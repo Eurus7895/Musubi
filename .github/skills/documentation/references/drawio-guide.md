@@ -66,7 +66,7 @@ Edges use `source` and `target` referencing shape IDs.
 ### Arrow (edge / connection)
 
 ```xml
-<mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;"
+<mxCell id="e1" value="" style="edgeStyle=none;"
         edge="1" source="box1" target="db1" parent="1">
   <mxGeometry relative="1" as="geometry" />
 </mxCell>
@@ -75,7 +75,7 @@ Edges use `source` and `target` referencing shape IDs.
 ### Labeled arrow
 
 ```xml
-<mxCell id="e2" value="write_stage()" style="edgeStyle=orthogonalEdgeStyle;"
+<mxCell id="e2" value="write_stage()" style="edgeStyle=none;"
         edge="1" source="box1" target="db1" parent="1">
   <mxGeometry relative="1" as="geometry" />
 </mxCell>
@@ -156,23 +156,23 @@ Common shape types: `mxgraph.aws4.*`, `mxgraph.azure.*`, `cylinder`,
           <mxGeometry x="240" y="400" width="80" height="60" as="geometry" />
         </mxCell>
 
-        <mxCell id="e1" value="MCP tool calls" style="edgeStyle=orthogonalEdgeStyle;"
+        <mxCell id="e1" value="MCP tool calls" style="edgeStyle=none;"
                 edge="1" source="copilot" target="mcp" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;"
+        <mxCell id="e2" value="" style="edgeStyle=none;"
                 edge="1" source="mcp" target="state" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;"
+        <mxCell id="e3" value="" style="edgeStyle=none;"
                 edge="1" source="mcp" target="verifier" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;"
+        <mxCell id="e4" value="" style="edgeStyle=none;"
                 edge="1" source="mcp" target="executor" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e5" value="" style="edgeStyle=orthogonalEdgeStyle;"
+        <mxCell id="e5" value="" style="edgeStyle=none;"
                 edge="1" source="state" target="db" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
@@ -190,3 +190,115 @@ Common shape types: `mxgraph.aws4.*`, `mxgraph.azure.*`, `cylinder`,
 - Keep geometry on a 10px grid (`gridSize="10"`) for clean alignment.
 - Use swimlanes to group related components visually.
 - Export to SVG for embedding in Markdown documentation.
+
+---
+
+## Making a Diagram Fully Editable (Manual Layout)
+
+Apply these rules when refactoring an existing `.drawio` file so it behaves as a
+static manual layout — no auto-routing, no node resize cascades, no edge jumping.
+
+### Why diagrams break editability
+
+Draw.io's auto-layout features (`childLayout`, `resizeParent`, orthogonal edge routing)
+recalculate positions whenever a node is moved or resized. This causes edges to jump,
+containers to expand unexpectedly, and nodes to shift. The fix is to strip all
+automatic layout behaviour and let geometry be the single source of truth.
+
+### Rules to apply
+
+**1. Remove auto-layout from `mxGraphModel`**
+
+Strip these attributes if present on `<mxGraphModel>`:
+- `autosize`
+- `resizeParent`
+- `childLayout`
+
+Safe attributes to keep: `dx`, `dy`, `grid`, `gridSize`, `guides`, `tooltips`,
+`connect`, `arrows`, `fold`, `page`, `pageScale`, `pageWidth`, `pageHeight`.
+
+**2. Remove auto-layout from swimlanes and containers**
+
+For any `<mxCell>` with `style="swimlane;..."`, remove from the style string:
+- `childLayout=stackLayout`
+- `resizeParent=1`
+- `resizeParentMax=...`
+- `collapsible=...` (optional — only remove if causing resize issues)
+
+Keep: `swimlane`, `fillColor`, `strokeColor`, `fontStyle`, `fontSize`, and any
+visual-only properties.
+
+**3. Fix all edges**
+
+Replace any routing style with `edgeStyle=none`:
+
+```xml
+<!-- before — auto-routing, jumps on node move -->
+<mxCell style="edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;..." .../>
+
+<!-- after — stable straight line -->
+<mxCell style="edgeStyle=none;" .../>
+```
+
+Remove from edge styles: `orthogonalLoop=1`, `jettySize=auto`, `exitX`, `exitY`,
+`exitDx`, `exitDy`, `entryX`, `entryY`, `entryDx`, `entryDy`.
+
+Only add `<Array as="points">` waypoints if an edge must visually avoid overlapping
+a node. Do not add waypoints pre-emptively.
+
+**4. Preserve all IDs and connections**
+
+- Never change `id` attributes on any `<mxCell>`.
+- Never change `source` or `target` on edges unless the connection is logically wrong.
+- Never change `parent` attributes.
+
+**5. Preserve all geometry**
+
+- Keep all `x`, `y`, `width`, `height` values unchanged.
+- Do not add or remove `<mxGeometry>` children.
+- `relative="1"` on edge geometry is correct — leave it.
+
+**6. Do not touch non-layout styles**
+
+Only modify style tokens related to layout (`edgeStyle`, `childLayout`,
+`resizeParent`, routing attributes). Leave all visual styles (`fillColor`,
+`strokeColor`, `rounded`, `shape`, `fontSize`, etc.) exactly as-is.
+
+### Checklist before returning refactored XML
+
+- [ ] No `childLayout=stackLayout` anywhere in the file
+- [ ] No `resizeParent=1` anywhere in the file
+- [ ] All edges use `edgeStyle=none`
+- [ ] No `orthogonalLoop`, `jettySize`, `exitX/Y`, `entryX/Y` in any edge style
+- [ ] All `id` attributes unchanged
+- [ ] All `source`/`target` attributes unchanged
+- [ ] All `mxGeometry` x/y/width/height unchanged
+- [ ] Output is valid XML (well-formed, no unclosed tags)
+
+### Example — before and after
+
+```xml
+<!-- BEFORE: auto-layout swimlane with orthogonal edges -->
+<mxCell id="sw1" value="Layer"
+        style="swimlane;childLayout=stackLayout;resizeParent=1;fillColor=#dae8fc;"
+        vertex="1" parent="1">
+  <mxGeometry x="50" y="50" width="300" height="200" as="geometry" />
+</mxCell>
+<mxCell id="e1" value=""
+        style="edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;"
+        edge="1" source="box1" target="box2" parent="1">
+  <mxGeometry relative="1" as="geometry" />
+</mxCell>
+
+<!-- AFTER: manual layout, stable edges -->
+<mxCell id="sw1" value="Layer"
+        style="swimlane;fillColor=#dae8fc;"
+        vertex="1" parent="1">
+  <mxGeometry x="50" y="50" width="300" height="200" as="geometry" />
+</mxCell>
+<mxCell id="e1" value=""
+        style="edgeStyle=none;"
+        edge="1" source="box1" target="box2" parent="1">
+  <mxGeometry relative="1" as="geometry" />
+</mxCell>
+```
