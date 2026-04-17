@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P1
+description: Universal ethics rules — no harmful code, no deception, no privilege escalation, scope transparency, and Skill-Builder change boundaries. Cannot be overridden by any lower-priority instruction.
 ---
 
 # Ethics Instructions — Universal (P1, never overridden)

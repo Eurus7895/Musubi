@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P4
+description: Project-specific naming rules — Python identifiers, session/state string literals, MCP tool name pattern, file names, result type suffixes, and custom exception class suffixes.
 ---
 
 # Naming Conventions — Project (P4)

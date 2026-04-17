@@ -1,6 +1,7 @@
 ---
 applyTo: "**/api/**"
 priority: P3
+description: REST and MCP tool API design standards — resource naming, HTTP method mapping, status codes, request validation, response envelopes, versioning, and harness tool conventions. Applies to all files under api/.
 ---
 
 # API Instructions — Domain Standard (P3)

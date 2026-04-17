@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P2
+description: Organization-wide code review standards — review checklist (correctness, security, types, tests, quality, architecture), severity classification, reviewer output schema, and what reviewers must not do.
 ---
 
 # Code Review Standards — Organization Standard (P2)

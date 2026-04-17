@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P2
+description: Organization-wide git standards — branch naming, commit message format, merge strategy, pull request requirements, and release tagging. Applies to all agents that produce or review commits.
 ---
 
 # Git Conventions — Organization Standard (P2)

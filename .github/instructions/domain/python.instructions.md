@@ -1,6 +1,7 @@
 ---
 applyTo: "**/*.py"
 priority: P3
+description: Python 3.11+ coding standards — type annotations, dataclasses, error handling, subprocess safety, file I/O with pathlib, logging, and pytest conventions. Applies to all Python source files.
 ---
 
 # Python Instructions — Domain Standard (P3)

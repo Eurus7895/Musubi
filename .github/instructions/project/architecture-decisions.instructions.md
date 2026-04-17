@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P4
+description: Project architecture decisions — zero LLM inside harness, append-only state, structural context firewall, subprocess-first execution, single-file prompt assembly, Skill-Builder human approval gate, MCP stdio transport, and SQLite storage rationale.
 ---
 
 # Architecture Decisions — Project (P4)

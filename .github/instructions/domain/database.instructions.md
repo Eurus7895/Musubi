@@ -1,6 +1,7 @@
 ---
 applyTo: "**/models/**,**/storage/**,**/memory/**"
 priority: P3
+description: SQLite schema design, parameterized query rules, WAL mode setup, append-only state enforcement, connection management, and cross-session pattern storage schema. Applies to models, storage, and memory modules.
 ---
 
 # Database Instructions — Domain Standard (P3)

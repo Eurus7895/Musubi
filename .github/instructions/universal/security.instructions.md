@@ -1,6 +1,7 @@
 ---
 applyTo: "**"
 priority: P1
+description: Universal security rules — secrets handling, input validation, injection prevention, subprocess safety, and file access controls. Cannot be overridden by any lower-priority instruction.
 ---
 
 # Security Instructions — Universal (P1, never overridden)
