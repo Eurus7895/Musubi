@@ -1,0 +1,9 @@
+{
+    "servers": {
+        "copilot-harness": {
+            "type": "stdio",
+            "command": "copilot-harness",
+            "args": ["serve"]
+        }
+    }
+}
