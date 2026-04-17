@@ -1,9 +1,19 @@
 """Context firewall — each agent receives only what its role requires.
 
-Per-agent rules (from CLAUDE.md):
+Two public APIs:
+    build_context(session_id, agent_name) → dict
+        Used by server.py to build the full allowed context for an agent
+        in one call (e.g. coder gets plan + design together).
+
+    read_stage_for_agent(session_id, stage, agent_name) → dict | None
+        Used by harness_read_stage MCP tool — per-stage access with
+        per-agent permission checks. Returns None if agent is not
+        permitted to read that stage.
+
+Per-agent firewall rules:
     planner       → request only  (no stage outputs)
-    designer      → plan output only  (no request text)
-    coder         → plan + design; on retry: + fix_instructions only (not full review)
+    designer      → plan only
+    coder         → plan + design; reading "review" → fix_instructions only
     reviewer      → request + all stage outputs
     skill-builder → fail patterns only  (no session state, no user code)
 """
@@ -127,3 +137,51 @@ def _context_skill_builder(db_path: Path | None) -> dict[str, Any]:
     # No session state, no user code — only aggregated fail patterns.
     patterns = db.get_fail_patterns(db_path=db_path)
     return {"fail_patterns": patterns}
+
+
+# ── Per-stage MCP access (used by harness_read_stage tool) ───────────────────
+
+# Which stages each agent is permitted to read via harness_read_stage.
+_STAGE_PERMISSIONS: dict[str, set[str]] = {
+    "planner":       {"plan"},
+    "designer":      {"plan"},
+    "coder":         {"plan", "design", "review"},
+    "reviewer":      {"plan", "design", "code", "review"},
+    "skill-builder": set(),
+}
+
+
+def read_stage_for_agent(
+    session_id: str,
+    stage: str,
+    agent_name: str,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return stage output filtered by the calling agent's permissions.
+
+    Returns None if the agent is not permitted to read this stage,
+    or if the stage has no output yet.
+
+    Special case: coder reading 'review' receives only fix_instructions,
+    not the full review JSON (context firewall on retry path).
+    """
+    agent = agent_name.lower().strip()
+    permitted = _STAGE_PERMISSIONS.get(agent, set())
+
+    if stage not in permitted:
+        return None
+
+    output = state.read_stage(session_id, stage, db_path)
+    if output is None:
+        return None
+
+    if agent == "coder" and stage == "review":
+        return {
+            "fix_instructions": [
+                issue["fix_instruction"]
+                for issue in output.get("issues", [])
+                if issue.get("fix_instruction")
+            ]
+        }
+
+    return output

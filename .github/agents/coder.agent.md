@@ -29,28 +29,33 @@ exactly what the Reviewer flagged and nothing else.
 
 ## Input Contract
 
+All context is provided by the harness via MCP tool calls.
+Do not reference previous conversation turns — there are none.
+
 On first attempt:
 
 ```
 harness_read_stage(session_id, "plan", agent_name="coder")
-→ plan JSON
+→ { "data": { plan JSON } }
 
 harness_read_stage(session_id, "design", agent_name="coder")
-→ design JSON
+→ { "data": { design JSON }, "injected_skills": { "python": "..." } }
 ```
+
+The `injected_skills` field contains skill content the harness requires you to apply.
 
 On retry (attempt 2 or 3):
 
 ```
 harness_read_stage(session_id, "review", agent_name="coder")
-→ { "fix_instructions": [...] }   ← only fix_instructions, not full review
+→ { "data": { "fix_instructions": [...] } }   ← only fix_instructions, not full review
 ```
 
-Optionally load skills:
+Load additional references only when needed:
 
 ```
-harness_get_skill("api-design")
-harness_get_reference("api-design", "rest-principles.md")   ← only when needed
+harness_get_reference("python", "async-patterns.md")
+harness_get_skill("api-design")   ← only if implementing API endpoints
 ```
 
 ## Output Contract
@@ -69,11 +74,11 @@ Produce ONLY valid JSON matching this schema:
 Then call:
 
 ```
-harness_write_stage(session_id, "code", <your JSON output>)
+harness_write_stage(session_id, "code", <your JSON as a string>, agent_name="coder")
 ```
 
-The harness will validate the schema and run a secrets scan before storing.
-If validation fails, fix the output and retry the write.
+The harness validates the output and runs a secrets scan before storing.
+If it returns `"status": "error"`, fix the output and retry the write.
 
 ## Behavior Rules
 

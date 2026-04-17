@@ -30,22 +30,20 @@ correction loop.
 
 ## Input Contract
 
-```
-harness_read_stage(session_id, "plan", agent_name="reviewer")
-→ plan JSON
-
-harness_read_stage(session_id, "design", agent_name="reviewer")
-→ design JSON
-
-harness_read_stage(session_id, "code", agent_name="reviewer")
-→ code output JSON + actual file contents (read via view tool)
-```
-
-Load the code review skill:
+All context is provided by the harness via MCP tool calls.
+Do not reference previous conversation turns — there are none.
 
 ```
-harness_get_skill("code-review")
+harness_read_stage(session_id, "plan",   agent_name="reviewer") → { "data": { plan JSON } }
+harness_read_stage(session_id, "design", agent_name="reviewer") → { "data": { design JSON } }
+harness_read_stage(session_id, "code",   agent_name="reviewer")
+→ { "data": { code JSON }, "injected_skills": { "code-review": "..." } }
 ```
+
+The `injected_skills.code-review` field is the code review procedure — you MUST apply it.
+It is not optional. The harness injects it; your job is to follow it.
+
+Then read the actual modified files using your `view` tool to inspect the code directly.
 
 Load references when needed:
 
@@ -82,7 +80,7 @@ Rules for `status`:
 Then call:
 
 ```
-harness_write_stage(session_id, "review", <your JSON output>)
+harness_write_stage(session_id, "review", <your JSON as a string>, agent_name="reviewer")
 ```
 
 The harness reads `status` and routes accordingly:
