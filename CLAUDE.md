@@ -144,7 +144,8 @@ copilot-harness/
         pattern_detector.py                                        [Day 5]
     storage/
         db.py          ← SQLite CRUD
-        schema.sql     ← sessions, stage_outputs, agent_versions, fail_patterns
+        schema.sql     ← sessions, stage_outputs, agent_versions, fail_patterns,
+                          active_session (crash recovery pointer)
     tests/
         test_state.py
         test_context_builder.py
@@ -207,11 +208,17 @@ Agent loads additional references on demand via harness_get_reference().
 
 ### State Tools
 ```
+harness_get_active_session()
+    → state.get_active_session()
+    → returns { session_id, request, resume_stage, attempt } | { session_id: null }
+    → call FIRST — before harness_new_session — to detect interrupted sessions
+
 harness_new_session(request)
-    → create_session() + lock_agent_versions()
+    → create_session() + lock_agent_versions() + set_active_session()
     → returns { session_id, locked_agent_versions }
 
 harness_read_stage(session_id, stage, agent_name)
+    → auto-marks agent's output stage in_progress (crash recovery marker)
     → context_builder.read_stage_for_agent() — per-stage firewall
     → auto-injects skills from STAGE_SKILL_MAP
     → returns { data, injected_skills? }
@@ -321,7 +328,7 @@ Day 3:
     → correction_loop escalates back to Planner stage, not Coder retry
 ```
 
-### 3. State Management ✅ Built (Day 2)
+### 3. State Management ✅ Built (Day 2 + crash recovery)
 
 **Session schema:**
 ```json
@@ -341,6 +348,13 @@ Day 3:
 **Rules:** pending → in_progress → complete. Write-once per attempt.
 `read_stage` returns latest written output — reviewer sees attempt-1 code
 even after attempt counter increments.
+
+**Crash recovery (built):**
+- `active_session` table — singleton row always pointing to most recent active session
+- `harness_get_active_session()` — returns `{ session_id, request, resume_stage, attempt }`
+- `harness_read_stage` auto-marks agent's output stage `in_progress` before returning —
+  crash between read and write is detectable on resume
+- All 5 `.agent.md` Input Contracts start with `harness_get_active_session()` check
 
 **TODO:**
 ```
@@ -452,7 +466,7 @@ Week 2:
 |---|---|---|
 | Tool Design | ⚠️ Prompt-level only | Phase 2 for structural |
 | Feedback Loops | ✅ Designed | wrong_plan path (Day 3) |
-| State Management | ✅ Built | cross-session memory (Week 2) |
+| State Management | ✅ Built + crash recovery | cross-session memory (Week 2) |
 | Multi-Agent Coordination | ❌ Missing | handoff schemas (Day 3) |
 | Security & Permissions | ⚠️ Injection scan only | secrets + full verifier (Day 3) |
 | Verification | ✅ Designed | verifier.py (Day 3) |
@@ -492,23 +506,29 @@ Copilot Chat (VS Code) ✅     ALL agent reasoning — every stage
 [✅] .github/agents/proposed/
 ```
 
-### Day 2 — State + Context Firewall + MCP Server ✅ Complete
+### Day 2 — State + Context Firewall + MCP Server + Crash Recovery ✅ Complete
 ```
-[✅] storage/schema.sql
-[✅] storage/db.py — SQLite WAL, parameterized queries, context managers
-[✅] state.py — create_session, lock_agent_versions, write_stage (write-once),
-                read_stage (latest written output), increment_attempt, resume
+[✅] storage/schema.sql — sessions, stage_outputs, agent_versions, fail_patterns,
+                          active_session (singleton crash recovery pointer)
+[✅] storage/db.py — SQLite WAL, parameterized queries, context managers,
+                     get_active_session_id / set_active_session_id
+[✅] state.py — create_session (auto-sets active pointer), lock_agent_versions,
+                write_stage (write-once), read_stage (latest written output),
+                increment_attempt, resume, mark_in_progress,
+                get_active_session() → { session_id, request, resume_stage, attempt }
 [✅] context_builder.py — build_context() → dict, read_stage_for_agent() → dict,
                           scan_injection(), validate_skill_builder_write()
 [✅] server.py — FastMCP stdio server
-                 harness_new_session, harness_read_stage (+ skill injection),
-                 harness_write_stage, harness_get_status,
+                 harness_get_active_session (crash recovery),
+                 harness_new_session, harness_read_stage (+ skill injection
+                 + auto-mark in_progress), harness_write_stage, harness_get_status,
                  harness_get_skill, harness_get_reference
                  stub: harness_run_lint, harness_run_typecheck, harness_run_tests
+[✅] All 5 .agent.md Input Contracts — Step 1: harness_get_active_session() resume check
 [✅] cli.py — copilot-harness serve
 [✅] .vscode/mcp.json — python ${workspaceFolder}/copilot-harness/server.py
 [✅] pyproject.toml — mcp>=1.0.0 dependency
-[✅] tests/test_state.py + test_context_builder.py — 69 tests passing
+[✅] tests/test_state.py + test_context_builder.py — 78 tests passing
 ```
 
 ### Day 3 — Verification + Correction Loop + Skill Loader
@@ -584,7 +604,6 @@ Test:
 ### Week 2 — Hardening
 ```
 [ ] Full unit test suite (all components)
-[ ] Crash recovery: server.py resume → picks up from last complete stage
 [ ] .github/memory/ — Tier 1 + Tier 2 memory files
 [ ] memory_loader.py — inject into harness_read_stage responses
 [ ] session_distiller.py — converts sessions to memory entries
@@ -617,6 +636,11 @@ state.py: ✅
 [✅] attempt counter increments, previous attempt preserved
 [✅] resume() returns correct last incomplete stage
 [✅] read_stage returns latest WRITTEN output (not latest attempt row)
+[✅] create_session sets active_session pointer automatically
+[✅] get_active_session() returns { session_id, request, resume_stage, attempt }
+[✅] get_active_session() returns None when no active session exists
+[✅] latest session wins when multiple sessions created
+[✅] mark_in_progress() transitions pending → in_progress (idempotent)
 
 context_builder.py: ✅
 [✅] Planner context: request only, zero stage outputs
@@ -627,8 +651,9 @@ context_builder.py: ✅
 [✅] validate_skill_builder_write blocks path traversal
 
 server.py / MCP tools: ⬜
+[ ] harness_get_active_session → returns active session or null
 [ ] harness_new_session → session created, versions locked
-[ ] harness_read_stage → firewall enforced, skills auto-injected
+[ ] harness_read_stage → firewall enforced, skills auto-injected, stage marked in_progress
 [ ] harness_write_stage → injection detected → rejected
 [ ] harness_get_skill → SKILL.md content returned
 [ ] harness_get_reference → reference content returned
@@ -688,4 +713,4 @@ WEEK 2:
 *Runtime: GitHub Copilot Chat in VS Code + local MCP stdio server*
 *Phase 1: MCP server — build now*
 *Phase 2: VS Code extension — after Phase 1 validated with 10+ real runs*
-*Current milestone: Day 2 complete — Day 3 next (verifier + correction loop + skill_loader)*
+*Current milestone: Day 2 complete (incl. crash recovery) — Day 3 next (verifier + correction loop + skill_loader)*
