@@ -180,6 +180,29 @@ def write_stage_output(
         )
 
 
+# ── active_session ────────────────────────────────────────────────────────
+
+def get_active_session_id(db_path: Path | None = None) -> str | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT session_id FROM active_session WHERE singleton = 1"
+        ).fetchone()
+    return row["session_id"] if row else None
+
+
+def set_active_session_id(
+    session_id: str | None, now: str, db_path: Path | None = None
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO active_session (singleton, session_id, updated_at) VALUES (1, ?, ?)"
+            " ON CONFLICT(singleton) DO UPDATE SET"
+            "  session_id = excluded.session_id,"
+            "  updated_at = excluded.updated_at",
+            (session_id, now),
+        )
+
+
 # ── fail_patterns ─────────────────────────────────────────────────────────
 
 def insert_fail_pattern(

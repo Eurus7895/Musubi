@@ -31,6 +31,20 @@ You define the shape of the solution — not the implementation.
 All context is provided by the harness via MCP tool calls.
 Do not reference previous conversation turns — there are none.
 
+**Step 1 — Check for a session to resume (crash recovery):**
+
+```
+harness_get_active_session()
+→ { "session_id": null }                       → halt: Planner must run first
+→ { "session_id": "abc123",
+    "resume_stage": "plan" | "design", ... }   → use this session_id below
+```
+
+If `resume_stage` is "code" or later, the Designer's work is already complete — do not
+call this agent at all.
+
+**Step 2 — Read the plan:**
+
 ```
 harness_read_stage(session_id, "plan", agent_name="designer")
 → { "data": { plan JSON }, "injected_skills": { "api-design": "..." } }

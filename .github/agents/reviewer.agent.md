@@ -33,6 +33,19 @@ correction loop.
 All context is provided by the harness via MCP tool calls.
 Do not reference previous conversation turns — there are none.
 
+**Step 1 — Check for a session to resume (crash recovery):**
+
+```
+harness_get_active_session()
+→ { "session_id": null }                           → halt: earlier agents must run first
+→ { "session_id": "abc123", "resume_stage": "review" | "code", ... }
+```
+
+If `resume_stage` is "code", the previous Reviewer write failed — start a fresh review.
+If `resume_stage` is anything before "code", halt — Coder has not run yet.
+
+**Step 2 — Read all stages:**
+
 ```
 harness_read_stage(session_id, "plan",   agent_name="reviewer") → { "data": { plan JSON } }
 harness_read_stage(session_id, "design", agent_name="reviewer") → { "data": { design JSON } }

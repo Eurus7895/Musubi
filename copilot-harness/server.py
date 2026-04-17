@@ -48,6 +48,16 @@ _STAGE_SKILL_MAP: dict[tuple[str, str], list[str]] = {
     ("code",   "reviewer"):  ["code-review"],   # always — reviewer must use it
 }
 
+# Agent → the stage that agent writes to.
+# Used to auto-mark that stage in_progress when the agent calls harness_read_stage,
+# so crash recovery can identify where the pipeline was interrupted.
+_AGENT_OUTPUT_STAGE: dict[str, str] = {
+    "planner":  "plan",
+    "designer": "design",
+    "coder":    "code",
+    "reviewer": "review",
+}
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("copilot-harness")
@@ -59,6 +69,30 @@ def _read_skill(skill_id: str) -> str | None:
 
 
 # ── State tools ───────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def harness_get_active_session() -> str:
+    """Check for an active session that needs resuming after a crash or restart.
+
+    Call this BEFORE harness_new_session() at the start of every agent invocation.
+
+    If session_id is non-null, resume from resume_stage instead of starting fresh:
+      - Skip any stages before resume_stage (their outputs are already stored).
+      - Start work at resume_stage with the given attempt number.
+
+    Returns:
+      { "session_id": null }                            → no active session, call harness_new_session()
+      { "session_id": "...", "request": "...",          → resume this session
+        "resume_stage": "code", "attempt": 2 }
+    """
+    active = state.get_active_session()
+    if active is None:
+        return json.dumps({
+            "session_id": None,
+            "message": "No active session. Call harness_new_session() to start.",
+        })
+    return json.dumps(active)
+
 
 @mcp.tool()
 def harness_new_session(request: str) -> str:
@@ -89,6 +123,15 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     Relevant skills are automatically injected into the response based on
     the (stage, agent_name) pair — agents cannot opt out of skill content.
     """
+    # Mark the calling agent's output stage as in_progress for crash recovery.
+    # Planner reading "plan" → marks plan in_progress before writing.
+    output_stage = _AGENT_OUTPUT_STAGE.get(agent_name.lower())
+    if output_stage:
+        try:
+            state.mark_in_progress(session_id, output_stage)
+        except Exception:
+            pass  # session may not exist yet — don't fail the read
+
     output = context_builder.read_stage_for_agent(session_id, stage, agent_name)
 
     result: dict = {}

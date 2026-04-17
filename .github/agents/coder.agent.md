@@ -32,7 +32,19 @@ exactly what the Reviewer flagged and nothing else.
 All context is provided by the harness via MCP tool calls.
 Do not reference previous conversation turns — there are none.
 
-On first attempt:
+**Step 1 — Check for a session to resume (crash recovery):**
+
+```
+harness_get_active_session()
+→ { "session_id": null }                           → halt: earlier agents must run first
+→ { "session_id": "abc123",
+    "resume_stage": "code", "attempt": 1 | 2 | 3 } → use this session_id and attempt below
+```
+
+If `resume_stage` is "review" or later, Coder's work is already complete — do not
+call this agent at all. If `attempt` is 2 or 3, skip to the retry path below.
+
+**Step 2 — First attempt:**
 
 ```
 harness_read_stage(session_id, "plan", agent_name="coder")
@@ -44,7 +56,7 @@ harness_read_stage(session_id, "design", agent_name="coder")
 
 The `injected_skills` field contains skill content the harness requires you to apply.
 
-On retry (attempt 2 or 3):
+**Step 2 (retry — attempt 2 or 3):**
 
 ```
 harness_read_stage(session_id, "review", agent_name="coder")

@@ -32,11 +32,27 @@ You do not write code. You scope, decompose, and specify.
 All context is provided by the harness via MCP tool calls.
 Do not reference previous conversation turns — there are none.
 
+**Step 1 — Check for a session to resume (crash recovery):**
+
+```
+harness_get_active_session()
+→ { "session_id": null }                    → proceed to Step 2 (start fresh)
+→ { "session_id": "abc123",
+    "resume_stage": "plan", "attempt": 1 }  → resume: skip to Step 3 with this session_id
+```
+
+If `resume_stage` is not "plan" (e.g. "design" or later), the Planner's work is already
+complete — do not call this agent at all.
+
+**Step 2 — Start a new session (only if no active session):**
+
 ```
 harness_new_session(request) → { "session_id": "...", "locked_agent_versions": {...} }
 ```
 
 Store the `session_id`. Pass it to every subsequent harness tool call.
+
+**Step 3 — Read the current plan:**
 
 ```
 harness_read_stage(session_id, "plan", agent_name="planner")

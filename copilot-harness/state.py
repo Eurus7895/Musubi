@@ -36,6 +36,7 @@ def create_session(request: str, db_path: Path | None = None) -> str:
     db.insert_session(session_id, request, now, db_path)
     for stage in STAGES:
         db.insert_stage(session_id, stage, attempt=1, db_path=db_path)
+    db.set_active_session_id(session_id, now, db_path)
     return session_id
 
 
@@ -64,6 +65,35 @@ def get_agent_versions(
     session_id: str, db_path: Path | None = None
 ) -> dict[str, str]:
     return db.get_agent_versions(session_id, db_path)
+
+
+# ── Active session (crash recovery) ──────────────────────────────────────────
+
+def set_active_session(session_id: str, db_path: Path | None = None) -> None:
+    """Update the active-session pointer (called automatically by create_session)."""
+    db.set_active_session_id(session_id, _now(), db_path)
+
+
+def get_active_session(db_path: Path | None = None) -> dict | None:
+    """Return crash-recovery info for the current active session, or None.
+
+    Returns None if there is no active session or if the tracked session is
+    already complete/escalated — so callers always get actionable data.
+    """
+    session_id = db.get_active_session_id(db_path)
+    if not session_id:
+        return None
+    session = db.get_session(session_id, db_path)
+    if session is None or session["status"] != "active":
+        return None
+    resume_stage = resume(session_id, db_path)
+    attempt = get_attempt(session_id, resume_stage, db_path) if resume_stage else None
+    return {
+        "session_id": session_id,
+        "request": session["request"],
+        "resume_stage": resume_stage,
+        "attempt": attempt,
+    }
 
 
 # ── Stage I/O ─────────────────────────────────────────────────────────────────

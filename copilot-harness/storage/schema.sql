@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 
+-- Single-row pointer to the most recent active session (crash recovery).
+-- CHECK constraint enforces at most one row (singleton = 1 always).
+CREATE TABLE IF NOT EXISTS active_session (
+    singleton  INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
+    session_id TEXT,
+    updated_at TEXT
+);
+
 -- Populated by pattern_detector.py (Day 5); schema defined here for FK integrity.
 CREATE TABLE IF NOT EXISTS fail_patterns (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

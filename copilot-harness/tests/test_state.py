@@ -153,3 +153,80 @@ def test_resume_after_retry_points_to_retried_stage(session_id: str, db: Path) -
     state.increment_attempt(session_id, "code", db_path=db)
     # code has a new attempt with no output — should resume there
     assert state.resume(session_id, db_path=db) == "code"
+
+
+# ── crash recovery (active session) ──────────────────────────────────────────
+
+def test_create_session_sets_active_session(db: Path) -> None:
+    sid = state.create_session("build something", db_path=db)
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["session_id"] == sid
+
+
+def test_get_active_session_returns_request(db: Path) -> None:
+    state.create_session("my request", db_path=db)
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["request"] == "my request"
+
+
+def test_get_active_session_returns_resume_stage(session_id: str, db: Path) -> None:
+    state.write_stage(session_id, "plan", {"ok": True}, db_path=db)
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["resume_stage"] == "design"
+
+
+def test_get_active_session_returns_none_when_no_session(db: Path) -> None:
+    assert state.get_active_session(db_path=db) is None
+
+
+def test_get_active_session_latest_session_wins(db: Path) -> None:
+    state.create_session("first", db_path=db)
+    sid2 = state.create_session("second", db_path=db)
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["session_id"] == sid2
+
+
+def test_get_active_session_returns_attempt(session_id: str, db: Path) -> None:
+    state.write_stage(session_id, "plan", {"ok": True}, db_path=db)
+    state.write_stage(session_id, "design", {"ok": True}, db_path=db)
+    state.write_stage(session_id, "code", {"ok": True}, db_path=db)
+    state.increment_attempt(session_id, "code", db_path=db)
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["resume_stage"] == "code"
+    assert active["attempt"] == 2
+
+
+def test_get_active_session_none_when_all_complete(session_id: str, db: Path) -> None:
+    for stage in state.STAGES:
+        state.write_stage(session_id, stage, {"stage": stage}, db_path=db)
+    # All stages complete → resume returns None → get_active_session still returns
+    # the session (status is still 'active'), but resume_stage is None
+    active = state.get_active_session(db_path=db)
+    assert active is not None
+    assert active["resume_stage"] is None
+    assert active["attempt"] is None
+
+
+def test_mark_in_progress_transitions_status(session_id: str, db: Path) -> None:
+    from storage import db as _db
+    row_before = _db.get_stage_row(session_id, "plan", db_path=db)
+    assert row_before is not None
+    assert row_before["status"] == "pending"
+    state.mark_in_progress(session_id, "plan", db_path=db)
+    row_after = _db.get_stage_row(session_id, "plan", db_path=db)
+    assert row_after is not None
+    assert row_after["status"] == "in_progress"
+
+
+def test_mark_in_progress_idempotent(session_id: str, db: Path) -> None:
+    state.mark_in_progress(session_id, "plan", db_path=db)
+    state.mark_in_progress(session_id, "plan", db_path=db)
+    from storage import db as _db
+    row = _db.get_stage_row(session_id, "plan", db_path=db)
+    assert row is not None
+    assert row["status"] == "in_progress"

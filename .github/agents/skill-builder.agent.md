@@ -34,8 +34,12 @@ and apply.
 All context is provided by the harness via MCP tool calls.
 Do not reference previous conversation turns — there are none.
 
-The harness provides a structured trigger from `pattern_detector.py`.
-Retrieve it via:
+**Step 1 — The session_id is provided by the trigger:**
+
+Skill-Builder is invoked with a specific `session_id` by `pattern_detector.py`.
+Do not call `harness_get_active_session()` — the triggering session_id is your input.
+
+**Step 2 — Retrieve fail patterns:**
 
 ```
 harness_get_status(session_id)
