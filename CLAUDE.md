@@ -136,7 +136,7 @@ copilot-harness/
     state.py           ← append-only session state (SQLite)
     context_builder.py ← context firewall (returns dict) + injection detection
     verifier.py        ← schema validation + secrets scan          ✅ built
-    executor.py        ← lint + typecheck + test runner            [Day 4]
+    executor.py        ← lint + typecheck + test runner            ✅ built
     correction_loop.py ← reviewer → coder retry (max 3)           ✅ built
     skill_loader.py    ← serves SKILL.md + references             ✅ built
     memory/
@@ -151,26 +151,26 @@ copilot-harness/
         test_context_builder.py
         test_verifier.py         ✅ built
         test_correction_loop.py  ✅ built
-        test_executor.py         [Day 4]
+        test_executor.py         ✅ built
     pyproject.toml
     README.md
     CLAUDE.md
 
 .vscode/
-    mcp.json           ← connects VS Code to local MCP server
+    mcp.json           ← { "command": "copilot-harness", "args": ["serve"] }
+                          portable — works in any project once the CLI is installed
 ```
 
-**Phase 2 — VS Code Extension (✅ built):**
+**VS Code Extension (✅ built):**
 ```
 copilot-harness-extension/   ← VS Code extension (TypeScript)
     src/
-        extension.ts         ← registers "CopilotHarness: Run Pipeline" +
-                               "CopilotHarness: Resume Interrupted Pipeline"
-        pipeline.ts          ← drives 5 agents via vscode.lm API
-                               correction loop (max 3) handled here
-        client.ts            ← MCP stdio client: spawns server, JSON-RPC handshake,
-                               callTool() wrapper
-    package.json             ← VS Code ^1.90.0 extension manifest
+        extension.ts         ← registers @harness chat participant
+                               user types "@harness <request>" in Copilot Chat
+        pipeline.ts          ← drives 5 agents via vscode.lm.invokeTool() +
+                               vscode.lm.sendRequest(); correction loop (max 3)
+                               NO second server spawned — uses VS Code's managed server
+    package.json             ← VS Code ^1.93.0 (vscode.lm.invokeTool minimum)
     tsconfig.json
 ```
 
@@ -253,11 +253,11 @@ harness_get_reference(skill_id, reference_name)
     → load only when needed (OWASP, patterns, etc.)
 ```
 
-### Execution Tools (stubs — Day 4)
+### Execution Tools ✅ built (Day 4)
 ```
-harness_run_lint(files)       → executor.py: ruff check
-harness_run_typecheck(files)  → executor.py: mypy
-harness_run_tests(test_dir)   → executor.py: pytest
+harness_run_lint(files)       → executor.run_lint()      → LintResult (ruff JSON)
+harness_run_typecheck(files)  → executor.run_typecheck()  → TypeCheckResult (mypy)
+harness_run_tests(test_dir)   → executor.run_tests()      → RunResult (pytest -v)
 ```
 
 ---
@@ -480,10 +480,10 @@ Week 2:
 | State Management | ✅ Built + crash recovery | cross-session memory (Week 2) |
 | Multi-Agent Coordination | ❌ Missing | handoff schemas (Day 4) |
 | Security & Permissions | ✅ Built (injection scan + verifier secrets) | proposed_change_validator (Day 5) |
-| Verification | ✅ Built (verifier.py — schema + secrets + contracts) | executor.py (Day 4) |
+| Verification | ✅ Built (verifier.py + executor.py) | — |
 | Architecture Enforcement | ✅ Designed | patch applier (Day 5) |
 | Memory Architecture | ❌ Missing | 3-tier memory (Week 2) |
-| Phase 2 Extension | ✅ Built | executor integration (Day 4) |
+| Extension (@harness) | ✅ Built (chat participant + invokeTool) | — |
 
 ---
 
@@ -498,11 +498,10 @@ context_builder.py     ❌     Python dict filtering + regex   ✅
 verifier.py            ❌     jsonschema + regex              ✅
 correction_loop.py     ❌     Python orchestration            ✅
 skill_loader.py        ❌     file I/O                        ✅
-executor.py            ❌     subprocess: ruff, mypy, pytest  [Day 4]
+executor.py            ❌     subprocess: ruff, mypy, pytest  ✅
 pattern_detector.py    ❌     SQLite count threshold          [Day 5]
-extension/client.ts    ❌     MCP stdio JSON-RPC client       ✅
-extension/pipeline.ts  ❌     vscode.lm orchestration         ✅
-extension/extension.ts ❌     VS Code command registration    ✅
+extension/pipeline.ts  ❌     vscode.lm.invokeTool + sendRequest  ✅
+extension/extension.ts ❌     @harness chat participant       ✅
 
 Copilot Chat (VS Code) ✅     agent reasoning in Phase 1
 vscode.lm API          ✅     agent reasoning in Phase 2
@@ -543,7 +542,7 @@ vscode.lm API          ✅     agent reasoning in Phase 2
                  stub: harness_run_lint, harness_run_typecheck, harness_run_tests
 [✅] All 5 .agent.md Input Contracts — Step 1: harness_get_active_session() resume check
 [✅] cli.py — copilot-harness serve
-[✅] .vscode/mcp.json — python ${workspaceFolder}/copilot-harness/server.py
+[✅] .vscode/mcp.json — copilot-harness serve (portable CLI)
 [✅] pyproject.toml — mcp>=1.0.0 dependency
 [✅] tests/test_state.py + test_context_builder.py — 78 tests passing
 ```
@@ -577,23 +576,20 @@ vscode.lm API          ✅     agent reasoning in Phase 2
 [✅] tests/test_verifier.py + test_correction_loop.py
 ```
 
-### Day 4 — Executor
+### Day 4 — Executor ✅ Complete
 ```
-[ ] executor.py
-      run_lint(files) → LintResult
-      run_typecheck(files) → TypeCheckResult
-      run_tests(test_dir) → TestResult
-      run_all(session_id, files_modified) → ExecutionResult
-      run_skill_asset(skill_id, asset_name, input_json) → AssetResult
-      Wire into harness_run_lint / harness_run_typecheck / harness_run_tests
+[✅] executor.py
+      run_lint(files)       → LintResult       (ruff --output-format=json)
+      run_typecheck(files)  → TypeCheckResult  (mypy)
+      run_tests(test_dir)   → RunResult        (pytest -v --tb=short)
+      run_all(files, dir)   → ExecutionResult  (lint → typecheck → tests, early exit)
+      30s timeout per subprocess; FileNotFoundError + TimeoutExpired handled
+      Wired into harness_run_lint / harness_run_typecheck / harness_run_tests
 
-[ ] tests/test_executor.py
-
-Test:
-  harness_run_lint → ruff errors as structured LintResult
-  harness_run_tests → pytest failures with test name + reason
-  harness_run_typecheck → mypy errors with file + line
-  clean code → ExecutionResult.passed = True
+[✅] tests/test_executor.py — 31 tests
+      Parser tests: _parse_ruff_output, _parse_mypy_output, _parse_pytest_output
+      Integration: run_lint detects F401, run_typecheck detects type errors,
+                   run_tests passes/fails, run_all stops early on lint failure
 ```
 
 ### Day 5 — Self-Improvement Loop + Packaging
@@ -623,38 +619,27 @@ Test:
 [ ] Edge cases: malformed JSON output, empty agent response, executor timeout
 ```
 
-### Phase 2 — VS Code Extension ✅ Complete
+### VS Code Extension ✅ Complete (refactored)
 
 ```
-[✅] src/client.ts
-      HarnessClient class — spawns copilot-harness/server.py as child process
-      JSON-RPC 2.0 initialize handshake + notifications/initialized
-      callTool(name, args) → parses tool response (JSON or plain text)
-      dispose() → SIGTERM server process
+[✅] src/extension.ts
+      Registers @harness chat participant (id: copilot-harness.harness)
+      User types "@harness <request>" in Copilot Chat to start the pipeline
+      Streams progress back into the chat window via ChatResponseStream
 
 [✅] src/pipeline.ts
-      runPipeline(request, workspaceRoot, client, out, token) → PipelineResult
-      Reads agent .agent.md files as system prompts (falls back to inline defaults)
-      Per-agent: harness_read_stage (firewall + skill injection) →
-                 vscode.lm.sendRequest() → harness_write_stage
-      Planner: request injected directly (no plan output exists at start)
+      runPipeline(request, workspaceRoot, stream, token, toolToken) → PipelineResult
+      callHarness(toolName, args, token, toolToken) — calls harness_* tools via
+        vscode.lm.invokeTool() on VS Code's managed MCP server (NO second process)
+      Per-agent: harness_read_stage → vscode.lm.sendRequest(copilot) → harness_write_stage
       Crash recovery: harness_get_active_session() → skip complete stages
       Correction loop: reviewer "fail" → harness_increment_attempt (code + review)
                        → coder retry with fix_instructions → reviewer re-run (max 3)
-      Escalation returned as PipelineResult.escalated = true
 
-[✅] src/extension.ts
-      Commands: copilotHarness.runPipeline
-                copilotHarness.resumePipeline
-      Progress notification (cancellable) + CopilotHarness output channel
-      "Show Output" action on completion / escalation / error
-
-[✅] harness_increment_attempt(session_id, stage) added to server.py
-      Exposes state.increment_attempt() as MCP tool
-      Enables correction loop retry without violating write-once invariant
-
-[✅] package.json — VS Code ^1.90.0, activationEvents: []
+[✅] package.json — VS Code ^1.93.0 (vscode.lm.invokeTool minimum)
+                    chatParticipants contribution (replaces commands)
 [✅] tsconfig.json — CommonJS / ES2022 / strict
+[✅] .vscode/mcp.json — "copilot-harness serve" (portable CLI, not hardcoded path)
 ```
 
 ---
@@ -744,4 +729,4 @@ WEEK 2:
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Phase 1 — Copilot Chat in VS Code + local MCP stdio server*
 *         Phase 2 — VS Code extension drives pipeline via vscode.lm API*
-*Current milestone: Day 3 complete + Phase 2 complete — Day 4 next (executor: ruff, mypy, pytest)*
+*Current milestone: Day 4 complete + Extension refactored (@harness chat participant) — Day 5 next (pattern detector, self-improvement loop)*

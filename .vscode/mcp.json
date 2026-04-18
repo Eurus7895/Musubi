@@ -2,8 +2,8 @@
     "servers": {
         "copilot-harness": {
             "type": "stdio",
-            "command": "python",
-            "args": ["${workspaceFolder}/copilot-harness/server.py"]
+            "command": "copilot-harness",
+            "args": ["serve"]
         }
     }
 }

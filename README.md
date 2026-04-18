@@ -8,57 +8,101 @@ injects skills, enforces correction loops, and runs code verification.
 
 ---
 
+## Quick Start
+
+**Requirements:** Python 3.11+, VS Code with GitHub Copilot Chat extension
+
+### 1. Install the MCP server
+
+```bash
+cd copilot-harness
+python -m pip install -e .
+```
+
+### 2. Open the workspace in VS Code
+
+VS Code reads `.vscode/mcp.json` and spawns the MCP server automatically.
+No manual startup needed. Verify it's running: open Copilot Chat and check
+that `harness_*` tools appear in the tool list.
+
+### 3. Install and activate the extension
+
+```bash
+cd copilot-harness-extension
+npm install
+npm run package        # produces copilot-harness-extension-0.1.0.vsix
+```
+
+In VS Code: **Extensions** sidebar → `...` menu → **Install from VSIX** → select the file.
+
+### 4. Run the pipeline from Copilot Chat
+
+Open Copilot Chat and type:
+
+```
+@harness add a login endpoint that validates email + password
+```
+
+All five agents run automatically in sequence. Progress streams into the chat window:
+
+```
+✓ planner complete
+✓ designer complete
+✓ coder complete
+✗ reviewer failed — retrying coder (attempt 2 of 3)
+✓ coder complete
+✓ reviewer passed
+Pipeline complete. Session: abc123
+```
+
+If VS Code restarts mid-run the next `@harness` message resumes from where it stopped — no work lost.
+
+---
+
 ## How It Works
 
 CopilotHarness runs as a local MCP stdio server. There are two ways to drive it:
 
-**Phase 1 — Manual (Copilot Chat):** VS Code spawns the server and Copilot Chat
-agents call `harness_*` tools directly. The developer opens each `@agent` in turn.
-
-**Phase 2 — Automated (VS Code Extension):** The extension drives all agents
-automatically via `vscode.lm.sendRequest()`, calling the same MCP server on each
-agent's behalf. No manual relay needed.
+VS Code reads `.vscode/mcp.json` and starts `copilot-harness serve` — a local stdio
+process. The `@harness` chat participant (VS Code extension) then drives the full
+5-agent pipeline by calling `harness_*` tools via `vscode.lm.invokeTool()` on that
+single server, and calling Copilot for each agent's reasoning via `vscode.lm.sendRequest()`.
 
 ```
-VS Code → .vscode/mcp.json → spawns python copilot-harness/server.py
+VS Code reads .vscode/mcp.json → starts copilot-harness serve  (ONE server)
                                        ↓
-                    ┌──────────────────┴──────────────────┐
-             Phase 1 (manual)                    Phase 2 (extension)
-        Copilot Chat @agent                  copilotHarness.runPipeline
-        calls harness_* tools                extension calls harness_* tools
-        developer relays each step           all 5 agents run automatically
-                    └──────────────────┬──────────────────┘
+User types: @harness <request> in Copilot Chat
                                        ↓
-              harness_get_active_session() → crash recovery check
-              harness_new_session()        → session created, agent versions locked
-              harness_read_stage()         → firewall enforced, skills auto-injected
-              harness_write_stage()        → injection scan + schema validation + store
+Extension (@harness participant) — for each agent:
+    vscode.lm.invokeTool("harness_read_stage")   → firewall enforced, skills injected
+    vscode.lm.sendRequest(copilot, agentPrompt)  → Copilot reasons, returns JSON
+    vscode.lm.invokeTool("harness_write_stage")  → injection scan + validation + store
+                                       ↓
+    reviewer "fail" → correction loop → retry coder (max 3) → re-run reviewer
+                                       ↓
+    stream.markdown(progress) back to Copilot Chat
 ```
 
 ---
 
 ## Setup
 
-**Requirements:** Python 3.11+, VS Code with GitHub Copilot Chat
+**Requirements:** Python 3.11+, Node.js 18+, VS Code 1.93+ with GitHub Copilot Chat
 
 ```bash
+# Install the MCP server (once, globally)
 cd copilot-harness
-pip install -e .
+python -m pip install -e .
+
+# Build and install the extension
+cd ../copilot-harness-extension
+npm install && npm run package
+# Then: VS Code → Extensions → ··· → Install from VSIX
 ```
 
-VS Code reads `.vscode/mcp.json` and starts the MCP server automatically when
-you open the workspace. No manual startup needed.
-
-**Phase 2 extension** (automated pipeline):
-
-```bash
-cd copilot-harness-extension
-npm install
-npm run compile
-```
-
-Install the compiled extension in VS Code, then run
-`CopilotHarness: Run Pipeline` from the Command Palette.
+Any project that needs the harness only requires two things:
+- `.vscode/mcp.json` (copy from this repo — points to `copilot-harness serve`)
+- `.github/agents/` + `.github/skills/` (agent definitions and skills)
 
 ---
 
@@ -91,9 +135,9 @@ session is found, the agent resumes from the correct stage without data loss.
 | `harness_get_skill(skill_id)` | Load SKILL.md on demand | ✅ |
 | `harness_get_reference(skill_id, ref_name)` | Load reference document | ✅ |
 | `harness_increment_attempt(session_id, stage)` | Increment attempt counter for retry | ✅ |
-| `harness_run_lint(files)` | ruff check | Day 4 |
-| `harness_run_typecheck(files)` | mypy | Day 4 |
-| `harness_run_tests(test_dir)` | pytest | Day 4 |
+| `harness_run_lint(files)` | ruff check | ✅ |
+| `harness_run_typecheck(files)` | mypy | ✅ |
+| `harness_run_tests(test_dir)` | pytest | ✅ |
 
 ---
 
@@ -133,12 +177,11 @@ copilot-harness/     ← Phase 1: Python MCP server (zero LLM)
     storage/         ← SQLite schema + CRUD (active_session table)
     tests/           ← state, context_builder, verifier, correction_loop tests
 
-copilot-harness-extension/  ← Phase 2: VS Code extension (TypeScript)
+copilot-harness-extension/  ← VS Code extension (TypeScript)
     src/
-        extension.ts ← registers "CopilotHarness: Run Pipeline" command
-        pipeline.ts  ← drives 5 agents via vscode.lm API + correction loop
-        client.ts    ← MCP stdio client (spawns server, JSON-RPC)
-    package.json     ← VS Code ^1.90.0 extension manifest
+        extension.ts ← registers @harness chat participant
+        pipeline.ts  ← drives 5 agents via vscode.lm.invokeTool + sendRequest
+    package.json     ← VS Code ^1.93.0 extension manifest
 
 .vscode/mcp.json     ← connects VS Code to local MCP server
 ```
@@ -152,8 +195,8 @@ copilot-harness-extension/  ← Phase 2: VS Code extension (TypeScript)
 | Day 1 | Native Copilot files (agents, instructions, skills) | ✅ |
 | Day 2 | State, context firewall, MCP server, crash recovery | ✅ |
 | Day 3 | Verifier, correction loop, skill loader | ✅ |
-| Phase 2 | VS Code extension (automated pipeline) | ✅ |
-| Day 4 | Executor (lint, typecheck, tests) | ⬜ |
+| Day 4 | Executor (lint, typecheck, tests) | ✅ |
+| Extension | @harness chat participant, vscode.lm.invokeTool pipeline | ✅ |
 | Day 5 | Self-improvement loop, pattern detector | ⬜ |
 | Week 2 | Hardening, memory architecture | ⬜ |
 
@@ -167,4 +210,5 @@ pytest tests/ -v
 ```
 
 Tests cover state management, context firewall, injection detection, crash recovery,
-schema validation, secrets scanning, and the correction loop.
+schema validation, secrets scanning, correction loop, and executor (ruff/mypy/pytest).
+163 tests, all passing.
