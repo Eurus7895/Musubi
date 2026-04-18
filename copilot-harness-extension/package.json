@@ -4,27 +4,26 @@
   "description": "Automated 5-agent pipeline runner for GitHub Copilot Chat via CopilotHarness",
   "version": "0.1.0",
   "publisher": "copilot-harness",
-  "engines": {
-    "vscode": "^1.90.0"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/Eurus7895/CopilotHarness"
   },
-  "categories": ["AI"],
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "AI"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
+    "chatParticipants": [
       {
-        "command": "copilotHarness.runPipeline",
-        "title": "CopilotHarness: Run Pipeline",
-        "category": "CopilotHarness"
-      },
-      {
-        "command": "copilotHarness.resumePipeline",
-        "title": "CopilotHarness: Resume Interrupted Pipeline",
-        "category": "CopilotHarness"
+        "id": "copilot-harness.harness",
+        "name": "harness",
+        "fullName": "CopilotHarness",
+        "description": "Runs the automated 5-agent pipeline. Usage: @harness <your request>",
+        "isSticky": true
       }
     ]
   },
@@ -35,7 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.116.0",
     "typescript": "^5.4.0"
   }
 }

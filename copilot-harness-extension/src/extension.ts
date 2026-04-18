@@ -1,141 +1,73 @@
 /**
- * extension.ts — VS Code extension entry point for CopilotHarness Phase 2.
+ * extension.ts — VS Code extension entry point for CopilotHarness.
  *
- * Registers two commands:
- *   copilotHarness.runPipeline    — prompt for a request, run full pipeline
- *   copilotHarness.resumePipeline — resume the last interrupted session
+ * Registers the @harness chat participant. Usage in Copilot Chat:
+ *   @harness add a login endpoint with JWT authentication
  *
- * Both commands:
- *   1. Spawn the local MCP server (copilot-harness/server.py) via HarnessClient
- *   2. Drive the 5-agent pipeline (planner→designer→coder→reviewer) via pipeline.ts
- *   3. Report results to the CopilotHarness output channel
+ * The participant drives the full 5-agent pipeline automatically:
+ *   planner → designer → coder → reviewer (+ correction loop)
+ * All harness_* tools are called via vscode.lm.invokeTool() on the
+ * single MCP server VS Code already manages via .vscode/mcp.json.
  */
 
 import * as vscode from "vscode";
-import { HarnessClient } from "./client";
 import { runPipeline } from "./pipeline";
 
-let outputChannel: vscode.OutputChannel | undefined;
-
 export function activate(context: vscode.ExtensionContext): void {
-  outputChannel = vscode.window.createOutputChannel("CopilotHarness");
-
-  context.subscriptions.push(
-    outputChannel,
-    vscode.commands.registerCommand(
-      "copilotHarness.runPipeline",
-      () => commandRunPipeline(false),
-    ),
-    vscode.commands.registerCommand(
-      "copilotHarness.resumePipeline",
-      () => commandRunPipeline(true),
-    ),
+  const participant = vscode.chat.createChatParticipant(
+    "copilot-harness.harness",
+    handler,
   );
+  participant.iconPath = new vscode.ThemeIcon("robot");
+  context.subscriptions.push(participant);
 }
 
-export function deactivate(): void {
-  outputChannel?.dispose();
-}
+export function deactivate(): void {}
 
-// ── Command implementation ─────────────────────────────────────────────────────
+// ── Chat participant handler ───────────────────────────────────────────────────
 
-async function commandRunPipeline(resume: boolean): Promise<void> {
+async function handler(
+  request: vscode.ChatRequest,
+  _context: vscode.ChatContext,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+): Promise<vscode.ChatResult> {
+  const userRequest = request.prompt.trim();
+
+  if (!userRequest) {
+    stream.markdown(
+      "Describe the feature or task to implement.\n\n" +
+      "**Usage:** `@harness add a login endpoint with JWT authentication`",
+    );
+    return {};
+  }
+
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
-    vscode.window.showErrorMessage("CopilotHarness: No workspace folder open.");
-    return;
+    stream.markdown("**Error:** No workspace folder open.");
+    return {};
   }
 
-  let request: string;
+  try {
+    const result = await runPipeline(
+      userRequest,
+      workspaceRoot,
+      stream,
+      token,
+      request.toolInvocationToken,
+    );
 
-  if (resume) {
-    // For resume, use a placeholder — pipeline.ts will detect the active session
-    // and use its stored request. We surface it to the user via the output channel.
-    request = "__resume__";
-  } else {
-    const input = await vscode.window.showInputBox({
-      title: "CopilotHarness: Run Pipeline",
-      prompt: "Describe the feature or task",
-      placeHolder:
-        "e.g. Add a user login endpoint with JWT authentication",
-      ignoreFocusOut: true,
-      validateInput: (v) =>
-        v.trim() ? undefined : "Request cannot be empty",
-    });
-    if (!input?.trim()) return;
-    request = input.trim();
+    if (result.escalated) {
+      stream.markdown(`\n---\n**Escalated:** ${result.escalation}`);
+    } else {
+      stream.markdown(
+        `\n---\n**Pipeline complete.** Session: \`${result.sessionId}\``,
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    stream.markdown(`\n**Error:** ${msg}`);
   }
 
-  outputChannel!.clear();
-  outputChannel!.show(true);
-  outputChannel!.appendLine(
-    `CopilotHarness Pipeline — ${new Date().toLocaleString()}`,
-  );
-  if (!resume) {
-    outputChannel!.appendLine(`Request: ${request}`);
-  }
-  outputChannel!.appendLine("─".repeat(60));
-
-  const client = new HarnessClient(workspaceRoot);
-
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "CopilotHarness",
-      cancellable: true,
-    },
-    async (progress, token) => {
-      try {
-        progress.report({ message: "Starting MCP server…" });
-        await client.start();
-        outputChannel!.appendLine("[harness] MCP server started.");
-
-        progress.report({ message: "Running pipeline…" });
-        const result = await runPipeline(
-          request,
-          workspaceRoot,
-          client,
-          outputChannel!,
-          token,
-        );
-
-        outputChannel!.appendLine("\n" + "─".repeat(60));
-
-        if (token.isCancellationRequested) {
-          outputChannel!.appendLine("Pipeline cancelled by user.");
-          vscode.window.showWarningMessage("CopilotHarness: Pipeline cancelled.");
-          return;
-        }
-
-        if (result.escalated) {
-          outputChannel!.appendLine(`ESCALATED: ${result.escalation}`);
-          const action = await vscode.window.showWarningMessage(
-            `CopilotHarness: Pipeline escalated — ${result.escalation}`,
-            "Show Output",
-          );
-          if (action === "Show Output") outputChannel!.show(true);
-        } else {
-          outputChannel!.appendLine(
-            `Pipeline complete. Session: ${result.sessionId}`,
-          );
-          const action = await vscode.window.showInformationMessage(
-            `CopilotHarness: Pipeline complete (session ${result.sessionId})`,
-            "Show Output",
-          );
-          if (action === "Show Output") outputChannel!.show(true);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        outputChannel!.appendLine(`\nERROR: ${msg}`);
-        const action = await vscode.window.showErrorMessage(
-          `CopilotHarness error: ${msg}`,
-          "Show Output",
-        );
-        if (action === "Show Output") outputChannel!.show(true);
-      } finally {
-        client.dispose();
-        outputChannel!.appendLine("[harness] MCP server stopped.");
-      }
-    },
-  );
+  return {};
 }
