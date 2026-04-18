@@ -198,6 +198,30 @@ def harness_get_status(session_id: str) -> str:
     return json.dumps(status)
 
 
+@mcp.tool()
+def harness_increment_attempt(session_id: str, stage: str) -> str:
+    """Increment the attempt counter for a stage, enabling a retry write.
+
+    Used by the Phase 2 VS Code extension correction loop:
+      after a failed review, the extension calls this for both "code" and "review"
+      before re-running the coder and reviewer agents.
+
+    state.py enforces write-once per attempt; incrementing creates a new attempt
+    row so the next harness_write_stage call succeeds without overwriting history.
+    """
+    try:
+        state.increment_attempt(session_id, stage)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    attempt = state.get_attempt(session_id, stage)
+    return json.dumps({
+        "status": "incremented",
+        "session_id": session_id,
+        "stage": stage,
+        "attempt": attempt,
+    })
+
+
 # ── Skill tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
