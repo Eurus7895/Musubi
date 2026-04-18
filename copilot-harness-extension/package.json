@@ -29,8 +29,8 @@
     ]
   },
   "scripts": {
-    "compile": "tsc -p ./",
-    "watch": "tsc --watch -p ./",
+    "compile": "npx tsc -p ./",
+    "watch": "npx tsc --watch -p ./",
     "package": "npm run compile && vsce package"
   },
   "devDependencies": {

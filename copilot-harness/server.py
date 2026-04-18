@@ -2,18 +2,16 @@
 
 Zero LLM calls. Pure routing: MCP tool call → harness component → structured result.
 
-Tools implemented now (Day 2 + Day 3):
+Tools:
     harness_new_session       → state.py
     harness_read_stage        → context_builder.py (firewall) + skill auto-injection
     harness_write_stage       → verifier.py (schema + secrets + contracts) + state.py
     harness_get_status        → state.py
     harness_get_skill         → skill_loader.py
     harness_get_reference     → skill_loader.py
-
-Stub tools (wired in Day 4 when executor.py is built):
-    harness_run_lint          → executor.py
-    harness_run_typecheck     → executor.py
-    harness_run_tests         → executor.py
+    harness_run_lint          → executor.py (ruff)
+    harness_run_typecheck     → executor.py (mypy)
+    harness_run_tests         → executor.py (pytest)
 
 Skill auto-injection:
     harness_read_stage automatically appends relevant SKILL.md content
@@ -31,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mcp.server.fastmcp import FastMCP
 
 import context_builder
+import executor
 import skill_loader
 import state
 import verifier
@@ -259,32 +258,45 @@ def harness_get_reference(skill_id: str, reference_name: str) -> str:
     return content
 
 
-# ── Execution tools — stubs until executor.py is built (Day 3/4) ─────────────
+# ── Execution tools ───────────────────────────────────────────────────────────
 
 @mcp.tool()
 def harness_run_lint(files: list[str]) -> str:
-    """Run ruff lint on the specified files. (executor.py — Day 4)"""
+    """Run ruff check on the specified files. Returns structured lint errors."""
+    result = executor.run_lint(files)
     return json.dumps({
-        "status": "not_implemented",
-        "message": "executor.py not yet built. Coming in Day 4.",
+        "passed": result.passed,
+        "errors": [
+            {"file": e.file, "line": e.line, "col": e.col,
+             "code": e.code, "message": e.message}
+            for e in result.errors
+        ],
     })
 
 
 @mcp.tool()
 def harness_run_typecheck(files: list[str]) -> str:
-    """Run mypy type checking on the specified files. (executor.py — Day 4)"""
+    """Run mypy type checking on the specified files. Returns structured type errors."""
+    result = executor.run_typecheck(files)
     return json.dumps({
-        "status": "not_implemented",
-        "message": "executor.py not yet built. Coming in Day 4.",
+        "passed": result.passed,
+        "errors": [
+            {"file": e.file, "line": e.line, "message": e.message}
+            for e in result.errors
+        ],
     })
 
 
 @mcp.tool()
 def harness_run_tests(test_dir: str) -> str:
-    """Run pytest in the specified directory. (executor.py — Day 4)"""
+    """Run pytest in the specified directory. Returns structured test failures."""
+    result = executor.run_tests(test_dir)
     return json.dumps({
-        "status": "not_implemented",
-        "message": "executor.py not yet built. Coming in Day 4.",
+        "passed": result.passed,
+        "failures": [
+            {"test_name": f.test_name, "reason": f.reason}
+            for f in result.failures
+        ],
     })
 
 
