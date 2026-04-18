@@ -2,15 +2,15 @@
 
 Zero LLM calls. Pure routing: MCP tool call → harness component → structured result.
 
-Tools implemented now (Day 2):
+Tools implemented now (Day 2 + Day 3):
     harness_new_session       → state.py
     harness_read_stage        → context_builder.py (firewall) + skill auto-injection
-    harness_write_stage       → context_builder.py (injection scan) + state.py
+    harness_write_stage       → verifier.py (schema + secrets + contracts) + state.py
     harness_get_status        → state.py
-    harness_get_skill         → .github/skills/{id}/SKILL.md
-    harness_get_reference     → .github/skills/{id}/references/{name}
+    harness_get_skill         → skill_loader.py
+    harness_get_reference     → skill_loader.py
 
-Stub tools (wired in Day 3/4 when executor.py is built):
+Stub tools (wired in Day 4 when executor.py is built):
     harness_run_lint          → executor.py
     harness_run_typecheck     → executor.py
     harness_run_tests         → executor.py
@@ -31,12 +31,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from mcp.server.fastmcp import FastMCP
 
 import context_builder
+import skill_loader
 import state
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-
-_REPO_ROOT = Path(__file__).parent.parent
-_SKILLS_DIR = _REPO_ROOT / ".github" / "skills"
+import verifier
 
 # ── Skill auto-injection map ──────────────────────────────────────────────────
 # (stage, agent_name) → list of skill IDs whose SKILL.md is injected into
@@ -61,11 +58,6 @@ _AGENT_OUTPUT_STAGE: dict[str, str] = {
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("copilot-harness")
-
-
-def _read_skill(skill_id: str) -> str | None:
-    path = _SKILLS_DIR / skill_id / "SKILL.md"
-    return path.read_text() if path.exists() else None
 
 
 # ── State tools ───────────────────────────────────────────────────────────────
@@ -148,7 +140,7 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     # Auto-inject skills based on (stage, agent_name) — pushed, not pulled.
     injected: dict[str, str] = {}
     for skill_id in _STAGE_SKILL_MAP.get((stage, agent_name.lower()), []):
-        content = _read_skill(skill_id)
+        content = skill_loader.get_skill(skill_id)
         if content:
             injected[skill_id] = content
     if injected:
@@ -163,12 +155,11 @@ def harness_write_stage(
 ) -> str:
     """Write stage output after validation.
 
-    output must be a JSON string. The harness:
-      1. Parses and validates JSON structure
-      2. Scans for injection patterns (rejects if found)
-      3. Stores append-only in session state
-
-    Schema validation (verifier.py) is added in Day 3.
+    output must be a JSON string. The harness runs (in order):
+      1. JSON parse
+      2. Injection scan (rejects immediately if found)
+      3. Schema + secrets + cross-stage contract validation (verifier.py)
+      4. Append-only store in session state
     """
     try:
         parsed = json.loads(output)
@@ -179,6 +170,14 @@ def harness_write_stage(
         return json.dumps({
             "status": "error",
             "error": "Output rejected: contains instruction-injection patterns.",
+        })
+
+    result = verifier.validate(parsed, agent_name, session_id=session_id)
+    if not result.valid:
+        return json.dumps({
+            "status": "error",
+            "error": "Output rejected: validation failed.",
+            "validation_errors": result.errors,
         })
 
     try:
@@ -209,14 +208,14 @@ def harness_get_skill(skill_id: str) -> str:
     are auto-injected into harness_read_stage — you only need this for
     skills not automatically provided.
     """
-    path = _SKILLS_DIR / skill_id / "SKILL.md"
-    if not path.exists():
-        available = sorted(p.parent.name for p in _SKILLS_DIR.glob("*/SKILL.md"))
+    content = skill_loader.get_skill(skill_id)
+    if content is None:
+        available = [s.skill_id for s in skill_loader.list_skills()]
         return json.dumps({
             "error": f"Skill '{skill_id}' not found.",
             "available_skills": available,
         })
-    return path.read_text()
+    return content
 
 
 @mcp.tool()
@@ -226,15 +225,14 @@ def harness_get_reference(skill_id: str, reference_name: str) -> str:
     Load references only when needed — they are not auto-injected.
     Example: harness_get_reference("code-review", "owasp-top10.md")
     """
-    ref_path = _SKILLS_DIR / skill_id / "references" / reference_name
-    if not ref_path.exists():
-        refs_dir = _SKILLS_DIR / skill_id / "references"
-        available = sorted(p.name for p in refs_dir.glob("*")) if refs_dir.exists() else []
+    content = skill_loader.get_reference(skill_id, reference_name)
+    if content is None:
+        available = skill_loader.list_references(skill_id)
         return json.dumps({
             "error": f"Reference '{reference_name}' not found in skill '{skill_id}'.",
             "available_references": available,
         })
-    return ref_path.read_text()
+    return content
 
 
 # ── Execution tools — stubs until executor.py is built (Day 3/4) ─────────────
