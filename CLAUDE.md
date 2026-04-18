@@ -135,10 +135,10 @@ copilot-harness/
     cli.py             ← entry point: copilot-harness serve
     state.py           ← append-only session state (SQLite)
     context_builder.py ← context firewall (returns dict) + injection detection
-    verifier.py        ← schema validation + secrets scan          [Day 3]
+    verifier.py        ← schema validation + secrets scan          ✅ built
     executor.py        ← lint + typecheck + test runner            [Day 4]
-    correction_loop.py ← reviewer → coder retry (max 3)           [Day 3]
-    skill_loader.py    ← serves SKILL.md + references             [Day 3]
+    correction_loop.py ← reviewer → coder retry (max 3)           ✅ built
+    skill_loader.py    ← serves SKILL.md + references             ✅ built
     memory/
         cross_session.db
         pattern_detector.py                                        [Day 5]
@@ -149,8 +149,8 @@ copilot-harness/
     tests/
         test_state.py
         test_context_builder.py
-        test_verifier.py         [Day 3]
-        test_correction_loop.py  [Day 3]
+        test_verifier.py         ✅ built
+        test_correction_loop.py  ✅ built
         test_executor.py         [Day 4]
     pyproject.toml
     README.md
@@ -160,14 +160,18 @@ copilot-harness/
     mcp.json           ← connects VS Code to local MCP server
 ```
 
-**Phase 2 additions (after Phase 1 validated with 10+ real runs):**
+**Phase 2 — VS Code Extension (✅ built):**
 ```
 copilot-harness-extension/   ← VS Code extension (TypeScript)
     src/
-        extension.ts         ← registers "CopilotHarness: Run Pipeline" command
-        pipeline.ts          ← drives agents via vscode.lm API
-        client.ts            ← calls same MCP server or Python backend
-    package.json
+        extension.ts         ← registers "CopilotHarness: Run Pipeline" +
+                               "CopilotHarness: Resume Interrupted Pipeline"
+        pipeline.ts          ← drives 5 agents via vscode.lm API
+                               correction loop (max 3) handled here
+        client.ts            ← MCP stdio client: spawns server, JSON-RPC handshake,
+                               callTool() wrapper
+    package.json             ← VS Code ^1.90.0 extension manifest
+    tsconfig.json
 ```
 
 ---
@@ -224,26 +228,32 @@ harness_read_stage(session_id, stage, agent_name)
     → returns { data, injected_skills? }
 
 harness_write_stage(session_id, stage, output, agent_name)
-    → scan_injection() + [verifier.py Day 3] + state.write_stage()
+    → scan_injection() + verifier.validate() (schema + secrets + contracts)
+    → state.write_stage()
     → returns { status: "stored" | "error" }
 
 harness_get_status(session_id)
     → state.get_status()
     → returns pipeline stage summary
+
+harness_increment_attempt(session_id, stage)
+    → state.increment_attempt() — creates new attempt row
+    → used by Phase 2 extension correction loop before retry writes
+    → returns { status: "incremented", attempt: N }
 ```
 
 ### Skill Tools
 ```
 harness_get_skill(skill_id)
-    → reads .github/skills/{id}/SKILL.md
+    → skill_loader.get_skill() → reads .github/skills/{id}/SKILL.md
     → use for skills not in STAGE_SKILL_MAP
 
 harness_get_reference(skill_id, reference_name)
-    → reads .github/skills/{id}/references/{name}
+    → skill_loader.get_reference() → reads .github/skills/{id}/references/{name}
     → load only when needed (OWASP, patterns, etc.)
 ```
 
-### Execution Tools (stubs — Day 3/4)
+### Execution Tools (stubs — Day 4)
 ```
 harness_run_lint(files)       → executor.py: ruff check
 harness_run_typecheck(files)  → executor.py: mypy
@@ -401,13 +411,14 @@ Day 3:
 ### 6. Verification ✅ Designed
 
 ```
-server.py (injection scan, now):
+server.py (injection scan):
     scan_injection() on every harness_write_stage
 
-verifier.py (structural, Day 3):
+verifier.py (structural, ✅ built):
     schema validation per agent output
-    secrets scan
-    cross-stage contract validation
+    secrets scan (AWS keys, GitHub tokens, private keys, API keys, bearer tokens)
+    cross-stage contract validation (design references plan task IDs,
+    code only modifies files declared in design)
 
 reviewer.agent.md (domain, Copilot Chat):
     structured checklist — all criteria, architecture match, security,
@@ -464,14 +475,15 @@ Week 2:
 
 | Component | Status | Priority |
 |---|---|---|
-| Tool Design | ⚠️ Prompt-level only | Phase 2 for structural |
-| Feedback Loops | ✅ Designed | wrong_plan path (Day 3) |
+| Tool Design | ⚠️ Prompt-level only (Phase 1) | Phase 2 automates this |
+| Feedback Loops | ✅ Built (correction_loop.py + extension loop) | wrong_plan path (Day 5) |
 | State Management | ✅ Built + crash recovery | cross-session memory (Week 2) |
-| Multi-Agent Coordination | ❌ Missing | handoff schemas (Day 3) |
-| Security & Permissions | ⚠️ Injection scan only | secrets + full verifier (Day 3) |
-| Verification | ✅ Designed | verifier.py (Day 3) |
+| Multi-Agent Coordination | ❌ Missing | handoff schemas (Day 4) |
+| Security & Permissions | ✅ Built (injection scan + verifier secrets) | proposed_change_validator (Day 5) |
+| Verification | ✅ Built (verifier.py — schema + secrets + contracts) | executor.py (Day 4) |
 | Architecture Enforcement | ✅ Designed | patch applier (Day 5) |
 | Memory Architecture | ❌ Missing | 3-tier memory (Week 2) |
+| Phase 2 Extension | ✅ Built | executor integration (Day 4) |
 
 ---
 
@@ -480,16 +492,20 @@ Week 2:
 ```
 Component              LLM?   Implementation
 ──────────────────────────────────────────────────────
-server.py              ❌     FastMCP stdio routing
-state.py               ❌     Python + SQLite
-context_builder.py     ❌     Python dict filtering + regex
-verifier.py            ❌     jsonschema + regex          [Day 3]
-executor.py            ❌     subprocess: ruff, mypy, pytest [Day 4]
-correction_loop.py     ❌     Python orchestration        [Day 3]
-skill_loader.py        ❌     file I/O                    [Day 3]
-pattern_detector.py    ❌     SQLite count threshold      [Day 5]
+server.py              ❌     FastMCP stdio routing           ✅
+state.py               ❌     Python + SQLite                 ✅
+context_builder.py     ❌     Python dict filtering + regex   ✅
+verifier.py            ❌     jsonschema + regex              ✅
+correction_loop.py     ❌     Python orchestration            ✅
+skill_loader.py        ❌     file I/O                        ✅
+executor.py            ❌     subprocess: ruff, mypy, pytest  [Day 4]
+pattern_detector.py    ❌     SQLite count threshold          [Day 5]
+extension/client.ts    ❌     MCP stdio JSON-RPC client       ✅
+extension/pipeline.ts  ❌     vscode.lm orchestration         ✅
+extension/extension.ts ❌     VS Code command registration    ✅
 
-Copilot Chat (VS Code) ✅     ALL agent reasoning — every stage
+Copilot Chat (VS Code) ✅     agent reasoning in Phase 1
+vscode.lm API          ✅     agent reasoning in Phase 2
 ```
 
 ---
@@ -521,7 +537,8 @@ Copilot Chat (VS Code) ✅     ALL agent reasoning — every stage
 [✅] server.py — FastMCP stdio server
                  harness_get_active_session (crash recovery),
                  harness_new_session, harness_read_stage (+ skill injection
-                 + auto-mark in_progress), harness_write_stage, harness_get_status,
+                 + auto-mark in_progress), harness_write_stage (+ verifier),
+                 harness_get_status, harness_increment_attempt,
                  harness_get_skill, harness_get_reference
                  stub: harness_run_lint, harness_run_typecheck, harness_run_tests
 [✅] All 5 .agent.md Input Contracts — Step 1: harness_get_active_session() resume check
@@ -531,38 +548,33 @@ Copilot Chat (VS Code) ✅     ALL agent reasoning — every stage
 [✅] tests/test_state.py + test_context_builder.py — 78 tests passing
 ```
 
-### Day 3 — Verification + Correction Loop + Skill Loader
+### Day 3 — Verification + Correction Loop + Skill Loader ✅ Complete
 ```
-[ ] verifier.py
+[✅] verifier.py
       validate(output, agent_name) → ValidationResult
       _check_schema(output, schema) → list[SchemaError]
-      _scan_secrets(text) → list[SecretMatch]
+      _scan_secrets(text) → list[SecretMatch]   (6 patterns: AWS, GH token, private key,
+                                                  generic API key, bearer token)
       OUTPUT_SCHEMAS: dict[str, dict]  ← one JSON schema per agent
-      Wire into harness_write_stage in server.py
+      Wired into harness_write_stage in server.py
 
-[ ] correction_loop.py
+[✅] correction_loop.py
       run(session_id, review_output) → LoopResult
       get_attempt_count(session_id) → int
       build_retry_context(session_id) → fix_instructions only
       escalate(session_id) → EscalationMessage
 
-[ ] skill_loader.py
+[✅] skill_loader.py
       get_skill(skill_id) → SKILL.md content
       get_reference(skill_id, ref_name) → reference content
       list_skills() → list[SkillMeta]
-      Wire into server.py harness_get_skill / harness_get_reference
+      Wired into server.py harness_get_skill / harness_get_reference
 
-[ ] Cross-stage contract validation in verifier.py
+[✅] Cross-stage contract validation in verifier.py
       design output must reference all plan task IDs
       code output must only modify files declared in design
 
-[ ] tests/test_verifier.py + test_correction_loop.py
-
-Test:
-  harness_write_stage with missing field → ValidationResult.failed
-  harness_write_stage with API key → secret detected, rejected
-  correction_loop: 3 failures → escalation message
-  retry context: fix_instructions only
+[✅] tests/test_verifier.py + test_correction_loop.py
 ```
 
 ### Day 4 — Executor
@@ -611,18 +623,38 @@ Test:
 [ ] Edge cases: malformed JSON output, empty agent response, executor timeout
 ```
 
-### Phase 2 — VS Code Extension (after Phase 1 validated)
-
-**Trigger:** Phase 1 working with 10+ real pipeline runs. Value confirmed.
+### Phase 2 — VS Code Extension ✅ Complete
 
 ```
-Extension drives agents automatically via vscode.lm API:
-    extension.ts  ← "CopilotHarness: Run Pipeline" command
-    pipeline.ts   ← calls vscode.lm.sendRequest() per agent
-    client.ts     ← calls same MCP server (or HTTP wrapper)
+[✅] src/client.ts
+      HarnessClient class — spawns copilot-harness/server.py as child process
+      JSON-RPC 2.0 initialize handshake + notifications/initialized
+      callTool(name, args) → parses tool response (JSON or plain text)
+      dispose() → SIGTERM server process
 
-Nothing in state.py, verifier.py, context_builder.py, server.py changes.
-Extension replaces the human relay — same harness, automated.
+[✅] src/pipeline.ts
+      runPipeline(request, workspaceRoot, client, out, token) → PipelineResult
+      Reads agent .agent.md files as system prompts (falls back to inline defaults)
+      Per-agent: harness_read_stage (firewall + skill injection) →
+                 vscode.lm.sendRequest() → harness_write_stage
+      Planner: request injected directly (no plan output exists at start)
+      Crash recovery: harness_get_active_session() → skip complete stages
+      Correction loop: reviewer "fail" → harness_increment_attempt (code + review)
+                       → coder retry with fix_instructions → reviewer re-run (max 3)
+      Escalation returned as PipelineResult.escalated = true
+
+[✅] src/extension.ts
+      Commands: copilotHarness.runPipeline
+                copilotHarness.resumePipeline
+      Progress notification (cancellable) + CopilotHarness output channel
+      "Show Output" action on completion / escalation / error
+
+[✅] harness_increment_attempt(session_id, stage) added to server.py
+      Exposes state.increment_attempt() as MCP tool
+      Enables correction loop retry without violating write-once invariant
+
+[✅] package.json — VS Code ^1.90.0, activationEvents: []
+[✅] tsconfig.json — CommonJS / ES2022 / strict
 ```
 
 ---
@@ -710,7 +742,6 @@ WEEK 2:
 *Updated: April 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: GitHub Copilot Chat in VS Code + local MCP stdio server*
-*Phase 1: MCP server — build now*
-*Phase 2: VS Code extension — after Phase 1 validated with 10+ real runs*
-*Current milestone: Day 2 complete (incl. crash recovery) — Day 3 next (verifier + correction loop + skill_loader)*
+*Runtime: Phase 1 — Copilot Chat in VS Code + local MCP stdio server*
+*         Phase 2 — VS Code extension drives pipeline via vscode.lm API*
+*Current milestone: Day 3 complete + Phase 2 complete — Day 4 next (executor: ruff, mypy, pytest)*
