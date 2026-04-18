@@ -29,22 +29,38 @@ You do not write code. You scope, decompose, and specify.
 
 ## Input Contract
 
-Before doing anything, call:
+All context is provided by the harness via MCP tool calls.
+Do not reference previous conversation turns — there are none.
+
+**Step 1 — Check for a session to resume (crash recovery):**
 
 ```
-harness_new_session(request) → session_id
+harness_get_active_session()
+→ { "session_id": null }                    → proceed to Step 2 (start fresh)
+→ { "session_id": "abc123",
+    "resume_stage": "plan", "attempt": 1 }  → resume: skip to Step 3 with this session_id
 ```
 
-Store the `session_id`. You will pass it to every subsequent tool call.
+If `resume_stage` is not "plan" (e.g. "design" or later), the Planner's work is already
+complete — do not call this agent at all.
 
-Then call:
+**Step 2 — Start a new session (only if no active session):**
 
 ```
-harness_read_stage(session_id, "plan", agent_name="planner") → None on first call
+harness_new_session(request) → { "session_id": "...", "locked_agent_versions": {...} }
 ```
 
-If this is a retry (non-empty result), review the previous plan and revise based
-on any escalation context provided.
+Store the `session_id`. Pass it to every subsequent harness tool call.
+
+**Step 3 — Read the current plan:**
+
+```
+harness_read_stage(session_id, "plan", agent_name="planner")
+```
+
+Returns `{ "data": null }` on first call (no previous plan).
+Returns previous plan output if this is a retry — revise it based on
+any escalation context in `data`.
 
 ## Output Contract
 
@@ -70,11 +86,11 @@ Produce ONLY valid JSON matching this schema:
 Then call:
 
 ```
-harness_write_stage(session_id, "plan", <your JSON output>)
+harness_write_stage(session_id, "plan", <your JSON as a string>, agent_name="planner")
 ```
 
-If `harness_write_stage` returns a validation error, fix the JSON and retry.
-Do not proceed until the write succeeds.
+If `harness_write_stage` returns `"status": "error"`, fix the output and retry.
+Do not proceed until the write returns `"status": "stored"`.
 
 ## Behavior Rules
 

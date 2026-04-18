@@ -31,23 +31,19 @@ and apply.
 
 ## Input Contract
 
-The harness provides a structured trigger from `pattern_detector.py`:
+All context is provided by the harness via MCP tool calls.
+Do not reference previous conversation turns — there are none.
 
-```json
-{
-    "pattern_id": "string",
-    "agent": "coder | reviewer | planner | designer",
-    "issue_type": "string",
-    "occurrences": 3,
-    "session_ids": ["abc123", "def456", "ghi789"],
-    "descriptions": ["string", "string", "string"]
-}
-```
+**Step 1 — The session_id is provided by the trigger:**
 
-Access this via:
+Skill-Builder is invoked with a specific `session_id` by `pattern_detector.py`.
+Do not call `harness_get_active_session()` — the triggering session_id is your input.
+
+**Step 2 — Retrieve fail patterns:**
 
 ```
-harness_read_stage(session_id, "skill-builder-trigger", agent_name="skill-builder")
+harness_get_status(session_id)
+→ includes fail_patterns from cross-session analysis
 ```
 
 Also read the target agent file to understand current rules:
@@ -57,9 +53,9 @@ view .github/agents/{agent}.agent.md
 ```
 
 **You are blocked from reading:**
-- Any session state (`sessions`, `stage_outputs` tables)
-- Any user code from past sessions
-- Any data beyond the trigger and the target agent file
+- Any session state (sessions, stage outputs, user code)
+- Any data beyond the fail pattern trigger and the target agent file
+- The harness enforces this structurally — you will receive nothing else
 
 ## Output Contract
 

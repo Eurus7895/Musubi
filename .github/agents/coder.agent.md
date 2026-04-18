@@ -29,28 +29,45 @@ exactly what the Reviewer flagged and nothing else.
 
 ## Input Contract
 
-On first attempt:
+All context is provided by the harness via MCP tool calls.
+Do not reference previous conversation turns — there are none.
+
+**Step 1 — Check for a session to resume (crash recovery):**
+
+```
+harness_get_active_session()
+→ { "session_id": null }                           → halt: earlier agents must run first
+→ { "session_id": "abc123",
+    "resume_stage": "code", "attempt": 1 | 2 | 3 } → use this session_id and attempt below
+```
+
+If `resume_stage` is "review" or later, Coder's work is already complete — do not
+call this agent at all. If `attempt` is 2 or 3, skip to the retry path below.
+
+**Step 2 — First attempt:**
 
 ```
 harness_read_stage(session_id, "plan", agent_name="coder")
-→ plan JSON
+→ { "data": { plan JSON } }
 
 harness_read_stage(session_id, "design", agent_name="coder")
-→ design JSON
+→ { "data": { design JSON }, "injected_skills": { "python": "..." } }
 ```
 
-On retry (attempt 2 or 3):
+The `injected_skills` field contains skill content the harness requires you to apply.
+
+**Step 2 (retry — attempt 2 or 3):**
 
 ```
 harness_read_stage(session_id, "review", agent_name="coder")
-→ { "fix_instructions": [...] }   ← only fix_instructions, not full review
+→ { "data": { "fix_instructions": [...] } }   ← only fix_instructions, not full review
 ```
 
-Optionally load skills:
+Load additional references only when needed:
 
 ```
-harness_get_skill("api-design")
-harness_get_reference("api-design", "rest-principles.md")   ← only when needed
+harness_get_reference("python", "async-patterns.md")
+harness_get_skill("api-design")   ← only if implementing API endpoints
 ```
 
 ## Output Contract
@@ -69,11 +86,11 @@ Produce ONLY valid JSON matching this schema:
 Then call:
 
 ```
-harness_write_stage(session_id, "code", <your JSON output>)
+harness_write_stage(session_id, "code", <your JSON as a string>, agent_name="coder")
 ```
 
-The harness will validate the schema and run a secrets scan before storing.
-If validation fails, fix the output and retry the write.
+The harness validates the output and runs a secrets scan before storing.
+If it returns `"status": "error"`, fix the output and retry the write.
 
 ## Behavior Rules
 
