@@ -9,7 +9,7 @@
     "url": "https://github.com/Eurus7895/CopilotHarness"
   },
   "engines": {
-    "vscode": "^1.93.0"
+    "vscode": "^1.116.0"
   },
   "categories": [
     "AI"
