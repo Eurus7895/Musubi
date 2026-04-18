@@ -8,6 +8,52 @@ injects skills, enforces correction loops, and runs code verification.
 
 ---
 
+## Quick Start
+
+**Requirements:** Python 3.11+, VS Code with GitHub Copilot Chat extension
+
+### 1. Install the MCP server
+
+```bash
+cd copilot-harness
+python -m pip install -e .
+```
+
+### 2. Open the workspace in VS Code
+
+VS Code reads `.vscode/mcp.json` and spawns the MCP server automatically.
+No manual startup needed. Verify it's running: open Copilot Chat and check
+that `harness_*` tools appear in the tool list.
+
+### 3. Run your first pipeline (Phase 1 — manual)
+
+Open each agent in Copilot Chat in order and describe your task:
+
+```
+@planner  "add a login endpoint that validates email + password"
+@designer
+@coder
+@reviewer
+```
+
+Each agent reads from and writes to the harness automatically via `harness_*` tools.
+If VS Code restarts mid-run, the next agent will detect the interrupted session and
+resume from the correct stage — no work lost.
+
+### 4. Run automated pipeline (Phase 2 — extension, optional)
+
+```bash
+cd copilot-harness-extension
+npm install
+npm run compile
+```
+
+Press `F5` in VS Code to launch the extension host, then open the Command Palette
+(`Ctrl+Shift+P`) and run **CopilotHarness: Run Pipeline**. Enter your request and
+all five agents run automatically with the correction loop applied.
+
+---
+
 ## How It Works
 
 CopilotHarness runs as a local MCP stdio server. There are two ways to drive it:
