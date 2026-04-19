@@ -14,8 +14,13 @@ BIN_DIR="$EXT_DIR/bin"
 
 echo "Building copilot-harness binary..."
 
+if ! command -v pyinstaller &>/dev/null; then
+    echo "Error: pyinstaller not found. Install it first:"
+    echo "  pip install pyinstaller"
+    exit 1
+fi
+
 cd "$SERVER_DIR"
-pip install pyinstaller -q
 pyinstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
 
 mkdir -p "$BIN_DIR"
