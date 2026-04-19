@@ -33,6 +33,11 @@ import executor
 import skill_loader
 import state
 import verifier
+from storage import db as _db
+
+# Ensure DB directory + schema exist before any tool call (critical for first run
+# when HARNESS_ROOT points to the extension install dir which has no data/ folder yet).
+_db.init_db()
 
 # ── Skill auto-injection map ──────────────────────────────────────────────────
 # (stage, agent_name) → list of skill IDs whose SKILL.md is injected into
