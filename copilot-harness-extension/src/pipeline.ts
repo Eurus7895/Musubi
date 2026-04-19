@@ -52,6 +52,18 @@ export interface PipelineResult {
   escalation?: string;
 }
 
+export interface StepResult {
+  success: boolean;
+  sessionId: string;
+  completedAgent: string;
+  completedStage: string;
+  output: unknown;
+  nextAgent: string | null;  // null when pipeline is complete or escalated
+  pipelineComplete: boolean;
+  escalated: boolean;
+  escalation?: string;
+}
+
 // ── Agent pipeline definition ─────────────────────────────────────────────────
 
 const AGENT_PIPELINE = [
@@ -295,4 +307,140 @@ export async function runPipeline(
   }
 
   return { success: true, sessionId, stages: stageOutputs, escalated: false };
+}
+
+// ── Single-step entry point ───────────────────────────────────────────────────
+
+export async function runStep(
+  client: McpClient,
+  workspaceRoot: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+  options: {
+    request?: string;    // provided → create new session; omitted → resume active
+    agentName?: string;  // run this specific agent instead of the next pending one
+  },
+): Promise<StepResult> {
+  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
+  if (!models.length) {
+    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
+  }
+  const model = models[0];
+
+  // ── Session setup ─────────────────────────────────────────────────────────────
+
+  const active = (await callHarness(client, "harness_get_active_session", {})) as ActiveSession;
+  let sessionId: string;
+  let sessionRequest: string;
+
+  if (options.request) {
+    const session = (await callHarness(client, "harness_new_session", { request: options.request })) as { session_id: string };
+    sessionId = session.session_id;
+    sessionRequest = options.request;
+    stream.progress(`Session ${sessionId} created`);
+  } else if (active.session_id) {
+    sessionId = active.session_id;
+    sessionRequest = active.request ?? "";
+    stream.progress(`Resuming session ${sessionId}`);
+  } else {
+    throw new Error("No active session. Start a new task with `@harness <your task description>`");
+  }
+
+  // ── Resolve which agent to run ────────────────────────────────────────────────
+
+  const statusData = (await callHarness(
+    client, "harness_get_status", { session_id: sessionId },
+  )) as SessionStatus;
+
+  let agentDef: typeof AGENT_PIPELINE[number] | undefined;
+
+  if (options.agentName) {
+    agentDef = AGENT_PIPELINE.find(a => a.name === options.agentName);
+    if (!agentDef) {
+      throw new Error(`Unknown agent: '${options.agentName}'. Valid: planner, designer, coder, reviewer`);
+    }
+    if (statusData.stages[agentDef.writeStage]?.status === "complete") {
+      throw new Error(
+        `Stage '${agentDef.writeStage}' is already complete. ` +
+        `Use \`@harness full <task>\` to start a new pipeline, or \`@harness status\` to review progress.`,
+      );
+    }
+  } else {
+    for (const agent of AGENT_PIPELINE) {
+      if (statusData.stages[agent.writeStage]?.status !== "complete") {
+        agentDef = agent;
+        break;
+      }
+    }
+  }
+
+  if (!agentDef) {
+    return {
+      success: true, sessionId, completedAgent: "", completedStage: "",
+      output: null, nextAgent: null, pipelineComplete: true, escalated: false,
+    };
+  }
+
+  // ── Run the agent ─────────────────────────────────────────────────────────────
+
+  stream.progress(`Running ${agentDef.name}...`);
+  const context = await readAgentContext(client, sessionId, agentDef.name, agentDef.readStages);
+  if (agentDef.name === "planner") {
+    context["request"] = sessionRequest;
+  }
+
+  const agentOutput = await runAgentLM(
+    model, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+  );
+  await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
+
+  // ── Reviewer: run inline correction loop ─────────────────────────────────────
+
+  let finalOutput: unknown = agentOutput;
+  let escalated = false;
+  let escalation: string | undefined;
+
+  if (agentDef.name === "reviewer") {
+    const review = agentOutput as ReviewOutput;
+    if (review.status === "escalate") {
+      escalated = true;
+      escalation = review.escalate_reason ?? "Reviewer escalated.";
+    } else if (review.status === "fail") {
+      const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
+      const finalReview = await runCorrectionLoop(
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+      );
+      finalOutput = finalReview;
+      if (finalReview.status !== "pass") {
+        escalated = true;
+        escalation = finalReview.status === "escalate"
+          ? (finalReview.escalate_reason ?? "Reviewer escalated.")
+          : `Max correction attempts (${MAX_CODE_ATTEMPTS}) reached without passing review.`;
+      }
+    }
+  }
+
+  // ── Determine what comes next ─────────────────────────────────────────────────
+
+  let nextAgent: string | null = null;
+  let pipelineComplete = false;
+
+  if (!escalated) {
+    const updated = (await callHarness(
+      client, "harness_get_status", { session_id: sessionId },
+    )) as SessionStatus;
+    for (const agent of AGENT_PIPELINE) {
+      if (updated.stages[agent.writeStage]?.status !== "complete") {
+        nextAgent = agent.name;
+        break;
+      }
+    }
+    if (!nextAgent) { pipelineComplete = true; }
+  }
+
+  return {
+    success: true, sessionId,
+    completedAgent: agentDef.name, completedStage: agentDef.writeStage,
+    output: finalOutput, nextAgent, pipelineComplete, escalated, escalation,
+  };
 }
