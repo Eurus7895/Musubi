@@ -32,7 +32,20 @@ if ! "$PYTHON" -m PyInstaller --version &>/dev/null; then
 fi
 
 cd "$SERVER_DIR"
-"$PYTHON" -m PyInstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
+
+# WSL bash passes /mnt/c/... paths to Windows Python, which misreads them as
+# C:\mnt\c\... Use wslpath to convert to native Windows paths when in WSL.
+if command -v wslpath &>/dev/null; then
+    DIST_PATH="$(wslpath -w "$SERVER_DIR/dist")"
+    WORK_PATH="$(wslpath -w "$SERVER_DIR/build")"
+    SPEC_PATH="$(wslpath -w "$SERVER_DIR/copilot-harness.spec")"
+else
+    DIST_PATH="$SERVER_DIR/dist"
+    WORK_PATH="$SERVER_DIR/build"
+    SPEC_PATH="$SERVER_DIR/copilot-harness.spec"
+fi
+
+"$PYTHON" -m PyInstaller "$SPEC_PATH" --distpath "$DIST_PATH" --workpath "$WORK_PATH" --noconfirm
 
 mkdir -p "$BIN_DIR"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
