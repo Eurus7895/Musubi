@@ -23,7 +23,8 @@ let out: vscode.OutputChannel;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   out = vscode.window.createOutputChannel("CopilotHarness");
   context.subscriptions.push(out);
-  out.appendLine("CopilotHarness activating...");
+  out.show(true); // make channel visible immediately so activation is always visible
+  out.appendLine("CopilotHarness v0.2.0 activating...");
   out.appendLine(`Extension path: ${context.extensionPath}`);
 
   const serverBin = resolveServerBinary(context.extensionPath);
