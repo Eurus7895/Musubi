@@ -14,14 +14,25 @@ BIN_DIR="$EXT_DIR/bin"
 
 echo "Building copilot-harness binary..."
 
-if ! python -m PyInstaller --version &>/dev/null; then
-    echo "Error: PyInstaller not found. Install it first:"
+# Prefer the venv Python when npm spawns bash without activating the venv.
+# Falls back to whatever python is on PATH (system or CI environment).
+if [[ -f "$REPO_ROOT/.venv/Scripts/python.exe" ]]; then
+    PYTHON="$REPO_ROOT/.venv/Scripts/python.exe"
+elif [[ -f "$REPO_ROOT/.venv/bin/python" ]]; then
+    PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+    PYTHON="python"
+fi
+echo "Using Python: $PYTHON"
+
+if ! "$PYTHON" -m PyInstaller --version &>/dev/null; then
+    echo "Error: PyInstaller not found in $PYTHON. Install it first:"
     echo "  pip install pyinstaller"
     exit 1
 fi
 
 cd "$SERVER_DIR"
-python -m PyInstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
+"$PYTHON" -m PyInstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
 
 mkdir -p "$BIN_DIR"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
