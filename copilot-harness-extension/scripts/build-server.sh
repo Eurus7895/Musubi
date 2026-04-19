@@ -48,7 +48,9 @@ fi
 "$PYTHON" -m PyInstaller "$SPEC_PATH" --distpath "$DIST_PATH" --workpath "$WORK_PATH" --noconfirm
 
 mkdir -p "$BIN_DIR"
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+# Detect the actual output — Windows PyInstaller produces .exe regardless of
+# how bash identifies the OS (WSL reports linux-gnu, not msys/win32).
+if [[ -f "$SERVER_DIR/dist/copilot-harness.exe" ]]; then
     cp "$SERVER_DIR/dist/copilot-harness.exe" "$BIN_DIR/copilot-harness.exe"
     echo "Binary copied to: $BIN_DIR/copilot-harness.exe"
 else
