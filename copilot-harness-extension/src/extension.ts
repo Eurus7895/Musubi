@@ -42,24 +42,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
-  // Register every harness_* tool with VS Code's language model API so
-  // vscode.lm.invokeTool() works immediately — no MCP trust prompt needed.
-  const tools = await client.listTools();
-  for (const tool of tools) {
-    const toolName = tool.name;
-    const reg = vscode.lm.registerTool(toolName, {
-      async invoke(
-        options: vscode.LanguageModelToolInvocationOptions<Record<string, unknown>>,
-        _token: vscode.CancellationToken,
-      ): Promise<vscode.LanguageModelToolResult> {
-        const text = await client.callTool(toolName, options.input ?? {});
-        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
-      },
-    });
-    context.subscriptions.push(reg);
-  }
-
-  const participant = vscode.chat.createChatParticipant("copilot-harness.harness", handler);
+  const participant = vscode.chat.createChatParticipant(
+    "copilot-harness.harness",
+    (req, ctx, stream, token) => handler(req, ctx, stream, token, client),
+  );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
 }
@@ -86,6 +72,7 @@ async function handler(
   _context: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  client: McpClient,
 ): Promise<vscode.ChatResult> {
   const userRequest = request.prompt.trim();
 
@@ -104,13 +91,7 @@ async function handler(
   }
 
   try {
-    const result = await runPipeline(
-      userRequest,
-      workspaceRoot,
-      stream,
-      token,
-      request.toolInvocationToken,
-    );
+    const result = await runPipeline(client, userRequest, workspaceRoot, stream, token);
 
     if (result.escalated) {
       stream.markdown(`\n---\n**Escalated:** ${result.escalation}`);
