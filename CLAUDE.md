@@ -45,42 +45,45 @@ tool the developer manually bridges. With MCP stdio:
 - Agents cannot skip the harness — it is the only path to read inputs and write outputs
 
 The MCP stdio server runs **entirely locally** as a subprocess. No network calls.
-No `api.githubcopilot.com`. VS Code reads `.vscode/mcp.json` and spawns
-`python server.py` on the developer's machine. The corporate firewall is irrelevant.
+No `api.githubcopilot.com`. The corporate firewall is irrelevant.
 
-**Phase 2:** When the VS Code extension is built, it replaces Copilot Chat as the
-agent runner — same MCP server, same harness logic, automated pipeline.
+**Phase 1 (dev mode):** VS Code reads `.vscode/mcp.json` → spawns `python server.py`
+→ Copilot Chat agents call harness_* tools manually.
+
+**Phase 2 (extension mode, current):** The VS Code extension spawns the bundled
+server binary directly via `McpClient` (JSON-RPC over stdio). No MCP panel, no user
+action needed. The extension drives all 5 agents automatically via `vscode.lm.sendRequest`.
 
 ---
 
 ## How It Works
 
 ```
-VS Code reads .vscode/mcp.json
+User types "@harness add a login endpoint" in Copilot Chat
     ↓
-Spawns: python copilot-harness/server.py  (local stdio process)
+VS Code activates copilot-harness-extension (onStartupFinished)
     ↓
-Copilot Chat sees harness_* tools in its tool list
+extension.ts spawns bin/copilot-harness.exe via McpClient (JSON-RPC stdio)
     ↓
-Developer opens @planner in Copilot Chat
+pipeline.ts drives 5 agents automatically:
+
+    McpClient.callTool("harness_get_active_session")
+        → crash recovery: resume interrupted session or start fresh
     ↓
-@planner calls harness_new_session(request)
-    → harness creates session, locks agent versions, returns session_id
+    McpClient.callTool("harness_new_session", { request })
+        → harness creates session, locks agent versions, returns session_id
     ↓
-@planner calls harness_read_stage(session_id, "plan", agent_name="planner")
-    → harness returns: request only (context firewall)
+    For each agent (planner → designer → coder → reviewer):
+        McpClient.callTool("harness_read_stage", { session_id, stage, agent_name })
+            → context firewall enforced, skills auto-injected
+        ↓
+        vscode.lm.sendRequest(copilot, agentPrompt + context)
+            → Copilot reasons, returns JSON output
+        ↓
+        McpClient.callTool("harness_write_stage", { session_id, stage, output })
+            → injection scan → schema check → append-only store
     ↓
-@planner produces plan JSON
-    ↓
-@planner calls harness_write_stage(session_id, "plan", output, agent_name="planner")
-    → harness: injection scan → schema check → append-only store
-    ↓
-Developer opens @designer in Copilot Chat
-    ↓
-@designer calls harness_read_stage(session_id, "plan", agent_name="designer")
-    → harness returns: plan output + injected api-design skill (auto, not optional)
-    ↓
-... pipeline continues through all 5 agents
+    Reviewer "fail" → correction loop (max 3 retries) → escalate
 ```
 
 ---
@@ -143,9 +146,10 @@ copilot-harness/
         cross_session.db
         pattern_detector.py                                        [Day 5]
     storage/
-        db.py          ← SQLite CRUD
-        schema.sql     ← sessions, stage_outputs, agent_versions, fail_patterns,
-                          active_session (crash recovery pointer)
+        db.py          ← SQLite CRUD; schema embedded as string (no file dep);
+                          DB path = $HARNESS_ROOT/data/copilot_harness.db when
+                          running as extension binary, else alongside db.py (dev)
+        schema.sql     ← reference copy (not read at runtime — embedded in db.py)
     tests/
         test_state.py
         test_context_builder.py
@@ -161,16 +165,24 @@ copilot-harness/
                           portable — works in any project once the CLI is installed
 ```
 
-**VS Code Extension (✅ built):**
+**VS Code Extension (✅ built, v0.2.0):**
 ```
 copilot-harness-extension/   ← VS Code extension (TypeScript)
     src/
-        extension.ts         ← registers @harness chat participant
-                               user types "@harness <request>" in Copilot Chat
-        pipeline.ts          ← drives 5 agents via vscode.lm.invokeTool() +
+        extension.ts         ← activates on VS Code start (onStartupFinished)
+                               spawns bin/copilot-harness.exe via McpClient
+                               registers @harness chat participant
+        mcpClient.ts         ← minimal MCP stdio client (newline JSON-RPC)
+                               McpClient.create() → listTools() → callTool()
+                               direct child process — no VS Code MCP panel needed
+        pipeline.ts          ← drives 5 agents via McpClient.callTool() +
                                vscode.lm.sendRequest(); correction loop (max 3)
-                               NO second server spawned — uses VS Code's managed server
-    package.json             ← VS Code ^1.93.0 (vscode.lm.invokeTool minimum)
+                               NO vscode.lm.invokeTool() — calls server directly
+    bin/
+        copilot-harness.exe  ← PyInstaller one-file binary (Windows)
+        copilot-harness      ← PyInstaller one-file binary (Linux/Mac)
+        launch.js            ← cross-platform launcher (picks .exe on Windows)
+    package.json             ← VS Code ^1.93.0, activationEvents: onStartupFinished
     tsconfig.json
 ```
 
@@ -483,7 +495,7 @@ Week 2:
 | Verification | ✅ Built (verifier.py + executor.py) | — |
 | Architecture Enforcement | ✅ Designed | patch applier (Day 5) |
 | Memory Architecture | ❌ Missing | 3-tier memory (Week 2) |
-| Extension (@harness) | ✅ Built (chat participant + invokeTool) | — |
+| Extension (@harness) | ✅ Built (McpClient + direct callTool, no invokeTool) | — |
 
 ---
 
@@ -500,8 +512,9 @@ correction_loop.py     ❌     Python orchestration            ✅
 skill_loader.py        ❌     file I/O                        ✅
 executor.py            ❌     subprocess: ruff, mypy, pytest  ✅
 pattern_detector.py    ❌     SQLite count threshold          [Day 5]
-extension/pipeline.ts  ❌     vscode.lm.invokeTool + sendRequest  ✅
-extension/extension.ts ❌     @harness chat participant       ✅
+extension/mcpClient.ts ❌     JSON-RPC stdio child process        ✅
+extension/pipeline.ts  ❌     McpClient.callTool + sendRequest    ✅
+extension/extension.ts ❌     @harness chat participant           ✅
 
 Copilot Chat (VS Code) ✅     agent reasoning in Phase 1
 vscode.lm API          ✅     agent reasoning in Phase 2
@@ -619,27 +632,37 @@ Test:
 [ ] Edge cases: malformed JSON output, empty agent response, executor timeout
 ```
 
-### VS Code Extension ✅ Complete (refactored)
+### VS Code Extension ✅ Complete (v0.2.0)
 
 ```
+[✅] src/mcpClient.ts
+      McpClient.create(binary, args, env) — spawns server as child process
+      Newline-delimited JSON-RPC 2.0 over stdio (no VS Code MCP panel needed)
+      listTools() → McpToolDef[]
+      callTool(name, args) → string (raw text from MCP content array)
+
 [✅] src/extension.ts
+      activationEvents: onStartupFinished — activates at VS Code start
+      Spawns bin/copilot-harness[.exe] via McpClient with HARNESS_ROOT env
       Registers @harness chat participant (id: copilot-harness.harness)
-      User types "@harness <request>" in Copilot Chat to start the pipeline
-      Streams progress back into the chat window via ChatResponseStream
+      Output channel "CopilotHarness" auto-shown on activation for diagnostics
 
 [✅] src/pipeline.ts
-      runPipeline(request, workspaceRoot, stream, token, toolToken) → PipelineResult
-      callHarness(toolName, args, token, toolToken) — calls harness_* tools via
-        vscode.lm.invokeTool() on VS Code's managed MCP server (NO second process)
+      runPipeline(client, request, workspaceRoot, stream, token) → PipelineResult
+      callHarness(client, toolName, args) — calls McpClient.callTool() directly
+        NO vscode.lm.invokeTool() — avoids VS Code tool registry entirely
       Per-agent: harness_read_stage → vscode.lm.sendRequest(copilot) → harness_write_stage
       Crash recovery: harness_get_active_session() → skip complete stages
       Correction loop: reviewer "fail" → harness_increment_attempt (code + review)
                        → coder retry with fix_instructions → reviewer re-run (max 3)
 
-[✅] package.json — VS Code ^1.93.0 (vscode.lm.invokeTool minimum)
-                    chatParticipants contribution (replaces commands)
+[✅] storage/db.py — schema embedded as string; DB path uses HARNESS_ROOT env var
+                     fixes PyInstaller temp-dir issue (DB was recreated each run)
+
+[✅] package.json — VS Code ^1.93.0, activationEvents: onStartupFinished
 [✅] tsconfig.json — CommonJS / ES2022 / strict
-[✅] .vscode/mcp.json — "copilot-harness serve" (portable CLI, not hardcoded path)
+[✅] .vscode/mcp.json — dev mode only: python server.py for manual Copilot Chat use
+[✅] copilot-harness.spec — PyInstaller one-file build (Windows .exe + Linux binary)
 ```
 
 ---
@@ -727,6 +750,6 @@ WEEK 2:
 *Updated: April 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: Phase 1 — Copilot Chat in VS Code + local MCP stdio server*
-*         Phase 2 — VS Code extension drives pipeline via vscode.lm API*
-*Current milestone: Day 4 complete + Extension refactored (@harness chat participant) — Day 5 next (pattern detector, self-improvement loop)*
+*Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat drives pipeline automatically*
+*         Dev mode — .vscode/mcp.json + python server.py for manual agent use*
+*Current milestone: Extension fully working (McpClient direct, DB path fixed) — Day 5 next (pattern detector, self-improvement loop)*

@@ -2,7 +2,7 @@
   "name": "copilot-harness-extension",
   "displayName": "CopilotHarness",
   "description": "Automated 5-agent pipeline runner for GitHub Copilot Chat via CopilotHarness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "copilot-harness",
   "repository": {
     "type": "git",
@@ -14,7 +14,7 @@
   "categories": [
     "AI"
   ],
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
   "contributes": {
     "chatParticipants": [
@@ -30,7 +30,10 @@
   "scripts": {
     "compile": "npx tsc -p ./",
     "watch": "npx tsc --watch -p ./",
-    "package": "npm run compile && vsce package"
+    "build:server": "bash scripts/build-server.sh",
+    "build:assets": "bash scripts/copy-assets.sh",
+    "build": "npm run build:server && npm run build:assets && npm run compile",
+    "package": "npm run build && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

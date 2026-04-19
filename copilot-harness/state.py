@@ -77,8 +77,10 @@ def set_active_session(session_id: str, db_path: Path | None = None) -> None:
 def get_active_session(db_path: Path | None = None) -> dict | None:
     """Return crash-recovery info for the current active session, or None.
 
-    Returns None if there is no active session or if the tracked session is
-    already complete/escalated — so callers always get actionable data.
+    Returns None if there is no active session, if the tracked session is
+    already complete/escalated, or if all pipeline stages are written
+    (pipeline fully finished — auto-clears the pointer so the next run
+    starts a fresh session instead of silently skipping everything).
     """
     session_id = db.get_active_session_id(db_path)
     if not session_id:
@@ -87,7 +89,12 @@ def get_active_session(db_path: Path | None = None) -> dict | None:
     if session is None or session["status"] != "active":
         return None
     resume_stage = resume(session_id, db_path)
-    attempt = get_attempt(session_id, resume_stage, db_path) if resume_stage else None
+    if resume_stage is None:
+        # All stages have written output — pipeline is done.
+        # Clear the pointer so the next @harness call starts fresh.
+        db.set_active_session_id(None, _now(), db_path)
+        return None
+    attempt = get_attempt(session_id, resume_stage, db_path)
     return {
         "session_id": session_id,
         "request": session["request"],
