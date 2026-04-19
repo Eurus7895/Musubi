@@ -3,8 +3,7 @@
  *
  * On activation:
  *   1. Spawns the bundled harness server binary as a child process.
- *   2. Registers all harness_* tools via vscode.lm.registerTool() — no MCP
- *      server trust prompt, no user action needed.
+ *   2. Calls harness tools directly via McpClient (no vscode.lm.invokeTool).
  *   3. Registers the @harness chat participant.
  *
  * Usage in Copilot Chat:
@@ -17,26 +16,40 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline } from "./pipeline";
 
+let out: vscode.OutputChannel;
+
 // ── Extension lifecycle ───────────────────────────────────────────────────────
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  out = vscode.window.createOutputChannel("CopilotHarness");
+  context.subscriptions.push(out);
+  out.appendLine("CopilotHarness activating...");
+  out.appendLine(`Extension path: ${context.extensionPath}`);
+
   const serverBin = resolveServerBinary(context.extensionPath);
   if (!serverBin) {
-    vscode.window.showWarningMessage(
-      "CopilotHarness: server binary not found in extension. Run `npm run package` to build.",
-    );
+    const msg = "Server binary not found in extension bin/. Run `npm run package` to build.";
+    out.appendLine(`ERROR: ${msg}`);
+    out.show();
+    vscode.window.showWarningMessage(`CopilotHarness: ${msg}`);
     return;
   }
+  out.appendLine(`Server binary: ${serverBin}`);
 
   let client: McpClient;
   try {
+    out.appendLine("Starting MCP server...");
     client = await McpClient.create(serverBin, ["serve"], {
       HARNESS_ROOT: context.extensionPath,
     });
+    out.appendLine("MCP server started. Listing tools...");
+    const tools = await client.listTools();
+    out.appendLine(`Tools available (${tools.length}): ${tools.map(t => t.name).join(", ")}`);
   } catch (err) {
-    vscode.window.showErrorMessage(
-      `CopilotHarness: failed to start server — ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    out.appendLine(`ERROR starting server: ${msg}`);
+    out.show();
+    vscode.window.showErrorMessage(`CopilotHarness: failed to start server — ${msg}`);
     return;
   }
 
@@ -48,6 +61,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
+
+  out.appendLine("CopilotHarness ready. Use @harness in Copilot Chat.");
 }
 
 export function deactivate(): void {}
@@ -60,6 +75,7 @@ function resolveServerBinary(extensionPath: string): string | null {
     path.join(extensionPath, "bin", "copilot-harness"),
   ];
   for (const c of candidates) {
+    out.appendLine(`Checking: ${c} — ${fs.existsSync(c) ? "found" : "not found"}`);
     if (fs.existsSync(c)) { return c; }
   }
   return null;
@@ -100,6 +116,7 @@ async function handler(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    out.appendLine(`Pipeline error: ${msg}`);
     stream.markdown(`\n**Error:** ${msg}`);
   }
 
