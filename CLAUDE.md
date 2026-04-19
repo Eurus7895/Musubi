@@ -144,7 +144,7 @@ copilot-harness/
     skill_loader.py    ← serves SKILL.md + references             ✅ built
     memory/
         cross_session.db
-        pattern_detector.py                                        [Day 5]
+        pattern_detector.py                                        ✅ built
     storage/
         db.py          ← SQLite CRUD; schema embedded as string (no file dep);
                           DB path = $HARNESS_ROOT/data/copilot_harness.db when
@@ -488,13 +488,13 @@ Week 2:
 | Component | Status | Priority |
 |---|---|---|
 | Tool Design | ⚠️ Prompt-level only (Phase 1) | Phase 2 automates this |
-| Feedback Loops | ✅ Built (correction_loop.py + extension loop) | wrong_plan path (Day 5) |
+| Feedback Loops | ✅ Built (correction_loop.py + extension loop) | — |
 | State Management | ✅ Built + crash recovery | cross-session memory (Week 2) |
-| Multi-Agent Coordination | ❌ Missing | handoff schemas (Day 4) |
-| Security & Permissions | ✅ Built (injection scan + verifier secrets) | proposed_change_validator (Day 5) |
+| Multi-Agent Coordination | ❌ Missing | handoff schemas (Week 2) |
+| Security & Permissions | ✅ Built (injection scan + verifier + patch applier guard) | — |
 | Verification | ✅ Built (verifier.py + executor.py) | — |
-| Architecture Enforcement | ✅ Designed | patch applier (Day 5) |
-| Memory Architecture | ❌ Missing | 3-tier memory (Week 2) |
+| Architecture Enforcement | ✅ Built (patch applier + archive + proposed/ guard) | — |
+| Memory Architecture | ⚠️ Partial (pattern_detector.py built) | 3-tier memory (Week 2) |
 | Extension (@harness) | ✅ Built (McpClient + direct callTool, no invokeTool) | — |
 
 ---
@@ -511,7 +511,8 @@ verifier.py            ❌     jsonschema + regex              ✅
 correction_loop.py     ❌     Python orchestration            ✅
 skill_loader.py        ❌     file I/O                        ✅
 executor.py            ❌     subprocess: ruff, mypy, pytest  ✅
-pattern_detector.py    ❌     SQLite count threshold          [Day 5]
+pattern_detector.py    ❌     SQLite count threshold          ✅
+proposed_patch_applier.py ❌  regex validate + file I/O       ✅
 extension/mcpClient.ts ❌     JSON-RPC stdio child process        ✅
 extension/pipeline.ts  ❌     McpClient.callTool + sendRequest    ✅
 extension/extension.ts ❌     @harness chat participant           ✅
@@ -605,21 +606,41 @@ vscode.lm API          ✅     agent reasoning in Phase 2
                    run_tests passes/fails, run_all stops early on lint failure
 ```
 
-### Day 5 — Self-Improvement Loop + Packaging
+### Day 5 — Self-Improvement Loop + Packaging ✅ Complete
 ```
-[ ] memory/pattern_detector.py
-      record_failure(session_id, agent_name, issue)
-      detect_patterns(agent_name) → list[Pattern]
-      trigger_skill_builder(pattern) → writes proposed/*.patch.md
-[ ] Wire pattern_detector into correction_loop.py
-[ ] proposed_patch_applier.py
-      validates + applies + archives Skill-Builder patches
-[ ] pyproject.toml — finalise entry point copilot-harness = "cli:main"
+[✅] memory/pattern_detector.py
+      record_failure(session_id, agent_name, issue, db_path?)
+      detect_patterns(agent_name?, db_path?) → list[Pattern]
+      trigger_skill_builder(pattern, repo_root?) → writes proposed/*.patch.md
+      PATTERN_THRESHOLD = 3
 
-Test:
-  3 sessions same coder failure → proposed/coder.patch.md created
-  direct write to .github/agents/ blocked by validate_skill_builder_write()
-  patch applier blocks non-Behavior-Rules changes
+[✅] Wire pattern_detector into correction_loop.py
+      LoopResult gains triggered_patches: list[str]
+      run() gains repo_root parameter
+      Every non-pass review → record_failure() per issue description
+      detect_patterns + trigger_skill_builder when threshold met + repo_root given
+
+[✅] proposed_patch_applier.py
+      validate_patch(patch_path) → PatchValidationResult
+        blocks: tools:, input contract, output contract in proposed addition
+        requires patch in .github/agents/proposed/ and valid '# Proposed Patch:' header
+      apply_patch(patch_path, repo_root?) → ApplyResult
+        archives to .github/agents/archive/{agent}.{timestamp}.md
+        appends rule to Behavior Rules section
+
+[✅] pyproject.toml — entry point copilot-harness = "cli:main" (confirmed)
+      version bumped to 0.2.0; packages = ["storage", "memory"] added
+
+[✅] tests/test_pattern_detector.py — 17 tests
+      record_failure, detect_patterns, trigger_skill_builder
+      integration: 3 sessions same failure → patch created
+      integration: correction_loop.run() records failures + triggers patches
+
+[✅] tests/test_patch_applier.py — 19 tests
+      validate_skill_builder_write blocks .github/agents/ direct writes
+      validate_patch: valid, missing header, missing section, tools/contract blocks
+      apply_patch: appends rule, creates archive, preserves original
+      Total across all modules: 206 tests passing
 ```
 
 ### Week 2 — Hardening
@@ -703,14 +724,28 @@ verifier.py: ⬜ (Day 3)
 [ ] API key pattern → secret detected
 [ ] Valid output → all checks pass
 
-correction_loop.py: ⬜ (Day 3)
-[ ] Max 3 attempts enforced
-[ ] Attempt 4 → escalation with session_id + all issues
+correction_loop.py: ✅
+[✅] Max 3 attempts enforced
+[✅] Attempt 4 → escalation with session_id + all issues
 
-executor.py: ⬜ (Day 4)
-[ ] ruff error → structured LintResult
-[ ] pytest failure → TestResult with test name + reason
-[ ] Clean code → ExecutionResult.passed = True
+executor.py: ✅ (Day 4)
+[✅] ruff error → structured LintResult
+[✅] pytest failure → TestResult with test name + reason
+[✅] Clean code → ExecutionResult.passed = True
+
+pattern_detector.py: ✅ (Day 5)
+[✅] 3 sessions same coder failure → proposed/coder.patch.md created
+[✅] Below threshold → no patch
+[✅] correction_loop.run() records failures to pattern detector
+[✅] trigger_skill_builder writes only when repo_root provided
+
+proposed_patch_applier.py: ✅ (Day 5)
+[✅] Patch in proposed/ with valid header → applied to agent file
+[✅] Patch outside proposed/ → rejected
+[✅] tools: in addition → rejected (non-Behavior-Rules change)
+[✅] input contract / output contract in addition → rejected
+[✅] Applied patch archived to .github/agents/archive/
+[✅] validate_skill_builder_write blocks .github/agents/ direct writes
 ```
 
 ---
@@ -752,4 +787,4 @@ WEEK 2:
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat drives pipeline automatically*
 *         Dev mode — .vscode/mcp.json + python server.py for manual agent use*
-*Current milestone: Extension fully working (McpClient direct, DB path fixed) — Day 5 next (pattern detector, self-improvement loop)*
+*Current milestone: Day 5 complete — pattern_detector + patch applier + 206 tests passing. Week 2 next (memory, session distiller, README).*

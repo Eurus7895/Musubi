@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "copilot-harness"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0,<1.10.0",
@@ -17,11 +17,13 @@ py-modules = [
     "context_builder",
     "correction_loop",
     "executor",
+    "proposed_patch_applier",
     "server",
     "skill_loader",
     "state",
     "verifier",
 ]
+packages = ["storage", "memory"]
 
 [project.scripts]
 copilot-harness = "cli:main"
