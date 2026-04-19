@@ -67,10 +67,11 @@ Produce ONLY valid JSON matching this schema:
 ```json
 {
     "summary": "One sentence describing the architecture",
+    "tasks_addressed": ["T1", "T2", "T3"],
     "modules": [
         {
             "file": "path/to/module.py",
-            "purpose": "string",
+            "purpose": "string — reference the task IDs this module implements, e.g. 'Implements T1 and T2'",
             "public_interface": [
                 {
                     "name": "function_or_class_name",
@@ -93,6 +94,9 @@ Produce ONLY valid JSON matching this schema:
     "confidence": "high | medium | low"
 }
 ```
+
+`tasks_addressed` MUST list every task ID from the plan (e.g. `["T1", "T2", "T3"]`).
+The harness validates that all plan task IDs appear here — omitting any will cause the write to be rejected.
 
 Then call:
 
