@@ -9,7 +9,7 @@
     "url": "https://github.com/Eurus7895/CopilotHarness"
   },
   "engines": {
-    "vscode": "^1.93.0"
+    "vscode": "^1.99.0"
   },
   "categories": [
     "AI"
@@ -25,7 +25,17 @@
         "description": "Runs the automated 5-agent pipeline. Usage: @harness <your request>",
         "isSticky": true
       }
-    ]
+    ],
+    "mcpServers": {
+      "copilot-harness": {
+        "label": "CopilotHarness",
+        "command": "node",
+        "args": ["${extensionPath}/bin/launch.js", "serve"],
+        "env": {
+          "HARNESS_ROOT": "${extensionPath}"
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "npx tsc -p ./",

@@ -35,61 +35,45 @@ function getUserMcpPath(): string {
 }
 
 function registerMcpServer(extensionPath: string): void {
-  const binName = process.platform === "win32"
-    ? "copilot-harness.exe"
-    : "copilot-harness";
-  const serverBin = path.join(extensionPath, "bin", binName);
+  const launcherJs = path.join(extensionPath, "bin", "launch.js");
 
-  // Dev mode: binary not built yet — skip automatic registration.
-  if (!fs.existsSync(serverBin)) {
-    return;
+  // contributes.mcpServers in package.json handles registration automatically
+  // when "node" is on PATH. As a fallback, write user-level mcp.json using the
+  // absolute path to the current Node.js binary so the server still starts even
+  // if "node" is not on the system PATH.
+  if (!fs.existsSync(launcherJs)) {
+    return; // Dev mode without built assets — nothing to do.
   }
 
   const mcpPath = getUserMcpPath();
-
   let config: Record<string, unknown> = {};
   if (fs.existsSync(mcpPath)) {
     try {
       config = JSON.parse(fs.readFileSync(mcpPath, "utf-8")) as Record<string, unknown>;
-    } catch {
-      // Corrupt file — start fresh.
-    }
+    } catch { /* corrupt file — start fresh */ }
   }
 
   const servers = (config["servers"] as Record<string, unknown> | undefined) ?? {};
   const existing = servers["copilot-harness"] as Record<string, unknown> | undefined;
 
-  // Already registered with the correct binary path — nothing to do.
-  if (existing?.["command"] === serverBin) {
+  // Already registered with the same launcher — nothing to do.
+  if (existing?.["args"] instanceof Array && existing["args"][0] === launcherJs) {
     return;
   }
 
+  // Use process.execPath (absolute path to VS Code's Node.js) so the server
+  // starts even when "node" is not on PATH. This is the fallback path;
+  // contributes.mcpServers is the primary registration mechanism.
   servers["copilot-harness"] = {
     type: "stdio",
-    command: serverBin,
-    args: ["serve"],
-    env: {
-      // Tells skill_loader.py and context_builder.py where to find
-      // .github/skills/ and .github/agents/ bundled inside the extension.
-      HARNESS_ROOT: extensionPath,
-    },
+    command: process.execPath,
+    args: [launcherJs, "serve"],
+    env: { HARNESS_ROOT: extensionPath },
   };
   config["servers"] = servers;
 
   fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
   fs.writeFileSync(mcpPath, JSON.stringify(config, null, 4));
-
-  // MCP servers are loaded at VS Code startup — prompt once to reload.
-  vscode.window
-    .showInformationMessage(
-      "CopilotHarness: MCP server registered. Reload window to activate harness_* tools.",
-      "Reload Window",
-    )
-    .then((choice) => {
-      if (choice === "Reload Window") {
-        vscode.commands.executeCommand("workbench.action.reloadWindow");
-      }
-    });
 }
 
 // ── Extension lifecycle ───────────────────────────────────────────────────────
