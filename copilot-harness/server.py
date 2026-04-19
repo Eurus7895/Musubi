@@ -161,30 +161,34 @@ def harness_write_stage(
       4. Append-only store in session state
     """
     try:
-        parsed = json.loads(output)
-    except json.JSONDecodeError as exc:
-        return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
 
-    if context_builder.scan_injection(json.dumps(parsed)):
-        return json.dumps({
-            "status": "error",
-            "error": "Output rejected: contains instruction-injection patterns.",
-        })
+        if context_builder.scan_injection(json.dumps(parsed)):
+            return json.dumps({
+                "status": "error",
+                "error": "Output rejected: contains instruction-injection patterns.",
+            })
 
-    result = verifier.validate(parsed, agent_name, session_id=session_id)
-    if not result.valid:
-        return json.dumps({
-            "status": "error",
-            "error": "Output rejected: validation failed.",
-            "validation_errors": result.errors,
-        })
+        result = verifier.validate(parsed, agent_name, session_id=session_id)
+        if not result.valid:
+            return json.dumps({
+                "status": "error",
+                "error": "Output rejected: validation failed.",
+                "validation_errors": result.errors,
+            })
 
-    try:
-        state.write_stage(session_id, stage, parsed)
-    except ValueError as exc:
-        return json.dumps({"status": "error", "error": str(exc)})
+        try:
+            state.write_stage(session_id, stage, parsed)
+        except ValueError as exc:
+            return json.dumps({"status": "error", "error": str(exc)})
 
-    return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
+        return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
+
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
 
 
 @mcp.tool()

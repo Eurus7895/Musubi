@@ -74,7 +74,8 @@ async function callHarness(
   try {
     return JSON.parse(text);
   } catch {
-    return text;
+    // Server returned non-JSON — likely an unhandled exception from FastMCP.
+    throw new Error(`${toolName} returned non-JSON response: ${text.slice(0, 300)}`);
   }
 }
 
