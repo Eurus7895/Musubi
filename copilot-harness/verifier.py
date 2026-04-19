@@ -41,8 +41,8 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "types": {"summary": str, "tasks": list},
     },
     "designer": {
-        "required": ["architecture", "files"],
-        "types": {"architecture": str, "files": list},
+        "required": ["summary", "modules"],
+        "types": {"summary": str, "modules": list},
     },
     "coder": {
         "required": ["summary", "files_modified"],
@@ -136,9 +136,9 @@ def _check_code_only_modifies_declared_files(
     if design_output is None:
         return []
     declared = {
-        f["path"]
-        for f in design_output.get("files", [])
-        if isinstance(f, dict) and "path" in f
+        m["file"]
+        for m in design_output.get("modules", [])
+        if isinstance(m, dict) and "file" in m
     }
     if not declared:
         return []
