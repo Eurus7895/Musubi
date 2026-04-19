@@ -41,8 +41,8 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "types": {"summary": str, "tasks": list},
     },
     "designer": {
-        "required": ["summary", "tasks_addressed", "modules"],
-        "types": {"summary": str, "tasks_addressed": list, "modules": list},
+        "required": ["architecture", "files"],
+        "types": {"architecture": str, "files": list},
     },
     "coder": {
         "required": ["summary", "files_modified"],
@@ -112,7 +112,7 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
 def _check_design_references_plan_tasks(
     design_output: dict[str, Any], plan_output: dict[str, Any] | None
 ) -> list[str]:
-    """Every plan task ID must appear in design's tasks_addressed list."""
+    """Design output text must contain every task ID declared in the plan."""
     if plan_output is None:
         return []
     task_ids = {
@@ -122,8 +122,8 @@ def _check_design_references_plan_tasks(
     }
     if not task_ids:
         return []
-    addressed = set(design_output.get("tasks_addressed", []))
-    missing = sorted(task_ids - addressed)
+    design_text = json.dumps(design_output)
+    missing = sorted(tid for tid in task_ids if tid not in design_text)
     if missing:
         return [f"Design does not reference plan task IDs: {missing}"]
     return []
@@ -136,9 +136,9 @@ def _check_code_only_modifies_declared_files(
     if design_output is None:
         return []
     declared = {
-        m["file"]
-        for m in design_output.get("modules", [])
-        if isinstance(m, dict) and "file" in m
+        f["path"]
+        for f in design_output.get("files", [])
+        if isinstance(f, dict) and "path" in f
     }
     if not declared:
         return []

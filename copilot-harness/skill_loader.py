@@ -9,22 +9,11 @@ Public API:
     list_references(skill_id, skills_dir?) → list[str]
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
-def _resolve_skills_dir() -> Path:
-    # When running as a bundled extension binary, HARNESS_ROOT is set by the
-    # VS Code extension to its own extensionPath (where .github/ is shipped).
-    harness_root = os.environ.get("HARNESS_ROOT")
-    if harness_root:
-        return Path(harness_root) / ".github" / "skills"
-    # Development: resolve relative to this file's repo root.
-    return Path(__file__).parent.parent / ".github" / "skills"
-
-
-_SKILLS_DIR = _resolve_skills_dir()
+_REPO_ROOT = Path(__file__).parent.parent
+_SKILLS_DIR = _REPO_ROOT / ".github" / "skills"
 
 
 @dataclass

@@ -11,18 +11,6 @@ dependencies = [
     "starlette>=0.27.0,<0.28.0",
 ]
 
-[tool.setuptools]
-py-modules = [
-    "cli",
-    "context_builder",
-    "correction_loop",
-    "executor",
-    "server",
-    "skill_loader",
-    "state",
-    "verifier",
-]
-
 [project.scripts]
 copilot-harness = "cli:main"
 

@@ -1,70 +1,21 @@
 """SQLite CRUD layer. No business logic — just data access."""
 
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator
 
-# Schema is embedded so it works in both dev and PyInstaller one-file builds.
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    request    TEXT NOT NULL,
-    status     TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS agent_versions (
-    session_id TEXT NOT NULL,
-    agent_name TEXT NOT NULL,
-    version    TEXT NOT NULL,
-    PRIMARY KEY (session_id, agent_name),
-    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
-);
-CREATE TABLE IF NOT EXISTS stage_outputs (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT    NOT NULL,
-    stage      TEXT    NOT NULL,
-    attempt    INTEGER NOT NULL DEFAULT 1,
-    status     TEXT    NOT NULL DEFAULT 'pending',
-    output     TEXT,
-    written_at TEXT,
-    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
-);
-CREATE TABLE IF NOT EXISTS active_session (
-    singleton  INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
-    session_id TEXT,
-    updated_at TEXT
-);
-CREATE TABLE IF NOT EXISTS fail_patterns (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  TEXT NOT NULL,
-    agent_name  TEXT NOT NULL,
-    issue       TEXT NOT NULL,
-    recorded_at TEXT NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
-);
-"""
-
-def _default_db_path() -> Path:
-    # When running as the VS Code extension binary HARNESS_ROOT points to the
-    # extension install dir — a stable, writable location across binary runs.
-    # Fall back to alongside db.py for dev / test usage.
-    root = os.environ.get("HARNESS_ROOT")
-    if root:
-        return Path(root) / "data" / "copilot_harness.db"
-    return Path(__file__).parent / "copilot_harness.db"
-
-DEFAULT_DB_PATH = _default_db_path()
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+DEFAULT_DB_PATH = Path(__file__).parent / "copilot_harness.db"
 
 
 def init_db(db_path: Path | None = None) -> None:
     path = db_path or DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
+    schema = SCHEMA_PATH.read_text()
     with sqlite3.connect(path) as conn:
-        conn.executescript(_SCHEMA_SQL)
+        conn.executescript(schema)
 
 
 @contextmanager

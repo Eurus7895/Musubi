@@ -22,7 +22,6 @@ Skill auto-injection:
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 # Ensure the copilot-harness directory is on sys.path when run directly.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,11 +33,6 @@ import executor
 import skill_loader
 import state
 import verifier
-from storage import db as _db
-
-# Ensure DB directory + schema exist before any tool call (critical for first run
-# when HARNESS_ROOT points to the extension install dir which has no data/ folder yet).
-_db.init_db()
 
 # ── Skill auto-injection map ──────────────────────────────────────────────────
 # (stage, agent_name) → list of skill IDs whose SKILL.md is injected into
@@ -156,50 +150,41 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
 
 @mcp.tool()
 def harness_write_stage(
-    session_id: str, stage: str, output: Any, agent_name: str
+    session_id: str, stage: str, output: str, agent_name: str
 ) -> str:
     """Write stage output after validation.
 
-    output may be a JSON string or a JSON-serialisable object — both are accepted.
-    The harness runs (in order):
-      1. Normalise to parsed dict (parse if string, use directly if already a dict/list)
+    output must be a JSON string. The harness runs (in order):
+      1. JSON parse
       2. Injection scan (rejects immediately if found)
       3. Schema + secrets + cross-stage contract validation (verifier.py)
       4. Append-only store in session state
     """
     try:
-        # Accept both JSON-string and native JSON object from MCP clients.
-        if isinstance(output, str):
-            try:
-                parsed = json.loads(output)
-            except json.JSONDecodeError as exc:
-                return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
-        else:
-            parsed = output
+        parsed = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
 
-        if context_builder.scan_injection(json.dumps(parsed)):
-            return json.dumps({
-                "status": "error",
-                "error": "Output rejected: contains instruction-injection patterns.",
-            })
+    if context_builder.scan_injection(json.dumps(parsed)):
+        return json.dumps({
+            "status": "error",
+            "error": "Output rejected: contains instruction-injection patterns.",
+        })
 
-        result = verifier.validate(parsed, agent_name, session_id=session_id)
-        if not result.valid:
-            return json.dumps({
-                "status": "error",
-                "error": "Output rejected: validation failed.",
-                "validation_errors": result.errors,
-            })
+    result = verifier.validate(parsed, agent_name, session_id=session_id)
+    if not result.valid:
+        return json.dumps({
+            "status": "error",
+            "error": "Output rejected: validation failed.",
+            "validation_errors": result.errors,
+        })
 
-        try:
-            state.write_stage(session_id, stage, parsed)
-        except ValueError as exc:
-            return json.dumps({"status": "error", "error": str(exc)})
+    try:
+        state.write_stage(session_id, stage, parsed)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
 
-        return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
-
-    except Exception as exc:
-        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
 
 
 @mcp.tool()

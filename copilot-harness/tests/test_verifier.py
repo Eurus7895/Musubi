@@ -31,9 +31,8 @@ def test_valid_planner_output() -> None:
 
 def test_valid_designer_output() -> None:
     output = {
-        "summary": "REST API with JWT auth",
-        "tasks_addressed": ["T1", "T2"],
-        "modules": [{"file": "app.py", "purpose": "Implements T1 and T2", "public_interface": []}],
+        "architecture": "REST API with JWT",
+        "files": [{"path": "app.py", "purpose": "main app"}],
     }
     result = verifier.validate(output, "designer")
     assert result.valid is True
@@ -86,22 +85,16 @@ def test_planner_missing_tasks() -> None:
     assert any("tasks" in e for e in result.errors)
 
 
-def test_designer_missing_summary() -> None:
-    result = verifier.validate({"tasks_addressed": [], "modules": []}, "designer")
+def test_designer_missing_architecture() -> None:
+    result = verifier.validate({"files": []}, "designer")
     assert result.valid is False
-    assert any("summary" in e for e in result.errors)
+    assert any("architecture" in e for e in result.errors)
 
 
-def test_designer_missing_tasks_addressed() -> None:
-    result = verifier.validate({"summary": "REST API", "modules": []}, "designer")
+def test_designer_missing_files() -> None:
+    result = verifier.validate({"architecture": "REST"}, "designer")
     assert result.valid is False
-    assert any("tasks_addressed" in e for e in result.errors)
-
-
-def test_designer_missing_modules() -> None:
-    result = verifier.validate({"summary": "REST API", "tasks_addressed": []}, "designer")
-    assert result.valid is False
-    assert any("modules" in e for e in result.errors)
+    assert any("files" in e for e in result.errors)
 
 
 def test_coder_missing_summary() -> None:
@@ -224,9 +217,8 @@ def test_design_references_all_plan_tasks(session: str, db: Path) -> None:
         "tasks": [{"id": "T1", "description": "route"}, {"id": "T2", "description": "model"}],
     }, db_path=db)
     design = {
-        "summary": "REST API",
-        "tasks_addressed": ["T1", "T2"],
-        "modules": [{"file": "app.py", "purpose": "Implements T1 and T2", "public_interface": []}],
+        "architecture": "REST",
+        "files": [{"path": "app.py", "purpose": "T1 and T2 implementation"}],
     }
     result = verifier.validate(design, "designer", session_id=session, db_path=db)
     assert result.valid is True
@@ -238,9 +230,8 @@ def test_design_missing_plan_task_id(session: str, db: Path) -> None:
         "tasks": [{"id": "T1", "description": "route"}, {"id": "T2", "description": "model"}],
     }, db_path=db)
     design = {
-        "summary": "REST API",
-        "tasks_addressed": ["T1"],
-        "modules": [{"file": "app.py", "purpose": "Implements T1 only", "public_interface": []}],
+        "architecture": "REST",
+        "files": [{"path": "app.py", "purpose": "only T1 here"}],
     }
     result = verifier.validate(design, "designer", session_id=session, db_path=db)
     assert result.valid is False
@@ -248,23 +239,19 @@ def test_design_missing_plan_task_id(session: str, db: Path) -> None:
 
 
 def test_design_skips_contract_check_when_no_plan(session: str, db: Path) -> None:
-    design = {"summary": "REST API", "tasks_addressed": [], "modules": []}
+    design = {"architecture": "REST", "files": []}
     result = verifier.validate(design, "designer", session_id=session, db_path=db)
     assert result.valid is True
 
 
 # ── Cross-stage: code only modifies declared files ───────────────────────────
 
-def _design(modules: list) -> dict:
-    return {"summary": "x", "tasks_addressed": [], "modules": modules}
-
-
 def test_code_modifies_only_declared_files(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
-    state.write_stage(session, "design", _design([
-        {"file": "app.py", "purpose": "main"},
-        {"file": "models.py", "purpose": "db"},
-    ]), db_path=db)
+    state.write_stage(session, "design", {
+        "architecture": "x",
+        "files": [{"path": "app.py", "purpose": "main"}, {"path": "models.py", "purpose": "db"}],
+    }, db_path=db)
     code = {"summary": "done", "files_modified": ["app.py", "models.py"]}
     result = verifier.validate(code, "coder", session_id=session, db_path=db)
     assert result.valid is True
@@ -272,7 +259,10 @@ def test_code_modifies_only_declared_files(session: str, db: Path) -> None:
 
 def test_code_modifies_undeclared_file(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
-    state.write_stage(session, "design", _design([{"file": "app.py", "purpose": "main"}]), db_path=db)
+    state.write_stage(session, "design", {
+        "architecture": "x",
+        "files": [{"path": "app.py", "purpose": "main"}],
+    }, db_path=db)
     code = {"summary": "done", "files_modified": ["app.py", "secret.py"]}
     result = verifier.validate(code, "coder", session_id=session, db_path=db)
     assert result.valid is False
@@ -288,7 +278,7 @@ def test_code_skips_contract_check_when_no_design(session: str, db: Path) -> Non
 
 def test_code_skips_contract_check_when_design_has_no_files(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
-    state.write_stage(session, "design", _design([]), db_path=db)
+    state.write_stage(session, "design", {"architecture": "x", "files": []}, db_path=db)
     code = {"summary": "done", "files_modified": ["app.py"]}
     result = verifier.validate(code, "coder", session_id=session, db_path=db)
     assert result.valid is True

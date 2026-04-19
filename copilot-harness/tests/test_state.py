@@ -204,17 +204,12 @@ def test_get_active_session_returns_attempt(session_id: str, db: Path) -> None:
 def test_get_active_session_none_when_all_complete(session_id: str, db: Path) -> None:
     for stage in state.STAGES:
         state.write_stage(session_id, stage, {"stage": stage}, db_path=db)
-    # All stages written → pipeline is finished → must return None and clear pointer
+    # All stages complete → resume returns None → get_active_session still returns
+    # the session (status is still 'active'), but resume_stage is None
     active = state.get_active_session(db_path=db)
-    assert active is None
-
-
-def test_get_active_session_clears_pointer_when_all_complete(session_id: str, db: Path) -> None:
-    for stage in state.STAGES:
-        state.write_stage(session_id, stage, {"stage": stage}, db_path=db)
-    state.get_active_session(db_path=db)  # trigger the clear
-    # Second call must also return None (pointer was cleared, not just suppressed)
-    assert state.get_active_session(db_path=db) is None
+    assert active is not None
+    assert active["resume_stage"] is None
+    assert active["attempt"] is None
 
 
 def test_mark_in_progress_transitions_status(session_id: str, db: Path) -> None:
