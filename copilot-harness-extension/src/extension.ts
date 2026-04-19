@@ -2,96 +2,84 @@
  * extension.ts — VS Code extension entry point for CopilotHarness.
  *
  * On activation:
- *   1. Registers the MCP server in the user-level mcp.json so harness_* tools
- *      are available in every VS Code workspace — no per-project setup needed.
- *   2. Registers the @harness chat participant.
+ *   1. Spawns the bundled harness server binary as a child process.
+ *   2. Registers all harness_* tools via vscode.lm.registerTool() — no MCP
+ *      server trust prompt, no user action needed.
+ *   3. Registers the @harness chat participant.
  *
  * Usage in Copilot Chat:
  *   @harness add a login endpoint with JWT authentication
  */
 
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
+import { McpClient } from "./mcpClient";
 import { runPipeline } from "./pipeline";
-
-// ── MCP server auto-registration ──────────────────────────────────────────────
-
-function getUserMcpPath(): string {
-  if (process.platform === "win32") {
-    return path.join(
-      process.env["APPDATA"] ?? os.homedir(),
-      "Code", "User", "mcp.json",
-    );
-  }
-  if (process.platform === "darwin") {
-    return path.join(
-      os.homedir(),
-      "Library", "Application Support", "Code", "User", "mcp.json",
-    );
-  }
-  return path.join(os.homedir(), ".config", "Code", "User", "mcp.json");
-}
-
-function registerMcpServer(extensionPath: string): void {
-  const launcherJs = path.join(extensionPath, "bin", "launch.js");
-
-  // contributes.mcpServers in package.json handles registration automatically
-  // when "node" is on PATH. As a fallback, write user-level mcp.json using the
-  // absolute path to the current Node.js binary so the server still starts even
-  // if "node" is not on the system PATH.
-  if (!fs.existsSync(launcherJs)) {
-    return; // Dev mode without built assets — nothing to do.
-  }
-
-  const mcpPath = getUserMcpPath();
-  let config: Record<string, unknown> = {};
-  if (fs.existsSync(mcpPath)) {
-    try {
-      config = JSON.parse(fs.readFileSync(mcpPath, "utf-8")) as Record<string, unknown>;
-    } catch { /* corrupt file — start fresh */ }
-  }
-
-  const servers = (config["servers"] as Record<string, unknown> | undefined) ?? {};
-  const existing = servers["copilot-harness"] as Record<string, unknown> | undefined;
-
-  // Already registered with the same launcher — nothing to do.
-  if (existing?.["args"] instanceof Array && existing["args"][0] === launcherJs) {
-    return;
-  }
-
-  // Use process.execPath (absolute path to VS Code's Node.js) so the server
-  // starts even when "node" is not on PATH. This is the fallback path;
-  // contributes.mcpServers is the primary registration mechanism.
-  servers["copilot-harness"] = {
-    type: "stdio",
-    command: process.execPath,
-    args: [launcherJs, "serve"],
-    env: { HARNESS_ROOT: extensionPath },
-  };
-  config["servers"] = servers;
-
-  fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
-  fs.writeFileSync(mcpPath, JSON.stringify(config, null, 4));
-}
 
 // ── Extension lifecycle ───────────────────────────────────────────────────────
 
-export function activate(context: vscode.ExtensionContext): void {
-  registerMcpServer(context.extensionPath);
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const serverBin = resolveServerBinary(context.extensionPath);
+  if (!serverBin) {
+    vscode.window.showWarningMessage(
+      "CopilotHarness: server binary not found in extension. Run `npm run package` to build.",
+    );
+    return;
+  }
 
-  const participant = vscode.chat.createChatParticipant(
-    "copilot-harness.harness",
-    handler,
-  );
+  let client: McpClient;
+  try {
+    client = await McpClient.create(serverBin, ["serve"], {
+      HARNESS_ROOT: context.extensionPath,
+    });
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `CopilotHarness: failed to start server — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  context.subscriptions.push({ dispose: () => client.dispose() });
+
+  // Register every harness_* tool with VS Code's language model API so
+  // vscode.lm.invokeTool() works immediately — no MCP trust prompt needed.
+  const tools = await client.listTools();
+  for (const tool of tools) {
+    const toolName = tool.name;
+    const reg = vscode.lm.registerTool(toolName, {
+      async invoke(
+        options: vscode.LanguageModelToolInvocationOptions<Record<string, unknown>>,
+        _token: vscode.CancellationToken,
+      ): Promise<vscode.LanguageModelToolResult> {
+        const text = await client.callTool(toolName, options.input ?? {});
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+      },
+    });
+    context.subscriptions.push(reg);
+  }
+
+  const participant = vscode.chat.createChatParticipant("copilot-harness.harness", handler);
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
 }
 
 export function deactivate(): void {}
 
-// ── Chat participant handler ───────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function resolveServerBinary(extensionPath: string): string | null {
+  const candidates = [
+    path.join(extensionPath, "bin", "copilot-harness.exe"),
+    path.join(extensionPath, "bin", "copilot-harness"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) { return c; }
+  }
+  return null;
+}
+
+// ── Chat participant handler ──────────────────────────────────────────────────
 
 async function handler(
   request: vscode.ChatRequest,
@@ -127,9 +115,7 @@ async function handler(
     if (result.escalated) {
       stream.markdown(`\n---\n**Escalated:** ${result.escalation}`);
     } else {
-      stream.markdown(
-        `\n---\n**Pipeline complete.** Session: \`${result.sessionId}\``,
-      );
+      stream.markdown(`\n---\n**Pipeline complete.** Session: \`${result.sessionId}\``);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
