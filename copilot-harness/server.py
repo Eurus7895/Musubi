@@ -22,6 +22,7 @@ Skill auto-injection:
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 # Ensure the copilot-harness directory is on sys.path when run directly.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -155,21 +156,26 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
 
 @mcp.tool()
 def harness_write_stage(
-    session_id: str, stage: str, output: str, agent_name: str
+    session_id: str, stage: str, output: Any, agent_name: str
 ) -> str:
     """Write stage output after validation.
 
-    output must be a JSON string. The harness runs (in order):
-      1. JSON parse
+    output may be a JSON string or a JSON-serialisable object — both are accepted.
+    The harness runs (in order):
+      1. Normalise to parsed dict (parse if string, use directly if already a dict/list)
       2. Injection scan (rejects immediately if found)
       3. Schema + secrets + cross-stage contract validation (verifier.py)
       4. Append-only store in session state
     """
     try:
-        try:
-            parsed = json.loads(output)
-        except json.JSONDecodeError as exc:
-            return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
+        # Accept both JSON-string and native JSON object from MCP clients.
+        if isinstance(output, str):
+            try:
+                parsed = json.loads(output)
+            except json.JSONDecodeError as exc:
+                return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
+        else:
+            parsed = output
 
         if context_builder.scan_injection(json.dumps(parsed)):
             return json.dumps({
