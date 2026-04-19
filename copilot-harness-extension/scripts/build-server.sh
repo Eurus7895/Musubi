@@ -14,14 +14,14 @@ BIN_DIR="$EXT_DIR/bin"
 
 echo "Building copilot-harness binary..."
 
-if ! command -v pyinstaller &>/dev/null; then
-    echo "Error: pyinstaller not found. Install it first:"
+if ! python -m PyInstaller --version &>/dev/null; then
+    echo "Error: PyInstaller not found. Install it first:"
     echo "  pip install pyinstaller"
     exit 1
 fi
 
 cd "$SERVER_DIR"
-pyinstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
+python -m PyInstaller copilot-harness.spec --distpath "$SERVER_DIR/dist" --workpath "$SERVER_DIR/build" --noconfirm
 
 mkdir -p "$BIN_DIR"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
