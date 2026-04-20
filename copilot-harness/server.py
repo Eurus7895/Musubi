@@ -34,6 +34,7 @@ import executor
 import skill_loader
 import state
 import verifier
+from context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 from storage import db as _db
 
 # Ensure DB directory + schema exist before any tool call (critical for first run
@@ -142,9 +143,24 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     else:
         result["data"] = output
 
-    # Auto-inject skills based on (stage, agent_name) — pushed, not pulled.
+    # Auto-inject skills — static map floor + plan-declared required_skills.
+    # Static map: always injected regardless of task (e.g. reviewer always gets code-review).
+    # required_skills: declared by Planner in plan output, filtered through agent's allowlist
+    #   so a wrong or irrelevant skill cannot reach an agent that shouldn't see it.
+    skill_ids: set[str] = set(_STAGE_SKILL_MAP.get((stage, agent_name.lower()), []))
+
+    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+    try:
+        plan = state.read_stage(session_id, "plan")
+        if isinstance(plan, dict):
+            for sid in plan.get("required_skills", []):
+                if sid in allowed:
+                    skill_ids.add(sid)
+    except Exception:
+        pass  # plan not yet written — skip dynamic injection
+
     injected: dict[str, str] = {}
-    for skill_id in _STAGE_SKILL_MAP.get((stage, agent_name.lower()), []):
+    for skill_id in skill_ids:
         content = skill_loader.get_skill(skill_id)
         if content:
             injected[skill_id] = content
@@ -239,13 +255,23 @@ def harness_increment_attempt(session_id: str, stage: str) -> str:
 # ── Skill tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def harness_get_skill(skill_id: str) -> str:
+def harness_get_skill(skill_id: str, agent_name: str) -> str:
     """Return the SKILL.md content for a skill by ID.
 
-    Use this to load a skill on demand. Skills listed in STAGE_SKILL_MAP
-    are auto-injected into harness_read_stage — you only need this for
-    skills not automatically provided.
+    Each agent has an explicit allowlist — only skills relevant to its role
+    can be loaded on demand. This prevents wrong-domain knowledge (e.g. C++
+    or devops skills) from contaminating an agent's reasoning context.
+
+    Skills in STAGE_SKILL_MAP are auto-injected via harness_read_stage.
+    Use this only for additional skills the Planner did not declare or
+    that were not auto-injected for this stage.
     """
+    if not check_skill_permission(agent_name, skill_id):
+        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set()))
+        return json.dumps({
+            "error": f"Agent '{agent_name}' is not permitted to load skill '{skill_id}'.",
+            "allowed_skills": allowed,
+        })
     content = skill_loader.get_skill(skill_id)
     if content is None:
         available = [s.skill_id for s in skill_loader.list_skills()]
@@ -257,12 +283,21 @@ def harness_get_skill(skill_id: str) -> str:
 
 
 @mcp.tool()
-def harness_get_reference(skill_id: str, reference_name: str) -> str:
+def harness_get_reference(skill_id: str, reference_name: str, agent_name: str) -> str:
     """Return a reference document from a skill's references/ folder.
 
+    Subject to the same agent allowlist as harness_get_skill — an agent
+    cannot access references for a skill it is not permitted to load.
+
     Load references only when needed — they are not auto-injected.
-    Example: harness_get_reference("code-review", "owasp-top10.md")
+    Example: harness_get_reference("python", "async-patterns.md", agent_name="coder")
     """
+    if not check_skill_permission(agent_name, skill_id):
+        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set()))
+        return json.dumps({
+            "error": f"Agent '{agent_name}' is not permitted to access skill '{skill_id}'.",
+            "allowed_skills": allowed,
+        })
     content = skill_loader.get_reference(skill_id, reference_name)
     if content is None:
         available = skill_loader.list_references(skill_id)
