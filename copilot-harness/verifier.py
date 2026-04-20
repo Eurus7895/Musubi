@@ -38,7 +38,7 @@ class ValidationResult:
 OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "planner": {
         "required": ["summary", "tasks"],
-        "types": {"summary": str, "tasks": list},
+        "types": {"summary": str, "tasks": list, "required_skills": list},
     },
     "designer": {
         "required": ["summary", "tasks_addressed", "modules"],

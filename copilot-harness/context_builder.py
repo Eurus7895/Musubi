@@ -47,6 +47,25 @@ def scan_injection(text: str) -> bool:
     return any(p.search(text) for p in _INJECTION_PATTERNS)
 
 
+# ── Skill access control ─────────────────────────────────────────────────────
+
+# Explicit allowlist per agent. Deny by default — unknown agents get nothing.
+# Mirrors the stage firewall: agents only load skills relevant to their role.
+AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
+    "planner":       set(),
+    "designer":      {"api-design", "database-patterns", "documentation"},
+    "coder":         {"python", "testing", "database-patterns", "api-design"},
+    "reviewer":      {"code-review", "testing"},
+    "skill-builder": set(),
+}
+
+
+def check_skill_permission(agent_name: str, skill_id: str) -> bool:
+    """Return True only if the agent is permitted to access the given skill."""
+    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower().strip(), set())
+    return skill_id in allowed
+
+
 # ── Skill-Builder path guard ──────────────────────────────────────────────────
 
 _PROPOSED_PATTERN = re.compile(
