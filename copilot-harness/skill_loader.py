@@ -38,7 +38,7 @@ def get_skill(skill_id: str, skills_dir: Path | None = None) -> str | None:
     """Return SKILL.md content for skill_id, or None if not found."""
     base = skills_dir or _SKILLS_DIR
     path = base / skill_id / "SKILL.md"
-    return path.read_text() if path.exists() else None
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 def get_reference(
@@ -49,7 +49,7 @@ def get_reference(
     """Return reference file content, or None if not found."""
     base = skills_dir or _SKILLS_DIR
     path = base / skill_id / "references" / reference_name
-    return path.read_text() if path.exists() else None
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
@@ -59,7 +59,7 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
     for skill_path in sorted(base.glob("*/SKILL.md")):
         skill_id = skill_path.parent.name
         title = skill_id
-        for line in skill_path.read_text().splitlines():
+        for line in skill_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("# "):
                 title = line[2:].strip()
                 break

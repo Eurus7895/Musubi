@@ -179,6 +179,23 @@ async function writeStage(
   }
 }
 
+function materializeCoderFiles(
+  workspaceRoot: string,
+  output: unknown,
+  stream: vscode.ChatResponseStream,
+): void {
+  if (typeof output !== "object" || output === null) { return; }
+  const fileContents = (output as Record<string, unknown>)["file_contents"];
+  if (typeof fileContents !== "object" || fileContents === null) { return; }
+  for (const [relPath, content] of Object.entries(fileContents as Record<string, unknown>)) {
+    if (typeof content !== "string") { continue; }
+    const absPath = path.join(workspaceRoot, relPath);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, content, "utf-8");
+    stream.markdown(`  - Created \`${relPath}\``);
+  }
+}
+
 // ── Correction loop ───────────────────────────────────────────────────────────
 
 async function runCorrectionLoop(
@@ -205,6 +222,7 @@ async function runCorrectionLoop(
     const coderCtx = await readAgentContext(client, sessionId, "coder", ["design", "plan", "review"]);
     const fixedCode = await runAgentLM(model, loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
     await writeStage(client, sessionId, "code", "coder", fixedCode);
+    materializeCoderFiles(workspaceRoot, fixedCode, stream);
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
@@ -275,6 +293,10 @@ export async function runPipeline(
     const agentOutput = await runAgentLM(model, loadAgentPrompt(workspaceRoot, agent.name), context, token);
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
+
+    if (agent.name === "coder") {
+      materializeCoderFiles(workspaceRoot, agentOutput, stream);
+    }
 
     stream.markdown(`✓ **${agent.name}** complete`);
 
@@ -393,6 +415,10 @@ export async function runStep(
     model, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
+
+  if (agentDef.name === "coder") {
+    materializeCoderFiles(workspaceRoot, agentOutput, stream);
+  }
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
 

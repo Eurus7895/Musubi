@@ -45,8 +45,8 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "types": {"summary": str, "tasks_addressed": list, "modules": list},
     },
     "coder": {
-        "required": ["summary", "files_modified"],
-        "types": {"summary": str, "files_modified": list},
+        "required": ["summary", "files_modified", "file_contents"],
+        "types": {"summary": str, "files_modified": list, "file_contents": dict},
     },
     "reviewer": {
         "required": ["status", "attempt", "issues"],
