@@ -86,9 +86,9 @@ Produce ONLY valid JSON matching this schema:
 }
 ```
 
-`file_contents` MUST contain the complete content for every file listed in `files_modified`.
-The extension uses this field to write the actual files to disk — if it is missing or incomplete,
-no artifacts will be created.
+`file_contents` should contain the complete content for every file listed in `files_modified`.
+The extension uses this field to write the actual files to disk. If omitted, the harness stores
+the metadata but no files are created — always include it so artifacts are materialized.
 
 Then call:
 
