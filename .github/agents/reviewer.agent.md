@@ -71,7 +71,7 @@ Produce ONLY valid JSON matching this schema:
 
 ```json
 {
-    "status": "pass | fail | escalate",
+    "status": "pass | fail | escalate | wrong_plan",
     "attempt": 1,
     "issues": [
         {
@@ -89,6 +89,9 @@ Rules for `status`:
 - `pass`: no critical or high issues. Medium/low issues may be present.
 - `fail`: one or more critical or high issues. Coder must retry.
 - `escalate`: this is attempt 3 and issues remain, OR the issue is outside Coder's scope.
+- `wrong_plan`: the code cannot pass review because the plan itself is flawed (wrong scope,
+  missing requirements, contradictory constraints). The harness escalates back to Planner,
+  not Coder. Use `escalate_reason` to describe exactly what is wrong with the plan.
 
 Then call:
 

@@ -98,10 +98,12 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
   ].join("\n"),
   reviewer: [
     'Produce a JSON object with exactly these top-level keys:',
-    '  "status"  — "pass" | "fail" | "escalate"',
+    '  "status"  — "pass" | "fail" | "escalate" | "wrong_plan"',
+    '             wrong_plan = plan is flawed, escalates back to Planner (not Coder retry)',
     '  "attempt" — integer',
     '  "issues"  — array of { severity, description, fix_instruction, checklist_item }',
-    '  "escalate_reason" — string or null',
+    '             severity must be "critical" | "high" | "medium" | "low"',
+    '  "escalate_reason" — string describing the escalation or wrong_plan reason, or null',
   ].join("\n"),
 };
 
