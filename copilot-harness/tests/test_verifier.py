@@ -40,7 +40,18 @@ def test_valid_designer_output() -> None:
 
 
 def test_valid_coder_output() -> None:
-    output = {"summary": "Implemented login", "files_modified": ["app.py"]}
+    output = {
+        "summary": "Implemented login",
+        "files_modified": ["app.py"],
+        "file_contents": {"app.py": "def login(): pass\n"},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True
+
+
+def test_valid_coder_output_no_files_modified() -> None:
+    """file_contents not required when files_modified is empty."""
+    output = {"summary": "No files changed", "files_modified": []}
     result = verifier.validate(output, "coder")
     assert result.valid is True
 
@@ -211,7 +222,11 @@ def test_generic_api_key_detected() -> None:
 
 
 def test_clean_output_no_secrets() -> None:
-    output = {"summary": "done", "files_modified": ["app.py"]}
+    output = {
+        "summary": "done",
+        "files_modified": ["app.py"],
+        "file_contents": {"app.py": "x = 1\n"},
+    }
     result = verifier.validate(output, "coder")
     assert result.valid is True
 
@@ -259,38 +274,86 @@ def _design(modules: list) -> dict:
     return {"summary": "x", "tasks_addressed": [], "modules": modules}
 
 
+def _coder_output(*files: str) -> dict:
+    """Build a minimal valid coder output with file_contents for the given paths."""
+    return {
+        "summary": "done",
+        "files_modified": list(files),
+        "file_contents": {f: f"# content of {f}\n" for f in files},
+    }
+
+
 def test_code_modifies_only_declared_files(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
     state.write_stage(session, "design", _design([
         {"file": "app.py", "purpose": "main"},
         {"file": "models.py", "purpose": "db"},
     ]), db_path=db)
-    code = {"summary": "done", "files_modified": ["app.py", "models.py"]}
-    result = verifier.validate(code, "coder", session_id=session, db_path=db)
+    result = verifier.validate(_coder_output("app.py", "models.py"), "coder", session_id=session, db_path=db)
     assert result.valid is True
 
 
 def test_code_modifies_undeclared_file(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
     state.write_stage(session, "design", _design([{"file": "app.py", "purpose": "main"}]), db_path=db)
-    code = {"summary": "done", "files_modified": ["app.py", "secret.py"]}
-    result = verifier.validate(code, "coder", session_id=session, db_path=db)
+    result = verifier.validate(_coder_output("app.py", "secret.py"), "coder", session_id=session, db_path=db)
     assert result.valid is False
     assert any("secret.py" in e for e in result.errors)
 
 
 def test_code_skips_contract_check_when_no_design(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
-    code = {"summary": "done", "files_modified": ["anything.py"]}
-    result = verifier.validate(code, "coder", session_id=session, db_path=db)
+    result = verifier.validate(_coder_output("anything.py"), "coder", session_id=session, db_path=db)
     assert result.valid is True
 
 
 def test_code_skips_contract_check_when_design_has_no_files(session: str, db: Path) -> None:
     state.write_stage(session, "plan", {"summary": "x", "tasks": []}, db_path=db)
     state.write_stage(session, "design", _design([]), db_path=db)
-    code = {"summary": "done", "files_modified": ["app.py"]}
-    result = verifier.validate(code, "coder", session_id=session, db_path=db)
+    result = verifier.validate(_coder_output("app.py"), "coder", session_id=session, db_path=db)
+    assert result.valid is True
+
+
+# ── file_contents coverage validation ────────────────────────────────────────
+
+def test_coder_missing_file_contents_rejected() -> None:
+    output = {"summary": "done", "files_modified": ["app.py"]}
+    result = verifier.validate(output, "coder")
+    assert result.valid is False
+    assert any("file_contents" in e for e in result.errors)
+
+
+def test_coder_empty_file_contents_rejected() -> None:
+    output = {"summary": "done", "files_modified": ["app.py"], "file_contents": {}}
+    result = verifier.validate(output, "coder")
+    assert result.valid is False
+    assert any("app.py" in e for e in result.errors)
+
+
+def test_coder_file_contents_missing_one_path_rejected() -> None:
+    output = {
+        "summary": "done",
+        "files_modified": ["app.py", "models.py"],
+        "file_contents": {"app.py": "x = 1\n"},  # missing models.py
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is False
+    assert any("models.py" in e for e in result.errors)
+
+
+def test_coder_empty_string_content_rejected() -> None:
+    output = {
+        "summary": "done",
+        "files_modified": ["app.py"],
+        "file_contents": {"app.py": "   "},  # whitespace only
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is False
+
+
+def test_coder_file_contents_not_required_when_no_files_modified() -> None:
+    output = {"summary": "done", "files_modified": []}
+    result = verifier.validate(output, "coder")
     assert result.valid is True
 
 

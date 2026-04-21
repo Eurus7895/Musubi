@@ -56,6 +56,16 @@ harness_read_stage(session_id, "design", agent_name="coder")
 
 The `injected_skills` field contains skill content the harness requires you to apply.
 
+In extension mode the input context also contains:
+```
+"existing_file_contents": {
+    "path/to/file.py": "...current on-disk content..."
+}
+```
+These are the **current** contents of every file listed in the design's `modules`.
+Use them as your base. Write the modified full content in your `file_contents` output.
+Files absent from `existing_file_contents` do not yet exist — create them from scratch.
+
 **Step 2 (retry — attempt 2 or 3):**
 
 ```
@@ -79,16 +89,24 @@ Produce ONLY valid JSON matching this schema:
     "summary": "One sentence describing what was implemented",
     "files_modified": ["path/to/file.py"],
     "file_contents": {
-        "path/to/file.py": "...full file content as a string..."
+        "path/to/file.py": "...COMPLETE file content as a string..."
     },
     "implementation_notes": "string — explain any deviations or uncertainties",
     "confidence": "high | medium | low"
 }
 ```
 
-`file_contents` should contain the complete content for every file listed in `files_modified`.
-The extension uses this field to write the actual files to disk. If omitted, the harness stores
-the metadata but no files are created — always include it so artifacts are materialized.
+**`file_contents` is REQUIRED.** The harness rejects output with a missing or empty
+`file_contents` — validation will fail and the pipeline will not proceed.
+
+Rules for `file_contents`:
+- Every path in `files_modified` MUST have an entry.
+- Each entry must be the **complete file content** — not a stub, not a summary,
+  not pseudo-code, not a diff. Write the entire file from the first line to the last.
+- If the input context includes `existing_file_contents`, those are the current
+  on-disk contents. Use them as your base and write the modified version in full.
+- New files (not in `existing_file_contents`) must be written completely from scratch.
+- The extension writes these strings directly to disk. What you write is what ships.
 
 Then call:
 
