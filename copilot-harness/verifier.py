@@ -118,7 +118,7 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
 
 # ── Reviewer issues nested validation ────────────────────────────────────────
 
-_ISSUE_REQUIRED = {"severity", "description", "fix_instruction", "checklist_item"}
+_ISSUE_REQUIRED = {"severity", "description", "fix_instruction"}
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
 
 

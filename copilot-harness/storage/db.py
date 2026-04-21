@@ -283,3 +283,14 @@ def get_fail_patterns(
                 "SELECT * FROM fail_patterns ORDER BY recorded_at DESC"
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── sessions (bulk) ────────────────────────────────────────────────────────
+
+def get_all_sessions(db_path: Path | None = None) -> list[dict]:
+    """Return all session rows ordered by creation time."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM sessions ORDER BY created_at ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]

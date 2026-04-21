@@ -128,8 +128,8 @@ _PYTEST_FAIL_RE = re.compile(r"^FAILED (.+) - (.+)$")
 
 
 def _parse_pytest_output(output: str) -> list[FailedTest]:
-    """Parse pytest stdout into TestFailure list."""
-    failures: list[TestFailure] = []
+    """Parse pytest stdout into FailedTest list."""
+    failures: list[FailedTest] = []
     for line in output.splitlines():
         m = _PYTEST_FAIL_RE.match(line.strip())
         if m:
