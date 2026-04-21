@@ -64,6 +64,47 @@ export interface StepResult {
   escalation?: string;
 }
 
+// ── Per-agent output schema hints (injected into extension-mode prompt) ───────
+// Prevents Copilot from producing tool-call JSON or wrapped objects when told
+// not to call tools — the Input Contract in agent files describes tool calls
+// that the extension has already executed on the agent's behalf.
+
+const AGENT_OUTPUT_HINTS: Record<string, string> = {
+  planner: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"        — string: one sentence describing what will be built',
+    '  "tasks"          — array of { id, description, files_affected, acceptance_criteria, complexity }',
+    '  "required_skills"— array of skill IDs (optional)',
+    '  "open_questions" — array of strings (optional)',
+    '  "confidence"     — "high" | "medium" | "low"',
+  ].join("\n"),
+  designer: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"          — string',
+    '  "tasks_addressed"  — array of task IDs from the plan (e.g. ["T1","T2"])',
+    '  "modules"          — array of { file, purpose, public_interface }',
+    '  "data_schemas"     — array of { name, fields } (optional)',
+    '  "dependencies"     — array of strings (optional)',
+    '  "integration_notes"— string (optional)',
+    '  "confidence"       — "high" | "medium" | "low"',
+  ].join("\n"),
+  coder: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"              — string',
+    '  "files_modified"       — array of file paths',
+    '  "file_contents"        — object mapping file path → full file content string (strongly recommended)',
+    '  "implementation_notes" — string (optional)',
+    '  "confidence"           — "high" | "medium" | "low"',
+  ].join("\n"),
+  reviewer: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "status"  — "pass" | "fail" | "escalate"',
+    '  "attempt" — integer',
+    '  "issues"  — array of { severity, description, fix_instruction, checklist_item }',
+    '  "escalate_reason" — string or null',
+  ].join("\n"),
+};
+
 // ── Agent pipeline definition ─────────────────────────────────────────────────
 
 const AGENT_PIPELINE = [
@@ -137,18 +178,23 @@ async function readAgentContext(
 
 async function runAgentLM(
   model: vscode.LanguageModelChat,
+  agentName: string,
   agentPrompt: string,
   context: Record<string, unknown>,
   token: vscode.CancellationToken,
 ): Promise<unknown> {
+  const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
   const messages = [
     vscode.LanguageModelChatMessage.User(
       agentPrompt +
       "\n\n---\n\n" +
       "IMPORTANT — you are being driven by the CopilotHarness VS Code extension.\n" +
-      "The extension has already retrieved your input context shown below.\n" +
-      "Your ONLY task: analyse the context and respond with VALID JSON matching your output schema.\n" +
-      "Do NOT call any tools. Do NOT include markdown or explanation outside the JSON.",
+      "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
+      "harness_read_stage) have already been executed by the extension.\n" +
+      "The results are in the input context below — do NOT call any tools.\n\n" +
+      "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
+      "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n" +
+      schemaHint,
     ),
     vscode.LanguageModelChatMessage.User(
       `Input context from the harness:\n\n${JSON.stringify(context, null, 2)}`,
@@ -220,14 +266,14 @@ async function runCorrectionLoop(
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
 
     const coderCtx = await readAgentContext(client, sessionId, "coder", ["design", "plan", "review"]);
-    const fixedCode = await runAgentLM(model, loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
+    const fixedCode = await runAgentLM(model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
     const newReview = (await runAgentLM(
-      model, loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
+      model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
 
@@ -290,7 +336,7 @@ export async function runPipeline(
       context["request"] = request;
     }
 
-    const agentOutput = await runAgentLM(model, loadAgentPrompt(workspaceRoot, agent.name), context, token);
+    const agentOutput = await runAgentLM(model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token);
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
 
@@ -412,7 +458,7 @@ export async function runStep(
   }
 
   const agentOutput = await runAgentLM(
-    model, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+    model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
