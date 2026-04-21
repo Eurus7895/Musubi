@@ -244,6 +244,174 @@ function materializeCoderFiles(
   }
 }
 
+// ── Stage output → Markdown ───────────────────────────────────────────────────
+
+function _str(v: unknown, fallback = ""): string {
+  return typeof v === "string" ? v : fallback;
+}
+function _list(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+function _obj(v: unknown): Record<string, unknown> {
+  return (typeof v === "object" && v !== null && !Array.isArray(v))
+    ? v as Record<string, unknown> : {};
+}
+
+function planToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Plan`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `## Tasks`,
+    ``,
+    `| ID | Description | Complexity | Files Affected |`,
+    `|----|-------------|------------|----------------|`,
+  ];
+  for (const t of _list(o["tasks"])) {
+    const task = _obj(t);
+    const files = _list(task["files_affected"]).join(", ") || "—";
+    lines.push(
+      `| ${_str(task["id"])} | ${_str(task["description"])} | ${_str(task["complexity"])} | ${files} |`,
+    );
+  }
+  for (const t of _list(o["tasks"])) {
+    const task = _obj(t);
+    const criteria = _list(task["acceptance_criteria"]);
+    if (criteria.length) {
+      lines.push(``, `### ${_str(task["id"])} — Acceptance Criteria`, ``);
+      for (const c of criteria) { lines.push(`- ${c}`); }
+    }
+  }
+  const skills = _list(o["required_skills"]);
+  if (skills.length) {
+    lines.push(``, `## Required Skills`, ``, skills.map(s => `- ${s}`).join("\n"));
+  }
+  const questions = _list(o["open_questions"]);
+  if (questions.length) {
+    lines.push(``, `## Open Questions`, ``, questions.map(q => `- ${q}`).join("\n"));
+  }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function designToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Design`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `**Tasks Addressed:** ${_list(o["tasks_addressed"]).join(", ") || "—"}`,
+    ``,
+    `## Modules`,
+  ];
+  for (const m of _list(o["modules"])) {
+    const mod = _obj(m);
+    lines.push(``, `### \`${_str(mod["file"])}\``, ``, `*${_str(mod["purpose"])}*`, ``);
+    const iface = _list(mod["public_interface"]);
+    if (iface.length) {
+      lines.push(`| Name | Signature | Description |`, `|------|-----------|-------------|`);
+      for (const fn of iface) {
+        const f = _obj(fn);
+        lines.push(`| ${_str(f["name"])} | \`${_str(f["signature"])}\` | ${_str(f["description"])} |`);
+      }
+    }
+  }
+  const schemas = _list(o["data_schemas"]);
+  if (schemas.length) {
+    lines.push(``, `## Data Schemas`);
+    for (const s of schemas) {
+      const schema = _obj(s);
+      lines.push(``, `### ${_str(schema["name"])}`, ``, `| Field | Type | Description |`, `|-------|------|-------------|`);
+      for (const f of _list(schema["fields"])) {
+        const field = _obj(f);
+        lines.push(`| ${_str(field["name"])} | ${_str(field["type"])} | ${_str(field["description"])} |`);
+      }
+    }
+  }
+  const deps = _list(o["dependencies"]);
+  if (deps.length) {
+    lines.push(``, `## Dependencies`, ``, deps.map(d => `- \`${d}\``).join("\n"));
+  }
+  const notes = _str(o["integration_notes"]);
+  if (notes) { lines.push(``, `## Integration Notes`, ``, notes); }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function codeToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Code`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `## Files Modified`,
+    ``,
+  ];
+  for (const f of _list(o["files_modified"])) { lines.push(`- \`${f}\``); }
+  const notes = _str(o["implementation_notes"]);
+  if (notes) { lines.push(``, `## Implementation Notes`, ``, notes); }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function reviewToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const statusIcon: Record<string, string> = {
+    pass: "✅", fail: "❌", escalate: "🚨", wrong_plan: "⚠️",
+  };
+  const status = _str(o["status"], "unknown");
+  const lines: string[] = [
+    `# Review`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Status:** ${statusIcon[status] ?? "❓"} ${status}`,
+    ``,
+    `## Issues`,
+    ``,
+    `| Severity | Checklist Item | Description | Fix Instruction |`,
+    `|----------|---------------|-------------|-----------------|`,
+  ];
+  for (const i of _list(o["issues"])) {
+    const issue = _obj(i);
+    lines.push(
+      `| ${_str(issue["severity"])} | ${_str(issue["checklist_item"])} | ${_str(issue["description"])} | ${_str(issue["fix_instruction"])} |`,
+    );
+  }
+  const reason = _str(o["escalate_reason"]);
+  if (reason) { lines.push(``, `## Escalation / Wrong Plan Reason`, ``, reason); }
+  return lines.join("\n");
+}
+
+const _STAGE_RENDERER: Record<
+  string,
+  (o: Record<string, unknown>, sid: string, attempt: number) => string
+> = {
+  plan:   planToMarkdown,
+  design: designToMarkdown,
+  code:   codeToMarkdown,
+  review: reviewToMarkdown,
+};
+
+function materializeStageOutput(
+  workspaceRoot: string,
+  sessionId: string,
+  stage: string,
+  attempt: number,
+  output: unknown,
+): void {
+  const renderer = _STAGE_RENDERER[stage];
+  if (!renderer || typeof output !== "object" || output === null) { return; }
+  const md = renderer(output as Record<string, unknown>, sessionId, attempt);
+  const dir = path.join(workspaceRoot, ".harness", "sessions", sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  // Include attempt suffix so correction-loop retries don't overwrite.
+  const suffix = attempt > 1 ? `.attempt${attempt}` : "";
+  fs.writeFileSync(path.join(dir, `${stage}${suffix}.md`), md, "utf-8");
+}
+
 // ── Correction loop ───────────────────────────────────────────────────────────
 
 async function runCorrectionLoop(
@@ -271,6 +439,7 @@ async function runCorrectionLoop(
     const fixedCode = await runAgentLM(model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
+    materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
@@ -278,6 +447,7 @@ async function runCorrectionLoop(
       model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
+    materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
 
     currentReview = newReview;
     if (newReview.status === "pass" || newReview.status === "escalate") { break; }
@@ -342,6 +512,8 @@ export async function runPipeline(
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
 
+    const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
+    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
@@ -464,6 +636,8 @@ export async function runStep(
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
+  const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
+  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
