@@ -78,10 +78,17 @@ Produce ONLY valid JSON matching this schema:
 {
     "summary": "One sentence describing what was implemented",
     "files_modified": ["path/to/file.py"],
+    "file_contents": {
+        "path/to/file.py": "...full file content as a string..."
+    },
     "implementation_notes": "string — explain any deviations or uncertainties",
     "confidence": "high | medium | low"
 }
 ```
+
+`file_contents` should contain the complete content for every file listed in `files_modified`.
+The extension uses this field to write the actual files to disk. If omitted, the harness stores
+the metadata but no files are created — always include it so artifacts are materialized.
 
 Then call:
 

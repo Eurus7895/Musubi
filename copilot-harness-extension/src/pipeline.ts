@@ -64,6 +64,49 @@ export interface StepResult {
   escalation?: string;
 }
 
+// ── Per-agent output schema hints (injected into extension-mode prompt) ───────
+// Prevents Copilot from producing tool-call JSON or wrapped objects when told
+// not to call tools — the Input Contract in agent files describes tool calls
+// that the extension has already executed on the agent's behalf.
+
+const AGENT_OUTPUT_HINTS: Record<string, string> = {
+  planner: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"        — string: one sentence describing what will be built',
+    '  "tasks"          — array of { id, description, files_affected, acceptance_criteria, complexity }',
+    '  "required_skills"— array of skill IDs (optional)',
+    '  "open_questions" — array of strings (optional)',
+    '  "confidence"     — "high" | "medium" | "low"',
+  ].join("\n"),
+  designer: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"          — string',
+    '  "tasks_addressed"  — array of task IDs from the plan (e.g. ["T1","T2"])',
+    '  "modules"          — array of { file, purpose, public_interface }',
+    '  "data_schemas"     — array of { name, fields } (optional)',
+    '  "dependencies"     — array of strings (optional)',
+    '  "integration_notes"— string (optional)',
+    '  "confidence"       — "high" | "medium" | "low"',
+  ].join("\n"),
+  coder: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"              — string',
+    '  "files_modified"       — array of file paths',
+    '  "file_contents"        — object mapping file path → full file content string (strongly recommended)',
+    '  "implementation_notes" — string (optional)',
+    '  "confidence"           — "high" | "medium" | "low"',
+  ].join("\n"),
+  reviewer: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "status"  — "pass" | "fail" | "escalate" | "wrong_plan"',
+    '             wrong_plan = plan is flawed, escalates back to Planner (not Coder retry)',
+    '  "attempt" — integer',
+    '  "issues"  — array of { severity, description, fix_instruction, checklist_item }',
+    '             severity must be "critical" | "high" | "medium" | "low"',
+    '  "escalate_reason" — string describing the escalation or wrong_plan reason, or null',
+  ].join("\n"),
+};
+
 // ── Agent pipeline definition ─────────────────────────────────────────────────
 
 const AGENT_PIPELINE = [
@@ -137,18 +180,23 @@ async function readAgentContext(
 
 async function runAgentLM(
   model: vscode.LanguageModelChat,
+  agentName: string,
   agentPrompt: string,
   context: Record<string, unknown>,
   token: vscode.CancellationToken,
 ): Promise<unknown> {
+  const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
   const messages = [
     vscode.LanguageModelChatMessage.User(
       agentPrompt +
       "\n\n---\n\n" +
       "IMPORTANT — you are being driven by the CopilotHarness VS Code extension.\n" +
-      "The extension has already retrieved your input context shown below.\n" +
-      "Your ONLY task: analyse the context and respond with VALID JSON matching your output schema.\n" +
-      "Do NOT call any tools. Do NOT include markdown or explanation outside the JSON.",
+      "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
+      "harness_read_stage) have already been executed by the extension.\n" +
+      "The results are in the input context below — do NOT call any tools.\n\n" +
+      "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
+      "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n" +
+      schemaHint,
     ),
     vscode.LanguageModelChatMessage.User(
       `Input context from the harness:\n\n${JSON.stringify(context, null, 2)}`,
@@ -179,6 +227,191 @@ async function writeStage(
   }
 }
 
+function materializeCoderFiles(
+  workspaceRoot: string,
+  output: unknown,
+  stream: vscode.ChatResponseStream,
+): void {
+  if (typeof output !== "object" || output === null) { return; }
+  const fileContents = (output as Record<string, unknown>)["file_contents"];
+  if (typeof fileContents !== "object" || fileContents === null) { return; }
+  for (const [relPath, content] of Object.entries(fileContents as Record<string, unknown>)) {
+    if (typeof content !== "string") { continue; }
+    const absPath = path.join(workspaceRoot, relPath);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, content, "utf-8");
+    stream.markdown(`  - Created \`${relPath}\``);
+  }
+}
+
+// ── Stage output → Markdown ───────────────────────────────────────────────────
+
+function _str(v: unknown, fallback = ""): string {
+  return typeof v === "string" ? v : fallback;
+}
+function _list(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+function _obj(v: unknown): Record<string, unknown> {
+  return (typeof v === "object" && v !== null && !Array.isArray(v))
+    ? v as Record<string, unknown> : {};
+}
+
+function planToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Plan`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `## Tasks`,
+    ``,
+    `| ID | Description | Complexity | Files Affected |`,
+    `|----|-------------|------------|----------------|`,
+  ];
+  for (const t of _list(o["tasks"])) {
+    const task = _obj(t);
+    const files = _list(task["files_affected"]).join(", ") || "—";
+    lines.push(
+      `| ${_str(task["id"])} | ${_str(task["description"])} | ${_str(task["complexity"])} | ${files} |`,
+    );
+  }
+  for (const t of _list(o["tasks"])) {
+    const task = _obj(t);
+    const criteria = _list(task["acceptance_criteria"]);
+    if (criteria.length) {
+      lines.push(``, `### ${_str(task["id"])} — Acceptance Criteria`, ``);
+      for (const c of criteria) { lines.push(`- ${c}`); }
+    }
+  }
+  const skills = _list(o["required_skills"]);
+  if (skills.length) {
+    lines.push(``, `## Required Skills`, ``, skills.map(s => `- ${s}`).join("\n"));
+  }
+  const questions = _list(o["open_questions"]);
+  if (questions.length) {
+    lines.push(``, `## Open Questions`, ``, questions.map(q => `- ${q}`).join("\n"));
+  }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function designToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Design`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `**Tasks Addressed:** ${_list(o["tasks_addressed"]).join(", ") || "—"}`,
+    ``,
+    `## Modules`,
+  ];
+  for (const m of _list(o["modules"])) {
+    const mod = _obj(m);
+    lines.push(``, `### \`${_str(mod["file"])}\``, ``, `*${_str(mod["purpose"])}*`, ``);
+    const iface = _list(mod["public_interface"]);
+    if (iface.length) {
+      lines.push(`| Name | Signature | Description |`, `|------|-----------|-------------|`);
+      for (const fn of iface) {
+        const f = _obj(fn);
+        lines.push(`| ${_str(f["name"])} | \`${_str(f["signature"])}\` | ${_str(f["description"])} |`);
+      }
+    }
+  }
+  const schemas = _list(o["data_schemas"]);
+  if (schemas.length) {
+    lines.push(``, `## Data Schemas`);
+    for (const s of schemas) {
+      const schema = _obj(s);
+      lines.push(``, `### ${_str(schema["name"])}`, ``, `| Field | Type | Description |`, `|-------|------|-------------|`);
+      for (const f of _list(schema["fields"])) {
+        const field = _obj(f);
+        lines.push(`| ${_str(field["name"])} | ${_str(field["type"])} | ${_str(field["description"])} |`);
+      }
+    }
+  }
+  const deps = _list(o["dependencies"]);
+  if (deps.length) {
+    lines.push(``, `## Dependencies`, ``, deps.map(d => `- \`${d}\``).join("\n"));
+  }
+  const notes = _str(o["integration_notes"]);
+  if (notes) { lines.push(``, `## Integration Notes`, ``, notes); }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function codeToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const lines: string[] = [
+    `# Code`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Summary:** ${_str(o["summary"], "_none_")}`,
+    ``,
+    `## Files Modified`,
+    ``,
+  ];
+  for (const f of _list(o["files_modified"])) { lines.push(`- \`${f}\``); }
+  const notes = _str(o["implementation_notes"]);
+  if (notes) { lines.push(``, `## Implementation Notes`, ``, notes); }
+  lines.push(``, `**Confidence:** ${_str(o["confidence"], "—")}`);
+  return lines.join("\n");
+}
+
+function reviewToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const statusIcon: Record<string, string> = {
+    pass: "✅", fail: "❌", escalate: "🚨", wrong_plan: "⚠️",
+  };
+  const status = _str(o["status"], "unknown");
+  const lines: string[] = [
+    `# Review`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Status:** ${statusIcon[status] ?? "❓"} ${status}`,
+    ``,
+    `## Issues`,
+    ``,
+    `| Severity | Checklist Item | Description | Fix Instruction |`,
+    `|----------|---------------|-------------|-----------------|`,
+  ];
+  for (const i of _list(o["issues"])) {
+    const issue = _obj(i);
+    lines.push(
+      `| ${_str(issue["severity"])} | ${_str(issue["checklist_item"])} | ${_str(issue["description"])} | ${_str(issue["fix_instruction"])} |`,
+    );
+  }
+  const reason = _str(o["escalate_reason"]);
+  if (reason) { lines.push(``, `## Escalation / Wrong Plan Reason`, ``, reason); }
+  return lines.join("\n");
+}
+
+const _STAGE_RENDERER: Record<
+  string,
+  (o: Record<string, unknown>, sid: string, attempt: number) => string
+> = {
+  plan:   planToMarkdown,
+  design: designToMarkdown,
+  code:   codeToMarkdown,
+  review: reviewToMarkdown,
+};
+
+function materializeStageOutput(
+  workspaceRoot: string,
+  sessionId: string,
+  stage: string,
+  attempt: number,
+  output: unknown,
+): void {
+  const renderer = _STAGE_RENDERER[stage];
+  if (!renderer || typeof output !== "object" || output === null) { return; }
+  const md = renderer(output as Record<string, unknown>, sessionId, attempt);
+  const dir = path.join(workspaceRoot, ".harness", "sessions", sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  // Include attempt suffix so correction-loop retries don't overwrite.
+  const suffix = attempt > 1 ? `.attempt${attempt}` : "";
+  fs.writeFileSync(path.join(dir, `${stage}${suffix}.md`), md, "utf-8");
+}
+
 // ── Correction loop ───────────────────────────────────────────────────────────
 
 async function runCorrectionLoop(
@@ -203,15 +436,18 @@ async function runCorrectionLoop(
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
 
     const coderCtx = await readAgentContext(client, sessionId, "coder", ["design", "plan", "review"]);
-    const fixedCode = await runAgentLM(model, loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
+    const fixedCode = await runAgentLM(model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
     await writeStage(client, sessionId, "code", "coder", fixedCode);
+    materializeCoderFiles(workspaceRoot, fixedCode, stream);
+    materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
     const newReview = (await runAgentLM(
-      model, loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
+      model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
+    materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
 
     currentReview = newReview;
     if (newReview.status === "pass" || newReview.status === "escalate") { break; }
@@ -272,9 +508,15 @@ export async function runPipeline(
       context["request"] = request;
     }
 
-    const agentOutput = await runAgentLM(model, loadAgentPrompt(workspaceRoot, agent.name), context, token);
+    const agentOutput = await runAgentLM(model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token);
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
+
+    const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
+    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
+    if (agent.name === "coder") {
+      materializeCoderFiles(workspaceRoot, agentOutput, stream);
+    }
 
     stream.markdown(`✓ **${agent.name}** complete`);
 
@@ -390,9 +632,15 @@ export async function runStep(
   }
 
   const agentOutput = await runAgentLM(
-    model, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+    model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
+
+  const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
+  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
+  if (agentDef.name === "coder") {
+    materializeCoderFiles(workspaceRoot, agentOutput, stream);
+  }
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
 

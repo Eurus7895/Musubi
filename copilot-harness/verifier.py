@@ -38,19 +38,29 @@ class ValidationResult:
 OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "planner": {
         "required": ["summary", "tasks"],
-        "types": {"summary": str, "tasks": list, "required_skills": list},
+        "types": {
+            "summary": str, "tasks": list,
+            "required_skills": list, "open_questions": list, "confidence": str,
+        },
     },
     "designer": {
         "required": ["summary", "tasks_addressed", "modules"],
-        "types": {"summary": str, "tasks_addressed": list, "modules": list},
+        "types": {
+            "summary": str, "tasks_addressed": list, "modules": list,
+            "data_schemas": list, "dependencies": list,
+            "integration_notes": str, "confidence": str,
+        },
     },
     "coder": {
         "required": ["summary", "files_modified"],
-        "types": {"summary": str, "files_modified": list},
+        "types": {
+            "summary": str, "files_modified": list, "file_contents": dict,
+            "implementation_notes": str, "confidence": str,
+        },
     },
     "reviewer": {
         "required": ["status", "attempt", "issues"],
-        "types": {"status": str, "attempt": int, "issues": list},
+        "types": {"status": str, "attempt": int, "issues": list, "escalate_reason": str},
         "status_values": {"pass", "fail", "escalate", "wrong_plan"},
     },
 }
@@ -103,6 +113,33 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
                 f"got '{output['status']}'"
             )
 
+    return errors
+
+
+# ── Reviewer issues nested validation ────────────────────────────────────────
+
+_ISSUE_REQUIRED = {"severity", "description", "fix_instruction", "checklist_item"}
+_VALID_SEVERITIES = {"critical", "high", "medium", "low"}
+
+
+def _check_reviewer_issues(output: dict[str, Any]) -> list[str]:
+    """Validate each item in the reviewer's issues array."""
+    issues = output.get("issues", [])
+    if not isinstance(issues, list):
+        return []
+    errors: list[str] = []
+    for i, item in enumerate(issues):
+        if not isinstance(item, dict):
+            errors.append(f"issues[{i}] must be an object, got {type(item).__name__}")
+            continue
+        for field in _ISSUE_REQUIRED:
+            if field not in item:
+                errors.append(f"issues[{i}] missing required field: '{field}'")
+        sev = item.get("severity")
+        if sev is not None and sev not in _VALID_SEVERITIES:
+            errors.append(
+                f"issues[{i}].severity must be one of {sorted(_VALID_SEVERITIES)}, got '{sev}'"
+            )
     return errors
 
 
@@ -174,6 +211,10 @@ def validate(
     text = json.dumps(output) if isinstance(output, (dict, list)) else str(output)
     for hit in _scan_secrets(text):
         errors.append(f"Potential secret detected: {hit}")
+
+    # Reviewer nested issues validation (runs regardless of session context).
+    if agent_name.lower() == "reviewer" and isinstance(output, dict):
+        errors.extend(_check_reviewer_issues(output))
 
     # Cross-stage checks only run when session context is available and no
     # earlier errors would make the output unusable anyway.
