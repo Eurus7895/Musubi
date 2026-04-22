@@ -120,4 +120,6 @@ code change.
 
 *CopilotHarness | April 2026 | v0.2.0 | 337 tests*
 *Current: Week 3c complete — direct mode + hooks + slash commands*
-*Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction, /help*
+*Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction, /help,*
+*`.claude-plugin/plugin.json`, pipeline-as-install-unit, direct-mode skill pull.*
+*Full plan in CLAUDE.md § Known TODOs.*
