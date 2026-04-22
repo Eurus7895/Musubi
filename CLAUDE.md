@@ -465,6 +465,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Discoverability (/help) | ❌ Missing | Week 4: data-driven slash help |
 | Plugin manifest | ❌ Missing | Week 4: `.claude-plugin/plugin.json` |
 | Pipeline-as-install-unit | ⚠️ Half | Week 4: decide skill locality first |
+| Direct-mode skill pull | ❌ Missing | Week 4: `AGENT_SKILL_ALLOWLIST["direct"]` + `harness_list_skills` |
 | Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
@@ -682,11 +683,52 @@ WEEK 4:
         requires skill_loader fallback like the agents multi-dir glob).
         No implementation until that decision is made.
 
+  TODO: Direct-mode pull-on-demand skills (CopilotCrew-style hybrid)
+        Pattern: pipeline mode keeps push (harness decides, firewall intact);
+        direct mode gains pull (LLM picks from a whitelist). Inspired by
+        github.com/Eurus7895/CopilotCrew CLAUDE.md.
+
+        Current gap: direct mode bypasses the harness entirely (single
+        vscode.lm.sendRequest, no MCP). The pull primitives already
+        exist — harness_get_skill(skill_id, agent_name), AGENT_SKILL_ALLOWLIST,
+        check_skill_permission — they just have no caller in direct mode.
+
+        Implementation sketch:
+          1. context_builder.AGENT_SKILL_ALLOWLIST["direct"] = union of
+             generator allowlists (planner+designer+coder). Deliberately
+             exclude reviewer's code-review skill so evaluator patterns
+             don't leak into generator-style use.
+          2. New MCP tool harness_list_skills(agent_name) in server.py —
+             returns [{skill_id, description}] filtered through the
+             caller's allowlist. LLM needs the catalog before it can pull.
+          3. Extend runDirect() in copilot-harness-extension/src/extension.ts:
+             - One-shot MCP call to harness_list_skills, inject catalog
+               into the system prompt.
+             - Register harness_get_skill + harness_get_reference as
+               vscode.lm tools so the LLM can pull mid-response.
+             - Still no session, no plan JSON, no correction loop —
+               just broader context than today.
+          4. Tests:
+             - AGENT_SKILL_ALLOWLIST["direct"] rejects reviewer-only skills
+             - harness_list_skills("direct") returns allowed IDs only
+             - harness_get_skill(disallowed, agent="direct") returns error
+             - Regression: harness_read_stage behavior for pipeline agents
+               is unchanged (pipeline mode still push-only).
+
+        Tradeoffs:
+          - Direct mode stops being "zero harness overhead"; one extra
+            MCP round-trip per call for the catalog. Still no pipeline.
+          - The direct agent has the broadest allowlist of any agent —
+            acceptable because there is no evaluator to firewall in
+            direct mode.
+
 DEFERRED (needs discussion first):
-  - Model-invoked skill loading à la Claude Code's auto-invoke.
-    Breaks the "skills are pushed, not pulled" invariant that the
-    evaluator firewall and stage-specific injection depend on. Not a
-    drop-in change — needs an architectural conversation first.
+  - Model-invoked skill loading **inside pipeline mode** (agent decides
+    which skill to load during plan/design/code). Breaks the
+    "harness pushes, agent cannot opt out" invariant that the evaluator
+    firewall and stage-specific injection depend on. Direct-mode pull
+    above does NOT break this invariant because direct mode has no
+    evaluator and no stage structure.
 ```
 
 ---
