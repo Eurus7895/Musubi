@@ -515,7 +515,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
 | Memory Architecture | ✅ Built (3-tier) | — |
-| Extension (@harness) | ✅ Built | Week 3a: separate evaluator |
+| Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ❌ Missing | Week 3c: routing in extension.ts |
 | Context Management | ⚠️ Missing | Future: subagent offloading |
 
@@ -529,18 +529,29 @@ All core harness modules built. 260 tests passing.
 ### Week 2 ✅ Complete
 3-tier memory. Edge case hardening. 260 tests.
 
-### Week 3a (next) — Separate Evaluator Session
-**Highest-value change. Ship this first.**
+### Week 3a ✅ Complete — Separate Evaluator Session
+**Shipped.** Reviewer now runs as an evaluator with an isolated context.
 ```
-[ ] Modify pipeline.ts: reviewer runs in separate vscode.lm.sendRequest()
-      Fresh context — reviewer receives ONLY output + schema
-      No generator instructions, no memory, no pipeline history
-[ ] Test: does evaluation quality improve vs current shared-session reviewer?
-[ ] Test: correction loop still fires correctly with separate sessions
-[ ] If single generator (planner+designer+coder collapsed into one) produces
-      acceptable output → keep Level 1. If not → document specific failures
-      and keep Level 2 with justification.
+[x] Reviewer context firewalled to {code} only — no request, plan, design,
+      or prior review. Enforced in copilot-harness/context_builder.py
+      (_STAGE_PERMISSIONS["reviewer"] = {"code"}; _context_reviewer()).
+[x] Memory injection skipped for reviewer in server.py harness_read_stage.
+[x] Dynamic plan.required_skills injection skipped for reviewer; the
+      code-review skill static injection is retained (that IS the checklist).
+[x] pipeline.ts AGENT_PIPELINE + runCorrectionLoop: reviewer readStages
+      tightened to ["code"].
+[x] reviewer.agent.md rewritten for the evaluator contract.
+[x] Tests: 11 new assertions covering reviewer isolation
+      (test_context_builder.py, test_skill_access.py).
+[ ] Deferred — Level 1 vs Level 2 decision. Requires running the LM against
+      the eval set and comparing pass rates. Plan: build a one-off
+      single-generator probe, run 3–5 representative requests, decide.
+      Threshold: ≥ 80% first-attempt pass → Level 1 viable.
 ```
+
+**Known trade-off:** `wrong_plan` status now rarely fires — the reviewer
+cannot see the plan. Accepted for Week 3a. If this produces regressions,
+Week 3b+ can add a dedicated planner-feedback channel.
 
 ### Week 3b — Pipeline Directory Migration
 **Structural cleanup. No behavior change.**
@@ -645,12 +656,14 @@ different execution model.
 ## Known TODOs
 
 ```
-WEEK 3a (next — highest priority):
-  TODO: Separate evaluator session in pipeline.ts
-  TODO: Test single-generator vs multi-agent for feature-dev
-  TODO: Document Level decision with evidence
+WEEK 3a ✅ Complete — evaluator firewall shipped:
+  DONE: Reviewer context isolated to {code} (Python firewall + pipeline.ts)
+  DONE: No memory / no dynamic skill injection for reviewer
+  DONE: reviewer.agent.md rewritten for evaluator contract
+  DEFERRED: Test single-generator vs multi-agent for feature-dev
+  DEFERRED: Document Level decision with evidence
 
-WEEK 3b:
+WEEK 3b (next):
   TODO: Pipeline directory migration (.github/agents/ → .github/pipelines/)
   TODO: Agent frontmatter (YAML --- block)
   TODO: pipeline.yaml format with level enforcement
@@ -686,5 +699,5 @@ WEEK 4:
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
-*Current: Week 2 complete — 260 tests, 3-tier memory*
-*Next: Week 3a — separate evaluator session (highest-value change)*
+*Current: Week 3a complete — evaluator firewall, 275 tests*
+*Next: Week 3b — pipeline directory migration*
