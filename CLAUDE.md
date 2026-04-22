@@ -462,6 +462,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Feedback Loops | ✅ Built | — |
 | State Management | ✅ Built + crash recovery | — |
 | Multi-Agent Coordination | ❌ Missing | Week 4: handoff schemas |
+| Discoverability (/help) | ❌ Missing | Week 4: data-driven slash help |
 | Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
@@ -645,6 +646,18 @@ WEEK 4:
   TODO: Cross-session memory query
   TODO: Tier 2 compaction
   TODO: Level-1 single-generator probe (Week 3a deferred item)
+  TODO: /help slash command — dynamic, data-driven help
+        Sources: list .github/commands/*.md frontmatter
+                 (name, description, action, agent|pipeline)
+        Also show: direct mode, --pipeline flag, legacy bare keywords.
+        Implementation sketch:
+          - add "help" to SlashAction in slashCommands.ts
+          - add .github/commands/help.md (action: help)
+          - new case in runSlash() that renders a table built from
+            listSlashCommands(workspaceRoot) so the output stays in
+            sync whenever a new command file is added
+          - update USAGE in extension.ts to point users at /help
+          - test: test_slash_commands.py asserts help.md has action=help
 ```
 
 ---
