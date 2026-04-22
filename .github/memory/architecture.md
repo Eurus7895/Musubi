@@ -31,7 +31,9 @@ Constraints imposed by one-file mode:
 - Planner: request only
 - Designer: plan only
 - Coder: plan + design (on retry: fix_instructions from review only, not full review JSON)
-- Reviewer: plan + design + code
+- Reviewer: **code only** (Week 3a evaluator firewall — no request, plan, design,
+  Tier 1 memory, or dynamic `required_skills` injection; only the static
+  `code-review` skill is auto-injected)
 - Skill-Builder: no stage access — only sees fail patterns via separate mechanism
 
 ## Correction Loop
@@ -40,3 +42,25 @@ Max 3 attempts per code stage. After 3 failures → escalate with full context.
 Pattern detector records every non-pass review issue; at threshold (3 across distinct
 sessions) triggers Skill-Builder to write a proposed patch to `.github/agents/proposed/`.
 Human reviews and applies via `proposed_patch_applier.py`.
+
+## Pipeline Directory Layout (Week 3b)
+
+Each pipeline lives at `.github/pipelines/<name>/` with its own
+`pipeline.yaml`, `agents/`, and `README.md`. `feature-dev` ships at
+`level: 2` (4-agent generator + separate evaluator). The legacy
+`.github/agents/` path is retained for rollback and still hosts
+`skill-builder.agent.md`; `state.AGENTS_DIRS` globs the pipeline
+directory first and falls back to the legacy path.
+
+## Routing & Hooks (Week 3c)
+
+The extension routes at string-match cost (no LLM):
+- Input starts with `/` → slash command dispatch via
+  `.github/commands/*.md` frontmatter.
+- Input contains `--pipeline` → force pipeline mode.
+- Otherwise → direct mode: single `vscode.lm.sendRequest`, no harness.
+
+`hooks.json` + `scripts/` wire deterministic Python scripts to
+`SessionStart` (baseline checks), `PreToolUse` (policy gate,
+fail-closed), and `PostToolUse` (SQLite audit log). The harness
+exposes `harness_run_hook(event, payload)` as the entry point.

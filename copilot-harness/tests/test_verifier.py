@@ -78,6 +78,34 @@ def test_valid_reviewer_status_wrong_plan() -> None:
     assert result.valid is True
 
 
+def test_reviewer_escalate_reason_null_allowed() -> None:
+    """reviewer.agent.md documents escalate_reason: null for pass/fail outputs."""
+    output = {"status": "pass", "attempt": 1, "issues": [], "escalate_reason": None}
+    result = verifier.validate(output, "reviewer")
+    assert result.valid is True, result.errors
+
+
+def test_reviewer_escalate_reason_string_allowed() -> None:
+    """With status=escalate the reason is a string."""
+    output = {
+        "status": "escalate",
+        "attempt": 3,
+        "issues": [],
+        "escalate_reason": "Max attempts reached",
+    }
+    result = verifier.validate(output, "reviewer")
+    assert result.valid is True, result.errors
+
+
+def test_reviewer_escalate_reason_wrong_type_rejected() -> None:
+    """Anything other than str | None is still rejected (e.g. a number)."""
+    output = {"status": "pass", "attempt": 1, "issues": [], "escalate_reason": 42}
+    result = verifier.validate(output, "reviewer")
+    assert result.valid is False
+    assert any("escalate_reason" in e for e in result.errors)
+    assert any("str | NoneType" in e or "NoneType" in e for e in result.errors)
+
+
 def test_unknown_agent_passes_without_schema() -> None:
     result = verifier.validate({"anything": True}, "skill-builder")
     assert result.valid is True

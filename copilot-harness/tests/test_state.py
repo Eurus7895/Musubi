@@ -75,6 +75,66 @@ def test_lock_agent_versions_missing_version(tmp_path: Path, db: Path) -> None:
     assert versions["designer"] == "0.0.0"
 
 
+# ── Week 3b: multi-dir agent lookup ──────────────────────────────────────────
+
+def test_lock_agent_versions_multi_dir(tmp_path: Path, db: Path) -> None:
+    """Agents from multiple directories are all picked up."""
+    pipeline_dir = tmp_path / "pipeline"
+    legacy_dir = tmp_path / "legacy"
+    pipeline_dir.mkdir()
+    legacy_dir.mkdir()
+    (pipeline_dir / "planner.agent.md").write_text("---\nversion: 1.0.0\n---\n")
+    (pipeline_dir / "coder.agent.md").write_text("---\nversion: 1.1.0\n---\n")
+    (legacy_dir / "skill-builder.agent.md").write_text("---\nversion: 0.3.0\n---\n")
+
+    sid = state.create_session("req", db_path=db)
+    versions = state.lock_agent_versions(
+        sid, agents_dir=[pipeline_dir, legacy_dir], db_path=db,
+    )
+
+    assert versions == {"planner": "1.0.0", "coder": "1.1.0", "skill-builder": "0.3.0"}
+
+
+def test_lock_agent_versions_first_dir_wins(tmp_path: Path, db: Path) -> None:
+    """When the same agent exists in two dirs, the earlier one in the list wins."""
+    pipeline_dir = tmp_path / "pipeline"
+    legacy_dir = tmp_path / "legacy"
+    pipeline_dir.mkdir()
+    legacy_dir.mkdir()
+    (pipeline_dir / "planner.agent.md").write_text("---\nversion: 2.0.0\n---\n")
+    (legacy_dir / "planner.agent.md").write_text("---\nversion: 1.0.0\n---\n")
+
+    sid = state.create_session("req", db_path=db)
+    versions = state.lock_agent_versions(
+        sid, agents_dir=[pipeline_dir, legacy_dir], db_path=db,
+    )
+    assert versions["planner"] == "2.0.0"
+
+
+def test_lock_agent_versions_skips_missing_dirs(tmp_path: Path, db: Path) -> None:
+    """Non-existent directories in the list are ignored, not errored."""
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "planner.agent.md").write_text("---\nversion: 1.0.0\n---\n")
+    missing_dir = tmp_path / "does-not-exist"
+
+    sid = state.create_session("req", db_path=db)
+    versions = state.lock_agent_versions(
+        sid, agents_dir=[missing_dir, real_dir], db_path=db,
+    )
+    assert versions == {"planner": "1.0.0"}
+
+
+def test_lock_agent_versions_default_dirs_find_pipeline_agents(db: Path) -> None:
+    """With no agents_dir override, the real pipeline agents are picked up."""
+    sid = state.create_session("req", db_path=db)
+    versions = state.lock_agent_versions(sid, db_path=db)
+    # Week 3b migrated these into .github/pipelines/feature-dev/agents/;
+    # skill-builder stays at .github/agents/. All five should appear.
+    for agent in ("planner", "designer", "coder", "reviewer", "skill-builder"):
+        assert agent in versions, f"Missing agent {agent} in {sorted(versions)}"
+
+
 # ── write_stage / read_stage ──────────────────────────────────────────────────
 
 def test_write_and_read_stage(session_id: str, db: Path) -> None:

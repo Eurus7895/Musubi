@@ -166,142 +166,93 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State vs Future State
-
-### Current State (Week 2 complete, v0.2.0)
+## Current State (Week 3 complete, v0.2.0)
 
 ```
 WHAT EXISTS NOW:
-  ✅ 260 tests passing
+  ✅ 334 tests passing
   ✅ Harness core: state, context_builder, verifier, executor,
        correction_loop, skill_loader
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
   ✅ Pattern detector + proposed patch applier
   ✅ VS Code extension v0.2.0 with McpClient
   ✅ PyInstaller binary distribution
+  ✅ Separate evaluator session (Week 3a)
+  ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
+  ✅ Direct mode + slash commands + hooks.json (Week 3c)
 
-WHAT THE FEATURE-DEV PIPELINE LOOKS LIKE NOW:
-  5 agents: planner → designer → coder → reviewer → skill-builder
-  All run in same session via pipeline.ts
-  Reviewer shares context with generator agents
-  Agent files live in .github/agents/*.agent.md (flat)
+FEATURE-DEV PIPELINE TODAY:
+  4 agents: planner → designer → coder → reviewer (evaluator firewall)
+  + skill-builder (meta-agent, not in feature-dev)
+  Agent files live in .github/pipelines/feature-dev/agents/*.agent.md
+  pipeline.yaml declares level: 2 (Week 3a Level-1 probe deferred)
 
-THIS IS LEVEL 2 ARCHITECTURE.
-  We built multi-agent before proving single-agent fails.
-  Week 3a will test whether a single generator can replace
-  planner+designer+coder. If it can → collapse to Level 1.
-  If it demonstrably cannot → keep Level 2, document why.
-```
-
-### Future State (after Week 3)
-
-```
-WHAT WILL CHANGE:
-  Direct mode in extension.ts (zero-cost routing)
-  Pipeline directories: .github/pipelines/feature-dev/
-  hooks.json wiring for PreToolUse policy enforcement
-  Separate evaluator session (reviewer in fresh context)
-  Agent frontmatter (YAML --- block + markdown body)
-  Slash commands: .github/commands/feature-dev.md
-
-WHAT WILL NOT CHANGE:
-  All harness core modules (zero code changes)
-  3-tier memory architecture
-  McpClient + PyInstaller binary
-  260 tests (only additions, no removals)
+ROUTING:
+  Slash-command input          → pipeline mode (harness_* tools, session)
+  Input with --pipeline flag   → pipeline mode
+  Everything else              → direct mode (single vscode.lm call)
 ```
 
 ---
 
-## File Structure — Current (v0.2.0)
+## File Structure (v0.2.0, post Week 3)
 
 ```
 .github/
-    AGENTS.md
+    AGENTS.md                    ← session-start map
     copilot-instructions.md
     instructions/                ← priority-ranked rules (P1-P4)
-    agents/                      ← current agent definitions (flat)
-        planner.agent.md
-        designer.agent.md
-        coder.agent.md
-        reviewer.agent.md
-        skill-builder.agent.md
-        proposed/                ← Skill-Builder writes here
-    skills/                      ← domain skills
-        code-review/    SKILL.md + assets/ + references/
-        api-design/     SKILL.md + assets/ + references/
-        python/         SKILL.md + assets/ + references/
-        testing/        SKILL.md + assets/ + references/
-    memory/                      ← 3-tier memory
-        MEMORY.md                ← Tier 1 index
-        architecture.md          ← Tier 2 decisions
-        failure-patterns.md      ← Tier 2 recurring failures
+
+    pipelines/                   ← Week 3b: self-contained pipeline directories
+        feature-dev/
+            pipeline.yaml        ← level, baseline_checks, correction
+            README.md
+            agents/              ← agent .md with extended frontmatter
+                planner.agent.md
+                designer.agent.md
+                coder.agent.md
+                reviewer.agent.md
+
+    commands/                    ← Week 3c: slash commands
+        feature-dev.md           ← /feature-dev — full pipeline
+        continue.md, status.md
+        planner.md, designer.md, coder.md, reviewer.md
+
+    agents/                      ← DEPRECATED (Week 5 removal)
+        skill-builder.agent.md   ← meta-agent, stays here
+        proposed/                ← Skill-Builder output
+        README.md                ← deprecation notice
+
+    skills/                      ← domain skills (unchanged)
+        code-review/, api-design/, python/, testing/, database-patterns/,
+        documentation/   each: SKILL.md + assets/ + references/
+
+    memory/                      ← 3-tier memory (unchanged)
+        MEMORY.md, architecture.md, failure-patterns.md
 
 copilot-harness/                 ← Python MCP server
-    server.py                    ← FastMCP stdio — all harness_* tools
-    cli.py                       ← entry point: copilot-harness serve
-    state.py                     ← session state (SQLite)          ✅
-    context_builder.py           ← context firewall + injection     ✅
-    verifier.py                  ← schema + secrets validation      ✅
-    executor.py                  ← lint + typecheck + test runner   ✅
-    correction_loop.py           ← evaluator → generator retry     ✅
-    skill_loader.py              ← SKILL.md + references            ✅
-    memory/
-        pattern_detector.py                                         ✅
-        memory_loader.py                                            ✅
-        session_distiller.py                                        ✅
-    storage/
-        db.py                    ← SQLite WAL, schema embedded      ✅
+    server.py                    ← FastMCP stdio — harness_* tools
+                                   (harness_run_hook added Week 3c)
+    cli.py, state.py, context_builder.py, verifier.py, executor.py
+    correction_loop.py, skill_loader.py
+    memory/, storage/, tests/    (334 tests)
 
 copilot-harness-extension/       ← VS Code extension (TypeScript)
     src/
-        extension.ts             ← @harness chat participant        ✅
-        mcpClient.ts             ← JSON-RPC stdio client            ✅
-        pipeline.ts              ← agent driver + correction loop   ✅
+        extension.ts             ← direct-mode routing + slash dispatch
+        mcpClient.ts             ← JSON-RPC stdio client
+        pipeline.ts              ← agent driver + correction loop
+                                   (multi-dir loadAgentPrompt fallback)
+        slashCommands.ts         ← Week 3c: slash-command loader
     bin/
-        copilot-harness.exe      ← PyInstaller binary               ✅
+        copilot-harness.exe      ← PyInstaller binary
 
-tests/                           ← 260 tests passing               ✅
-```
-
-## File Structure — After Week 3 Migration
-
-```
-.github/
-    AGENTS.md                    ← session-start map (~100 lines)
-    copilot-instructions.md
-    instructions/                ← same (no changes)
-
-    pipelines/                   ← NEW: self-contained pipeline directories
-        feature-dev/
-            pipeline.yaml        ← level, correction config
-            agents/
-                generator.md     ← YAML frontmatter + system prompt
-                evaluator.md     ← skeptical QA (separate session)
-            skills/
-                SKILL.md
-            schemas/
-                output.json
-            README.md
-
-    commands/                    ← NEW: slash commands
-        feature-dev.md           ← /feature-dev — bypasses router
-
-    skills/                      ← global skills (unchanged)
-    memory/                      ← 3-tier memory (unchanged)
-    agents/                      ← DEPRECATED — migrated to pipelines/
-
-copilot-harness/                 ← UNCHANGED (zero code changes)
-copilot-harness-extension/       ← MODIFIED:
-    src/
-        extension.ts             ← adds direct mode routing
-        pipeline.ts              ← adds separate evaluator session
-
-hooks.json                       ← NEW: hook wiring config
-scripts/                         ← NEW: hook implementations
-    pre_tool_use.py
-    post_tool_use.py
-    session_start.py
+hooks.json                       ← Week 3c: lifecycle hook config
+scripts/                         ← Week 3c: hook implementations
+    policy_engine.py             ← PIPELINE_POLICIES (fail-closed)
+    pre_tool_use.py              ← policy gate (exit 0=allow, 1=deny)
+    post_tool_use.py             ← SQLite audit log
+    session_start.py             ← baseline_checks runner
 ```
 
 ---
@@ -507,16 +458,20 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 
 | Component | Status | Next action |
 |---|---|---|
-| Tool Design | ⚠️ Prompt-level | Week 3c: hooks.json PreToolUse |
+| Tool Design | ✅ hooks.json PreToolUse (Week 3c) | — |
 | Feedback Loops | ✅ Built | — |
 | State Management | ✅ Built + crash recovery | — |
 | Multi-Agent Coordination | ❌ Missing | Week 4: handoff schemas |
-| Security & Permissions | ✅ Built | Week 3c: hooks.json enforcement |
+| Discoverability (/help) | ❌ Missing | Week 4: data-driven slash help |
+| Plugin manifest | ❌ Missing | Week 4: `.claude-plugin/plugin.json` |
+| Pipeline-as-install-unit | ⚠️ Half | Week 4: decide skill locality first |
+| Direct-mode skill pull | ❌ Missing | Week 4: `AGENT_SKILL_ALLOWLIST["direct"]` + `harness_list_skills` |
+| Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
 | Memory Architecture | ✅ Built (3-tier) | — |
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
-| Direct Mode | ❌ Missing | Week 3c: routing in extension.ts |
+| Direct Mode | ✅ Shipped (Week 3c) | — |
 | Context Management | ⚠️ Missing | Future: subagent offloading |
 
 ---
@@ -553,26 +508,36 @@ All core harness modules built. 260 tests passing.
 cannot see the plan. Accepted for Week 3a. If this produces regressions,
 Week 3b+ can add a dedicated planner-feedback channel.
 
-### Week 3b — Pipeline Directory Migration
+### Week 3b ✅ Complete — Pipeline Directory Migration
 **Structural cleanup. No behavior change.**
 ```
-[ ] Create .github/pipelines/feature-dev/ directory
-[ ] Move agent definitions into pipeline directory
-[ ] Add pipeline.yaml with level: 1 (or 2 if 3a proves multi-agent needed)
-[ ] Add YAML frontmatter to agent .md files (name, description, model,
-      maxTurns, disallowedTools)
-[ ] Verify: harness_read_stage loads skills from new paths
-[ ] Mark .github/agents/ as deprecated (keep for rollback, remove Week 5)
+[x] Create .github/pipelines/feature-dev/ directory
+[x] Move planner/designer/coder/reviewer into pipeline directory;
+      skill-builder stays at .github/agents/ (meta-agent, not pipeline-scoped)
+[x] Add pipeline.yaml with level: 2 (Week 3a Level-1 probe deferred)
+[x] Add YAML frontmatter to agent .md files (model, maxTurns, tools,
+      disallowedTools)
+[x] state.AGENTS_DIRS globs both pipeline dir + legacy dir (first wins)
+[x] pipeline.ts loadAgentPrompt falls back to legacy path
+[x] Mark .github/agents/ deprecated via README (keep for rollback, remove Week 5)
 ```
 
-### Week 3c — Direct Mode + Hooks + Commands
+### Week 3c ✅ Complete — Direct Mode + Hooks + Commands
 ```
-[ ] Direct mode routing in extension.ts
-      Slash commands → pipeline. Everything else → direct.
+[x] Direct mode routing in extension.ts
+      Slash commands → pipeline. --pipeline flag → pipeline.
+      Everything else → direct (vscode.lm.sendRequest, no harness).
       No LLM routing call. Zero cost.
-[ ] hooks.json wiring — PreToolUse policy enforcement as Python script
-[ ] Slash command files: .github/commands/feature-dev.md
-[ ] --pipeline flag to force pipeline mode for non-slash input
+[x] hooks.json at repo root (SessionStart / PreToolUse / PostToolUse)
+[x] scripts/pre_tool_use.py — policy engine (PIPELINE_POLICIES fail-closed)
+[x] scripts/post_tool_use.py — SQLite audit log (storage/audit.db)
+[x] scripts/session_start.py — runs pipeline.yaml baseline_checks
+[x] harness_run_hook MCP tool in server.py (shells out, reports results)
+[x] .github/commands/*.md — 7 slash command files, frontmatter-driven
+[x] copilot-harness-extension/src/slashCommands.ts — loader + lister
+[x] --pipeline flag detection in parseCommand()
+[x] Tests: +59 new (pipeline YAML shape, policy engine, hooks, slash
+      commands, multi-dir agent glob). Total now 334.
 ```
 
 ### Week 4 — Multi-Agent Coordination
@@ -663,20 +628,107 @@ WEEK 3a ✅ Complete — evaluator firewall shipped:
   DEFERRED: Test single-generator vs multi-agent for feature-dev
   DEFERRED: Document Level decision with evidence
 
-WEEK 3b (next):
-  TODO: Pipeline directory migration (.github/agents/ → .github/pipelines/)
-  TODO: Agent frontmatter (YAML --- block)
-  TODO: pipeline.yaml format with level enforcement
+WEEK 3b ✅ Complete — pipeline directory migration:
+  DONE: .github/pipelines/feature-dev/ with pipeline.yaml (level: 2)
+  DONE: 4 agents moved + frontmatter extended (model, maxTurns, disallowedTools)
+  DONE: state.AGENTS_DIRS multi-dir glob; pipeline.ts fallback path
+  DONE: Legacy .github/agents/ retained (skill-builder + rollback) + README
 
-WEEK 3c:
-  TODO: Direct mode routing in extension.ts
-  TODO: hooks.json + scripts/pre_tool_use.py
-  TODO: Slash command files (.github/commands/)
+WEEK 3c ✅ Complete — direct mode + hooks + slash commands:
+  DONE: Direct mode routing in extension.ts (slash → pipeline, bare → direct)
+  DONE: hooks.json + scripts/{pre,post}_tool_use,session_start}.py
+  DONE: scripts/policy_engine.py with fail-closed PIPELINE_POLICIES
+  DONE: .github/commands/*.md — 7 slash commands with frontmatter contracts
+  DONE: slashCommands.ts loader (no new npm deps)
+  DONE: harness_run_hook MCP tool in server.py
+  DONE: --pipeline flag forces pipeline mode for non-slash input
+  DONE: +59 tests (334 total)
 
 WEEK 4:
   TODO: Handoff schemas (only if feature-dev stays Level 2)
   TODO: Cross-session memory query
   TODO: Tier 2 compaction
+  TODO: Level-1 single-generator probe (Week 3a deferred item)
+  TODO: /help slash command — dynamic, data-driven help
+        Sources: list .github/commands/*.md frontmatter
+                 (name, description, action, agent|pipeline)
+        Also show: direct mode, --pipeline flag, legacy bare keywords.
+        Implementation sketch:
+          - add "help" to SlashAction in slashCommands.ts
+          - add .github/commands/help.md (action: help)
+          - new case in runSlash() that renders a table built from
+            listSlashCommands(workspaceRoot) so the output stays in
+            sync whenever a new command file is added
+          - update USAGE in extension.ts to point users at /help
+          - test: test_slash_commands.py asserts help.md has action=help
+
+  TODO: .claude-plugin/plugin.json manifest for feature-dev
+        Every content primitive (commands, agents, skills, hooks, MCP) is
+        already in Claude Code plugin layout. Missing: the install unit.
+        Implementation sketch:
+          - add .github/pipelines/feature-dev/.claude-plugin/plugin.json
+            with { name, version, description, commands, agents, skills,
+            hooks, mcpServers } pointing at the existing files
+          - no code change — this is purely declarative metadata
+          - test: test_plugin_manifest.py validates the JSON parses and
+            every referenced path resolves on disk
+
+  TODO: Pipeline-as-install-unit (copy-paste install)
+        Prereq: the plugin.json manifest above.
+        Goal: copying .github/pipelines/<name>/ into another repo drops
+        in a working pipeline (commands, agents, skills, hooks). Today
+        skills live at repo-global .github/skills/, which breaks portability.
+        Decision needed: keep global skills (simpler, matches current
+        auto-injection map) or allow pipeline-local skills/ (portable,
+        requires skill_loader fallback like the agents multi-dir glob).
+        No implementation until that decision is made.
+
+  TODO: Direct-mode pull-on-demand skills (CopilotCrew-style hybrid)
+        Pattern: pipeline mode keeps push (harness decides, firewall intact);
+        direct mode gains pull (LLM picks from a whitelist). Inspired by
+        github.com/Eurus7895/CopilotCrew CLAUDE.md.
+
+        Current gap: direct mode bypasses the harness entirely (single
+        vscode.lm.sendRequest, no MCP). The pull primitives already
+        exist — harness_get_skill(skill_id, agent_name), AGENT_SKILL_ALLOWLIST,
+        check_skill_permission — they just have no caller in direct mode.
+
+        Implementation sketch:
+          1. context_builder.AGENT_SKILL_ALLOWLIST["direct"] = union of
+             generator allowlists (planner+designer+coder). Deliberately
+             exclude reviewer's code-review skill so evaluator patterns
+             don't leak into generator-style use.
+          2. New MCP tool harness_list_skills(agent_name) in server.py —
+             returns [{skill_id, description}] filtered through the
+             caller's allowlist. LLM needs the catalog before it can pull.
+          3. Extend runDirect() in copilot-harness-extension/src/extension.ts:
+             - One-shot MCP call to harness_list_skills, inject catalog
+               into the system prompt.
+             - Register harness_get_skill + harness_get_reference as
+               vscode.lm tools so the LLM can pull mid-response.
+             - Still no session, no plan JSON, no correction loop —
+               just broader context than today.
+          4. Tests:
+             - AGENT_SKILL_ALLOWLIST["direct"] rejects reviewer-only skills
+             - harness_list_skills("direct") returns allowed IDs only
+             - harness_get_skill(disallowed, agent="direct") returns error
+             - Regression: harness_read_stage behavior for pipeline agents
+               is unchanged (pipeline mode still push-only).
+
+        Tradeoffs:
+          - Direct mode stops being "zero harness overhead"; one extra
+            MCP round-trip per call for the catalog. Still no pipeline.
+          - The direct agent has the broadest allowlist of any agent —
+            acceptable because there is no evaluator to firewall in
+            direct mode.
+
+DEFERRED (needs discussion first):
+  - Model-invoked skill loading **inside pipeline mode** (agent decides
+    which skill to load during plan/design/code). Breaks the
+    "harness pushes, agent cannot opt out" invariant that the evaluator
+    firewall and stage-specific injection depend on. Direct-mode pull
+    above does NOT break this invariant because direct mode has no
+    evaluator and no stage structure.
 ```
 
 ---
@@ -699,5 +751,5 @@ WEEK 4:
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
-*Current: Week 3a complete — evaluator firewall, 275 tests*
-*Next: Week 3b — pipeline directory migration*
+*Current: Week 3c complete — direct mode + hooks + slash commands, 334 tests*
+*Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction*

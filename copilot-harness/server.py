@@ -20,6 +20,9 @@ Skill auto-injection:
 """
 
 import json
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -435,6 +438,89 @@ def harness_distill_session(session_id: str) -> str:
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({"status": "ok", "appended": appended})
+
+
+# ── Hook loader (Week 3c) ─────────────────────────────────────────────────────
+# hooks.json lives at repo root. If HARNESS_ROOT is set (extension bundle),
+# look there first; otherwise look next to this file's parent.
+
+def _resolve_hooks_path() -> Path:
+    harness_root = os.environ.get("HARNESS_ROOT")
+    if harness_root:
+        candidate = Path(harness_root) / "hooks.json"
+        if candidate.exists():
+            return candidate
+    return Path(__file__).parent.parent / "hooks.json"
+
+
+def _load_hooks() -> dict:
+    path = _resolve_hooks_path()
+    if not path.exists():
+        return {"version": "1.0", "hooks": {}}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"version": "1.0", "hooks": {}}
+
+
+_HOOKS = _load_hooks()
+_REPO_ROOT = _resolve_hooks_path().parent
+
+
+@mcp.tool()
+def harness_run_hook(event: str, payload: str = "") -> str:
+    """Execute the hook(s) registered for a lifecycle event.
+
+    event — one of "SessionStart", "PreToolUse", "PostToolUse",
+            "on-eval-fail", "on-escalate" (anything listed in hooks.json).
+    payload — JSON string piped to each hook on stdin (optional; empty ok).
+
+    Returns a JSON object describing each hook's exit code, stdout, and stderr.
+    The harness never substitutes an LLM for a deterministic hook — this
+    just shells out and reports what happened.
+    """
+    configured = _HOOKS.get("hooks", {}).get(event, [])
+    if not configured:
+        return json.dumps({"event": event, "results": [], "note": "no hooks configured"})
+
+    results: list[dict] = []
+    for spec in configured:
+        if spec.get("type") != "command":
+            results.append({
+                "type": spec.get("type"),
+                "skipped": f"unsupported hook type {spec.get('type')!r}",
+            })
+            continue
+        cmd_str = spec.get("command", "").strip()
+        if not cmd_str:
+            continue
+        argv = shlex.split(cmd_str)
+        try:
+            proc = subprocess.run(
+                argv,
+                input=payload,
+                capture_output=True,
+                text=True,
+                cwd=str(_REPO_ROOT),
+                timeout=30,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            results.append({
+                "command": cmd_str,
+                "error": f"{type(exc).__name__}: {exc}",
+                "exit_code": None,
+            })
+            continue
+        results.append({
+            "command": cmd_str,
+            "exit_code": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+        })
+
+    return json.dumps({"event": event, "results": results})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

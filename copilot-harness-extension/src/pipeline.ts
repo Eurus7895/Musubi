@@ -187,15 +187,22 @@ async function callHarness(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function loadAgentPrompt(workspaceRoot: string, agentName: string): string {
-  const filePath = path.join(workspaceRoot, ".github", "agents", `${agentName}.agent.md`);
-  try {
-    return fs.readFileSync(filePath, "utf-8");
-  } catch {
-    return (
-      `You are the ${agentName} agent in the CopilotHarness pipeline. ` +
-      `Analyse the provided input context and produce valid JSON output matching your output schema.`
-    );
+  // Week 3b: try pipeline-local agents first, fall back to legacy .github/agents/.
+  const candidates = [
+    path.join(workspaceRoot, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
+    path.join(workspaceRoot, ".github", "agents", `${agentName}.agent.md`),
+  ];
+  for (const filePath of candidates) {
+    try {
+      return fs.readFileSync(filePath, "utf-8");
+    } catch {
+      // try next candidate
+    }
   }
+  return (
+    `You are the ${agentName} agent in the CopilotHarness pipeline. ` +
+    `Analyse the provided input context and produce valid JSON output matching your output schema.`
+  );
 }
 
 function extractJson(text: string): unknown {

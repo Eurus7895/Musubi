@@ -6,7 +6,10 @@ description: >
   a structured pass/fail result with specific fix instructions for the Coder.
   Invoked after the Coder writes code. Use this agent to gate code quality before
   execution.
+model: gpt-4o
+maxTurns: 1
 tools: ["view", "glob"]
+disallowedTools: ["Write", "Edit", "Bash"]
 ---
 
 ## Role

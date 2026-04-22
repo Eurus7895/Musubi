@@ -41,6 +41,16 @@ plan → design → code → review
 
 Write-once per attempt. Reviewer "fail" → correction loop (max 3) → escalate.
 
+Reviewer runs under the Week 3a evaluator firewall — sees `code` only, no
+plan/design/memory/dynamic skills.
+
+## Routing (Week 3c)
+
+Zero-LLM-cost string match in `extension.ts`:
+- `/<name> …` → slash command (loads `.github/commands/<name>.md`)
+- `… --pipeline …` → force pipeline
+- otherwise → direct mode (single `vscode.lm.sendRequest`, no harness)
+
 ---
 
 ## Active Tier 2 Files
