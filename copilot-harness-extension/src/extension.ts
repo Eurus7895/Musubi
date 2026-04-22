@@ -17,6 +17,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline, runStep, StepResult } from "./pipeline";
+import { loadSlashCommand, listSlashCommands, SlashCommand } from "./slashCommands";
 
 let out: vscode.OutputChannel;
 
@@ -87,21 +88,62 @@ function resolveServerBinary(extensionPath: string): string | null {
 // ── Command parsing ───────────────────────────────────────────────────────────
 
 const AGENT_NAMES = new Set(["planner", "designer", "coder", "reviewer"]);
+const PIPELINE_FLAG = "--pipeline";
 
 type AgentName = "planner" | "designer" | "coder" | "reviewer";
 
 type ParsedCommand =
-  | { type: "step";     request: string }
+  | { type: "slash";    name: string; args: string }
+  | { type: "direct";   prompt: string }
+  | { type: "pipelineForced"; request: string }
   | { type: "continue" }
   | { type: "agent";    agentName: AgentName; request?: string }
   | { type: "full";     request: string }
   | { type: "status" }
   | { type: "help" };
 
+function stripPipelineFlag(text: string): { stripped: string; hadFlag: boolean } {
+  // Remove a standalone --pipeline token (space-delimited). Never strips a
+  // substring of a longer word.
+  const tokens = text.split(/\s+/).filter(t => t.length > 0);
+  const out: string[] = [];
+  let hadFlag = false;
+  for (const tok of tokens) {
+    if (tok === PIPELINE_FLAG) { hadFlag = true; continue; }
+    out.push(tok);
+  }
+  return { stripped: out.join(" "), hadFlag };
+}
+
+/**
+ * Routing rules (Week 3c — zero LLM cost):
+ *   1. Starts with `/` → slash command (parse; unknown commands error).
+ *   2. Contains `--pipeline` token → force pipeline mode on the remainder.
+ *   3. Legacy bare keywords (`continue`, `status`, `full`, agent names)
+ *      keep working for one release cycle.
+ *   4. Everything else → direct mode (single Copilot call, no harness).
+ */
 function parseCommand(text: string): ParsedCommand {
   const trimmed = text.trim();
   if (!trimmed) { return { type: "help" }; }
 
+  // 1. Slash commands.
+  if (trimmed.startsWith("/")) {
+    const body = trimmed.slice(1);
+    const spaceIdx = body.indexOf(" ");
+    const name = (spaceIdx === -1 ? body : body.slice(0, spaceIdx)).toLowerCase();
+    const args = spaceIdx === -1 ? "" : body.slice(spaceIdx + 1).trim();
+    if (!name) { return { type: "help" }; }
+    return { type: "slash", name, args };
+  }
+
+  // 2. --pipeline flag forces pipeline mode.
+  const { stripped, hadFlag } = stripPipelineFlag(trimmed);
+  if (hadFlag) {
+    return { type: "pipelineForced", request: stripped || trimmed };
+  }
+
+  // 3. Legacy bare keywords (deprecated — slash commands preferred).
   const spaceIdx = trimmed.indexOf(" ");
   const first = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toLowerCase();
   const rest  = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
@@ -109,12 +151,12 @@ function parseCommand(text: string): ParsedCommand {
   if (first === "continue") { return { type: "continue" }; }
   if (first === "status")   { return { type: "status" }; }
   if (first === "full")     { return { type: "full", request: rest || trimmed }; }
-
   if (AGENT_NAMES.has(first)) {
     return { type: "agent", agentName: first as AgentName, request: rest || undefined };
   }
 
-  return { type: "step", request: trimmed };
+  // 4. Default: direct mode — free-form question to Copilot, no harness.
+  return { type: "direct", prompt: trimmed };
 }
 
 // ── Output rendering ──────────────────────────────────────────────────────────
@@ -241,19 +283,43 @@ async function showStatus(client: McpClient, stream: vscode.ChatResponseStream):
 // ── Usage text ────────────────────────────────────────────────────────────────
 
 const USAGE = `
-**CopilotHarness** — step-by-step 4-agent pipeline
+**CopilotHarness** — direct mode + governed pipeline
 
 | Command | Action |
 |---|---|
-| \`@harness <task>\` | New session — run planner, then pause |
-| \`@harness continue\` | Run next pending agent |
-| \`@harness planner <task>\` | Run planner only |
-| \`@harness designer\` | Run designer on active session |
-| \`@harness coder\` | Run coder on active session |
-| \`@harness reviewer\` | Run reviewer on active session |
-| \`@harness full <task>\` | Run all agents automatically |
-| \`@harness status\` | Show active session progress |
+| \`@harness <question>\` | Direct mode — single Copilot call, no pipeline |
+| \`@harness /feature-dev <task>\` | Full governed pipeline (plan → design → code → review) |
+| \`@harness /continue\` | Run next pending agent in active session |
+| \`@harness /planner <task>\` | Run planner only |
+| \`@harness /designer\` | Run designer on active session |
+| \`@harness /coder\` | Run coder on active session |
+| \`@harness /reviewer\` | Run reviewer on active session |
+| \`@harness /status\` | Show active session progress |
+| \`@harness <task> --pipeline\` | Force pipeline mode for non-slash input |
+
+Bare keywords (\`continue\`, \`status\`, \`full\`, agent names) still work but are
+deprecated — use the slash form instead. Slash commands are defined in
+\`.github/commands/\`.
 `.trim();
+
+// ── Direct mode ───────────────────────────────────────────────────────────────
+
+async function runDirect(
+  prompt: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+): Promise<void> {
+  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
+  if (!models.length) {
+    stream.markdown("**Error:** No Copilot language model available.");
+    return;
+  }
+  const messages = [vscode.LanguageModelChatMessage.User(prompt)];
+  const response = await models[0].sendRequest(messages, {}, token);
+  for await (const chunk of response.text) {
+    stream.markdown(chunk);
+  }
+}
 
 // ── Chat participant handler ──────────────────────────────────────────────────
 
@@ -283,7 +349,8 @@ async function handler(
         await showStatus(client, stream);
         break;
 
-      case "full": {
+      case "full":
+      case "pipelineForced": {
         const result = await runPipeline(client, cmd.request, workspaceRoot, stream, token);
         stream.markdown("\n---\n");
         if (result.escalated) {
@@ -291,12 +358,6 @@ async function handler(
         } else {
           stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
         }
-        break;
-      }
-
-      case "step": {
-        const result = await runStep(client, workspaceRoot, stream, token, { request: cmd.request });
-        renderStepResult(result, stream);
         break;
       }
 
@@ -314,6 +375,14 @@ async function handler(
         renderStepResult(result, stream);
         break;
       }
+
+      case "direct":
+        await runDirect(cmd.prompt, stream, token);
+        break;
+
+      case "slash":
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token);
+        break;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -322,4 +391,62 @@ async function handler(
   }
 
   return {};
+}
+
+// ── Slash command dispatch ────────────────────────────────────────────────────
+
+async function runSlash(
+  name: string,
+  args: string,
+  client: McpClient,
+  workspaceRoot: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+): Promise<void> {
+  const cmd = loadSlashCommand(workspaceRoot, name);
+  if (!cmd) {
+    const available = listSlashCommands(workspaceRoot).map(c => `/${c.name}`).join(", ");
+    stream.markdown(
+      `**Unknown command:** \`/${name}\`` +
+      (available ? `\n\nAvailable: ${available}` : ""),
+    );
+    return;
+  }
+
+  switch (cmd.action) {
+    case "pipeline": {
+      if (!args) {
+        stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
+        return;
+      }
+      const result = await runPipeline(client, args, workspaceRoot, stream, token);
+      stream.markdown("\n---\n");
+      if (result.escalated) {
+        stream.markdown(`⚠️ **Escalated:** ${result.escalation}`);
+      } else {
+        stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
+      }
+      return;
+    }
+    case "step": {
+      if (!cmd.agent || !AGENT_NAMES.has(cmd.agent)) {
+        stream.markdown(`**Error:** \`/${cmd.name}\` is missing a valid \`agent\` in its frontmatter.`);
+        return;
+      }
+      const result = await runStep(client, workspaceRoot, stream, token, {
+        agentName: cmd.agent as AgentName,
+        request: args || undefined,
+      });
+      renderStepResult(result, stream);
+      return;
+    }
+    case "continue": {
+      const result = await runStep(client, workspaceRoot, stream, token, {});
+      renderStepResult(result, stream);
+      return;
+    }
+    case "status":
+      await showStatus(client, stream);
+      return;
+  }
 }
