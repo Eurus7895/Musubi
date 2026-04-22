@@ -14,7 +14,7 @@ Per-agent firewall rules:
     planner       → request only  (no stage outputs)
     designer      → plan only
     coder         → plan + design; reading "review" → fix_instructions only
-    reviewer      → request + all stage outputs
+    reviewer      → code only  (evaluator firewall — no request, plan, design)
     skill-builder → fail patterns only  (no session state, no user code)
 """
 
@@ -143,13 +143,12 @@ def _context_coder(session_id: str, db_path: Path | None) -> dict[str, Any]:
 
 
 def _context_reviewer(session_id: str, db_path: Path | None) -> dict[str, Any]:
-    session = state.get_session(session_id, db_path)
-    return {
-        "request": session["request"] if session else None,
-        "plan":    state.read_stage(session_id, "plan",   db_path),
-        "design":  state.read_stage(session_id, "design", db_path),
-        "code":    state.read_stage(session_id, "code",   db_path),
-    }
+    # Evaluator firewall: reviewer sees only the artifact being judged.
+    # No request, no plan, no design — those would bias the review toward
+    # intent rather than the code-review checklist. The review schema is
+    # injected by the extension's system prompt (AGENT_OUTPUT_HINTS) and
+    # by the code-review skill, not here.
+    return {"code": state.read_stage(session_id, "code", db_path)}
 
 
 def _context_skill_builder(db_path: Path | None) -> dict[str, Any]:
@@ -165,7 +164,7 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     "planner":       {"plan"},
     "designer":      {"plan"},
     "coder":         {"plan", "design", "review"},
-    "reviewer":      {"plan", "design", "code", "review"},
+    "reviewer":      {"code"},
     "skill-builder": set(),
 }
 
