@@ -15,7 +15,7 @@ Same model + same task + changed environment = better outcomes
 
 ## Quick Start
 
-**Requirements:** Python 3.12+, Node.js 18+, VS Code with GitHub Copilot Chat, PyInstaller
+**Requirements:** Python 3.11+, Node.js 18+, VS Code with GitHub Copilot Chat, PyInstaller
 
 ```powershell
 # 1. Python setup
