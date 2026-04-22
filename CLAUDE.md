@@ -218,10 +218,13 @@ ROUTING:
         continue.md, status.md
         planner.md, designer.md, coder.md, reviewer.md
 
-    agents/                      ← DEPRECATED (Week 5 removal)
-        skill-builder.agent.md   ← meta-agent, stays here
+    agents/                      ← cross-pipeline agents (un-deprecated Week 5)
+        skill-builder.agent.md   ← meta-agent
+        explorer.agent.md        ← Week 5: read-only exploration role
+        investigator.agent.md    ← Week 5: debug / run-tests role
+        reviewer-aux.agent.md    ← Week 5: strict read-only per-file review
         proposed/                ← Skill-Builder output
-        README.md                ← deprecation notice
+        README.md                ← reframed: cross-pipeline vs pipeline-scoped
 
     skills/                      ← domain skills (unchanged)
         code-review/, api-design/, python/, testing/, database-patterns/,
@@ -472,7 +475,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Memory Architecture | ✅ Built (3-tier) | — |
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ✅ Shipped (Week 3c) | — |
-| Context Management | ⚠️ Missing | Future: subagent offloading |
+| Context Management | ⚠️ Missing | Week 5: helper-agent invocation |
 
 ---
 
@@ -549,6 +552,168 @@ Week 3b+ can add a dedicated planner-feedback channel.
 [ ] Cross-session memory query
 [ ] Tier 2 compaction (failure-patterns.md > 5KB)
 ```
+
+### Week 5 — Agents as First-Class Helpers (planned, main feature)
+
+**One concept, three invocation modes.** Drop the "subagent" label. There is
+only one thing — an *agent* — and three ways to invoke it:
+
+```
+user       → user types /explore / /investigate / etc.
+             Direct-to-agent. No parent, no pipeline, no evaluator.
+
+stage      → pipeline.yaml chains the agent as a stage.
+             Reads prior stages, writes structured JSON, goes through evaluator.
+
+helper     → another agent calls it mid-task via harness_spawn_agent.
+             Isolated context. Parent sees only the summary, never the transcript.
+```
+
+Same `.agent.md` file can be invoked in any of the three modes. The *invocation
+contract* differs; the agent definition does not.
+
+**Cross-pipeline agents live at `.github/agents/`** (un-deprecated). Pipeline-
+specific stage agents stay at `pipelines/<name>/agents/`.
+
+**First three helper roles:**
+```
+explorer       Read + Grep + Glob                  (read-only exploration)
+investigator   Read + Grep + Glob + Bash           (debug, run tests)
+reviewer-aux   Read + View                         (strict per-file review)
+```
+
+**What helpers are for — and what they are NOT.** Helpers exist to absorb
+**simple, repetitive, high-volume** work that would pollute the caller's
+context without adding reasoning value. They are not for open-ended
+research, architecture decisions, or creative design.
+
+```
+Good fits (ship):
+  - Scan N files for a pattern and return matches + summary
+  - Run the same lint / grep / check across a directory and aggregate
+  - Read a single file and return a structured fact (imports, symbols)
+  - Execute a deterministic probe (run one test, report pass/fail + tail)
+  - Per-file review against a fixed checklist
+
+Bad fits (do NOT build a role for these):
+  - "Explore the architecture of this project" (too open-ended)
+  - "Design a new feature" (that's the planner stage)
+  - "Decide which approach is better" (decision belongs to caller)
+  - "Implement this change" (needs full pipeline + evaluator)
+```
+
+The principle: helpers gather or verify *facts*. The caller does the
+*reasoning*. If a role needs chain-of-thought beyond its brief, it's the
+wrong role — either promote it to a pipeline stage with an evaluator, or
+keep it in the caller.
+
+**Spawn visibility — always shown to the user.** Every helper invocation
+is surfaced in the Copilot Chat UI, never hidden. The extension emits:
+
+```
+▶ explorer  "scan src/**/*.py for JWTValidator.verify usages"  (max 8 turns)
+   …running…
+✓ explorer  14 matches across 9 files  (turns: 3, tools: Grep×3, Read×4)
+```
+
+This is non-negotiable for trust and audit:
+- User sees which helpers were spawned, with what brief, for how long
+- User sees final summary line; full summary is inlined in the parent's
+  output (collapsible)
+- Transcript of the helper is NOT shown (firewall still holds) — only the
+  spawn event, brief, turn count, tool usage histogram, and summary
+- `post_tool_use.py` audit log records every spawn with caller, role,
+  brief, turns, tools, result (for later inspection)
+
+No silent helpers. If a helper is running, the user knows.
+
+**Firewall rule** (preserves "harness pushes, agent cannot opt out"):
+```
+helper-mode agent sees:   brief + role skill + allowed tools
+                          NO parent plan, NO memory, NO sibling helpers,
+                          NO session_id of parent
+parent sees on return:    summary (token-capped) + optional structured JSON
+                          NEVER the helper's transcript
+```
+
+**Policy engine — new table:**
+```python
+AGENT_HELPER_POLICIES = {
+    "explorer":     ["Read", "Grep", "Glob"],
+    "investigator": ["Read", "Grep", "Glob", "Bash"],
+    "reviewer-aux": ["Read", "View"],
+}
+# effective = AGENT_HELPER_POLICIES[role] ∩ caller_allowlist
+# slash-direct invocation: caller_allowlist = role policy (no intersection)
+```
+
+**MCP tools:**
+```
+harness_spawn_agent(caller, role, brief, allowed_tools, max_turns, output_schema)
+    → handle
+harness_await_agent(handle)
+    → { summary, structured, tools_used, turns, escalated }
+harness_list_agents(caller)          # catalog for pull-style discovery
+```
+
+**`pipeline.yaml` extension** (opt-in per stage — keeps push-not-pull invariant):
+```yaml
+generator:
+  agent: agents/coder.md
+  helpers:                        # stage-declared whitelist
+    - role: explorer
+      max_concurrent: 2
+    - role: investigator
+      max_concurrent: 1
+```
+
+**Slash commands** (new `action: agent`):
+```
+.github/commands/explore.md       → runs explorer directly on user brief
+.github/commands/investigate.md   → runs investigator directly
+.github/commands/review-file.md   → runs reviewer-aux on one file
+```
+
+**Rollout phases:**
+```
+Phase A — Core primitives (pipeline-agnostic)
+  [ ] harness_spawn_agent + harness_await_agent + harness_list_agents
+  [ ] AGENT_HELPER_POLICIES in policy_engine.py (fail-closed)
+  [ ] Helper context firewall in context_builder.py (brief-only path)
+  [ ] Ephemeral session storage (auto-cleaned when parent completes)
+  [ ] Summary token cap + schema validation in verifier.py
+  [ ] Three role files under .github/agents/
+  [ ] Spawn-event surface: mcpClient.ts emits "helper_spawned" / "helper_done"
+      notifications; extension renders them as visible chat markers
+      (brief, turn count, tool histogram, final summary line)
+
+Phase B — Slash-direct invocation (ship first — simplest)
+  [ ] action: agent in slashCommands.ts
+  [ ] .github/commands/{explore,investigate,review-file}.md
+  [ ] Extension runs helper loop via vscode.lm.sendRequest
+  [ ] No session, no plan JSON, no evaluator — result streams to chat
+
+Phase C — Pipeline helper invocation
+  [ ] pipeline.yaml `helpers:` whitelist per stage
+  [ ] pipeline.ts wires spawn tool into stage agent
+  [ ] Tests: parent never sees transcript, policy intersected, max_turns honored
+
+Phase D — Direct-mode helper invocation
+  [ ] Bundle with Week 4 "Direct-mode pull-on-demand skills"
+  [ ] Direct agent gets harness_list_agents + harness_spawn_agent in same
+      MCP round-trip as harness_list_skills
+```
+
+**Invariant analysis (why this does not break push-not-pull):**
+- Helper context is still pushed by harness, not pulled by helper — firewall intact.
+- *Caller's* choice to spawn is a tool call, not a context-shaping decision —
+  pipeline YAML `helpers:` list bounds which roles the caller may reach.
+- Slash-direct invocation has no evaluator or stage structure, so push-not-pull
+  is irrelevant (same rationale as Week 4 direct-mode pull skills).
+
+**Promotion rule applied:** Add a helper role only when 3+ observed failures
+cannot be fixed by improving the calling agent's skill. Do not invent roles
+speculatively.
 
 ---
 
@@ -722,6 +887,45 @@ WEEK 4:
             acceptable because there is no evaluator to firewall in
             direct mode.
 
+WEEK 5 — Agents as first-class helpers (planned, main feature):
+  TODO: Core primitives (Phase A)
+        - harness_spawn_agent / harness_await_agent / harness_list_agents
+        - AGENT_HELPER_POLICIES in scripts/policy_engine.py (fail-closed)
+        - Helper firewall path in context_builder.py (brief-only, no memory,
+          no parent plan, no sibling helpers)
+        - Ephemeral helper session storage + auto-cleanup
+        - Summary token cap + optional JSON schema validation in verifier.py
+        - .github/agents/{explorer,investigator,reviewer-aux}.agent.md
+
+  TODO: Slash-direct invocation (Phase B — ship first)
+        - Add SlashAction `agent` in slashCommands.ts
+        - .github/commands/{explore,investigate,review-file}.md
+        - Extension runs helper loop via vscode.lm.sendRequest
+        - No session, no plan JSON, no evaluator — user brief → summary to chat
+        - Tests: slash-triggered helper uses role policy directly (no parent
+          intersection); firewall rejects parent-session reads
+
+  TODO: Pipeline helper invocation (Phase C)
+        - pipeline.yaml `helpers:` whitelist per stage (opt-in, per-stage)
+        - pipeline.ts wires harness_spawn_agent into stage agent tools
+        - Policy = role ∩ caller allowlist
+        - Tests: parent never sees transcript, only summary + structured;
+          max_turns is a hard cap; stages outside the whitelist cannot spawn
+
+  TODO: Direct-mode helper invocation (Phase D)
+        - Bundle with the Week 4 "direct-mode pull-on-demand skills" TODO
+        - Same MCP round-trip returns both skill catalog and helper catalog
+        - Direct agent gets harness_spawn_agent + harness_list_agents
+        - No new invariants — direct mode already has no evaluator
+
+  Terminology note: we deliberately dropped the word "subagent". There is
+  one concept — *agent* — with three invocation modes: user / stage / helper.
+  The `.agent.md` file is identical across modes; only the invocation
+  contract differs. The deprecated folder `.github/agents/` is un-deprecated
+  and becomes the home for cross-pipeline agents (skill-builder + the three
+  helper roles). Pipeline-scoped stage agents still live at
+  `.github/pipelines/<name>/agents/`.
+
 DEFERRED (needs discussion first):
   - Model-invoked skill loading **inside pipeline mode** (agent decides
     which skill to load during plan/design/code). Breaks the
@@ -729,6 +933,16 @@ DEFERRED (needs discussion first):
     firewall and stage-specific injection depend on. Direct-mode pull
     above does NOT break this invariant because direct mode has no
     evaluator and no stage structure.
+
+  - Helper agents reading memory. Default for Week 5 is *no memory for
+    helpers*. Opt-in per role via `memory: [<entry>]` in the role file
+    only after 3+ observed failures of the same pattern. Matches the
+    promotion rule.
+
+  - User-triggered helpers choosing their own role dynamically (instead
+    of one slash command per role). Keep the 1:1 mapping — it makes the
+    policy surface obvious and matches the "harness pushes" mental model
+    at the command layer.
 ```
 
 ---
@@ -753,3 +967,4 @@ DEFERRED (needs discussion first):
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
 *Current: Week 3c complete — direct mode + hooks + slash commands, 334 tests*
 *Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction*
+*Planned: Week 5 — agents as first-class helpers (user / stage / helper modes)*
