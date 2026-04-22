@@ -1,16 +1,6 @@
 ---
-id: documentation
-name: Documentation
-version: 1.0.0
-description: Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats
-triggers: ["diagram", "documentation", "drawio", "plantuml", "pdf", "word", "docx", "architecture diagram", "sequence diagram", "flowchart"]
-assets:
-    - assets/render-plantuml.py
-    - assets/render-pdf.py
-references:
-    - references/drawio-guide.md
-    - references/plantuml-guide.md
-    - references/pdf-word-guide.md
+name: documentation
+description: Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats. Use when the user asks for a diagram, documentation, architecture/sequence diagram, flowchart, or a PDF/Word/docx document.
 ---
 
 ## Purpose

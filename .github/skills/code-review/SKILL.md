@@ -1,14 +1,6 @@
 ---
-id: code-review
-name: Code Review
-version: 1.0.0
-description: Reviews code for correctness, security, type safety, and convention compliance
-triggers: ["review", "check code", "audit", "code quality", "inspect"]
-assets:
-    - assets/review-script.py
-references:
-    - references/owasp-top10.md
-    - references/common-patterns.md
+name: code-review
+description: Reviews code for correctness, security, type safety, and convention compliance. Use when the user asks to review, check, audit, or inspect code quality.
 ---
 
 ## Purpose

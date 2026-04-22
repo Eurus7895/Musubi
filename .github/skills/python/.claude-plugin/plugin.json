@@ -1,0 +1,9 @@
+{
+  "name": "python",
+  "description": "Idiomatic Python 3.11+ patterns, project setup, and common implementation procedures",
+  "version": "1.0.0",
+  "author": {
+    "name": "CopilotHarness",
+    "email": "noreply@copilot-harness.local"
+  }
+}
