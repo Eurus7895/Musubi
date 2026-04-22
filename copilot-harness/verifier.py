@@ -60,7 +60,12 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "reviewer": {
         "required": ["status", "attempt", "issues"],
-        "types": {"status": str, "attempt": int, "issues": list, "escalate_reason": str},
+        "types": {
+            "status": str, "attempt": int, "issues": list,
+            # Documented nullable in reviewer.agent.md: the reviewer emits
+            # `"escalate_reason": null` when status is pass/fail.
+            "escalate_reason": (str, type(None)),
+        },
         "status_values": {"pass", "fail", "escalate", "wrong_plan"},
     },
 }
@@ -104,7 +109,11 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
     for key, expected_type in schema.get("types", {}).items():
         if key in output and not isinstance(output[key], expected_type):
             actual = type(output[key]).__name__
-            errors.append(f"Field '{key}' must be {expected_type.__name__}, got {actual}")
+            if isinstance(expected_type, tuple):
+                expected_name = " | ".join(t.__name__ for t in expected_type)
+            else:
+                expected_name = expected_type.__name__
+            errors.append(f"Field '{key}' must be {expected_name}, got {actual}")
 
     if "status_values" in schema and "status" in output:
         if output["status"] not in schema["status_values"]:
