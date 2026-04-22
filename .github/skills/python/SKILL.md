@@ -1,14 +1,6 @@
 ---
-id: python
-name: Python
-version: 1.0.0
-description: Idiomatic Python 3.11+ patterns, project setup, and common implementation procedures
-triggers: ["python", "pyproject", "dataclass", "async", "type hints", "pytest", "ruff", "mypy"]
-assets:
-    - assets/scaffold.py
-references:
-    - references/async-patterns.md
-    - references/stdlib-recipes.md
+name: python
+description: Idiomatic Python 3.11+ patterns, project setup, and common implementation procedures. Use when the user is writing Python — pyproject, dataclasses, async, type hints, pytest, ruff, or mypy.
 ---
 
 ## Purpose

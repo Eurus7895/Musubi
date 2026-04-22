@@ -1,13 +1,6 @@
 ---
-id: database-patterns
-name: Database Patterns
-version: 1.0.0
-description: SQLite schema design, query patterns, and state management for append-only session storage
-triggers: ["database", "schema", "sql", "sqlite", "query", "migration", "state storage"]
-assets:
-    - assets/query-analyzer.py
-references:
-    - references/indexing-strategies.md
+name: database-patterns
+description: SQLite schema design, query patterns, and state management for append-only session storage. Use when the user is working with a database, schema, SQL, SQLite, queries, migrations, or state storage.
 ---
 
 ## Purpose

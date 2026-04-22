@@ -65,6 +65,41 @@ export interface StepResult {
   escalation?: string;
 }
 
+// ── Observability — lets the user confirm the LLM actually ran ────────────────
+
+let _pipelineLogger: vscode.OutputChannel | undefined;
+function logger(): vscode.OutputChannel {
+  if (!_pipelineLogger) {
+    _pipelineLogger = vscode.window.createOutputChannel("CopilotHarness Pipeline");
+  }
+  return _pipelineLogger;
+}
+
+function logLine(msg: string): void {
+  const ts = new Date().toISOString().substring(11, 23);
+  logger().appendLine(`[${ts}] ${msg}`);
+}
+
+function dumpRawResponse(
+  workspaceRoot: string,
+  sessionId: string,
+  stage: string,
+  attempt: number,
+  text: string,
+): string | null {
+  try {
+    const dir = path.join(workspaceRoot, ".harness", "sessions", sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = attempt > 1 ? `.attempt${attempt}` : "";
+    const file = path.join(dir, `${stage}${suffix}_raw.txt`);
+    fs.writeFileSync(file, text, "utf-8");
+    return file;
+  } catch (err) {
+    logLine(`  (failed to dump raw response: ${err instanceof Error ? err.message : String(err)})`);
+    return null;
+  }
+}
+
 // ── Per-agent output schema hints (injected into extension-mode prompt) ───────
 // Prevents Copilot from producing tool-call JSON or wrapped objects when told
 // not to call tools — the Input Contract in agent files describes tool calls
@@ -234,33 +269,67 @@ async function readAgentContext(
   return merged;
 }
 
+interface AgentObs {
+  workspaceRoot: string;
+  sessionId: string;
+  stage: string;
+  attempt: number;
+}
+
 async function runAgentLM(
   model: vscode.LanguageModelChat,
   agentName: string,
   agentPrompt: string,
   context: Record<string, unknown>,
   token: vscode.CancellationToken,
+  obs?: AgentObs,
 ): Promise<unknown> {
   const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
+  const systemMsg =
+    agentPrompt +
+    "\n\n---\n\n" +
+    "IMPORTANT — you are being driven by the CopilotHarness VS Code extension.\n" +
+    "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
+    "harness_read_stage) have already been executed by the extension.\n" +
+    "The results are in the input context below — do NOT call any tools.\n\n" +
+    "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
+    "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n" +
+    schemaHint;
+  const contextMsg = `Input context from the harness:\n\n${JSON.stringify(context, null, 2)}`;
   const messages = [
-    vscode.LanguageModelChatMessage.User(
-      agentPrompt +
-      "\n\n---\n\n" +
-      "IMPORTANT — you are being driven by the CopilotHarness VS Code extension.\n" +
-      "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
-      "harness_read_stage) have already been executed by the extension.\n" +
-      "The results are in the input context below — do NOT call any tools.\n\n" +
-      "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
-      "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n" +
-      schemaHint,
-    ),
-    vscode.LanguageModelChatMessage.User(
-      `Input context from the harness:\n\n${JSON.stringify(context, null, 2)}`,
-    ),
+    vscode.LanguageModelChatMessage.User(systemMsg),
+    vscode.LanguageModelChatMessage.User(contextMsg),
   ];
+
+  const promptChars = systemMsg.length + contextMsg.length;
+  logLine(`→ ${agentName}: sending ${promptChars.toLocaleString()} chars to ${model.id} (family=${model.family})`);
+
+  const t0 = Date.now();
   const response = await model.sendRequest(messages, {}, token);
   let text = "";
-  for await (const chunk of response.text) { text += chunk; }
+  let chunks = 0;
+  let firstChunkMs: number | null = null;
+  for await (const chunk of response.text) {
+    if (firstChunkMs === null) { firstChunkMs = Date.now() - t0; }
+    text += chunk;
+    chunks++;
+  }
+  const elapsed = Date.now() - t0;
+
+  logLine(
+    `← ${agentName}: received ${text.length.toLocaleString()} chars in ${chunks} chunk(s), ` +
+    `first-chunk=${firstChunkMs ?? "n/a"}ms, total=${elapsed}ms`,
+  );
+
+  if (text.length === 0) {
+    logLine(`  WARNING: empty response from ${agentName} — model may be unauthorized, rate-limited, or cancelled`);
+  }
+
+  if (obs) {
+    const dumped = dumpRawResponse(obs.workspaceRoot, obs.sessionId, obs.stage, obs.attempt, text);
+    if (dumped) { logLine(`  raw response dumped → ${dumped}`); }
+  }
+
   return extractJson(text);
 }
 
@@ -500,7 +569,10 @@ async function runCorrectionLoop(
       coderCtx["existing_file_contents"] = existingFiles;
     }
 
-    const fixedCode = await runAgentLM(model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
+    const fixedCode = await runAgentLM(
+      model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
+      { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
+    );
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
@@ -509,6 +581,7 @@ async function runCorrectionLoop(
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
     const newReview = (await runAgentLM(
       model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
+      { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
     materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
@@ -534,6 +607,8 @@ export async function runPipeline(
     throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
   }
   const model = models[0];
+  logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
+  logger().show(true);
 
   // ── Session setup (with crash recovery) ──────────────────────────────────────
 
@@ -582,11 +657,13 @@ export async function runPipeline(
       }
     }
 
-    const agentOutput = await runAgentLM(model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token);
+    const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
+    const agentOutput = await runAgentLM(
+      model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
+      { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
+    );
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
-
-    const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
     materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
@@ -642,6 +719,8 @@ export async function runStep(
     throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
   }
   const model = models[0];
+  logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
+  logger().show(true);
 
   // ── Session setup ─────────────────────────────────────────────────────────────
 
@@ -705,12 +784,13 @@ export async function runStep(
     context["request"] = sessionRequest;
   }
 
+  const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
   const agentOutput = await runAgentLM(
     model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+    { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
-  const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
   materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);

@@ -1,14 +1,6 @@
 ---
-id: testing
-name: Testing
-version: 1.0.0
-description: pytest-based testing procedures for harness components — unit, integration, and correction loop tests
-triggers: ["test", "pytest", "unit test", "integration test", "fixture", "mock", "coverage", "test suite"]
-assets:
-    - assets/coverage-check.py
-references:
-    - references/pytest-patterns.md
-    - references/mocking-guide.md
+name: testing
+description: pytest-based testing procedures for harness components — unit, integration, and correction loop tests. Use when the user is writing tests, fixtures, mocks, or asking about pytest or coverage.
 ---
 
 ## Purpose

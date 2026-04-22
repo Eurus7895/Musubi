@@ -1,13 +1,6 @@
 ---
-id: api-design
-name: API Design
-version: 1.0.0
-description: Designs REST APIs and MCP tool interfaces with consistent conventions
-triggers: ["api", "endpoint", "rest", "interface design", "mcp tool", "tool schema"]
-assets:
-    - assets/openapi-template.yaml
-references:
-    - references/rest-principles.md
+name: api-design
+description: Designs REST APIs and MCP tool interfaces with consistent conventions. Use when the user is designing an API, endpoint, REST interface, MCP tool, or tool schema.
 ---
 
 ## Purpose
