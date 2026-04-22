@@ -463,6 +463,8 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | State Management | ✅ Built + crash recovery | — |
 | Multi-Agent Coordination | ❌ Missing | Week 4: handoff schemas |
 | Discoverability (/help) | ❌ Missing | Week 4: data-driven slash help |
+| Plugin manifest | ❌ Missing | Week 4: `.claude-plugin/plugin.json` |
+| Pipeline-as-install-unit | ⚠️ Half | Week 4: decide skill locality first |
 | Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
@@ -658,6 +660,33 @@ WEEK 4:
             sync whenever a new command file is added
           - update USAGE in extension.ts to point users at /help
           - test: test_slash_commands.py asserts help.md has action=help
+
+  TODO: .claude-plugin/plugin.json manifest for feature-dev
+        Every content primitive (commands, agents, skills, hooks, MCP) is
+        already in Claude Code plugin layout. Missing: the install unit.
+        Implementation sketch:
+          - add .github/pipelines/feature-dev/.claude-plugin/plugin.json
+            with { name, version, description, commands, agents, skills,
+            hooks, mcpServers } pointing at the existing files
+          - no code change — this is purely declarative metadata
+          - test: test_plugin_manifest.py validates the JSON parses and
+            every referenced path resolves on disk
+
+  TODO: Pipeline-as-install-unit (copy-paste install)
+        Prereq: the plugin.json manifest above.
+        Goal: copying .github/pipelines/<name>/ into another repo drops
+        in a working pipeline (commands, agents, skills, hooks). Today
+        skills live at repo-global .github/skills/, which breaks portability.
+        Decision needed: keep global skills (simpler, matches current
+        auto-injection map) or allow pipeline-local skills/ (portable,
+        requires skill_loader fallback like the agents multi-dir glob).
+        No implementation until that decision is made.
+
+DEFERRED (needs discussion first):
+  - Model-invoked skill loading à la Claude Code's auto-invoke.
+    Breaks the "skills are pushed, not pulled" invariant that the
+    evaluator firewall and stage-specific injection depend on. Not a
+    drop-in change — needs an architectural conversation first.
 ```
 
 ---
