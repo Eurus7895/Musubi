@@ -12,8 +12,16 @@ from storage import db
 STAGES: list[str] = ["plan", "design", "code", "review"]
 
 # Resolved at import time so tests can override via the agents_dir parameter.
+# Week 3b: feature-dev agents moved to .github/pipelines/feature-dev/agents/.
+# .github/agents/ retained for the skill-builder meta-agent and rollback.
 _REPO_ROOT = Path(__file__).parent.parent
-AGENTS_DIR = _REPO_ROOT / ".github" / "agents"
+AGENTS_DIRS: list[Path] = [
+    _REPO_ROOT / ".github" / "pipelines" / "feature-dev" / "agents",
+    _REPO_ROOT / ".github" / "agents",
+]
+# Back-compat alias — some callers/tests still reference AGENTS_DIR as a Path.
+# Points at the primary (new) location.
+AGENTS_DIR = AGENTS_DIRS[0]
 
 
 def _now() -> str:
@@ -42,18 +50,34 @@ def create_session(request: str, db_path: Path | None = None) -> str:
 
 def lock_agent_versions(
     session_id: str,
-    agents_dir: Path | None = None,
+    agents_dir: Path | list[Path] | None = None,
     db_path: Path | None = None,
 ) -> dict[str, str]:
-    """Read version from every *.agent.md frontmatter and persist to DB."""
-    base = agents_dir or AGENTS_DIR
+    """Read version from every *.agent.md frontmatter and persist to DB.
+
+    agents_dir accepts either a single Path (back-compat for tests) or a list
+    of Paths. None → use the module-level AGENTS_DIRS (pipeline dir + legacy
+    .github/agents/). When the same agent name appears in more than one dir,
+    the first occurrence wins (pipeline dir takes precedence over legacy).
+    """
+    if agents_dir is None:
+        bases: list[Path] = list(AGENTS_DIRS)
+    elif isinstance(agents_dir, Path):
+        bases = [agents_dir]
+    else:
+        bases = list(agents_dir)
     versions: dict[str, str] = {}
-    for agent_file in sorted(base.glob("*.agent.md")):
-        # stem is e.g. "planner.agent"; strip the ".agent" suffix
-        name = agent_file.stem.replace(".agent", "")
-        version = _parse_version(agent_file)
-        versions[name] = version
-        db.upsert_agent_version(session_id, name, version, db_path)
+    for base in bases:
+        if not base.exists():
+            continue
+        for agent_file in sorted(base.glob("*.agent.md")):
+            # stem is e.g. "planner.agent"; strip the ".agent" suffix
+            name = agent_file.stem.replace(".agent", "")
+            if name in versions:
+                continue  # earlier base (pipeline dir) wins
+            version = _parse_version(agent_file)
+            versions[name] = version
+            db.upsert_agent_version(session_id, name, version, db_path)
     return versions
 
 

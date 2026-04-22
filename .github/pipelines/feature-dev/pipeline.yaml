@@ -1,0 +1,29 @@
+name: feature-dev
+description: Guided feature development — plan → design → code → review
+version: 1.0.0
+level: 2
+
+baseline_checks:
+  - type: file_read
+    path: src/
+    error: "Cannot read src/ — ensure workspace root contains source."
+
+generator:
+  agents:
+    - name: planner
+      agent: agents/planner.agent.md
+      skill: null
+    - name: designer
+      agent: agents/designer.agent.md
+      skill: skills/api-design/SKILL.md
+    - name: coder
+      agent: agents/coder.agent.md
+      skill: skills/python/SKILL.md
+
+evaluator:
+  agent: agents/reviewer.agent.md
+  skill: skills/code-review/SKILL.md
+
+correction:
+  max_retries: 3
+  escalate_message: "Feature requires human review — max correction attempts exhausted"

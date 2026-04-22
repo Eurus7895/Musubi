@@ -6,7 +6,10 @@ description: >
   completes, or on retry after a Reviewer returns a fail status. Writes only the
   files declared in the plan scope. Use this agent when architecture is defined
   and implementation is needed.
+model: gpt-4o
+maxTurns: 1
 tools: ["view", "edit", "bash"]
+disallowedTools: []
 ---
 
 ## Role
