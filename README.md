@@ -108,12 +108,14 @@ a crash between read and write is always detectable.
 |---|---|
 | `harness_get_active_session()` | Crash recovery — check for interrupted session |
 | `harness_new_session(request)` | Start pipeline, lock agent versions |
-| `harness_read_stage(session_id, stage, agent_name)` | Read with firewall + skill injection |
+| `harness_read_stage(session_id, stage, agent_name)` | Read with firewall + skill + memory injection |
 | `harness_write_stage(session_id, stage, output, agent_name)` | Validate + store |
 | `harness_get_status(session_id)` | Pipeline stage summary |
 | `harness_get_skill(skill_id)` | Load SKILL.md on demand |
 | `harness_get_reference(skill_id, ref_name)` | Load reference document |
 | `harness_increment_attempt(session_id, stage)` | Increment attempt counter for retry |
+| `harness_get_memory_entry(name)` | Load Tier 2 memory entry (e.g. `architecture.md`) |
+| `harness_distill_session(session_id)` | Distill session failures into Tier 2 memory |
 | `harness_run_lint(files)` | ruff check |
 | `harness_run_typecheck(files)` | mypy |
 | `harness_run_tests(test_dir)` | pytest |
@@ -136,9 +138,16 @@ copilot-harness/     ← Python MCP server (zero LLM)
     verifier.py      ← schema validation + secrets scan
     correction_loop.py ← reviewer → coder retry logic (max 3)
     skill_loader.py  ← serves SKILL.md + reference files
+    memory_loader.py ← Tier 1/2 memory injection into harness_read_stage
+    session_distiller.py ← distills session review failures to Tier 2 memory
     executor.py      ← ruff + mypy + pytest runner
     storage/db.py    ← SQLite CRUD; schema embedded; DB in HARNESS_ROOT/data/
-    tests/           ← 163 tests covering all components
+    tests/           ← 260 tests covering all components
+
+.github/memory/      ← 3-tier memory architecture
+    MEMORY.md        ← Tier 1: always-injected index (~200 tokens)
+    architecture.md  ← Tier 2: key decisions (SQLite, MCP, PyInstaller)
+    failure-patterns.md ← Tier 2: distilled recurring failures (auto-updated)
 
 copilot-harness-extension/   ← VS Code extension (TypeScript, v0.2.0)
     src/
@@ -194,8 +203,8 @@ CopilotHarness ready. Use @harness in Copilot Chat.
 | Day 3 — Verifier, correction loop, skill loader | ✅ |
 | Day 4 — Executor (lint, typecheck, tests) | ✅ |
 | Extension v0.2.0 — McpClient direct, DB path fixed, auto-activation | ✅ |
-| Day 5 — Self-improvement loop, pattern detector | ⬜ |
-| Week 2 — Memory architecture, hardening | ⬜ |
+| Day 5 — Self-improvement loop, pattern detector | ✅ |
+| Week 2 — Memory architecture (3-tier), session distiller, edge case hardening | ✅ |
 
 ---
 

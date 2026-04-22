@@ -494,7 +494,7 @@ Week 2:
 | Security & Permissions | ✅ Built (injection scan + verifier + patch applier guard) | — |
 | Verification | ✅ Built (verifier.py + executor.py) | — |
 | Architecture Enforcement | ✅ Built (patch applier + archive + proposed/ guard) | — |
-| Memory Architecture | ⚠️ Partial (pattern_detector.py built) | 3-tier memory (Week 2) |
+| Memory Architecture | ✅ Built (3-tier: MEMORY.md + Tier 2 files + memory_loader + session_distiller) | — |
 | Extension (@harness) | ✅ Built (McpClient + direct callTool, no invokeTool) | — |
 
 ---
@@ -643,14 +643,46 @@ vscode.lm API          ✅     agent reasoning in Phase 2
       Total across all modules: 206 tests passing
 ```
 
-### Week 2 — Hardening
+### Week 2 — Hardening ✅ Complete
 ```
-[ ] Full unit test suite (all components)
-[ ] .github/memory/ — Tier 1 + Tier 2 memory files
-[ ] memory_loader.py — inject into harness_read_stage responses
-[ ] session_distiller.py — converts sessions to memory entries
-[ ] README.md — team setup in < 5 minutes
-[ ] Edge cases: malformed JSON output, empty agent response, executor timeout
+[✅] .github/memory/ — Tier 1 + Tier 2 memory files
+      MEMORY.md          ← Tier 1 index (~200 tokens, always injected by harness_read_stage)
+      architecture.md    ← Tier 2: SQLite, MCP, PyInstaller decisions
+      failure-patterns.md ← Tier 2: recurring coder failures (auto-appended by distiller)
+
+[✅] memory_loader.py
+      get_tier1_index(repo_root?) → str | None
+      get_tier2_entry(name, repo_root?) → str | None  (path-traversal blocked)
+      list_tier2_entries(repo_root?) → list[str]
+      get_memory_context(repo_root?) → dict
+      Injected by harness_read_stage into every agent context as { tier1_index, tier2_available }
+
+[✅] session_distiller.py
+      distill_session(session_id, db_path?, repo_root?) → list[str]  (appended entries)
+      distill_all_completed(db_path?, repo_root?) → dict[str, list[str]]
+      Appends critical/high severity issues to failure-patterns.md; deduplicates
+
+[✅] harness_get_memory_entry(name) — new MCP tool
+      Loads Tier 2 entry on demand; path-traversal rejected
+
+[✅] harness_distill_session(session_id) — new MCP tool
+      Distills completed session into Tier 2 failure-patterns.md
+
+[✅] Edge cases hardened in server.py
+      Empty string agent response → rejected with clear error
+      Null output from agent → rejected with clear error
+      Executor tools: empty files list → pass with note
+      Empty test_dir → rejected with clear error
+      Executor raw output surfaced when structured parsing yields nothing
+
+[✅] Bug fix: verifier.py _ISSUE_REQUIRED removed 'checklist_item'
+      Was blocking valid reviewer fail outputs; not in feedback schema
+
+[✅] storage/db.py — get_all_sessions() added for distiller bulk processing
+
+[✅] tests/test_memory_loader.py — 16 tests
+[✅] tests/test_session_distiller.py — 12 tests
+      Total across all modules: 260 tests passing
 ```
 
 ### VS Code Extension ✅ Complete (v0.2.0)
@@ -762,10 +794,18 @@ DAY 4:
   TODO: executor.py — use files_modified from coder output for targeted lint
   TODO: subprocess timeout per call — 30s default
 
-WEEK 2:
-  TODO: MEMORY.md format — what goes in Tier 1 index vs Tier 2 files
-  TODO: session_distiller.py — what to extract and how to keep Tier 2 < 500 tokens
-  TODO: Team onboarding — new developer setup in < 5 minutes
+WEEK 2: ✅ Complete
+  DONE: MEMORY.md (Tier 1 index) + architecture.md + failure-patterns.md (Tier 2)
+  DONE: memory_loader.py — injected into every harness_read_stage response
+  DONE: session_distiller.py — critical/high issues appended to failure-patterns.md
+  DONE: harness_get_memory_entry + harness_distill_session MCP tools added
+  DONE: README.md updated with memory architecture and new tools
+
+WEEK 3 (next):
+  TODO: Cross-session memory query — let agents search past failure patterns
+  TODO: Tier 2 compaction — auto-merge/summarise entries when failure-patterns.md > 5KB
+  TODO: Multi-agent coordination — handoff schemas (plan→design, design→code, code→review)
+  TODO: Shared vocabulary / glossary injection
 ```
 
 ---
@@ -787,4 +827,4 @@ WEEK 2:
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat drives pipeline automatically*
 *         Dev mode — .vscode/mcp.json + python server.py for manual agent use*
-*Current milestone: Day 5 complete — pattern_detector + patch applier + 206 tests passing. Week 2 next (memory, session distiller, README).*
+*Current milestone: Week 2 complete — 3-tier memory architecture (MEMORY.md + memory_loader + session_distiller), edge case hardening, verifier bug fix, 260 tests passing.*

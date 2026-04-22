@@ -118,7 +118,7 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
 
 # ── Reviewer issues nested validation ────────────────────────────────────────
 
-_ISSUE_REQUIRED = {"severity", "description", "fix_instruction", "checklist_item"}
+_ISSUE_REQUIRED = {"severity", "description", "fix_instruction"}
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
 
 
@@ -188,6 +188,38 @@ def _check_code_only_modifies_declared_files(
     return []
 
 
+def _check_coder_file_contents(code_output: dict[str, Any]) -> list[str]:
+    """file_contents must cover every path in files_modified with non-empty strings.
+
+    This is the main guard against the model returning stub/empty implementations.
+    A missing or empty file_contents means no code gets written to disk.
+    """
+    modified = code_output.get("files_modified", [])
+    if not isinstance(modified, list) or not modified:
+        return []
+
+    contents = code_output.get("file_contents")
+
+    if contents is None:
+        return [
+            "file_contents is required when files_modified is non-empty. "
+            "Include the complete content of every modified file."
+        ]
+
+    if not isinstance(contents, dict):
+        return ["file_contents must be an object mapping file path → string content"]
+
+    errors: list[str] = []
+    for fpath in modified:
+        if not isinstance(fpath, str):
+            continue
+        if fpath not in contents:
+            errors.append(f"file_contents missing entry for '{fpath}' listed in files_modified")
+        elif not isinstance(contents[fpath], str) or not contents[fpath].strip():
+            errors.append(f"file_contents['{fpath}'] is empty — must contain complete file content")
+    return errors
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -215,6 +247,11 @@ def validate(
     # Reviewer nested issues validation (runs regardless of session context).
     if agent_name.lower() == "reviewer" and isinstance(output, dict):
         errors.extend(_check_reviewer_issues(output))
+
+    # Coder: file_contents coverage check runs regardless of session context —
+    # it only examines the coder output itself, not cross-stage data.
+    if agent_name.lower() == "coder" and isinstance(output, dict):
+        errors.extend(_check_coder_file_contents(output))
 
     # Cross-stage checks only run when session context is available and no
     # earlier errors would make the output unusable anyway.

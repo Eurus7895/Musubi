@@ -31,6 +31,8 @@ from mcp.server.fastmcp import FastMCP
 
 import context_builder
 import executor
+import memory_loader
+import session_distiller
 import skill_loader
 import state
 import verifier
@@ -167,6 +169,13 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     if injected:
         result["injected_skills"] = injected
 
+    # Inject Tier 1 memory index so agents know what decisions were made and
+    # where Tier 2 knowledge lives. Agents can load Tier 2 entries on demand
+    # via harness_get_memory_entry().
+    mem = memory_loader.get_memory_context()
+    if mem:
+        result["memory"] = mem
+
     return json.dumps(result)
 
 
@@ -186,12 +195,24 @@ def harness_write_stage(
     try:
         # Accept both JSON-string and native JSON object from MCP clients.
         if isinstance(output, str):
+            stripped = output.strip()
+            if not stripped:
+                return json.dumps({
+                    "status": "error",
+                    "error": "Output rejected: agent returned an empty response.",
+                })
             try:
-                parsed = json.loads(output)
+                parsed = json.loads(stripped)
             except json.JSONDecodeError as exc:
                 return json.dumps({"status": "error", "error": f"Invalid JSON: {exc}"})
         else:
             parsed = output
+
+        if parsed is None:
+            return json.dumps({
+                "status": "error",
+                "error": "Output rejected: agent returned null — expected a JSON object.",
+            })
 
         if context_builder.scan_injection(json.dumps(parsed)):
             return json.dumps({
@@ -313,41 +334,99 @@ def harness_get_reference(skill_id: str, reference_name: str, agent_name: str) -
 @mcp.tool()
 def harness_run_lint(files: list[str]) -> str:
     """Run ruff check on the specified files. Returns structured lint errors."""
+    if not files:
+        return json.dumps({"passed": True, "errors": [], "note": "No files specified."})
     result = executor.run_lint(files)
-    return json.dumps({
+    payload: dict = {
         "passed": result.passed,
         "errors": [
             {"file": e.file, "line": e.line, "col": e.col,
              "code": e.code, "message": e.message}
             for e in result.errors
         ],
-    })
+    }
+    if result.raw and not result.passed and not result.errors:
+        payload["raw_output"] = result.raw
+    return json.dumps(payload)
 
 
 @mcp.tool()
 def harness_run_typecheck(files: list[str]) -> str:
     """Run mypy type checking on the specified files. Returns structured type errors."""
+    if not files:
+        return json.dumps({"passed": True, "errors": [], "note": "No files specified."})
     result = executor.run_typecheck(files)
-    return json.dumps({
+    payload: dict = {
         "passed": result.passed,
         "errors": [
             {"file": e.file, "line": e.line, "message": e.message}
             for e in result.errors
         ],
-    })
+    }
+    if result.raw and not result.passed and not result.errors:
+        payload["raw_output"] = result.raw
+    return json.dumps(payload)
 
 
 @mcp.tool()
 def harness_run_tests(test_dir: str) -> str:
     """Run pytest in the specified directory. Returns structured test failures."""
+    if not test_dir or not test_dir.strip():
+        return json.dumps({"passed": False, "failures": [],
+                           "error": "test_dir must not be empty."})
     result = executor.run_tests(test_dir)
-    return json.dumps({
+    payload: dict = {
         "passed": result.passed,
         "failures": [
             {"test_name": f.test_name, "reason": f.reason}
             for f in result.failures
         ],
-    })
+    }
+    if result.raw and not result.passed and not result.failures:
+        payload["raw_output"] = result.raw
+    return json.dumps(payload)
+
+
+# ── Memory tools ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def harness_get_memory_entry(name: str) -> str:
+    """Return a Tier 2 memory file from .github/memory/.
+
+    Tier 1 (MEMORY.md index) is always injected automatically by harness_read_stage.
+    Use this to load a specific Tier 2 entry on demand (e.g. "architecture.md",
+    "failure-patterns.md").
+
+    name must be a plain filename — path traversal is rejected.
+    Returns the file content or an error dict.
+    """
+    content = memory_loader.get_tier2_entry(name)
+    if content is None:
+        available = memory_loader.list_tier2_entries()
+        return json.dumps({
+            "error": f"Memory entry '{name}' not found.",
+            "available": available,
+        })
+    return content
+
+
+@mcp.tool()
+def harness_distill_session(session_id: str) -> str:
+    """Distill a completed session's review output into Tier 2 failure-patterns.md.
+
+    Extracts critical/high severity issues from the review stage and appends
+    any new (deduplicated) patterns to .github/memory/failure-patterns.md.
+
+    Call this after a pipeline run completes (or after escalation) to keep
+    the memory layer current.
+
+    Returns { "appended": [...] } listing newly added issue strings.
+    """
+    try:
+        appended = session_distiller.distill_session(session_id)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "appended": appended})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

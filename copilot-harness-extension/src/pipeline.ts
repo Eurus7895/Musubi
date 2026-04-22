@@ -17,6 +17,7 @@ import { McpClient } from "./mcpClient";
 interface HarnessReadResult {
   data: unknown;
   injected_skills?: Record<string, string>;
+  memory?: Record<string, unknown>;
 }
 
 interface HarnessWriteResult {
@@ -90,11 +91,21 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
   ].join("\n"),
   coder: [
     'Produce a JSON object with exactly these top-level keys:',
-    '  "summary"              — string',
-    '  "files_modified"       — array of file paths',
-    '  "file_contents"        — object mapping file path → full file content string (strongly recommended)',
-    '  "implementation_notes" — string (optional)',
+    '  "summary"              — string: one sentence describing what was implemented',
+    '  "files_modified"       — array of file paths (every file you write)',
+    '  "file_contents"        — REQUIRED object mapping file path → complete file content as a string.',
+    '                           Every path in files_modified MUST have an entry here.',
+    '                           Write the COMPLETE file — not a stub, not a summary, not pseudo-code.',
+    '                           The extension writes these strings directly to disk. If a file exists',
+    '                           already its full new content must appear here. If creating a new file,',
+    '                           include all imports, all functions, all classes, all tests.',
+    '  "implementation_notes" — string: any deviations from the design or uncertainties',
     '  "confidence"           — "high" | "medium" | "low"',
+    '',
+    'CRITICAL: file_contents is not optional. An empty object or missing field means no code is',
+    'written to disk and the pipeline produces no artifacts. If you cannot implement something',
+    'completely, set confidence to "low" and explain in implementation_notes — but still write',
+    'the best complete implementation you can in file_contents.',
   ].join("\n"),
   reviewer: [
     'Produce a JSON object with exactly these top-level keys:',
@@ -155,6 +166,51 @@ function extractJson(text: string): unknown {
   const objMatch = text.match(/\{[\s\S]*\}/);
   if (objMatch) { try { return JSON.parse(objMatch[0]); } catch { /* fall through */ } }
   throw new Error(`Cannot extract JSON from model response:\n${text.substring(0, 500)}`);
+}
+
+/**
+ * Read workspace files listed in the design's modules array and return them
+ * as { relativePath → fileContent } so the coder can modify existing code
+ * rather than writing from scratch with no knowledge of what already exists.
+ *
+ * Files that don't exist yet (new files) are silently skipped — the coder
+ * will create them from scratch, which is the correct behaviour.
+ *
+ * Size-limited to avoid blowing the model context: individual files > 8 KB
+ * are included as a truncated excerpt with a note. The coder must still write
+ * the complete file in file_contents.
+ */
+function readWorkspaceFilesForCoder(
+  workspaceRoot: string,
+  designOutput: unknown,
+): Record<string, string> {
+  const FILE_SIZE_LIMIT = 8 * 1024; // 8 KB per file
+  const result: Record<string, string> = {};
+
+  if (typeof designOutput !== "object" || designOutput === null) { return result; }
+  const modules = (designOutput as Record<string, unknown>)["modules"];
+  if (!Array.isArray(modules)) { return result; }
+
+  for (const mod of modules) {
+    if (typeof mod !== "object" || mod === null) { continue; }
+    const relPath = (mod as Record<string, unknown>)["file"];
+    if (typeof relPath !== "string" || !relPath) { continue; }
+
+    const absPath = path.join(workspaceRoot, relPath);
+    try {
+      const stat = fs.statSync(absPath);
+      if (!stat.isFile()) { continue; }
+      let content = fs.readFileSync(absPath, "utf-8");
+      if (content.length > FILE_SIZE_LIMIT) {
+        content = content.slice(0, FILE_SIZE_LIMIT) +
+          `\n\n... [truncated — file is ${stat.size} bytes. Write the complete new version in file_contents.]\n`;
+      }
+      result[relPath] = content;
+    } catch {
+      // File doesn't exist yet (new file) — skip silently.
+    }
+  }
+  return result;
 }
 
 async function readAgentContext(
@@ -436,6 +492,14 @@ async function runCorrectionLoop(
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
 
     const coderCtx = await readAgentContext(client, sessionId, "coder", ["design", "plan", "review"]);
+
+    // Re-read workspace files after the previous coder attempt materialised them,
+    // so the retry sees the current (possibly partially correct) state on disk.
+    const existingFiles = readWorkspaceFilesForCoder(workspaceRoot, coderCtx["design"]);
+    if (Object.keys(existingFiles).length > 0) {
+      coderCtx["existing_file_contents"] = existingFiles;
+    }
+
     const fixedCode = await runAgentLM(model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token);
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
@@ -506,6 +570,16 @@ export async function runPipeline(
     const context = await readAgentContext(client, sessionId, agent.name, agent.readStages);
     if (agent.name === "planner") {
       context["request"] = request;
+    }
+
+    // Inject existing workspace file contents into coder context so the model
+    // can see what already exists and produce real modifications rather than
+    // writing from scratch with no knowledge of the current codebase.
+    if (agent.name === "coder") {
+      const existingFiles = readWorkspaceFilesForCoder(workspaceRoot, stageOutputs["design"] ?? context["design"]);
+      if (Object.keys(existingFiles).length > 0) {
+        context["existing_file_contents"] = existingFiles;
+      }
     }
 
     const agentOutput = await runAgentLM(model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token);
