@@ -151,15 +151,19 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     #   so a wrong or irrelevant skill cannot reach an agent that shouldn't see it.
     skill_ids: set[str] = set(_STAGE_SKILL_MAP.get((stage, agent_name.lower()), []))
 
-    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
-    try:
-        plan = state.read_stage(session_id, "plan")
-        if isinstance(plan, dict):
-            for sid in plan.get("required_skills", []):
-                if sid in allowed:
-                    skill_ids.add(sid)
-    except Exception:
-        pass  # plan not yet written — skip dynamic injection
+    # Reviewer is an evaluator — plan-declared required_skills are a generator
+    # hint, not relevant to judging the artifact. Skip dynamic injection for
+    # the reviewer; only the static code-review skill is injected.
+    if agent_name.lower() != "reviewer":
+        allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+        try:
+            plan = state.read_stage(session_id, "plan")
+            if isinstance(plan, dict):
+                for sid in plan.get("required_skills", []):
+                    if sid in allowed:
+                        skill_ids.add(sid)
+        except Exception:
+            pass  # plan not yet written — skip dynamic injection
 
     injected: dict[str, str] = {}
     for skill_id in skill_ids:
@@ -172,9 +176,13 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
     # Inject Tier 1 memory index so agents know what decisions were made and
     # where Tier 2 knowledge lives. Agents can load Tier 2 entries on demand
     # via harness_get_memory_entry().
-    mem = memory_loader.get_memory_context()
-    if mem:
-        result["memory"] = mem
+    # Reviewer is skipped: memory is generator-side learning about producing
+    # better outputs. The evaluator must judge against the checklist, not the
+    # team's prior preferences.
+    if agent_name.lower() != "reviewer":
+        mem = memory_loader.get_memory_context()
+        if mem:
+            result["memory"] = mem
 
     return json.dumps(result)
 

@@ -197,19 +197,50 @@ def test_coder_retry_fix_instructions_not_full_review(full_session: str, db: Pat
         assert isinstance(item, str)
 
 
-# ── build_context: reviewer ───────────────────────────────────────────────────
+# ── build_context: reviewer (evaluator firewall) ─────────────────────────────
 
-def test_reviewer_gets_all_stage_outputs(full_session: str, db: Path) -> None:
+def test_reviewer_gets_only_code(full_session: str, db: Path) -> None:
     ctx = context_builder.build_context(full_session, "reviewer", db_path=db)
-    assert ctx["request"] == "add a login endpoint"
-    assert ctx["plan"] is not None
-    assert ctx["design"] is not None
     assert ctx["code"] is not None
+    assert ctx["code"]["summary"] == "impl"
 
 
 def test_reviewer_context_keys(full_session: str, db: Path) -> None:
     ctx = context_builder.build_context(full_session, "reviewer", db_path=db)
-    assert set(ctx.keys()) == {"request", "plan", "design", "code"}
+    assert set(ctx.keys()) == {"code"}
+
+
+def test_reviewer_context_has_no_request(full_session: str, db: Path) -> None:
+    ctx = context_builder.build_context(full_session, "reviewer", db_path=db)
+    assert "request" not in ctx
+
+
+def test_reviewer_context_has_no_plan_or_design(full_session: str, db: Path) -> None:
+    ctx = context_builder.build_context(full_session, "reviewer", db_path=db)
+    assert "plan" not in ctx
+    assert "design" not in ctx
+
+
+def test_reviewer_cannot_read_plan_via_stage(full_session: str, db: Path) -> None:
+    result = context_builder.read_stage_for_agent(full_session, "plan", "reviewer", db_path=db)
+    assert result is None
+
+
+def test_reviewer_cannot_read_design_via_stage(full_session: str, db: Path) -> None:
+    result = context_builder.read_stage_for_agent(full_session, "design", "reviewer", db_path=db)
+    assert result is None
+
+
+def test_reviewer_cannot_read_review_via_stage(full_session: str, db: Path) -> None:
+    # Fresh eyes each pass — reviewer does not see its own prior review.
+    result = context_builder.read_stage_for_agent(full_session, "review", "reviewer", db_path=db)
+    assert result is None
+
+
+def test_reviewer_can_read_code_via_stage(full_session: str, db: Path) -> None:
+    result = context_builder.read_stage_for_agent(full_session, "code", "reviewer", db_path=db)
+    assert result is not None
+    assert result["summary"] == "impl"
 
 
 # ── build_context: skill-builder ──────────────────────────────────────────────

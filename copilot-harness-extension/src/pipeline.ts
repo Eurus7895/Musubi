@@ -156,10 +156,14 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
 // ── Agent pipeline definition ─────────────────────────────────────────────────
 
 const AGENT_PIPELINE = [
-  { name: "planner"  as const, readStages: ["plan"]                   as const, writeStage: "plan"   },
-  { name: "designer" as const, readStages: ["plan"]                   as const, writeStage: "design" },
-  { name: "coder"    as const, readStages: ["design", "plan"]         as const, writeStage: "code"   },
-  { name: "reviewer" as const, readStages: ["code", "plan", "design"] as const, writeStage: "review" },
+  { name: "planner"  as const, readStages: ["plan"]           as const, writeStage: "plan"   },
+  { name: "designer" as const, readStages: ["plan"]           as const, writeStage: "design" },
+  { name: "coder"    as const, readStages: ["design", "plan"] as const, writeStage: "code"   },
+  // Reviewer is an evaluator — sees only the code artifact. The Python
+  // firewall (context_builder._STAGE_PERMISSIONS["reviewer"] = {"code"})
+  // blocks plan/design reads regardless; listing only "code" here avoids
+  // two wasted MCP round-trips per reviewer invocation.
+  { name: "reviewer" as const, readStages: ["code"]           as const, writeStage: "review" },
 ] as const;
 
 const MAX_CODE_ATTEMPTS = 3;
@@ -578,7 +582,8 @@ async function runCorrectionLoop(
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
-    const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code", "plan", "design"]);
+    // Evaluator firewall: reviewer sees only the (new) code artifact.
+    const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"]);
     const newReview = (await runAgentLM(
       model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
       { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },

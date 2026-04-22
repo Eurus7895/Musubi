@@ -177,6 +177,60 @@ def test_no_required_skills_falls_back_to_static_map(monkeypatch: pytest.MonkeyP
     assert "python" in result.get("injected_skills", {})
 
 
+# ── reviewer evaluator firewall: no memory, no dynamic skill injection ───────
+
+def _patch_server_with_memory(monkeypatch: pytest.MonkeyPatch, plan_extra: dict | None = None) -> None:
+    """Like _patch_server but also stubs memory_loader to return non-empty memory."""
+    import memory_loader
+    _patch_server(monkeypatch, plan_extra)
+    monkeypatch.setattr(
+        memory_loader, "get_memory_context",
+        lambda: {"index": "# MEMORY.md\n\narchitecture.md — decisions"},
+    )
+    # read_stage_for_agent for reviewer reading "code" returns a code stage.
+    monkeypatch.setattr(
+        context_builder, "read_stage_for_agent",
+        lambda sid, stage, agent, db_path=None: (
+            {"summary": "code output"} if stage == "code" and agent == "reviewer" else None
+        ),
+    )
+
+
+def test_reviewer_no_memory_injection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reviewer must not receive Tier 1 memory — it is generator-side learning."""
+    _patch_server_with_memory(monkeypatch)
+    result = json.loads(server.harness_read_stage("sess-rv1", "code", "reviewer"))
+    assert "memory" not in result
+
+
+def test_reviewer_still_gets_code_review_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Static-map injection remains: reviewer reading code still gets code-review skill."""
+    _patch_server_with_memory(monkeypatch)
+    result = json.loads(server.harness_read_stage("sess-rv2", "code", "reviewer"))
+    assert "code-review" in result.get("injected_skills", {})
+
+
+def test_reviewer_no_required_skills_dynamic_injection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reviewer ignores plan.required_skills — those are a generator hint."""
+    _patch_server_with_memory(monkeypatch, {"required_skills": ["testing"]})
+    result = json.loads(server.harness_read_stage("sess-rv3", "code", "reviewer"))
+    injected = result.get("injected_skills", {})
+    assert "code-review" in injected       # static map still fires
+    assert "testing" not in injected       # dynamic injection blocked for reviewer
+
+
+def test_coder_still_gets_memory_injection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guardrail: the reviewer-skip logic must not accidentally suppress memory for other agents."""
+    _patch_server_with_memory(monkeypatch)
+    # Override read_stage_for_agent back to the default behavior used by coder tests.
+    monkeypatch.setattr(
+        context_builder, "read_stage_for_agent",
+        lambda *a, **k: {"summary": "design output"},
+    )
+    result = json.loads(server.harness_read_stage("sess-cd1", "design", "coder"))
+    assert "memory" in result
+
+
 # ── verifier: required_skills is optional and validated as list ───────────────
 
 def test_planner_output_with_required_skills_passes_validation() -> None:
