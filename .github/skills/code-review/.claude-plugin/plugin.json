@@ -1,9 +1,0 @@
-{
-  "name": "code-review",
-  "description": "Reviews code for correctness, security, type safety, and convention compliance",
-  "version": "1.0.0",
-  "author": {
-    "name": "CopilotHarness",
-    "email": "noreply@copilot-harness.local"
-  }
-}
