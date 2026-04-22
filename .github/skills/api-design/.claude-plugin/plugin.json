@@ -1,9 +1,0 @@
-{
-  "name": "api-design",
-  "description": "Designs REST APIs and MCP tool interfaces with consistent conventions",
-  "version": "1.0.0",
-  "author": {
-    "name": "CopilotHarness",
-    "email": "noreply@copilot-harness.local"
-  }
-}

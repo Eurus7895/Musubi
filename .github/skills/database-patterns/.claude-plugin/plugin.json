@@ -1,9 +1,0 @@
-{
-  "name": "database-patterns",
-  "description": "SQLite schema design, query patterns, and state management for append-only session storage",
-  "version": "1.0.0",
-  "author": {
-    "name": "CopilotHarness",
-    "email": "noreply@copilot-harness.local"
-  }
-}

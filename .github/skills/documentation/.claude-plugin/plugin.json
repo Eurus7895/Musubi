@@ -1,9 +1,0 @@
-{
-  "name": "documentation",
-  "description": "Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats",
-  "version": "1.0.0",
-  "author": {
-    "name": "CopilotHarness",
-    "email": "noreply@copilot-harness.local"
-  }
-}

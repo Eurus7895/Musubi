@@ -1,9 +1,0 @@
-{
-  "name": "testing",
-  "description": "pytest-based testing procedures for harness components — unit, integration, and correction loop tests",
-  "version": "1.0.0",
-  "author": {
-    "name": "CopilotHarness",
-    "email": "noreply@copilot-harness.local"
-  }
-}
