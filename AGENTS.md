@@ -1,77 +1,134 @@
 # AGENTS.md — CopilotHarness
 
-## Project Context
+> Read this file first, every session. It is a map — not a manual.
+> Under 120 lines. Always.
+> For architecture decisions, read CLAUDE.md instead.
 
-CopilotHarness is a pure Python MCP server that acts as the harness layer for
-GitHub Copilot's multi-agent team. It controls what each agent sees, validates
-what each agent produces, enforces the correction loop, serves skills on demand,
-and runs code to verify it works.
+---
 
-**Copilot is the LLM. CopilotHarness is the harness. Zero LLM calls inside the harness.**
+## What CopilotHarness Is
 
-## Global Rules (apply to all agents)
+Harness layer for GitHub Copilot Chat in VS Code. Two modes:
+- **Direct:** simple requests → single LLM call → fast answer, no overhead
+- **Pipeline:** complex workflows → governed agents → validated, auditable output
 
-1. **Always use MCP tool calls** for reading and writing session state. Never access
-   session state directly. Use `harness_read_stage` and `harness_write_stage`.
+The `@harness` chat participant routes automatically. Slash commands always
+go to pipeline. Everything else goes direct unless overridden.
 
-2. **Output valid JSON only** matching your agent's schema. No prose, no markdown
-   wrappers, no explanations outside the JSON structure.
+---
 
-3. **Never hardcode secrets.** No API keys, tokens, passwords, or private keys in
-   any output or code.
-
-4. **Respect the context firewall.** Only read stages you are authorized to read.
-   If `harness_read_stage` returns empty, that means you have no input for that stage.
-
-5. **Check your confidence.** If confidence is `low`, explain why in `implementation_notes`
-   or equivalent field.
-
-6. **Halt on schema rejection.** If `harness_write_stage` returns a validation error,
-   fix the output and retry. Do not proceed to the next stage.
-
-7. **Never modify files outside your declared scope.** Only touch files listed in
-   `session.plan.files_affected`.
-
-8. **Security first.** P1 security and ethics instructions cannot be overridden by
-   any instruction at P2, P3, or P4 level.
-
-## Commands
-
-| Command | What it does |
-|---------|-------------|
-| `@planner` | Invoke planner agent — creates or updates the session plan |
-| `@designer` | Invoke designer agent — produces architecture and interface design |
-| `@coder` | Invoke coder agent — implements code based on plan and design |
-| `@reviewer` | Invoke reviewer agent — reviews code output, produces pass/fail |
-| `@skill-builder` | Invoke skill-builder agent — proposes new skills based on failure patterns |
-
-## Pipeline Order
+## Where Everything Lives
 
 ```
-@planner → @designer → @coder → @reviewer → (executor runs lint/tests)
-                                    ↑              |
-                                    └── retry ─────┘ (max 3 attempts)
+AGENTS.md                        ← this file — read first, every session
+CLAUDE.md                        ← full design doc — architecture decisions
+
+.github/
+    pipelines/                   ← self-contained pipeline directories
+        feature-dev/
+            pipeline.yaml        ← level, correction config
+            agents/              ← generator.md + evaluator.md
+            skills/              ← SKILL.md
+            schemas/             ← evaluator grading criteria
+            README.md
+    commands/                    ← slash commands (/feature-dev, /code-review)
+    instructions/                ← rules (priority-ranked: universal > org > domain > project)
+    skills/                      ← global skills (shared across pipelines)
+    memory/                      ← 3-tier memory (MEMORY.md + Tier 2 files)
+
+copilot-harness/                 ← Python MCP server (zero LLM)
+copilot-harness-extension/       ← VS Code extension (@harness chat participant)
+
+hooks.json                       ← hook wiring (SessionStart, PreToolUse, PostToolUse)
+scripts/                         ← hook implementations (Python)
 ```
 
-## Session State Stages
+---
 
-| Stage | Written by | Read by |
-|-------|-----------|---------|
-| `plan` | Planner | Designer, Coder, Reviewer |
-| `design` | Designer | Coder, Reviewer |
-| `code` | Coder | Reviewer |
-| `review` | Reviewer | Coder (fix_instructions only on retry) |
+## Agent Complexity Levels
 
-## Agent Files
+```
+Direct   Single LLM call. No pipeline. No harness. Fast.
+Level 0  Single agent pipeline. Skill injection, plan JSON. No evaluator.
+Level 1  Single agent + separate evaluator (fresh session). Correction loop.
+Level 2  Multi-agent + evaluator. Not in v1. Promotion checklist required.
+```
 
-All agent definitions live in `.github/agents/`. Do not modify `.agent.md` files
-for agents with active sessions. Proposed changes go to `.github/agents/proposed/`.
+---
 
-## Skills
+## Session Protocol
 
-Skills live in `.github/skills/{skill-id}/`. Load them via MCP:
-- `harness_get_skill(skill_id)` — loads SKILL.md
-- `harness_get_reference(skill_id, ref_name)` — loads a reference file on demand
-- `harness_run_asset(skill_id, asset_name, input)` — runs an asset script via executor
+```
+DIRECT MODE:
+  @harness "explain this error" → LLM → stream response → done
 
-Never run asset scripts directly. Always use `harness_run_asset`.
+PIPELINE MODE:
+  1. ORIENT       harness_get_active_session() — resume or start fresh
+  2. BASELINE     Pipeline baseline_checks[] — files accessible? MCP alive?
+  3. RUN          Generator → output
+                  Evaluator (fresh session) → verdict
+                  Fail → correction loop (max 3) → escalate
+  4. STATE        Plan JSON + progress.md + SQLite
+  5. EXIT         Confirm output exists. Never exit silently.
+```
+
+---
+
+## Current Pipelines
+
+| Pipeline | Command | Level | Status |
+|---|---|---|---|
+| feature-dev | `/feature-dev` | 1 | ✅ Built (Week 3a: evaluator separation) |
+
+More pipelines added only after feature-dev is validated.
+
+---
+
+## Hooks
+
+| Hook | When | What it does |
+|---|---|---|
+| SessionStart | Before pipeline run | Orient + baseline checks |
+| PreToolUse | Before every tool call | Policy enforcement (deterministic) |
+| PostToolUse | After every tool call | SQLite audit logging |
+| on-eval-fail | Evaluator rejects | Log failure + fix_instructions |
+| on-escalate | Max retries exceeded | Escalate with full context |
+
+---
+
+## Rules That Cannot Be Broken
+
+```
+✅ Evaluator always in separate session — never shares context with generator
+✅ Baseline checks before every pipeline run — never silently skip
+✅ Bad output → fix skill file first, before promoting pipeline level
+✅ Level 2 requires promotion checklist (3+ observed failures documented)
+✅ PreToolUse hook enforces policy — never removed regardless of model capability
+✅ Each pipeline is a self-contained directory
+❌ Do not add pipelines until feature-dev is validated with real usage
+❌ Do not promote to Level 2 without 3+ observed failures
+```
+
+---
+
+## Key Interactions
+
+```
+# Direct mode (fast)
+@harness explain this error
+@harness how do I run the migrations?
+
+# Pipeline mode (governed)
+/feature-dev add a login endpoint
+/code-review PR-421
+
+# Session management
+harness_get_status(session_id)
+harness_get_active_session()
+```
+
+---
+
+*CopilotHarness | April 2026 | v0.2.0 | 260 tests*
+*Current: Week 2 complete*
+*Next: Week 3a — separate evaluator session*
