@@ -14,6 +14,9 @@ GitHub Copilot's multi-agent team — it controls what each agent sees, validate
 what each agent produces, enforces the correction loop, serves skills on demand,
 and runs code to verify it actually works.
 
+> Public-facing summary lives in [`README.md`](./README.md). This file is the
+> internal source of truth for architecture, schemas, and the build roadmap.
+
 ---
 
 ## Harness Engineering Principle
