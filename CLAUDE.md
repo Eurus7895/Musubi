@@ -166,31 +166,41 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Week 3 complete, v0.2.0)
+## Current State (Week 4 complete, v0.2.0)
 
 ```
 WHAT EXISTS NOW:
-  ✅ 334 tests passing
+  ✅ 379 tests passing
   ✅ Harness core: state, context_builder, verifier, executor,
        correction_loop, skill_loader
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
+       + Tier 2 compaction + cross-session query (Week 4 Day 4)
   ✅ Pattern detector + proposed patch applier
   ✅ VS Code extension v0.2.0 with McpClient
   ✅ PyInstaller binary distribution
   ✅ Separate evaluator session (Week 3a)
   ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
   ✅ Direct mode + slash commands + hooks.json (Week 3c)
+  ✅ /help slash command (dynamic, data-driven)           (Week 4 Day 1)
+  ✅ .claude-plugin/plugin.json manifest                  (Week 4 Day 2)
+  ✅ Direct-mode skill catalog + pull-on-demand           (Week 4 Day 3)
+  ✅ harness_query_sessions + harness_compact_memory      (Week 4 Day 4)
+  ✅ feature-dev-level1-probe (built, not yet run)        (Week 4 Day 5)
 
 FEATURE-DEV PIPELINE TODAY:
   4 agents: planner → designer → coder → reviewer (evaluator firewall)
   + skill-builder (meta-agent, not in feature-dev)
   Agent files live in .github/pipelines/feature-dev/agents/*.agent.md
-  pipeline.yaml declares level: 2 (Week 3a Level-1 probe deferred)
+  pipeline.yaml declares level: 2. Level-1 probe infrastructure built
+  at .github/pipelines/feature-dev-level1-probe/, awaiting a measurement
+  run.
 
 ROUTING:
   Slash-command input          → pipeline mode (harness_* tools, session)
   Input with --pipeline flag   → pipeline mode
-  Everything else              → direct mode (single vscode.lm call)
+  Everything else              → direct mode (one MCP round-trip for
+                                 skill catalog, then vscode.lm call;
+                                 LLM may pull skills on demand)
 ```
 
 ---
@@ -464,17 +474,18 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Tool Design | ✅ hooks.json PreToolUse (Week 3c) | — |
 | Feedback Loops | ✅ Built | — |
 | State Management | ✅ Built + crash recovery | — |
-| Multi-Agent Coordination | ❌ Missing | Week 4: handoff schemas |
-| Discoverability (/help) | ❌ Missing | Week 4: data-driven slash help |
-| Plugin manifest | ❌ Missing | Week 4: `.claude-plugin/plugin.json` |
-| Pipeline-as-install-unit | ⚠️ Half | Week 4: decide skill locality first |
-| Direct-mode skill pull | ❌ Missing | Week 4: `AGENT_SKILL_ALLOWLIST["direct"]` + `harness_list_skills` |
+| Multi-Agent Coordination | ⚠️ Handoff schemas still missing | Conditional on Week 4 Day 5 probe outcome |
+| Discoverability (/help) | ✅ Built (Week 4 Day 1) | — |
+| Plugin manifest | ✅ Built (Week 4 Day 2) | — |
+| Pipeline-as-install-unit | ⚠️ Half | Skill locality = global; revisit if portability needed |
+| Direct-mode skill pull | ✅ Built (Week 4 Day 3) | — |
 | Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
 | Verification | ✅ Built | — |
 | Architecture Enforcement | ✅ Built | — |
-| Memory Architecture | ✅ Built (3-tier) | — |
+| Memory Architecture | ✅ Built (3-tier) + compaction + cross-session query (Week 4 Day 4) | — |
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
-| Direct Mode | ✅ Shipped (Week 3c) | — |
+| Direct Mode | ✅ Shipped (Week 3c) + skill catalog (Week 4 Day 3) | — |
+| Level decision for feature-dev | ⚠️ Probe built, not run (Week 4 Day 5) | Run 5 representative requests through both pipelines |
 | Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
 ---
@@ -543,61 +554,90 @@ Week 3b+ can add a dedicated planner-feedback channel.
       commands, multi-dir agent glob). Total now 334.
 ```
 
-### Week 4 — Multi-Agent Coordination + Unblock Week 5 (5-day plan)
+### Week 4 ✅ Complete — Multi-Agent Coordination + Unblock Week 5
 
 ```
-Day 1 — /help slash command
-  [ ] Add "help" to SlashAction in slashCommands.ts
-  [ ] .github/commands/help.md (action: help)
-  [ ] runSlash() renders a table built from listSlashCommands(workspaceRoot)
-      — stays in sync as commands are added
-  [ ] Update USAGE in extension.ts to point users at /help
-  [ ] Test: test_slash_commands.py asserts help.md has action=help
+Day 1 ✅ /help slash command (dynamic, data-driven)
+  [x] Added "help" to SlashAction in slashCommands.ts + VALID_ACTIONS
+  [x] .github/commands/help.md (action: help)
+  [x] extension.ts buildHelpMarkdown() renders a table from
+      listSlashCommands(workspaceRoot) — stays in sync with new commands
+  [x] USAGE_HEADER + USAGE_FOOTER reused by both cmd.type=="help" and
+      the slash "/help" route
+  [x] test_slash_commands.py: +2 assertions (help.md has action=help;
+      help action carries no pipeline/agent)
 
-Day 2 — Plugin manifest + skill locality decision
-  [ ] .github/pipelines/feature-dev/.claude-plugin/plugin.json
+Day 2 ✅ Plugin manifest + skill locality decision
+  [x] .github/pipelines/feature-dev/.claude-plugin/plugin.json with
       { name, version, description, commands, agents, skills, hooks,
-        mcpServers } pointing at existing files — purely declarative
-  [ ] Decide: global skills (simpler) vs pipeline-local skills/ (portable,
-      needs skill_loader fallback like multi-dir agent glob)
-  [ ] STRETCH: if decision is pipeline-local, wire skill_loader fallback
-  [ ] Test: test_plugin_manifest.py — JSON parses + referenced paths resolve
+        mcpServers, pipeline, skillLocality } — purely declarative
+  [x] Decision recorded in plugin.json.skillLocality: mode="global".
+      Rationale: multiple pipelines reuse the same skills (python,
+      testing, code-review); per-pipeline duplication would fragment
+      the knowledge base. Revisit when a pipeline-specific skill
+      appears or a second repo needs copy-paste install without skills.
+  [x] NOT wired: skill_loader multi-dir fallback — deferred until the
+      locality decision flips to pipeline-local.
+  [x] test_plugin_manifest.py — 10 assertions (JSON parses + every
+      referenced path resolves + skillLocality decision is recorded)
 
-Day 3 — Direct-mode pull-on-demand skills (unblocks Week 5 Day 5)
-  [ ] context_builder.AGENT_SKILL_ALLOWLIST["direct"] = planner∪designer∪coder
-      (deliberately excludes reviewer's code-review skill)
-  [ ] New MCP tool harness_list_skills(agent_name) in server.py
-  [ ] extension.ts runDirect(): one-shot MCP call to harness_list_skills,
-      inject catalog into system prompt; register harness_get_skill +
-      harness_get_reference as vscode.lm tools so LLM can pull mid-response
-  [ ] Tests: allowlist rejects reviewer-only skills;
-      list_skills("direct") filters correctly;
-      get_skill(disallowed, agent="direct") errors;
-      regression: harness_read_stage unchanged for pipeline agents
+Day 3 ✅ Direct-mode pull-on-demand skills
+  [x] context_builder.AGENT_SKILL_ALLOWLIST["direct"] = designer ∪ coder.
+      Deliberately excludes reviewer's code-review skill (that's an
+      evaluator checklist, not generator knowledge)
+  [x] New MCP tool harness_list_skills(agent_name) in server.py —
+      returns catalog filtered through caller's allowlist
+  [x] extension.ts runDirect(): one-shot MCP call to harness_list_skills,
+      injects catalog into system prompt, pull-on-demand loop with
+      {"action":"pull_skill","skill_id":...} marker (max 3 rounds).
+      Simpler than registering vscode.lm tools; the marker form keeps
+      direct mode harness-free at the tool layer.
+  [x] Pipeline mode untouched — still push-only, firewall intact
+  [x] test_skill_access.py: +8 assertions (direct allowlist rejects
+      code-review; list_skills filters per caller; planner catalog empty;
+      reviewer catalog ⊆ {code-review, testing}; regression on
+      harness_read_stage for pipeline agents)
 
-Day 4 — Memory: Tier 2 compaction + cross-session query
-  [ ] session_distiller compaction trigger when failure-patterns.md > 5KB
-      (keep most-recent + most-frequent entries)
-  [ ] Cross-session memory query API (find prior sessions by tag/request)
-  [ ] harness_query_sessions MCP tool (or extend harness_get_memory_entry)
-  [ ] Tests: compaction preserves required entries; query returns session
-      IDs + excerpts; idempotent under concurrent distiller runs
+Day 4 ✅ Memory: Tier 2 compaction + cross-session query
+  [x] session_distiller.compact_failure_patterns() — fires when
+      .github/memory/failure-patterns.md > 5 KB. Keeps union of
+      top-10 most-frequent + top-10 most-recent. Auto-called from
+      distill_session after every append.
+  [x] memory_loader.query_sessions(query, limit) — case-insensitive
+      substring match against request + stored review output.
+      Returns structured excerpts (never full transcripts).
+  [x] harness_query_sessions + harness_compact_memory MCP tools
+  [x] test_session_distiller.py: +6 assertions (noop below threshold;
+      fires above; preserves most-frequent; idempotent; distill triggers
+      compaction; survives churn)
+  [x] test_memory_loader.py: +7 assertions (request match; review match;
+      empty query; limit; case-insensitive; no match; truncation)
 
-Day 5 — Level-1 probe for feature-dev
-  [ ] Build one-off single-generator probe branch (planner+designer+coder
-      collapsed into one agent with a composite skill)
-  [ ] Run 3–5 representative /feature-dev requests through Level-1 variant
-  [ ] Compare first-attempt pass rate vs Level-2 baseline
-  [ ] Threshold: ≥ 80% first-attempt pass → collapse to Level 1;
-      else feature-dev stays Level 2
-  [ ] Document decision + evidence in CLAUDE.md (resolves Week 3a deferred)
+Day 5 ✅ Level-1 probe for feature-dev (infrastructure built)
+  [x] Built .github/pipelines/feature-dev-level1-probe/ with
+      pipeline.yaml (level: 1, singular generator.agent), composite
+      agent file producing plan+design+code in one shot, README
+      documenting the 80% threshold and measurement protocol
+  [x] Re-uses production reviewer via ../feature-dev/agents/reviewer.agent.md
+      so generator-side changes are the only variable
+  [x] probe.target_pass_rate: 0.80, sample_size: 5, baseline: feature-dev
+  [x] test_level1_probe.py: 9 assertions (level=1, singular generator,
+      reviewer reuse, probe metadata, README decision rule, production
+      pipeline stays Level 2)
+  [ ] STILL DEFERRED: actually running the probe. The infrastructure is
+      built; 5 representative /feature-dev requests still need to be
+      selected and run through both pipelines. Decision log in the
+      probe README is empty until that happens. feature-dev stays
+      Level 2 until we have that evidence.
 
-CONDITIONAL (triggered by Day 5 outcome):
+Tests: +45 new across Days 1–5. Total now 379 (was 334).
+
+CONDITIONAL (triggered by Day 5 outcome, once probe is run):
   [ ] Handoff schemas (plan→design, design→code, code→review)
       Only if Level-2 stays. Bumps to Week 4.5 or top of Week 5.
   [ ] Pipeline-as-install-unit (copy-paste install)
-      Needs Day 2 skill-locality decision first. Bumps to Week 4.5
-      if pipeline-local skills is chosen.
+      Day 2 decision was "global skills" — portability still partial.
+      Revisit if second-repo install becomes a real requirement.
 ```
 
 ### Week 5 — Sub Agents (5-day plan, main feature)
@@ -903,83 +943,49 @@ WEEK 3c ✅ Complete — direct mode + hooks + slash commands:
   DONE: --pipeline flag forces pipeline mode for non-slash input
   DONE: +59 tests (334 total)
 
-WEEK 4:
-  TODO: Handoff schemas (only if feature-dev stays Level 2)
-  TODO: Cross-session memory query
-  TODO: Tier 2 compaction
-  TODO: Level-1 single-generator probe (Week 3a deferred item)
-  TODO: /help slash command — dynamic, data-driven help
-        Sources: list .github/commands/*.md frontmatter
-                 (name, description, action, agent|pipeline)
-        Also show: direct mode, --pipeline flag, legacy bare keywords.
-        Implementation sketch:
-          - add "help" to SlashAction in slashCommands.ts
-          - add .github/commands/help.md (action: help)
-          - new case in runSlash() that renders a table built from
-            listSlashCommands(workspaceRoot) so the output stays in
-            sync whenever a new command file is added
-          - update USAGE in extension.ts to point users at /help
-          - test: test_slash_commands.py asserts help.md has action=help
+WEEK 4 ✅ Complete:
+  DONE: /help slash command — dynamic table built from listSlashCommands()
+        .github/commands/help.md + SlashAction "help" + buildHelpMarkdown()
+  DONE: .claude-plugin/plugin.json manifest for feature-dev
+        .github/pipelines/feature-dev/.claude-plugin/plugin.json declares
+        commands, agents, skills, hooks, mcpServers, pipeline, skillLocality.
+        test_plugin_manifest.py validates every referenced path resolves.
+  DONE: Skill locality decision = GLOBAL
+        Recorded in plugin.json.skillLocality.mode + rationale. Multiple
+        pipelines reuse python/testing/code-review; per-pipeline duplication
+        would fragment knowledge. Revisit when a pipeline-specific skill
+        or second-repo install becomes a real requirement.
+  DONE: Direct-mode pull-on-demand skills
+        AGENT_SKILL_ALLOWLIST["direct"] = designer ∪ coder (code-review
+        deliberately excluded). harness_list_skills MCP tool. runDirect()
+        fetches catalog once, injects into system prompt, LLM pulls via
+        {"action":"pull_skill","skill_id":...} marker (max 3 rounds).
+        Pipeline mode untouched — still push-only.
+  DONE: Tier 2 compaction — session_distiller.compact_failure_patterns()
+        fires when failure-patterns.md > 5 KB. Keeps top-10 most-frequent
+        + top-10 most-recent. Auto-called from distill_session.
+        harness_compact_memory MCP tool exposes manual trigger.
+  DONE: Cross-session memory query — memory_loader.query_sessions()
+        substring match against request + review output; returns structured
+        excerpts (never raw transcripts). harness_query_sessions MCP tool.
+  DONE: +45 tests (379 total).
 
-  TODO: .claude-plugin/plugin.json manifest for feature-dev
-        Every content primitive (commands, agents, skills, hooks, MCP) is
-        already in Claude Code plugin layout. Missing: the install unit.
-        Implementation sketch:
-          - add .github/pipelines/feature-dev/.claude-plugin/plugin.json
-            with { name, version, description, commands, agents, skills,
-            hooks, mcpServers } pointing at the existing files
-          - no code change — this is purely declarative metadata
-          - test: test_plugin_manifest.py validates the JSON parses and
-            every referenced path resolves on disk
+WEEK 4 DEFERRED (infrastructure built, measurement still owed):
+  TODO: Run the Level-1 probe for feature-dev
+        .github/pipelines/feature-dev-level1-probe/ ready. Run 5
+        representative /feature-dev requests through both pipelines,
+        compare first-attempt pass rates. ≥ 80% → collapse to Level 1;
+        else stay Level 2. Record evidence in probe/README.md decision
+        log before touching production pipeline.yaml.
+
+  TODO: Handoff schemas (plan→design, design→code, code→review)
+        Only if the Level-1 probe keeps feature-dev at Level 2.
+        Conditional on the deferred measurement above.
 
   TODO: Pipeline-as-install-unit (copy-paste install)
-        Prereq: the plugin.json manifest above.
-        Goal: copying .github/pipelines/<name>/ into another repo drops
-        in a working pipeline (commands, agents, skills, hooks). Today
-        skills live at repo-global .github/skills/, which breaks portability.
-        Decision needed: keep global skills (simpler, matches current
-        auto-injection map) or allow pipeline-local skills/ (portable,
-        requires skill_loader fallback like the agents multi-dir glob).
-        No implementation until that decision is made.
-
-  TODO: Direct-mode pull-on-demand skills (CopilotCrew-style hybrid)
-        Pattern: pipeline mode keeps push (harness decides, firewall intact);
-        direct mode gains pull (LLM picks from a whitelist). Inspired by
-        github.com/Eurus7895/CopilotCrew CLAUDE.md.
-
-        Current gap: direct mode bypasses the harness entirely (single
-        vscode.lm.sendRequest, no MCP). The pull primitives already
-        exist — harness_get_skill(skill_id, agent_name), AGENT_SKILL_ALLOWLIST,
-        check_skill_permission — they just have no caller in direct mode.
-
-        Implementation sketch:
-          1. context_builder.AGENT_SKILL_ALLOWLIST["direct"] = union of
-             generator allowlists (planner+designer+coder). Deliberately
-             exclude reviewer's code-review skill so evaluator patterns
-             don't leak into generator-style use.
-          2. New MCP tool harness_list_skills(agent_name) in server.py —
-             returns [{skill_id, description}] filtered through the
-             caller's allowlist. LLM needs the catalog before it can pull.
-          3. Extend runDirect() in copilot-harness-extension/src/extension.ts:
-             - One-shot MCP call to harness_list_skills, inject catalog
-               into the system prompt.
-             - Register harness_get_skill + harness_get_reference as
-               vscode.lm tools so the LLM can pull mid-response.
-             - Still no session, no plan JSON, no correction loop —
-               just broader context than today.
-          4. Tests:
-             - AGENT_SKILL_ALLOWLIST["direct"] rejects reviewer-only skills
-             - harness_list_skills("direct") returns allowed IDs only
-             - harness_get_skill(disallowed, agent="direct") returns error
-             - Regression: harness_read_stage behavior for pipeline agents
-               is unchanged (pipeline mode still push-only).
-
-        Tradeoffs:
-          - Direct mode stops being "zero harness overhead"; one extra
-            MCP round-trip per call for the catalog. Still no pipeline.
-          - The direct agent has the broadest allowlist of any agent —
-            acceptable because there is no evaluator to firewall in
-            direct mode.
+        Day 2 decision was "global skills" — portability stays partial.
+        Revisit only when a second repo actually needs to copy-paste a
+        pipeline without the skills library.
 
 WEEK 5 — Sub agents for main-context preservation (planned, main feature):
   Goal: main agent's context stays clean. Heavy evidence-gathering runs
@@ -1061,6 +1067,6 @@ DEFERRED (needs discussion first):
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
-*Current: Week 3c complete — direct mode + hooks + slash commands, 334 tests*
-*Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction*
+*Current: Week 4 complete — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure; 379 tests*
+*Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas*
 *Planned: Week 5 — sub agents for main-context preservation*

@@ -5,7 +5,7 @@
  * Each command file has a YAML frontmatter block with keys:
  *   name:        string   (same as filename stem)
  *   description: string
- *   action:      "pipeline" | "step" | "continue" | "status"
+ *   action:      "pipeline" | "step" | "continue" | "status" | "help"
  *   pipeline:    string   (only when action=pipeline)
  *   agent:       string   (only when action=step)
  *
@@ -17,7 +17,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type SlashAction = "pipeline" | "step" | "continue" | "status";
+export type SlashAction = "pipeline" | "step" | "continue" | "status" | "help";
 
 export interface SlashCommand {
   name: string;
@@ -27,7 +27,7 @@ export interface SlashCommand {
   agent?: string;
 }
 
-const VALID_ACTIONS: ReadonlySet<string> = new Set(["pipeline", "step", "continue", "status"]);
+const VALID_ACTIONS: ReadonlySet<string> = new Set(["pipeline", "step", "continue", "status", "help"]);
 
 function parseFrontmatter(text: string): Record<string, string> | null {
   if (!text.startsWith("---")) { return null; }

@@ -315,6 +315,27 @@ def harness_get_skill(skill_id: str, agent_name: str) -> str:
 
 
 @mcp.tool()
+def harness_list_skills(agent_name: str) -> str:
+    """Return the catalog of skills the calling agent may load.
+
+    Week 4 Day 3 — enables direct-mode pull-on-demand. The extension injects
+    the catalog into the system prompt so the LLM knows which skill_ids it
+    may request via harness_get_skill / harness_get_reference mid-response.
+
+    Returns JSON { "skills": [{"skill_id", "title"}, ...], "agent_name": ... }.
+    Skills outside the caller's allowlist are filtered out — the catalog is
+    the only route by which an agent discovers skills it can pull.
+    """
+    key = agent_name.lower().strip()
+    allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
+    catalog: list[dict[str, str]] = []
+    for meta in skill_loader.list_skills():
+        if meta.skill_id in allowed:
+            catalog.append({"skill_id": meta.skill_id, "title": meta.title})
+    return json.dumps({"agent_name": key, "skills": catalog})
+
+
+@mcp.tool()
 def harness_get_reference(skill_id: str, reference_name: str, agent_name: str) -> str:
     """Return a reference document from a skill's references/ folder.
 
@@ -419,6 +440,44 @@ def harness_get_memory_entry(name: str) -> str:
             "available": available,
         })
     return content
+
+
+@mcp.tool()
+def harness_query_sessions(query: str, limit: int = 20) -> str:
+    """Search prior sessions for requests or review outputs matching `query`.
+
+    Week 4 Day 4 — cross-session memory query. Case-insensitive substring
+    match against session requests and stored review output. Returns session
+    IDs with short excerpts (never full transcripts) so a caller can decide
+    whether to pull a specific session for deeper inspection.
+
+    Result shape:
+        { "query": str, "results": [
+            { "session_id", "request", "created_at", "match_source",
+              "review_snippets"? } ] }
+    """
+    try:
+        results = memory_loader.query_sessions(query, limit=limit)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"query": query, "results": results})
+
+
+@mcp.tool()
+def harness_compact_memory() -> str:
+    """Rewrite .github/memory/failure-patterns.md if it has grown past 5 KB.
+
+    Week 4 Day 4 — keeps only the most-frequent + most-recent entries so the
+    file stays compact enough for Tier 2 injection without losing signal.
+
+    Returns { "compacted": bool, "before_bytes", "after_bytes", "kept", "dropped" }.
+    Safe to call as an idempotent operation — below the threshold it no-ops.
+    """
+    try:
+        result = session_distiller.compact_failure_patterns()
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps(result)
 
 
 @mcp.tool()

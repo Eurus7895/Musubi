@@ -7,16 +7,25 @@ Tier 2 — .github/memory/*.md (loaded on demand via get_tier2_entry)
     Distilled decisions and past failure patterns. Never auto-loaded in full;
     agents request specific entries via harness_get_reference("memory", name).
 
-Zero LLM calls. Pure file I/O.
+Tier 3 — cross-session query (Week 4 Day 4)
+    query_sessions() searches the sessions table for requests / review excerpts
+    matching a keyword. Returns session IDs + short excerpts, never full
+    transcripts, to keep the main-agent context small.
+
+Zero LLM calls. Pure file I/O + structured DB reads.
 
 Public API:
     get_tier1_index(repo_root?) → str | None
     get_tier2_entry(name, repo_root?) → str | None
     list_tier2_entries(repo_root?) → list[str]
     get_memory_context(repo_root?) → dict
+    query_sessions(query, limit=?, db_path=?) → list[dict]
 """
 
+import json
 from pathlib import Path
+
+from storage import db as _db
 
 # memory_loader.py lives in copilot-harness/ → repo root is one level up
 _DEFAULT_REPO_ROOT = Path(__file__).parent.parent
@@ -79,3 +88,95 @@ def get_memory_context(repo_root: Path | None = None) -> dict:
         "tier1_index": tier1,
         "tier2_available": list_tier2_entries(repo_root),
     }
+
+
+# ── Week 4 Day 4: cross-session memory query ────────────────────────────────
+
+_EXCERPT_LEN = 160
+
+
+def _extract_issue_snippets(review_json: str, max_snippets: int = 3) -> list[str]:
+    """Pull short issue descriptions from a stored review output row."""
+    try:
+        review = json.loads(review_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(review, dict):
+        return []
+    issues = review.get("issues") or []
+    snippets: list[str] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        desc = issue.get("description", "")
+        if isinstance(desc, str) and desc:
+            snippets.append(desc[:_EXCERPT_LEN])
+        if len(snippets) >= max_snippets:
+            break
+    return snippets
+
+
+def query_sessions(
+    query: str,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return prior sessions whose request or review output matches the query.
+
+    Case-insensitive substring match. Each result is structured and capped —
+    callers receive session IDs + short excerpts, never the raw transcript.
+
+    Result shape:
+        {
+            "session_id": "abc123",
+            "request": "<full request>",
+            "created_at": "<iso>",
+            "match_source": "request" | "review" | "both",
+            "review_snippets": ["...", ...]   # present when review matched
+        }
+
+    Useful for an agent that wants to answer "has this class of task come up
+    before?" without re-reading the whole DB.
+    """
+    needle = (query or "").strip().lower()
+    if not needle:
+        return []
+
+    _db.init_db(db_path)
+    sessions = _db.get_all_sessions(db_path)
+    results: list[dict] = []
+
+    for session in sessions:
+        sid = session["session_id"]
+        request_text = session.get("request", "") or ""
+        request_matches = needle in request_text.lower()
+
+        review_row = _db.get_latest_written_stage_row(sid, "review", db_path)
+        review_matches = False
+        review_snippets: list[str] = []
+        if review_row and review_row.get("output"):
+            output = review_row["output"]
+            if needle in output.lower():
+                review_matches = True
+                review_snippets = _extract_issue_snippets(output)
+
+        if not (request_matches or review_matches):
+            continue
+
+        source = (
+            "both" if request_matches and review_matches
+            else ("request" if request_matches else "review")
+        )
+        result: dict = {
+            "session_id": sid,
+            "request": request_text[:_EXCERPT_LEN * 2],
+            "created_at": session.get("created_at"),
+            "match_source": source,
+        }
+        if review_snippets:
+            result["review_snippets"] = review_snippets
+        results.append(result)
+        if len(results) >= limit:
+            break
+
+    return results

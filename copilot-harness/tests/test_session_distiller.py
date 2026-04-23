@@ -260,3 +260,142 @@ def test_distill_all_skips_pass_sessions(
     sid = _make_session_with_review(db_path, agents_dir, review)
     results = session_distiller.distill_all_completed(db_path, repo_root)
     assert sid not in results
+
+
+# ── Week 4 Day 4: compaction ─────────────────────────────────────────────────
+
+
+def _fill_failure_patterns(path: Path, num_entries: int) -> None:
+    """Write `num_entries` distinct entries to the given failure-patterns.md."""
+    header = (
+        "# Failure Patterns — Distilled from Sessions\n\n"
+        "> Updated automatically by `session_distiller.py` after each session.\n\n"
+        "---\n\n## Known Patterns\n\n"
+    )
+    lines = [header]
+    for i in range(num_entries):
+        # Vary count so ranking chooses different entries for "most frequent"
+        # vs "most recent".
+        count = (i % 5) + 1
+        # Date spread — older i = older date; newest entries have i closest to num_entries.
+        date = f"2024-{(i % 12) + 1:02d}-{((i % 27) + 1):02d}"
+        issue = f"Unique failure pattern number {i} describing a bug class"
+        lines.append(
+            f"### coder — {issue}"
+            f" ({count} occurrences, last seen: {date})\n"
+            f"Sessions: sess{i:04d}\n\n"
+        )
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def test_compaction_noops_below_threshold(repo_root: Path) -> None:
+    """Small file stays untouched — no compaction needed."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    original = path.read_text(encoding="utf-8")
+    result = session_distiller.compact_failure_patterns(repo_root=repo_root)
+    assert result["compacted"] is False
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_compaction_fires_above_threshold(repo_root: Path) -> None:
+    """File > 5 KB triggers compaction and shrinks."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    _fill_failure_patterns(path, num_entries=200)
+    before = path.stat().st_size
+    assert before > 5 * 1024, "test setup should exceed trigger"
+
+    result = session_distiller.compact_failure_patterns(repo_root=repo_root)
+    assert result["compacted"] is True
+    assert result["before_bytes"] == before
+    assert result["after_bytes"] < before
+    assert result["kept"] <= 20  # at most most-frequent (10) + most-recent (10)
+    assert result["dropped"] >= 180
+
+
+def test_compaction_preserves_most_frequent_entries(repo_root: Path) -> None:
+    """A high-count entry must survive compaction."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    body = (
+        "# Failure Patterns\n\n"
+        "---\n\n## Known Patterns\n\n"
+        "### coder — SQL injection risk (99 occurrences, last seen: 2020-01-01)\n"
+        "Sessions: ancient-bug\n\n"
+    )
+    # Pad with less-frequent, newer entries so total > 5 KB.
+    for i in range(250):
+        body += (
+            f"### coder — Filler bug {i} that adds bulk"
+            f" (1 occurrence, last seen: 2024-{(i % 12)+1:02d}-15)\n"
+            f"Sessions: sess{i}\n\n"
+        )
+    path.write_text(body, encoding="utf-8")
+
+    result = session_distiller.compact_failure_patterns(repo_root=repo_root)
+    assert result["compacted"] is True
+
+    compacted_text = path.read_text(encoding="utf-8")
+    assert "SQL injection risk" in compacted_text, (
+        "Compaction must keep the most-frequent entry (99 occurrences)"
+    )
+
+
+def test_compaction_is_idempotent(repo_root: Path) -> None:
+    """Running compaction twice does not further modify the file."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    _fill_failure_patterns(path, num_entries=200)
+
+    first = session_distiller.compact_failure_patterns(repo_root=repo_root)
+    assert first["compacted"] is True
+    text_after_first = path.read_text(encoding="utf-8")
+
+    second = session_distiller.compact_failure_patterns(repo_root=repo_root)
+    assert second["compacted"] is False
+    assert path.read_text(encoding="utf-8") == text_after_first
+
+
+def test_distill_triggers_compaction_when_large(
+    db_path: Path, agents_dir: Path, repo_root: Path
+) -> None:
+    """A distill call that crosses the threshold causes automatic compaction."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    _fill_failure_patterns(path, num_entries=200)
+    before_bytes = path.stat().st_size
+
+    review = {
+        "status": "fail", "attempt": 1,
+        "issues": [{"severity": "critical",
+                    "description": "New critical bug triggered compaction",
+                    "fix_instruction": ""}],
+        "checklist_results": [],
+    }
+    sid = _make_session_with_review(db_path, agents_dir, review)
+    appended = session_distiller.distill_session(sid, db_path, repo_root)
+
+    assert appended, "new critical issue should be appended"
+    after_bytes = path.stat().st_size
+    # Compaction must have fired — the file cannot have grown monotonically.
+    assert after_bytes < before_bytes, (
+        "distill should have triggered compaction on an over-sized file"
+    )
+
+
+def test_compaction_preserves_required_entry_after_churn(repo_root: Path) -> None:
+    """Required-by-count entry survives even after many new appends."""
+    path = repo_root / ".github" / "memory" / "failure-patterns.md"
+    high_count_line = (
+        "### coder — Must-keep pattern with highest count"
+        " (50 occurrences, last seen: 2024-06-01)\n"
+        "Sessions: sess-hc\n\n"
+    )
+    body = "# Failure Patterns\n\n---\n\n## Known Patterns\n\n" + high_count_line
+    for i in range(200):
+        body += (
+            f"### coder — churn filler {i}"
+            f" (1 occurrence, last seen: 2020-01-{(i % 27)+1:02d})\n"
+            f"Sessions: filler{i}\n\n"
+        )
+    path.write_text(body, encoding="utf-8")
+
+    session_distiller.compact_failure_patterns(repo_root=repo_root)
+    compacted = path.read_text(encoding="utf-8")
+    assert "Must-keep pattern with highest count" in compacted

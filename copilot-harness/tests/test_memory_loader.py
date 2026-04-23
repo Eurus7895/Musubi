@@ -122,3 +122,86 @@ def test_get_memory_context_only_memory_md_present(tmp_path: Path) -> None:
     (mem_dir / "MEMORY.md").write_text("# Index\n")
     ctx = memory_loader.get_memory_context(tmp_path)
     assert ctx["tier2_available"] == []
+
+
+# ── Week 4 Day 4: cross-session query ────────────────────────────────────────
+
+
+import state  # noqa: E402
+from storage import db  # noqa: E402
+
+
+@pytest.fixture()
+def query_db(tmp_path: Path) -> Path:
+    path = tmp_path / "query.db"
+    db.init_db(path)
+    return path
+
+
+def _seed_session(db_path: Path, request: str, review: dict | None = None) -> str:
+    sid = state.create_session(request, db_path=db_path)
+    for stage in ["plan", "design", "code"]:
+        state.write_stage(sid, stage, {"stub": True}, db_path=db_path)
+    if review is not None:
+        state.write_stage(sid, "review", review, db_path=db_path)
+    return sid
+
+
+def test_query_sessions_matches_request_substring(query_db: Path) -> None:
+    sid = _seed_session(query_db, "add a login endpoint with OAuth")
+    _seed_session(query_db, "rewrite the caching layer")
+    results = memory_loader.query_sessions("oauth", db_path=query_db)
+    assert len(results) == 1
+    assert results[0]["session_id"] == sid
+    assert results[0]["match_source"] in {"request", "both"}
+
+
+def test_query_sessions_matches_review_substring(query_db: Path) -> None:
+    review = {
+        "status": "fail", "attempt": 1,
+        "issues": [{"severity": "critical",
+                    "description": "SQL injection risk in login endpoint",
+                    "fix_instruction": "use params"}],
+    }
+    sid = _seed_session(query_db, "rewrite caching", review)
+    results = memory_loader.query_sessions("sql injection", db_path=query_db)
+    assert len(results) == 1
+    assert results[0]["session_id"] == sid
+    assert results[0]["match_source"] in {"review", "both"}
+    assert "review_snippets" in results[0]
+    assert any("SQL injection" in s for s in results[0]["review_snippets"])
+
+
+def test_query_sessions_empty_query_returns_empty(query_db: Path) -> None:
+    _seed_session(query_db, "anything")
+    assert memory_loader.query_sessions("", db_path=query_db) == []
+    assert memory_loader.query_sessions("   ", db_path=query_db) == []
+
+
+def test_query_sessions_respects_limit(query_db: Path) -> None:
+    for i in range(5):
+        _seed_session(query_db, f"add widget {i}")
+    results = memory_loader.query_sessions("widget", limit=3, db_path=query_db)
+    assert len(results) == 3
+
+
+def test_query_sessions_case_insensitive(query_db: Path) -> None:
+    _seed_session(query_db, "Add a Login endpoint")
+    upper = memory_loader.query_sessions("LOGIN", db_path=query_db)
+    lower = memory_loader.query_sessions("login", db_path=query_db)
+    mixed = memory_loader.query_sessions("LoGiN", db_path=query_db)
+    assert len(upper) == len(lower) == len(mixed) == 1
+
+
+def test_query_sessions_no_match_returns_empty(query_db: Path) -> None:
+    _seed_session(query_db, "add login endpoint")
+    assert memory_loader.query_sessions("kubernetes", db_path=query_db) == []
+
+
+def test_query_sessions_truncates_request_excerpt(query_db: Path) -> None:
+    long_req = "widget " * 200  # ~1400 chars
+    _seed_session(query_db, long_req)
+    results = memory_loader.query_sessions("widget", db_path=query_db)
+    assert len(results) == 1
+    # Excerpt must be capped — no full 1400-char transcript.
+    assert len(results[0]["request"]) <= 400
