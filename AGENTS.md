@@ -25,7 +25,7 @@ AGENTS.md / CLAUDE.md / README.md     ← session map / design doc / quickstart
 .github/
     pipelines/feature-dev/            ← pipeline.yaml + agents/{planner,designer,coder,reviewer}.agent.md
     commands/                         ← slash commands (*.md, frontmatter-driven)
-    agents/                           ← DEPRECATED; skill-builder + proposed/ only (removed Week 5)
+    agents/                           ← cross-pipeline home: skill-builder + Week 5 sub agent roles
     instructions/                     ← rules (universal > org > domain > project)
     skills/                           ← global skills, shared across pipelines
     memory/                           ← 3-tier memory (MEMORY.md + Tier 2)
@@ -122,4 +122,5 @@ code change.
 *Current: Week 3c complete — direct mode + hooks + slash commands*
 *Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction, /help,*
 *`.claude-plugin/plugin.json`, pipeline-as-install-unit, direct-mode skill pull.*
+*Planned (main feature): Week 5 — sub agents for main-context preservation.*
 *Full plan in CLAUDE.md § Known TODOs.*
