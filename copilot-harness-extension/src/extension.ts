@@ -325,22 +325,104 @@ function buildHelpMarkdown(workspaceRoot: string): string {
 interface SkillCatalogEntry { skill_id: string; title: string; }
 interface SkillCatalog { agent_name: string; skills: SkillCatalogEntry[]; }
 
+interface MemoryContext {
+  tier1_index?: string;
+  tier2_available?: string[];
+}
+
 const DIRECT_AGENT_NAME = "direct";
 const MAX_PULL_ROUNDS = 3;
+const MAX_HISTORY_TURNS = 10;  // caps the prior-conversation context we replay
+
+async function fetchDirectCatalog(client: McpClient): Promise<SkillCatalog> {
+  try {
+    const raw = await client.callTool("harness_list_skills", { agent_name: DIRECT_AGENT_NAME });
+    return JSON.parse(raw) as SkillCatalog;
+  } catch (err) {
+    out.appendLine(`[direct] harness_list_skills failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { agent_name: DIRECT_AGENT_NAME, skills: [] };
+  }
+}
+
+async function fetchMemoryContext(client: McpClient): Promise<MemoryContext> {
+  try {
+    const raw = await client.callTool("harness_get_memory_context", {});
+    const parsed = JSON.parse(raw) as MemoryContext;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (err) {
+    out.appendLine(`[direct] harness_get_memory_context failed: ${err instanceof Error ? err.message : String(err)}`);
+    return {};
+  }
+}
+
+/**
+ * Replay prior user/assistant turns from this chat thread so follow-ups in
+ * direct mode remember what was just discussed. Capped at `maxTurns` pairs
+ * of (request, response) to keep the prompt bounded — we always keep the
+ * MOST RECENT turns because those are the ones the user is following up on.
+ *
+ * VS Code's ChatContext.history is an ordered list of ChatRequestTurn and
+ * ChatResponseTurn. We only keep turns addressed to our own participant
+ * (copilot-harness.harness) so unrelated @copilot etc. don't leak in.
+ */
+function extractChatHistory(
+  chatContext: vscode.ChatContext,
+  maxTurns: number,
+): vscode.LanguageModelChatMessage[] {
+  const participantId = "copilot-harness.harness";
+  const relevant: vscode.ChatContext["history"][number][] = [];
+  for (const turn of chatContext.history) {
+    // Duck-type the participant id — both turn kinds expose it.
+    const tid = (turn as { participant?: string }).participant;
+    if (tid && tid !== participantId) { continue; }
+    relevant.push(turn);
+  }
+
+  // Keep the last 2*maxTurns entries (each turn = 1 request + 1 response).
+  const sliced = relevant.slice(-maxTurns * 2);
+
+  const messages: vscode.LanguageModelChatMessage[] = [];
+  for (const turn of sliced) {
+    const asRequest = turn as { prompt?: string };
+    const asResponse = turn as { response?: ReadonlyArray<unknown> };
+    if (typeof asRequest.prompt === "string" && asRequest.prompt.length > 0) {
+      messages.push(vscode.LanguageModelChatMessage.User(asRequest.prompt));
+      continue;
+    }
+    if (Array.isArray(asResponse.response)) {
+      const text = asResponse.response
+        .map(part => {
+          const p = part as { value?: unknown };
+          if (p && typeof p.value === "object" && p.value !== null) {
+            const md = p.value as { value?: unknown };
+            if (typeof md.value === "string") { return md.value; }
+          }
+          if (typeof p.value === "string") { return p.value; }
+          return "";
+        })
+        .join("");
+      if (text.trim().length > 0) {
+        messages.push(vscode.LanguageModelChatMessage.Assistant(text));
+      }
+    }
+  }
+  return messages;
+}
 
 /**
  * Week 4 Day 3 — Direct-mode pull-on-demand skills.
+ * Follow-up — chat history + Tier 1 memory injection.
  *
  * Flow:
- *   1. One MCP round-trip: harness_list_skills("direct") → catalog
- *   2. Inject the catalog into the system prompt so the LLM can name
- *      skill_ids it wants to load.
- *   3. Ask the LLM to answer. If it needs a skill it emits a JSON fenced
+ *   1. Two MCP calls in parallel: harness_list_skills("direct") + harness_get_memory_context.
+ *   2. Build a system prompt with the skill catalog and (if present) Tier 1 memory.
+ *   3. Replay recent chat history from vscode.ChatContext so follow-ups remember.
+ *   4. Ask the LLM to answer. If it needs a skill it emits a JSON fenced
  *      block {"action":"pull_skill","skill_id":"python"} as the FIRST
  *      line of its response, then stops.
- *   4. Extension fulfils the pull via harness_get_skill, appends the
+ *   5. Extension fulfils the pull via harness_get_skill, appends the
  *      skill content to the conversation, loops up to MAX_PULL_ROUNDS.
- *   5. On any round with no pull marker the response streams to chat.
+ *   6. On any round with no pull marker the response streams to chat.
  *
  * Pipeline mode is unchanged — push-only, firewall intact. Direct mode
  * is the only caller with allowlist-union access and an evaluator-free
@@ -349,6 +431,7 @@ const MAX_PULL_ROUNDS = 3;
 async function runDirect(
   prompt: string,
   client: McpClient,
+  chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
 ): Promise<void> {
@@ -359,22 +442,29 @@ async function runDirect(
   }
   const model = models[0];
 
-  // 1. One-shot catalog fetch.
-  let catalog: SkillCatalog = { agent_name: DIRECT_AGENT_NAME, skills: [] };
-  try {
-    const raw = await client.callTool("harness_list_skills", { agent_name: DIRECT_AGENT_NAME });
-    catalog = JSON.parse(raw) as SkillCatalog;
-  } catch (err) {
-    out.appendLine(`[direct] harness_list_skills failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // 1. Fetch catalog + memory concurrently — one round-trip of latency, not two.
+  const [catalog, memory] = await Promise.all([
+    fetchDirectCatalog(client),
+    fetchMemoryContext(client),
+  ]);
 
   const catalogLines = catalog.skills.length
     ? catalog.skills.map(s => `  - ${s.skill_id}: ${s.title}`).join("\n")
     : "  (none)";
 
+  const memoryBlock = memory.tier1_index
+    ? `Project memory (Tier 1 — always injected, do not restate verbatim):\n\n` +
+      memory.tier1_index.trim() + "\n\n" +
+      (memory.tier2_available && memory.tier2_available.length
+        ? `Tier 2 entries available on demand (ask the user if you need them): ` +
+          memory.tier2_available.join(", ") + "\n\n"
+        : "")
+    : "";
+
   const systemMsg =
     `You are answering a developer's question inside the CopilotHarness VS Code extension (direct mode — ` +
     `no pipeline, no evaluator).\n\n` +
+    memoryBlock +
     `You may optionally pull one of the following skills for extra knowledge before answering:\n\n` +
     catalogLines + "\n\n" +
     `If — and only if — a skill would meaningfully improve your answer, your ENTIRE response for that turn ` +
@@ -387,6 +477,7 @@ async function runDirect(
 
   const history: vscode.LanguageModelChatMessage[] = [
     vscode.LanguageModelChatMessage.User(systemMsg),
+    ...extractChatHistory(chatContext, MAX_HISTORY_TURNS),
     vscode.LanguageModelChatMessage.User(prompt),
   ];
 
@@ -467,7 +558,7 @@ function parseSkillPullRequest(text: string): { skill_id: string } | null {
 
 async function handler(
   request: vscode.ChatRequest,
-  _context: vscode.ChatContext,
+  context: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   client: McpClient,
@@ -519,7 +610,7 @@ async function handler(
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, stream, token);
+        await runDirect(cmd.prompt, client, context, stream, token);
         break;
 
       case "slash":

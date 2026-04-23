@@ -205,3 +205,34 @@ def test_query_sessions_truncates_request_excerpt(query_db: Path) -> None:
     assert len(results) == 1
     # Excerpt must be capped — no full 1400-char transcript.
     assert len(results[0]["request"]) <= 400
+
+
+# ── harness_get_memory_context MCP tool ──────────────────────────────────────
+
+
+def test_harness_get_memory_context_returns_tier1_when_present(
+    monkeypatch: pytest.MonkeyPatch, memory_root: Path
+) -> None:
+    """The MCP tool wraps memory_loader.get_memory_context — direct-mode uses it."""
+    import json
+    import server
+    monkeypatch.setattr(
+        memory_loader, "get_memory_context",
+        lambda: {"tier1_index": "# Tier 1 Index\nKey decisions here.\n",
+                 "tier2_available": ["architecture.md"]},
+    )
+    raw = server.harness_get_memory_context()
+    payload = json.loads(raw)
+    assert payload["tier1_index"].startswith("# Tier 1 Index")
+    assert "architecture.md" in payload["tier2_available"]
+
+
+def test_harness_get_memory_context_returns_empty_when_no_memory(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty repo → empty object, not an error."""
+    import json
+    import server
+    monkeypatch.setattr(memory_loader, "get_memory_context", lambda: {})
+    raw = server.harness_get_memory_context()
+    assert json.loads(raw) == {}

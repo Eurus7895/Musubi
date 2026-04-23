@@ -438,6 +438,23 @@ def harness_run_tests(test_dir: str) -> str:
 # ── Memory tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def harness_get_memory_context() -> str:
+    """Return the Tier 1 memory index + list of Tier 2 entries available.
+
+    Wraps memory_loader.get_memory_context so direct mode (and any other
+    caller that does not go through harness_read_stage) can inject project
+    memory into its prompt. Pipeline agents already receive this via the
+    stage-firewalled read, so they should NOT call this tool directly.
+
+    Result shape:
+        { "tier1_index": "...MEMORY.md content...",
+          "tier2_available": ["architecture.md", "failure-patterns.md"] }
+    Empty object when no MEMORY.md exists.
+    """
+    return json.dumps(memory_loader.get_memory_context())
+
+
+@mcp.tool()
 def harness_get_memory_entry(name: str) -> str:
     """Return a Tier 2 memory file from .github/memory/.
 
