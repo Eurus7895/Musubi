@@ -987,6 +987,12 @@ WEEK 4 DEFERRED (infrastructure built, measurement still owed):
         Revisit only when a second repo actually needs to copy-paste a
         pipeline without the skills library.
 
+FEATURE-DEV PIPELINE UPGRADES (tiered plan):
+  See .github/pipelines/feature-dev/ROADMAP.md for the full plan
+  across 5 tiers (observed-bug fixes, handoff contracts, Level-1 probe,
+  observability, Week-5 prerequisite). Each tier is independent;
+  recommended first slice is Tier 1 + Tier 2.
+
 WEEK 5 — Sub agents for main-context preservation (planned, main feature):
   Goal: main agent's context stays clean. Heavy evidence-gathering runs
   inside a sub agent; main receives only a compressed summary.
