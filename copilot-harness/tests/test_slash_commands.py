@@ -14,7 +14,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _COMMANDS_DIR = _REPO_ROOT / ".github" / "commands"
 
-VALID_ACTIONS = {"pipeline", "step", "continue", "status"}
+VALID_ACTIONS = {"pipeline", "step", "continue", "status", "help"}
 VALID_AGENTS = {"planner", "designer", "coder", "reviewer"}
 
 
@@ -94,3 +94,24 @@ def test_command_name_matches_filename_stem() -> None:
         assert fm.get("name") == f.stem, (
             f"{f.name}: name={fm.get('name')!r} does not match stem {f.stem!r}"
         )
+
+
+def test_help_command_exists_with_help_action() -> None:
+    help_file = _COMMANDS_DIR / "help.md"
+    assert help_file.is_file(), "Week 4 Day 1: .github/commands/help.md missing"
+    fm = _parse_frontmatter(help_file.read_text())
+    assert fm.get("action") == "help", (
+        f"help.md: action must be 'help', got {fm.get('action')!r}"
+    )
+    # help takes no args, so neither pipeline nor agent are required.
+    assert "pipeline" not in fm, "help.md: must not declare a pipeline"
+    assert "agent" not in fm, "help.md: must not declare an agent"
+
+
+def test_help_action_needs_no_pipeline_or_agent() -> None:
+    for f in _command_files():
+        fm = _parse_frontmatter(f.read_text())
+        if fm.get("action") == "help":
+            # help is a meta-command; it neither runs a pipeline nor a single agent.
+            assert not fm.get("pipeline"), f"{f.name}: help action must not declare pipeline"
+            assert not fm.get("agent"), f"{f.name}: help action must not declare agent"

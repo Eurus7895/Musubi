@@ -1,0 +1,45 @@
+{
+  "name": "feature-dev",
+  "version": "1.0.0",
+  "description": "CopilotHarness feature-dev pipeline: plan → design → code → review with evaluator firewall and 3-attempt correction loop.",
+  "commands": [
+    ".github/commands/feature-dev.md",
+    ".github/commands/continue.md",
+    ".github/commands/status.md",
+    ".github/commands/planner.md",
+    ".github/commands/designer.md",
+    ".github/commands/coder.md",
+    ".github/commands/reviewer.md",
+    ".github/commands/help.md"
+  ],
+  "agents": [
+    ".github/pipelines/feature-dev/agents/planner.agent.md",
+    ".github/pipelines/feature-dev/agents/designer.agent.md",
+    ".github/pipelines/feature-dev/agents/coder.agent.md",
+    ".github/pipelines/feature-dev/agents/reviewer.agent.md"
+  ],
+  "skills": [
+    ".github/skills/api-design/SKILL.md",
+    ".github/skills/python/SKILL.md",
+    ".github/skills/code-review/SKILL.md",
+    ".github/skills/testing/SKILL.md",
+    ".github/skills/database-patterns/SKILL.md",
+    ".github/skills/documentation/SKILL.md"
+  ],
+  "hooks": "hooks.json",
+  "mcpServers": {
+    "copilot-harness": {
+      "command": "${HARNESS_ROOT}/bin/copilot-harness",
+      "args": ["serve"]
+    }
+  },
+  "pipeline": {
+    "definition": ".github/pipelines/feature-dev/pipeline.yaml",
+    "level": 2,
+    "readme": ".github/pipelines/feature-dev/README.md"
+  },
+  "skillLocality": {
+    "mode": "global",
+    "rationale": "Week 4 Day 2 decision — skills stay at repo-global .github/skills/ for v1. Multiple pipelines will reuse the same skills (python, code-review, testing) so duplicating them per pipeline would fragment the knowledge base. Revisit when (a) a pipeline-specific skill with no reuse appears, or (b) a second repo needs to copy-paste install a pipeline without its skills. If revisited, skill_loader needs a multi-dir fallback mirroring state.AGENTS_DIRS."
+  }
+}

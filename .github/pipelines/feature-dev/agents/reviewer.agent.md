@@ -30,8 +30,19 @@ instructions. Your output drives the correction loop.
 5. Judge each file against: correctness, security, error handling, testability,
    code quality, and internal consistency with the code's own declared summary
    and `implementation_notes`.
-6. Classify each issue with a severity defined in the code-review skill.
-   Only `pass` when no critical or high issues remain.
+6. Classify each issue using the **severity rubric** (also in code-review/SKILL.md):
+
+   | Severity | Meaning | Examples |
+   |---|---|---|
+   | `critical` | Security defect, data loss, or guaranteed crash in production | SQL injection, hardcoded real secret, race-condition deadlock |
+   | `high`     | Correctness bug or contract violation — the feature is wrong | wrong return type at a boundary, missing required field, acceptance criterion unmet |
+   | `medium`   | Standards/quality violation — the code works but is not to spec | missing type annotation, function > 50 lines, unclear name |
+   | `low`      | Preference or nit — "would be nicer if…" | "consider adding a file handler", "maybe extract helper", docstring wording |
+
+   **Only `critical` or `high` issues may cause `status: fail`.** If every
+   issue you find is medium or low, the correct status is `pass` with the
+   issues listed — the harness will enforce this and coerce a mis-labelled
+   fail to pass, so label correctly in the first place.
 7. Produce `fix_instruction` for each issue — precise enough that the Coder
    can fix it without asking questions.
 
@@ -95,9 +106,15 @@ Produce ONLY valid JSON matching this schema:
 ```
 
 Rules for `status`:
-- `pass`: no critical or high issues. Medium/low issues may be present.
-- `fail`: one or more critical or high issues. Coder must retry.
-- `escalate`: this is attempt 3 and issues remain, OR the issue is outside Coder's scope.
+- `pass`: no critical or high issues. Medium/low issues may be present and
+  WILL be reported to the user — but they do not trigger a retry. Preferences
+  ("consider…", "would be nicer…") are ALWAYS low, never high.
+- `fail`: at least one `critical` or `high` issue. Coder must retry. The
+  harness enforces this: if you return `fail` with only medium/low issues,
+  the harness coerces the status to `pass` (and records the coercion).
+- `escalate`: this is attempt 3 and critical/high issues remain, OR the issue
+  is outside Coder's scope (e.g. requires a new dependency, new module the
+  design didn't declare).
 - `wrong_plan`: rare under the evaluator firewall — you cannot see the plan.
   Use this only when the code's own declared `summary` or `implementation_notes`
   reveal that the coder was working from contradictory or out-of-scope

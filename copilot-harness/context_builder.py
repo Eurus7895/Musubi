@@ -57,6 +57,15 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     "coder":         {"python", "testing", "database-patterns", "api-design"},
     "reviewer":      {"code-review", "testing"},
     "skill-builder": set(),
+    # Week 4 Day 3 — direct mode (single vscode.lm call, no pipeline, no
+    # evaluator). Union of the three generator allowlists. Reviewer's
+    # `code-review` skill is deliberately excluded: it is an evaluator
+    # checklist, not generator knowledge, and leaking it into direct mode
+    # would blur the evaluator/generator boundary.
+    "direct": (
+        {"api-design", "database-patterns", "documentation"}  # designer
+        | {"python", "testing", "database-patterns", "api-design"}  # coder
+    ),
 }
 
 

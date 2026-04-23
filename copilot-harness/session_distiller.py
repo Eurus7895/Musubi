@@ -14,8 +14,10 @@ Zero LLM calls. Pure text extraction from structured data.
 Public API:
     distill_session(session_id, db_path?, repo_root?) → list[str]  (appended entries)
     distill_all_completed(db_path?, repo_root?) → dict[str, list[str]]
+    compact_failure_patterns(repo_root?, max_bytes?) → dict  (Week 4 Day 4)
 """
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +26,11 @@ from storage import db as _db
 _FAILURE_PATTERNS_FILE = ".github/memory/failure-patterns.md"
 _MAX_ISSUE_LEN = 300
 _SEVERITY_KEEP = {"critical", "high"}
+# Week 4 Day 4 — compaction trigger: failure-patterns.md exceeding 5 KB gets
+# rewritten to keep only the highest-value subset (most-frequent + most-recent).
+_COMPACT_TRIGGER_BYTES = 5 * 1024
+_COMPACT_KEEP_MOST_FREQUENT = 10
+_COMPACT_KEEP_MOST_RECENT = 10
 
 _DEFAULT_REPO_ROOT = Path(__file__).parent.parent
 
@@ -120,6 +127,12 @@ def distill_session(
         existing.add(key)
         appended.append(desc)
 
+    # Auto-compact if the file has grown past the trigger threshold.
+    # Safe to no-op when under the threshold — compact_failure_patterns
+    # returns early without touching the file.
+    if appended:
+        compact_failure_patterns(repo_root=root)
+
     return appended
 
 
@@ -140,3 +153,123 @@ def distill_all_completed(
         if appended:
             results[sid] = appended
     return results
+
+
+# ── Week 4 Day 4: compaction ─────────────────────────────────────────────────
+
+_ENTRY_RE = re.compile(
+    r"^### (?P<agent>[^—\n]+?) — (?P<issue>.+?)"
+    r" \((?P<count>\d+) occurrences?, last seen: (?P<date>\d{4}-\d{2}-\d{2})\)\s*$",
+)
+
+
+def _parse_entries(text: str) -> list[dict]:
+    """Parse existing failure-patterns.md entries into structured records.
+
+    Each record has keys: agent, issue, count, date, sessions (list of IDs),
+    raw (the reconstructed full entry block ready to re-emit).
+    """
+    entries: list[dict] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        m = _ENTRY_RE.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        # Collect following lines until the next "### " or "## " header.
+        body_start = i + 1
+        j = body_start
+        while j < len(lines) and not lines[j].startswith(("### ", "## ")):
+            j += 1
+        body = "\n".join(lines[body_start:j]).rstrip("\n")
+        sessions: list[str] = []
+        for line in lines[body_start:j]:
+            if line.lower().startswith("sessions:"):
+                ids_part = line.split(":", 1)[1]
+                sessions = [s.strip() for s in ids_part.split(",") if s.strip()]
+                break
+        entries.append({
+            "agent": m.group("agent").strip(),
+            "issue": m.group("issue").strip(),
+            "count": int(m.group("count")),
+            "date": m.group("date"),
+            "sessions": sessions,
+            "raw": lines[i] + ("\n" + body if body else "") + "\n",
+        })
+        i = j
+    return entries
+
+
+def compact_failure_patterns(
+    repo_root: Path | None = None,
+    max_bytes: int = _COMPACT_TRIGGER_BYTES,
+) -> dict:
+    """Rewrite failure-patterns.md in place, keeping only high-value entries.
+
+    Runs only when the file exceeds `max_bytes`. Keeps the union of
+    (most-recent-by-date) and (most-frequent-by-count) entries. Preserves
+    the header matter (everything before the first "### " entry).
+
+    Returns { "compacted": bool, "before_bytes": int, "after_bytes": int,
+              "kept": int, "dropped": int }. Safe to call concurrently —
+    the rewrite is a single atomic write after parsing the file.
+    """
+    root = _repo_root(repo_root)
+    path = _patterns_path(root)
+    if not path.exists():
+        return {"compacted": False, "reason": "file does not exist"}
+    before_text = path.read_text(encoding="utf-8")
+    before_bytes = len(before_text.encode("utf-8"))
+    if before_bytes <= max_bytes:
+        return {"compacted": False, "before_bytes": before_bytes, "after_bytes": before_bytes}
+
+    entries = _parse_entries(before_text)
+    if not entries:
+        return {"compacted": False, "before_bytes": before_bytes, "after_bytes": before_bytes,
+                "reason": "no parseable entries"}
+
+    # Split header (everything before the first entry) so we can rebuild the file.
+    first_entry_idx = before_text.find("\n### ")
+    if first_entry_idx == -1:
+        # Entry appears at the very start — no header content to preserve.
+        header = ""
+    else:
+        header = before_text[:first_entry_idx + 1]
+
+    # Rank by frequency (desc) and by date (desc).
+    most_frequent = sorted(entries, key=lambda e: (-e["count"], e["date"]))
+    most_recent = sorted(entries, key=lambda e: e["date"], reverse=True)
+
+    kept_keys: set[tuple[str, str]] = set()
+    kept: list[dict] = []
+    for e in most_frequent[:_COMPACT_KEEP_MOST_FREQUENT]:
+        key = (e["agent"], e["issue"][:_MAX_ISSUE_LEN])
+        if key not in kept_keys:
+            kept_keys.add(key)
+            kept.append(e)
+    for e in most_recent[:_COMPACT_KEEP_MOST_RECENT]:
+        key = (e["agent"], e["issue"][:_MAX_ISSUE_LEN])
+        if key not in kept_keys:
+            kept_keys.add(key)
+            kept.append(e)
+
+    # Keep kept entries in most-recent-first order for readability.
+    kept.sort(key=lambda e: e["date"], reverse=True)
+
+    compaction_note = (
+        f"\n<!-- Compacted on {datetime.now(timezone.utc).strftime('%Y-%m-%d')}: "
+        f"kept {len(kept)} of {len(entries)} entries "
+        f"(most-frequent + most-recent). -->\n"
+    )
+    body = "\n".join(e["raw"].rstrip("\n") for e in kept) + "\n"
+    new_text = header.rstrip() + "\n" + compaction_note + "\n" + body
+    path.write_text(new_text, encoding="utf-8")
+    after_bytes = len(new_text.encode("utf-8"))
+    return {
+        "compacted": True,
+        "before_bytes": before_bytes,
+        "after_bytes": after_bytes,
+        "kept": len(kept),
+        "dropped": len(entries) - len(kept),
+    }

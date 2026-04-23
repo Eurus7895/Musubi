@@ -239,12 +239,28 @@ def harness_write_stage(
                 "validation_errors": result.errors,
             })
 
+        # Reviewer severity-rubric enforcement: if the reviewer returned a
+        # fail that isn't backed by a critical or high severity issue, the
+        # harness rewrites it to pass. Prevents the checklist-opinion
+        # correction loop (see CLAUDE.md failure-patterns).
+        coerced = False
+        if agent_name.lower() == "reviewer" and isinstance(parsed, dict):
+            parsed, coerced = verifier.normalize_reviewer_status(parsed)
+
         try:
             state.write_stage(session_id, stage, parsed)
         except ValueError as exc:
             return json.dumps({"status": "error", "error": str(exc)})
 
-        return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
+        response: dict[str, Any] = {
+            "status": "stored",
+            "session_id": session_id,
+            "stage": stage,
+        }
+        if coerced:
+            response["status_coerced"] = True
+            response["coercion_note"] = parsed.get("status_coercion_reason")
+        return json.dumps(response)
 
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -312,6 +328,27 @@ def harness_get_skill(skill_id: str, agent_name: str) -> str:
             "available_skills": available,
         })
     return content
+
+
+@mcp.tool()
+def harness_list_skills(agent_name: str) -> str:
+    """Return the catalog of skills the calling agent may load.
+
+    Week 4 Day 3 — enables direct-mode pull-on-demand. The extension injects
+    the catalog into the system prompt so the LLM knows which skill_ids it
+    may request via harness_get_skill / harness_get_reference mid-response.
+
+    Returns JSON { "skills": [{"skill_id", "title"}, ...], "agent_name": ... }.
+    Skills outside the caller's allowlist are filtered out — the catalog is
+    the only route by which an agent discovers skills it can pull.
+    """
+    key = agent_name.lower().strip()
+    allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
+    catalog: list[dict[str, str]] = []
+    for meta in skill_loader.list_skills():
+        if meta.skill_id in allowed:
+            catalog.append({"skill_id": meta.skill_id, "title": meta.title})
+    return json.dumps({"agent_name": key, "skills": catalog})
 
 
 @mcp.tool()
@@ -401,6 +438,23 @@ def harness_run_tests(test_dir: str) -> str:
 # ── Memory tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def harness_get_memory_context() -> str:
+    """Return the Tier 1 memory index + list of Tier 2 entries available.
+
+    Wraps memory_loader.get_memory_context so direct mode (and any other
+    caller that does not go through harness_read_stage) can inject project
+    memory into its prompt. Pipeline agents already receive this via the
+    stage-firewalled read, so they should NOT call this tool directly.
+
+    Result shape:
+        { "tier1_index": "...MEMORY.md content...",
+          "tier2_available": ["architecture.md", "failure-patterns.md"] }
+    Empty object when no MEMORY.md exists.
+    """
+    return json.dumps(memory_loader.get_memory_context())
+
+
+@mcp.tool()
 def harness_get_memory_entry(name: str) -> str:
     """Return a Tier 2 memory file from .github/memory/.
 
@@ -419,6 +473,44 @@ def harness_get_memory_entry(name: str) -> str:
             "available": available,
         })
     return content
+
+
+@mcp.tool()
+def harness_query_sessions(query: str, limit: int = 20) -> str:
+    """Search prior sessions for requests or review outputs matching `query`.
+
+    Week 4 Day 4 — cross-session memory query. Case-insensitive substring
+    match against session requests and stored review output. Returns session
+    IDs with short excerpts (never full transcripts) so a caller can decide
+    whether to pull a specific session for deeper inspection.
+
+    Result shape:
+        { "query": str, "results": [
+            { "session_id", "request", "created_at", "match_source",
+              "review_snippets"? } ] }
+    """
+    try:
+        results = memory_loader.query_sessions(query, limit=limit)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"query": query, "results": results})
+
+
+@mcp.tool()
+def harness_compact_memory() -> str:
+    """Rewrite .github/memory/failure-patterns.md if it has grown past 5 KB.
+
+    Week 4 Day 4 — keeps only the most-frequent + most-recent entries so the
+    file stays compact enough for Tier 2 injection without losing signal.
+
+    Returns { "compacted": bool, "before_bytes", "after_bytes", "kept", "dropped" }.
+    Safe to call as an idempotent operation — below the threshold it no-ops.
+    """
+    try:
+        result = session_distiller.compact_failure_patterns()
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps(result)
 
 
 @mcp.tool()

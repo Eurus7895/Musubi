@@ -40,7 +40,20 @@ issues, and convention violations before code is merged or executed.
    - No dead code or commented-out code?
    - Names clear and consistent?
 
-7. **Classify each issue** with severity: `critical`, `high`, `medium`, `low`.
+7. **Classify each issue using this severity rubric.** The harness enforces it —
+   a `status: fail` review whose only issues are medium/low is coerced to `pass`
+   before being stored, so mis-labelling just costs you accuracy.
+
+   | Severity | Meaning | When to use |
+   |---|---|---|
+   | `critical` | Security defect, data loss, guaranteed production crash | SQL injection, hardcoded real secret, deadlock |
+   | `high`     | Correctness bug or contract violation — the feature is actually wrong | missing required field, broken return value at a public boundary, acceptance criterion unmet |
+   | `medium`   | Standards violation — works but not to spec | missing type annotation, unclear name, function too long |
+   | `low`      | Preference / "consider…" / "would be nicer if…" | readability suggestions, nit-pick logging, optional handlers |
+
+   Key rule: **only critical or high may cause `status: fail`**. Preferences
+   ("consider adding X", "perhaps extract Y") are ALWAYS `low`, never `high`.
+   If every issue you found is medium or low, the correct status is `pass`.
 
 8. **Write fix instructions** — specific enough that a developer can act without
    asking questions. Include file name and approximate line number if possible.
