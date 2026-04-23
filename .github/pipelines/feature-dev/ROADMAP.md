@@ -1,0 +1,126 @@
+# feature-dev — pipeline upgrade plan
+
+Living plan for changes to the `feature-dev` pipeline. Nothing below is
+started — each tier is a self-contained unit of work that can be picked up
+independently. Order is by observed ROI, not priority.
+
+---
+
+## Tier 1 — Close the loop on observed failures
+
+Highest ROI: these fix bugs we have actually seen in production runs.
+
+- **T1.1 — Coder: severity-rubric awareness.**
+  Update `coder.agent.md` to tell the coder that medium/low issues in a
+  review are advisory; prioritize correctness/security; do not degrade code
+  quality chasing nits. Pairs with the reviewer-side rubric change.
+
+- **T1.2 — Surface rubric coercions to the user.**
+  `pipeline.ts` / `extension.ts` should render a visible marker when the
+  server returns `status_coerced: true` on a review write, so the user
+  understands why a "fail" review did not cause a retry.
+
+- **T1.3 — Teach the reviewer which strings the harness will reject.**
+  Add a short "known harness constraints" block to `reviewer.agent.md`
+  listing the secrets-scanner regex prefixes (`AKIA…`, `ghp_…`,
+  `-----BEGIN PRIVATE KEY-----`, `api_key=…`). Prevents reviewer asks
+  like "use a realistic secret" that the coder literally cannot satisfy.
+
+- **T1.4 — Seed failure-patterns.md with today's run.**
+  Append the severity-rubric failure pattern so the Week 4 Day 4 compactor
+  has real entries to compact; also primes Tier 2 memory for future
+  coders/reviewers.
+
+---
+
+## Tier 2 — Strengthen handoff contracts (Week 4 deferred gap)
+
+Prevents the whole class of "forgot half the plan" failures.
+
+- **T2.1 — Plan → Code acceptance-criterion trace.**
+  Coder emits an optional map
+  `criteria_covered: { "T1.a": ["tests/test_x.py::test_y"] }`.
+  `verifier.py` checks every `plan.tasks[*].acceptance_criteria` string
+  is mentioned. Schema-level failure instead of judgement.
+
+- **T2.2 — Promote `_check_code_only_modifies_declared_files` to a hard reject.**
+  Currently it lists undeclared files; make it reject the write. Give the
+  coder an escape hatch via `wrong_plan` status when it legitimately needs
+  a file the design missed — that routes back to Planner, not Coder retry.
+
+- **T2.3 — Designer integration_notes contract.**
+  Require `integration_notes` to mention at least one module from `modules`.
+  Catches "design summary has nothing to do with the declared modules" drift.
+
+---
+
+## Tier 3 — Run the Level-1 probe (Week 4 Day 5 deferred)
+
+Blocks the handoff-schema decision; must happen before any structural
+change to the pipeline.
+
+- **T3.1 — Select 5 representative requests.** Small, medium, large, one
+  ambiguous, one with a known retry pattern. Record the list in
+  `feature-dev-level1-probe/README.md` before running.
+- **T3.2 — Run each through both pipelines.** Capture first-attempt status,
+  retry count, artifact size, wall-clock time.
+- **T3.3 — Record the decision.** If ≥ 80% first-attempt pass AND retry
+  count ≤ Level-2, collapse `feature-dev` to Level 1 and retire the probe
+  directory. Otherwise keep Level 2 and move Tier 2 forward with confidence.
+
+---
+
+## Tier 4 — Observability / UX
+
+- **T4.1 — Per-stage progress events.**
+  `mcpClient.ts` emits `stage_started` / `stage_complete` /
+  `coercion_applied`; extension renders them as inline chat markers.
+  Currently only one `✓ coder complete` appears per stage.
+
+- **T4.2 — Friendlier escalation output.**
+  When max retries hit, print the reviewer's first-attempt issues next
+  to the final-attempt issues so the user sees what changed and what
+  didn't — the current output only shows the final fail state.
+
+- **T4.3 — `.harness/sessions/<id>/summary.md`** written at the end of every
+  run (pass or escalate). One-page digest of plan + design + code files +
+  final review. Saves the user from stitching the per-stage `.md` files
+  together.
+
+---
+
+## Tier 5 — Week 5 prerequisite (enables, does not require Week 5)
+
+- **T5.1 — `subagents:` block in `pipeline.yaml`.** Add the schema +
+  validator so when Week 5 ships, the coder stage can opt into spawning
+  `explorer` without re-plumbing the pipeline loader. Opt-in per stage,
+  whitelist only.
+  See CLAUDE.md Week 5 plan for the full sub-agent design.
+
+---
+
+## Dependencies
+
+```
+T1.1 ── independent
+T1.2 ── independent (surface fix only)
+T1.3 ── independent
+T1.4 ── independent
+
+T2.1 ── benefits from T3 decision (if Level 1 wins, T2.1 value drops)
+T2.2 ── independent
+T2.3 ── independent
+
+T3 ──── blocks structural changes; standalone otherwise
+
+T4.* ── all independent
+
+T5.1 ── blocks Week 5 Phase B (pipeline-main spawning)
+```
+
+## Recommended first slice
+
+Tier 1 + Tier 2 together. Tier 1 fixes observed bugs; Tier 2 prevents a
+related class of bugs and is cheap to add while the severity-rubric work
+is fresh. Defer Tier 3 until a day where 5 representative requests can
+actually be run end-to-end.

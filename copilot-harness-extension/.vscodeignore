@@ -1,0 +1,10 @@
+# Exclude dev/build artifacts — include everything else (bin/, .github/, dist/)
+src/**
+scripts/**
+node_modules/**
+.vscode/**
+.build-logs/**
+tsconfig.json
+**/*.map
+**/*.ts
+!**/*.d.ts

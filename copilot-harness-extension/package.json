@@ -1,0 +1,46 @@
+{
+  "name": "copilot-harness-extension",
+  "displayName": "CopilotHarness",
+  "description": "Automated 5-agent pipeline runner for GitHub Copilot Chat via CopilotHarness",
+  "version": "0.2.0",
+  "publisher": "copilot-harness",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Eurus7895/CopilotHarness"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "AI"
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "copilot-harness.harness",
+        "name": "harness",
+        "fullName": "CopilotHarness",
+        "description": "Runs the automated 5-agent pipeline. Usage: @harness <your request>",
+        "isSticky": true
+      }
+    ]
+  },
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "compile": "npx tsc -p ./",
+    "watch": "npx tsc --watch -p ./",
+    "build:server": "bash scripts/build-server.sh",
+    "build:assets": "bash scripts/copy-assets.sh",
+    "build": "bash scripts/build-parallel.sh",
+    "build:serial": "npm run build:server && npm run build:assets && npm run compile",
+    "package": "npm run build && vsce package",
+    "all": "npm run setup && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.93.0",
+    "typescript": "^5.4.0"
+  }
+}

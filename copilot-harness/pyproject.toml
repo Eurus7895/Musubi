@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copilot-harness"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0,<1.10.0",
+    "starlette>=0.27.0,<0.28.0",
+]
+
+[tool.setuptools]
+py-modules = [
+    "cli",
+    "context_builder",
+    "correction_loop",
+    "executor",
+    "memory_loader",
+    "proposed_patch_applier",
+    "server",
+    "session_distiller",
+    "skill_loader",
+    "state",
+    "verifier",
+]
+packages = ["storage", "memory"]
+
+[project.scripts]
+copilot-harness = "cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

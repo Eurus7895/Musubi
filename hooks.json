@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "python scripts/session_start.py",
+        "description": "Baseline checks before a pipeline run (per pipeline.yaml)."
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "python scripts/pre_tool_use.py",
+        "description": "Policy-engine gate: check PIPELINE_POLICIES before the tool call proceeds."
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "python scripts/post_tool_use.py",
+        "description": "SQLite audit log entry for each tool call."
+      }
+    ]
+  }
+}

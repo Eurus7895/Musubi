@@ -1,18 +1,21 @@
 # CLAUDE.md — CopilotHarness
+### Full Design Document
 
-> Context anchor for every coding session. Read this file before doing anything.
-> Ultimate goal: a fully implemented harness engineering layer for GitHub Copilot's
-> 5-agent development team. No LLM inside the harness — Copilot is the LLM,
-> CopilotHarness controls the environment it operates in.
+> This is the design doc. Read it when making architecture decisions.
+> For session-start orientation, read AGENTS.md instead.
 
 ---
 
 ## One Sentence
 
-CopilotHarness is a pure Python MCP server that acts as the harness layer for
-GitHub Copilot's multi-agent team — it controls what each agent sees, validates
-what each agent produces, enforces the correction loop, serves skills on demand,
-and runs code to verify it actually works.
+CopilotHarness is a Python MCP server that acts as the harness layer for GitHub
+Copilot Chat — it controls what each agent sees, validates what each agent
+produces, enforces the correction loop, injects skills, and runs code verification.
+
+**Copilot Chat reasons. CopilotHarness controls the environment it reasons about.**
+
+Simple requests get a direct response. Complex workflows route to governed
+pipelines with validation, correction loops, and audit trails.
 
 > Public-facing summary lives in [`README.md`](./README.md). This file is the
 > internal source of truth for architecture, schemas, and the build roadmap.
@@ -27,97 +30,245 @@ and runs code to verify it actually works.
 > Same model, same task, same compute →
 > just changing environment design → 64% performance improvement (Princeton SWE-agent paper)
 
-**Copilot is the LLM. CopilotHarness is the harness. Zero LLM calls inside the harness.**
+**Copilot Chat is the LLM. CopilotHarness is the harness. Zero LLM calls inside the harness.**
 
 ```
-What Copilot does:      reasoning, planning, coding, reviewing
-What CopilotHarness does: state, context firewall, validation, execution, skills
+What Copilot Chat does:    reasoning, planning, coding, reviewing
+What CopilotHarness does:  routing, state, context firewall, skill injection,
+                           validation, execution, correction loop, policy enforcement
 ```
 
 ---
 
-## The Two Layers
+## Why MCP, Not CLI Bridge
 
-### Layer 1 — Copilot Native Files (loaded automatically by Copilot)
+The harness must be the environment Copilot **operates within** — not a helper
+tool the developer manually bridges. With MCP stdio:
+
+- Copilot agents call `harness_read_stage` → harness enforces firewall, injects skills
+- Copilot agents call `harness_write_stage` → harness validates before storing
+- Agents cannot skip the harness — it is the only path to read inputs and write outputs
+
+The MCP stdio server runs **entirely locally** as a subprocess. No network calls.
+No `api.githubcopilot.com`. The corporate firewall is irrelevant.
+
+**Phase 1 (dev mode):** VS Code reads `.vscode/mcp.json` → spawns `python server.py`
+→ Copilot Chat agents call harness_* tools manually.
+
+**Phase 2 (extension mode, current):** The VS Code extension spawns the bundled
+server binary directly via `McpClient` (JSON-RPC over stdio). No MCP panel, no user
+action needed. The extension drives agents automatically via `vscode.lm.sendRequest`.
+
+---
+
+## How It Works
+
+```
+User types "@harness add a login endpoint" in Copilot Chat
+        ↓
+Intent Router (extension.ts)
+  Slash command (/feature-dev) → pipeline mode (deterministic, no LLM call)
+  Everything else → direct mode (no LLM routing call needed)
+  User override: --pipeline forces pipeline for non-slash input
+        ↓
+  ┌─────────────────────┬────────────────────────────────┐
+  │  DIRECT MODE        │  PIPELINE MODE                 │
+  │                     │                                │
+  │  Single LLM call    │  Governed pipeline             │
+  │  No schema, no      │  Agents + evaluator +          │
+  │  evaluator, no      │  validation + correction       │
+  │  plan JSON, no hooks│  + plan JSON + audit           │
+  │                     │                                │
+  │  "@harness explain  │  /feature-dev add OAuth        │
+  │   this error"       │  /code-review PR-421           │
+  │  "@harness how do   │  /refactor extract service     │
+  │   I run migrations?"│                                │
+  └─────────────────────┴────────────────────────────────┘
+        ↓
+DIRECT MODE:
+  vscode.lm.sendRequest(copilot, prompt)
+  Stream response to chat. Done.
+  No MCP, no harness, no plan JSON.
+
+PIPELINE MODE:
+  extension.ts spawns bin/copilot-harness.exe via McpClient
+        ↓
+    McpClient.callTool("harness_get_active_session")
+        → crash recovery: resume interrupted session or start fresh
+    ↓
+    McpClient.callTool("harness_new_session", { request })
+        → harness creates session, locks agent versions, returns session_id
+    ↓
+    McpClient.callTool("harness_read_stage", { session_id, stage, agent_name })
+        → context firewall enforced, skills auto-injected, memory injected
+    ↓
+    vscode.lm.sendRequest(copilot, agentPrompt + context)
+        → Copilot reasons, returns JSON output
+    ↓
+    McpClient.callTool("harness_write_stage", { session_id, stage, output })
+        → injection scan → schema check → append-only store
+    ↓
+    Evaluator (separate vscode.lm.sendRequest, fresh context) → verdict
+    ↓
+    Fail → correction loop (max 3 retries) → escalate
+```
+
+**Routing rule (zero cost — no LLM call):**
+- Input starts with `/` → pipeline (slash command)
+- Input has `--pipeline` flag → pipeline
+- Everything else → direct
+
+---
+
+## Agent Complexity Levels
+
+```
+Direct     Single LLM call. No pipeline, no schema, no evaluator.
+           Just: prompt → Copilot → stream response → done.
+           When: simple questions, explanations, quick lookups.
+           Speed: fastest possible — no harness overhead.
+
+Level 0    Single agent pipeline. Baseline checks, skill injection, plan JSON.
+           No evaluator. Team feedback is the evaluator.
+           When: task is well-defined, output schema is simple.
+           YAML: generator.agent (singular)
+
+Level 1    Single agent + separate evaluator (fresh session).
+           Full governance. Correction loop (max 3).
+           When: wrong output has real cost, quality must be structural.
+           YAML: generator.agent (singular) + evaluator.agent
+
+Level 2    Multi-agent pipeline + separate evaluator.
+           Multiple specialized agents in sequence.
+           Evaluator in separate session.
+           When: ONLY when single agent demonstrably fails at a subtask.
+           YAML: generator.agents (plural list)
+           Gate: promotion checklist required. Not in current version.
+```
+
+**Promotion rule:** A pipeline starts at the lowest viable level. Promotion
+requires 3+ observed failures that cannot be fixed by updating the skill file.
+
+**The YAML format enforces the level:**
+```yaml
+# Level 0 or Level 1 — singular agent
+generator:
+  agent: agents/generator.md       # one agent file
+
+# Level 2 only — plural agents list
+generator:
+  agents:                          # multiple agent files
+    - name: planner
+      agent: agents/planner.md
+    - name: coder
+      agent: agents/coder.md
+```
+
+If the pipeline.yaml uses `agents:` (plural), the level MUST be 2. The
+pipeline runner validates this. You cannot have Level 1 with multiple agents.
+
+---
+
+## Current State (Week 4 complete, v0.2.0)
+
+```
+WHAT EXISTS NOW:
+  ✅ 379 tests passing
+  ✅ Harness core: state, context_builder, verifier, executor,
+       correction_loop, skill_loader
+  ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
+       + Tier 2 compaction + cross-session query (Week 4 Day 4)
+  ✅ Pattern detector + proposed patch applier
+  ✅ VS Code extension v0.2.0 with McpClient
+  ✅ PyInstaller binary distribution
+  ✅ Separate evaluator session (Week 3a)
+  ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
+  ✅ Direct mode + slash commands + hooks.json (Week 3c)
+  ✅ /help slash command (dynamic, data-driven)           (Week 4 Day 1)
+  ✅ .claude-plugin/plugin.json manifest                  (Week 4 Day 2)
+  ✅ Direct-mode skill catalog + pull-on-demand           (Week 4 Day 3)
+  ✅ harness_query_sessions + harness_compact_memory      (Week 4 Day 4)
+  ✅ feature-dev-level1-probe (built, not yet run)        (Week 4 Day 5)
+
+FEATURE-DEV PIPELINE TODAY:
+  4 agents: planner → designer → coder → reviewer (evaluator firewall)
+  + skill-builder (meta-agent, not in feature-dev)
+  Agent files live in .github/pipelines/feature-dev/agents/*.agent.md
+  pipeline.yaml declares level: 2. Level-1 probe infrastructure built
+  at .github/pipelines/feature-dev-level1-probe/, awaiting a measurement
+  run.
+
+ROUTING:
+  Slash-command input          → pipeline mode (harness_* tools, session)
+  Input with --pipeline flag   → pipeline mode
+  Everything else              → direct mode (one MCP round-trip for
+                                 skill catalog, then vscode.lm call;
+                                 LLM may pull skills on demand)
+```
+
+---
+
+## File Structure (v0.2.0, post Week 3)
 
 ```
 .github/
-    AGENTS.md                            ← P1: global always-on rules
-    copilot-instructions.md              ← P1: global always-on conventions
+    AGENTS.md                    ← session-start map
+    copilot-instructions.md
+    instructions/                ← priority-ranked rules (P1-P4)
 
-    instructions/                        ← RULES AND STANDARDS (priority-ranked)
-        universal/                       ← P1: world-wide, never overridden
-            security.instructions.md
-            ethics.instructions.md
-        org/                             ← P2: team-wide standards
-            git-conventions.instructions.md
-            code-review-standards.instructions.md
-        domain/                          ← P3: technology-specific, file-scoped
-            python.instructions.md       ← applyTo: **/*.py
-            api.instructions.md          ← applyTo: **/api/**
-            database.instructions.md     ← applyTo: **/models/**
-        project/                         ← P4: repo-specific overrides
-            naming-conventions.instructions.md
-            architecture-decisions.instructions.md
+    pipelines/                   ← Week 3b: self-contained pipeline directories
+        feature-dev/
+            pipeline.yaml        ← level, baseline_checks, correction
+            README.md
+            agents/              ← agent .md with extended frontmatter
+                planner.agent.md
+                designer.agent.md
+                coder.agent.md
+                reviewer.agent.md
 
-    agents/                              ← WHO does the work
-        planner.agent.md
-        designer.agent.md
-        coder.agent.md
-        reviewer.agent.md
-        skill-builder.agent.md
-        proposed/                        ← Skill-Builder writes here, human approves
+    commands/                    ← Week 3c: slash commands
+        feature-dev.md           ← /feature-dev — full pipeline
+        continue.md, status.md
+        planner.md, designer.md, coder.md, reviewer.md
 
-    skills/                              ← HOW to do specific jobs (on demand)
-        code-review/
-            SKILL.md                     ← max 200 lines
-            assets/
-                review-script.py
-            references/
-                owasp-top10.md           ← loaded only when needed
-                common-patterns.md
-        api-design/
-            SKILL.md
-            assets/
-                openapi-template.yaml
-            references/
-                rest-principles.md
-        database-patterns/
-            SKILL.md
-            assets/
-                query-analyzer.py
-            references/
-                indexing-strategies.md
-```
+    agents/                      ← cross-pipeline agents (un-deprecated Week 5)
+        skill-builder.agent.md   ← meta-agent
+        explorer.agent.md        ← Week 5: sub agent role (read-only scan)
+        investigator.agent.md    ← Week 5: sub agent role (debug, run tests)
+        reviewer-aux.agent.md    ← Week 5: sub agent role (per-file review)
+        proposed/                ← Skill-Builder output
+        README.md                ← cross-pipeline agents vs pipeline-scoped stages
 
-### Layer 2 — CopilotHarness (MCP server, pure Python, zero LLM)
+    skills/                      ← domain skills (unchanged)
+        code-review/, api-design/, python/, testing/, database-patterns/,
+        documentation/   each: SKILL.md + assets/ + references/
 
-```
-copilot-harness/
-    server.py                            ← MCP stdio server, exposes all tools
-    state.py                             ← append-only session state
-    context_builder.py                   ← context firewall + injection detection
-    verifier.py                          ← schema validation + secrets scan
-    executor.py                          ← lint + type check + test runner
-    correction_loop.py                   ← reviewer → coder retry orchestration
-    skill_loader.py                      ← serves SKILL.md, references, runs assets
-    memory/
-        cross_session.db                 ← SQLite: fail patterns across sessions
-        pattern_detector.py              ← detects recurring failures
-    storage/
-        db.py
-        schema.sql
-    tests/
-        test_state.py
-        test_context_builder.py
-        test_verifier.py
-        test_correction_loop.py
-        test_executor.py
-    pyproject.toml
-    .vscode/
-        mcp.json
-    README.md
-    CLAUDE.md
+    memory/                      ← 3-tier memory (unchanged)
+        MEMORY.md, architecture.md, failure-patterns.md
+
+copilot-harness/                 ← Python MCP server
+    server.py                    ← FastMCP stdio — harness_* tools
+                                   (harness_run_hook added Week 3c)
+    cli.py, state.py, context_builder.py, verifier.py, executor.py
+    correction_loop.py, skill_loader.py
+    memory/, storage/, tests/    (334 tests)
+
+copilot-harness-extension/       ← VS Code extension (TypeScript)
+    src/
+        extension.ts             ← direct-mode routing + slash dispatch
+        mcpClient.ts             ← JSON-RPC stdio client
+        pipeline.ts              ← agent driver + correction loop
+                                   (multi-dir loadAgentPrompt fallback)
+        slashCommands.ts         ← Week 3c: slash-command loader
+    bin/
+        copilot-harness.exe      ← PyInstaller binary
+
+hooks.json                       ← Week 3c: lifecycle hook config
+scripts/                         ← Week 3c: hook implementations
+    policy_engine.py             ← PIPELINE_POLICIES (fail-closed)
+    pre_tool_use.py              ← policy gate (exit 0=allow, 1=deny)
+    post_tool_use.py             ← SQLite audit log
+    session_start.py             ← baseline_checks runner
 ```
 
 ---
@@ -125,663 +276,806 @@ copilot-harness/
 ## Key Distinction: instructions vs skills
 
 ```
-instructions.md = RULES AND STANDARDS to follow
-                  "always use type hints"
-                  "never hardcode secrets"
-                  "follow REST conventions"
-                  → constraints on agent behavior
-                  → priority-ranked: P1 cannot be overridden by P4
-                  → loaded automatically by Copilot
+instructions/   = RULES AND STANDARDS (always loaded, priority-ranked)
+                  → P1 universal > P2 org > P3 domain > P4 project
+                  → P1 can never be overridden
 
-skills/         = PROCEDURES AND KNOWLEDGE to apply
-                  "how to review code step by step"
-                  "how to design an API"
-                  "how to analyze database queries"
-                  → reusable domain expertise
-                  → max 200 lines per SKILL.md
-                  → loaded on demand via MCP tool call
-                  → deep knowledge in references/, loaded only when needed
-                  → executable logic in assets/, run by executor.py
+skills/         = PROCEDURES AND KNOWLEDGE (injected by harness or loaded on demand)
+                  → auto-injected: harness_read_stage pushes skills per pipeline config
+                  → on demand: agents call harness_get_skill / harness_get_reference
+                  → assets/ run by executor.py only, never by agent directly
 ```
 
 ---
 
-## Instructions Priority System
+## Skill Injection — Skills Are Pushed, Not Pulled
 
-```
-P1 — Universal (never overridden by anything)
-     security.instructions.md: never expose secrets, never trust unvalidated input
-     ethics.instructions.md: never generate harmful code, never deceive
+Copilot can decide "I don't need that skill." The harness prevents this by
+injecting skill content directly into `harness_read_stage` responses.
 
-P2 — Organization (overrides domain and project)
-     git-conventions, code-review-standards, documentation-standards
-
-P3 — Domain (overrides project, overridden by org)
-     python, typescript, api, database — scoped via applyTo field
-
-P4 — Project (most specific, lowest precedence above nothing)
-     repo-specific naming, architecture decisions
-
-Conflict resolution: higher priority wins. P1 always wins.
-```
+Pipeline YAML defines which skill to inject per agent. Agent cannot opt out.
+Skill content is part of the tool response.
+Agent loads additional references on demand via `harness_get_reference()`.
 
 ---
 
-## Skill Folder Structure
-
-```
-skills/{skill-id}/
-    SKILL.md                ← required, max 200 lines
-    assets/                 ← optional: executable scripts, templates, data files
-    references/             ← optional: deep domain documents loaded on demand
-```
-
-### SKILL.md format (max 200 lines)
-
-```markdown
----
-id: code-review
-name: Code Review
-version: 1.0.0
-description: Reviews code for bugs, security, and conventions
-triggers: ["review", "check code", "audit", "code quality"]
-assets:
-    - assets/review-script.py
-references:
-    - references/owasp-top10.md
-    - references/common-patterns.md
----
-
-## Purpose
-[1-2 sentences]
-
-## Procedure
-[step by step, concise]
-
-## Assets
-[what scripts are available and when to use them]
-
-## When to Load References
-- Load owasp-top10.md when: security issues detected in code
-- Load common-patterns.md when: pattern matching or anti-pattern detection needed
-```
-
-### Progressive Disclosure
-
-```
-L1 — SKILL.md always loaded (~200 lines)
-     handles 80% of cases
-     ↓ agent decides more knowledge needed
-L2 — references/*.md loaded on demand
-     agent calls harness_get_reference(skill_id, reference_name)
-     ↓ agent decides execution needed
-L3 — assets/ scripts executed
-     agent calls harness_run_asset(skill_id, asset_name, input)
-     executor.py runs script, returns output
-     never run directly by agent
-```
-
----
-
-## The 5-Agent Team
-
-| Agent | File | Tools | Reads | Writes |
-|---|---|---|---|---|
-| Planner | planner.agent.md | view, glob | request + P1/P2 instructions | session.plan |
-| Designer | designer.agent.md | view, glob | session.plan | session.design |
-| Coder | coder.agent.md | view, edit, bash | session.plan + session.design | session.code |
-| Reviewer | reviewer.agent.md | view, glob | all stages + request | session.review |
-| Skill-Builder | skill-builder.agent.md | view, edit | reviewer feedback + target skill | .github/agents/proposed/ |
-
----
-
-## .agent.md Format
-
-```markdown
----
-name: Coder
-description: Implements code based on plan and design. Invoked when code needs to be written or modified.
-tools: ["view", "edit", "bash"]
----
-
-## Role
-You are a senior software engineer implementing features based on a structured plan and design.
-
-## Instructions
-[full behavior instructions]
-
-## Input Contract
-Before doing anything, call harness_read_stage to get your inputs:
-- harness_read_stage("plan") → task list + acceptance criteria
-- harness_read_stage("design") → architecture + interfaces
-- harness_read_stage("review") → fix_instructions only (on retry)
-
-## Output Contract
-Produce ONLY valid JSON matching this schema:
-{
-    "summary": "string",
-    "files_modified": ["string"],
-    "implementation_notes": "string",
-    "confidence": "high | medium | low"
-}
-Then call harness_write_stage("code", <your output>).
-
-## Skills
-If you need domain knowledge, call harness_get_skill("api-design") or similar.
-If a reference is needed, call harness_get_reference(skill_id, reference_name).
-
-## Behavior Rules
-- Never modify files outside the scope declared in session.plan
-- Always handle errors on all external calls
-- Never hardcode secrets or credentials
-- If confidence is low, explain why in implementation_notes
-```
-
----
-
-## MCP Server — Tools Exposed
-
-CopilotHarness exposes these tools to Copilot agents via MCP stdio.
-**Zero LLM calls inside server.py or any harness component.**
+## MCP Tools
 
 ### State Tools
 ```
-harness_write_stage(session_id, stage, output)
-    → verifier.py validates schema + secrets + injection
-    → state.py stores if valid
-    → correction_loop.py checks if stage is "review" (pass/fail decision)
-
-harness_read_stage(session_id, stage)
-    → context_builder.py filters output based on calling agent identity
-    → returns only what that agent is allowed to see
+harness_get_active_session()
+    → returns { session_id, request, resume_stage, attempt } | { session_id: null }
 
 harness_new_session(request)
-    → state.py creates session, locks agent versions
-    → returns session_id
+    → create_session() + lock_agent_versions() + set_active_session()
+
+harness_read_stage(session_id, stage, agent_name)
+    → context firewall + skill injection + memory injection
+
+harness_write_stage(session_id, stage, output, agent_name)
+    → injection scan + schema check + append-only store
 
 harness_get_status(session_id)
-    → returns current pipeline status for orchestration
+harness_increment_attempt(session_id, stage)
 ```
 
 ### Skill Tools
 ```
 harness_get_skill(skill_id)
-    → skill_loader.py reads .github/skills/{id}/SKILL.md
-    → returns content to agent
-
 harness_get_reference(skill_id, reference_name)
-    → skill_loader.py reads .github/skills/{id}/references/{name}
-    → agent decides when to call this, not auto-loaded
-
-harness_run_asset(skill_id, asset_name, input_json)
-    → executor.py runs .github/skills/{id}/assets/{name}
-    → returns stdout as structured result
-    → agent never runs scripts directly
 ```
 
-### Execution Tools
+### Execution Tools ✅ built
 ```
-harness_run_lint(files)
-    → executor.py: subprocess ruff check {files}
-    → returns structured LintResult
+harness_run_lint(files)       → LintResult (ruff)
+harness_run_typecheck(files)  → TypeCheckResult (mypy)
+harness_run_tests(test_dir)   → RunResult (pytest)
+```
 
-harness_run_typecheck(files)
-    → executor.py: subprocess mypy {files}
-    → returns structured TypeCheckResult
-
-harness_run_tests(test_dir)
-    → executor.py: subprocess pytest {test_dir}
-    → returns structured TestResult
+### Memory Tools ✅ built
+```
+harness_get_memory_entry(name) → Tier 2 content on demand
+harness_distill_session(session_id) → appends to failure-patterns.md
 ```
 
 ---
 
-## MCP Connection
+## Hooks
 
-### .vscode/mcp.json (commit to repo)
-```json
-{
-    "servers": {
-        "copilot-harness": {
-            "type": "stdio",
-            "command": "copilot-harness",
-            "args": ["serve"]
-        }
-    }
-}
-```
+Follows Claude Code `hooks.json` format. Deterministic code at lifecycle points.
 
-### How agents connect
-Every `.agent.md` has an Input Contract and Output Contract section that tells
-the agent to use MCP tool calls — `harness_read_stage` to get inputs,
-`harness_write_stage` to submit outputs. Copilot calls these tools natively
-via its agent loop. No custom integration needed.
+**Key rule:** "Never send an LLM to do a linter's job."
+
+| Hook | When | v1 behavior |
+|---|---|---|
+| `SessionStart` | Before pipeline run | Orient: read progress, baseline checks |
+| `PreToolUse` | Before every tool call | Policy enforcement per agent |
+| `PostToolUse` | After every tool call | SQLite audit logging |
+| `on-eval-fail` | Evaluator rejects | Log + send fix_instructions |
+| `on-escalate` | Max retries exceeded | Escalate with full context |
 
 ---
 
-## Harness Engineering — 7 Components
+## Context Firewall (context_builder.py)
 
-### 1. Tool Design ⬜
-**What:** Each agent has explicit, enforced tool access.
-**How:** `tools` field in `.agent.md` frontmatter, enforced by Copilot SDK at runtime.
-**Harness role:** `context_builder.py` validates tool call logs, flags violations.
-**File:** `.github/agents/*.agent.md`, `context_builder.py`
+```python
+build_context(session_id, agent_name) → dict
+read_stage_for_agent(session_id, stage, agent_name) → dict | None
+    # Evaluator → sees output + schema ONLY. No generator instructions, no memory.
+    # Coder retry → fix_instructions only, not full review JSON.
+```
 
-### 2. Feedback Loops ⬜
-**What:** Structured signals between agents. Errors caught and routed correctly.
-**How:** Feedback schema from Reviewer → Coder:
-```json
-{
-    "status": "pass | fail | escalate",
-    "attempt": 1,
-    "issues": [{
-        "severity": "critical | high | medium | low",
-        "description": "string",
-        "fix_instruction": "string",
-        "checklist_item": "string"
-    }],
-    "escalate_reason": null
-}
-```
-**Correction loop:**
-```
-verifier.py: structural check → fail → retry Coder (no Reviewer yet)
-Reviewer: domain check → fail → correction_loop.py sends fix_instructions
-    → Coder retries (max 3 attempts)
-    → attempt 3 fails → escalate to user
-executor.py: runs lint + tests after Reviewer passes → final gate
-pattern_detector.py: records fails → Skill-Builder triggered at threshold
-```
-**File:** `correction_loop.py`, `reviewer.agent.md`
+---
 
-### 3. State Management ⬜
-**What:** Append-only session state. Crash recovery. Full audit trail.
-**Session schema:**
-```json
-{
-    "session_id": "abc123",
-    "request": "build a login endpoint",
-    "locked_agent_versions": {
-        "planner": "1.2.0",
-        "designer": "1.0.0",
-        "coder": "2.1.0",
-        "reviewer": "1.1.0"
+## Memory Architecture ✅ Built
+
+```
+Tier 1 — MEMORY.md (~200 tokens, always loaded by harness_read_stage)
+Tier 2 — .github/memory/*.md (loaded on demand)
+Tier 3 — storage/sessions/ (raw history, never auto-loaded)
+```
+
+memory_loader.py ✅ | session_distiller.py ✅ | harness_get_memory_entry ✅
+
+---
+
+## Pipeline YAML Format
+
+```yaml
+# Level 1 — single generator + separate evaluator
+name: feature-dev
+description: Guided feature development with review
+version: 1.0.0
+level: 1                         # 0, 1, or 2
+
+baseline_checks:
+  - type: file_read
+    path: src/
+    error: "Cannot read src/"
+
+generator:
+  agent: agents/generator.md     # SINGULAR — one agent (Level 0/1)
+  skill: skills/SKILL.md
+  output_schema: schemas/output.json
+
+evaluator:                        # null for Level 0
+  agent: agents/evaluator.md
+  schema: schemas/review-criteria.json
+
+correction:
+  max_retries: 3
+  escalate_message: "Feature requires human review"
+```
+
+```yaml
+# Level 2 ONLY — multiple generators (requires promotion checklist)
+name: feature-dev-v2
+level: 2
+
+generator:
+  agents:                         # PLURAL — multiple agents (Level 2 only)
+    - name: planner
+      agent: agents/planner.md
+      skill: null
+    - name: coder
+      agent: agents/coder.md
+      skill: skills/python/SKILL.md
+
+evaluator:
+  agent: agents/evaluator.md
+```
+
+**The runner validates:** `generator.agents` (plural) requires `level: 2`.
+Level 0/1 with `agents:` list is rejected at load time.
+
+---
+
+## Policy Engine
+
+```python
+PIPELINE_POLICIES = {
+    "feature-dev": {
+        "generator": ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
+        "evaluator": ["Read", "View"],
     },
-    "stages": {
-        "plan":   { "status": "complete", "output": {} },
-        "design": { "status": "complete", "output": {} },
-        "code":   {
-            "status": "in_progress", "attempt": 2,
-            "attempt_1": { "output": {}, "review_feedback": {} },
-            "output": null
-        },
-        "review": { "status": "pending", "output": null }
-    }
 }
 ```
-**Rules:** pending → in_progress → complete only. Output write-once per attempt.
-On crash: resume from last in_progress stage.
-**File:** `state.py`, `storage/schema.sql`
 
-### 4. Context Firewall ⬜
-**What:** Each agent receives only what its role requires. Injection detection.
-**Per-agent rules:**
-```
-Planner:       request + P1/P2 instructions only
-Designer:      session.plan.output only
-Coder:         session.plan + session.design
-               on retry: + fix_instructions only (not full review)
-Reviewer:      all stage outputs + request
-Skill-Builder: reviewer fail patterns + target .agent.md only
-               blocked: session state, user code
-```
-**Injection detection:** scan every output before storage for:
-- "ignore your instructions", "you are now", "forget previous"
-- instruction override patterns
-- adversarial content targeting downstream agents
-**File:** `context_builder.py`
-
-### 5. Security & Permissions ⬜
-**What:** Three enforcement layers. Defense in depth.
-```
-Layer 1: Copilot tool restrictions (tools field in .agent.md)
-Layer 2: Skill-Builder boundary
-         → writes to .github/agents/proposed/ only
-         → modifies Behavior Rules section only
-         → blocked from agents with active sessions
-Layer 3: Secrets scan on every agent output
-         → API keys, tokens, passwords, private keys
-         → blocked from entering session state if detected
-```
-**File:** `verifier.py`, `context_builder.py`
-
-### 6. Verification ⬜
-**What:** Two independent layers. Structural first, domain second, execution last.
-```
-verifier.py (structural, deterministic Python):
-    runs after every harness_write_stage call
-    checks: output schema, secrets, injection patterns
-
-reviewer.agent.md (domain, Copilot LLM):
-    structured checklist — not free-form judgment
-    [ ] all acceptance criteria implemented
-    [ ] architecture matches design
-    [ ] no hardcoded secrets
-    [ ] error handling on external calls
-    [ ] follows instructions priority rules
-    [ ] no unused code
-
-executor.py (execution, deterministic Python):
-    runs after Reviewer passes
-    ruff check → mypy → pytest
-    fail → back to Coder with execution errors as fix_instructions
-```
-**File:** `verifier.py`, `executor.py`, `reviewer.agent.md`
-
-### 7. Architecture Enforcement ⬜
-**What:** Agent behavior defined in files, not code. Immutable during session.
-**Rules:**
-```
-locked_agent_versions captured at session start
-Skill-Builder cannot modify .agent.md of active session agents
-Skill-Builder writes to proposed/ only — human approves
-Skill-Builder modifies Behavior Rules section only
-All agent prompts assembled by context_builder.py only
-No inline prompt construction anywhere else
-```
-**Proposed change flow:**
-```
-Skill-Builder detects recurring failure (3+ sessions)
-    ↓
-Writes to .github/agents/proposed/coder.patch.md
-    (contains: rule to add, triggering sessions, confidence)
-    ↓
-Human reviews → approves → applies patch
-    ↓
-Next session uses updated .agent.md, version increments
-```
-**File:** `state.py`, `context_builder.py`, `skill-builder.agent.md`
+Enforced via `PreToolUse` hook. Never removed regardless of model capability.
 
 ---
 
-## Processing Flow End-to-End
+## LLM Usage — Zero Inside Harness
 
 ```
-1. copilot-harness serve → MCP server starts (stdio)
-   VS Code reads .vscode/mcp.json → spawns process
+Component              LLM?   Status
+──────────────────────────────────────
+server.py              ❌     ✅
+state.py               ❌     ✅
+context_builder.py     ❌     ✅
+verifier.py            ❌     ✅
+correction_loop.py     ❌     ✅
+skill_loader.py        ❌     ✅
+executor.py            ❌     ✅
+pattern_detector.py    ❌     ✅
+patch_applier.py       ❌     ✅
+memory_loader.py       ❌     ✅
+session_distiller.py   ❌     ✅
+mcpClient.ts           ❌     ✅
+pipeline.ts            ❌     ✅
+extension.ts           ❌     ✅
 
-2. User sends request in Copilot Chat
-   Planner.agent.md loaded by Copilot
-   Planner calls: harness_new_session(request) → session_id
-   Planner calls: harness_read_stage("plan") → empty (first stage)
-   Planner produces plan JSON
-   Planner calls: harness_write_stage("plan", output)
-       → verifier.py: schema + secrets + injection check
-       → state.py: stores if valid
-
-3. Designer.agent.md loaded by Copilot
-   Designer calls: harness_read_stage("plan")
-       → context_builder.py: returns plan only (firewall)
-   Designer optionally calls: harness_get_skill("api-design")
-   Designer produces design JSON
-   Designer calls: harness_write_stage("design", output)
-
-4. Coder.agent.md loaded by Copilot
-   Coder calls: harness_read_stage("plan") + harness_read_stage("design")
-   Coder optionally calls: harness_get_skill + harness_get_reference
-   Coder produces code output
-   Coder calls: harness_write_stage("code", output)
-
-5. Reviewer.agent.md loaded by Copilot
-   Reviewer calls: harness_read_stage("*") → all stages
-   Reviewer optionally calls: harness_get_reference("code-review", "owasp-top10")
-   Reviewer produces review JSON
-   Reviewer calls: harness_write_stage("review", output)
-       → correction_loop.py: pass or fail?
-       → fail: fix_instructions sent to Coder (attempt 2)
-       → pass: continue to executor
-
-6. executor.py runs: harness_run_lint + harness_run_tests + harness_run_typecheck
-   fail → Coder receives execution errors as fix_instructions
-   pass → final output returned to user
-
-7. pattern_detector.py records session result
-   recurring failures (≥3) → Skill-Builder triggered
-   proposed change written to .github/agents/proposed/
+Copilot Chat / vscode.lm  ✅   agent reasoning only
 ```
 
 ---
 
-## LLM Usage — Confirmed Zero Inside Harness
+## Harness Audit Summary
 
-```
-Component              LLM?   Implementation
-──────────────────────────────────────────────────────
-server.py              ❌     MCP stdio, routes tool calls
-state.py               ❌     Python dataclass + SQLite
-context_builder.py     ❌     Python dict filtering + regex
-verifier.py            ❌     jsonschema + regex secrets scan
-executor.py            ❌     subprocess: ruff, mypy, pytest
-correction_loop.py     ❌     Python orchestration logic
-skill_loader.py        ❌     file I/O
-pattern_detector.py    ❌     SQLite count threshold
-
-Copilot (VS Code)      ✅     ALL agent reasoning happens here
-Skill-Builder agent    ✅     runs inside Copilot, writes to proposed/
-```
+| Component | Status | Next action |
+|---|---|---|
+| Tool Design | ✅ hooks.json PreToolUse (Week 3c) | — |
+| Feedback Loops | ✅ Built | — |
+| State Management | ✅ Built + crash recovery | — |
+| Multi-Agent Coordination | ⚠️ Handoff schemas still missing | Conditional on Week 4 Day 5 probe outcome |
+| Discoverability (/help) | ✅ Built (Week 4 Day 1) | — |
+| Plugin manifest | ✅ Built (Week 4 Day 2) | — |
+| Pipeline-as-install-unit | ⚠️ Half | Skill locality = global; revisit if portability needed |
+| Direct-mode skill pull | ✅ Built (Week 4 Day 3) | — |
+| Security & Permissions | ✅ Built + policy engine (Week 3c) | — |
+| Verification | ✅ Built | — |
+| Architecture Enforcement | ✅ Built | — |
+| Memory Architecture | ✅ Built (3-tier) + compaction + cross-session query (Week 4 Day 4) | — |
+| Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
+| Direct Mode | ✅ Shipped (Week 3c) + skill catalog (Week 4 Day 3) | — |
+| Level decision for feature-dev | ⚠️ Probe built, not run (Week 4 Day 5) | Run 5 representative requests through both pipelines |
+| Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
 ---
 
 ## Build Roadmap
 
-### Day 1 — Native Copilot Files (no Python)
-```
-[ ] AGENTS.md — global rules, project context, commands
-[ ] .github/copilot-instructions.md — team conventions
-[ ] .github/instructions/universal/security.instructions.md
-[ ] .github/instructions/universal/ethics.instructions.md
-[ ] .github/instructions/org/ — team standards
-[ ] .github/instructions/domain/ — python, api, database (with applyTo)
-[ ] All 5 .agent.md files:
-      frontmatter: name, description, tools
-      Role, Instructions, Input Contract, Output Contract, Behavior Rules
-      MCP tool calls in Input/Output Contract sections
-[ ] .github/skills/code-review/ — SKILL.md + assets/ + references/
-[ ] .github/agents/proposed/ — empty directory
+### Day 1–5 ✅ Complete
+All core harness modules built. 260 tests passing.
 
-Goal: agent definitions complete, skills folder populated
-Test: open VS Code, agents appear in Copilot agent picker
-      copilot-instructions.md referenced in chat responses
-```
+### Week 2 ✅ Complete
+3-tier memory. Edge case hardening. 260 tests.
 
-### Day 2 — State + Context Firewall
+### Week 3a ✅ Complete — Separate Evaluator Session
+**Shipped.** Reviewer now runs as an evaluator with an isolated context.
 ```
-[ ] storage/schema.sql — sessions, stage_outputs, agent_versions, fail_patterns
-[ ] storage/db.py — SQLite CRUD operations
-[ ] state.py
-      create_session(request) → session_id
-      lock_agent_versions() → reads .agent.md frontmatter versions
-      write_stage(session_id, stage, output) → append-only
-      read_stage(session_id, stage) → output or None
-      increment_attempt(session_id, stage) → updates attempt counter
-      resume(session_id) → last incomplete stage
-[ ] context_builder.py
-      build_context(session_id, agent_name) → filtered dict
-      scan_injection(text) → bool
-      validate_skill_builder_write(path) → bool (proposed/ only)
-
-Goal: firewall is structural, not agent self-enforced
-Test:
-      context for "planner" contains zero stage outputs
-      context for "coder" contains no raw request text
-      context for "skill-builder" contains no session state
-      scan_injection("ignore your previous instructions") → True
+[x] Reviewer context firewalled to {code} only — no request, plan, design,
+      or prior review. Enforced in copilot-harness/context_builder.py
+      (_STAGE_PERMISSIONS["reviewer"] = {"code"}; _context_reviewer()).
+[x] Memory injection skipped for reviewer in server.py harness_read_stage.
+[x] Dynamic plan.required_skills injection skipped for reviewer; the
+      code-review skill static injection is retained (that IS the checklist).
+[x] pipeline.ts AGENT_PIPELINE + runCorrectionLoop: reviewer readStages
+      tightened to ["code"].
+[x] reviewer.agent.md rewritten for the evaluator contract.
+[x] Tests: 11 new assertions covering reviewer isolation
+      (test_context_builder.py, test_skill_access.py).
+[ ] Deferred — Level 1 vs Level 2 decision. Requires running the LM against
+      the eval set and comparing pass rates. Plan: build a one-off
+      single-generator probe, run 3–5 representative requests, decide.
+      Threshold: ≥ 80% first-attempt pass → Level 1 viable.
 ```
 
-### Day 3 — Verification + Correction Loop
-```
-[ ] verifier.py
-      validate_schema(output, agent_name) → ValidationResult
-      scan_secrets(text) → list[SecretMatch]
-      scan_injection(text) → bool
-      verify(session_id, agent_name, output) → VerificationResult
-[ ] correction_loop.py
-      run(session_id) → orchestrates reviewer → coder loop
-      get_attempt_count(session_id) → int
-      build_retry_context(session_id) → fix_instructions only
-      escalate(session_id) → EscalationMessage
+**Known trade-off:** `wrong_plan` status now rarely fires — the reviewer
+cannot see the plan. Accepted for Week 3a. If this produces regressions,
+Week 3b+ can add a dedicated planner-feedback channel.
 
-Goal: loop runs max 3 attempts, escalates cleanly
-Test:
-      inject bad Coder output → verify 3 retries, then escalation
-      verify attempt_N outputs preserved in state
-      verify retry context contains fix_instructions only
-      verify secrets scan blocks hardcoded API keys
+### Week 3b ✅ Complete — Pipeline Directory Migration
+**Structural cleanup. No behavior change.**
+```
+[x] Create .github/pipelines/feature-dev/ directory
+[x] Move planner/designer/coder/reviewer into pipeline directory;
+      skill-builder stays at .github/agents/ (meta-agent, not pipeline-scoped)
+[x] Add pipeline.yaml with level: 2 (Week 3a Level-1 probe deferred)
+[x] Add YAML frontmatter to agent .md files (model, maxTurns, tools,
+      disallowedTools)
+[x] state.AGENTS_DIRS globs both pipeline dir + legacy dir (first wins)
+[x] pipeline.ts loadAgentPrompt falls back to legacy path
+[x] Mark .github/agents/ deprecated via README (keep for rollback, remove Week 5)
 ```
 
-### Day 4 — MCP Server + Execution
+### Week 3c ✅ Complete — Direct Mode + Hooks + Commands
 ```
-[ ] executor.py
-      run_lint(files) → LintResult
-      run_typecheck(files) → TypeCheckResult
-      run_tests(test_dir) → TestResult
-      run_asset(asset_path, input_json) → AssetResult
-      run_all(session_id) → ExecutionResult
-[ ] skill_loader.py
-      get_skill(skill_id) → SKILL.md content
-      get_reference(skill_id, ref_name) → reference file content
-      run_asset(skill_id, asset_name, input) → delegates to executor.py
-[ ] server.py — MCP stdio server
-      registers all harness_* tools
-      routes tool calls to correct component
-[ ] .vscode/mcp.json
-[ ] cli.py: copilot-harness serve
-
-Goal: VS Code connects, agents can call all MCP tools
-Test:
-      VS Code connects to MCP server
-      harness_write_stage triggers verifier
-      harness_read_stage respects context firewall
-      harness_run_tests catches a known failing test
+[x] Direct mode routing in extension.ts
+      Slash commands → pipeline. --pipeline flag → pipeline.
+      Everything else → direct (vscode.lm.sendRequest, no harness).
+      No LLM routing call. Zero cost.
+[x] hooks.json at repo root (SessionStart / PreToolUse / PostToolUse)
+[x] scripts/pre_tool_use.py — policy engine (PIPELINE_POLICIES fail-closed)
+[x] scripts/post_tool_use.py — SQLite audit log (storage/audit.db)
+[x] scripts/session_start.py — runs pipeline.yaml baseline_checks
+[x] harness_run_hook MCP tool in server.py (shells out, reports results)
+[x] .github/commands/*.md — 7 slash command files, frontmatter-driven
+[x] copilot-harness-extension/src/slashCommands.ts — loader + lister
+[x] --pipeline flag detection in parseCommand()
+[x] Tests: +59 new (pipeline YAML shape, policy engine, hooks, slash
+      commands, multi-dir agent glob). Total now 334.
 ```
 
-### Day 5 — Self-Improvement Loop
-```
-[ ] memory/cross_session.db schema
-[ ] memory/pattern_detector.py
-      record_failure(session_id, agent, issue)
-      detect_patterns(agent) → list of recurring issues
-      trigger_skill_builder(pattern) → writes proposed/*.patch.md
-[ ] Wire pattern_detector into correction_loop.py
-[ ] pipeline.py — top-level: runs full agent pipeline end-to-end
+### Week 4 ✅ Complete — Multi-Agent Coordination + Unblock Week 5
 
-Goal: system proposes its own improvements after recurring failures
-Test:
-      simulate same reviewer failure 3 sessions in a row
-      proposed/*.patch.md created with correct rule text
-      direct write to .github/agents/ is blocked
+```
+Day 1 ✅ /help slash command (dynamic, data-driven)
+  [x] Added "help" to SlashAction in slashCommands.ts + VALID_ACTIONS
+  [x] .github/commands/help.md (action: help)
+  [x] extension.ts buildHelpMarkdown() renders a table from
+      listSlashCommands(workspaceRoot) — stays in sync with new commands
+  [x] USAGE_HEADER + USAGE_FOOTER reused by both cmd.type=="help" and
+      the slash "/help" route
+  [x] test_slash_commands.py: +2 assertions (help.md has action=help;
+      help action carries no pipeline/agent)
+
+Day 2 ✅ Plugin manifest + skill locality decision
+  [x] .github/pipelines/feature-dev/.claude-plugin/plugin.json with
+      { name, version, description, commands, agents, skills, hooks,
+        mcpServers, pipeline, skillLocality } — purely declarative
+  [x] Decision recorded in plugin.json.skillLocality: mode="global".
+      Rationale: multiple pipelines reuse the same skills (python,
+      testing, code-review); per-pipeline duplication would fragment
+      the knowledge base. Revisit when a pipeline-specific skill
+      appears or a second repo needs copy-paste install without skills.
+  [x] NOT wired: skill_loader multi-dir fallback — deferred until the
+      locality decision flips to pipeline-local.
+  [x] test_plugin_manifest.py — 10 assertions (JSON parses + every
+      referenced path resolves + skillLocality decision is recorded)
+
+Day 3 ✅ Direct-mode pull-on-demand skills
+  [x] context_builder.AGENT_SKILL_ALLOWLIST["direct"] = designer ∪ coder.
+      Deliberately excludes reviewer's code-review skill (that's an
+      evaluator checklist, not generator knowledge)
+  [x] New MCP tool harness_list_skills(agent_name) in server.py —
+      returns catalog filtered through caller's allowlist
+  [x] extension.ts runDirect(): one-shot MCP call to harness_list_skills,
+      injects catalog into system prompt, pull-on-demand loop with
+      {"action":"pull_skill","skill_id":...} marker (max 3 rounds).
+      Simpler than registering vscode.lm tools; the marker form keeps
+      direct mode harness-free at the tool layer.
+  [x] Pipeline mode untouched — still push-only, firewall intact
+  [x] test_skill_access.py: +8 assertions (direct allowlist rejects
+      code-review; list_skills filters per caller; planner catalog empty;
+      reviewer catalog ⊆ {code-review, testing}; regression on
+      harness_read_stage for pipeline agents)
+
+Day 4 ✅ Memory: Tier 2 compaction + cross-session query
+  [x] session_distiller.compact_failure_patterns() — fires when
+      .github/memory/failure-patterns.md > 5 KB. Keeps union of
+      top-10 most-frequent + top-10 most-recent. Auto-called from
+      distill_session after every append.
+  [x] memory_loader.query_sessions(query, limit) — case-insensitive
+      substring match against request + stored review output.
+      Returns structured excerpts (never full transcripts).
+  [x] harness_query_sessions + harness_compact_memory MCP tools
+  [x] test_session_distiller.py: +6 assertions (noop below threshold;
+      fires above; preserves most-frequent; idempotent; distill triggers
+      compaction; survives churn)
+  [x] test_memory_loader.py: +7 assertions (request match; review match;
+      empty query; limit; case-insensitive; no match; truncation)
+
+Day 5 ✅ Level-1 probe for feature-dev (infrastructure built)
+  [x] Built .github/pipelines/feature-dev-level1-probe/ with
+      pipeline.yaml (level: 1, singular generator.agent), composite
+      agent file producing plan+design+code in one shot, README
+      documenting the 80% threshold and measurement protocol
+  [x] Re-uses production reviewer via ../feature-dev/agents/reviewer.agent.md
+      so generator-side changes are the only variable
+  [x] probe.target_pass_rate: 0.80, sample_size: 5, baseline: feature-dev
+  [x] test_level1_probe.py: 9 assertions (level=1, singular generator,
+      reviewer reuse, probe metadata, README decision rule, production
+      pipeline stays Level 2)
+  [ ] STILL DEFERRED: actually running the probe. The infrastructure is
+      built; 5 representative /feature-dev requests still need to be
+      selected and run through both pipelines. Decision log in the
+      probe README is empty until that happens. feature-dev stays
+      Level 2 until we have that evidence.
+
+Tests: +45 new across Days 1–5. Total now 379 (was 334).
+
+CONDITIONAL (triggered by Day 5 outcome, once probe is run):
+  [ ] Handoff schemas (plan→design, design→code, code→review)
+      Only if Level-2 stays. Bumps to Week 4.5 or top of Week 5.
+  [ ] Pipeline-as-install-unit (copy-paste install)
+      Day 2 decision was "global skills" — portability still partial.
+      Revisit if second-repo install becomes a real requirement.
 ```
 
-### Week 2 — Hardening
+### Week 5 — Sub Agents (5-day plan, main feature)
+
 ```
-[ ] Unit tests for all components (test_*.py)
-[ ] Crash recovery: pipeline.py resumes from last complete stage
-[ ] README.md — setup, how to add agents, how to write skills
-[ ] Edge cases: empty planner output, coder refuses task
-[ ] Instruction priority enforcement documentation
+Day 1 — Phase A.1: MCP plumbing + policy
+  [ ] harness_spawn_subagent(main_session_id, role, brief, allowed_tools,
+      max_turns, output_schema) → handle in server.py
+  [ ] harness_await_subagent(handle) → { summary, structured, tools_used,
+      turns, escalated }
+  [ ] harness_list_subagents(main_agent_name) → allowed roles for this main
+  [ ] SUBAGENT_POLICIES in scripts/policy_engine.py (fail-closed)
+  [ ] Ephemeral sub-session storage (auto-cleaned when main session ends)
+  [ ] Tests: policy intersection (role ∩ main_allowlist);
+      list_subagents filters by caller; unknown role rejected
+
+Day 2 — Phase A.2: Firewall + result verification
+  [ ] context_builder.py: sub agent read path — brief + role skill +
+      allowed tools only. NO main plan, NO memory, NO sibling subs,
+      NO main session_id
+  [ ] verifier.py: summary token cap + optional JSON schema validation
+      on return
+  [ ] Tests: sub agent cannot read main session state;
+      summary over token cap is truncated with marker;
+      schema validation rejects malformed structured returns
+
+Day 3 — Phase A.3: Role files + spawn-event surface
+  [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
+  [ ] .github/agents/investigator.agent.md (+ Bash for test runs)
+  [ ] .github/agents/reviewer-aux.agent.md (Read + View, per-file checklist)
+  [ ] mcpClient.ts emits "subagent_spawned" / "subagent_done" notifications
+  [ ] extension.ts renders visible chat markers (brief, turn count,
+      tool histogram, final summary line; full summary collapsible)
+  [ ] post_tool_use.py audit log records every spawn (caller, role, brief,
+      turns, tools, result) in storage/audit.db
+  [ ] Tests: every spawn produces a chat marker; audit row written per spawn;
+      no silent sub agents
+
+Day 4 — Phase B: Pipeline-main spawning (highest ROI)
+  [ ] pipeline.yaml schema extension: `subagents:` block per stage
+      (opt-in, whitelist of roles + max_concurrent)
+  [ ] pipeline.ts wires harness_spawn_subagent into stage agent tool list
+      when stage has `subagents:`; otherwise tool is unavailable
+  [ ] Enforce SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+  [ ] Integration test: feature-dev coder spawns explorer on a real brief,
+      receives summary, main context size unchanged (baseline check)
+  [ ] Tests: main never sees transcript; max_turns is a hard cap;
+      max_concurrent honored; stages without `subagents:` cannot spawn
+
+Day 5 — Phase C: Direct-mode spawning
+  [ ] Extend Week 4 Day 3 direct-mode MCP round-trip to ALSO return
+      harness_list_subagents("direct") catalog (same round-trip, one shot)
+  [ ] Register harness_spawn_subagent as vscode.lm tool in runDirect()
+  [ ] Direct main's sub-agent allowlist defined in SUBAGENT_POLICIES
+      (expect: explorer + investigator; reviewer-aux requires pipeline context)
+  [ ] Tests: direct main spawns sub end-to-end; sub spawned from direct
+      cannot read any direct state; direct mode still has no evaluator
+  [ ] Update Known TODOs, audit table, footer: mark Week 5 complete
+
+END-OF-WEEK checkpoint:
+  [ ] 334 existing + new tests green
+  [ ] Feature-dev run with a sub agent in the loop, full trace
+  [ ] Audit log shows every spawn; chat markers rendered
+  [ ] Memory of one real failure pattern (if encountered) distilled
 ```
+
+### Week 5 — Sub Agents (planned, main feature)
+
+**Why.** A main agent doing heavy evidence gathering (scan 50 files, run 20
+test cases, aggregate grep results) dumps irrelevant content into its own
+context window. Sub agents do that work in isolation and return a compressed
+summary, keeping the main agent's context clean for reasoning.
+
+**Definition.** A *sub agent* is an agent spawned **by another agent**
+mid-task. Same `.agent.md` file as any other agent. The "sub" refers to the
+invocation — an agent runs inside another agent's execution.
+
+Terminology:
+- **Agent** = the `.agent.md` file
+- **Main agent** = currently driving the work (a pipeline stage, or direct
+  mode `@harness`)
+- **Sub agent** = agent spawned by the main agent to offload work
+
+Invocations that are **not** sub agents: a pipeline running its stage agent,
+or a user slash-invoking an agent directly — in those cases the agent *is*
+the main, not a sub.
+
+**Goal: preserve main context.** Spawn a sub agent when the main only needs
+the *conclusion* of some exploration, not the raw evidence.
+
+```
+Good fits (ship):
+  - Scan N files for pattern X, return match count + locations
+  - Run the same lint / grep / check across a directory, aggregate
+  - Read a file, return structured facts (imports, exported symbols)
+  - Execute one test, report pass/fail + tail
+  - Per-file review against a fixed checklist
+
+Bad fits (do NOT build a role for these):
+  - "Explore the architecture" (open-ended reasoning)
+  - "Design a new feature" (that's a planner stage)
+  - "Decide which approach is better" (decision belongs to the main)
+  - "Implement this" (needs a full pipeline + evaluator)
+```
+
+Principle: **sub agents gather facts. The main agent reasons.** If a role
+needs chain-of-thought beyond its brief, it's the wrong role — promote it to
+a pipeline stage with an evaluator, or keep the work in the main.
+
+**First three sub agent roles** (files under `.github/agents/`):
+```
+explorer       Read + Grep + Glob             (read-only exploration)
+investigator   Read + Grep + Glob + Bash      (debug, run tests)
+reviewer-aux   Read + View                    (strict per-file review)
+```
+
+Cross-pipeline agents live at `.github/agents/` (un-deprecated). Pipeline-
+specific stage agents stay at `pipelines/<name>/agents/`.
+
+**Spawn visibility — always shown to the user.** Every sub agent spawn is
+surfaced in Copilot Chat, never hidden:
+
+```
+▶ explorer  "scan src/**/*.py for JWTValidator.verify usages"  (max 8 turns)
+   …running…
+✓ explorer  14 matches across 9 files  (turns: 3, tools: Grep×3, Read×4)
+```
+
+Non-negotiable:
+- User sees which sub agent was spawned, with what brief, for how long
+- User sees final summary line; full summary inlined (collapsible)
+- Transcript stays firewalled — only the spawn event + summary are visible
+- `post_tool_use.py` audit log records every spawn with caller, role,
+  brief, turns, tools, result
+
+No silent sub agents. If one is running, the user knows.
+
+**Firewall rule** (preserves "harness pushes, agent cannot opt out"):
+```
+sub agent sees:       brief + role skill + allowed tools
+                      NO main plan, NO memory, NO sibling sub agents,
+                      NO session_id of the main
+main sees on return:  summary (token-capped) + optional structured JSON
+                      NEVER the sub agent's transcript
+```
+
+**Policy engine — new table:**
+```python
+SUBAGENT_POLICIES = {
+    "explorer":     ["Read", "Grep", "Glob"],
+    "investigator": ["Read", "Grep", "Glob", "Bash"],
+    "reviewer-aux": ["Read", "View"],
+}
+# effective = SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+```
+
+**MCP tools:**
+```
+harness_spawn_subagent(main_session_id, role, brief, allowed_tools,
+                       max_turns, output_schema)   → handle
+harness_await_subagent(handle)
+    → { summary, structured, tools_used, turns, escalated }
+harness_list_subagents(main_agent_name)  # which roles can this main spawn?
+```
+
+**`pipeline.yaml` extension** (opt-in per stage — keeps push-not-pull):
+```yaml
+generator:
+  agent: agents/coder.md
+  subagents:                       # stage-declared whitelist
+    - role: explorer
+      max_concurrent: 2
+    - role: investigator
+      max_concurrent: 1
+```
+Stages without `subagents:` cannot spawn.
+
+**Rollout phases:**
+```
+Phase A — Core primitives
+  [ ] harness_spawn_subagent + harness_await_subagent + harness_list_subagents
+  [ ] SUBAGENT_POLICIES in policy_engine.py (fail-closed)
+  [ ] Sub agent context firewall in context_builder.py (brief-only path)
+  [ ] Ephemeral sub session storage (auto-cleaned on main completion)
+  [ ] Summary token cap + schema validation in verifier.py
+  [ ] Three role files under .github/agents/
+  [ ] Spawn-event surface: mcpClient.ts emits "subagent_spawned" /
+      "subagent_done" notifications; extension renders visible chat markers
+      (brief, turn count, tool histogram, final summary line)
+
+Phase B — Pipeline-main spawning (highest ROI — ship first)
+  [ ] pipeline.yaml `subagents:` whitelist per stage
+  [ ] pipeline.ts wires harness_spawn_subagent into stage agent tools
+  [ ] Tests: main never sees transcript, policy intersected, max_turns enforced
+
+Phase C — Direct-mode spawning
+  [ ] Bundle with Week 4 "Direct-mode pull-on-demand skills"
+  [ ] Direct main agent gets harness_list_subagents + harness_spawn_subagent
+      in same MCP round-trip as harness_list_skills
+```
+
+**Invariant analysis:**
+- Sub agent context is pushed by harness, not pulled — firewall intact.
+- Main's choice to spawn is a tool call; pipeline YAML `subagents:` bounds
+  which roles the main can reach.
+- Sub agent can never exceed main's allowlist (intersection).
+
+**Promotion rule:** Add a sub agent role only when 3+ observed cases show
+the main agent's context would have been saved by offloading. Do not invent
+roles speculatively.
 
 ---
 
-## Testing Checklist
+## Promotion Checklist — Adding an Agent
+
+Before promoting any pipeline from Level 0→1 or Level 1→2:
 
 ```
-state.py:
-[ ] Completed stage cannot be overwritten
-[ ] locked_agent_versions captured at session start
-[ ] attempt counter increments, previous attempt preserved
-[ ] resume() returns correct last incomplete stage
-
-context_builder.py:
-[ ] Planner: no stage outputs in context
-[ ] Designer: plan output only, no request text
-[ ] Coder on retry: fix_instructions only, not full review
-[ ] Skill-Builder: no session state, no user code
-[ ] scan_injection() catches override attempts
-
-verifier.py:
-[ ] Schema validation catches missing required fields
-[ ] Secrets scanner catches API keys and private key patterns
-[ ] Injection scanner catches adversarial patterns in output
-
-correction_loop.py:
-[ ] Max 3 attempts enforced
-[ ] Escalation message contains session_id, attempt count, all issues
-[ ] Retry context is fix_instructions only
-
-executor.py:
-[ ] Lint errors returned as structured feedback
-[ ] Type errors returned with file + line
-[ ] Test failures returned with test name + reason
-[ ] Asset scripts run in subprocess with timeout
-
-pattern_detector.py:
-[ ] Failure recorded per session per agent per issue
-[ ] Pattern triggered after 3 occurrences
-[ ] proposed/*.patch.md created, not .github/agents/ directly
-
-MCP server:
-[ ] All harness_* tools registered and callable from VS Code
-[ ] harness_write_stage triggers verifier before storing
-[ ] harness_read_stage respects context firewall per calling agent
+[ ] Observed the specific failure at least 3 times
+[ ] Failure is reproducible, not random
+[ ] Better prompt or skill file cannot fix it
+[ ] A specialized agent would demonstrably handle the subtask better
+[ ] Added complexity is worth added non-determinism
+[ ] Documented: which subtask failed, what the single agent produced,
+      why a separate agent would do better
 ```
+
+If any item is unchecked: do not promote. Fix the skill file or schema first.
+
+**Current feature-dev status:** Built as multi-agent (planner+designer+coder+reviewer).
+Week 3a tests whether collapsing to single generator is viable. Decision
+documented after test results.
+
+---
+
+## Evolution Path
+
+Designed now. Not building until validated.
+
+### Phase 2 — Pipeline Install (Month 2+)
+Copy a pipeline directory to add a new pipeline. The v1 format IS the install format.
+
+### Phase 3 — Auto-Invoke Skills (Month 3+)
+Skills register trigger descriptions in frontmatter. LLM decides which to load.
+
+### Phase 4 — Custom Hooks (Month 3+)
+`type: command` (shell), `type: http` (webhook), `type: agent` (spawn agent).
+
+### Phase 5 — Plugin Marketplace (Month 6+)
+GitHub repo of validated pipelines. Pipeline-as-directory = marketplace entry.
+
+### Phase 6 — Crew Integration
+CopilotHarness is VS Code. Crew is terminal. Same harness core, same pipeline
+format, different surfaces. Crew uses Copilot SDK as execution engine.
+CopilotHarness uses VS Code LM API. Both share:
+- Pipeline directory layout
+- Skill format (SKILL.md)
+- Hook format (hooks.json)
+- Evaluator pattern (separate session)
+- Policy engine
+Neither product replaces the other.
+
+---
+
+## Boundaries
+
+**vs AgentShield:** AgentShield secures individual tool calls.
+CopilotHarness governs what a pipeline produces across a full workflow.
+
+**vs Crew:** Crew is terminal-native for team workflows (standup, incidents,
+tickets, release notes). CopilotHarness is IDE-native for coding workflows.
+Same harness core. Same pipeline format. Different surfaces.
+
+**vs Claude Code:** Freeform agentic chat with plugins. CopilotHarness is
+governed pipelines. Same plugin primitives (commands, agents, skills, hooks, MCP),
+different execution model.
 
 ---
 
 ## Known TODOs
 
 ```
-BEFORE DAY 1:
-  TODO: Define output schema for each agent — drives verifier.py validation
-  TODO: Write actual team conventions for copilot-instructions.md
-  TODO: Decide injection detection patterns — regex list or semantic check?
-  TODO: Decide .agent.md versioning — git commit hash or semantic version?
+WEEK 3a ✅ Complete — evaluator firewall shipped:
+  DONE: Reviewer context isolated to {code} (Python firewall + pipeline.ts)
+  DONE: No memory / no dynamic skill injection for reviewer
+  DONE: reviewer.agent.md rewritten for evaluator contract
+  DEFERRED: Test single-generator vs multi-agent for feature-dev
+  DEFERRED: Document Level decision with evidence
 
-DAY 2:
-  TODO: How does context_builder.py know which agent is calling harness_read_stage?
-        Agent must pass agent_name in every MCP tool call.
-        Add agent_name as required param to harness_read_stage.
+WEEK 3b ✅ Complete — pipeline directory migration:
+  DONE: .github/pipelines/feature-dev/ with pipeline.yaml (level: 2)
+  DONE: 4 agents moved + frontmatter extended (model, maxTurns, disallowedTools)
+  DONE: state.AGENTS_DIRS multi-dir glob; pipeline.ts fallback path
+  DONE: Legacy .github/agents/ retained (skill-builder + rollback) + README
 
-DAY 4:
-  TODO: executor.py — subprocess with timeout or Docker sandbox?
-        Subprocess is simpler. Docker is safer for untrusted code.
-        Start with subprocess, add Docker option in Week 2.
-  TODO: Which test runner to support? pytest only, or also jest for JS?
+WEEK 3c ✅ Complete — direct mode + hooks + slash commands:
+  DONE: Direct mode routing in extension.ts (slash → pipeline, bare → direct)
+  DONE: hooks.json + scripts/{pre,post}_tool_use,session_start}.py
+  DONE: scripts/policy_engine.py with fail-closed PIPELINE_POLICIES
+  DONE: .github/commands/*.md — 7 slash commands with frontmatter contracts
+  DONE: slashCommands.ts loader (no new npm deps)
+  DONE: harness_run_hook MCP tool in server.py
+  DONE: --pipeline flag forces pipeline mode for non-slash input
+  DONE: +59 tests (334 total)
 
-WEEK 2:
-  TODO: Instructions priority enforcement — how does harness detect P1 violations?
-        Option: verifier.py loads P1 instructions, checks agent output against them.
-  TODO: Cross-session memory — local SQLite per developer or shared team database?
+WEEK 4 ✅ Complete:
+  DONE: /help slash command — dynamic table built from listSlashCommands()
+        .github/commands/help.md + SlashAction "help" + buildHelpMarkdown()
+  DONE: .claude-plugin/plugin.json manifest for feature-dev
+        .github/pipelines/feature-dev/.claude-plugin/plugin.json declares
+        commands, agents, skills, hooks, mcpServers, pipeline, skillLocality.
+        test_plugin_manifest.py validates every referenced path resolves.
+  DONE: Skill locality decision = GLOBAL
+        Recorded in plugin.json.skillLocality.mode + rationale. Multiple
+        pipelines reuse python/testing/code-review; per-pipeline duplication
+        would fragment knowledge. Revisit when a pipeline-specific skill
+        or second-repo install becomes a real requirement.
+  DONE: Direct-mode pull-on-demand skills
+        AGENT_SKILL_ALLOWLIST["direct"] = designer ∪ coder (code-review
+        deliberately excluded). harness_list_skills MCP tool. runDirect()
+        fetches catalog once, injects into system prompt, LLM pulls via
+        {"action":"pull_skill","skill_id":...} marker (max 3 rounds).
+        Pipeline mode untouched — still push-only.
+  DONE: Tier 2 compaction — session_distiller.compact_failure_patterns()
+        fires when failure-patterns.md > 5 KB. Keeps top-10 most-frequent
+        + top-10 most-recent. Auto-called from distill_session.
+        harness_compact_memory MCP tool exposes manual trigger.
+  DONE: Cross-session memory query — memory_loader.query_sessions()
+        substring match against request + review output; returns structured
+        excerpts (never raw transcripts). harness_query_sessions MCP tool.
+  DONE: +45 tests (379 total).
+
+WEEK 4 DEFERRED (infrastructure built, measurement still owed):
+  TODO: Run the Level-1 probe for feature-dev
+        .github/pipelines/feature-dev-level1-probe/ ready. Run 5
+        representative /feature-dev requests through both pipelines,
+        compare first-attempt pass rates. ≥ 80% → collapse to Level 1;
+        else stay Level 2. Record evidence in probe/README.md decision
+        log before touching production pipeline.yaml.
+
+  TODO: Handoff schemas (plan→design, design→code, code→review)
+        Only if the Level-1 probe keeps feature-dev at Level 2.
+        Conditional on the deferred measurement above.
+
+  TODO: Pipeline-as-install-unit (copy-paste install)
+        Day 2 decision was "global skills" — portability stays partial.
+        Revisit only when a second repo actually needs to copy-paste a
+        pipeline without the skills library.
+
+FEATURE-DEV PIPELINE UPGRADES (tiered plan):
+  See .github/pipelines/feature-dev/ROADMAP.md for the full plan
+  across 5 tiers (observed-bug fixes, handoff contracts, Level-1 probe,
+  observability, Week-5 prerequisite). Each tier is independent;
+  recommended first slice is Tier 1 + Tier 2.
+
+WEEK 5 — Sub agents for main-context preservation (planned, main feature):
+  Goal: main agent's context stays clean. Heavy evidence-gathering runs
+  inside a sub agent; main receives only a compressed summary.
+
+  TODO: Core primitives (Phase A)
+        - harness_spawn_subagent / harness_await_subagent / harness_list_subagents
+        - SUBAGENT_POLICIES in scripts/policy_engine.py (fail-closed)
+        - Sub agent firewall path in context_builder.py (brief-only, no memory,
+          no main plan, no sibling sub agents)
+        - Ephemeral sub session storage + auto-cleanup when main completes
+        - Summary token cap + optional JSON schema validation in verifier.py
+        - .github/agents/{explorer,investigator,reviewer-aux}.agent.md
+        - Spawn-event surface: mcpClient.ts emits "subagent_spawned" /
+          "subagent_done"; extension renders visible chat markers (brief,
+          turn count, tool histogram, final summary line). Non-negotiable —
+          no silent sub agents.
+
+  TODO: Pipeline-main spawning (Phase B — ship first, highest ROI)
+        - pipeline.yaml `subagents:` whitelist per stage (opt-in, per-stage)
+        - pipeline.ts wires harness_spawn_subagent into stage agent tools
+        - Policy = SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+        - Tests: main never sees transcript, only summary + structured;
+          max_turns is a hard cap; stages without `subagents:` cannot spawn
+
+  TODO: Direct-mode spawning (Phase C)
+        - Bundle with the Week 4 "direct-mode pull-on-demand skills" TODO
+        - Same MCP round-trip returns skill catalog + sub agent catalog
+        - Direct main agent gets harness_spawn_subagent + harness_list_subagents
+        - No new invariants — direct mode already has no evaluator
+
+  Terminology note: "sub agent" is reserved for the agent-spawns-agent case.
+  A pipeline running its stage agent, or a user slash-invoking an agent, is
+  NOT a sub agent invocation — there the agent IS the main. The `.agent.md`
+  file is identical regardless of how it is invoked; only the invocation
+  contract and firewall differ. The deprecated folder `.github/agents/` is
+  un-deprecated and becomes the home for cross-pipeline agents (skill-builder
+  + the three sub agent roles). Pipeline-scoped stage agents still live at
+  `.github/pipelines/<name>/agents/`.
+
+DEFERRED (needs discussion first):
+  - Model-invoked skill loading **inside pipeline mode** (agent decides
+    which skill to load during plan/design/code). Breaks the
+    "harness pushes, agent cannot opt out" invariant that the evaluator
+    firewall and stage-specific injection depend on. Direct-mode pull
+    above does NOT break this invariant because direct mode has no
+    evaluator and no stage structure.
+
+  - Sub agents reading memory. Default for Week 5 is *no memory for sub
+    agents*. Opt-in per role via `memory: [<entry>]` in the role file only
+    after 3+ observed failures of the same pattern. Matches the promotion
+    rule.
+
+  - User-invokable slash commands for sub agent roles (e.g. `/explore`).
+    Dropped from Week 5 scope: sub agents exist to preserve a *main*
+    agent's context; when the user is the caller, there is no main context
+    to preserve — just use direct mode and let the direct main agent spawn
+    sub agents as needed. Revisit only if a concrete power-user workflow
+    demands it.
 ```
 
 ---
 
 ## Resources
 
-- Copilot .agent.md format: https://learn.microsoft.com/en-us/visualstudio/ide/copilot-specialized-agents
-- awesome-copilot examples: https://github.com/github/awesome-copilot
-- Custom instructions: https://code.visualstudio.com/docs/copilot/customization/custom-instructions
-- AGENTS.md spec: https://agents.md
-- Copilot SDK custom agents: https://docs.github.com/en/copilot/how-tos/copilot-sdk/use-copilot-sdk/custom-agents
+- .agent.md format: https://learn.microsoft.com/en-us/visualstudio/ide/copilot-specialized-agents
+- FastMCP docs: https://gofastmcp.com
+- VS Code Language Model API: https://code.visualstudio.com/api/extension-guides/language-model
+- Claude Code plugins reference: https://code.claude.com/docs/en/plugins-reference
+- Claude Code skills deep dive: https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/
+- Harness best practices: https://github.com/celesteanders/harness/blob/main/docs/best-practices.md
 - Harness Engineering: https://mitchellh.com/writing/harness-engineering
-- SWE-agent paper (Princeton NeurIPS 2024): https://arxiv.org/abs/2405.15793
-- OWASP Top 10 for Agentic AI: https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/
+- SWE-agent paper: https://arxiv.org/abs/2405.15793
+- OWASP Top 10 Agentic AI: https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/
 
 ---
 
 *Updated: April 2026*
 *Project: CopilotHarness*
-*Phase: Pre-build*
-*Ultimate goal: 7-component harness engineering — all enforced structurally, zero LLM inside harness*
-*Next action: Day 1 — write all .agent.md files and AGENTS.md before touching any Python*
-*Next milestone: Day 2 — context_builder.py passes all firewall tests*
+*Repo: https://github.com/Eurus7895/CopilotHarness*
+*Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
+*Current: Week 4 complete — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure; 379 tests*
+*Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas*
+*Planned: Week 5 — sub agents for main-context preservation*
