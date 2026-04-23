@@ -11,6 +11,52 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
+import { HarnessDashboard, StageTags } from "./dashboard";
+
+// ── Dashboard tag presets — mirrors the "push-not-pull" injection contract ──
+// The harness pushes these to each stage; the dashboard displays what was
+// pushed so the user can see the governance at a glance.
+const STAGE_TAGS: Record<string, StageTags> = {
+  plan:   { memory: "MEMORY.md", policy: "Read·Grep·Glob" },
+  design: { skill: "api-design", schema: "design.json" },
+  code:   { skill: "python", policy: "Read·Write·Edit·Bash" },
+  review: { skill: "code-review", firewall: "code only" },
+};
+function tagsForRetry(): StageTags {
+  return { skill: "python", firewall: "fix_instructions only" };
+}
+
+function summarizeStageOutput(stage: string, output: unknown): string {
+  if (typeof output !== "object" || output === null) return "schema ✓";
+  const o = output as Record<string, unknown>;
+  switch (stage) {
+    case "plan": {
+      const n = Array.isArray(o.tasks) ? o.tasks.length : 0;
+      return `${n}-step plan, schema ✓`;
+    }
+    case "design": {
+      const n = Array.isArray(o.modules) ? o.modules.length : 0;
+      return `${n} module${n === 1 ? "" : "s"}, schema ✓`;
+    }
+    case "code": {
+      const n = Array.isArray(o.files_modified) ? o.files_modified.length : 0;
+      return `${n} file${n === 1 ? "" : "s"}, schema ✓`;
+    }
+    case "review": {
+      const status = typeof o.status === "string" ? o.status : "unknown";
+      return `review: ${status}`;
+    }
+    default: return "schema ✓";
+  }
+}
+
+function firstFixInstruction(review: { issues?: Array<{ fix_instruction?: string }> }): string {
+  if (!review.issues || !review.issues.length) return "";
+  for (const i of review.issues) {
+    if (i && typeof i.fix_instruction === "string" && i.fix_instruction) return i.fix_instruction;
+  }
+  return "";
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -559,6 +605,7 @@ async function runCorrectionLoop(
   codeAttempt: number,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard?: HarnessDashboard,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
 
@@ -567,6 +614,16 @@ async function runCorrectionLoop(
 
     codeAttempt++;
     stream.progress(`Review failed — retrying coder (attempt ${codeAttempt} of ${MAX_CODE_ATTEMPTS})`);
+    dashboard?.post({
+      type: "correction_retry",
+      sessionId,
+      stage: "code",
+      attempt: codeAttempt,
+      maxAttempts: MAX_CODE_ATTEMPTS,
+      reviewerVerdict: currentReview.status,
+      issuesCount: currentReview.issues?.length ?? 0,
+      fixInstructions: firstFixInstruction(currentReview),
+    });
 
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "code" });
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
@@ -580,23 +637,63 @@ async function runCorrectionLoop(
       coderCtx["existing_file_contents"] = existingFiles;
     }
 
-    const fixedCode = await runAgentLM(
-      model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
-      { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
-    );
+    dashboard?.post({
+      type: "stage_start", sessionId, stage: "code", attempt: codeAttempt,
+      maxAttempts: MAX_CODE_ATTEMPTS, tags: tagsForRetry(),
+    });
+    const coderT0 = Date.now();
+    let fixedCode: unknown;
+    try {
+      fixedCode = await runAgentLM(
+        model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
+        { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
+      );
+    } catch (err) {
+      dashboard?.post({
+        type: "stage_failed", sessionId, stage: "code",
+        durationMs: Date.now() - coderT0,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
+    dashboard?.post({
+      type: "stage_complete", sessionId, stage: "code",
+      durationMs: Date.now() - coderT0,
+      summary: summarizeStageOutput("code", fixedCode),
+    });
 
     stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     // Evaluator firewall: reviewer sees only the (new) code artifact.
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"]);
-    const newReview = (await runAgentLM(
-      model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
-      { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
-    )) as ReviewOutput;
+    dashboard?.post({
+      type: "stage_start", sessionId, stage: "review", attempt: codeAttempt,
+      maxAttempts: MAX_CODE_ATTEMPTS, tags: STAGE_TAGS["review"],
+    });
+    const reviewerT0 = Date.now();
+    let newReview: ReviewOutput;
+    try {
+      newReview = (await runAgentLM(
+        model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
+        { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
+      )) as ReviewOutput;
+    } catch (err) {
+      dashboard?.post({
+        type: "stage_failed", sessionId, stage: "review",
+        durationMs: Date.now() - reviewerT0,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
     await writeStage(client, sessionId, "review", "reviewer", newReview);
     materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
+    dashboard?.post({
+      type: "stage_complete", sessionId, stage: "review",
+      durationMs: Date.now() - reviewerT0,
+      summary: summarizeStageOutput("review", newReview),
+    });
 
     currentReview = newReview;
     if (newReview.status === "pass" || newReview.status === "escalate") { break; }
@@ -613,6 +710,8 @@ export async function runPipeline(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard?: HarnessDashboard,
+  pipelineMeta?: { route: string; pipelineName: string; level: number },
 ): Promise<PipelineResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -638,6 +737,21 @@ export async function runPipeline(
 
   const stageOutputs: Record<string, unknown> = {};
 
+  const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
+  dashboard?.post({
+    type: "session_start",
+    sessionId,
+    request,
+    route: meta.route,
+    pipelineName: meta.pipelineName,
+    level: meta.level,
+    agents: AGENT_PIPELINE.map(a => ({
+      name: a.name,
+      stage: a.writeStage,
+      tags: STAGE_TAGS[a.writeStage] ?? {},
+    })),
+  });
+
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
 
   for (const agent of AGENT_PIPELINE) {
@@ -649,6 +763,10 @@ export async function runPipeline(
 
     if (statusData.stages[agent.writeStage]?.status === "complete") {
       stream.progress(`Stage '${agent.writeStage}' already complete — skipping`);
+      dashboard?.post({
+        type: "stage_complete", sessionId, stage: agent.writeStage,
+        durationMs: 0, summary: "already complete (skipped)",
+      });
       continue;
     }
 
@@ -670,16 +788,36 @@ export async function runPipeline(
     }
 
     const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
-    const agentOutput = await runAgentLM(
-      model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
-      { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
-    );
+    dashboard?.post({
+      type: "stage_start", sessionId, stage: agent.writeStage, attempt,
+      maxAttempts: MAX_CODE_ATTEMPTS, tags: STAGE_TAGS[agent.writeStage] ?? {},
+    });
+    const stageT0 = Date.now();
+    let agentOutput: unknown;
+    try {
+      agentOutput = await runAgentLM(
+        model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
+        { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
+      );
+    } catch (err) {
+      dashboard?.post({
+        type: "stage_failed", sessionId, stage: agent.writeStage,
+        durationMs: Date.now() - stageT0,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
     materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
+    dashboard?.post({
+      type: "stage_complete", sessionId, stage: agent.writeStage,
+      durationMs: Date.now() - stageT0,
+      summary: summarizeStageOutput(agent.writeStage, agentOutput),
+    });
 
     stream.markdown(`✓ **${agent.name}** complete`);
 
@@ -690,6 +828,11 @@ export async function runPipeline(
       if (review.status === "pass") { continue; }
 
       if (review.status === "escalate") {
+        dashboard?.post({
+          type: "pipeline_complete", sessionId,
+          success: false, escalated: true,
+          escalation: review.escalate_reason ?? "Reviewer escalated.",
+        });
         return {
           success: false, sessionId, stages: stageOutputs, escalated: true,
           escalation: review.escalate_reason ?? "Reviewer escalated.",
@@ -698,7 +841,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, dashboard,
       );
       stageOutputs["review"] = finalReview;
 
@@ -706,11 +849,16 @@ export async function runPipeline(
         const reason = finalReview.status === "escalate"
           ? (finalReview.escalate_reason ?? "Reviewer escalated.")
           : `Max correction attempts (${MAX_CODE_ATTEMPTS}) reached without passing review.`;
+        dashboard?.post({
+          type: "pipeline_complete", sessionId,
+          success: false, escalated: true, escalation: reason,
+        });
         return { success: false, sessionId, stages: stageOutputs, escalated: true, escalation: reason };
       }
     }
   }
 
+  dashboard?.post({ type: "pipeline_complete", sessionId, success: true, escalated: false });
   return { success: true, sessionId, stages: stageOutputs, escalated: false };
 }
 
@@ -725,6 +873,7 @@ export async function runStep(
     request?: string;    // provided → create new session; omitted → resume active
     agentName?: string;  // run this specific agent instead of the next pending one
   },
+  dashboard?: HarnessDashboard,
 ): Promise<StepResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -740,10 +889,12 @@ export async function runStep(
   let sessionId: string;
   let sessionRequest: string;
 
+  let newSession = false;
   if (options.request) {
     const session = (await callHarness(client, "harness_new_session", { request: options.request })) as { session_id: string };
     sessionId = session.session_id;
     sessionRequest = options.request;
+    newSession = true;
     stream.progress(`Session ${sessionId} created`);
   } else if (active.session_id) {
     sessionId = active.session_id;
@@ -751,6 +902,22 @@ export async function runStep(
     stream.progress(`Resuming session ${sessionId}`);
   } else {
     throw new Error("No active session. Start a new task with `@harness <your task description>`");
+  }
+
+  if (newSession && dashboard) {
+    dashboard.post({
+      type: "session_start",
+      sessionId,
+      request: sessionRequest,
+      route: options.agentName ? `/${options.agentName}` : "/step",
+      pipelineName: "feature-dev (step)",
+      level: 2,
+      agents: AGENT_PIPELINE.map(a => ({
+        name: a.name,
+        stage: a.writeStage,
+        tags: STAGE_TAGS[a.writeStage] ?? {},
+      })),
+    });
   }
 
   // ── Resolve which agent to run ────────────────────────────────────────────────
@@ -797,16 +964,37 @@ export async function runStep(
   }
 
   const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
-  const agentOutput = await runAgentLM(
-    model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
-    { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
-  );
+  dashboard?.post({
+    type: "stage_start", sessionId, stage: agentDef.writeStage,
+    attempt: stepAttempt, maxAttempts: MAX_CODE_ATTEMPTS,
+    tags: STAGE_TAGS[agentDef.writeStage] ?? {},
+  });
+  const stepT0 = Date.now();
+  let agentOutput: unknown;
+  try {
+    agentOutput = await runAgentLM(
+      model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+      { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
+    );
+  } catch (err) {
+    dashboard?.post({
+      type: "stage_failed", sessionId, stage: agentDef.writeStage,
+      durationMs: Date.now() - stepT0,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
   materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
+  dashboard?.post({
+    type: "stage_complete", sessionId, stage: agentDef.writeStage,
+    durationMs: Date.now() - stepT0,
+    summary: summarizeStageOutput(agentDef.writeStage, agentOutput),
+  });
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
 
@@ -822,7 +1010,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, dashboard,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {
@@ -850,6 +1038,13 @@ export async function runStep(
       }
     }
     if (!nextAgent) { pipelineComplete = true; }
+  }
+
+  if (pipelineComplete || escalated) {
+    dashboard?.post({
+      type: "pipeline_complete", sessionId,
+      success: !escalated, escalated, escalation,
+    });
   }
 
   return {

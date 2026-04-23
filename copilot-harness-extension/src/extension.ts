@@ -17,7 +17,8 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline, runStep, StepResult } from "./pipeline";
-import { loadSlashCommand, listSlashCommands, SlashCommand } from "./slashCommands";
+import { loadSlashCommand, listSlashCommands } from "./slashCommands";
+import { HarnessDashboard } from "./dashboard";
 
 let out: vscode.OutputChannel;
 
@@ -59,9 +60,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
+  const dashboard = new HarnessDashboard(context.extensionUri, (msg) => out.appendLine(msg));
+  context.subscriptions.push(dashboard);
+
+  // Per-run CancellationTokenSource so the dashboard's Cancel button can
+  // abort the in-flight pipeline. Replaced on every chat request so each run
+  // has its own fresh source.
+  let activeCts: vscode.CancellationTokenSource | null = null;
+
+  dashboard.onAction(async (action) => {
+    switch (action.type) {
+      case "action_cancel":
+        activeCts?.cancel();
+        return;
+      case "action_status":
+        await vscode.commands.executeCommand("workbench.action.chat.open",
+          { query: "@harness /status" });
+        return;
+      case "action_view_file": {
+        if (!action.relPath) return;
+        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!ws) return;
+        const abs = path.join(ws, action.relPath);
+        try {
+          const doc = await vscode.workspace.openTextDocument(abs);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+          vscode.window.showWarningMessage(`CopilotHarness: cannot open ${action.relPath}`);
+        }
+        return;
+      }
+      case "action_run_slash": {
+        const text = `@harness /${action.name}${action.args ? " " + action.args : ""}`;
+        await vscode.env.clipboard.writeText(text);
+        await vscode.commands.executeCommand("workbench.action.chat.open", { query: text });
+        return;
+      }
+      case "action_open_chat":
+        await vscode.commands.executeCommand("workbench.action.chat.open", { query: "@harness " });
+        return;
+    }
+  });
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.showDashboard", () => dashboard.show()),
+  );
+
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    (req, ctx, stream, token) => handler(req, ctx, stream, token, client),
+    async (req, ctx, stream, token) => {
+      // Link the request token to a local source so the dashboard can also cancel.
+      activeCts?.dispose();
+      activeCts = new vscode.CancellationTokenSource();
+      token.onCancellationRequested(() => activeCts?.cancel());
+      try {
+        return await handler(req, ctx, stream, activeCts.token, client, dashboard);
+      } finally {
+        activeCts?.dispose();
+        activeCts = null;
+      }
+    },
   );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
@@ -159,89 +217,13 @@ function parseCommand(text: string): ParsedCommand {
   return { type: "direct", prompt: trimmed };
 }
 
-// ── Output rendering ──────────────────────────────────────────────────────────
-
-function renderAgentOutput(agentName: string, output: unknown, stream: vscode.ChatResponseStream): void {
-  if (!output || typeof output !== "object") { return; }
-  const o = output as Record<string, unknown>;
-
-  switch (agentName) {
-    case "planner": {
-      if (o.summary) { stream.markdown(`**Summary:** ${o.summary}\n\n`); }
-      const tasks = Array.isArray(o.tasks) ? o.tasks : [];
-      if (tasks.length) {
-        stream.markdown("**Tasks:**\n");
-        for (const t of tasks) {
-          if (typeof t === "object" && t !== null) {
-            const task = t as Record<string, unknown>;
-            stream.markdown(`- \`${task.id ?? "?"}\` — ${task.description ?? ""}\n`);
-          }
-        }
-      }
-      break;
-    }
-    case "designer": {
-      if (o.summary) { stream.markdown(`**Summary:** ${o.summary}\n\n`); }
-      const modules = Array.isArray(o.modules) ? o.modules : [];
-      if (modules.length) {
-        stream.markdown("**Modules:**\n");
-        for (const m of modules) {
-          if (typeof m === "object" && m !== null) {
-            const mod = m as Record<string, unknown>;
-            stream.markdown(`- \`${mod.file ?? "?"}\` — ${mod.purpose ?? ""}\n`);
-          }
-        }
-      }
-      break;
-    }
-    case "coder": {
-      if (o.summary) { stream.markdown(`**Summary:** ${o.summary}\n\n`); }
-      const files = Array.isArray(o.files_modified) ? o.files_modified : [];
-      if (files.length) {
-        stream.markdown(`**Files modified:** ${files.map(f => `\`${f}\``).join(", ")}\n`);
-      }
-      break;
-    }
-    case "reviewer": {
-      const status = o.status as string;
-      const icon = status === "pass" ? "✅" : status === "escalate" ? "🚨" : "⚠️";
-      stream.markdown(`**Review:** ${icon} ${status.toUpperCase()}\n\n`);
-      const issues = Array.isArray(o.issues) ? o.issues : [];
-      if (issues.length) {
-        stream.markdown("**Issues:**\n");
-        for (const issue of issues) {
-          if (typeof issue === "object" && issue !== null) {
-            const i = issue as Record<string, unknown>;
-            stream.markdown(`- [${i.severity ?? "?"}] ${i.description ?? ""}\n`);
-          }
-        }
-      }
-      break;
-    }
-  }
-}
-
-function renderStepResult(result: StepResult, stream: vscode.ChatResponseStream): void {
-  stream.markdown(`\n✓ **${result.completedAgent}** complete\n\n`);
-  renderAgentOutput(result.completedAgent, result.output, stream);
-
-  stream.markdown("\n---\n");
-
-  if (result.escalated) {
-    stream.markdown(`⚠️ **Escalated:** ${result.escalation}`);
-  } else if (result.pipelineComplete) {
-    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
-  } else if (result.nextAgent) {
-    stream.markdown(
-      `**Next:** \`${result.nextAgent}\` is ready.\n\n` +
-      `Type \`@harness continue\` or \`@harness ${result.nextAgent}\` to proceed.`,
-    );
-  }
-}
-
 // ── Status display ────────────────────────────────────────────────────────────
 
-async function showStatus(client: McpClient, stream: vscode.ChatResponseStream): Promise<void> {
+async function showStatus(
+  client: McpClient,
+  stream: vscode.ChatResponseStream,
+  dashboard?: HarnessDashboard,
+): Promise<void> {
   const activeRaw = await client.callTool("harness_get_active_session", {});
   let active: { session_id: string | null; request?: string };
   try { active = JSON.parse(activeRaw); } catch { active = { session_id: null }; }
@@ -257,6 +239,9 @@ async function showStatus(client: McpClient, stream: vscode.ChatResponseStream):
     stream.markdown("Could not retrieve session status.");
     return;
   }
+
+  // Reveal the dashboard so the current session is visible alongside the table.
+  dashboard?.show();
 
   const STAGE_ORDER = ["plan", "design", "code", "review"];
   const STAGE_ICON: Record<string, string> = {
@@ -434,6 +419,7 @@ async function runDirect(
   chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard?: HarnessDashboard,
 ): Promise<void> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -447,6 +433,13 @@ async function runDirect(
     fetchDirectCatalog(client),
     fetchMemoryContext(client),
   ]);
+
+  dashboard?.post({
+    type: "direct_start",
+    prompt,
+    skillCatalog: catalog.skills.map(s => ({ id: s.skill_id, title: s.title })),
+    memory,
+  });
 
   const catalogLines = catalog.skills.length
     ? catalog.skills.map(s => `  - ${s.skill_id}: ${s.title}`).join("\n")
@@ -494,6 +487,7 @@ async function runDirect(
     if (!pull || round === MAX_PULL_ROUNDS) {
       // Final answer or budget exhausted — stream whatever we have.
       stream.markdown(text);
+      dashboard?.post({ type: "direct_complete" });
       return;
     }
 
@@ -525,6 +519,11 @@ async function runDirect(
 
     pulled.add(pull.skill_id);
     stream.progress(`Loaded skill: ${pull.skill_id}`);
+    dashboard?.post({
+      type: "direct_pull_skill",
+      skillId: pull.skill_id,
+      title: catalog.skills.find(s => s.skill_id === pull.skill_id)?.title ?? pull.skill_id,
+    });
 
     history.push(vscode.LanguageModelChatMessage.Assistant(text));
     history.push(vscode.LanguageModelChatMessage.User(
@@ -562,6 +561,7 @@ async function handler(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   client: McpClient,
+  dashboard: HarnessDashboard,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -579,24 +579,23 @@ async function handler(
         break;
 
       case "status":
-        await showStatus(client, stream);
+        await showStatus(client, stream, dashboard);
         break;
 
       case "full":
       case "pipelineForced": {
-        const result = await runPipeline(client, cmd.request, workspaceRoot, stream, token);
-        stream.markdown("\n---\n");
-        if (result.escalated) {
-          stream.markdown(`⚠️ **Escalated:** ${result.escalation}`);
-        } else {
-          stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
-        }
+        emitPipelineMarker(stream, cmd.request);
+        const result = await runPipeline(
+          client, cmd.request, workspaceRoot, stream, token, dashboard,
+          { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
+        );
+        emitPipelineSummary(stream, result);
         break;
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, stream, token, {});
-        renderStepResult(result, stream);
+        const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
+        emitStepMarker(stream, result);
         break;
       }
 
@@ -604,17 +603,17 @@ async function handler(
         const result = await runStep(client, workspaceRoot, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
-        });
-        renderStepResult(result, stream);
+        }, dashboard);
+        emitStepMarker(stream, result);
         break;
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, context, stream, token);
+        await runDirect(cmd.prompt, client, context, stream, token, dashboard);
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token);
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token, dashboard);
         break;
     }
   } catch (err) {
@@ -626,6 +625,51 @@ async function handler(
   return {};
 }
 
+// ── Chat-side markers ─────────────────────────────────────────────────────────
+// The dashboard owns rich rendering; the chat shows brief markers + buttons.
+
+function emitPipelineMarker(stream: vscode.ChatResponseStream, request: string): void {
+  const shortReq = request.length > 80 ? request.slice(0, 77) + "…" : request;
+  stream.markdown(`🎛 **Pipeline running** — *${shortReq}*. See the **Harness Dashboard** for live stages.\n\n`);
+  stream.button({
+    command: "copilot-harness.showDashboard",
+    title: "Show Harness Dashboard",
+  });
+}
+
+function emitPipelineSummary(
+  stream: vscode.ChatResponseStream,
+  result: { escalated: boolean; escalation?: string; sessionId: string },
+): void {
+  stream.markdown("\n---\n");
+  if (result.escalated) {
+    stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}`);
+  } else {
+    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
+  }
+}
+
+function emitStepMarker(stream: vscode.ChatResponseStream, result: StepResult): void {
+  if (result.escalated) {
+    stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}`);
+    return;
+  }
+  if (result.pipelineComplete) {
+    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
+    return;
+  }
+  if (result.completedAgent) {
+    stream.markdown(`✓ **${result.completedAgent}** complete. `);
+    if (result.nextAgent) {
+      stream.markdown(`Next: \`${result.nextAgent}\` — type \`@harness continue\`.\n\n`);
+    }
+  }
+  stream.button({
+    command: "copilot-harness.showDashboard",
+    title: "Show Harness Dashboard",
+  });
+}
+
 // ── Slash command dispatch ────────────────────────────────────────────────────
 
 async function runSlash(
@@ -635,6 +679,7 @@ async function runSlash(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard: HarnessDashboard,
 ): Promise<void> {
   const cmd = loadSlashCommand(workspaceRoot, name);
   if (!cmd) {
@@ -652,13 +697,13 @@ async function runSlash(
         stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
         return;
       }
-      const result = await runPipeline(client, args, workspaceRoot, stream, token);
-      stream.markdown("\n---\n");
-      if (result.escalated) {
-        stream.markdown(`⚠️ **Escalated:** ${result.escalation}`);
-      } else {
-        stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
-      }
+      emitPipelineMarker(stream, args);
+      const pipelineName = cmd.pipeline ?? cmd.name;
+      const result = await runPipeline(
+        client, args, workspaceRoot, stream, token, dashboard,
+        { route: `/${cmd.name}`, pipelineName, level: 2 },
+      );
+      emitPipelineSummary(stream, result);
       return;
     }
     case "step": {
@@ -669,17 +714,17 @@ async function runSlash(
       const result = await runStep(client, workspaceRoot, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
-      });
-      renderStepResult(result, stream);
+      }, dashboard);
+      emitStepMarker(stream, result);
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, stream, token, {});
-      renderStepResult(result, stream);
+      const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
+      emitStepMarker(stream, result);
       return;
     }
     case "status":
-      await showStatus(client, stream);
+      await showStatus(client, stream, dashboard);
       return;
     case "help":
       stream.markdown(buildHelpMarkdown(workspaceRoot));

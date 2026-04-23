@@ -25,6 +25,13 @@
         "description": "Runs the automated 5-agent pipeline. Usage: @harness <your request>",
         "isSticky": true
       }
+    ],
+    "commands": [
+      {
+        "command": "copilot-harness.showDashboard",
+        "title": "Show Dashboard",
+        "category": "CopilotHarness"
+      }
     ]
   },
   "scripts": {

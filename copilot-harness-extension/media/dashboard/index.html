@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CopilotHarness Dashboard</title>
+  <!-- CSP is injected by the extension via a nonce; style/script hrefs are replaced at render. -->
+  <meta http-equiv="Content-Security-Policy" content="__CSP__" />
+  <link rel="stylesheet" href="__STYLE_URI__" />
+</head>
+<body>
+  <div class="chat">
+    <div class="chat-head">
+      <span class="title">CopilotHarness Dashboard</span>
+      <button class="icon-btn" id="btn-status" title="/status">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l2.5 1.5"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-open-chat" title="Open Copilot Chat">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M8 3v10M3 8h10"/></svg>
+      </button>
+    </div>
+
+    <div class="chat-body" id="chat-body">
+      <div class="empty-state" id="empty-state">
+        No active session. Run <code>@harness /feature-dev &lt;task&gt;</code> in Copilot Chat,
+        or <code>@harness &lt;question&gt;</code> for direct mode.
+      </div>
+    </div>
+
+    <div class="chat-input-wrap">
+      <div class="chat-input">
+        <div class="text">Input is in Copilot Chat. Use <b>@harness</b> there.</div>
+      </div>
+      <div class="chat-input-tools">
+        <span class="chip">Context</span>
+        <span class="chip" id="active-file-chip">coder.agent.md</span>
+        <span class="chip" style="color:var(--purple)">/feature-dev</span>
+        <span class="model">Ask · gpt-4o</span>
+      </div>
+      <div class="suggestions" id="suggestions">
+        <span class="sug" data-slash="continue"><span class="s">/continue</span> next agent</span>
+        <span class="sug" data-slash="reviewer"><span class="s">/reviewer</span> re-run</span>
+        <span class="sug" data-slash="planner"><span class="s">/planner</span> new task</span>
+        <span class="sug" data-slash="status">/status</span>
+      </div>
+    </div>
+  </div>
+
+  <script nonce="__NONCE__" src="__APP_URI__"></script>
+</body>
+</html>
