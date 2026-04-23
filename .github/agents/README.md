@@ -1,25 +1,35 @@
-# .github/agents/ — DEPRECATED for feature-dev agents
+# .github/agents/ — Cross-Pipeline Agents
 
-The four feature-dev pipeline agents — `planner`, `designer`, `coder`,
-`reviewer` — moved to `.github/pipelines/feature-dev/agents/` in
-Week 3b (pipeline directory migration).
+This directory holds agents that are **not scoped to a single pipeline**.
+Pipeline-specific stage agents live under `.github/pipelines/<name>/agents/`
+(e.g. `planner`, `designer`, `coder`, `reviewer` for `feature-dev`, moved
+there in Week 3b).
 
-This directory now holds only:
+## Who lives here
 
 - **`skill-builder.agent.md`** — meta-agent that proposes patches to
-  other agents. Not part of the `feature-dev` pipeline; stays here.
+  other agents. Not part of any pipeline; spawned on its own.
 - **`proposed/`** — skill-builder's output directory for proposed
   patches. Validated by `context_builder.validate_skill_builder_write`.
+- **Sub agent roles** (planned, Week 5) — `explorer`, `investigator`,
+  `reviewer-aux`. Same `.agent.md` format, invoked by a *main* agent
+  mid-task to offload evidence gathering. See `CLAUDE.md § Week 5`.
+
+A "sub agent" here means the *invocation contract*, not the agent file:
+the same `.agent.md` can be spawned by another agent (firewalled context,
+returns summary only) or — in principle — run as a stand-alone main. The
+three Week-5 role files are authored specifically for the sub-agent
+invocation contract.
 
 ## Loader behavior
 
 Both `copilot-harness/state.py::lock_agent_versions` and
-`copilot-harness-extension/src/pipeline.ts::loadAgentPrompt` check
-`.github/pipelines/feature-dev/agents/` **first**, then fall back to
-this directory. If you restore a removed agent file here, it will
-only be picked up when no copy exists in the pipeline dir.
+`copilot-harness-extension/src/pipeline.ts::loadAgentPrompt` check the
+pipeline-scoped directory first (`.github/pipelines/<name>/agents/`) and
+fall back to this directory. Cross-pipeline agents are only found here.
 
-## Removal timeline
+## Naming
 
-Per `CLAUDE.md`, the rollback fallback path is removed in **Week 5**.
-By then the pipeline dir is the only source of truth.
+`<role>.agent.md`. Role is the invocation name (`skill-builder`,
+`explorer`, etc.). Policy lookups and slash-command routing use the
+role name as-is.

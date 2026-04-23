@@ -218,10 +218,13 @@ ROUTING:
         continue.md, status.md
         planner.md, designer.md, coder.md, reviewer.md
 
-    agents/                      ← DEPRECATED (Week 5 removal)
-        skill-builder.agent.md   ← meta-agent, stays here
+    agents/                      ← cross-pipeline agents (un-deprecated Week 5)
+        skill-builder.agent.md   ← meta-agent
+        explorer.agent.md        ← Week 5: sub agent role (read-only scan)
+        investigator.agent.md    ← Week 5: sub agent role (debug, run tests)
+        reviewer-aux.agent.md    ← Week 5: sub agent role (per-file review)
         proposed/                ← Skill-Builder output
-        README.md                ← deprecation notice
+        README.md                ← cross-pipeline agents vs pipeline-scoped stages
 
     skills/                      ← domain skills (unchanged)
         code-review/, api-design/, python/, testing/, database-patterns/,
@@ -472,7 +475,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Memory Architecture | ✅ Built (3-tier) | — |
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ✅ Shipped (Week 3c) | — |
-| Context Management | ⚠️ Missing | Future: subagent offloading |
+| Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
 ---
 
@@ -540,15 +543,271 @@ Week 3b+ can add a dedicated planner-feedback channel.
       commands, multi-dir agent glob). Total now 334.
 ```
 
-### Week 4 — Multi-Agent Coordination
+### Week 4 — Multi-Agent Coordination + Unblock Week 5 (5-day plan)
+
 ```
-[ ] Handoff schemas (plan→design, design→code, code→review)
-      Only needed if feature-dev stays Level 2 after Week 3a test
-[ ] Shared vocabulary / glossary injection
-[ ] Cross-stage contract validation in verifier.py
-[ ] Cross-session memory query
-[ ] Tier 2 compaction (failure-patterns.md > 5KB)
+Day 1 — /help slash command
+  [ ] Add "help" to SlashAction in slashCommands.ts
+  [ ] .github/commands/help.md (action: help)
+  [ ] runSlash() renders a table built from listSlashCommands(workspaceRoot)
+      — stays in sync as commands are added
+  [ ] Update USAGE in extension.ts to point users at /help
+  [ ] Test: test_slash_commands.py asserts help.md has action=help
+
+Day 2 — Plugin manifest + skill locality decision
+  [ ] .github/pipelines/feature-dev/.claude-plugin/plugin.json
+      { name, version, description, commands, agents, skills, hooks,
+        mcpServers } pointing at existing files — purely declarative
+  [ ] Decide: global skills (simpler) vs pipeline-local skills/ (portable,
+      needs skill_loader fallback like multi-dir agent glob)
+  [ ] STRETCH: if decision is pipeline-local, wire skill_loader fallback
+  [ ] Test: test_plugin_manifest.py — JSON parses + referenced paths resolve
+
+Day 3 — Direct-mode pull-on-demand skills (unblocks Week 5 Day 5)
+  [ ] context_builder.AGENT_SKILL_ALLOWLIST["direct"] = planner∪designer∪coder
+      (deliberately excludes reviewer's code-review skill)
+  [ ] New MCP tool harness_list_skills(agent_name) in server.py
+  [ ] extension.ts runDirect(): one-shot MCP call to harness_list_skills,
+      inject catalog into system prompt; register harness_get_skill +
+      harness_get_reference as vscode.lm tools so LLM can pull mid-response
+  [ ] Tests: allowlist rejects reviewer-only skills;
+      list_skills("direct") filters correctly;
+      get_skill(disallowed, agent="direct") errors;
+      regression: harness_read_stage unchanged for pipeline agents
+
+Day 4 — Memory: Tier 2 compaction + cross-session query
+  [ ] session_distiller compaction trigger when failure-patterns.md > 5KB
+      (keep most-recent + most-frequent entries)
+  [ ] Cross-session memory query API (find prior sessions by tag/request)
+  [ ] harness_query_sessions MCP tool (or extend harness_get_memory_entry)
+  [ ] Tests: compaction preserves required entries; query returns session
+      IDs + excerpts; idempotent under concurrent distiller runs
+
+Day 5 — Level-1 probe for feature-dev
+  [ ] Build one-off single-generator probe branch (planner+designer+coder
+      collapsed into one agent with a composite skill)
+  [ ] Run 3–5 representative /feature-dev requests through Level-1 variant
+  [ ] Compare first-attempt pass rate vs Level-2 baseline
+  [ ] Threshold: ≥ 80% first-attempt pass → collapse to Level 1;
+      else feature-dev stays Level 2
+  [ ] Document decision + evidence in CLAUDE.md (resolves Week 3a deferred)
+
+CONDITIONAL (triggered by Day 5 outcome):
+  [ ] Handoff schemas (plan→design, design→code, code→review)
+      Only if Level-2 stays. Bumps to Week 4.5 or top of Week 5.
+  [ ] Pipeline-as-install-unit (copy-paste install)
+      Needs Day 2 skill-locality decision first. Bumps to Week 4.5
+      if pipeline-local skills is chosen.
 ```
+
+### Week 5 — Sub Agents (5-day plan, main feature)
+
+```
+Day 1 — Phase A.1: MCP plumbing + policy
+  [ ] harness_spawn_subagent(main_session_id, role, brief, allowed_tools,
+      max_turns, output_schema) → handle in server.py
+  [ ] harness_await_subagent(handle) → { summary, structured, tools_used,
+      turns, escalated }
+  [ ] harness_list_subagents(main_agent_name) → allowed roles for this main
+  [ ] SUBAGENT_POLICIES in scripts/policy_engine.py (fail-closed)
+  [ ] Ephemeral sub-session storage (auto-cleaned when main session ends)
+  [ ] Tests: policy intersection (role ∩ main_allowlist);
+      list_subagents filters by caller; unknown role rejected
+
+Day 2 — Phase A.2: Firewall + result verification
+  [ ] context_builder.py: sub agent read path — brief + role skill +
+      allowed tools only. NO main plan, NO memory, NO sibling subs,
+      NO main session_id
+  [ ] verifier.py: summary token cap + optional JSON schema validation
+      on return
+  [ ] Tests: sub agent cannot read main session state;
+      summary over token cap is truncated with marker;
+      schema validation rejects malformed structured returns
+
+Day 3 — Phase A.3: Role files + spawn-event surface
+  [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
+  [ ] .github/agents/investigator.agent.md (+ Bash for test runs)
+  [ ] .github/agents/reviewer-aux.agent.md (Read + View, per-file checklist)
+  [ ] mcpClient.ts emits "subagent_spawned" / "subagent_done" notifications
+  [ ] extension.ts renders visible chat markers (brief, turn count,
+      tool histogram, final summary line; full summary collapsible)
+  [ ] post_tool_use.py audit log records every spawn (caller, role, brief,
+      turns, tools, result) in storage/audit.db
+  [ ] Tests: every spawn produces a chat marker; audit row written per spawn;
+      no silent sub agents
+
+Day 4 — Phase B: Pipeline-main spawning (highest ROI)
+  [ ] pipeline.yaml schema extension: `subagents:` block per stage
+      (opt-in, whitelist of roles + max_concurrent)
+  [ ] pipeline.ts wires harness_spawn_subagent into stage agent tool list
+      when stage has `subagents:`; otherwise tool is unavailable
+  [ ] Enforce SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+  [ ] Integration test: feature-dev coder spawns explorer on a real brief,
+      receives summary, main context size unchanged (baseline check)
+  [ ] Tests: main never sees transcript; max_turns is a hard cap;
+      max_concurrent honored; stages without `subagents:` cannot spawn
+
+Day 5 — Phase C: Direct-mode spawning
+  [ ] Extend Week 4 Day 3 direct-mode MCP round-trip to ALSO return
+      harness_list_subagents("direct") catalog (same round-trip, one shot)
+  [ ] Register harness_spawn_subagent as vscode.lm tool in runDirect()
+  [ ] Direct main's sub-agent allowlist defined in SUBAGENT_POLICIES
+      (expect: explorer + investigator; reviewer-aux requires pipeline context)
+  [ ] Tests: direct main spawns sub end-to-end; sub spawned from direct
+      cannot read any direct state; direct mode still has no evaluator
+  [ ] Update Known TODOs, audit table, footer: mark Week 5 complete
+
+END-OF-WEEK checkpoint:
+  [ ] 334 existing + new tests green
+  [ ] Feature-dev run with a sub agent in the loop, full trace
+  [ ] Audit log shows every spawn; chat markers rendered
+  [ ] Memory of one real failure pattern (if encountered) distilled
+```
+
+### Week 5 — Sub Agents (planned, main feature)
+
+**Why.** A main agent doing heavy evidence gathering (scan 50 files, run 20
+test cases, aggregate grep results) dumps irrelevant content into its own
+context window. Sub agents do that work in isolation and return a compressed
+summary, keeping the main agent's context clean for reasoning.
+
+**Definition.** A *sub agent* is an agent spawned **by another agent**
+mid-task. Same `.agent.md` file as any other agent. The "sub" refers to the
+invocation — an agent runs inside another agent's execution.
+
+Terminology:
+- **Agent** = the `.agent.md` file
+- **Main agent** = currently driving the work (a pipeline stage, or direct
+  mode `@harness`)
+- **Sub agent** = agent spawned by the main agent to offload work
+
+Invocations that are **not** sub agents: a pipeline running its stage agent,
+or a user slash-invoking an agent directly — in those cases the agent *is*
+the main, not a sub.
+
+**Goal: preserve main context.** Spawn a sub agent when the main only needs
+the *conclusion* of some exploration, not the raw evidence.
+
+```
+Good fits (ship):
+  - Scan N files for pattern X, return match count + locations
+  - Run the same lint / grep / check across a directory, aggregate
+  - Read a file, return structured facts (imports, exported symbols)
+  - Execute one test, report pass/fail + tail
+  - Per-file review against a fixed checklist
+
+Bad fits (do NOT build a role for these):
+  - "Explore the architecture" (open-ended reasoning)
+  - "Design a new feature" (that's a planner stage)
+  - "Decide which approach is better" (decision belongs to the main)
+  - "Implement this" (needs a full pipeline + evaluator)
+```
+
+Principle: **sub agents gather facts. The main agent reasons.** If a role
+needs chain-of-thought beyond its brief, it's the wrong role — promote it to
+a pipeline stage with an evaluator, or keep the work in the main.
+
+**First three sub agent roles** (files under `.github/agents/`):
+```
+explorer       Read + Grep + Glob             (read-only exploration)
+investigator   Read + Grep + Glob + Bash      (debug, run tests)
+reviewer-aux   Read + View                    (strict per-file review)
+```
+
+Cross-pipeline agents live at `.github/agents/` (un-deprecated). Pipeline-
+specific stage agents stay at `pipelines/<name>/agents/`.
+
+**Spawn visibility — always shown to the user.** Every sub agent spawn is
+surfaced in Copilot Chat, never hidden:
+
+```
+▶ explorer  "scan src/**/*.py for JWTValidator.verify usages"  (max 8 turns)
+   …running…
+✓ explorer  14 matches across 9 files  (turns: 3, tools: Grep×3, Read×4)
+```
+
+Non-negotiable:
+- User sees which sub agent was spawned, with what brief, for how long
+- User sees final summary line; full summary inlined (collapsible)
+- Transcript stays firewalled — only the spawn event + summary are visible
+- `post_tool_use.py` audit log records every spawn with caller, role,
+  brief, turns, tools, result
+
+No silent sub agents. If one is running, the user knows.
+
+**Firewall rule** (preserves "harness pushes, agent cannot opt out"):
+```
+sub agent sees:       brief + role skill + allowed tools
+                      NO main plan, NO memory, NO sibling sub agents,
+                      NO session_id of the main
+main sees on return:  summary (token-capped) + optional structured JSON
+                      NEVER the sub agent's transcript
+```
+
+**Policy engine — new table:**
+```python
+SUBAGENT_POLICIES = {
+    "explorer":     ["Read", "Grep", "Glob"],
+    "investigator": ["Read", "Grep", "Glob", "Bash"],
+    "reviewer-aux": ["Read", "View"],
+}
+# effective = SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+```
+
+**MCP tools:**
+```
+harness_spawn_subagent(main_session_id, role, brief, allowed_tools,
+                       max_turns, output_schema)   → handle
+harness_await_subagent(handle)
+    → { summary, structured, tools_used, turns, escalated }
+harness_list_subagents(main_agent_name)  # which roles can this main spawn?
+```
+
+**`pipeline.yaml` extension** (opt-in per stage — keeps push-not-pull):
+```yaml
+generator:
+  agent: agents/coder.md
+  subagents:                       # stage-declared whitelist
+    - role: explorer
+      max_concurrent: 2
+    - role: investigator
+      max_concurrent: 1
+```
+Stages without `subagents:` cannot spawn.
+
+**Rollout phases:**
+```
+Phase A — Core primitives
+  [ ] harness_spawn_subagent + harness_await_subagent + harness_list_subagents
+  [ ] SUBAGENT_POLICIES in policy_engine.py (fail-closed)
+  [ ] Sub agent context firewall in context_builder.py (brief-only path)
+  [ ] Ephemeral sub session storage (auto-cleaned on main completion)
+  [ ] Summary token cap + schema validation in verifier.py
+  [ ] Three role files under .github/agents/
+  [ ] Spawn-event surface: mcpClient.ts emits "subagent_spawned" /
+      "subagent_done" notifications; extension renders visible chat markers
+      (brief, turn count, tool histogram, final summary line)
+
+Phase B — Pipeline-main spawning (highest ROI — ship first)
+  [ ] pipeline.yaml `subagents:` whitelist per stage
+  [ ] pipeline.ts wires harness_spawn_subagent into stage agent tools
+  [ ] Tests: main never sees transcript, policy intersected, max_turns enforced
+
+Phase C — Direct-mode spawning
+  [ ] Bundle with Week 4 "Direct-mode pull-on-demand skills"
+  [ ] Direct main agent gets harness_list_subagents + harness_spawn_subagent
+      in same MCP round-trip as harness_list_skills
+```
+
+**Invariant analysis:**
+- Sub agent context is pushed by harness, not pulled — firewall intact.
+- Main's choice to spawn is a tool call; pipeline YAML `subagents:` bounds
+  which roles the main can reach.
+- Sub agent can never exceed main's allowlist (intersection).
+
+**Promotion rule:** Add a sub agent role only when 3+ observed cases show
+the main agent's context would have been saved by offloading. Do not invent
+roles speculatively.
 
 ---
 
@@ -722,6 +981,45 @@ WEEK 4:
             acceptable because there is no evaluator to firewall in
             direct mode.
 
+WEEK 5 — Sub agents for main-context preservation (planned, main feature):
+  Goal: main agent's context stays clean. Heavy evidence-gathering runs
+  inside a sub agent; main receives only a compressed summary.
+
+  TODO: Core primitives (Phase A)
+        - harness_spawn_subagent / harness_await_subagent / harness_list_subagents
+        - SUBAGENT_POLICIES in scripts/policy_engine.py (fail-closed)
+        - Sub agent firewall path in context_builder.py (brief-only, no memory,
+          no main plan, no sibling sub agents)
+        - Ephemeral sub session storage + auto-cleanup when main completes
+        - Summary token cap + optional JSON schema validation in verifier.py
+        - .github/agents/{explorer,investigator,reviewer-aux}.agent.md
+        - Spawn-event surface: mcpClient.ts emits "subagent_spawned" /
+          "subagent_done"; extension renders visible chat markers (brief,
+          turn count, tool histogram, final summary line). Non-negotiable —
+          no silent sub agents.
+
+  TODO: Pipeline-main spawning (Phase B — ship first, highest ROI)
+        - pipeline.yaml `subagents:` whitelist per stage (opt-in, per-stage)
+        - pipeline.ts wires harness_spawn_subagent into stage agent tools
+        - Policy = SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+        - Tests: main never sees transcript, only summary + structured;
+          max_turns is a hard cap; stages without `subagents:` cannot spawn
+
+  TODO: Direct-mode spawning (Phase C)
+        - Bundle with the Week 4 "direct-mode pull-on-demand skills" TODO
+        - Same MCP round-trip returns skill catalog + sub agent catalog
+        - Direct main agent gets harness_spawn_subagent + harness_list_subagents
+        - No new invariants — direct mode already has no evaluator
+
+  Terminology note: "sub agent" is reserved for the agent-spawns-agent case.
+  A pipeline running its stage agent, or a user slash-invoking an agent, is
+  NOT a sub agent invocation — there the agent IS the main. The `.agent.md`
+  file is identical regardless of how it is invoked; only the invocation
+  contract and firewall differ. The deprecated folder `.github/agents/` is
+  un-deprecated and becomes the home for cross-pipeline agents (skill-builder
+  + the three sub agent roles). Pipeline-scoped stage agents still live at
+  `.github/pipelines/<name>/agents/`.
+
 DEFERRED (needs discussion first):
   - Model-invoked skill loading **inside pipeline mode** (agent decides
     which skill to load during plan/design/code). Breaks the
@@ -729,6 +1027,18 @@ DEFERRED (needs discussion first):
     firewall and stage-specific injection depend on. Direct-mode pull
     above does NOT break this invariant because direct mode has no
     evaluator and no stage structure.
+
+  - Sub agents reading memory. Default for Week 5 is *no memory for sub
+    agents*. Opt-in per role via `memory: [<entry>]` in the role file only
+    after 3+ observed failures of the same pattern. Matches the promotion
+    rule.
+
+  - User-invokable slash commands for sub agent roles (e.g. `/explore`).
+    Dropped from Week 5 scope: sub agents exist to preserve a *main*
+    agent's context; when the user is the caller, there is no main context
+    to preserve — just use direct mode and let the direct main agent spawn
+    sub agents as needed. Revisit only if a concrete power-user workflow
+    demands it.
 ```
 
 ---
@@ -753,3 +1063,4 @@ DEFERRED (needs discussion first):
 *Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
 *Current: Week 3c complete — direct mode + hooks + slash commands, 334 tests*
 *Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction*
+*Planned: Week 5 — sub agents for main-context preservation*
