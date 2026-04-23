@@ -93,11 +93,16 @@ DIRECT MODE:
 PIPELINE MODE:
   extension.ts spawns bin/copilot-harness.exe via McpClient
         ↓
+    Chat stream emits one-line marker + "Show Harness Dashboard" button.
+    Extension opens the Dashboard webview and posts session_start.
+    ↓
     McpClient.callTool("harness_get_active_session")
         → crash recovery: resume interrupted session or start fresh
     ↓
     McpClient.callTool("harness_new_session", { request })
         → harness creates session, locks agent versions, returns session_id
+    ↓
+    For each agent: Dashboard ← stage_start (name, attempt, tags)
     ↓
     McpClient.callTool("harness_read_stage", { session_id, stage, agent_name })
         → context firewall enforced, skills auto-injected, memory injected
@@ -108,9 +113,14 @@ PIPELINE MODE:
     McpClient.callTool("harness_write_stage", { session_id, stage, output })
         → injection scan → schema check → append-only store
     ↓
+    Dashboard ← stage_complete (durationMs, summary)
+    ↓
     Evaluator (separate vscode.lm.sendRequest, fresh context) → verdict
     ↓
-    Fail → correction loop (max 3 retries) → escalate
+    Fail → Dashboard ← correction_retry (attempt, fix_instructions)
+         → correction loop (max 3 retries) → escalate
+    ↓
+    Dashboard ← pipeline_complete (success, escalated)
 ```
 
 **Routing rule (zero cost — no LLM call):**
@@ -169,17 +179,17 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Week 4 complete, v0.2.0)
+## Current State (Week 4 complete + Dashboard, v0.3.0)
 
 ```
 WHAT EXISTS NOW:
-  ✅ 379 tests passing
+  ✅ 379 tests passing (Python harness — TS extension has no unit tests)
   ✅ Harness core: state, context_builder, verifier, executor,
        correction_loop, skill_loader
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
        + Tier 2 compaction + cross-session query (Week 4 Day 4)
   ✅ Pattern detector + proposed patch applier
-  ✅ VS Code extension v0.2.0 with McpClient
+  ✅ VS Code extension v0.3.0 with McpClient + Harness Dashboard webview
   ✅ PyInstaller binary distribution
   ✅ Separate evaluator session (Week 3a)
   ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
@@ -189,6 +199,9 @@ WHAT EXISTS NOW:
   ✅ Direct-mode skill catalog + pull-on-demand           (Week 4 Day 3)
   ✅ harness_query_sessions + harness_compact_memory      (Week 4 Day 4)
   ✅ feature-dev-level1-probe (built, not yet run)        (Week 4 Day 5)
+  ✅ Harness Dashboard webview — pipeline card, stage dots, skill/memory/
+       firewall/schema/policy tags, retry block with reviewer fix_instructions,
+       live elapsed timer, footer actions (/status, Cancel, View plan.md)
 
 FEATURE-DEV PIPELINE TODAY:
   4 agents: planner → designer → coder → reviewer (evaluator firewall)
@@ -204,11 +217,19 @@ ROUTING:
   Everything else              → direct mode (one MCP round-trip for
                                  skill catalog, then vscode.lm call;
                                  LLM may pull skills on demand)
+
+CHAT OUTPUT vs DASHBOARD:
+  Chat stream (Copilot Chat) — one-line marker + "Show Harness Dashboard"
+                               button. Minimal surface.
+  Dashboard webview           — rich pipeline card rendered verbatim from
+                               the design mockup; extension drives it via
+                               typed postMessage events at the existing
+                               pipeline.ts instrumentation points.
 ```
 
 ---
 
-## File Structure (v0.2.0, post Week 3)
+## File Structure (v0.3.0, post Week 4 + Dashboard)
 
 ```
 .github/
@@ -251,15 +272,24 @@ copilot-harness/                 ← Python MCP server
                                    (harness_run_hook added Week 3c)
     cli.py, state.py, context_builder.py, verifier.py, executor.py
     correction_loop.py, skill_loader.py
-    memory/, storage/, tests/    (334 tests)
+    memory/, storage/, tests/    (379 tests)
 
-copilot-harness-extension/       ← VS Code extension (TypeScript)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.0)
     src/
         extension.ts             ← direct-mode routing + slash dispatch
+                                   (threads dashboard + CancellationTokenSource)
         mcpClient.ts             ← JSON-RPC stdio client
         pipeline.ts              ← agent driver + correction loop
-                                   (multi-dir loadAgentPrompt fallback)
+                                   emits typed events to the dashboard
         slashCommands.ts         ← Week 3c: slash-command loader
+        dashboard.ts             ← v0.3.0: HarnessDashboard webview owner
+                                   (event bus, 1Hz tick, CSP + nonce)
+    media/
+        dashboard/               ← v0.3.0: webview assets (stripped of VS
+                                   Code chrome — just the chat-panel surface)
+            index.html           ← mounts #chat-body + #suggestions
+            style.css            ← extracted from the mockup
+            app.js               ← DOM mutator, consumes postMessage events
     bin/
         copilot-harness.exe      ← PyInstaller binary
 
@@ -296,6 +326,46 @@ injecting skill content directly into `harness_read_stage` responses.
 Pipeline YAML defines which skill to inject per agent. Agent cannot opt out.
 Skill content is part of the tool response.
 Agent loads additional references on demand via `harness_get_reference()`.
+
+---
+
+## Harness Dashboard Webview (v0.3.0)
+
+`vscode.ChatResponseStream` accepts only CommonMark + a few primitives
+(button, anchor, filetree). Colored status dots, flex layout, pulse
+animations — none of that renders in the chat panel. We ship a dedicated
+webview instead.
+
+```
+Copilot Chat               ← one-line marker + "Show Harness Dashboard" button
+Harness Dashboard panel    ← the full card from the design mockup
+                             (route pill, stage dots, skill/memory/firewall/
+                              schema/policy tags, retry block with reviewer
+                              fix_instructions, live elapsed timer, footer
+                              actions: /status · Cancel · View plan.md)
+```
+
+**Event bus (extension → webview, via `postMessage`):**
+`session_start` · `stage_start` · `stage_progress` · `stage_complete` ·
+`stage_failed` · `correction_retry` · `pipeline_complete` · `hook_event` ·
+`tick` · `direct_start` · `direct_pull_skill` · `direct_complete`.
+
+**Actions (webview → extension):**
+`ready` · `action_cancel` · `action_status` · `action_view_file` ·
+`action_run_slash` · `action_open_chat`.
+
+**Invariants:**
+- Events are queued before the webview posts `ready`, then flushed.
+- A `CancellationTokenSource` linked to the chat request AND the
+  dashboard's Cancel button lets either side abort the in-flight pipeline.
+- CSP + nonce'd script tag; webview only reads from `media/dashboard/`.
+- No new LLM calls — the dashboard is purely a renderer of events emitted
+  from the existing `pipeline.ts` instrumentation points.
+
+**Rendering boundary.** The Python harness does not know about the
+dashboard. All events originate in `copilot-harness-extension/src/pipeline.ts`
+and `extension.ts`. `HarnessDashboard` in `src/dashboard.ts` owns the
+`WebviewPanel` lifecycle and the event-to-DOM translation table.
 
 ---
 
@@ -488,6 +558,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Memory Architecture | ✅ Built (3-tier) + compaction + cross-session query (Week 4 Day 4) | — |
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ✅ Shipped (Week 3c) + skill catalog (Week 4 Day 3) | — |
+| Harness Dashboard (webview) | ✅ Built (v0.3.0) — pipeline card, stage dots, tags, retry block, live timer | — |
 | Level decision for feature-dev | ⚠️ Probe built, not run (Week 4 Day 5) | Run 5 representative requests through both pipelines |
 | Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
@@ -1075,7 +1146,7 @@ DEFERRED (needs discussion first):
 *Updated: April 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: Extension mode (v0.2.0) — @harness in Copilot Chat*
-*Current: Week 4 complete — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure; 379 tests*
+*Runtime: Extension mode (v0.3.0) — @harness in Copilot Chat + Harness Dashboard webview*
+*Current: Week 4 complete + Dashboard webview — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure, live pipeline card in a webview panel; 379 tests*
 *Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas*
-*Planned: Week 5 — sub agents for main-context preservation*
+*Planned: Week 5 — sub agents for main-context preservation (dashboard already has the event surface to display them)*

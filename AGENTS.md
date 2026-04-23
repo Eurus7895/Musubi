@@ -32,6 +32,8 @@ AGENTS.md / CLAUDE.md / README.md     ← session map / design doc / quickstart
 
 copilot-harness/                      ← Python MCP server (zero LLM)
 copilot-harness-extension/            ← VS Code extension (@harness chat participant)
+    src/dashboard.ts                  ← HarnessDashboard webview owner
+    media/dashboard/                  ← webview assets (HTML/CSS/JS from mockup)
 
 hooks.json                            ← SessionStart / PreToolUse / PostToolUse wiring
 scripts/                              ← hook impls: policy_engine, pre/post_tool_use, session_start
@@ -56,6 +58,8 @@ Level 2  Multi-agent + evaluator. Promotion checklist required.
 DIRECT:   @harness <text> → vscode.lm → stream → done
 PIPELINE: orient (resume/new) → baseline → generator → evaluator (fresh session)
           → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
+          Chat streams a one-line marker + "Show Harness Dashboard" button;
+          the Dashboard webview renders the live pipeline card.
 ```
 
 ---
@@ -118,12 +122,12 @@ code change.
 
 ---
 
-*CopilotHarness | April 2026 | v0.2.0 | 337 tests*
-*Current: Week 3c complete — direct mode + hooks + slash commands*
-*Next: Week 4 (5-day plan) — Day 1 /help · Day 2 plugin manifest · Day 3 direct-*
-*mode pull-skills · Day 4 Tier 2 compaction + cross-session memory · Day 5*
-*Level-1 probe for feature-dev.*
+*CopilotHarness | April 2026 | v0.3.0 | 379 tests (Python harness)*
+*Current: Week 4 complete + Harness Dashboard webview — /help, plugin manifest,*
+*direct-mode pull-skills, Tier 2 compaction, cross-session memory, Level-1 probe*
+*infrastructure, live pipeline card rendered in a VS Code webview panel.*
+*Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas.*
 *Planned (main feature): Week 5 (5-day plan) — Day 1–3 sub agent core primitives*
-*(MCP, firewall, role files, spawn-event surface) · Day 4 pipeline-main spawning*
-*· Day 5 direct-mode spawning.*
+*(MCP, firewall, role files, spawn-event surface — Dashboard already has the event*
+*surface to render spawns) · Day 4 pipeline-main spawning · Day 5 direct-mode spawning.*
 *Full day-by-day plan in CLAUDE.md § Build Roadmap.*

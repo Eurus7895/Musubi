@@ -20,6 +20,14 @@ request, plan, or design. It judges the code artifact against the
 If reviewer returns `status: "fail"`, the coder retries with
 `fix_instructions`. Max 3 attempts, then the pipeline escalates.
 
+## Surface
+
+Copilot Chat streams a one-line marker + "Show Harness Dashboard" button.
+The Harness Dashboard webview (`copilot-harness-extension/src/dashboard.ts`,
+v0.3.0) renders the live pipeline card — stage dots, skill / memory /
+firewall / schema / policy tags, retry block with reviewer fix_instructions,
+elapsed timer, and footer actions (`/status` · Cancel · View plan.md).
+
 ## Level
 
 `level: 2` — multi-agent generator. Week 3a deferred the Level-1
