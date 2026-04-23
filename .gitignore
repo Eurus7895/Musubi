@@ -68,6 +68,11 @@ db.sqlite3-journal
 copilot-harness/storage/copilot_harness.db
 copilot-harness/memory/cross_session.db
 
+# CopilotHarness build output — copy-assets.sh stages .github/ assets into
+# the extension dir for .vsix packaging. Source of truth lives at the repo
+# root .github/; this copy must never be committed (would drift silently).
+copilot-harness-extension/.github/
+
 # Flask stuff:
 instance/
 .webassets-cache
