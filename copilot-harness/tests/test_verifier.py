@@ -397,3 +397,106 @@ def test_validation_result_failed() -> None:
     r = verifier.ValidationResult.failed(["oops"])
     assert r.valid is False
     assert r.errors == ["oops"]
+
+
+# ── Reviewer severity-rubric coercion ────────────────────────────────────────
+# Prevents the checklist-opinion correction loop. Documented in
+# reviewer.agent.md and .github/skills/code-review/SKILL.md.
+
+
+def test_reviewer_fail_with_only_medium_and_low_is_coerced_to_pass() -> None:
+    output = {
+        "status": "fail", "attempt": 1,
+        "issues": [
+            {"severity": "medium", "description": "missing type annotation",
+             "fix_instruction": "add -> None"},
+            {"severity": "low", "description": "consider adding a file handler",
+             "fix_instruction": "add RotatingFileHandler"},
+        ],
+    }
+    coerced, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is True
+    assert coerced["status"] == "pass"
+    assert coerced["status_coerced_from"] == "fail"
+    # Issues are preserved — the user still sees the advisory findings.
+    assert len(coerced["issues"]) == 2
+
+
+def test_reviewer_fail_with_high_issue_is_not_coerced() -> None:
+    output = {
+        "status": "fail", "attempt": 1,
+        "issues": [
+            {"severity": "high", "description": "wrong return type at public boundary",
+             "fix_instruction": "change return type to str"},
+            {"severity": "low", "description": "nit: docstring wording",
+             "fix_instruction": "rephrase"},
+        ],
+    }
+    coerced, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is False
+    assert coerced["status"] == "fail"
+    assert "status_coerced_from" not in coerced
+
+
+def test_reviewer_fail_with_critical_issue_is_not_coerced() -> None:
+    output = {
+        "status": "fail", "attempt": 1,
+        "issues": [
+            {"severity": "critical", "description": "SQL injection",
+             "fix_instruction": "parameterize query"},
+        ],
+    }
+    _, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is False
+
+
+def test_reviewer_pass_is_never_coerced() -> None:
+    """Coercion only applies to status=fail. pass/escalate/wrong_plan stand."""
+    for status in ("pass", "escalate", "wrong_plan"):
+        output = {"status": status, "attempt": 1,
+                  "issues": [{"severity": "medium", "description": "x",
+                              "fix_instruction": "y"}]}
+        _, was_coerced = verifier.normalize_reviewer_status(output)
+        assert was_coerced is False, f"{status} must not be coerced"
+
+
+def test_reviewer_fail_with_empty_issues_is_coerced_to_pass() -> None:
+    """A fail with no issues at all is still a rubric violation."""
+    output = {"status": "fail", "attempt": 1, "issues": []}
+    coerced, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is True
+    assert coerced["status"] == "pass"
+
+
+def test_reviewer_escalate_with_only_medium_issues_is_not_coerced() -> None:
+    """Escalate is a deliberate decision — the rubric does not downgrade it."""
+    output = {
+        "status": "escalate", "attempt": 3,
+        "issues": [{"severity": "medium", "description": "x", "fix_instruction": "y"}],
+        "escalate_reason": "out of scope",
+    }
+    _, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is False
+
+
+def test_coercion_preserves_attempt_and_escalate_reason() -> None:
+    output = {
+        "status": "fail", "attempt": 2,
+        "issues": [{"severity": "low", "description": "x", "fix_instruction": "y"}],
+        "escalate_reason": None,
+    }
+    coerced, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is True
+    assert coerced["attempt"] == 2
+    assert coerced["escalate_reason"] is None
+
+
+def test_coercion_handles_mixed_case_severity() -> None:
+    """Guard against 'Low' / 'MEDIUM' slipping through as a fail-triggering severity."""
+    output = {
+        "status": "fail", "attempt": 1,
+        "issues": [{"severity": "Medium", "description": "x", "fix_instruction": "y"}],
+    }
+    coerced, was_coerced = verifier.normalize_reviewer_status(output)
+    assert was_coerced is True
+    assert coerced["status"] == "pass"

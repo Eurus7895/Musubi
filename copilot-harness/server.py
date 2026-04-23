@@ -239,12 +239,28 @@ def harness_write_stage(
                 "validation_errors": result.errors,
             })
 
+        # Reviewer severity-rubric enforcement: if the reviewer returned a
+        # fail that isn't backed by a critical or high severity issue, the
+        # harness rewrites it to pass. Prevents the checklist-opinion
+        # correction loop (see CLAUDE.md failure-patterns).
+        coerced = False
+        if agent_name.lower() == "reviewer" and isinstance(parsed, dict):
+            parsed, coerced = verifier.normalize_reviewer_status(parsed)
+
         try:
             state.write_stage(session_id, stage, parsed)
         except ValueError as exc:
             return json.dumps({"status": "error", "error": str(exc)})
 
-        return json.dumps({"status": "stored", "session_id": session_id, "stage": stage})
+        response: dict[str, Any] = {
+            "status": "stored",
+            "session_id": session_id,
+            "stage": stage,
+        }
+        if coerced:
+            response["status_coerced"] = True
+            response["coercion_note"] = parsed.get("status_coercion_reason")
+        return json.dumps(response)
 
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})

@@ -129,6 +129,53 @@ def _check_schema(output: Any, agent_name: str) -> list[str]:
 
 _ISSUE_REQUIRED = {"severity", "description", "fix_instruction"}
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
+# Only these severities are allowed to drive a status=fail retry. Anything
+# else is advisory — see normalize_reviewer_status().
+_FAIL_TRIGGERING_SEVERITIES = {"critical", "high"}
+
+
+def normalize_reviewer_status(output: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Enforce the severity rubric on reviewer output.
+
+    Rule (documented in reviewer.agent.md + code-review/SKILL.md):
+      - critical | high  → force fail / escalate; coder must retry
+      - medium  | low    → advisory; recorded but does not fail the review
+
+    If the reviewer submits status="fail" with no critical/high issue, the
+    harness coerces it to "pass" and records the coercion in a synthetic
+    `status_coerced_from` field. The issues list is preserved so medium/low
+    findings still reach the user.
+
+    Returns (possibly-mutated output, coerced_bool). Does NOT mutate `escalate` or
+    `wrong_plan` — both are deliberate reviewer decisions that can stand on
+    severity-independent grounds.
+    """
+    if not isinstance(output, dict):
+        return output, False
+    if output.get("status") != "fail":
+        return output, False
+
+    issues = output.get("issues") or []
+    if not isinstance(issues, list):
+        return output, False
+
+    severities = {
+        (i.get("severity") or "").lower()
+        for i in issues
+        if isinstance(i, dict)
+    }
+    if severities & _FAIL_TRIGGERING_SEVERITIES:
+        return output, False  # genuine fail, leave alone
+
+    # No critical/high present — rubric says this is a pass.
+    coerced = dict(output)
+    coerced["status"] = "pass"
+    coerced["status_coerced_from"] = "fail"
+    coerced["status_coercion_reason"] = (
+        "Severity rubric: status=fail requires at least one critical or "
+        "high issue. Only medium/low issues were present; coerced to pass."
+    )
+    return coerced, True
 
 
 def _check_reviewer_issues(output: dict[str, Any]) -> list[str]:
