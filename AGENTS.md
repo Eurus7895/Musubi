@@ -120,7 +120,10 @@ code change.
 
 *CopilotHarness | April 2026 | v0.2.0 | 337 tests*
 *Current: Week 3c complete — direct mode + hooks + slash commands*
-*Next: Week 4 — handoff schemas, cross-session memory, Tier 2 compaction, /help,*
-*`.claude-plugin/plugin.json`, pipeline-as-install-unit, direct-mode skill pull.*
-*Planned (main feature): Week 5 — sub agents for main-context preservation.*
-*Full plan in CLAUDE.md § Known TODOs.*
+*Next: Week 4 (5-day plan) — Day 1 /help · Day 2 plugin manifest · Day 3 direct-*
+*mode pull-skills · Day 4 Tier 2 compaction + cross-session memory · Day 5*
+*Level-1 probe for feature-dev.*
+*Planned (main feature): Week 5 (5-day plan) — Day 1–3 sub agent core primitives*
+*(MCP, firewall, role files, spawn-event surface) · Day 4 pipeline-main spawning*
+*· Day 5 direct-mode spawning.*
+*Full day-by-day plan in CLAUDE.md § Build Roadmap.*

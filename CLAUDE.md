@@ -543,14 +543,125 @@ Week 3b+ can add a dedicated planner-feedback channel.
       commands, multi-dir agent glob). Total now 334.
 ```
 
-### Week 4 — Multi-Agent Coordination
+### Week 4 — Multi-Agent Coordination + Unblock Week 5 (5-day plan)
+
 ```
-[ ] Handoff schemas (plan→design, design→code, code→review)
-      Only needed if feature-dev stays Level 2 after Week 3a test
-[ ] Shared vocabulary / glossary injection
-[ ] Cross-stage contract validation in verifier.py
-[ ] Cross-session memory query
-[ ] Tier 2 compaction (failure-patterns.md > 5KB)
+Day 1 — /help slash command
+  [ ] Add "help" to SlashAction in slashCommands.ts
+  [ ] .github/commands/help.md (action: help)
+  [ ] runSlash() renders a table built from listSlashCommands(workspaceRoot)
+      — stays in sync as commands are added
+  [ ] Update USAGE in extension.ts to point users at /help
+  [ ] Test: test_slash_commands.py asserts help.md has action=help
+
+Day 2 — Plugin manifest + skill locality decision
+  [ ] .github/pipelines/feature-dev/.claude-plugin/plugin.json
+      { name, version, description, commands, agents, skills, hooks,
+        mcpServers } pointing at existing files — purely declarative
+  [ ] Decide: global skills (simpler) vs pipeline-local skills/ (portable,
+      needs skill_loader fallback like multi-dir agent glob)
+  [ ] STRETCH: if decision is pipeline-local, wire skill_loader fallback
+  [ ] Test: test_plugin_manifest.py — JSON parses + referenced paths resolve
+
+Day 3 — Direct-mode pull-on-demand skills (unblocks Week 5 Day 5)
+  [ ] context_builder.AGENT_SKILL_ALLOWLIST["direct"] = planner∪designer∪coder
+      (deliberately excludes reviewer's code-review skill)
+  [ ] New MCP tool harness_list_skills(agent_name) in server.py
+  [ ] extension.ts runDirect(): one-shot MCP call to harness_list_skills,
+      inject catalog into system prompt; register harness_get_skill +
+      harness_get_reference as vscode.lm tools so LLM can pull mid-response
+  [ ] Tests: allowlist rejects reviewer-only skills;
+      list_skills("direct") filters correctly;
+      get_skill(disallowed, agent="direct") errors;
+      regression: harness_read_stage unchanged for pipeline agents
+
+Day 4 — Memory: Tier 2 compaction + cross-session query
+  [ ] session_distiller compaction trigger when failure-patterns.md > 5KB
+      (keep most-recent + most-frequent entries)
+  [ ] Cross-session memory query API (find prior sessions by tag/request)
+  [ ] harness_query_sessions MCP tool (or extend harness_get_memory_entry)
+  [ ] Tests: compaction preserves required entries; query returns session
+      IDs + excerpts; idempotent under concurrent distiller runs
+
+Day 5 — Level-1 probe for feature-dev
+  [ ] Build one-off single-generator probe branch (planner+designer+coder
+      collapsed into one agent with a composite skill)
+  [ ] Run 3–5 representative /feature-dev requests through Level-1 variant
+  [ ] Compare first-attempt pass rate vs Level-2 baseline
+  [ ] Threshold: ≥ 80% first-attempt pass → collapse to Level 1;
+      else feature-dev stays Level 2
+  [ ] Document decision + evidence in CLAUDE.md (resolves Week 3a deferred)
+
+CONDITIONAL (triggered by Day 5 outcome):
+  [ ] Handoff schemas (plan→design, design→code, code→review)
+      Only if Level-2 stays. Bumps to Week 4.5 or top of Week 5.
+  [ ] Pipeline-as-install-unit (copy-paste install)
+      Needs Day 2 skill-locality decision first. Bumps to Week 4.5
+      if pipeline-local skills is chosen.
+```
+
+### Week 5 — Sub Agents (5-day plan, main feature)
+
+```
+Day 1 — Phase A.1: MCP plumbing + policy
+  [ ] harness_spawn_subagent(main_session_id, role, brief, allowed_tools,
+      max_turns, output_schema) → handle in server.py
+  [ ] harness_await_subagent(handle) → { summary, structured, tools_used,
+      turns, escalated }
+  [ ] harness_list_subagents(main_agent_name) → allowed roles for this main
+  [ ] SUBAGENT_POLICIES in scripts/policy_engine.py (fail-closed)
+  [ ] Ephemeral sub-session storage (auto-cleaned when main session ends)
+  [ ] Tests: policy intersection (role ∩ main_allowlist);
+      list_subagents filters by caller; unknown role rejected
+
+Day 2 — Phase A.2: Firewall + result verification
+  [ ] context_builder.py: sub agent read path — brief + role skill +
+      allowed tools only. NO main plan, NO memory, NO sibling subs,
+      NO main session_id
+  [ ] verifier.py: summary token cap + optional JSON schema validation
+      on return
+  [ ] Tests: sub agent cannot read main session state;
+      summary over token cap is truncated with marker;
+      schema validation rejects malformed structured returns
+
+Day 3 — Phase A.3: Role files + spawn-event surface
+  [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
+  [ ] .github/agents/investigator.agent.md (+ Bash for test runs)
+  [ ] .github/agents/reviewer-aux.agent.md (Read + View, per-file checklist)
+  [ ] mcpClient.ts emits "subagent_spawned" / "subagent_done" notifications
+  [ ] extension.ts renders visible chat markers (brief, turn count,
+      tool histogram, final summary line; full summary collapsible)
+  [ ] post_tool_use.py audit log records every spawn (caller, role, brief,
+      turns, tools, result) in storage/audit.db
+  [ ] Tests: every spawn produces a chat marker; audit row written per spawn;
+      no silent sub agents
+
+Day 4 — Phase B: Pipeline-main spawning (highest ROI)
+  [ ] pipeline.yaml schema extension: `subagents:` block per stage
+      (opt-in, whitelist of roles + max_concurrent)
+  [ ] pipeline.ts wires harness_spawn_subagent into stage agent tool list
+      when stage has `subagents:`; otherwise tool is unavailable
+  [ ] Enforce SUBAGENT_POLICIES[role] ∩ main_agent_allowlist
+  [ ] Integration test: feature-dev coder spawns explorer on a real brief,
+      receives summary, main context size unchanged (baseline check)
+  [ ] Tests: main never sees transcript; max_turns is a hard cap;
+      max_concurrent honored; stages without `subagents:` cannot spawn
+
+Day 5 — Phase C: Direct-mode spawning
+  [ ] Extend Week 4 Day 3 direct-mode MCP round-trip to ALSO return
+      harness_list_subagents("direct") catalog (same round-trip, one shot)
+  [ ] Register harness_spawn_subagent as vscode.lm tool in runDirect()
+  [ ] Direct main's sub-agent allowlist defined in SUBAGENT_POLICIES
+      (expect: explorer + investigator; reviewer-aux requires pipeline context)
+  [ ] Tests: direct main spawns sub end-to-end; sub spawned from direct
+      cannot read any direct state; direct mode still has no evaluator
+  [ ] Update Known TODOs, audit table, footer: mark Week 5 complete
+
+END-OF-WEEK checkpoint:
+  [ ] 334 existing + new tests green
+  [ ] Feature-dev run with a sub agent in the loop, full trace
+  [ ] Audit log shows every spawn; chat markers rendered
+  [ ] Memory of one real failure pattern (if encountered) distilled
 ```
 
 ### Week 5 — Sub Agents (planned, main feature)
