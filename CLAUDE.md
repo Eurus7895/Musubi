@@ -391,8 +391,9 @@ harness_increment_attempt(session_id, stage)
 
 ### Skill Tools
 ```
-harness_get_skill(skill_id)
-harness_get_reference(skill_id, reference_name)
+harness_get_skill(skill_id, agent_name)
+harness_get_reference(skill_id, reference_name, agent_name)
+harness_list_skills(agent_name)        # Week 4 Day 3 — per-caller filtered catalog
 ```
 
 ### Execution Tools ✅ built
@@ -400,13 +401,21 @@ harness_get_reference(skill_id, reference_name)
 harness_run_lint(files)       → LintResult (ruff)
 harness_run_typecheck(files)  → TypeCheckResult (mypy)
 harness_run_tests(test_dir)   → RunResult (pytest)
+harness_run_hook(event, payload)      # Week 3c — shells out to scripts/<hook>.py
 ```
 
 ### Memory Tools ✅ built
 ```
-harness_get_memory_entry(name) → Tier 2 content on demand
-harness_distill_session(session_id) → appends to failure-patterns.md
+harness_get_memory_context()           → Tier 1 index + Tier 2 available
+harness_get_memory_entry(name)         → Tier 2 content on demand
+harness_query_sessions(query, limit)   # Week 4 Day 4 — cross-session substring search
+harness_distill_session(session_id)    → appends to failure-patterns.md
+harness_compact_memory()               # Week 4 Day 4 — prunes failure-patterns.md when > 5 KB
 ```
+
+**Total: 18 MCP tools** (harness_get_active_session, harness_new_session,
+harness_read_stage, harness_write_stage, harness_get_status,
+harness_increment_attempt + the 12 above).
 
 ---
 
