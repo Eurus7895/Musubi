@@ -3,6 +3,7 @@ src/**
 scripts/**
 node_modules/**
 .vscode/**
+.build-logs/**
 tsconfig.json
 **/*.map
 **/*.ts
