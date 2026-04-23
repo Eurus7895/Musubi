@@ -17,6 +17,9 @@ produces, enforces the correction loop, injects skills, and runs code verificati
 Simple requests get a direct response. Complex workflows route to governed
 pipelines with validation, correction loops, and audit trails.
 
+> Public-facing summary lives in [`README.md`](./README.md). This file is the
+> internal source of truth for architecture, schemas, and the build roadmap.
+
 ---
 
 ## Harness Engineering Principle

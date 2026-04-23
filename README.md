@@ -1,296 +1,292 @@
 # CopilotHarness
+CopilotHarness is a pure Python MCP server that acts as the harness layer for
+GitHub Copilot's multi-agent team — it controls what each agent sees, validates
+what each agent produces, enforces the correction loop, serves skills on
+demand, and runs code to verify it actually works.
 
-A harness engineering layer for GitHub Copilot Chat in VS Code.
-The harness controls what each agent sees, validates what each agent produces,
-injects skills, enforces correction loops, and runs code verification.
-
-**Copilot Chat reasons. CopilotHarness controls the environment it reasons about.**
-
-```
-Same model + same task + changed environment = better outcomes
-(Princeton SWE-agent paper: 64% improvement from harness design alone)
-```
+> **Status:** Pre-build. Copilot native files and the Python package are both
+> still being scaffolded. See [Status & Roadmap](#status--roadmap) below.
+> Contributors should read [`CLAUDE.md`](./CLAUDE.md) for the full internal
+> design.
 
 ---
 
-## Quick Start
+## Harness Engineering Principle
 
-**Requirements:** Python 3.11+, Node.js 18+, VS Code with GitHub Copilot Chat, PyInstaller
+> "The model is what thinks. The harness is what it thinks about. And the
+> harness is what determines the final outcome."
 
-```powershell
-# 1. Python setup
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e copilot-harness/
-pip install pyinstaller
-
-# 2. Build the extension (bundles server binary + skills + agents)
-cd copilot-harness-extension
-npm install
-npm install -g @vscode/vsce
-npm run package
-# → copilot-harness-extension-0.2.0.vsix
-
-# 3. Install into VS Code
-code --install-extension copilot-harness-extension-0.2.0.vsix
-```
-
-Close and reopen VS Code. The **CopilotHarness** output channel appears automatically,
-confirming the server started. Then:
+Same model, same task, same compute — just changing environment design
+yielded a **64% performance improvement** in the Princeton SWE-agent paper
+(NeurIPS 2024). CopilotHarness takes that principle seriously: Copilot is the
+LLM, CopilotHarness is everything that shapes what Copilot sees and what
+happens with what Copilot produces.
 
 ```
-@harness /feature-dev add a login endpoint that validates email + password
+What Copilot does:        reasoning, planning, coding, reviewing
+What CopilotHarness does: state, context firewall, validation, execution, skills
 ```
 
-Or, for a quick question, skip the pipeline:
+## Zero-LLM Principle
 
-```
-@harness how does the correction loop work?
-```
+There are **zero LLM calls inside the harness**. Every component is
+deterministic Python.
+
+| Component              | LLM? | Implementation                        |
+| ---------------------- | ---- | ------------------------------------- |
+| `server.py`            | no   | MCP stdio, routes tool calls          |
+| `state.py`             | no   | Python dataclass + SQLite             |
+| `context_builder.py`   | no   | dict filtering + regex                |
+| `verifier.py`          | no   | jsonschema + regex secrets scan       |
+| `executor.py`          | no   | subprocess: ruff, mypy, pytest        |
+| `correction_loop.py`   | no   | orchestration logic                   |
+| `skill_loader.py`      | no   | file I/O                              |
+| `pattern_detector.py`  | no   | SQLite count threshold                |
+| Copilot (VS Code)      | yes  | all agent reasoning happens here      |
 
 ---
 
-## How It Works
+## The Two Layers
 
-The extension spawns the bundled server binary as a child process on VS Code start.
-No MCP panel, no manual server start, no tool enabling required.
-
-```
-VS Code opens → extension activates (onStartupFinished)
-    ↓
-extension.ts spawns bin/copilot-harness.exe via McpClient (JSON-RPC stdio)
-    ↓
-User types @harness <input> in Copilot Chat → extension.ts routes it:
-
-    starts with "/"      → slash command → pipeline / step / status / continue
-    contains --pipeline  → force pipeline mode
-    everything else      → DIRECT MODE: single vscode.lm.sendRequest, no harness
-
-PIPELINE MODE (for slash commands like /feature-dev <task>):
-    harness_get_active_session()         → resume interrupted session or start fresh
-    harness_new_session(request)         → create session, lock agent versions
-    ↓
-    For each agent (planner → designer → coder → reviewer):
-        harness_read_stage(...)          → context firewall enforced, skills injected
-        vscode.lm.sendRequest(copilot)   → Copilot reasons, returns JSON output
-        harness_write_stage(...)         → injection scan + schema validation + store
-    ↓
-    Reviewer "fail" → correction loop (max 3 retries) → escalate
-    ↓
-    Pipeline complete. Session: abc123
-```
-
-The routing is a pure string check — **zero LLM cost** to decide direct vs pipeline.
-
----
-
-## Commands
-
-Slash commands live in `.github/commands/*.md` — each file declares an action
-(`pipeline`, `step`, `continue`, `status`) in YAML frontmatter.
-
-| Command | Mode | Action |
-|---|---|---|
-| `@harness <question>` | direct | Single Copilot call, no pipeline |
-| `@harness /feature-dev <task>` | pipeline | Full 4-agent governed pipeline |
-| `@harness /planner <task>` | pipeline | Planner only (new session) |
-| `@harness /designer` | pipeline | Designer on active session |
-| `@harness /coder` | pipeline | Coder on active session |
-| `@harness /reviewer` | pipeline | Reviewer on active session |
-| `@harness /continue` | pipeline | Run next pending agent |
-| `@harness /status` | pipeline | Show active session progress |
-| `@harness <task> --pipeline` | pipeline | Force pipeline for free-form input |
-
-Legacy bare keywords (`continue`, `status`, `full`, `planner`, …) still work for
-one release cycle — prefer the slash form.
-
----
-
-## The feature-dev Pipeline
-
-| Agent | Gets from harness | Writes | Auto-injected skill |
-|---|---|---|---|
-| Planner | request only | `plan` | none |
-| Designer | plan | `design` | api-design |
-| Coder | plan + design (+ review on retry) | `code` | python |
-| Reviewer | **code only** (evaluator firewall) | `review` | code-review (always) |
-
-Skills are **pushed by the harness** — agents cannot skip them.
-
-The Reviewer runs under the Week 3a evaluator firewall: it cannot see the
-request, plan, design, or memory. It judges the code artifact against the
-`code-review` checklist and returns `pass | fail | escalate | wrong_plan`.
-
-Skill-Builder is a meta-agent that lives outside the feature-dev pipeline at
-`.github/agents/skill-builder.agent.md`. It writes proposed patches to
-`.github/agents/proposed/` for human review.
-
----
-
-## Hooks
-
-`hooks.json` at the repo root wires deterministic scripts to lifecycle events:
-
-| Hook | Script | Behavior |
-|---|---|---|
-| `SessionStart` | `scripts/session_start.py` | Runs `baseline_checks` from `pipeline.yaml` |
-| `PreToolUse` | `scripts/pre_tool_use.py` | Policy-engine gate — exit 0 allow / 1 deny |
-| `PostToolUse` | `scripts/post_tool_use.py` | SQLite audit log to `storage/audit.db` |
-
-`scripts/policy_engine.py` holds `PIPELINE_POLICIES` — a fail-closed allowlist
-mapping `(pipeline, agent) → [tool, …]`. Unknown pipeline or agent → deny.
-Invoke any hook via the `harness_run_hook(event, payload)` MCP tool.
-
-**Key rule:** "Never send an LLM to do a linter's job."
-
----
-
-## Crash Recovery
-
-If VS Code closes mid-pipeline, no work is lost. On next `@harness` call:
-
-```
-harness_get_active_session()
-→ { session_id: null }                        → start fresh
-→ { session_id, request, resume_stage, ... }  → skip completed stages, resume here
-```
-
-The harness marks each stage `in_progress` the moment `harness_read_stage` is called —
-a crash between read and write is always detectable.
-
----
-
-## MCP Tools
-
-| Tool | Purpose |
-|---|---|
-| `harness_get_active_session()` | Crash recovery — check for interrupted session |
-| `harness_new_session(request)` | Start pipeline, lock agent versions |
-| `harness_read_stage(session_id, stage, agent_name)` | Read with firewall + skill + memory injection |
-| `harness_write_stage(session_id, stage, output, agent_name)` | Validate + store |
-| `harness_get_status(session_id)` | Pipeline stage summary |
-| `harness_get_skill(skill_id, agent_name)` | Load SKILL.md on demand |
-| `harness_get_reference(skill_id, ref_name, agent_name)` | Load reference document |
-| `harness_increment_attempt(session_id, stage)` | Increment attempt counter for retry |
-| `harness_get_memory_entry(name)` | Load Tier 2 memory entry (e.g. `architecture.md`) |
-| `harness_distill_session(session_id)` | Distill session failures into Tier 2 memory |
-| `harness_run_lint(files)` | ruff check |
-| `harness_run_typecheck(files)` | mypy |
-| `harness_run_tests(test_dir)` | pytest |
-| `harness_run_hook(event, payload)` | Execute hooks.json lifecycle hooks |
-
----
-
-## Project Structure
+### Layer 1 — Copilot native files (loaded automatically by Copilot)
 
 ```
 .github/
-    pipelines/
-        feature-dev/             ← self-contained pipeline (Week 3b)
-            pipeline.yaml        ← level: 2, baseline_checks, correction
-            agents/              ← planner/designer/coder/reviewer .agent.md
-            README.md
-    commands/                    ← slash command contracts (Week 3c)
-        feature-dev.md, continue.md, status.md,
-        planner.md, designer.md, coder.md, reviewer.md
-    agents/                      ← DEPRECATED (removed Week 5)
-        skill-builder.agent.md   ← meta-agent stays here
-        proposed/                ← Skill-Builder writes here (human approves)
-    instructions/                ← priority-ranked rules (P1–P4)
-    skills/                      ← 6 domain skills, each: SKILL.md + refs/ + assets/
-    memory/                      ← 3-tier memory architecture
-        MEMORY.md                ← Tier 1: always-injected index (~200 tokens)
-        architecture.md          ← Tier 2: key decisions
-        failure-patterns.md      ← Tier 2: distilled failures (auto-updated)
+    AGENTS.md                      P1: global always-on rules
+    copilot-instructions.md        P1: global always-on conventions
+    instructions/
+        universal/                 P1: world-wide, never overridden
+        org/                       P2: team-wide standards
+        domain/                    P3: technology-specific (applyTo scoped)
+        project/                   P4: repo-specific overrides
+    agents/
+        planner.agent.md
+        designer.agent.md
+        coder.agent.md
+        reviewer.agent.md
+        skill-builder.agent.md
+        proposed/                  Skill-Builder writes here, human approves
+    skills/
+        code-review/
+            SKILL.md               max 200 lines
+            assets/                executable scripts, templates
+            references/            loaded only when needed
+        api-design/
+        database-patterns/
+```
 
-copilot-harness/                 ← Python MCP server (zero LLM)
-    server.py                    ← FastMCP stdio — harness_* tools
-                                   (includes harness_run_hook, Week 3c)
-    state.py                     ← append-only session state + crash recovery
-    context_builder.py           ← context firewall + injection detection
-    verifier.py                  ← schema validation + secrets scan
-    correction_loop.py           ← reviewer → coder retry (max 3)
-    skill_loader.py              ← serves SKILL.md + reference files
-    memory_loader.py             ← Tier 1/2 memory injection
-    session_distiller.py         ← distills failures to Tier 2 memory
-    executor.py                  ← ruff + mypy + pytest runner
-    storage/db.py                ← SQLite CRUD; schema embedded
-    tests/                       ← 334 tests covering all components
+### Layer 2 — CopilotHarness (MCP server, pure Python)
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.2.0)
-    src/
-        mcpClient.ts             ← JSON-RPC stdio client
-        extension.ts             ← @harness + direct-mode routing
-        pipeline.ts              ← 4-agent orchestration + correction loop
-        slashCommands.ts         ← frontmatter-driven slash loader (Week 3c)
-    bin/
-        copilot-harness.exe      ← PyInstaller binary (Windows)
-        copilot-harness          ← PyInstaller binary (Linux/Mac)
-
-hooks.json                       ← SessionStart / PreToolUse / PostToolUse (Week 3c)
-scripts/                         ← deterministic hook implementations
-    policy_engine.py             ← PIPELINE_POLICIES (fail-closed)
-    pre_tool_use.py              ← policy gate (exit 0=allow, 1=deny)
-    post_tool_use.py             ← SQLite audit log
-    session_start.py             ← pipeline.yaml baseline_checks runner
-
-.vscode/mcp.json                 ← dev mode only: python server.py for manual use
+```
+copilot-harness/
+    server.py                MCP stdio server, exposes all tools
+    state.py                 append-only session state
+    context_builder.py       context firewall + injection detection
+    verifier.py              schema validation + secrets scan
+    executor.py              lint + type check + test runner
+    correction_loop.py       reviewer → coder retry orchestration
+    skill_loader.py          serves SKILL.md, references, runs assets
+    memory/
+        cross_session.db     SQLite: fail patterns across sessions
+        pattern_detector.py  detects recurring failures
+    storage/
+        db.py
+        schema.sql
 ```
 
 ---
 
-## Dev Mode (manual agent use)
+## Instructions vs Skills
 
-For working on the harness itself without the extension:
+```
+instructions.md   RULES AND STANDARDS to follow
+                  "always use type hints"
+                  "never hardcode secrets"
+                  loaded automatically by Copilot, priority-ranked
 
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e copilot-harness/
-code .   # launch VS Code with venv active
+skills/           PROCEDURES AND KNOWLEDGE to apply
+                  "how to review code step by step"
+                  loaded on demand via MCP tool call
+                  SKILL.md ≤ 200 lines; deep docs in references/
+                  executable logic in assets/, run by executor.py
 ```
 
-VS Code reads `.vscode/mcp.json` → spawns `python server.py` → harness tools appear
-in Copilot Chat's tool picker. Agents call tools manually via Copilot Chat.
+### Instructions Priority System
+
+```
+P1 — Universal   never overridden (security, ethics)
+P2 — Org         team-wide standards (git conventions, review standards)
+P3 — Domain      technology-specific, applyTo scoped (python, api, database)
+P4 — Project     repo-specific overrides (naming, architecture)
+```
+
+Conflict resolution: higher priority wins. P1 always wins.
+
+### Skills: Progressive Disclosure
+
+```
+L1 — SKILL.md always loaded (~200 lines), handles 80% of cases
+L2 — references/*.md loaded on demand via harness_get_reference
+L3 — assets/ scripts executed via harness_run_asset
+     (the agent never runs scripts directly)
+```
 
 ---
 
-## Diagnostics
+## The 5-Agent Team
 
-**Output panel** (`Ctrl+Shift+U`) → **CopilotHarness**:
-```
-CopilotHarness v0.2.0 activating...
-Extension path: C:\...\extensions\copilot-harness-0.2.0\
-Checking: ...\bin\copilot-harness.exe — found
-Starting MCP server...
-MCP server started. Listing tools...
-Tools available (14): harness_get_active_session, harness_new_session, ...
-CopilotHarness ready. Use @harness in Copilot Chat.
+| Agent         | File                      | Tools              | Reads                                   | Writes                          |
+| ------------- | ------------------------- | ------------------ | --------------------------------------- | ------------------------------- |
+| Planner       | `planner.agent.md`        | view, glob         | request + P1/P2 instructions            | `session.plan`                  |
+| Designer      | `designer.agent.md`       | view, glob         | `session.plan`                          | `session.design`                |
+| Coder         | `coder.agent.md`          | view, edit, bash   | `session.plan` + `session.design`       | `session.code`                  |
+| Reviewer      | `reviewer.agent.md`       | view, glob         | all stages + request                    | `session.review`                |
+| Skill-Builder | `skill-builder.agent.md`  | view, edit         | reviewer feedback + target skill        | `.github/agents/proposed/`      |
+
+Each agent declares its tools and contracts in frontmatter and in
+Input/Output Contract sections. The harness enforces firewall rules per agent
+identity at the MCP boundary.
+
+---
+
+## MCP Tools Exposed
+
+The harness exposes the following tools over MCP stdio. Copilot agents call
+them natively from their agent loop — no custom integration needed.
+
+**State**
+- `harness_new_session(request)` — creates a session, locks agent versions
+- `harness_write_stage(session_id, stage, output)` — validates + stores
+- `harness_read_stage(session_id, stage)` — firewall-filtered read
+- `harness_get_status(session_id)` — pipeline status
+
+**Skills**
+- `harness_get_skill(skill_id)` — returns `SKILL.md` content
+- `harness_get_reference(skill_id, reference_name)` — on-demand deep doc
+- `harness_run_asset(skill_id, asset_name, input_json)` — runs asset in
+  subprocess via `executor.py`
+
+**Execution**
+- `harness_run_lint(files)` — `ruff check`, structured `LintResult`
+- `harness_run_typecheck(files)` — `mypy`, structured `TypeCheckResult`
+- `harness_run_tests(test_dir)` — `pytest`, structured `TestResult`
+
+### Connecting from VS Code
+
+`.vscode/mcp.json`:
+
+```json
+{
+    "servers": {
+        "copilot-harness": {
+            "type": "stdio",
+            "command": "copilot-harness",
+            "args": ["serve"]
+        }
+    }
+}
 ```
 
 ---
 
-## Build Status
+## Processing Flow
 
-| Milestone | Status |
-|---|---|
-| Day 1 — Native Copilot files (agents, instructions, skills) | ✅ |
-| Day 2 — State, context firewall, MCP server, crash recovery | ✅ |
-| Day 3 — Verifier, correction loop, skill loader | ✅ |
-| Day 4 — Executor (lint, typecheck, tests) | ✅ |
-| Day 5 — Self-improvement loop, pattern detector | ✅ |
-| Extension v0.2.0 — McpClient direct, DB path fixed, auto-activation | ✅ |
-| Week 2 — Memory architecture (3-tier), session distiller, edge case hardening | ✅ |
-| Week 3a — Separate evaluator session (reviewer firewall) | ✅ |
-| Week 3b — Pipeline directory migration (`.github/pipelines/feature-dev/`) | ✅ |
-| Week 3c — Direct mode + `hooks.json` + slash commands | ✅ |
+1. `copilot-harness serve` — MCP server starts (stdio). VS Code reads
+   `.vscode/mcp.json` and spawns the process.
+2. User sends a request in Copilot Chat. Planner loads, calls
+   `harness_new_session`, produces a plan, calls `harness_write_stage("plan")`.
+   `verifier.py` runs schema + secrets + injection checks before anything is
+   stored.
+3. Designer reads the plan through the firewall, optionally pulls a skill,
+   writes `session.design`.
+4. Coder reads plan + design, optionally pulls skills/references, writes
+   `session.code`.
+5. Reviewer reads all stages, produces structured feedback. On fail,
+   `correction_loop.py` sends `fix_instructions` back to the Coder (max 3
+   attempts, then escalates).
+6. On Reviewer pass, `executor.py` runs lint + typecheck + tests. Any failure
+   routes back to the Coder as `fix_instructions`.
+7. `pattern_detector.py` records session results. After 3 recurring failures of
+   the same kind, Skill-Builder is triggered and writes a proposal to
+   `.github/agents/proposed/` for human approval.
 
 ---
 
-## Running Tests
+## Harness Engineering — 7 Components
+
+1. **Tool Design** — each agent has an explicit `tools` list in its
+   `.agent.md`; `context_builder.py` validates tool-call logs.
+2. **Feedback Loops** — structured Reviewer → Coder schema with severity,
+   `fix_instruction`, and `checklist_item`; max 3 retries then escalate.
+3. **State Management** — append-only session state, `pending → in_progress →
+   complete`, write-once per attempt, resumable after crash.
+4. **Context Firewall** — per-agent allowlists on what stage outputs are
+   visible; injection detection scans every output before storage.
+5. **Security & Permissions** — three layers: Copilot tool restrictions,
+   Skill-Builder scoped to `proposed/` + Behavior Rules only, and a secrets
+   scan on every agent output.
+6. **Verification** — structural (`verifier.py`), domain (Reviewer with a
+   fixed checklist), and execution (`executor.py`) — three independent gates.
+7. **Architecture Enforcement** — agent versions locked at session start;
+   Skill-Builder cannot mutate active-session agents; all prompts are
+   assembled exclusively by `context_builder.py`.
+
+---
+
+## Status & Roadmap
+
+**Current phase:** Pre-build. Day 1 has not started.
+
+- **Day 1** — Copilot native files: `AGENTS.md`, `copilot-instructions.md`,
+  `instructions/{universal,org,domain,project}/`, all 5 `.agent.md` files,
+  first skill (`code-review/`).
+- **Day 2** — `storage/schema.sql`, `state.py`, `context_builder.py` with
+  per-agent firewall + injection detection passing tests.
+- **Day 3** — `verifier.py` + `correction_loop.py`: max-3-attempt loop with
+  clean escalation; secrets/injection scans.
+- **Day 4** — `executor.py`, `skill_loader.py`, `server.py` + `.vscode/mcp.json`
+  wiring so VS Code connects and tools round-trip.
+- **Day 5** — `memory/pattern_detector.py` + `pipeline.py`: self-improvement
+  loop that writes proposals to `.github/agents/proposed/`.
+- **Week 2** — hardening: unit tests per component, crash recovery, README
+  setup guide, edge cases, priority-enforcement docs.
+
+See [`CLAUDE.md`](./CLAUDE.md) for detailed per-day checklists and the
+testing checklist.
+
+---
+
+## Getting Started
+
+The Python package is not yet published. Once Day 4 lands, the typical setup
+will be:
 
 ```bash
-cd copilot-harness
-pytest tests/ -v
-# 334 tests
+pip install copilot-harness        # not yet available
+copilot-harness serve              # starts the MCP stdio server
 ```
+
+Then open the repo in VS Code with `.vscode/mcp.json` present. The 5 agents
+will appear in the Copilot agent picker.
+
+Contributors: read [`CLAUDE.md`](./CLAUDE.md) first. It is the source of
+truth for architecture, schemas, and the build roadmap.
+
+---
+
+## Resources
+
+- Copilot `.agent.md` format — https://learn.microsoft.com/en-us/visualstudio/ide/copilot-specialized-agents
+- awesome-copilot — https://github.com/github/awesome-copilot
+- Custom instructions — https://code.visualstudio.com/docs/copilot/customization/custom-instructions
+- AGENTS.md spec — https://agents.md
+- Copilot SDK custom agents — https://docs.github.com/en/copilot/how-tos/copilot-sdk/use-copilot-sdk/custom-agents
+- Harness Engineering (Mitchell Hashimoto) — https://mitchellh.com/writing/harness-engineering
+- SWE-agent paper (Princeton, NeurIPS 2024) — https://arxiv.org/abs/2405.15793
+- OWASP Top 10 for Agentic AI — https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/
+
+---
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).
