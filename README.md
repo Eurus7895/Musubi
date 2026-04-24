@@ -412,7 +412,7 @@ CopilotHarness ready. Use @harness in Copilot Chat.
 | Week 4 Day 4 — Tier 2 compaction + `harness_query_sessions` | ✅ |
 | Week 4 Day 5 — feature-dev Level-1 probe infrastructure (run pending) | ✅ |
 | Extension v0.3.1 — rich in-chat pipeline rendering (status emoji, governance tags, retry blocks, plan.md anchor) | ✅ |
-| Extension v0.4.0 — Tasks sidebar TreeView (live active session + history of past runs) | ✅ |
+| Extension v0.4.0 — Tasks sidebar TreeView + Show Tasks chat button + per-stage output <details> + CopilotHarness mark (three-input anchor icon) | ✅ |
 
 ---
 
