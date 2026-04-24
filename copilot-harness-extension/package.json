@@ -1,8 +1,8 @@
 {
   "name": "copilot-harness-extension",
   "displayName": "CopilotHarness",
-  "description": "Automated 4-agent pipeline for GitHub Copilot Chat — renders in the chat and in a dedicated sidebar Dashboard.",
-  "version": "0.3.2",
+  "description": "Automated 4-agent pipeline for GitHub Copilot Chat via CopilotHarness — rendered inline in the chat.",
+  "version": "0.3.1",
   "publisher": "copilot-harness",
   "repository": {
     "type": "git",
@@ -25,33 +25,7 @@
         "description": "Runs the automated 4-agent pipeline. Usage: @harness <your request>",
         "isSticky": true
       }
-    ],
-    "commands": [
-      {
-        "command": "copilot-harness.showDashboard",
-        "title": "Show Dashboard",
-        "category": "CopilotHarness"
-      }
-    ],
-    "viewsContainers": {
-      "auxiliarybar": [
-        {
-          "id": "copilotHarness",
-          "title": "CopilotHarness",
-          "icon": "$(dashboard)"
-        }
-      ]
-    },
-    "views": {
-      "copilotHarness": [
-        {
-          "type": "webview",
-          "id": "copilotHarness.dashboard",
-          "name": "Dashboard",
-          "contextualTitle": "CopilotHarness Dashboard"
-        }
-      ]
-    }
+    ]
   },
   "scripts": {
     "setup": "bash scripts/setup.sh",

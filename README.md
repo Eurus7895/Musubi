@@ -24,15 +24,15 @@ python -m venv .venv
 pip install -e copilot-harness/
 pip install pyinstaller
 
-# 2. Build the extension (bundles server binary + skills + agents + dashboard assets)
+# 2. Build the extension (bundles server binary + skills + agents)
 cd copilot-harness-extension
 npm install
 npm install -g @vscode/vsce
 npm run package
-# → copilot-harness-extension-0.3.2.vsix
+# → copilot-harness-extension-0.3.1.vsix
 
 # 3. Install into VS Code
-code --install-extension copilot-harness-extension-0.3.2.vsix
+code --install-extension copilot-harness-extension-0.3.1.vsix
 ```
 
 Close and reopen VS Code. The **CopilotHarness** output channel appears automatically,
@@ -89,20 +89,22 @@ The routing is a pure string check — **zero LLM cost** to decide direct vs pip
 
 ---
 
-## Two Surfaces (v0.3.2)
+## In-Chat Rendering (v0.3.1)
 
-Pipeline runs render in **both** places simultaneously — pick whichever
-feels natural:
-
-### 1. In Copilot Chat (primary)
-
-Each stage streams a markdown section as it runs:
+The pipeline renders inline in Copilot Chat — the same surface as Copilot
+Chat or Claude Chat — so you don't switch panels to see what the harness
+is doing. Each agent stage streams a markdown section as it runs:
 
 ```
 ### ⏳ planner
 ◆ memory: `MEMORY.md` · ◇ policy: `Read·Grep·Glob`
 
 ✓ **planner** — 3.1s — 5-step plan, schema ✓
+
+### ⏳ designer
+◈ skill: `api-design` · { } schema: `design.json`
+
+✓ **designer** — 4.8s — 3 modules, schema ✓
 
 ### ↻ coder  *(attempt 2/3)*
 ◈ skill: `python` · ⟡ firewall: `fix_instructions only`
@@ -120,24 +122,12 @@ Each stage streams a markdown section as it runs:
 [View plan.md →]
 ```
 
-### 2. CopilotHarness Dashboard — sidebar tab (v0.3.2)
-
-A dedicated VS Code `WebviewView` docked in the **Auxiliary Sidebar** —
-drag it to sit beside `CHAT` and `CLAUDE CODE` if you use those. The
-same pipeline events render as a live card: colored status dots (pass /
-fail / running / retry), animated pulse on the running stage, governance
-tags, retry block with reviewer verdict + `fix_instructions`, and an
-elapsed timer that ticks every second.
-
-Open it from the palette: **CopilotHarness: Show Dashboard** — or just
-toggle the auxiliary sidebar (`Ctrl+Alt+B`) and click the CopilotHarness
-tab.
-
 The governance tags (◆ memory, ◈ skill, { } schema, ⟡ firewall, ◇ policy)
-mirror the push-not-pull injection the harness enforces — you see what
-was pushed to each stage in both surfaces. At pipeline end the chat emits
-a **View plan.md** anchor and the dashboard exposes a matching button;
-both open `.harness/sessions/<sid>/plan.md`.
+mirror the push-not-pull injection the harness enforces — you see what was
+pushed to each stage without leaving the chat. Reviewer failures render as a
+blockquote with the first `fix_instruction`, so you see *why* the retry is
+happening before it starts. At pipeline end a **View plan.md** anchor opens
+the materialised session artifact at `.harness/sessions/<sid>/plan.md`.
 
 ---
 
@@ -279,21 +269,13 @@ copilot-harness/                 ← Python MCP server (zero LLM)
     storage/db.py                ← SQLite CRUD; schema embedded
     tests/                       ← 379 tests covering all components
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.2)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.1)
     src/
         mcpClient.ts             ← JSON-RPC stdio client
-        extension.ts             ← @harness + direct-mode routing + dashboard wiring
+        extension.ts             ← @harness + direct-mode routing
         pipeline.ts              ← 4-agent orchestration + correction loop
-                                   + rich in-chat stage rendering
-                                   + dashboard event emission
+                                   + rich in-chat stage rendering (v0.3.1)
         slashCommands.ts         ← frontmatter-driven slash loader (Week 3c)
-        dashboard.ts             ← WebviewViewProvider (v0.3.2)
-                                   auxiliary-sidebar dashboard
-    media/
-        dashboard/               ← webview assets (v0.3.2)
-            index.html           ← CSP-locked shell
-            style.css            ← VS Code theme-aware stage card
-            app.js               ← DOM mutator, consumes postMessage events
     bin/
         copilot-harness.exe      ← PyInstaller binary (Windows)
         copilot-harness          ← PyInstaller binary (Linux/Mac)
@@ -330,8 +312,8 @@ in Copilot Chat's tool picker. Agents call tools manually via Copilot Chat.
 
 **Output panel** (`Ctrl+Shift+U`) → **CopilotHarness**:
 ```
-CopilotHarness v0.3.2 activating...
-Extension path: C:\...\extensions\copilot-harness-0.3.2\
+CopilotHarness v0.3.1 activating...
+Extension path: C:\...\extensions\copilot-harness-0.3.1\
 Checking: ...\bin\copilot-harness.exe — found
 Starting MCP server...
 MCP server started. Listing tools...
@@ -361,7 +343,6 @@ CopilotHarness ready. Use @harness in Copilot Chat.
 | Week 4 Day 4 — Tier 2 compaction + `harness_query_sessions` | ✅ |
 | Week 4 Day 5 — feature-dev Level-1 probe infrastructure (run pending) | ✅ |
 | Extension v0.3.1 — rich in-chat pipeline rendering (status emoji, governance tags, retry blocks, plan.md anchor) | ✅ |
-| Extension v0.3.2 — CopilotHarness sidebar Dashboard (WebviewView in auxiliary bar; live pipeline card beside Chat / Claude Code) | ✅ |
 
 ---
 

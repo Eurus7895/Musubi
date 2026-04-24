@@ -179,7 +179,7 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Week 4 complete + dual-surface rendering, v0.3.2)
+## Current State (Week 4 complete + rich in-chat rendering, v0.3.1)
 
 ```
 WHAT EXISTS NOW:
@@ -189,7 +189,7 @@ WHAT EXISTS NOW:
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
        + Tier 2 compaction + cross-session query (Week 4 Day 4)
   ✅ Pattern detector + proposed patch applier
-  ✅ VS Code extension v0.3.2 with McpClient + rich in-chat rendering + sidebar Dashboard
+  ✅ VS Code extension v0.3.1 with McpClient + rich in-chat pipeline rendering
   ✅ PyInstaller binary distribution
   ✅ Separate evaluator session (Week 3a)
   ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
@@ -203,10 +203,6 @@ WHAT EXISTS NOW:
        status emoji (⏳ ↻ ✓ ✗), governance tags (◆ memory / ◈ skill /
        { } schema / ⟡ firewall / ◇ policy), elapsed seconds, retry
        blockquote with reviewer verdict + fix_instructions, plan.md anchor.
-  ✅ CopilotHarness Dashboard — WebviewView in auxiliary sidebar (v0.3.2).
-       Colored status dots, pulse animation on running stage, ticking
-       elapsed timer, retry block, /status · Cancel · plan.md buttons.
-       Drag-droppable — users typically sit it beside CHAT / CLAUDE CODE.
 
 FEATURE-DEV PIPELINE TODAY:
   4 agents: planner → designer → coder → reviewer (evaluator firewall)
@@ -223,28 +219,21 @@ ROUTING:
                                  skill catalog, then vscode.lm call;
                                  LLM may pull skills on demand)
 
-RENDERING — TWO SURFACES, ONE EVENT STREAM:
-  Every @harness interaction — direct AND pipeline — renders in two
-  places concurrently. Same information, different UX.
-    1. Copilot Chat (primary surface)
-       stream.markdown + stream.progress + stream.anchor
-       Pipeline header, per-stage ### sections, tag lines, retry
-       blockquote, stage-complete lines, footer summary, plan.md
-       anchor. CommonMark only — no colors, no animations.
-    2. CopilotHarness Dashboard (auxiliary-sidebar WebviewView)
-       Live pipeline card with colored status dots (pass / fail /
-       running / retry), pulse animation on running stage, ticking
-       elapsed timer, retry block with reviewer fix_instructions,
-       footer buttons (/status · Cancel · plan.md). Events delivered
-       via postMessage; the webview replays buffered events if the
-       user opens the view mid-run.
-  pipeline.ts emits to both surfaces at the same instrumentation
-  points. No duplicate LLM calls; no duplicate harness state.
+CHAT SURFACE:
+  Every @harness interaction — direct AND pipeline — lives inline in
+  Copilot Chat. No separate panel. The VS Code chat API supports
+  markdown + progress + button + anchor; we use all four:
+    - markdown: pipeline header, per-stage ### sections, tag lines,
+                retry blockquote, stage-complete lines, footer summary
+    - progress: ephemeral "Resuming session ..." hints
+    - anchor:   final "View plan.md" link to the materialised artifact
+  No colors, no animations — the chat renders CommonMark — but all
+  governance information the pipeline enforces is visible inline.
 ```
 
 ---
 
-## File Structure (v0.3.2, post Week 4)
+## File Structure (v0.3.1, post Week 4)
 
 ```
 .github/
@@ -289,23 +278,16 @@ copilot-harness/                 ← Python MCP server
     correction_loop.py, skill_loader.py
     memory/, storage/, tests/    (379 tests)
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.2)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.1)
     src/
         extension.ts             ← direct-mode routing + slash dispatch
                                    + pipeline/step summary + plan.md anchor
-                                   + Dashboard provider registration
         mcpClient.ts             ← JSON-RPC stdio client
         pipeline.ts              ← agent driver + correction loop
                                    + rich in-chat stage rendering
-                                   + dashboard event emission
+                                   (STAGE_TAGS, emitStageStart/Complete,
+                                   fmtSeconds, renderTags)
         slashCommands.ts         ← Week 3c: slash-command loader
-        dashboard.ts             ← HarnessDashboard: vscode.WebviewViewProvider
-                                   (v0.3.2) — event bus, replay log, 1Hz tick
-    media/
-        dashboard/               ← webview assets (v0.3.2)
-            index.html           ← CSP-locked shell with nonce'd script
-            style.css            ← VS Code theme-aware stage card
-            app.js               ← DOM mutator, consumes postMessage events
     bin/
         copilot-harness.exe      ← PyInstaller binary
 
@@ -345,51 +327,48 @@ Agent loads additional references on demand via `harness_get_reference()`.
 
 ---
 
-## Dual-Surface Rendering (v0.3.2)
+## In-Chat Pipeline Rendering (v0.3.1)
 
-Every pipeline run renders concurrently in **two** surfaces from a single
-event stream. No duplicated LLM calls, no duplicated state — pipeline.ts
-emits to both at the same instrumentation points.
+The whole harness experience — direct mode AND pipeline mode — renders
+inline in Copilot Chat. No separate panel, no webview. This matches the
+Copilot Chat / Claude Chat idiom: the assistant speaks, you read in the
+same surface.
 
-### Surface 1 — Copilot Chat (in-chat rendering)
+**What VS Code's ChatResponseStream gives us:**
+- `stream.markdown(md)` — CommonMark with GFM tables
+- `stream.progress(text)` — ephemeral one-line hints
+- `stream.button({ command, title })` — action buttons
+- `stream.anchor(uri, title)` — file/line links
 
-Markdown-only output via `ChatResponseStream`:
+**Per-stage template (pipeline.ts `emitStageStart` / `emitStageComplete`):**
 
-| stream primitive | what it carries |
-|---|---|
-| `stream.markdown(md)` | pipeline header, per-stage `### ⏳/✓/↻ <agent>`, tag line, retry blockquote, stage-complete line, footer summary |
-| `stream.progress(text)` | ephemeral "Resuming session …" hints |
-| `stream.anchor(uri, "View plan.md")` | link to `.harness/sessions/<sid>/plan.md` |
+```markdown
+### ⏳ coder   *(attempt 2/3 on retry)*
+◈ skill: `python` · ⟡ firewall: `fix_instructions only`
 
-No colors, no animations — CommonMark + GFM only.
+✓ **coder** — 9.2s — 3 files, schema ✓
+```
 
-### Surface 2 — CopilotHarness Dashboard (auxiliary-sidebar WebviewView)
+**Retry blockquote (pipeline.ts `runCorrectionLoop`):**
 
-`vscode.WebviewViewProvider` registered against `copilotHarness.dashboard`.
-Contributes to `viewsContainers.auxiliarybar` so the tab can sit beside
-CHAT / CLAUDE CODE; the user can drag it to the activity bar or panel if
-they prefer.
+```markdown
+> ⚠️ **reviewer → fail** · 2 issues
+>
+> Fix: Reorder auth → ownership → fetch. Add test_cancel_403_when_not_owner.
+```
 
-**Event bus (extension → webview, via `postMessage`):**
-`session_start` · `stage_start` · `stage_progress` · `stage_complete` ·
-`stage_failed` · `correction_retry` · `pipeline_complete` · `tick` ·
-`direct_start` · `direct_pull_skill` · `reset`.
+**Pipeline header + footer (extension.ts):**
 
-**Actions (webview → extension):**
-`ready` · `action_cancel` · `action_status` · `action_view_file`.
+```markdown
+🎛 **/feature-dev** — feature-dev · level 2 · session `s/9f3a2c`
+...
+*total: 18.4s*
 
-**Invariants:**
-- Events not delivered before the view resolves are kept in a 500-event
-  replay log; flushed when the view emits `ready`.
-- 1 Hz `tick` driver updates the elapsed timer and every `.stage.running`
-  row; started on `session_start`, stopped on `pipeline_complete`.
-- `retainContextWhenHidden: true` — the card survives tab-switching.
-- CSP + per-render nonce; webview only reads from `media/dashboard/`.
-- Dashboard never makes LLM calls; it's a pure renderer of pipeline events.
-- Cancel button routes through a `CancellationTokenSource` linked to the
-  chat request token, so either side can abort the run.
+✅ **Pipeline complete.** Session: `s/9f3a2c`
+[View plan.md →]
+```
 
-### Governance tag map (`STAGE_TAGS` in pipeline.ts)
+**Governance tag map (`STAGE_TAGS` in pipeline.ts):**
 
 | stage | tags pushed |
 |---|---|
@@ -399,9 +378,16 @@ they prefer.
 | review | ◈ skill: `code-review` · ⟡ firewall: `code only` |
 | code (retry) | ◈ skill: `python` · ⟡ firewall: `fix_instructions only` |
 
-Both surfaces render this map. It mirrors the push-not-pull injection the
-harness enforces. `pipeline.yaml` is the source of truth; STAGE_TAGS is
-a render-time copy that must stay in sync.
+These mirror the push-not-pull injection the harness enforces — the
+reader sees what was pushed to each stage without leaving the chat.
+
+**Invariants:**
+- The Python harness is unchanged by the rendering choice — all emit
+  points are in `pipeline.ts` / `extension.ts`.
+- No dashboard panel, no postMessage bus, no webview CSP concerns.
+- `pipeline.yaml` is the source of truth for skills/tags; the STAGE_TAGS
+  table is a render-time mirror and must stay in sync. (Candidate for
+  harness-driven push later — out of scope for v0.3.1.)
 
 ---
 
@@ -604,7 +590,6 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ✅ Shipped (Week 3c) + skill catalog (Week 4 Day 3) | — |
 | In-chat rendering | ✅ Built (v0.3.1) — stage sections, governance tags, retry blockquote, plan.md anchor | — |
-| Dashboard sidebar view | ✅ Built (v0.3.2) — WebviewView in auxiliary bar; colored dots, pulse, tick timer, retry block, action buttons | — |
 | Level decision for feature-dev | ⚠️ Probe built, not run (Week 4 Day 5) | Run 5 representative requests through both pipelines |
 | Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
@@ -1192,7 +1177,7 @@ DEFERRED (needs discussion first):
 *Updated: April 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: Extension mode (v0.3.2) — @harness in Copilot Chat + CopilotHarness Dashboard (sidebar WebviewView)*
-*Current: Week 4 complete + dual-surface rendering — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure, per-stage rendering in both Copilot Chat and the auxiliary-sidebar Dashboard; 379 tests*
+*Runtime: Extension mode (v0.3.1) — @harness in Copilot Chat, rich in-chat pipeline rendering*
+*Current: Week 4 complete + in-chat rendering — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure, per-stage markdown sections with governance tags and retry blockquote; 379 tests*
 *Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas*
-*Planned: Week 5 — sub agents for main-context preservation (Dashboard has the event surface to render spawns as nested cards; chat as nested ### sections)*
+*Planned: Week 5 — sub agents for main-context preservation (render spawns inline as nested ### sections)*
