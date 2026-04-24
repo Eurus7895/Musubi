@@ -109,7 +109,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     "copilot-harness.harness",
     (req, ctx, stream, token) => handler(req, ctx, stream, token, client, refreshTasks),
   );
-  participant.iconPath = new vscode.ThemeIcon("robot");
+  // Use our own harness mark for the chat avatar rather than the generic
+  // robot codicon. iconPath accepts a Uri; VS Code theming the SVG works
+  // because harness.svg uses currentColor throughout.
+  participant.iconPath = vscode.Uri.joinPath(
+    context.extensionUri, "media", "icons", "harness.svg",
+  );
   context.subscriptions.push(participant);
 
   // Initial refresh — if a session was interrupted, it shows up immediately.

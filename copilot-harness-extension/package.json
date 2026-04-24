@@ -50,7 +50,7 @@
         {
           "id": "copilotHarness",
           "title": "CopilotHarness",
-          "icon": "$(checklist)"
+          "icon": "media/icons/harness.svg"
         }
       ]
     },

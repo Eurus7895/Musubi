@@ -1,0 +1,38 @@
+<!--
+  CopilotHarness activity-bar icon.
+
+  Abstraction: three inputs (planner, designer, coder) flow into one
+  anchor node (the harness) → one output leaves from the bottom
+  (reviewer / shipped change). Pure shape, no lettering.
+
+  VS Code activity-bar icons MUST be single-color and use `currentColor`
+  so they inherit the user's theme (--vscode-foreground in light/dark).
+  No fills other than currentColor; no inline styles.
+
+  24×24 viewBox keeps it crisp at 16px (activity bar) and 24px (title bar).
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 24 24"
+     fill="none"
+     stroke="currentColor"
+     stroke-width="1.6"
+     stroke-linecap="round"
+     stroke-linejoin="round">
+  <!-- Three input branches converging on the anchor -->
+  <line x1="4.5"  y1="6"  x2="12" y2="12.5" />
+  <line x1="12"   y1="3"  x2="12" y2="12.5" />
+  <line x1="19.5" y1="6"  x2="12" y2="12.5" />
+  <!-- Output branch -->
+  <line x1="12" y1="12.5" x2="12" y2="20" />
+
+  <!-- Input nodes (small filled dots) -->
+  <circle cx="4.5"  cy="6" r="1.35" fill="currentColor" stroke="none" />
+  <circle cx="12"   cy="3" r="1.35" fill="currentColor" stroke="none" />
+  <circle cx="19.5" cy="6" r="1.35" fill="currentColor" stroke="none" />
+
+  <!-- Anchor node: larger filled dot at the convergence -->
+  <circle cx="12" cy="12.5" r="2.1" fill="currentColor" stroke="none" />
+
+  <!-- Output node: same size as inputs, marks the shipped change -->
+  <circle cx="12" cy="20" r="1.5" fill="currentColor" stroke="none" />
+</svg>
