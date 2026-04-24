@@ -22,11 +22,12 @@ If reviewer returns `status: "fail"`, the coder retries with
 
 ## Surface
 
-Copilot Chat streams a one-line marker + "Show Harness Dashboard" button.
-The Harness Dashboard webview (`copilot-harness-extension/src/dashboard.ts`,
-v0.3.0) renders the live pipeline card — stage dots, skill / memory /
-firewall / schema / policy tags, retry block with reviewer fix_instructions,
-elapsed timer, and footer actions (`/status` · Cancel · View plan.md).
+Everything renders inline in Copilot Chat. Each stage streams a markdown
+section with a status emoji (⏳ running, ✓ complete, ↻ retry), the injected
+skill / memory / firewall / schema / policy tags, elapsed seconds, and — on
+reviewer fail — a blockquote with the verdict and fix_instructions before
+the next coder attempt. On completion the chat emits a **View plan.md**
+anchor pointing at `.harness/sessions/<sid>/plan.md`.
 
 ## Level
 

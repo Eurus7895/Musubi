@@ -18,7 +18,6 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline, runStep, StepResult } from "./pipeline";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
-import { HarnessDashboard } from "./dashboard";
 
 let out: vscode.OutputChannel;
 
@@ -60,66 +59,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
-  const dashboard = new HarnessDashboard(context.extensionUri, (msg) => out.appendLine(msg));
-  context.subscriptions.push(dashboard);
-
-  // Per-run CancellationTokenSource so the dashboard's Cancel button can
-  // abort the in-flight pipeline. Replaced on every chat request so each run
-  // has its own fresh source.
-  let activeCts: vscode.CancellationTokenSource | null = null;
-
-  dashboard.onAction(async (action) => {
-    switch (action.type) {
-      case "action_cancel":
-        activeCts?.cancel();
-        return;
-      case "action_status":
-        await vscode.commands.executeCommand("workbench.action.chat.open",
-          { query: "@harness /status" });
-        return;
-      case "action_view_file": {
-        if (!action.relPath) return;
-        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!ws) return;
-        const abs = path.join(ws, action.relPath);
-        try {
-          const doc = await vscode.workspace.openTextDocument(abs);
-          await vscode.window.showTextDocument(doc, { preview: false });
-        } catch (err) {
-          vscode.window.showWarningMessage(`CopilotHarness: cannot open ${action.relPath}`);
-        }
-        return;
-      }
-      case "action_run_slash": {
-        const text = `@harness /${action.name}${action.args ? " " + action.args : ""}`;
-        await vscode.env.clipboard.writeText(text);
-        await vscode.commands.executeCommand("workbench.action.chat.open", { query: text });
-        return;
-      }
-      case "action_open_chat":
-        await vscode.commands.executeCommand("workbench.action.chat.open", { query: "@harness " });
-        return;
-    }
-  });
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand("copilot-harness.showDashboard", () => dashboard.show()),
-  );
-
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    async (req, ctx, stream, token) => {
-      // Link the request token to a local source so the dashboard can also cancel.
-      activeCts?.dispose();
-      activeCts = new vscode.CancellationTokenSource();
-      token.onCancellationRequested(() => activeCts?.cancel());
-      try {
-        return await handler(req, ctx, stream, activeCts.token, client, dashboard);
-      } finally {
-        activeCts?.dispose();
-        activeCts = null;
-      }
-    },
+    (req, ctx, stream, token) => handler(req, ctx, stream, token, client),
   );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
@@ -222,7 +164,6 @@ function parseCommand(text: string): ParsedCommand {
 async function showStatus(
   client: McpClient,
   stream: vscode.ChatResponseStream,
-  dashboard?: HarnessDashboard,
 ): Promise<void> {
   const activeRaw = await client.callTool("harness_get_active_session", {});
   let active: { session_id: string | null; request?: string };
@@ -239,9 +180,6 @@ async function showStatus(
     stream.markdown("Could not retrieve session status.");
     return;
   }
-
-  // Reveal the dashboard so the current session is visible alongside the table.
-  dashboard?.show();
 
   const STAGE_ORDER = ["plan", "design", "code", "review"];
   const STAGE_ICON: Record<string, string> = {
@@ -419,7 +357,6 @@ async function runDirect(
   chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
-  dashboard?: HarnessDashboard,
 ): Promise<void> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -433,13 +370,6 @@ async function runDirect(
     fetchDirectCatalog(client),
     fetchMemoryContext(client),
   ]);
-
-  dashboard?.post({
-    type: "direct_start",
-    prompt,
-    skillCatalog: catalog.skills.map(s => ({ id: s.skill_id, title: s.title })),
-    memory,
-  });
 
   const catalogLines = catalog.skills.length
     ? catalog.skills.map(s => `  - ${s.skill_id}: ${s.title}`).join("\n")
@@ -487,7 +417,6 @@ async function runDirect(
     if (!pull || round === MAX_PULL_ROUNDS) {
       // Final answer or budget exhausted — stream whatever we have.
       stream.markdown(text);
-      dashboard?.post({ type: "direct_complete" });
       return;
     }
 
@@ -519,11 +448,6 @@ async function runDirect(
 
     pulled.add(pull.skill_id);
     stream.progress(`Loaded skill: ${pull.skill_id}`);
-    dashboard?.post({
-      type: "direct_pull_skill",
-      skillId: pull.skill_id,
-      title: catalog.skills.find(s => s.skill_id === pull.skill_id)?.title ?? pull.skill_id,
-    });
 
     history.push(vscode.LanguageModelChatMessage.Assistant(text));
     history.push(vscode.LanguageModelChatMessage.User(
@@ -561,7 +485,6 @@ async function handler(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   client: McpClient,
-  dashboard: HarnessDashboard,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -579,14 +502,13 @@ async function handler(
         break;
 
       case "status":
-        await showStatus(client, stream, dashboard);
+        await showStatus(client, stream);
         break;
 
       case "full":
       case "pipelineForced": {
-        emitPipelineMarker(stream, cmd.request);
         const result = await runPipeline(
-          client, cmd.request, workspaceRoot, stream, token, dashboard,
+          client, cmd.request, workspaceRoot, stream, token,
           { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
         );
         emitPipelineSummary(stream, result);
@@ -594,7 +516,7 @@ async function handler(
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
+        const result = await runStep(client, workspaceRoot, stream, token, {});
         emitStepMarker(stream, result);
         break;
       }
@@ -603,17 +525,17 @@ async function handler(
         const result = await runStep(client, workspaceRoot, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
-        }, dashboard);
+        });
         emitStepMarker(stream, result);
         break;
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, context, stream, token, dashboard);
+        await runDirect(cmd.prompt, client, context, stream, token);
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token, dashboard);
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token);
         break;
     }
   } catch (err) {
@@ -625,17 +547,9 @@ async function handler(
   return {};
 }
 
-// ── Chat-side markers ─────────────────────────────────────────────────────────
-// The dashboard owns rich rendering; the chat shows brief markers + buttons.
-
-function emitPipelineMarker(stream: vscode.ChatResponseStream, request: string): void {
-  const shortReq = request.length > 80 ? request.slice(0, 77) + "…" : request;
-  stream.markdown(`🎛 **Pipeline running** — *${shortReq}*. See the **Harness Dashboard** for live stages.\n\n`);
-  stream.button({
-    command: "copilot-harness.showDashboard",
-    title: "Show Harness Dashboard",
-  });
-}
+// ── Chat-side summaries ──────────────────────────────────────────────────────
+// pipeline.ts emits per-stage rich markdown. These footers close the session
+// with a pass/fail line + an action button to open the materialised plan.
 
 function emitPipelineSummary(
   stream: vscode.ChatResponseStream,
@@ -643,31 +557,40 @@ function emitPipelineSummary(
 ): void {
   stream.markdown("\n---\n");
   if (result.escalated) {
-    stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}`);
+    stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}\n`);
   } else {
-    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
+    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\`\n`);
   }
+  emitPlanAnchor(stream, result.sessionId);
 }
 
 function emitStepMarker(stream: vscode.ChatResponseStream, result: StepResult): void {
   if (result.escalated) {
-    stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}`);
+    stream.markdown(`\n⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}\n`);
     return;
   }
   if (result.pipelineComplete) {
-    stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\``);
+    stream.markdown(`\n✅ **Pipeline complete.** Session: \`${result.sessionId}\`\n`);
+    emitPlanAnchor(stream, result.sessionId);
     return;
   }
-  if (result.completedAgent) {
-    stream.markdown(`✓ **${result.completedAgent}** complete. `);
-    if (result.nextAgent) {
-      stream.markdown(`Next: \`${result.nextAgent}\` — type \`@harness continue\`.\n\n`);
-    }
+  if (result.nextAgent) {
+    stream.markdown(
+      `\n**Next:** \`${result.nextAgent}\` — type \`@harness continue\` or \`@harness /${result.nextAgent}\`.\n`,
+    );
   }
-  stream.button({
-    command: "copilot-harness.showDashboard",
-    title: "Show Harness Dashboard",
-  });
+}
+
+function emitPlanAnchor(stream: vscode.ChatResponseStream, sessionId: string): void {
+  const ws = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!ws) return;
+  const planUri = vscode.Uri.joinPath(ws, ".harness", "sessions", sessionId, "plan.md");
+  try {
+    stream.anchor(planUri, "View plan.md");
+  } catch {
+    // stream.anchor can throw on older VS Code; swallow silently — the
+    // file is still on disk for the user to open manually.
+  }
 }
 
 // ── Slash command dispatch ────────────────────────────────────────────────────
@@ -679,7 +602,6 @@ async function runSlash(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
-  dashboard: HarnessDashboard,
 ): Promise<void> {
   const cmd = loadSlashCommand(workspaceRoot, name);
   if (!cmd) {
@@ -697,10 +619,9 @@ async function runSlash(
         stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
         return;
       }
-      emitPipelineMarker(stream, args);
       const pipelineName = cmd.pipeline ?? cmd.name;
       const result = await runPipeline(
-        client, args, workspaceRoot, stream, token, dashboard,
+        client, args, workspaceRoot, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
       );
       emitPipelineSummary(stream, result);
@@ -714,17 +635,17 @@ async function runSlash(
       const result = await runStep(client, workspaceRoot, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
-      }, dashboard);
+      });
       emitStepMarker(stream, result);
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
+      const result = await runStep(client, workspaceRoot, stream, token, {});
       emitStepMarker(stream, result);
       return;
     }
     case "status":
-      await showStatus(client, stream, dashboard);
+      await showStatus(client, stream);
       return;
     case "help":
       stream.markdown(buildHelpMarkdown(workspaceRoot));

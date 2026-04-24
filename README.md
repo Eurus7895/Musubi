@@ -24,15 +24,15 @@ python -m venv .venv
 pip install -e copilot-harness/
 pip install pyinstaller
 
-# 2. Build the extension (bundles server binary + skills + agents + dashboard assets)
+# 2. Build the extension (bundles server binary + skills + agents)
 cd copilot-harness-extension
 npm install
 npm install -g @vscode/vsce
 npm run package
-# → copilot-harness-extension-0.3.0.vsix
+# → copilot-harness-extension-0.3.1.vsix
 
 # 3. Install into VS Code
-code --install-extension copilot-harness-extension-0.3.0.vsix
+code --install-extension copilot-harness-extension-0.3.1.vsix
 ```
 
 Close and reopen VS Code. The **CopilotHarness** output channel appears automatically,
@@ -67,54 +67,67 @@ User types @harness <input> in Copilot Chat → extension.ts routes it:
     everything else      → DIRECT MODE: single vscode.lm.sendRequest, no harness
 
 PIPELINE MODE (for slash commands like /feature-dev <task>):
-    Chat stream emits a one-line marker + "Show Harness Dashboard" button.
-    The Harness Dashboard webview opens alongside the chat (v0.3.0).
+    Chat streams a header line: "🎛 /feature-dev — level 2 · session s/abc123".
     ↓
     harness_get_active_session()         → resume interrupted session or start fresh
     harness_new_session(request)         → create session, lock agent versions
     ↓
     For each agent (planner → designer → coder → reviewer):
-        Dashboard ← stage_start (tags: skill, memory, firewall, schema, policy)
+        Chat ← ### ⏳ <agent>  +  tag line (skill/memory/firewall/schema/policy)
         harness_read_stage(...)          → context firewall enforced, skills injected
         vscode.lm.sendRequest(copilot)   → Copilot reasons, returns JSON output
         harness_write_stage(...)         → injection scan + schema validation + store
-        Dashboard ← stage_complete (durationMs, summary)
+        Chat ← ✓ <agent> — 3.1s — 5-step plan, schema ✓
     ↓
-    Reviewer "fail" → Dashboard ← correction_retry (attempt, fix_instructions)
+    Reviewer "fail" → Chat ← ⚠️ reviewer → fail · 2 issues  +  fix_instructions
                     → correction loop (max 3 retries) → escalate
     ↓
-    Dashboard ← pipeline_complete (success, escalated)
-    Pipeline complete. Session: abc123
+    Chat ← ✅ Pipeline complete. Session: s/abc123   [View plan.md →]
 ```
 
 The routing is a pure string check — **zero LLM cost** to decide direct vs pipeline.
 
 ---
 
-## Harness Dashboard (v0.3.0)
+## In-Chat Rendering (v0.3.1)
 
-Copilot Chat's `ChatResponseStream` only renders CommonMark + a few primitives
-(buttons, anchors, filetrees). Colored status dots, flex layouts, and pulse
-animations can't live inside the chat panel, so pipeline runs surface in a
-dedicated **webview** that mirrors the design mockup:
+The pipeline renders inline in Copilot Chat — the same surface as Copilot
+Chat or Claude Chat — so you don't switch panels to see what the harness
+is doing. Each agent stage streams a markdown section as it runs:
 
-- Route pill (`/FEATURE-DEV`), pipeline level, retries counter, live elapsed timer.
-- Per-stage status dots (pass / fail / running / retry / queued) with tags for
-  **skill**, **memory**, **firewall**, **schema**, **policy** — mirroring the
-  push-not-pull injection the harness enforces.
-- Retry block showing the reviewer verdict + `fix_instructions` that are sent
-  back to the coder.
-- Footer actions: `/status`, **Cancel** (aborts the in-flight pipeline via a
-  linked `CancellationTokenSource`), **View plan.md** (opens the materialised
-  session artifact).
+```
+### ⏳ planner
+◆ memory: `MEMORY.md` · ◇ policy: `Read·Grep·Glob`
 
-The extension drives the webview via typed `postMessage` events
-(`session_start` · `stage_start` · `stage_complete` · `correction_retry` ·
-`pipeline_complete` · `tick` · `direct_*`). No new LLM calls — events piggyback
-on the existing `pipeline.ts` instrumentation points. CSP + per-render nonce
-lock down script execution inside the webview.
+✓ **planner** — 3.1s — 5-step plan, schema ✓
 
-Open it any time: **Command Palette → CopilotHarness: Show Dashboard**.
+### ⏳ designer
+◈ skill: `api-design` · { } schema: `design.json`
+
+✓ **designer** — 4.8s — 3 modules, schema ✓
+
+### ↻ coder  *(attempt 2/3)*
+◈ skill: `python` · ⟡ firewall: `fix_instructions only`
+
+> ⚠️ **reviewer → fail** · 2 issues
+>
+> Fix: Reorder auth → ownership → fetch. Add test_cancel_403_when_not_owner.
+
+✓ **coder** — 9.2s — 3 files, schema ✓
+✓ **reviewer** — 2.1s — review: pass
+
+*total: 18.4s*
+
+✅ **Pipeline complete.** Session: `s/9f3a2c`
+[View plan.md →]
+```
+
+The governance tags (◆ memory, ◈ skill, { } schema, ⟡ firewall, ◇ policy)
+mirror the push-not-pull injection the harness enforces — you see what was
+pushed to each stage without leaving the chat. Reviewer failures render as a
+blockquote with the first `fix_instruction`, so you see *why* the retry is
+happening before it starts. At pipeline end a **View plan.md** anchor opens
+the materialised session artifact at `.harness/sessions/<sid>/plan.md`.
 
 ---
 
@@ -132,7 +145,7 @@ Slash commands live in `.github/commands/*.md` — each file declares an action
 | `@harness /coder` | pipeline | Coder on active session |
 | `@harness /reviewer` | pipeline | Reviewer on active session |
 | `@harness /continue` | pipeline | Run next pending agent |
-| `@harness /status` | pipeline | Show active session progress (+ focus Dashboard) |
+| `@harness /status` | pipeline | Show active session progress |
 | `@harness <task> --pipeline` | pipeline | Force pipeline for free-form input |
 
 Legacy bare keywords (`continue`, `status`, `full`, `planner`, …) still work for
@@ -256,19 +269,13 @@ copilot-harness/                 ← Python MCP server (zero LLM)
     storage/db.py                ← SQLite CRUD; schema embedded
     tests/                       ← 379 tests covering all components
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.0)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.1)
     src/
         mcpClient.ts             ← JSON-RPC stdio client
-        extension.ts             ← @harness + direct-mode routing + dashboard wiring
+        extension.ts             ← @harness + direct-mode routing
         pipeline.ts              ← 4-agent orchestration + correction loop
-                                   (emits typed events to the dashboard)
+                                   + rich in-chat stage rendering (v0.3.1)
         slashCommands.ts         ← frontmatter-driven slash loader (Week 3c)
-        dashboard.ts             ← HarnessDashboard webview owner (v0.3.0)
-    media/
-        dashboard/               ← webview assets (v0.3.0)
-            index.html           ← stripped-down chat panel, CSP-locked
-            style.css            ← extracted from the design mockup
-            app.js               ← DOM mutator, consumes postMessage events
     bin/
         copilot-harness.exe      ← PyInstaller binary (Windows)
         copilot-harness          ← PyInstaller binary (Linux/Mac)
@@ -305,8 +312,8 @@ in Copilot Chat's tool picker. Agents call tools manually via Copilot Chat.
 
 **Output panel** (`Ctrl+Shift+U`) → **CopilotHarness**:
 ```
-CopilotHarness v0.3.0 activating...
-Extension path: C:\...\extensions\copilot-harness-0.3.0\
+CopilotHarness v0.3.1 activating...
+Extension path: C:\...\extensions\copilot-harness-0.3.1\
 Checking: ...\bin\copilot-harness.exe — found
 Starting MCP server...
 MCP server started. Listing tools...
@@ -335,7 +342,7 @@ CopilotHarness ready. Use @harness in Copilot Chat.
 | Week 4 Day 3 — Direct-mode skill catalog + pull-on-demand | ✅ |
 | Week 4 Day 4 — Tier 2 compaction + `harness_query_sessions` | ✅ |
 | Week 4 Day 5 — feature-dev Level-1 probe infrastructure (run pending) | ✅ |
-| Extension v0.3.0 — Harness Dashboard webview (live pipeline card) | ✅ |
+| Extension v0.3.1 — rich in-chat pipeline rendering (status emoji, governance tags, retry blocks, plan.md anchor) | ✅ |
 
 ---
 
