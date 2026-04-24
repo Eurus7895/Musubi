@@ -32,6 +32,8 @@ AGENTS.md / CLAUDE.md / README.md     ← session map / design doc / quickstart
 
 copilot-harness/                      ← Python MCP server (zero LLM)
 copilot-harness-extension/            ← VS Code extension (@harness chat participant)
+    src/dashboard.ts                  ← WebviewViewProvider for the sidebar Dashboard
+    media/dashboard/                  ← webview assets (HTML/CSS/JS)
 
 hooks.json                            ← SessionStart / PreToolUse / PostToolUse wiring
 scripts/                              ← hook impls: policy_engine, pre/post_tool_use, session_start
@@ -56,9 +58,13 @@ Level 2  Multi-agent + evaluator. Promotion checklist required.
 DIRECT:   @harness <text> → vscode.lm → stream → done
 PIPELINE: orient (resume/new) → baseline → generator → evaluator (fresh session)
           → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
-          Each stage renders inline in Copilot Chat — status emoji, injected
-          skill/memory/firewall/schema/policy tags, elapsed time, reviewer
-          verdict + fix_instructions on retry.
+          Each stage renders in TWO surfaces concurrently:
+            1. Copilot Chat — markdown section per stage, tag line, retry
+               blockquote, plan.md anchor at pipeline end.
+            2. CopilotHarness Dashboard (auxiliary-sidebar WebviewView) —
+               live pipeline card with colored status dots, pulse animation
+               on running stage, ticking elapsed timer, /status · Cancel ·
+               plan.md buttons.
 ```
 
 ---
@@ -121,13 +127,13 @@ code change.
 
 ---
 
-*CopilotHarness | April 2026 | v0.3.1 | 379 tests (Python harness)*
-*Current: Week 4 complete + rich in-chat pipeline rendering — /help, plugin*
-*manifest, direct-mode pull-skills, Tier 2 compaction, cross-session memory,*
-*Level-1 probe infrastructure, stage-by-stage markdown in Copilot Chat with*
-*governance tags, retry blocks, and plan.md anchor.*
+*CopilotHarness | April 2026 | v0.3.2 | 379 tests (Python harness)*
+*Current: Week 4 complete + dual-surface rendering — rich in-chat stage*
+*markdown (v0.3.1) AND auxiliary-sidebar Dashboard WebviewView (v0.3.2)*
+*with colored status dots, pulse animation, ticking timer, and action buttons.*
+*Users can put the Dashboard beside CHAT / CLAUDE CODE in the auxiliary bar.*
 *Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas.*
 *Planned (main feature): Week 5 (5-day plan) — Day 1–3 sub agent core primitives*
-*(MCP, firewall, role files, spawn-event surface) · Day 4 pipeline-main spawning*
-*· Day 5 direct-mode spawning.*
+*(MCP, firewall, role files, spawn-event surface — Dashboard can render spawn*
+*events as nested cards) · Day 4 pipeline-main spawning · Day 5 direct-mode spawning.*
 *Full day-by-day plan in CLAUDE.md § Build Roadmap.*

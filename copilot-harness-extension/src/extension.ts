@@ -18,6 +18,7 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline, runStep, StepResult } from "./pipeline";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
+import { HarnessDashboard } from "./dashboard";
 
 let out: vscode.OutputChannel;
 
@@ -59,9 +60,64 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
+  // Sidebar Dashboard — WebviewView docked in the auxiliary sidebar. The
+  // in-chat rendering is the primary surface; the dashboard mirrors each
+  // pipeline event for users who prefer a dedicated tab beside Copilot Chat.
+  const dashboard = new HarnessDashboard(context.extensionUri, (msg) => out.appendLine(msg));
+  context.subscriptions.push(dashboard);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(HarnessDashboard.viewType, dashboard, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
+  // Cancel in-flight pipeline from the dashboard's button. Linked to the
+  // chat request token by listening to the request's cancellation too.
+  let activeCts: vscode.CancellationTokenSource | null = null;
+
+  dashboard.onAction(async (action) => {
+    switch (action.type) {
+      case "action_cancel":
+        activeCts?.cancel();
+        return;
+      case "action_status":
+        await vscode.commands.executeCommand("workbench.action.chat.open", {
+          query: "@harness /status",
+        });
+        return;
+      case "action_view_file": {
+        if (!action.relPath) return;
+        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!ws) return;
+        const abs = path.join(ws, action.relPath);
+        try {
+          const doc = await vscode.workspace.openTextDocument(abs);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch {
+          vscode.window.showWarningMessage(`CopilotHarness: cannot open ${action.relPath}`);
+        }
+        return;
+      }
+    }
+  });
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.showDashboard", () => dashboard.show()),
+  );
+
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    (req, ctx, stream, token) => handler(req, ctx, stream, token, client),
+    async (req, ctx, stream, token) => {
+      activeCts?.dispose();
+      activeCts = new vscode.CancellationTokenSource();
+      token.onCancellationRequested(() => activeCts?.cancel());
+      try {
+        return await handler(req, ctx, stream, activeCts.token, client, dashboard);
+      } finally {
+        activeCts?.dispose();
+        activeCts = null;
+      }
+    },
   );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
@@ -357,6 +413,7 @@ async function runDirect(
   chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard: HarnessDashboard,
 ): Promise<void> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -370,6 +427,8 @@ async function runDirect(
     fetchDirectCatalog(client),
     fetchMemoryContext(client),
   ]);
+
+  dashboard.post({ type: "direct_start", prompt });
 
   const catalogLines = catalog.skills.length
     ? catalog.skills.map(s => `  - ${s.skill_id}: ${s.title}`).join("\n")
@@ -448,6 +507,11 @@ async function runDirect(
 
     pulled.add(pull.skill_id);
     stream.progress(`Loaded skill: ${pull.skill_id}`);
+    dashboard.post({
+      type: "direct_pull_skill",
+      skillId: pull.skill_id,
+      title: catalog.skills.find(s => s.skill_id === pull.skill_id)?.title ?? pull.skill_id,
+    });
 
     history.push(vscode.LanguageModelChatMessage.Assistant(text));
     history.push(vscode.LanguageModelChatMessage.User(
@@ -485,6 +549,7 @@ async function handler(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   client: McpClient,
+  dashboard: HarnessDashboard,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -510,13 +575,14 @@ async function handler(
         const result = await runPipeline(
           client, cmd.request, workspaceRoot, stream, token,
           { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
+          dashboard,
         );
         emitPipelineSummary(stream, result);
         break;
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, stream, token, {});
+        const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
         emitStepMarker(stream, result);
         break;
       }
@@ -525,17 +591,17 @@ async function handler(
         const result = await runStep(client, workspaceRoot, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
-        });
+        }, dashboard);
         emitStepMarker(stream, result);
         break;
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, context, stream, token);
+        await runDirect(cmd.prompt, client, context, stream, token, dashboard);
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token);
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token, dashboard);
         break;
     }
   } catch (err) {
@@ -602,6 +668,7 @@ async function runSlash(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  dashboard: HarnessDashboard,
 ): Promise<void> {
   const cmd = loadSlashCommand(workspaceRoot, name);
   if (!cmd) {
@@ -623,6 +690,7 @@ async function runSlash(
       const result = await runPipeline(
         client, args, workspaceRoot, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
+        dashboard,
       );
       emitPipelineSummary(stream, result);
       return;
@@ -635,12 +703,12 @@ async function runSlash(
       const result = await runStep(client, workspaceRoot, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
-      });
+      }, dashboard);
       emitStepMarker(stream, result);
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, stream, token, {});
+      const result = await runStep(client, workspaceRoot, stream, token, {}, dashboard);
       emitStepMarker(stream, result);
       return;
     }

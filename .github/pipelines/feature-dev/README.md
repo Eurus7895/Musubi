@@ -20,14 +20,22 @@ request, plan, or design. It judges the code artifact against the
 If reviewer returns `status: "fail"`, the coder retries with
 `fix_instructions`. Max 3 attempts, then the pipeline escalates.
 
-## Surface
+## Surfaces
 
-Everything renders inline in Copilot Chat. Each stage streams a markdown
-section with a status emoji (⏳ running, ✓ complete, ↻ retry), the injected
-skill / memory / firewall / schema / policy tags, elapsed seconds, and — on
-reviewer fail — a blockquote with the verdict and fix_instructions before
-the next coder attempt. On completion the chat emits a **View plan.md**
-anchor pointing at `.harness/sessions/<sid>/plan.md`.
+Each pipeline run renders in **two** surfaces concurrently (v0.3.2):
+
+1. **Copilot Chat** — per-stage markdown sections with status emoji
+   (⏳ running, ✓ complete, ↻ retry), governance tags (skill / memory /
+   firewall / schema / policy), elapsed seconds, reviewer-fail blockquote
+   with `fix_instructions`, and a **View plan.md** anchor at pipeline end.
+2. **CopilotHarness Dashboard** — a `WebviewView` docked in VS Code's
+   auxiliary sidebar. Users can drag it to sit beside CHAT / CLAUDE CODE.
+   Same events render as a live card with colored status dots, pulse
+   animation on the running stage, ticking elapsed timer, and
+   `/status` · Cancel · plan.md action buttons.
+
+The two surfaces are driven by the same events emitted from `pipeline.ts` —
+no duplicated LLM calls, no duplicated harness state.
 
 ## Level
 
