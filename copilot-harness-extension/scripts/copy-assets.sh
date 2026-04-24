@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Copy .github/skills/ and .github/agents/ from the repo root into the extension
-# so they ship inside the .vsix and are accessible via HARNESS_ROOT at runtime.
+# Copy .github/skills/, .github/agents/ and .github/commands/ from the repo
+# root into the extension so they ship inside the .vsix and are accessible
+# via HARNESS_ROOT (server) and context.extensionPath (extension) at runtime.
+#
+# .github/commands/ is the slash-command catalog (/help, /feature-dev, ...).
+# Without bundling it, the extension can only find slash commands when the
+# user happens to have the CopilotHarness repo open as their workspace.
 #
 # Run from repo root:  bash copilot-harness-extension/scripts/copy-assets.sh
 # Or via npm script:   npm run build:assets  (from copilot-harness-extension/)
@@ -13,9 +18,10 @@ EXT_DIR="$REPO_ROOT/copilot-harness-extension"
 echo "Copying .github assets into extension..."
 
 mkdir -p "$EXT_DIR/.github"
-rm -rf "$EXT_DIR/.github/skills" "$EXT_DIR/.github/agents"
-cp -r "$REPO_ROOT/.github/skills"  "$EXT_DIR/.github/skills"
-cp -r "$REPO_ROOT/.github/agents"  "$EXT_DIR/.github/agents"
+rm -rf "$EXT_DIR/.github/skills" "$EXT_DIR/.github/agents" "$EXT_DIR/.github/commands"
+cp -r "$REPO_ROOT/.github/skills"   "$EXT_DIR/.github/skills"
+cp -r "$REPO_ROOT/.github/agents"   "$EXT_DIR/.github/agents"
+cp -r "$REPO_ROOT/.github/commands" "$EXT_DIR/.github/commands"
 
 echo "Assets copied to: $EXT_DIR/.github/"
 

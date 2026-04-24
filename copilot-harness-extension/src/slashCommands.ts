@@ -12,6 +12,12 @@
  * A tiny hand-written parser keeps this dependency-free. The schema
  * is narrow and controlled in-repo, so a full YAML parser would be
  * overkill.
+ *
+ * Resolution order: each loader/lister accepts a list of roots and
+ * searches them in order — workspace first, extension bundle as the
+ * fallback — so the slash commands shipped with the .vsix work even
+ * when the open workspace has no `.github/commands/` of its own.
+ * A workspace command of the same name wins over the bundled one.
  */
 
 import * as fs from "fs";
@@ -28,6 +34,10 @@ export interface SlashCommand {
 }
 
 const VALID_ACTIONS: ReadonlySet<string> = new Set(["pipeline", "step", "continue", "status", "help"]);
+
+function asRootList(roots: string | string[]): string[] {
+  return Array.isArray(roots) ? roots.filter(r => r && r.length > 0) : [roots];
+}
 
 function parseFrontmatter(text: string): Record<string, string> | null {
   if (!text.startsWith("---")) { return null; }
@@ -51,14 +61,11 @@ function parseFrontmatter(text: string): Record<string, string> | null {
   return result;
 }
 
-function commandsDir(workspaceRoot: string): string {
-  return path.join(workspaceRoot, ".github", "commands");
+function commandsDir(root: string): string {
+  return path.join(root, ".github", "commands");
 }
 
-export function loadSlashCommand(workspaceRoot: string, name: string): SlashCommand | null {
-  const safeName = name.replace(/[^a-z0-9_-]/gi, "");
-  if (!safeName) { return null; }
-  const filePath = path.join(commandsDir(workspaceRoot), `${safeName}.md`);
+function parseCommandFile(filePath: string, fallbackName: string): SlashCommand | null {
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf-8");
@@ -70,7 +77,7 @@ export function loadSlashCommand(workspaceRoot: string, name: string): SlashComm
   const action = fm.action;
   if (!action || !VALID_ACTIONS.has(action)) { return null; }
   return {
-    name: fm.name || safeName,
+    name: fm.name || fallbackName,
     description: fm.description || "",
     action: action as SlashAction,
     pipeline: fm.pipeline,
@@ -78,18 +85,33 @@ export function loadSlashCommand(workspaceRoot: string, name: string): SlashComm
   };
 }
 
-export function listSlashCommands(workspaceRoot: string): SlashCommand[] {
-  const dir = commandsDir(workspaceRoot);
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter(f => f.endsWith(".md"));
-  } catch {
-    return [];
+export function loadSlashCommand(roots: string | string[], name: string): SlashCommand | null {
+  const safeName = name.replace(/[^a-z0-9_-]/gi, "");
+  if (!safeName) { return null; }
+  for (const root of asRootList(roots)) {
+    const filePath = path.join(commandsDir(root), `${safeName}.md`);
+    const cmd = parseCommandFile(filePath, safeName);
+    if (cmd) { return cmd; }
   }
-  const commands: SlashCommand[] = [];
-  for (const f of files) {
-    const cmd = loadSlashCommand(workspaceRoot, f.replace(/\.md$/, ""));
-    if (cmd) { commands.push(cmd); }
+  return null;
+}
+
+export function listSlashCommands(roots: string | string[]): SlashCommand[] {
+  const seen = new Map<string, SlashCommand>();
+  for (const root of asRootList(roots)) {
+    const dir = commandsDir(root);
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir).filter(f => f.endsWith(".md"));
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      const stem = f.replace(/\.md$/, "");
+      if (seen.has(stem)) { continue; }   // earlier root wins
+      const cmd = parseCommandFile(path.join(dir, f), stem);
+      if (cmd) { seen.set(stem, cmd); }
+    }
   }
-  return commands;
+  return Array.from(seen.values());
 }
