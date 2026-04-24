@@ -179,7 +179,7 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Week 4 complete + rich in-chat rendering, v0.3.1)
+## Current State (Week 4 complete + Tasks sidebar, v0.4.0)
 
 ```
 WHAT EXISTS NOW:
@@ -189,7 +189,7 @@ WHAT EXISTS NOW:
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
        + Tier 2 compaction + cross-session query (Week 4 Day 4)
   ✅ Pattern detector + proposed patch applier
-  ✅ VS Code extension v0.3.1 with McpClient + rich in-chat pipeline rendering
+  ✅ VS Code extension v0.4.0 with McpClient + rich in-chat rendering + sidebar Tasks view
   ✅ PyInstaller binary distribution
   ✅ Separate evaluator session (Week 3a)
   ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
@@ -203,6 +203,15 @@ WHAT EXISTS NOW:
        status emoji (⏳ ↻ ✓ ✗), governance tags (◆ memory / ◈ skill /
        { } schema / ⟡ firewall / ◇ policy), elapsed seconds, retry
        blockquote with reviewer verdict + fix_instructions, plan.md anchor.
+  ✅ Tasks sidebar TreeView (v0.4.0) — native vscode.TreeDataProvider under
+       a new activity-bar container. Two sections:
+         Active session — stages (pending / in_progress / complete / failed),
+                          codicon status markers, attempt counter,
+                          auto-refresh on pipeline stage transitions.
+         History        — past sessions from .harness/sessions/, outcome
+                          inferred from the latest review.md. Expand a row
+                          to see its stages; click a stage to open the
+                          materialised artifact in an editor tab.
 
 FEATURE-DEV PIPELINE TODAY:
   4 agents: planner → designer → coder → reviewer (evaluator firewall)
@@ -233,7 +242,7 @@ CHAT SURFACE:
 
 ---
 
-## File Structure (v0.3.1, post Week 4)
+## File Structure (v0.4.0, post Week 4)
 
 ```
 .github/
@@ -278,16 +287,25 @@ copilot-harness/                 ← Python MCP server
     correction_loop.py, skill_loader.py
     memory/, storage/, tests/    (379 tests)
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.1)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.4.0)
     src/
         extension.ts             ← direct-mode routing + slash dispatch
                                    + pipeline/step summary + plan.md anchor
+                                   + Tasks view provider registration
         mcpClient.ts             ← JSON-RPC stdio client
         pipeline.ts              ← agent driver + correction loop
                                    + rich in-chat stage rendering
                                    (STAGE_TAGS, emitStageStart/Complete,
                                    fmtSeconds, renderTags)
+                                   + onChange callback fired at stage
+                                   transitions to refresh the Tasks view
         slashCommands.ts         ← Week 3c: slash-command loader
+        tasksView.ts             ← v0.4.0: HarnessTasksProvider
+                                   (vscode.TreeDataProvider)
+                                   Active section via harness_get_active_session
+                                   + harness_get_status;
+                                   History section via filesystem scan of
+                                   .harness/sessions/<sid>/*.md
     bin/
         copilot-harness.exe      ← PyInstaller binary
 
@@ -388,6 +406,57 @@ reader sees what was pushed to each stage without leaving the chat.
 - `pipeline.yaml` is the source of truth for skills/tags; the STAGE_TAGS
   table is a render-time mirror and must stay in sync. (Candidate for
   harness-driven push later — out of scope for v0.3.1.)
+
+---
+
+## Tasks Sidebar TreeView (v0.4.0)
+
+Native `vscode.TreeDataProvider` contributed to a dedicated activity-bar
+container (`copilotHarness` → view `copilotHarness.tasks`). No webview,
+no HTML/CSS — TreeItems, codicons, VS Code's own theming.
+
+```
+CopilotHarness            ← activity-bar icon ($(checklist))
+└── Tasks
+    ├── Active session    ← only when harness_get_active_session returns a live session
+    │     ├── ✓ planner    complete
+    │     ├── ✓ designer   complete
+    │     ├── ↻ coder      in_progress · attempt 2
+    │     └── ○ reviewer   pending
+    └── History           ← always present
+          ├── ✓ s/9f3a2c     review: pass        (expand → stages)
+          ├── ⚠ s/8b21a4     review: escalate
+          └── ○ s/6a01ee     plan only
+```
+
+**Data sources (no new MCP tool needed):**
+- Active — `harness_get_active_session` + `harness_get_status` (existing).
+- History — filesystem scan of `.harness/sessions/<sid>/`; outcome
+  inferred from the latest `review.md`'s `**Status:**` header
+  (`pass` / `fail` / `escalate`).
+- Session stages (when expanded) — list `<stage>.md` + `<stage>.attemptN.md`
+  files; click opens the latest attempt.
+
+**Refresh contract:**
+- `HarnessTasksProvider.refresh()` fires `onDidChangeTreeData`.
+- extension.ts exposes a `refreshTasks()` callback to pipeline.ts via
+  optional `onChange` parameter on `runPipeline` / `runStep` /
+  `runCorrectionLoop`.
+- pipeline.ts calls `onChange?.()` at every stage-start, stage-complete,
+  and session-start — a 150 ms debounce in extension.ts collapses bursts.
+
+**Commands:**
+- `copilot-harness.refreshTasks` — manual refresh (view title bar).
+- `copilot-harness.openSessionArtifact(sessionId, stage)` — opens the
+  latest attempt of `<stage>.md` in an editor tab. Bound to each
+  TreeItem's `command`.
+
+**Invariants:**
+- TreeView never blocks on an MCP call — errors route to the output
+  channel; the view degrades to showing just History from disk.
+- No LLM calls. No modification of `.harness/` state. Read-only surface.
+- File-system heuristics for history must match exactly what
+  `materializeStageOutput` writes (`<stage>.md`, `<stage>.attemptN.md`).
 
 ---
 
@@ -590,6 +659,7 @@ Copilot Chat / vscode.lm  ✅   agent reasoning only
 | Extension (@harness) | ✅ Built + evaluator firewall (Week 3a) | — |
 | Direct Mode | ✅ Shipped (Week 3c) + skill catalog (Week 4 Day 3) | — |
 | In-chat rendering | ✅ Built (v0.3.1) — stage sections, governance tags, retry blockquote, plan.md anchor | — |
+| Tasks sidebar view | ✅ Built (v0.4.0) — TreeDataProvider, Active + History sections, click-to-open artifacts | — |
 | Level decision for feature-dev | ⚠️ Probe built, not run (Week 4 Day 5) | Run 5 representative requests through both pipelines |
 | Context Management | ⚠️ Missing | Week 5: sub agents (main-context preservation) |
 
@@ -1177,7 +1247,7 @@ DEFERRED (needs discussion first):
 *Updated: April 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: Extension mode (v0.3.1) — @harness in Copilot Chat, rich in-chat pipeline rendering*
-*Current: Week 4 complete + in-chat rendering — /help, plugin manifest, direct-mode skill pull, memory compaction + cross-session query, Level-1 probe infrastructure, per-stage markdown sections with governance tags and retry blockquote; 379 tests*
+*Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
+*Current: Week 4 complete + in-chat rendering + Tasks sidebar — rich stage markdown in chat, activity-bar Tasks view showing the live session and a filesystem-scanned history of past runs; click any stage to open its .md artifact. 379 tests.*
 *Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas*
-*Planned: Week 5 — sub agents for main-context preservation (render spawns inline as nested ### sections)*
+*Planned: Week 5 — sub agents for main-context preservation (render spawns inline as nested ### sections; sub-agent roles appear as child TreeItems under their parent stage)*

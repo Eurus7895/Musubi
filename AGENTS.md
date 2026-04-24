@@ -32,6 +32,8 @@ AGENTS.md / CLAUDE.md / README.md     ← session map / design doc / quickstart
 
 copilot-harness/                      ← Python MCP server (zero LLM)
 copilot-harness-extension/            ← VS Code extension (@harness chat participant)
+    src/tasksView.ts                  ← sidebar Tasks TreeView (v0.4.0)
+                                        — Active session + History
 
 hooks.json                            ← SessionStart / PreToolUse / PostToolUse wiring
 scripts/                              ← hook impls: policy_engine, pre/post_tool_use, session_start
@@ -56,9 +58,12 @@ Level 2  Multi-agent + evaluator. Promotion checklist required.
 DIRECT:   @harness <text> → vscode.lm → stream → done
 PIPELINE: orient (resume/new) → baseline → generator → evaluator (fresh session)
           → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
-          Each stage renders inline in Copilot Chat — status emoji, injected
-          skill/memory/firewall/schema/policy tags, elapsed time, reviewer
-          verdict + fix_instructions on retry.
+          Renders in two native VS Code surfaces:
+            - Copilot Chat (primary): per-stage markdown sections, tag lines,
+              retry blockquote, plan.md anchor at pipeline end.
+            - Tasks TreeView (activity bar, v0.4.0): Active-session stages
+              (pending → in_progress → complete → failed) and a History list
+              of past sessions with clickable artifact rows.
 ```
 
 ---
@@ -121,11 +126,11 @@ code change.
 
 ---
 
-*CopilotHarness | April 2026 | v0.3.1 | 379 tests (Python harness)*
-*Current: Week 4 complete + rich in-chat pipeline rendering — /help, plugin*
-*manifest, direct-mode pull-skills, Tier 2 compaction, cross-session memory,*
-*Level-1 probe infrastructure, stage-by-stage markdown in Copilot Chat with*
-*governance tags, retry blocks, and plan.md anchor.*
+*CopilotHarness | April 2026 | v0.4.0 | 379 tests (Python harness)*
+*Current: Week 4 complete + in-chat rendering + Tasks sidebar TreeView —*
+*rich stage-by-stage markdown in Copilot Chat plus an activity-bar Tasks view*
+*showing the live session and a history list of past runs (click a stage to*
+*open its .harness/sessions/<sid>/<stage>.md artifact).*
 *Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas.*
 *Planned (main feature): Week 5 (5-day plan) — Day 1–3 sub agent core primitives*
 *(MCP, firewall, role files, spawn-event surface) · Day 4 pipeline-main spawning*

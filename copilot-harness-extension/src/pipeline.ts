@@ -628,6 +628,7 @@ async function runCorrectionLoop(
   codeAttempt: number,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  onChange?: () => void,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
 
@@ -659,6 +660,7 @@ async function runCorrectionLoop(
     }
 
     emitStageStart(stream, "coder", codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
+    onChange?.();
     const coderT0 = Date.now();
     const fixedCode = await runAgentLM(
       model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
@@ -668,10 +670,12 @@ async function runCorrectionLoop(
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
     emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
+    onChange?.();
 
     // Evaluator firewall: reviewer sees only the (new) code artifact.
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"]);
     emitStageStart(stream, "reviewer", codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
+    onChange?.();
     const reviewerT0 = Date.now();
     const newReview = (await runAgentLM(
       model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
@@ -680,6 +684,7 @@ async function runCorrectionLoop(
     await writeStage(client, sessionId, "review", "reviewer", newReview);
     materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
     emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
+    onChange?.();
 
     currentReview = newReview;
     if (newReview.status === "pass" || newReview.status === "escalate") { break; }
@@ -726,6 +731,7 @@ export async function runPipeline(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   pipelineMeta?: { route: string; pipelineName: string; level: number },
+  onChange?: () => void,
 ): Promise<PipelineResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -756,6 +762,9 @@ export async function runPipeline(
   stream.markdown(
     `🎛 **${meta.route}** — ${meta.pipelineName} · level ${meta.level} · session \`${sessionId}\`\n`,
   );
+
+  // Notify the Tasks view so the new session appears under "Active session".
+  onChange?.();
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
 
@@ -788,6 +797,7 @@ export async function runPipeline(
 
     const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
     emitStageStart(stream, agent.name, attempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agent.writeStage] ?? {});
+    onChange?.();
     const stageT0 = Date.now();
     const agentOutput = await runAgentLM(
       model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
@@ -800,6 +810,7 @@ export async function runPipeline(
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
     emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
+    onChange?.();
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
     if (agent.name === "reviewer") {
@@ -816,7 +827,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -846,6 +857,7 @@ export async function runStep(
     request?: string;    // provided → create new session; omitted → resume active
     agentName?: string;  // run this specific agent instead of the next pending one
   },
+  onChange?: () => void,
 ): Promise<StepResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -918,6 +930,7 @@ export async function runStep(
 
   const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
   emitStageStart(stream, agentDef.name, stepAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agentDef.writeStage] ?? {});
+  onChange?.();
   const stepT0 = Date.now();
   const agentOutput = await runAgentLM(
     model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
@@ -930,6 +943,7 @@ export async function runStep(
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
   emitStageComplete(stream, agentDef.name, Date.now() - stepT0, summarizeStageOutput(agentDef.writeStage, agentOutput));
+  onChange?.();
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
 
@@ -945,7 +959,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {

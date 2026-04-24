@@ -20,14 +20,20 @@ request, plan, or design. It judges the code artifact against the
 If reviewer returns `status: "fail"`, the coder retries with
 `fix_instructions`. Max 3 attempts, then the pipeline escalates.
 
-## Surface
+## Surfaces
 
-Everything renders inline in Copilot Chat. Each stage streams a markdown
-section with a status emoji (⏳ running, ✓ complete, ↻ retry), the injected
-skill / memory / firewall / schema / policy tags, elapsed seconds, and — on
-reviewer fail — a blockquote with the verdict and fix_instructions before
-the next coder attempt. On completion the chat emits a **View plan.md**
-anchor pointing at `.harness/sessions/<sid>/plan.md`.
+Two native surfaces, both fed from the same pipeline events:
+
+1. **Copilot Chat** (v0.3.1 in-chat rendering) — each stage streams a
+   markdown section with status emoji (⏳ running, ✓ complete, ↻ retry),
+   skill / memory / firewall / schema / policy tag line, elapsed seconds,
+   and — on reviewer fail — a blockquote with the verdict and
+   `fix_instructions` before the next coder attempt. Pipeline end emits a
+   **View plan.md** anchor.
+2. **Tasks TreeView** (v0.4.0) — activity-bar sidebar view listing the
+   Active session's stages (pending / in_progress / complete / failed)
+   and a History of past runs. Click a stage to open
+   `.harness/sessions/<sid>/<stage>.md` in an editor tab.
 
 ## Level
 

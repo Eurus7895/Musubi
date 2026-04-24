@@ -18,6 +18,7 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runPipeline, runStep, StepResult } from "./pipeline";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
+import { HarnessTasksProvider } from "./tasksView";
 
 let out: vscode.OutputChannel;
 
@@ -59,12 +60,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
+  // ── Tasks sidebar view (v0.4.0) ───────────────────────────────────────────
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionPath;
+  const tasksProvider = new HarnessTasksProvider(client, workspaceRoot, (msg) => out.appendLine(msg));
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("copilotHarness.tasks", tasksProvider),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.refreshTasks", () => tasksProvider.refresh()),
+    vscode.commands.registerCommand(
+      "copilot-harness.openSessionArtifact",
+      async (sessionId: string, stage: string) => {
+        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!ws) return;
+        // Prefer latest attempt file; fall back to base.
+        const dir = path.join(ws, ".harness", "sessions", sessionId);
+        let candidate = path.join(dir, `${stage}.md`);
+        try {
+          const files = fs.readdirSync(dir)
+            .filter(f => new RegExp(`^${stage}(?:\\.attempt\\d+)?\\.md$`).test(f))
+            .sort();
+          if (files.length > 0) candidate = path.join(dir, files[files.length - 1]);
+        } catch { /* use base candidate */ }
+        try {
+          const doc = await vscode.workspace.openTextDocument(candidate);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch {
+          vscode.window.showWarningMessage(`CopilotHarness: cannot open ${candidate}`);
+        }
+      },
+    ),
+  );
+
+  // Refreshing the tree is the only signal pipeline.ts sends out. Debounced
+  // so rapid stage transitions don't thrash the TreeView.
+  let refreshTimer: NodeJS.Timeout | undefined;
+  const refreshTasks = (): void => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => tasksProvider.refresh(), 150);
+  };
+
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    (req, ctx, stream, token) => handler(req, ctx, stream, token, client),
+    (req, ctx, stream, token) => handler(req, ctx, stream, token, client, refreshTasks),
   );
   participant.iconPath = new vscode.ThemeIcon("robot");
   context.subscriptions.push(participant);
+
+  // Initial refresh — if a session was interrupted, it shows up immediately.
+  refreshTasks();
 
   out.appendLine("CopilotHarness ready. Use @harness in Copilot Chat.");
 }
@@ -485,6 +529,7 @@ async function handler(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   client: McpClient,
+  refreshTasks: () => void,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -510,13 +555,14 @@ async function handler(
         const result = await runPipeline(
           client, cmd.request, workspaceRoot, stream, token,
           { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
+          refreshTasks,
         );
         emitPipelineSummary(stream, result);
         break;
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, stream, token, {});
+        const result = await runStep(client, workspaceRoot, stream, token, {}, refreshTasks);
         emitStepMarker(stream, result);
         break;
       }
@@ -525,7 +571,7 @@ async function handler(
         const result = await runStep(client, workspaceRoot, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
-        });
+        }, refreshTasks);
         emitStepMarker(stream, result);
         break;
       }
@@ -535,13 +581,16 @@ async function handler(
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token);
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token, refreshTasks);
         break;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     out.appendLine(`Pipeline error: ${msg}`);
     stream.markdown(`\n**Error:** ${msg}`);
+  } finally {
+    // Always refresh so escalations and errors show up in the Tasks view.
+    refreshTasks();
   }
 
   return {};
@@ -602,6 +651,7 @@ async function runSlash(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  refreshTasks: () => void,
 ): Promise<void> {
   const cmd = loadSlashCommand(workspaceRoot, name);
   if (!cmd) {
@@ -623,6 +673,7 @@ async function runSlash(
       const result = await runPipeline(
         client, args, workspaceRoot, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
+        refreshTasks,
       );
       emitPipelineSummary(stream, result);
       return;
@@ -635,12 +686,12 @@ async function runSlash(
       const result = await runStep(client, workspaceRoot, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
-      });
+      }, refreshTasks);
       emitStepMarker(stream, result);
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, stream, token, {});
+      const result = await runStep(client, workspaceRoot, stream, token, {}, refreshTasks);
       emitStepMarker(stream, result);
       return;
     }

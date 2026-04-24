@@ -1,8 +1,8 @@
 {
   "name": "copilot-harness-extension",
   "displayName": "CopilotHarness",
-  "description": "Automated 4-agent pipeline for GitHub Copilot Chat via CopilotHarness — rendered inline in the chat.",
-  "version": "0.3.1",
+  "description": "Automated 4-agent pipeline for GitHub Copilot Chat via CopilotHarness — inline chat rendering + sidebar Tasks view.",
+  "version": "0.4.0",
   "publisher": "copilot-harness",
   "repository": {
     "type": "git",
@@ -25,7 +25,48 @@
         "description": "Runs the automated 4-agent pipeline. Usage: @harness <your request>",
         "isSticky": true
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "copilot-harness.refreshTasks",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.openSessionArtifact",
+        "title": "Open Session Artifact",
+        "category": "CopilotHarness"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilotHarness",
+          "title": "CopilotHarness",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
+    "views": {
+      "copilotHarness": [
+        {
+          "type": "tree",
+          "id": "copilotHarness.tasks",
+          "name": "Tasks",
+          "contextualTitle": "CopilotHarness Tasks"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilot-harness.refreshTasks",
+          "when": "view == copilotHarness.tasks",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "setup": "bash scripts/setup.sh",

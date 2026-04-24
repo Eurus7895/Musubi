@@ -29,10 +29,10 @@ cd copilot-harness-extension
 npm install
 npm install -g @vscode/vsce
 npm run package
-# → copilot-harness-extension-0.3.1.vsix
+# → copilot-harness-extension-0.4.0.vsix
 
 # 3. Install into VS Code
-code --install-extension copilot-harness-extension-0.3.1.vsix
+code --install-extension copilot-harness-extension-0.4.0.vsix
 ```
 
 Close and reopen VS Code. The **CopilotHarness** output channel appears automatically,
@@ -89,11 +89,39 @@ The routing is a pure string check — **zero LLM cost** to decide direct vs pip
 
 ---
 
+## Tasks Sidebar (v0.4.0)
+
+A native VS Code `TreeView` in the activity bar. Click the CopilotHarness
+icon; you get two sections:
+
+```
+▾ Active session              (only when a session is live)
+    ✓ planner    complete
+    ✓ designer   complete
+    ↻ coder      in progress · attempt 2
+    ○ reviewer   pending
+▾ History
+  ▸ s/9f3a2c     review: pass       ← click → opens plan.md
+  ▸ s/8b21a4     review: escalate
+  ▸ s/6a01ee     plan only
+```
+
+Each history row expands to show the stage artifacts (`plan.md`,
+`design.md`, `code.md`, `review.md`) — click any child to open it in
+an editor tab. The live section refreshes automatically as pipeline
+stages advance; history updates whenever a session completes.
+
+The view is contributed to the activity bar by default — if you want it
+beside CHAT / CLAUDE CODE in the auxiliary sidebar, right-click the
+CopilotHarness icon and pick **Move View**.
+
+---
+
 ## In-Chat Rendering (v0.3.1)
 
-The pipeline renders inline in Copilot Chat — the same surface as Copilot
-Chat or Claude Chat — so you don't switch panels to see what the harness
-is doing. Each agent stage streams a markdown section as it runs:
+The pipeline also renders inline in Copilot Chat — the same surface as
+Copilot Chat or Claude Chat — so you don't switch panels to watch a run.
+Each agent stage streams a markdown section as it runs:
 
 ```
 ### ⏳ planner
@@ -269,13 +297,15 @@ copilot-harness/                 ← Python MCP server (zero LLM)
     storage/db.py                ← SQLite CRUD; schema embedded
     tests/                       ← 379 tests covering all components
 
-copilot-harness-extension/       ← VS Code extension (TypeScript, v0.3.1)
+copilot-harness-extension/       ← VS Code extension (TypeScript, v0.4.0)
     src/
         mcpClient.ts             ← JSON-RPC stdio client
-        extension.ts             ← @harness + direct-mode routing
+        extension.ts             ← @harness + direct-mode routing + tasks view wiring
         pipeline.ts              ← 4-agent orchestration + correction loop
-                                   + rich in-chat stage rendering (v0.3.1)
+                                   + rich in-chat rendering + onChange callback
         slashCommands.ts         ← frontmatter-driven slash loader (Week 3c)
+        tasksView.ts             ← v0.4.0: TreeDataProvider for sidebar Tasks
+                                   (Active session + History from .harness/)
     bin/
         copilot-harness.exe      ← PyInstaller binary (Windows)
         copilot-harness          ← PyInstaller binary (Linux/Mac)
@@ -312,8 +342,8 @@ in Copilot Chat's tool picker. Agents call tools manually via Copilot Chat.
 
 **Output panel** (`Ctrl+Shift+U`) → **CopilotHarness**:
 ```
-CopilotHarness v0.3.1 activating...
-Extension path: C:\...\extensions\copilot-harness-0.3.1\
+CopilotHarness v0.4.0 activating...
+Extension path: C:\...\extensions\copilot-harness-0.4.0\
 Checking: ...\bin\copilot-harness.exe — found
 Starting MCP server...
 MCP server started. Listing tools...
@@ -343,6 +373,7 @@ CopilotHarness ready. Use @harness in Copilot Chat.
 | Week 4 Day 4 — Tier 2 compaction + `harness_query_sessions` | ✅ |
 | Week 4 Day 5 — feature-dev Level-1 probe infrastructure (run pending) | ✅ |
 | Extension v0.3.1 — rich in-chat pipeline rendering (status emoji, governance tags, retry blocks, plan.md anchor) | ✅ |
+| Extension v0.4.0 — Tasks sidebar TreeView (live active session + history of past runs) | ✅ |
 
 ---
 
