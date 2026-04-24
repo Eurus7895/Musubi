@@ -37,6 +37,12 @@
         "command": "copilot-harness.openSessionArtifact",
         "title": "Open Session Artifact",
         "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.showTasks",
+        "title": "Show Tasks",
+        "category": "CopilotHarness",
+        "icon": "$(checklist)"
       }
     ],
     "viewsContainers": {

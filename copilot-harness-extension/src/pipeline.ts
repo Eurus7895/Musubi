@@ -670,6 +670,7 @@ async function runCorrectionLoop(
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
     emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
+    emitStageOutputDetails(stream, "code", fixedCode);
     onChange?.();
 
     // Evaluator firewall: reviewer sees only the (new) code artifact.
@@ -684,6 +685,7 @@ async function runCorrectionLoop(
     await writeStage(client, sessionId, "review", "reviewer", newReview);
     materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
     emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
+    emitStageOutputDetails(stream, "review", newReview);
     onChange?.();
 
     currentReview = newReview;
@@ -720,6 +722,99 @@ function emitStageComplete(
   summary: string,
 ): void {
   stream.markdown(`\n✓ **${agentName}** — ${fmtSeconds(durationMs)} — ${summary}\n`);
+}
+
+/**
+ * Render the stage's structured output as a collapsible <details> block
+ * in the chat. GFM supports <details>/<summary> in CommonMark; chat
+ * renders it as an expandable section. We emit the whole block as ONE
+ * markdown call so partial streaming can't break the HTML.
+ */
+function emitStageOutputDetails(
+  stream: vscode.ChatResponseStream,
+  stage: string,
+  output: unknown,
+): void {
+  if (typeof output !== "object" || output === null) return;
+  const body = formatStageOutput(stage, output as Record<string, unknown>);
+  if (!body) return;
+  stream.markdown(`\n<details><summary>output</summary>\n\n${body}\n\n</details>\n`);
+}
+
+function formatStageOutput(stage: string, o: Record<string, unknown>): string {
+  const lines: string[] = [];
+  switch (stage) {
+    case "plan": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const tasks = Array.isArray(o.tasks) ? o.tasks : [];
+      if (tasks.length) {
+        lines.push("**Tasks:**");
+        for (const t of tasks) {
+          if (typeof t !== "object" || t === null) continue;
+          const task = t as Record<string, unknown>;
+          const id = task.id ?? "?";
+          const desc = task.description ?? "";
+          lines.push(`- \`${id}\` — ${desc}`);
+        }
+      }
+      const skills = Array.isArray(o.required_skills) ? o.required_skills : [];
+      if (skills.length) lines.push("", `**Required skills:** ${skills.map(s => `\`${s}\``).join(", ")}`);
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "design": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const modules = Array.isArray(o.modules) ? o.modules : [];
+      if (modules.length) {
+        lines.push("**Modules:**");
+        for (const m of modules) {
+          if (typeof m !== "object" || m === null) continue;
+          const mod = m as Record<string, unknown>;
+          lines.push(`- \`${mod.file ?? "?"}\` — ${mod.purpose ?? ""}`);
+        }
+      }
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "code": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const files = Array.isArray(o.files_modified) ? o.files_modified : [];
+      if (files.length) {
+        lines.push(`**Files modified:** ${files.map(f => `\`${f}\``).join(", ")}`);
+      }
+      const notes = typeof o.implementation_notes === "string" ? o.implementation_notes : "";
+      if (notes.trim()) lines.push("", `**Notes:** ${notes.trim()}`);
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "review": {
+      const status = typeof o.status === "string" ? o.status : "unknown";
+      const icon = status === "pass" ? "✅" : status === "escalate" ? "🚨" : "⚠️";
+      lines.push(`**Status:** ${icon} ${status}`);
+      const issues = Array.isArray(o.issues) ? o.issues : [];
+      if (issues.length) {
+        lines.push("", "**Issues:**");
+        for (const i of issues) {
+          if (typeof i !== "object" || i === null) continue;
+          const issue = i as Record<string, unknown>;
+          const sev = issue.severity ?? "?";
+          const desc = issue.description ?? "";
+          lines.push(`- [${sev}] ${desc}`);
+          if (typeof issue.fix_instruction === "string" && issue.fix_instruction) {
+            lines.push(`  - Fix: ${issue.fix_instruction}`);
+          }
+        }
+      }
+      const reason = typeof o.escalate_reason === "string" ? o.escalate_reason : "";
+      if (reason) lines.push("", `**Escalation reason:** ${reason}`);
+      return lines.join("\n");
+    }
+    default:
+      return "";
+  }
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -762,6 +857,8 @@ export async function runPipeline(
   stream.markdown(
     `🎛 **${meta.route}** — ${meta.pipelineName} · level ${meta.level} · session \`${sessionId}\`\n`,
   );
+  // Jump-to-sidebar button so users can watch the live run in the Tasks view.
+  stream.button({ command: "copilot-harness.showTasks", title: "$(checklist) Show Tasks" });
 
   // Notify the Tasks view so the new session appears under "Active session".
   onChange?.();
@@ -810,6 +907,7 @@ export async function runPipeline(
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
     emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
+    emitStageOutputDetails(stream, agent.writeStage, agentOutput);
     onChange?.();
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
@@ -885,6 +983,7 @@ export async function runStep(
   } else {
     throw new Error("No active session. Start a new task with `@harness <your task description>`");
   }
+  stream.button({ command: "copilot-harness.showTasks", title: "$(checklist) Show Tasks" });
 
   // ── Resolve which agent to run ────────────────────────────────────────────────
 
@@ -943,6 +1042,7 @@ export async function runStep(
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
   emitStageComplete(stream, agentDef.name, Date.now() - stepT0, summarizeStageOutput(agentDef.writeStage, agentOutput));
+  emitStageOutputDetails(stream, agentDef.writeStage, agentOutput);
   onChange?.();
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────

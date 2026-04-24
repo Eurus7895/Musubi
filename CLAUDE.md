@@ -375,15 +375,38 @@ same surface.
 > Fix: Reorder auth → ownership → fetch. Add test_cancel_403_when_not_owner.
 ```
 
-**Pipeline header + footer (extension.ts):**
+**Pipeline header + footer:**
 
 ```markdown
 🎛 **/feature-dev** — feature-dev · level 2 · session `s/9f3a2c`
+[ $(checklist) Show Tasks ]     ← stream.button → workbench.view.extension.copilotHarness
 ...
 *total: 18.4s*
 
 ✅ **Pipeline complete.** Session: `s/9f3a2c`
 [View plan.md →]
+```
+
+**Per-stage output (`emitStageOutputDetails`, v0.4.0):**
+
+Under each stage-complete line, a collapsible `<details>` block renders
+the agent's structured output as markdown — tasks for planner, modules
+for designer, files_modified + implementation_notes for coder, status +
+issues + fix_instructions for reviewer. Emitted as one markdown call so
+streaming can't break the HTML.
+
+```markdown
+✓ **planner** — 3.1s — 5-step plan, schema ✓
+
+<details><summary>output</summary>
+
+**Summary:** Add /jobs/:id/cancel with 401/403/404 guards
+
+**Tasks:**
+- `T1` — Add route handler with RBAC middleware
+- `T2` — Add test_cancel_403_when_not_owner
+- ...
+</details>
 ```
 
 **Governance tag map (`STAGE_TAGS` in pipeline.ts):**

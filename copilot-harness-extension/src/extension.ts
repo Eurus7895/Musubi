@@ -90,6 +90,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       },
     ),
+    vscode.commands.registerCommand("copilot-harness.showTasks", async () => {
+      // Focus our view container so the Tasks tree becomes visible.
+      // This is what the in-chat "Show Tasks" button routes to.
+      await vscode.commands.executeCommand("workbench.view.extension.copilotHarness");
+    }),
   );
 
   // Refreshing the tree is the only signal pipeline.ts sends out. Debounced

@@ -117,11 +117,50 @@ CopilotHarness icon and pick **Move View**.
 
 ---
 
-## In-Chat Rendering (v0.3.1)
+## In-Chat Rendering (v0.3.1, expanded in v0.4.0)
 
 The pipeline also renders inline in Copilot Chat — the same surface as
 Copilot Chat or Claude Chat — so you don't switch panels to watch a run.
 Each agent stage streams a markdown section as it runs:
+
+```
+🎛 /feature-dev — feature-dev · level 2 · session s/9f3a2c
+[ Show Tasks ]                      ← button jumps to the sidebar TreeView
+
+### ⏳ planner
+◆ memory: `MEMORY.md` · ◇ policy: `Read·Grep·Glob`
+
+✓ **planner** — 3.1s — 5-step plan, schema ✓
+▸ output                            ← <details> block with the plan JSON
+
+### ⏳ designer
+◈ skill: `api-design` · { } schema: `design.json`
+
+✓ **designer** — 4.8s — 3 modules, schema ✓
+▸ output                            ← modules list, file/purpose
+
+### ↻ coder  *(attempt 2/3)*
+◈ skill: `python` · ⟡ firewall: `fix_instructions only`
+
+> ⚠️ **reviewer → fail** · 2 issues
+>
+> Fix: Reorder auth → ownership → fetch. Add test_cancel_403_when_not_owner.
+
+✓ **coder** — 9.2s — 3 files, schema ✓
+▸ output                            ← files_modified, implementation notes
+✓ **reviewer** — 2.1s — review: pass
+▸ output                            ← status, issue list, fix instructions
+
+*total: 18.4s*
+
+✅ **Pipeline complete.** Session: `s/9f3a2c`
+[View plan.md →]
+```
+
+Under each stage line is a collapsible **output** block (`<details>`)
+with the agent's structured JSON rendered as markdown — tasks for planner,
+modules for designer, files modified for coder, issues + fix_instructions
+for reviewer. Clicking it expands inline; no tab switching.
 
 ```
 ### ⏳ planner
