@@ -12,6 +12,75 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 
+// ── Stage tag presets — mirrors the "push-not-pull" injection contract ────
+// The harness pushes these to each stage; we render them so the user can
+// see the governance at a glance.
+interface StageTags {
+  skill?: string;
+  memory?: string;
+  firewall?: string;
+  schema?: string;
+  policy?: string;
+}
+
+const STAGE_TAGS: Record<string, StageTags> = {
+  plan:   { memory: "MEMORY.md", policy: "Read·Grep·Glob" },
+  design: { skill: "api-design", schema: "design.json" },
+  code:   { skill: "python", policy: "Read·Write·Edit·Bash" },
+  review: { skill: "code-review", firewall: "code only" },
+};
+function tagsForRetry(): StageTags {
+  return { skill: "python", firewall: "fix_instructions only" };
+}
+
+function renderTags(tags: StageTags): string {
+  const parts: string[] = [];
+  if (tags.memory)   parts.push(`◆ memory: \`${tags.memory}\``);
+  if (tags.skill)    parts.push(`◈ skill: \`${tags.skill}\``);
+  if (tags.schema)   parts.push(`{ } schema: \`${tags.schema}\``);
+  if (tags.firewall) parts.push(`⟡ firewall: \`${tags.firewall}\``);
+  if (tags.policy)   parts.push(`◇ policy: \`${tags.policy}\``);
+  return parts.join(" · ");
+}
+
+function fmtSeconds(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const s = ms / 1000;
+  return s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s";
+}
+
+function summarizeStageOutput(stage: string, output: unknown): string {
+  if (typeof output !== "object" || output === null) return "schema ✓";
+  const o = output as Record<string, unknown>;
+  switch (stage) {
+    case "plan": {
+      const n = Array.isArray(o.tasks) ? o.tasks.length : 0;
+      return `${n}-step plan, schema ✓`;
+    }
+    case "design": {
+      const n = Array.isArray(o.modules) ? o.modules.length : 0;
+      return `${n} module${n === 1 ? "" : "s"}, schema ✓`;
+    }
+    case "code": {
+      const n = Array.isArray(o.files_modified) ? o.files_modified.length : 0;
+      return `${n} file${n === 1 ? "" : "s"}, schema ✓`;
+    }
+    case "review": {
+      const status = typeof o.status === "string" ? o.status : "unknown";
+      return `review: ${status}`;
+    }
+    default: return "schema ✓";
+  }
+}
+
+function firstFixInstruction(review: { issues?: Array<{ fix_instruction?: string }> }): string {
+  if (!review.issues || !review.issues.length) return "";
+  for (const i of review.issues) {
+    if (i && typeof i.fix_instruction === "string" && i.fix_instruction) return i.fix_instruction;
+  }
+  return "";
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface HarnessReadResult {
@@ -559,6 +628,7 @@ async function runCorrectionLoop(
   codeAttempt: number,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  onChange?: () => void,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
 
@@ -566,7 +636,16 @@ async function runCorrectionLoop(
     if (token.isCancellationRequested) { break; }
 
     codeAttempt++;
-    stream.progress(`Review failed — retrying coder (attempt ${codeAttempt} of ${MAX_CODE_ATTEMPTS})`);
+
+    // Reviewer verdict + fix_instructions block — rendered as a blockquote
+    // in the chat so the user sees what went wrong before the retry starts.
+    const fix = firstFixInstruction(currentReview);
+    const issuesCount = currentReview.issues?.length ?? 0;
+    stream.markdown(
+      `\n> ⚠️ **reviewer → ${currentReview.status}** · ${issuesCount} issue${issuesCount === 1 ? "" : "s"}` +
+      (fix ? `\n>\n> Fix: ${fix}` : "") +
+      `\n\n`,
+    );
 
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "code" });
     await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
@@ -580,6 +659,9 @@ async function runCorrectionLoop(
       coderCtx["existing_file_contents"] = existingFiles;
     }
 
+    emitStageStart(stream, "coder", codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
+    onChange?.();
+    const coderT0 = Date.now();
     const fixedCode = await runAgentLM(
       model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
       { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
@@ -587,22 +669,152 @@ async function runCorrectionLoop(
     await writeStage(client, sessionId, "code", "coder", fixedCode);
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
+    emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
+    emitStageOutputDetails(stream, "code", fixedCode);
+    onChange?.();
 
-    stream.progress(`Re-running reviewer (attempt ${codeAttempt})`);
     // Evaluator firewall: reviewer sees only the (new) code artifact.
     const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"]);
+    emitStageStart(stream, "reviewer", codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
+    onChange?.();
+    const reviewerT0 = Date.now();
     const newReview = (await runAgentLM(
       model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
       { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
     materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
+    emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
+    emitStageOutputDetails(stream, "review", newReview);
+    onChange?.();
 
     currentReview = newReview;
     if (newReview.status === "pass" || newReview.status === "escalate") { break; }
   }
 
   return currentReview;
+}
+
+// ── Chat rendering helpers ──────────────────────────────────────────────────
+// Each agent stage renders as:
+//   ### ⏳ planner  (attempt 2/3 when retrying)
+//   ◆ memory: `MEMORY.md` · ◇ policy: `Read·Grep·Glob`
+//   ✓ **planner** — 3.1s — 5-step plan, schema ✓
+
+function emitStageStart(
+  stream: vscode.ChatResponseStream,
+  agentName: string,
+  attempt: number,
+  maxAttempts: number,
+  tags: StageTags,
+): void {
+  const emoji = attempt > 1 ? "↻" : "⏳";
+  const attemptStr = attempt > 1 ? `  *(attempt ${attempt}/${maxAttempts})*` : "";
+  stream.markdown(`\n### ${emoji} ${agentName}${attemptStr}\n`);
+  const tagLine = renderTags(tags);
+  if (tagLine) stream.markdown(tagLine + "\n\n");
+}
+
+function emitStageComplete(
+  stream: vscode.ChatResponseStream,
+  agentName: string,
+  durationMs: number,
+  summary: string,
+): void {
+  stream.markdown(`\n✓ **${agentName}** — ${fmtSeconds(durationMs)} — ${summary}\n`);
+}
+
+/**
+ * Render the stage's structured output as a collapsible <details> block
+ * in the chat. GFM supports <details>/<summary> in CommonMark; chat
+ * renders it as an expandable section. We emit the whole block as ONE
+ * markdown call so partial streaming can't break the HTML.
+ */
+function emitStageOutputDetails(
+  stream: vscode.ChatResponseStream,
+  stage: string,
+  output: unknown,
+): void {
+  if (typeof output !== "object" || output === null) return;
+  const body = formatStageOutput(stage, output as Record<string, unknown>);
+  if (!body) return;
+  stream.markdown(`\n<details><summary>output</summary>\n\n${body}\n\n</details>\n`);
+}
+
+function formatStageOutput(stage: string, o: Record<string, unknown>): string {
+  const lines: string[] = [];
+  switch (stage) {
+    case "plan": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const tasks = Array.isArray(o.tasks) ? o.tasks : [];
+      if (tasks.length) {
+        lines.push("**Tasks:**");
+        for (const t of tasks) {
+          if (typeof t !== "object" || t === null) continue;
+          const task = t as Record<string, unknown>;
+          const id = task.id ?? "?";
+          const desc = task.description ?? "";
+          lines.push(`- \`${id}\` — ${desc}`);
+        }
+      }
+      const skills = Array.isArray(o.required_skills) ? o.required_skills : [];
+      if (skills.length) lines.push("", `**Required skills:** ${skills.map(s => `\`${s}\``).join(", ")}`);
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "design": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const modules = Array.isArray(o.modules) ? o.modules : [];
+      if (modules.length) {
+        lines.push("**Modules:**");
+        for (const m of modules) {
+          if (typeof m !== "object" || m === null) continue;
+          const mod = m as Record<string, unknown>;
+          lines.push(`- \`${mod.file ?? "?"}\` — ${mod.purpose ?? ""}`);
+        }
+      }
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "code": {
+      if (typeof o.summary === "string") lines.push(`**Summary:** ${o.summary}`, "");
+      const files = Array.isArray(o.files_modified) ? o.files_modified : [];
+      if (files.length) {
+        lines.push(`**Files modified:** ${files.map(f => `\`${f}\``).join(", ")}`);
+      }
+      const notes = typeof o.implementation_notes === "string" ? o.implementation_notes : "";
+      if (notes.trim()) lines.push("", `**Notes:** ${notes.trim()}`);
+      const confidence = typeof o.confidence === "string" ? o.confidence : "";
+      if (confidence) lines.push("", `**Confidence:** ${confidence}`);
+      return lines.join("\n");
+    }
+    case "review": {
+      const status = typeof o.status === "string" ? o.status : "unknown";
+      const icon = status === "pass" ? "✅" : status === "escalate" ? "🚨" : "⚠️";
+      lines.push(`**Status:** ${icon} ${status}`);
+      const issues = Array.isArray(o.issues) ? o.issues : [];
+      if (issues.length) {
+        lines.push("", "**Issues:**");
+        for (const i of issues) {
+          if (typeof i !== "object" || i === null) continue;
+          const issue = i as Record<string, unknown>;
+          const sev = issue.severity ?? "?";
+          const desc = issue.description ?? "";
+          lines.push(`- [${sev}] ${desc}`);
+          if (typeof issue.fix_instruction === "string" && issue.fix_instruction) {
+            lines.push(`  - Fix: ${issue.fix_instruction}`);
+          }
+        }
+      }
+      const reason = typeof o.escalate_reason === "string" ? o.escalate_reason : "";
+      if (reason) lines.push("", `**Escalation reason:** ${reason}`);
+      return lines.join("\n");
+    }
+    default:
+      return "";
+  }
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -613,6 +825,8 @@ export async function runPipeline(
   workspaceRoot: string,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  pipelineMeta?: { route: string; pipelineName: string; level: number },
+  onChange?: () => void,
 ): Promise<PipelineResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -633,10 +847,21 @@ export async function runPipeline(
   } else {
     const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
     sessionId = session.session_id;
-    stream.progress(`Session ${sessionId} created`);
   }
 
   const stageOutputs: Record<string, unknown> = {};
+  const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
+  const pipelineT0 = Date.now();
+
+  // Pipeline header — one line so the user knows what's running.
+  stream.markdown(
+    `🎛 **${meta.route}** — ${meta.pipelineName} · level ${meta.level} · session \`${sessionId}\`\n`,
+  );
+  // Jump-to-sidebar button so users can watch the live run in the Tasks view.
+  stream.button({ command: "copilot-harness.showTasks", title: "$(checklist) Show Tasks" });
+
+  // Notify the Tasks view so the new session appears under "Active session".
+  onChange?.();
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
 
@@ -648,11 +873,9 @@ export async function runPipeline(
     )) as SessionStatus;
 
     if (statusData.stages[agent.writeStage]?.status === "complete") {
-      stream.progress(`Stage '${agent.writeStage}' already complete — skipping`);
+      stream.markdown(`\n✓ **${agent.name}** — already complete (skipped)\n`);
       continue;
     }
-
-    stream.progress(`Running ${agent.name}...`);
 
     const context = await readAgentContext(client, sessionId, agent.name, agent.readStages);
     if (agent.name === "planner") {
@@ -670,6 +893,9 @@ export async function runPipeline(
     }
 
     const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
+    emitStageStart(stream, agent.name, attempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agent.writeStage] ?? {});
+    onChange?.();
+    const stageT0 = Date.now();
     const agentOutput = await runAgentLM(
       model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
       { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
@@ -680,8 +906,9 @@ export async function runPipeline(
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
-
-    stream.markdown(`✓ **${agent.name}** complete`);
+    emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
+    emitStageOutputDetails(stream, agent.writeStage, agentOutput);
+    onChange?.();
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
     if (agent.name === "reviewer") {
@@ -698,7 +925,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -711,6 +938,9 @@ export async function runPipeline(
     }
   }
 
+  // Pipeline footer — total elapsed. Caller (extension.ts) emits the
+  // pass/fail summary line + action buttons.
+  stream.markdown(`\n*total: ${fmtSeconds(Date.now() - pipelineT0)}*\n`);
   return { success: true, sessionId, stages: stageOutputs, escalated: false };
 }
 
@@ -725,6 +955,7 @@ export async function runStep(
     request?: string;    // provided → create new session; omitted → resume active
     agentName?: string;  // run this specific agent instead of the next pending one
   },
+  onChange?: () => void,
 ): Promise<StepResult> {
   const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
   if (!models.length) {
@@ -744,14 +975,15 @@ export async function runStep(
     const session = (await callHarness(client, "harness_new_session", { request: options.request })) as { session_id: string };
     sessionId = session.session_id;
     sessionRequest = options.request;
-    stream.progress(`Session ${sessionId} created`);
+    stream.markdown(`🎛 **step** — session \`${sessionId}\`\n`);
   } else if (active.session_id) {
     sessionId = active.session_id;
     sessionRequest = active.request ?? "";
-    stream.progress(`Resuming session ${sessionId}`);
+    stream.markdown(`↻ **resuming** — session \`${sessionId}\`\n`);
   } else {
     throw new Error("No active session. Start a new task with `@harness <your task description>`");
   }
+  stream.button({ command: "copilot-harness.showTasks", title: "$(checklist) Show Tasks" });
 
   // ── Resolve which agent to run ────────────────────────────────────────────────
 
@@ -790,13 +1022,15 @@ export async function runStep(
 
   // ── Run the agent ─────────────────────────────────────────────────────────────
 
-  stream.progress(`Running ${agentDef.name}...`);
   const context = await readAgentContext(client, sessionId, agentDef.name, agentDef.readStages);
   if (agentDef.name === "planner") {
     context["request"] = sessionRequest;
   }
 
   const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
+  emitStageStart(stream, agentDef.name, stepAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agentDef.writeStage] ?? {});
+  onChange?.();
+  const stepT0 = Date.now();
   const agentOutput = await runAgentLM(
     model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
     { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
@@ -807,6 +1041,9 @@ export async function runStep(
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
+  emitStageComplete(stream, agentDef.name, Date.now() - stepT0, summarizeStageOutput(agentDef.writeStage, agentOutput));
+  emitStageOutputDetails(stream, agentDef.writeStage, agentOutput);
+  onChange?.();
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
 
@@ -822,7 +1059,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token,
+        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {

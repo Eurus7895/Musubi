@@ -41,7 +41,11 @@ run_step() {
 pids=()
 run_step "build:server" bash "$EXT_DIR/scripts/build-server.sh" & pids+=($!)
 run_step "build:assets" bash "$EXT_DIR/scripts/copy-assets.sh" & pids+=($!)
-run_step "compile"      npx tsc -p "$EXT_DIR"                  & pids+=($!)
+# Use cd + "-p ." rather than passing $EXT_DIR explicitly: when WSL bash
+# invokes Windows tsc.exe, CWD is auto-translated to a Windows path but
+# explicit /mnt/c/... arguments are not — Windows tsc would then fail
+# TS5058. cd-then-relative dodges this on every host.
+run_step "compile"      bash -c "cd '$EXT_DIR' && exec npx tsc -p ." & pids+=($!)
 
 # wait -n would let us fail fast on the first failure, but masks slower
 # steps' logs. Waiting on each PID explicitly captures every exit code.
