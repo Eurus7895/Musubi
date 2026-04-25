@@ -16,20 +16,27 @@ Highest ROI: these fix bugs we have actually seen in production runs.
   quality chasing nits. Pairs with the reviewer-side rubric change.
 
 - **T1.2 — Surface rubric coercions to the user.**
-  `pipeline.ts` / `extension.ts` should render a visible marker when the
-  server returns `status_coerced: true` on a review write, so the user
-  understands why a "fail" review did not cause a retry.
+  Server already sets `status_coerced: true` on the review write
+  (`server.py:261`); the chat surface ignores it. Render it as a
+  governance tag on the review stage line — concretely, append
+  `◇ policy: status coerced` to the existing tag row in
+  `STAGE_TAGS["review"]` when the write response carries the flag, so
+  the user understands why a "fail" review did not cause a retry.
 
-- **T1.3 — Teach the reviewer which strings the harness will reject.**
-  Add a short "known harness constraints" block to `reviewer.agent.md`
-  listing the secrets-scanner regex prefixes (`AKIA…`, `ghp_…`,
-  `-----BEGIN PRIVATE KEY-----`, `api_key=…`). Prevents reviewer asks
-  like "use a realistic secret" that the coder literally cannot satisfy.
+- **T1.3 — Single source of truth for harness-rejected strings.**
+  Do NOT duplicate the secrets-scanner regex prefixes into
+  `reviewer.agent.md` — they will rot the moment the scanner changes.
+  Instead expose them once via a new `harness_get_constraints` MCP tool
+  (or inject them into the reviewer skill at `harness_read_stage` time).
+  Reviewer reads the live list; coder gets the same list pushed by the
+  harness. Prevents reviewer asks like "use a realistic secret" that the
+  coder literally cannot satisfy.
 
-- **T1.4 — Seed failure-patterns.md with today's run.**
-  Append the severity-rubric failure pattern so the Week 4 Day 4 compactor
-  has real entries to compact; also primes Tier 2 memory for future
-  coders/reviewers.
+- **T1.4 — Distill today's run into failure-patterns.md.**
+  Call `harness_distill_session` on the offending session rather than
+  hand-editing `.github/memory/failure-patterns.md`. The Week 4 Day 4
+  compactor's heuristics only understand the distiller's output format;
+  hand-edits risk format drift. Same outcome, no risk.
 
 ---
 
@@ -38,10 +45,12 @@ Highest ROI: these fix bugs we have actually seen in production runs.
 Prevents the whole class of "forgot half the plan" failures.
 
 - **T2.1 — Plan → Code acceptance-criterion trace.**
-  Coder emits an optional map
+  Coder schema requires (not optional — Tier 2's whole point is
+  schema-level guarantees) a map
   `criteria_covered: { "T1.a": ["tests/test_x.py::test_y"] }`.
   `verifier.py` checks every `plan.tasks[*].acceptance_criteria` string
-  is mentioned. Schema-level failure instead of judgement.
+  is mentioned; missing entries are a hard write-stage rejection routed
+  back as a coder retry with `fix_instructions`.
 
 - **T2.2 — Promote `_check_code_only_modifies_declared_files` to a hard reject.**
   Currently it lists undeclared files; make it reject the write. Give the
@@ -72,10 +81,16 @@ change to the pipeline.
 
 ## Tier 4 — Observability / UX
 
-- **T4.1 — Per-stage progress events.**
-  `mcpClient.ts` emits `stage_started` / `stage_complete` /
-  `coercion_applied`; extension renders them as inline chat markers.
-  Currently only one `✓ coder complete` appears per stage.
+- **T4.1 — Move stage events from extension to harness.**
+  Per-stage `### ⏳ / ✓` rendering already ships (v0.3.1 — see
+  `emitStageStart` / `emitStageComplete` in `pipeline.ts`), but the
+  events are *synthesized by the extension* around each `harness_*`
+  call. Push them from the harness instead: `mcpClient.ts` surfaces
+  `stage_started` / `stage_complete` / `coercion_applied` notifications
+  emitted by `server.py`, extension just forwards them. Removes the
+  silent-divergence risk where a server-side state change (e.g. a
+  coercion) exists but the extension never learns about it. Pairs with
+  T1.2 — `coercion_applied` is the event T1.2 needs.
 
 - **T4.2 — Friendlier escalation output.**
   When max retries hit, print the reviewer's first-attempt issues next
@@ -103,7 +118,7 @@ change to the pipeline.
 
 ```
 T1.1 ── independent
-T1.2 ── independent (surface fix only)
+T1.2 ── depends on T4.1 (consumes the coercion_applied event)
 T1.3 ── independent
 T1.4 ── independent
 
@@ -113,14 +128,19 @@ T2.3 ── independent
 
 T3 ──── blocks structural changes; standalone otherwise
 
-T4.* ── all independent
+T4.1 ── enables T1.2 (event source for the coercion marker)
+T4.2 ── independent
+T4.3 ── independent
 
 T5.1 ── blocks Week 5 Phase B (pipeline-main spawning)
 ```
 
 ## Recommended first slice
 
-Tier 1 + Tier 2 together. Tier 1 fixes observed bugs; Tier 2 prevents a
+Tier 1 + Tier 2 together, with **T4.1 pulled forward** so T1.2 has an
+event source to render. Tier 1 fixes observed bugs; Tier 2 prevents a
 related class of bugs and is cheap to add while the severity-rubric work
-is fresh. Defer Tier 3 until a day where 5 representative requests can
-actually be run end-to-end.
+is fresh; T4.1 is the cheapest plumbing change that unblocks T1.2 and
+removes a class of silent extension/server divergence at the same time.
+Defer Tier 3 until a day where 5 representative requests can actually be
+run end-to-end.
