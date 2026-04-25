@@ -1,0 +1,31 @@
+{
+  "name": "pipeline-builder",
+  "version": "1.0.0",
+  "description": "CopilotHarness pipeline-builder pipeline: scaffolds NEW pipelines from a brief. plan → design → code → review with evaluator firewall and 3-attempt correction loop.",
+  "commands": [
+    ".github/commands/pipeline-builder.md"
+  ],
+  "agents": [
+    ".github/pipelines/pipeline-builder/agents/planner.agent.md",
+    ".github/pipelines/pipeline-builder/agents/designer.agent.md",
+    ".github/pipelines/pipeline-builder/agents/coder.agent.md",
+    ".github/pipelines/pipeline-builder/agents/reviewer.agent.md"
+  ],
+  "skills": [],
+  "hooks": "hooks.json",
+  "mcpServers": {
+    "copilot-harness": {
+      "command": "${HARNESS_ROOT}/bin/copilot-harness",
+      "args": ["serve"]
+    }
+  },
+  "pipeline": {
+    "definition": ".github/pipelines/pipeline-builder/pipeline.yaml",
+    "level": 2,
+    "readme": ".github/pipelines/pipeline-builder/README.md"
+  },
+  "skillLocality": {
+    "mode": "embedded",
+    "rationale": "Pipeline-authoring knowledge is embedded in each agent's .md file. The harness's _STAGE_SKILL_MAP auto-injects feature-dev's defaults (api-design / python / code-review) keyed by (stage, agent_name) and is not pipeline-aware; retargeting it would also retarget feature-dev. Promote to a global skill at .github/skills/pipeline-authoring/ when (a) a second pipeline-authoring use-case appears, or (b) the auto-injection map gains pipeline_name support."
+  }
+}

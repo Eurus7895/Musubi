@@ -255,12 +255,24 @@ async function callHarness(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function loadAgentPrompt(workspaceRoot: string, agentName: string): string {
-  // Week 3b: try pipeline-local agents first, fall back to legacy .github/agents/.
-  const candidates = [
+function loadAgentPrompt(workspaceRoot: string, pipelineName: string, agentName: string): string {
+  // Resolution order:
+  //   1. The named pipeline's own agents/   (so /pipeline-builder loads its agents,
+  //      not feature-dev's)
+  //   2. feature-dev/agents/                 (default fallback — pipelines that
+  //      don't override an agent inherit feature-dev's)
+  //   3. legacy .github/agents/              (cross-pipeline meta-agents like
+  //      skill-builder)
+  // The first hit wins. Calls without a pipelineName (or with "feature-dev")
+  // collapse to the original two-candidate path.
+  const candidates: string[] = [];
+  if (pipelineName && pipelineName !== "feature-dev") {
+    candidates.push(path.join(workspaceRoot, ".github", "pipelines", pipelineName, "agents", `${agentName}.agent.md`));
+  }
+  candidates.push(
     path.join(workspaceRoot, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
     path.join(workspaceRoot, ".github", "agents", `${agentName}.agent.md`),
-  ];
+  );
   for (const filePath of candidates) {
     try {
       return fs.readFileSync(filePath, "utf-8");
@@ -624,6 +636,7 @@ async function runCorrectionLoop(
   model: vscode.LanguageModelChat,
   sessionId: string,
   workspaceRoot: string,
+  pipelineName: string,
   initialReview: ReviewOutput,
   codeAttempt: number,
   stream: vscode.ChatResponseStream,
@@ -663,7 +676,7 @@ async function runCorrectionLoop(
     onChange?.();
     const coderT0 = Date.now();
     const fixedCode = await runAgentLM(
-      model, "coder", loadAgentPrompt(workspaceRoot, "coder"), coderCtx, token,
+      model, "coder", loadAgentPrompt(workspaceRoot, pipelineName, "coder"), coderCtx, token,
       { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
     );
     await writeStage(client, sessionId, "code", "coder", fixedCode);
@@ -679,7 +692,7 @@ async function runCorrectionLoop(
     onChange?.();
     const reviewerT0 = Date.now();
     const newReview = (await runAgentLM(
-      model, "reviewer", loadAgentPrompt(workspaceRoot, "reviewer"), reviewerCtx, token,
+      model, "reviewer", loadAgentPrompt(workspaceRoot, pipelineName, "reviewer"), reviewerCtx, token,
       { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
     )) as ReviewOutput;
     await writeStage(client, sessionId, "review", "reviewer", newReview);
@@ -897,7 +910,7 @@ export async function runPipeline(
     onChange?.();
     const stageT0 = Date.now();
     const agentOutput = await runAgentLM(
-      model, agent.name, loadAgentPrompt(workspaceRoot, agent.name), context, token,
+      model, agent.name, loadAgentPrompt(workspaceRoot, meta.pipelineName, agent.name), context, token,
       { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
     );
     await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
@@ -925,7 +938,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, meta.pipelineName, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -1031,8 +1044,12 @@ export async function runStep(
   emitStageStart(stream, agentDef.name, stepAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agentDef.writeStage] ?? {});
   onChange?.();
   const stepT0 = Date.now();
+  // runStep has no pipeline context — legacy bare keywords (planner/designer/...)
+  // and `continue` always operate on feature-dev. The slash command path uses
+  // runPipeline, which threads pipelineName explicitly.
+  const stepPipeline = "feature-dev";
   const agentOutput = await runAgentLM(
-    model, agentDef.name, loadAgentPrompt(workspaceRoot, agentDef.name), context, token,
+    model, agentDef.name, loadAgentPrompt(workspaceRoot, stepPipeline, agentDef.name), context, token,
     { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
   );
   await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
@@ -1059,7 +1076,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, stepPipeline, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {

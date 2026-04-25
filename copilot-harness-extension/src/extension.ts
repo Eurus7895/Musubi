@@ -107,7 +107,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    (req, ctx, stream, token) => handler(req, ctx, stream, token, client, refreshTasks),
+    (req, ctx, stream, token) => handler(req, ctx, stream, token, client, refreshTasks, context.extensionPath),
   );
   // Use our own harness mark for the chat avatar rather than the generic
   // robot codicon. iconPath accepts a Uri; VS Code theming the SVG works
@@ -275,8 +275,8 @@ const USAGE_FOOTER = [
 ].join("\n");
 
 /** Build the /help body by listing every on-disk slash command. */
-function buildHelpMarkdown(workspaceRoot: string): string {
-  const commands = listSlashCommands(workspaceRoot).sort((a, b) => a.name.localeCompare(b.name));
+function buildHelpMarkdown(roots: string[]): string {
+  const commands = listSlashCommands(roots).sort((a, b) => a.name.localeCompare(b.name));
   const rows: string[] = [
     USAGE_HEADER,
     "",
@@ -540,6 +540,7 @@ async function handler(
   token: vscode.CancellationToken,
   client: McpClient,
   refreshTasks: () => void,
+  extensionPath: string,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -547,13 +548,18 @@ async function handler(
     return {};
   }
 
+  // Workspace first, extension bundle as fallback. The bundle ships the
+  // canonical /help, /feature-dev, /planner... set; a workspace can shadow
+  // any of them by dropping a same-named file into its own .github/commands/.
+  const slashRoots = [workspaceRoot, extensionPath];
+
   const cmd = parseCommand(request.prompt);
 
   try {
     switch (cmd.type) {
 
       case "help":
-        stream.markdown(buildHelpMarkdown(workspaceRoot));
+        stream.markdown(buildHelpMarkdown(slashRoots));
         break;
 
       case "status":
@@ -591,7 +597,7 @@ async function handler(
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, stream, token, refreshTasks);
+        await runSlash(cmd.name, cmd.args, client, workspaceRoot, slashRoots, stream, token, refreshTasks);
         break;
     }
   } catch (err) {
@@ -659,13 +665,14 @@ async function runSlash(
   args: string,
   client: McpClient,
   workspaceRoot: string,
+  slashRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   refreshTasks: () => void,
 ): Promise<void> {
-  const cmd = loadSlashCommand(workspaceRoot, name);
+  const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
-    const available = listSlashCommands(workspaceRoot).map(c => `/${c.name}`).join(", ");
+    const available = listSlashCommands(slashRoots).map(c => `/${c.name}`).join(", ");
     stream.markdown(
       `**Unknown command:** \`/${name}\`` +
       (available ? `\n\nAvailable: ${available}` : ""),
@@ -709,7 +716,7 @@ async function runSlash(
       await showStatus(client, stream);
       return;
     case "help":
-      stream.markdown(buildHelpMarkdown(workspaceRoot));
+      stream.markdown(buildHelpMarkdown(slashRoots));
       return;
   }
 }
