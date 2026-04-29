@@ -27,7 +27,7 @@ would violate one, stop and ask.
 3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `validation/context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
 4. **Zero-cost routing.** Slash command → pipeline. `--pipeline` flag → pipeline. Everything else → direct. No LLM call to decide.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
-6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); pipeline-specific variants are prefixed (`pipeline-builder-planner.agent.md`). The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
+6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); a pipeline-specific variant of a role would be filename-prefixed (`<pipeline>-<role>.agent.md`) — but only when 3+ specific failures of the canonical agent justify it. The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
 7. **Append-only stage store.** Stage outputs are written once; retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
 8. **No silent sub agents.** Every spawn (when shipped in Week 5) emits a chat marker and an audit-log row.
 
@@ -100,7 +100,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 # Python harness
 cd copilot-harness
 pip install -e .
-pytest tests/ -v                 # 390 tests
+pytest tests/ -v                 # 370 tests
 
 # Per-component checks
 ruff check copilot-harness/

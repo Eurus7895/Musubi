@@ -14,8 +14,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _COMMANDS_DIR = _REPO_ROOT / ".github" / "commands"
 
-VALID_ACTIONS = {"pipeline", "step", "continue", "status", "help"}
-VALID_AGENTS = {"planner", "designer", "coder", "reviewer"}
+VALID_ACTIONS = {"pipeline", "step", "continue", "status", "help", "agent"}
+# Step actions must use a canonical pipeline role. `action: agent` (one-shot)
+# accepts any agent file in `.github/agents/`.
+VALID_STEP_AGENTS = {"planner", "designer", "coder", "reviewer"}
+VALID_AGENTS = VALID_STEP_AGENTS
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:

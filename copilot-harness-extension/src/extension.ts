@@ -16,7 +16,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
-import { runPipeline, runStep, StepResult } from "./pipeline";
+import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 
@@ -710,6 +710,19 @@ async function runSlash(
     case "continue": {
       const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks);
       emitStepMarker(stream, result);
+      return;
+    }
+    case "agent": {
+      if (!cmd.agent) {
+        stream.markdown(`**Error:** \`/${cmd.name}\` is missing \`agent\` in its frontmatter.`);
+        return;
+      }
+      if (!args) {
+        stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
+        return;
+      }
+      stream.markdown(`🎛 **/${cmd.name}** — one-shot \`${cmd.agent}\`\n`);
+      await runOneShotAgent(workspaceRoot, slashRoots, cmd.agent, args, stream, token);
       return;
     }
     case "status":

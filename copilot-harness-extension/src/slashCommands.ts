@@ -23,7 +23,10 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type SlashAction = "pipeline" | "step" | "continue" | "status" | "help";
+// `agent` is a one-shot LLM call against an agent prompt — no harness session,
+// no stage validation. Used for low-frequency dev tools like /pipeline-builder
+// where the 4-agent ceremony is overkill.
+export type SlashAction = "pipeline" | "step" | "continue" | "status" | "help" | "agent";
 
 export interface SlashCommand {
   name: string;
@@ -33,7 +36,7 @@ export interface SlashCommand {
   agent?: string;
 }
 
-const VALID_ACTIONS: ReadonlySet<string> = new Set(["pipeline", "step", "continue", "status", "help"]);
+const VALID_ACTIONS: ReadonlySet<string> = new Set(["pipeline", "step", "continue", "status", "help", "agent"]);
 
 function asRootList(roots: string | string[]): string[] {
   return Array.isArray(roots) ? roots.filter(r => r && r.length > 0) : [roots];

@@ -1,16 +1,17 @@
 ---
 name: pipeline-builder
-description: Scaffold a NEW CopilotHarness pipeline from a brief — plan → design → code → review
-action: pipeline
-pipeline: pipeline-builder
+description: Scaffold a NEW CopilotHarness pipeline from a brief — single composite agent
+action: agent
+agent: pipeline-builder
 ---
 
 # /pipeline-builder
 
-Runs the `pipeline-builder` pipeline: a 4-agent sequence (planner, designer,
-coder, reviewer) that authors the directory layout for a NEW pipeline under
-`.github/pipelines/<new-name>/` plus its slash command at
-`.github/commands/<new-name>.md`.
+One-shot composite agent that scaffolds a new CopilotHarness pipeline from
+a brief. **No 4-stage pipeline ceremony** — a single LLM call produces
+`pipeline.yaml`, the README, and the slash command file. Aligns with
+the project rule "do not invent agents speculatively"; pipeline authoring
+is bounded enough that one careful agent does the job.
 
 ## Usage
 
@@ -18,9 +19,9 @@ coder, reviewer) that authors the directory layout for a NEW pipeline under
 @harness /pipeline-builder <brief>
 ```
 
-The brief should at minimum include the new pipeline's purpose. Optional but
-recommended: target level (0 / 1 / 2), the stages and what each does, any
-existing skills the pipeline should reference.
+The brief should at minimum include the new pipeline's purpose. Optional
+but useful: target level (1 / 2), what each stage does, any existing
+skills the pipeline should reference.
 
 Examples:
 
@@ -29,20 +30,25 @@ Examples:
 ```
 
 ```
-@harness /pipeline-builder Level 1, single agent that drafts release notes from git log between two refs
+@harness /pipeline-builder Level 1, drafts release notes from git log between two refs
 ```
 
 ## Output
 
-On a successful run, the new pipeline directory is written to
-`.github/pipelines/<name>/` with `pipeline.yaml`, `README.md`, four agent
-files under `agents/`, and `.claude-plugin/plugin.json`. The slash command
-file is written to `.github/commands/<name>.md`.
+On a successful run the agent writes:
 
-The branch is the audit trail — review the diff, then merge or discard.
+- `.github/pipelines/<name>/pipeline.yaml`
+- `.github/pipelines/<name>/README.md`
+- `.github/commands/<name>.md`
+
+Variant agent files (`.github/agents/<name>-<role>.agent.md`) are written
+ONLY if the agent decides the pipeline genuinely needs to override a
+canonical agent — most pipelines reuse `agents/planner.agent.md` etc.
+directly.
+
+The branch is the audit trail — review the diff, then commit or discard.
 
 ## See also
 
-- `.github/pipelines/pipeline-builder/pipeline.yaml` — pipeline definition
-- `.github/pipelines/pipeline-builder/README.md` — stage + checklist overview
-- `/CLAUDE.md` — full design doc
+- `.github/agents/pipeline-builder.agent.md` — agent prompt
+- `/CLAUDE.md` — design rules and hard constraints

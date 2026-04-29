@@ -1251,3 +1251,56 @@ export async function runStep(
     output: finalOutput, nextAgent, pipelineComplete, escalated, escalation,
   };
 }
+
+// ── One-shot agent — single LLM call, no harness session, no stage validation
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Used by slash commands with `action: agent`. Loads the agent prompt, sends
+// the user's request as context, materialises any file_contents the agent
+// produces. Aligns with the project's "don't invent agents speculatively"
+// rule: low-frequency dev tools (e.g. /pipeline-builder) don't need a
+// 4-stage pipeline.
+
+export interface OneShotResult {
+  success: boolean;
+  agentName: string;
+  output: unknown;
+}
+
+export async function runOneShotAgent(
+  workspaceRoot: string,
+  promptRoots: string[],
+  agentName: string,
+  request: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+): Promise<OneShotResult> {
+  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
+  if (!models.length) {
+    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
+  }
+  const model = models[0];
+  logLine(`Selected LM: id=${model.id} for one-shot ${agentName}`);
+
+  const agentPrompt = loadAgentPrompt(promptRoots, "", agentName);
+  const context: Record<string, unknown> = {
+    request,
+    workspace_tree: readWorkspaceTree(workspaceRoot),
+  };
+
+  stream.markdown(`\n### ⏳ ${agentName}\n*one-shot · no pipeline state*\n\n`);
+  const t0 = Date.now();
+  const output = await runAgentLM(model, agentName, agentPrompt, context, token);
+  const elapsed = Date.now() - t0;
+
+  // Agents that emit file_contents (like pipeline-builder) get materialised
+  // to disk via the same helper the coder uses inside the pipeline.
+  if (typeof output === "object" && output !== null && "file_contents" in output) {
+    materializeCoderFiles(workspaceRoot, output, stream);
+  }
+
+  stream.markdown(`\n✓ **${agentName}** — ${fmtSeconds(elapsed)}\n`);
+  emitStageOutputDetails(stream, "code", output);
+
+  return { success: true, agentName, output };
+}
