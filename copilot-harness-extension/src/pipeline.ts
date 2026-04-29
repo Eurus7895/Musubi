@@ -814,10 +814,11 @@ function emitStageComplete(
 }
 
 /**
- * Render the stage's structured output as a collapsible <details> block
- * in the chat. GFM supports <details>/<summary> in CommonMark; chat
- * renders it as an expandable section. We emit the whole block as ONE
- * markdown call so partial streaming can't break the HTML.
+ * Render the stage's structured output as an indented markdown block.
+ *
+ * Copilot Chat does NOT render raw <details>/<summary> HTML as a
+ * collapsible — the tags appear as literal text. We use a blockquote
+ * instead so the structured fields render cleanly without HTML.
  */
 function emitStageOutputDetails(
   stream: vscode.ChatResponseStream,
@@ -827,7 +828,10 @@ function emitStageOutputDetails(
   if (typeof output !== "object" || output === null) return;
   const body = formatStageOutput(stage, output as Record<string, unknown>);
   if (!body) return;
-  stream.markdown(`\n<details><summary>output</summary>\n\n${body}\n\n</details>\n`);
+  // Prefix every line with "> " so the entire block renders as one
+  // continuous blockquote. Empty lines need "> " too or the quote breaks.
+  const quoted = body.split("\n").map(l => `> ${l}`).join("\n");
+  stream.markdown(`\n${quoted}\n`);
 }
 
 function formatStageOutput(stage: string, o: Record<string, unknown>): string {
