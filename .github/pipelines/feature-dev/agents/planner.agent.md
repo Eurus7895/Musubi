@@ -79,7 +79,7 @@ Produce ONLY valid JSON matching this schema:
         {
             "id": "T1",
             "description": "string",
-            "files_affected": ["path/to/file.py"],
+            "files_affected": ["real/path/from/workspace_tree.py"],
             "acceptance_criteria": ["string"],
             "complexity": "low | medium | high"
         }
@@ -112,3 +112,10 @@ Do not proceed until the write returns `"status": "stored"`.
   `confidence: low` and list your assumptions in `open_questions`.
 - Never expand scope beyond what the user explicitly requested.
 - Always include `files_affected` — this is the scope boundary for Coder.
+- **Use real paths from `context.workspace_tree`.** The harness injects the
+  workspace's actual file/directory list. Ground every `files_affected` entry
+  in that tree — pick existing files when modifying behaviour, and place new
+  files under directories that already exist (e.g. `tests/`, `src/`). Never
+  emit placeholders like `path/to/file.py`. If the workspace genuinely has no
+  matching layout, propose a sensible new path that fits common conventions
+  for the language and explain in `open_questions`.

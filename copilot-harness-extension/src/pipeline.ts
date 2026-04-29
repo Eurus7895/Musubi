@@ -305,6 +305,56 @@ function extractJson(text: string): unknown {
 }
 
 /**
+ * Walk the workspace root and return a list of file paths (relative to root)
+ * the planner / designer can use to ground their module choices in the real
+ * project layout. Without this, agents fall back to placeholders like
+ * "path/to/test_file.py" because they have no view of the workspace.
+ *
+ * Skips heavy / irrelevant trees (node_modules, .git, dist, build, __pycache__,
+ * venv, .venv, .harness, .vscode) and caps the result at MAX_ENTRIES to keep
+ * the prompt bounded in large repos. Directories are listed before their
+ * contents so the agent sees structure even when the cap truncates files.
+ */
+function readWorkspaceTree(workspaceRoot: string): string[] {
+  const SKIP = new Set([
+    "node_modules", ".git", "dist", "build", "__pycache__",
+    "venv", ".venv", ".harness", ".vscode", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", "out", "target",
+  ]);
+  const MAX_ENTRIES = 400;
+  const MAX_DEPTH = 6;
+
+  const entries: string[] = [];
+  const walk = (abs: string, rel: string, depth: number): void => {
+    if (entries.length >= MAX_ENTRIES || depth > MAX_DEPTH) { return; }
+    let children: fs.Dirent[];
+    try {
+      children = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    children.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const child of children) {
+      if (entries.length >= MAX_ENTRIES) { return; }
+      if (child.name.startsWith(".") && child.name !== ".github") { continue; }
+      if (SKIP.has(child.name)) { continue; }
+      const childRel = rel ? `${rel}/${child.name}` : child.name;
+      if (child.isDirectory()) {
+        entries.push(childRel + "/");
+        walk(path.join(abs, child.name), childRel, depth + 1);
+      } else if (child.isFile()) {
+        entries.push(childRel);
+      }
+    }
+  };
+  walk(workspaceRoot, "", 0);
+  return entries;
+}
+
+/**
  * Read workspace files listed in the design's modules array and return them
  * as { relativePath → fileContent } so the coder can modify existing code
  * rather than writing from scratch with no knowledge of what already exists.
@@ -971,6 +1021,14 @@ export async function runPipeline(
       context["request"] = request;
     }
 
+    // Inject the workspace file tree into planner/designer context so they
+    // ground module paths in the actual project layout instead of falling
+    // back to placeholders like "path/to/test_file.py" that the coder then
+    // dutifully creates on disk.
+    if (agent.name === "planner" || agent.name === "designer") {
+      context["workspace_tree"] = readWorkspaceTree(workspaceRoot);
+    }
+
     // Inject existing workspace file contents into coder context so the model
     // can see what already exists and produce real modifications rather than
     // writing from scratch with no knowledge of the current codebase.
@@ -1114,6 +1172,9 @@ export async function runStep(
   const context = await readAgentContext(client, sessionId, agentDef.name, agentDef.readStages);
   if (agentDef.name === "planner") {
     context["request"] = sessionRequest;
+  }
+  if (agentDef.name === "planner" || agentDef.name === "designer") {
+    context["workspace_tree"] = readWorkspaceTree(workspaceRoot);
   }
 
   const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;

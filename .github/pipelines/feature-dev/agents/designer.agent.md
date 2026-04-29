@@ -56,6 +56,10 @@ harness_read_stage(session_id, "plan", agent_name="designer")
 The `injected_skills` field contains skill content the harness requires you to apply.
 If the plan is empty or missing (`data: null`), halt — do not proceed without a valid plan.
 
+The harness also injects `context.workspace_tree` — a list of every file and
+directory in the user's workspace. Use it to choose real `modules[].file`
+paths instead of placeholders.
+
 Load additional references only when needed:
 
 ```
@@ -73,7 +77,7 @@ Produce ONLY valid JSON matching this schema:
     "tasks_addressed": ["T1", "T2", "T3"],
     "modules": [
         {
-            "file": "path/to/module.py",
+            "file": "real/relative/path/from/workspace_tree.py",
             "purpose": "string — reference the task IDs this module implements, e.g. 'Implements T1 and T2'",
             "public_interface": [
                 {
@@ -115,3 +119,10 @@ harness_write_stage(session_id, "design", <your JSON as a string>, agent_name="d
 - If a task cannot be designed without more information, set `confidence: low`
   and explain in `integration_notes`.
 - Load references only when needed — do not preload all skill references.
+- **Module paths must be real, workspace-relative paths.** The harness injects
+  `context.workspace_tree` — a list of every file/directory in the workspace.
+  Pick paths that fit the existing layout (e.g. if `tests/` exists put new
+  tests there; if `src/foo/` exists place related modules under it). Never
+  emit placeholders like `path/to/file.py`, `your/module.py`, or
+  `src/example.py` when the workspace has a real location to use. For brand
+  new directories, prefer extending an existing convention over inventing one.
