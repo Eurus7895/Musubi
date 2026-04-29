@@ -63,7 +63,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 ## Conventions
 
 **File layout:**
-- Pipelines: `.github/pipelines/<name>/{pipeline.yaml, agents/*.agent.md, README.md, .claude-plugin/plugin.json}`
+- Pipelines: `.github/pipelines/<name>/{pipeline.yaml, agents/*.agent.md, README.md}`
 - Cross-pipeline agents: `.github/agents/<name>.agent.md`
 - Slash commands: `.github/commands/<name>.md` (frontmatter-driven; loader is `slashCommands.ts`)
 - Skills: `.github/skills/<name>/SKILL.md` (+ `assets/`, `references/`)

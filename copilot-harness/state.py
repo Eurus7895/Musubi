@@ -1,6 +1,7 @@
 """Append-only session state. All persistence goes through storage/db.py."""
 
 import json
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -11,14 +12,32 @@ from storage import db
 
 STAGES: list[str] = ["plan", "design", "code", "review"]
 
-# Resolved at import time so tests can override via the agents_dir parameter.
-# Week 3b: feature-dev agents moved to .github/pipelines/feature-dev/agents/.
-# .github/agents/ retained for the skill-builder meta-agent and rollback.
-_REPO_ROOT = Path(__file__).parent.parent
-AGENTS_DIRS: list[Path] = [
-    _REPO_ROOT / ".github" / "pipelines" / "feature-dev" / "agents",
-    _REPO_ROOT / ".github" / "agents",
-]
+
+def _root() -> Path:
+    """Where the harness's .github/ tree lives.
+
+    HARNESS_ROOT (set by the VS Code extension to its installed bundle path)
+    wins so the harness finds shipped pipelines/agents when invoked from a
+    workspace that has none of its own. Falls back to the source-tree parent
+    when running tests or `python -m copilot-harness`.
+    """
+    env = os.environ.get("HARNESS_ROOT")
+    if env:
+        return Path(env)
+    return Path(__file__).parent.parent
+
+
+# Resolved as functions so HARNESS_ROOT changes during tests still take effect.
+def _agents_dirs() -> list[Path]:
+    root = _root()
+    return [
+        root / ".github" / "pipelines" / "feature-dev" / "agents",
+        root / ".github" / "agents",
+    ]
+
+
+# Module-level snapshot for callers that import the list directly.
+AGENTS_DIRS: list[Path] = _agents_dirs()
 # Back-compat alias — some callers/tests still reference AGENTS_DIR as a Path.
 # Points at the primary (new) location.
 AGENTS_DIR = AGENTS_DIRS[0]
@@ -61,7 +80,7 @@ def lock_agent_versions(
     the first occurrence wins (pipeline dir takes precedence over legacy).
     """
     if agents_dir is None:
-        bases: list[Path] = list(AGENTS_DIRS)
+        bases: list[Path] = _agents_dirs()
     elif isinstance(agents_dir, Path):
         bases = [agents_dir]
     else:

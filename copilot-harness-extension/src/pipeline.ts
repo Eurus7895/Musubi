@@ -255,29 +255,38 @@ async function callHarness(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function loadAgentPrompt(workspaceRoot: string, pipelineName: string, agentName: string): string {
-  // Resolution order:
+function loadAgentPrompt(
+  roots: string | string[],
+  pipelineName: string,
+  agentName: string,
+): string {
+  // Resolution order, applied for each root in turn (workspace first, extension
+  // bundle as fallback — same pattern as slashCommands.ts):
   //   1. The named pipeline's own agents/   (so /pipeline-builder loads its agents,
   //      not feature-dev's)
   //   2. feature-dev/agents/                 (default fallback — pipelines that
   //      don't override an agent inherit feature-dev's)
   //   3. legacy .github/agents/              (cross-pipeline meta-agents like
   //      skill-builder)
-  // The first hit wins. Calls without a pipelineName (or with "feature-dev")
-  // collapse to the original two-candidate path.
-  const candidates: string[] = [];
-  if (pipelineName && pipelineName !== "feature-dev") {
-    candidates.push(path.join(workspaceRoot, ".github", "pipelines", pipelineName, "agents", `${agentName}.agent.md`));
-  }
-  candidates.push(
-    path.join(workspaceRoot, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
-    path.join(workspaceRoot, ".github", "agents", `${agentName}.agent.md`),
-  );
-  for (const filePath of candidates) {
-    try {
-      return fs.readFileSync(filePath, "utf-8");
-    } catch {
-      // try next candidate
+  // The first hit wins. Without the extension-bundle fallback, opening the
+  // extension in any other workspace would silently drop to the generic
+  // placeholder prompt below.
+  const rootList = Array.isArray(roots) ? roots.filter(Boolean) : [roots];
+  for (const root of rootList) {
+    const candidates: string[] = [];
+    if (pipelineName && pipelineName !== "feature-dev") {
+      candidates.push(path.join(root, ".github", "pipelines", pipelineName, "agents", `${agentName}.agent.md`));
+    }
+    candidates.push(
+      path.join(root, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
+      path.join(root, ".github", "agents", `${agentName}.agent.md`),
+    );
+    for (const filePath of candidates) {
+      try {
+        return fs.readFileSync(filePath, "utf-8");
+      } catch {
+        // try next candidate
+      }
     }
   }
   return (
@@ -431,16 +440,82 @@ async function writeStage(
   stage: string,
   agentName: string,
   output: unknown,
-): Promise<void> {
-  const result = (await callHarness(client, "harness_write_stage", {
+): Promise<HarnessWriteResult> {
+  return (await callHarness(client, "harness_write_stage", {
     session_id: sessionId, stage, output: JSON.stringify(output), agent_name: agentName,
   })) as HarnessWriteResult;
+}
 
-  if (result.status !== "stored") {
-    const details = result.validation_errors?.join("\n") ?? "";
-    throw new Error(
-      `harness_write_stage failed for '${stage}': ${result.error ?? "unknown"}\n${details}`.trim(),
+/**
+ * Run an agent and write its output, retrying on validation failure.
+ *
+ * harness_write_stage can reject output for schema/secrets/contract reasons
+ * (e.g. coder writes a file not in design.modules). Without a retry loop,
+ * the user sees "Output rejected" with no recovery — they have to abandon
+ * the session and start over. This function feeds validation_errors back
+ * into the agent context so it can self-correct, sharing the 3-attempt
+ * budget with the reviewer loop.
+ */
+async function runAgentWithValidationRetry(
+  client: McpClient,
+  model: vscode.LanguageModelChat,
+  agentName: string,
+  agentPrompt: string,
+  baseContext: Record<string, unknown>,
+  sessionId: string,
+  stage: string,
+  initialAttempt: number,
+  workspaceRoot: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+  onChange?: () => void,
+): Promise<{ output: unknown; finalAttempt: number }> {
+  let attempt = initialAttempt;
+  let context = baseContext;
+
+  for (;;) {
+    if (token.isCancellationRequested) {
+      throw new Error("cancelled");
+    }
+    const output = await runAgentLM(
+      model, agentName, agentPrompt, context, token,
+      { workspaceRoot, sessionId, stage, attempt },
     );
+    const result = await writeStage(client, sessionId, stage, agentName, output);
+    if (result.status === "stored") {
+      return { output, finalAttempt: attempt };
+    }
+
+    const details = result.validation_errors?.join("\n") ?? "";
+    const errLine = `${result.error ?? "unknown"}${details ? "\n" + details : ""}`;
+
+    if (attempt >= MAX_CODE_ATTEMPTS) {
+      throw new Error(
+        `harness_write_stage failed for '${stage}' after ${attempt} attempt(s): ${errLine}`.trim(),
+      );
+    }
+
+    stream.markdown(
+      `\n> ⚠️ **${agentName} → validation failed** (attempt ${attempt}/${MAX_CODE_ATTEMPTS})` +
+      (details ? `\n>\n> ${details.split("\n").join("\n> ")}` : "") +
+      `\n\n`,
+    );
+
+    await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage });
+    attempt += 1;
+    onChange?.();
+
+    context = {
+      ...baseContext,
+      validation_feedback: {
+        previous_attempt: attempt - 1,
+        error: result.error,
+        validation_errors: result.validation_errors ?? [],
+        instruction:
+          "Your previous output was rejected by the harness validator. " +
+          "Fix the listed errors and produce a corrected output that conforms to your Output Contract.",
+      },
+    };
   }
 }
 
@@ -636,6 +711,7 @@ async function runCorrectionLoop(
   model: vscode.LanguageModelChat,
   sessionId: string,
   workspaceRoot: string,
+  promptRoots: string[],
   pipelineName: string,
   initialReview: ReviewOutput,
   codeAttempt: number,
@@ -675,11 +751,11 @@ async function runCorrectionLoop(
     emitStageStart(stream, "coder", codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
     onChange?.();
     const coderT0 = Date.now();
-    const fixedCode = await runAgentLM(
-      model, "coder", loadAgentPrompt(workspaceRoot, pipelineName, "coder"), coderCtx, token,
-      { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
+    const { output: fixedCode, finalAttempt: coderFinalAttempt } = await runAgentWithValidationRetry(
+      client, model, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
+      coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange,
     );
-    await writeStage(client, sessionId, "code", "coder", fixedCode);
+    codeAttempt = coderFinalAttempt;
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
     emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
@@ -691,12 +767,12 @@ async function runCorrectionLoop(
     emitStageStart(stream, "reviewer", codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
     onChange?.();
     const reviewerT0 = Date.now();
-    const newReview = (await runAgentLM(
-      model, "reviewer", loadAgentPrompt(workspaceRoot, pipelineName, "reviewer"), reviewerCtx, token,
-      { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
-    )) as ReviewOutput;
-    await writeStage(client, sessionId, "review", "reviewer", newReview);
-    materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
+    const { output: newReviewOutput, finalAttempt: reviewerFinalAttempt } = await runAgentWithValidationRetry(
+      client, model, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
+      reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange,
+    );
+    const newReview = newReviewOutput as ReviewOutput;
+    materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
     emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
     emitStageOutputDetails(stream, "review", newReview);
     onChange?.();
@@ -836,6 +912,7 @@ export async function runPipeline(
   client: McpClient,
   request: string,
   workspaceRoot: string,
+  promptRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   pipelineMeta?: { route: string; pipelineName: string; level: number },
@@ -849,18 +926,13 @@ export async function runPipeline(
   logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
   logger().show(true);
 
-  // ── Session setup (with crash recovery) ──────────────────────────────────────
-
-  const active = (await callHarness(client, "harness_get_active_session", {})) as ActiveSession;
-  let sessionId: string;
-
-  if (active.session_id) {
-    sessionId = active.session_id;
-    stream.progress(`Resuming session ${sessionId} (interrupted at '${active.resume_stage}')`);
-  } else {
-    const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
-    sessionId = session.session_id;
-  }
+  // ── Session setup ────────────────────────────────────────────────────────────
+  // A slash-command invocation with an explicit request is always a new session.
+  // Resume is the job of /continue (runStep without a request) — folding crash
+  // recovery into runPipeline silently inherited stale stages from the prior
+  // run and skipped planner/designer with "already complete".
+  const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
+  const sessionId = session.session_id;
 
   const stageOutputs: Record<string, unknown> = {};
   const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
@@ -909,13 +981,12 @@ export async function runPipeline(
     emitStageStart(stream, agent.name, attempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agent.writeStage] ?? {});
     onChange?.();
     const stageT0 = Date.now();
-    const agentOutput = await runAgentLM(
-      model, agent.name, loadAgentPrompt(workspaceRoot, meta.pipelineName, agent.name), context, token,
-      { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
+    const { output: agentOutput, finalAttempt } = await runAgentWithValidationRetry(
+      client, model, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
+      context, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
     );
-    await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
-    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
+    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, finalAttempt, agentOutput);
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
@@ -938,7 +1009,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, meta.pipelineName, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -962,6 +1033,7 @@ export async function runPipeline(
 export async function runStep(
   client: McpClient,
   workspaceRoot: string,
+  promptRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   options: {
@@ -1048,13 +1120,12 @@ export async function runStep(
   // and `continue` always operate on feature-dev. The slash command path uses
   // runPipeline, which threads pipelineName explicitly.
   const stepPipeline = "feature-dev";
-  const agentOutput = await runAgentLM(
-    model, agentDef.name, loadAgentPrompt(workspaceRoot, stepPipeline, agentDef.name), context, token,
-    { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
+  const { output: agentOutput, finalAttempt: stepFinalAttempt } = await runAgentWithValidationRetry(
+    client, model, agentDef.name, loadAgentPrompt(promptRoots, stepPipeline, agentDef.name),
+    context, sessionId, agentDef.writeStage, stepAttempt, workspaceRoot, stream, token, onChange,
   );
-  await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
-  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
+  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepFinalAttempt, agentOutput);
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
@@ -1076,7 +1147,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, stepPipeline, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, promptRoots, stepPipeline, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {

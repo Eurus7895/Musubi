@@ -569,7 +569,7 @@ async function handler(
       case "full":
       case "pipelineForced": {
         const result = await runPipeline(
-          client, cmd.request, workspaceRoot, stream, token,
+          client, cmd.request, workspaceRoot, slashRoots, stream, token,
           { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
           refreshTasks,
         );
@@ -578,13 +578,13 @@ async function handler(
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, stream, token, {}, refreshTasks);
+        const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks);
         emitStepMarker(stream, result);
         break;
       }
 
       case "agent": {
-        const result = await runStep(client, workspaceRoot, stream, token, {
+        const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
         }, refreshTasks);
@@ -688,7 +688,7 @@ async function runSlash(
       }
       const pipelineName = cmd.pipeline ?? cmd.name;
       const result = await runPipeline(
-        client, args, workspaceRoot, stream, token,
+        client, args, workspaceRoot, slashRoots, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
         refreshTasks,
       );
@@ -700,7 +700,7 @@ async function runSlash(
         stream.markdown(`**Error:** \`/${cmd.name}\` is missing a valid \`agent\` in its frontmatter.`);
         return;
       }
-      const result = await runStep(client, workspaceRoot, stream, token, {
+      const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
       }, refreshTasks);
@@ -708,7 +708,7 @@ async function runSlash(
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, stream, token, {}, refreshTasks);
+      const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks);
       emitStepMarker(stream, result);
       return;
     }

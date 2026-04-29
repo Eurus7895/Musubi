@@ -1,17 +1,15 @@
 """Tests for the pipeline-builder pipeline.
 
 Validates the artifact set authored at .github/pipelines/pipeline-builder/:
-pipeline.yaml shape, agent files exist with valid frontmatter, plugin.json
-manifest matches files on disk, slash command is registered.
+pipeline.yaml shape, agent files exist with valid frontmatter, slash command
+is registered.
 
-Mirrors test_pipeline_yaml.py + test_plugin_manifest.py + test_slash_commands.py
-but scoped to pipeline-builder so a regression in either pipeline fails its own
-test without coupling.
+Mirrors test_pipeline_yaml.py + test_slash_commands.py but scoped to
+pipeline-builder so a regression fails its own test without coupling.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -20,13 +18,8 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _PIPELINE_DIR = _REPO_ROOT / ".github" / "pipelines" / "pipeline-builder"
 _PIPELINE_YAML = _PIPELINE_DIR / "pipeline.yaml"
-_MANIFEST = _PIPELINE_DIR / ".claude-plugin" / "plugin.json"
 _SLASH_CMD = _REPO_ROOT / ".github" / "commands" / "pipeline-builder.md"
 
-# pipeline-builder declares "embedded" locality (knowledge baked into agent
-# prompts, no .github/skills/ entry) — accepted alongside the modes feature-dev
-# uses.
-_VALID_LOCALITY_MODES = {"global", "pipeline-local", "embedded"}
 _CANONICAL_AGENTS = {"planner", "designer", "coder", "reviewer"}
 _CANONICAL_STAGES = {"plan", "design", "code", "review"}
 _REQUIRED_BODY_SECTIONS = (
@@ -43,10 +36,6 @@ _REQUIRED_BODY_SECTIONS = (
 def _load_yaml() -> dict:
     with open(_PIPELINE_YAML, encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def _load_manifest() -> dict:
-    return json.loads(_MANIFEST.read_text(encoding="utf-8"))
 
 
 def _agent_file(name: str) -> Path:
@@ -191,50 +180,6 @@ def test_reviewer_disregards_auto_injected_skill() -> None:
     assert "code-review" in text.lower() and "disregard" in text.lower(), (
         "reviewer.agent.md must explicitly disregard the auto-injected code-review skill"
     )
-
-
-# ── plugin.json ──────────────────────────────────────────────────────────────
-
-def test_manifest_exists_and_parses() -> None:
-    data = _load_manifest()
-    assert isinstance(data, dict)
-
-
-def test_manifest_name_matches_pipeline() -> None:
-    assert _load_manifest()["name"] == "pipeline-builder"
-
-
-def test_manifest_every_command_resolves() -> None:
-    for rel in _load_manifest()["commands"]:
-        assert (_REPO_ROOT / rel).is_file(), f"Missing command: {rel}"
-
-
-def test_manifest_every_agent_resolves() -> None:
-    for rel in _load_manifest()["agents"]:
-        assert (_REPO_ROOT / rel).is_file(), f"Missing agent: {rel}"
-
-
-def test_manifest_pipeline_definition_resolves() -> None:
-    block = _load_manifest()["pipeline"]
-    assert (_REPO_ROOT / block["definition"]).is_file()
-    assert block["level"] == _load_yaml()["level"]
-
-
-def test_manifest_skill_locality_recorded() -> None:
-    locality = _load_manifest().get("skillLocality")
-    assert isinstance(locality, dict)
-    assert locality.get("mode") in _VALID_LOCALITY_MODES
-    assert len(locality.get("rationale", "")) > 40
-
-
-def test_manifest_skills_list_is_empty_for_embedded_mode() -> None:
-    """When skillLocality.mode == 'embedded', the manifest should NOT list any
-    skills — knowledge lives in the agent prompts, not in .github/skills/."""
-    data = _load_manifest()
-    if data.get("skillLocality", {}).get("mode") == "embedded":
-        assert data.get("skills") == [], (
-            f"embedded locality must declare empty skills[], got {data.get('skills')}"
-        )
 
 
 # ── Slash command ────────────────────────────────────────────────────────────
