@@ -16,9 +16,15 @@ from pathlib import Path
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_PIPELINE_DIR = _REPO_ROOT / ".github" / "pipelines" / "pipeline-builder"
+_GITHUB_DIR = _REPO_ROOT / ".github"
+_PIPELINE_DIR = _GITHUB_DIR / "pipelines" / "pipeline-builder"
+# Pipeline-builder's agents are stored flat under .github/agents/ with a
+# `pipeline-builder-` prefix to distinguish them from the canonical
+# planner/designer/coder/reviewer (feature-dev's variants).
+_AGENTS_DIR = _GITHUB_DIR / "agents"
+_AGENT_PREFIX = "pipeline-builder-"
 _PIPELINE_YAML = _PIPELINE_DIR / "pipeline.yaml"
-_SLASH_CMD = _REPO_ROOT / ".github" / "commands" / "pipeline-builder.md"
+_SLASH_CMD = _GITHUB_DIR / "commands" / "pipeline-builder.md"
 
 _CANONICAL_AGENTS = {"planner", "designer", "coder", "reviewer"}
 _CANONICAL_STAGES = {"plan", "design", "code", "review"}
@@ -39,7 +45,7 @@ def _load_yaml() -> dict:
 
 
 def _agent_file(name: str) -> Path:
-    return _PIPELINE_DIR / "agents" / f"{name}.agent.md"
+    return _AGENTS_DIR / f"{_AGENT_PREFIX}{name}.agent.md"
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -103,14 +109,15 @@ def test_generator_agent_names_are_canonical() -> None:
 
 
 def test_generator_agent_paths_resolve() -> None:
+    # `agent:` paths in pipeline.yaml are relative to .github/.
     for item in _load_yaml()["generator"]["agents"]:
-        agent_file = _PIPELINE_DIR / item["agent"]
+        agent_file = _GITHUB_DIR / item["agent"]
         assert agent_file.is_file(), f"Missing agent file: {agent_file}"
 
 
 def test_evaluator_agent_resolves() -> None:
     ev = _load_yaml()["evaluator"]
-    assert (_PIPELINE_DIR / ev["agent"]).is_file()
+    assert (_GITHUB_DIR / ev["agent"]).is_file()
 
 
 def test_correction_max_retries_positive() -> None:

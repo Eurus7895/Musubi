@@ -10,7 +10,8 @@ from pathlib import Path
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_PIPELINE_DIR = _REPO_ROOT / ".github" / "pipelines" / "feature-dev"
+_GITHUB_DIR = _REPO_ROOT / ".github"
+_PIPELINE_DIR = _GITHUB_DIR / "pipelines" / "feature-dev"
 _PIPELINE_YAML = _PIPELINE_DIR / "pipeline.yaml"
 
 
@@ -47,13 +48,15 @@ def test_generator_uses_plural_agents_list() -> None:
 
 
 def test_generator_agent_paths_resolve() -> None:
+    # `agent:` paths are relative to .github/ (agents now live in a shared
+    # catalog at .github/agents/, not under each pipeline dir).
     for item in _load()["generator"]["agents"]:
-        agent_file = _PIPELINE_DIR / item["agent"]
+        agent_file = _GITHUB_DIR / item["agent"]
         assert agent_file.is_file(), f"Missing agent file {agent_file}"
 
 
 def test_evaluator_agent_path_resolves() -> None:
-    ev_path = _PIPELINE_DIR / _load()["evaluator"]["agent"]
+    ev_path = _GITHUB_DIR / _load()["evaluator"]["agent"]
     assert ev_path.is_file(), f"Missing evaluator agent file {ev_path}"
 
 

@@ -11,17 +11,17 @@ baseline_checks:
 generator:
   agents:
     - name: planner
-      agent: agents/planner.agent.md
+      agent: agents/pipeline-builder-planner.agent.md
       skill: null
     - name: designer
-      agent: agents/designer.agent.md
+      agent: agents/pipeline-builder-designer.agent.md
       skill: null
     - name: coder
-      agent: agents/coder.agent.md
+      agent: agents/pipeline-builder-coder.agent.md
       skill: null
 
 evaluator:
-  agent: agents/reviewer.agent.md
+  agent: agents/pipeline-builder-reviewer.agent.md
   skill: null
 
 correction:

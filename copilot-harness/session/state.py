@@ -28,19 +28,19 @@ def _root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
-# Resolved as functions so HARNESS_ROOT changes during tests still take effect.
+# Resolved as a function so HARNESS_ROOT changes during tests still take effect.
+# Every agent file lives flat under .github/agents/. lock_agent_versions
+# parses each *.agent.md it finds and locks one version per agent. Filename
+# stem (minus the `.agent` suffix) IS the agent name — so canonical roles
+# are bare (planner.agent.md) and pipeline variants are prefixed
+# (pipeline-builder-planner.agent.md).
 def _agents_dirs() -> list[Path]:
-    root = _root()
-    return [
-        root / ".github" / "pipelines" / "feature-dev" / "agents",
-        root / ".github" / "agents",
-    ]
+    return [_root() / ".github" / "agents"]
 
 
 # Module-level snapshot for callers that import the list directly.
 AGENTS_DIRS: list[Path] = _agents_dirs()
 # Back-compat alias — some callers/tests still reference AGENTS_DIR as a Path.
-# Points at the primary (new) location.
 AGENTS_DIR = AGENTS_DIRS[0]
 
 

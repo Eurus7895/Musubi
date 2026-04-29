@@ -260,14 +260,13 @@ function loadAgentPrompt(
   pipelineName: string,
   agentName: string,
 ): string {
-  // Resolution order, applied for each root in turn (workspace first, extension
-  // bundle as fallback — same pattern as slashCommands.ts):
-  //   1. The named pipeline's own agents/   (so /pipeline-builder loads its agents,
-  //      not feature-dev's)
-  //   2. feature-dev/agents/                 (default fallback — pipelines that
-  //      don't override an agent inherit feature-dev's)
-  //   3. legacy .github/agents/              (cross-pipeline meta-agents like
-  //      skill-builder)
+  // Agents live in a flat shared catalog at .github/agents/. Pipelines
+  // compose them by reference. Resolution order, per root (workspace first,
+  // extension bundle as fallback):
+  //   1. .github/agents/<pipelineName>-<agentName>.agent.md
+  //        (pipeline-specific variant — e.g. pipeline-builder-planner)
+  //   2. .github/agents/<agentName>.agent.md
+  //        (canonical / feature-dev / shared agents like skill-builder)
   // The first hit wins. Without the extension-bundle fallback, opening the
   // extension in any other workspace would silently drop to the generic
   // placeholder prompt below.
@@ -275,12 +274,9 @@ function loadAgentPrompt(
   for (const root of rootList) {
     const candidates: string[] = [];
     if (pipelineName && pipelineName !== "feature-dev") {
-      candidates.push(path.join(root, ".github", "pipelines", pipelineName, "agents", `${agentName}.agent.md`));
+      candidates.push(path.join(root, ".github", "agents", `${pipelineName}-${agentName}.agent.md`));
     }
-    candidates.push(
-      path.join(root, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
-      path.join(root, ".github", "agents", `${agentName}.agent.md`),
-    );
+    candidates.push(path.join(root, ".github", "agents", `${agentName}.agent.md`));
     for (const filePath of candidates) {
       try {
         return fs.readFileSync(filePath, "utf-8");
