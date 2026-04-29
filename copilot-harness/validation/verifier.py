@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import state
+from session import state
 
 # ── Result type ───────────────────────────────────────────────────────────────
 

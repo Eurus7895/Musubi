@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-import state
+from session import state
 from storage import db
 
 # ── Injection detection ───────────────────────────────────────────────────────

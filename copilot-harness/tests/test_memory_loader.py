@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-import memory_loader
+from memory import memory_loader
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ def test_get_memory_context_only_memory_md_present(tmp_path: Path) -> None:
 # ── Week 4 Day 4: cross-session query ────────────────────────────────────────
 
 
-import state  # noqa: E402
+from session import state  # noqa: E402
 from storage import db  # noqa: E402
 
 

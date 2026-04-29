@@ -24,7 +24,8 @@ def _root() -> Path:
     env = os.environ.get("HARNESS_ROOT")
     if env:
         return Path(env)
-    return Path(__file__).parent.parent
+    # __file__ = copilot-harness/session/state.py → repo root is 3 levels up.
+    return Path(__file__).parent.parent.parent
 
 
 # Resolved as functions so HARNESS_ROOT changes during tests still take effect.

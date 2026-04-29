@@ -12,20 +12,8 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = [
-    "cli",
-    "context_builder",
-    "correction_loop",
-    "executor",
-    "memory_loader",
-    "proposed_patch_applier",
-    "server",
-    "session_distiller",
-    "skill_loader",
-    "state",
-    "verifier",
-]
-packages = ["storage", "memory"]
+py-modules = ["cli", "server"]
+packages = ["session", "validation", "skills", "memory", "execution", "storage"]
 
 [project.scripts]
 copilot-harness = "cli:main"

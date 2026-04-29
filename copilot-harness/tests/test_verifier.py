@@ -3,8 +3,8 @@
 import pytest
 from pathlib import Path
 
-import state
-import verifier
+from session import state
+from validation import verifier
 from storage import db as _db
 
 

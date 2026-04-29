@@ -130,8 +130,8 @@ def apply_patch(
     if not validation.valid:
         return ApplyResult(applied=False, patch_path=patch_path, errors=validation.errors)
 
-    # proposed_patch_applier.py lives in copilot-harness/, one level below repo root
-    root = repo_root or Path(__file__).parent.parent
+    # proposed_patch_applier.py lives in copilot-harness/execution/, two levels below repo root
+    root = repo_root or Path(__file__).parent.parent.parent
     agent_name = validation.target_agent
     addition = validation.addition
 

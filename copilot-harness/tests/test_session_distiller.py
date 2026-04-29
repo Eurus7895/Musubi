@@ -4,8 +4,8 @@ import json
 import pytest
 from pathlib import Path
 
-import state
-import session_distiller
+from session import state
+from memory import session_distiller
 from storage import db
 
 

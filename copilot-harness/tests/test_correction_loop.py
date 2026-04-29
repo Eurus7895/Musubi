@@ -3,8 +3,8 @@
 import pytest
 from pathlib import Path
 
-import state
-import correction_loop
+from session import state
+from session import correction_loop
 from storage import db as _db
 
 

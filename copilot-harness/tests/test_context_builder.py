@@ -3,8 +3,8 @@
 import pytest
 from pathlib import Path
 
-import state
-import context_builder
+from session import state
+from validation import context_builder
 from storage import db as _db
 
 

@@ -27,8 +27,8 @@ from pathlib import Path
 
 from storage import db as _db
 
-# memory_loader.py lives in copilot-harness/ → repo root is one level up
-_DEFAULT_REPO_ROOT = Path(__file__).parent.parent
+# memory_loader.py lives in copilot-harness/memory/ → repo root is two levels up
+_DEFAULT_REPO_ROOT = Path(__file__).parent.parent.parent
 
 _MEMORY_DIR = ".github/memory"
 _TIER1_FILE = "MEMORY.md"

@@ -32,7 +32,7 @@ _COMPACT_TRIGGER_BYTES = 5 * 1024
 _COMPACT_KEEP_MOST_FREQUENT = 10
 _COMPACT_KEEP_MOST_RECENT = 10
 
-_DEFAULT_REPO_ROOT = Path(__file__).parent.parent
+_DEFAULT_REPO_ROOT = Path(__file__).parent.parent.parent
 
 
 def _repo_root(override: Path | None) -> Path:

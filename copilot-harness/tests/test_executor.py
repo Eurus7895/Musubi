@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-import executor
-from executor import (
+from execution import executor
+from execution.executor import (
     FailedTest,
     LintError,
     LintResult,
@@ -180,7 +180,7 @@ def test_run_lint_returns_lint_result_type():
 
 
 def test_run_lint_command_not_found():
-    with patch("executor._run", return_value=(1, "", "Command not found: ruff")):
+    with patch("execution.executor._run", return_value=(1, "", "Command not found: ruff")):
         result = run_lint(["x.py"])
     assert result.passed is False
 
@@ -220,7 +220,7 @@ def test_run_typecheck_returns_typecheck_result_type():
 
 
 def test_run_typecheck_command_not_found():
-    with patch("executor._run", return_value=(1, "", "Command not found: mypy")):
+    with patch("execution.executor._run", return_value=(1, "", "Command not found: mypy")):
         result = run_typecheck(["x.py"])
     assert result.passed is False
 
