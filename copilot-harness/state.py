@@ -48,7 +48,9 @@ def _now() -> str:
 
 
 def _parse_version(agent_path: Path) -> str:
-    text = agent_path.read_text()
+    # Force UTF-8 — agent .md files contain em dashes / arrows / other
+    # non-ASCII; on Windows the default encoding is cp1252 and decoding fails.
+    text = agent_path.read_text(encoding="utf-8")
     m = re.search(r"^version:\s*(.+)$", text, re.MULTILINE)
     return m.group(1).strip() if m else "0.0.0"
 

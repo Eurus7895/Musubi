@@ -80,6 +80,16 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 - Don't add status/version/week-number footers — they rot. Status lives in `docs/design.md`.
 - Don't add scaffolding comments or backwards-compat shims.
 
+**Text I/O — always pass `encoding="utf-8"` explicitly.**
+- `Path.read_text()` / `Path.write_text()` / `open()` without an `encoding=`
+  argument falls back to the platform default — `cp1252`/`charmap` on Windows
+  — and crashes on the em dashes, arrows, and other non-ASCII characters in
+  agent `.md` files, skill content, and stage outputs. The harness has hit
+  this once already (`harness_new_session` failing with
+  `'charmap' codec can't decode byte 0x90`); never reintroduce it.
+- Same rule for `json.load`/`json.dump` when the file handle is opened by
+  this codebase — open with `encoding="utf-8"` first.
+
 ---
 
 ## Commands
