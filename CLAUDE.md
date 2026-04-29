@@ -1100,6 +1100,72 @@ Neither product replaces the other.
 
 ---
 
+## Best Practices Compliance
+
+Cross-checked against the harness best-practices reference cited in
+§ Resources (celesteanders/harness `docs/best-practices.md`). Each row
+is one of the 30 numbered practices from that doc.
+
+| # | Practice | Status | Where enforced |
+|---|---|---|---|
+| **1. Architecture** | | | |
+| 1 | Specialized agents (Planner / Generator / Evaluator) | ✅ | feature-dev: planner→designer→coder→reviewer; reviewer = evaluator |
+| 2 | Start single-agent before multi-agent | ⚠️ | Built Level-2 first; Level-1 probe infra exists, run pending (Wk4 D5) |
+| 3 | Fresh context windows + structured handoff | ⚠️ | Evaluator gets fresh session (Wk3a). Handoff schemas still TODO (conditional on probe) |
+| **2. State & Persistence** | | | |
+| 4 | All state in structured files | ✅ | `.harness/sessions/<sid>/<stage>.md` + SQLite audit (`storage/audit.db`) |
+| 5 | Repo as system of record | ✅ | Skills, agents, instructions, memory all in-repo under `.github/` |
+| 6 | Top-level instruction files ~100 lines | ✅ | AGENTS.md ≤120 lines (this file = design doc, not entry point) |
+| **3. Session Protocol** | | | |
+| 7 | Orient → setup → verify → task → impl → test → update → exit | ✅ | SessionStart hook + baseline_checks + correction loop + plan.md persist |
+| 8 | One task per session | ✅ | Pipeline = one request; `harness_get_active_session` enforces single live session |
+| 9 | Verify existing functionality first | ✅ | `baseline_checks` in pipeline.yaml run before generator |
+| **4. Feedback Loops** | | | |
+| 10 | Lint / typecheck / tests in feedback loop | ✅ | `harness_run_lint`, `harness_run_typecheck`, `harness_run_tests` (ruff/mypy/pytest) |
+| 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
+| 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
+| **5. Context Window** | | | |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Week 5 plan — sub agents (explorer / investigator / reviewer-aux) |
+| 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
+| 15 | Subagents for parallel reads / summarization | ⚠️ | Week 5 (Phase A core primitives + Phase B pipeline-main spawning) |
+| **6. Prompt Engineering** | | | |
+| 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
+| 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
+| 18 | Agents improve their own instructions | ✅ | skill-builder meta-agent writes proposals to `.github/agents/proposed/` |
+| 19 | Capture bugs immediately in task list | ✅ | session_distiller appends to `failure-patterns.md` (auto-compacted) |
+| **7. Security** | | | |
+| 20 | Three-layer defense (sandbox / FS / allowlist) | ⚠️ | Layer 3 ✅ (PIPELINE_POLICIES fail-closed). Layers 1–2 inherited from VS Code/OS |
+| **8. Code Quality** | | | |
+| 21 | Architectural invariants enforced mechanically | ✅ | `policy_engine.py` + PreToolUse hook; injection scan in verifier |
+| 22 | Incremental tech debt cleanup | ⚠️ | No recurring cleanup pipeline yet — manual via roadmap |
+| 23 | Boring, stable tech for agent reasoning | ✅ | Python + TypeScript + JSON-RPC stdio; no exotic deps |
+| 24 | Inspectable via logs / observability | ✅ | CopilotHarness output channel + SQLite audit log + per-session `.md` artifacts |
+| **9. Recovery & Resilience** | | | |
+| 25 | Descriptive git commits as recovery; read history at start | ⚠️ | Crash recovery via `harness_get_active_session` ✅; git-history read at start ❌ |
+| 26 | Plan for failures; reset to known-good state | ✅ | Append-only stage store + `harness_increment_attempt` retry; max-3 escalate |
+| 27 | Periodically regenerate plans against spec | ❌ | Not built — single plan per session today |
+| **10. Evolving the Harness** | | | |
+| 28 | Strip scaffolding after model upgrades | ⚠️ | Wk3a Level-1 probe is exactly this exercise — not yet run |
+| 29 | Calibrate evaluator involvement to task difficulty | ⚠️ | Levels 0/1/2 defined; promotion checklist exists; calibration data pending probe |
+| 30 | Increase complexity only when ceilings force it | ✅ | Promotion rule: 3+ observed failures before adding an agent (§ Promotion Checklist) |
+
+**Legend:** ✅ done · ⚠️ partial / planned · ❌ out of scope or not yet built.
+
+**Open compliance gaps worth tracking** (each is already in § Known TODOs
+or § Build Roadmap — listed here so the alignment is auditable, not
+duplicated):
+
+- BP 2, 3, 28, 29 — **Level-1 probe** (Wk4 D5 deferred). Running it
+  unblocks the multi-vs-single-agent calibration.
+- BP 13, 15 — **Sub agents** (Week 5 main feature). Phase A→B→C plan
+  already specced.
+- BP 25 (history half) — **Read git log at SessionStart**. Cheap to
+  add to `scripts/session_start.py`; not yet wired.
+- BP 27 — **Plan regeneration**. Defer until a real session shows
+  spec-vs-code drift. Promotion rule applies (3+ observed cases).
+
+---
+
 ## Boundaries
 
 **vs AgentShield:** AgentShield secures individual tool calls.

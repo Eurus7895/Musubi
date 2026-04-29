@@ -20,23 +20,14 @@ go to pipeline. Everything else goes direct unless overridden.
 ## Where Everything Lives
 
 ```
-AGENTS.md / CLAUDE.md / README.md     ← session map / design doc / quickstart
-
-.github/
-    pipelines/feature-dev/            ← pipeline.yaml + agents/{planner,designer,coder,reviewer}.agent.md
-    commands/                         ← slash commands (*.md, frontmatter-driven)
-    agents/                           ← cross-pipeline home: skill-builder + Week 5 sub agent roles
-    instructions/                     ← rules (universal > org > domain > project)
-    skills/                           ← global skills, shared across pipelines
-    memory/                           ← 3-tier memory (MEMORY.md + Tier 2)
-
-copilot-harness/                      ← Python MCP server (zero LLM)
-copilot-harness-extension/            ← VS Code extension (@harness chat participant)
-    src/tasksView.ts                  ← sidebar Tasks TreeView (v0.4.0)
-                                        — Active session + History
-
-hooks.json                            ← SessionStart / PreToolUse / PostToolUse wiring
-scripts/                              ← hook impls: policy_engine, pre/post_tool_use, session_start
+AGENTS.md / CLAUDE.md / README.md     map / design doc / quickstart
+.github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
+.github/commands/                     slash commands (*.md frontmatter)
+.github/agents/                       cross-pipeline: skill-builder + sub agent roles
+.github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
+copilot-harness/                      Python MCP server (zero LLM)
+copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
+hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
 ```
 
 ---
@@ -56,15 +47,13 @@ Level 2  Multi-agent + evaluator. Promotion checklist required.
 
 ```
 DIRECT:   @harness <text> → vscode.lm → stream → done
-PIPELINE: orient (resume/new) → baseline → generator → evaluator (fresh session)
+PIPELINE: orient → baseline → generator → evaluator (fresh session)
           → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
-          Renders in two native VS Code surfaces:
-            - Copilot Chat (primary): per-stage markdown sections, tag lines,
-              retry blockquote, plan.md anchor at pipeline end.
-            - Tasks TreeView (activity bar, v0.4.0): Active-session stages
-              (pending → in_progress → complete → failed) and a History list
-              of past sessions with clickable artifact rows.
 ```
+
+Renders inline in Copilot Chat (per-stage sections, tag lines, retry
+blockquote, plan.md anchor) and in the activity-bar Tasks TreeView
+(Active session + clickable History). Details in README.md.
 
 ---
 
@@ -87,7 +76,7 @@ No new pipelines until feature-dev is validated.
 | PreToolUse | Before tool call | Policy gate (deterministic, fail-closed) |
 | PostToolUse | After tool call | SQLite audit log (storage/audit.db) |
 
-`on-eval-fail` and `on-escalate` are reserved for Week 4+ — not wired yet.
+`on-eval-fail` and `on-escalate` are reserved hook events — not wired yet.
 
 ---
 
@@ -126,13 +115,5 @@ code change.
 
 ---
 
-*CopilotHarness | April 2026 | v0.4.0 | 379 tests (Python harness)*
-*Current: Week 4 complete + in-chat rendering + Tasks sidebar TreeView —*
-*rich stage-by-stage markdown in Copilot Chat plus an activity-bar Tasks view*
-*showing the live session and a history list of past runs (click a stage to*
-*open its .harness/sessions/<sid>/<stage>.md artifact).*
-*Next: Run the Level-1 probe (5 requests through both pipelines) → decide handoff schemas.*
-*Planned (main feature): Week 5 (5-day plan) — Day 1–3 sub agent core primitives*
-*(MCP, firewall, role files, spawn-event surface) · Day 4 pipeline-main spawning*
-*· Day 5 direct-mode spawning.*
-*Full day-by-day plan in CLAUDE.md § Build Roadmap.*
+*CopilotHarness | v0.4.0 | 379 tests | April 2026*
+*Status, roadmap, and full design → CLAUDE.md.*
