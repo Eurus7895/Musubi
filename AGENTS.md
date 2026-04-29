@@ -2,7 +2,7 @@
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
-> For architecture decisions, read CLAUDE.md instead.
+> Rules and conventions → `CLAUDE.md`. Architecture and roadmap → `docs/design.md`.
 
 ---
 
@@ -20,7 +20,7 @@ go to pipeline. Everything else goes direct unless overridden.
 ## Where Everything Lives
 
 ```
-AGENTS.md / CLAUDE.md / README.md     map / design doc / quickstart
+AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
 .github/agents/                       cross-pipeline: skill-builder + sub agent roles
@@ -116,4 +116,4 @@ code change.
 ---
 
 *CopilotHarness | v0.4.0 | 379 tests | April 2026*
-*Status, roadmap, and full design → CLAUDE.md.*
+*Status, roadmap, and full design → docs/design.md.*
