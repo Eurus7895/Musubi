@@ -1225,6 +1225,11 @@ export async function runStep(
   }
 
   // ── Determine what comes next ─────────────────────────────────────────────────
+  //
+  // Start the search AFTER the agent we just ran. Walking from index 0 made
+  // /coder suggest "Next: planner" when the user jumped ahead — the message
+  // implied planner runs after coder, which is nonsense. The natural
+  // successor (planner → designer → coder → reviewer) is what users expect.
 
   let nextAgent: string | null = null;
   let pipelineComplete = false;
@@ -1233,7 +1238,9 @@ export async function runStep(
     const updated = (await callHarness(
       client, "harness_get_status", { session_id: sessionId },
     )) as SessionStatus;
-    for (const agent of AGENT_PIPELINE) {
+    const justRanIdx = AGENT_PIPELINE.findIndex(a => a.name === agentDef.name);
+    for (let i = justRanIdx + 1; i < AGENT_PIPELINE.length; i++) {
+      const agent = AGENT_PIPELINE[i];
       if (updated.stages[agent.writeStage]?.status !== "complete") {
         nextAgent = agent.name;
         break;
