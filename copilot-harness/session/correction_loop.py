@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import state
 from memory import pattern_detector as _pd
+
+from . import state
 
 MAX_ATTEMPTS = 3
 

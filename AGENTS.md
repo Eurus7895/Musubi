@@ -8,12 +8,13 @@
 
 ## What CopilotHarness Is
 
-Harness layer for GitHub Copilot Chat in VS Code. Two modes:
+Harness layer for GitHub Copilot Chat in VS Code. Three modes:
 - **Direct:** simple requests → single LLM call → fast answer, no overhead
-- **Pipeline:** complex workflows → governed agents → validated, auditable output
+- **Pipeline:** repeatable high-stakes workflows → predetermined chain in `pipeline.yaml` → full guardrails (enterprise feature, frozen in current scope)
+- **Agent:** structured tasks → planner-led delegation across agent catalog → harness still enforces firewall, validation, skills, retry, audit *(Week 6 — planned, see `docs/design.md`)*
 
-The `@harness` chat participant routes automatically. Slash commands always
-go to pipeline. Everything else goes direct unless overridden.
+The `@harness` chat participant routes automatically: slash commands go to
+their declared action; bare `@harness <prompt>` goes direct.
 
 ---
 
@@ -101,9 +102,12 @@ No new pipelines until feature-dev is validated.
 # Direct mode (single vscode.lm call, no harness)
 @harness explain this error
 
-# Pipeline mode (4 agents + correction loop)
+# Pipeline mode (4 agents + correction loop, enterprise / frozen)
 @harness /feature-dev add a login endpoint
 @harness add a login endpoint --pipeline          # flag form
+
+# Agent mode (planner-led delegation, Week 6 — planned)
+@harness /agent <task>
 
 # Single step / status
 @harness /planner <task>  /coder  /continue  /status

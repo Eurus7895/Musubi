@@ -23,11 +23,11 @@ These cannot be broken without an explicit design discussion. If a change
 would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Python harness + TS extension orchestrate; only `vscode.lm.sendRequest` calls the model. New code must not import an LLM SDK.
-2. **Skills are pushed, not pulled.** In pipeline mode the harness injects skill content via `harness_read_stage`. Agents cannot opt out. Pull-on-demand exists only in **direct mode** (no evaluator there).
-3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
-4. **Zero-cost routing.** Slash command → pipeline. `--pipeline` flag → pipeline. Everything else → direct. No LLM call to decide.
+2. **Skills are pushed, not pulled.** In pipeline mode (and agent mode, when shipped) the harness injects skill content based on the agent's `inject_skills` frontmatter. Agents cannot opt out. Pull-on-demand exists only in **direct mode**.
+3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `validation/context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
+4. **Zero-cost routing.** `/feature-dev` etc → pipeline. `/agent` → agent (Week 6 — planned). `--pipeline` flag → pipeline. Bare `@harness <prompt>` → direct. No LLM call to decide which mode.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
-6. **Pipelines are self-contained** under `.github/pipelines/<name>/`. Cross-pipeline agents (e.g. skill-builder, sub agent roles) live in `.github/agents/`.
+6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); a pipeline-specific variant of a role would be filename-prefixed (`<pipeline>-<role>.agent.md`) — but only when 3+ specific failures of the canonical agent justify it. The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
 7. **Append-only stage store.** Stage outputs are written once; retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
 8. **No silent sub agents.** Every spawn (when shipped in Week 5) emits a chat marker and an audit-log row.
 
@@ -63,8 +63,10 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 ## Conventions
 
 **File layout:**
-- Pipelines: `.github/pipelines/<name>/{pipeline.yaml, agents/*.agent.md, README.md, .claude-plugin/plugin.json}`
-- Cross-pipeline agents: `.github/agents/<name>.agent.md`
+- Pipelines: `.github/pipelines/<name>/{pipeline.yaml, README.md}` — composes shared agents by path
+- Canonical agents: `.github/agents/<role>.agent.md`
+- Pipeline-specific variants: `.github/agents/<pipeline>-<role>.agent.md`
+- Shared cross-pipeline agents (skill-builder etc.): `.github/agents/<name>.agent.md`
 - Slash commands: `.github/commands/<name>.md` (frontmatter-driven; loader is `slashCommands.ts`)
 - Skills: `.github/skills/<name>/SKILL.md` (+ `assets/`, `references/`)
 - Memory: `.github/memory/{MEMORY.md, architecture.md, failure-patterns.md}` (3-tier)
@@ -80,6 +82,16 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 - Don't add status/version/week-number footers — they rot. Status lives in `docs/design.md`.
 - Don't add scaffolding comments or backwards-compat shims.
 
+**Text I/O — always pass `encoding="utf-8"` explicitly.**
+- `Path.read_text()` / `Path.write_text()` / `open()` without an `encoding=`
+  argument falls back to the platform default — `cp1252`/`charmap` on Windows
+  — and crashes on the em dashes, arrows, and other non-ASCII characters in
+  agent `.md` files, skill content, and stage outputs. The harness has hit
+  this once already (`harness_new_session` failing with
+  `'charmap' codec can't decode byte 0x90`); never reintroduce it.
+- Same rule for `json.load`/`json.dump` when the file handle is opened by
+  this codebase — open with `encoding="utf-8"` first.
+
 ---
 
 ## Commands
@@ -88,7 +100,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 # Python harness
 cd copilot-harness
 pip install -e .
-pytest tests/ -v                 # 379 tests
+pytest tests/ -v                 # 370 tests
 
 # Per-component checks
 ruff check copilot-harness/

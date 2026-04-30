@@ -63,25 +63,9 @@ Prevents the whole class of "forgot half the plan" failures.
 
 ---
 
-## Tier 3 — Run the Level-1 probe (Week 4 Day 5 deferred)
+## Tier 3 — Observability / UX
 
-Blocks the handoff-schema decision; must happen before any structural
-change to the pipeline.
-
-- **T3.1 — Select 5 representative requests.** Small, medium, large, one
-  ambiguous, one with a known retry pattern. Record the list in
-  `feature-dev-level1-probe/README.md` before running.
-- **T3.2 — Run each through both pipelines.** Capture first-attempt status,
-  retry count, artifact size, wall-clock time.
-- **T3.3 — Record the decision.** If ≥ 80% first-attempt pass AND retry
-  count ≤ Level-2, collapse `feature-dev` to Level 1 and retire the probe
-  directory. Otherwise keep Level 2 and move Tier 2 forward with confidence.
-
----
-
-## Tier 4 — Observability / UX
-
-- **T4.1 — Move stage events from extension to harness.**
+- **T3.1 — Move stage events from extension to harness.**
   Per-stage `### ⏳ / ✓` rendering already ships (v0.3.1 — see
   `emitStageStart` / `emitStageComplete` in `pipeline.ts`), but the
   events are *synthesized by the extension* around each `harness_*`
@@ -92,21 +76,21 @@ change to the pipeline.
   coercion) exists but the extension never learns about it. Pairs with
   T1.2 — `coercion_applied` is the event T1.2 needs.
 
-- **T4.2 — Friendlier escalation output.**
+- **T3.2 — Friendlier escalation output.**
   When max retries hit, print the reviewer's first-attempt issues next
   to the final-attempt issues so the user sees what changed and what
   didn't — the current output only shows the final fail state.
 
-- **T4.3 — `.harness/sessions/<id>/summary.md`** written at the end of every
+- **T3.3 — `.harness/sessions/<id>/summary.md`** written at the end of every
   run (pass or escalate). One-page digest of plan + design + code files +
   final review. Saves the user from stitching the per-stage `.md` files
   together.
 
 ---
 
-## Tier 5 — Week 5 prerequisite (enables, does not require Week 5)
+## Tier 4 — Week 5 prerequisite (enables, does not require Week 5)
 
-- **T5.1 — `subagents:` block in `pipeline.yaml`.** Add the schema +
+- **T4.1 — `subagents:` block in `pipeline.yaml`.** Add the schema +
   validator so when Week 5 ships, the coder stage can opt into spawning
   `explorer` without re-plumbing the pipeline loader. Opt-in per stage,
   whitelist only.
@@ -118,29 +102,25 @@ change to the pipeline.
 
 ```
 T1.1 ── independent
-T1.2 ── depends on T4.1 (consumes the coercion_applied event)
+T1.2 ── depends on T3.1 (consumes the coercion_applied event)
 T1.3 ── independent
 T1.4 ── independent
 
-T2.1 ── benefits from T3 decision (if Level 1 wins, T2.1 value drops)
+T2.1 ── independent
 T2.2 ── independent
 T2.3 ── independent
 
-T3 ──── blocks structural changes; standalone otherwise
+T3.1 ── enables T1.2 (event source for the coercion marker)
+T3.2 ── independent
+T3.3 ── independent
 
-T4.1 ── enables T1.2 (event source for the coercion marker)
-T4.2 ── independent
-T4.3 ── independent
-
-T5.1 ── blocks Week 5 Phase B (pipeline-main spawning)
+T4.1 ── blocks Week 5 Phase B (pipeline-main spawning)
 ```
 
 ## Recommended first slice
 
-Tier 1 + Tier 2 together, with **T4.1 pulled forward** so T1.2 has an
+Tier 1 + Tier 2 together, with **T3.1 pulled forward** so T1.2 has an
 event source to render. Tier 1 fixes observed bugs; Tier 2 prevents a
 related class of bugs and is cheap to add while the severity-rubric work
-is fresh; T4.1 is the cheapest plumbing change that unblocks T1.2 and
+is fresh; T3.1 is the cheapest plumbing change that unblocks T1.2 and
 removes a class of silent extension/server divergence at the same time.
-Defer Tier 3 until a day where 5 representative requests can actually be
-run end-to-end.

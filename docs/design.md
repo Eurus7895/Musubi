@@ -1050,6 +1050,139 @@ roles speculatively.
 
 ---
 
+### Week 6 — Agent Mode (planned)
+
+**Why.** Pipeline mode formalizes a fixed sequence (planner → designer →
+coder → reviewer) optimized for repeatable high-stakes workflows. Direct
+mode is a single LLM call for ad-hoc Q&A. There's a gap between them: tasks
+that need *some* orchestration but don't fit the four-stage pipeline shape.
+Agent mode fills it — a planner-led delegation chain where the planner picks
+which agents run next, from a shared catalog under `.github/agents/`.
+
+**Three modes, three use cases:**
+
+| Entry point | Mode | When |
+|---|---|---|
+| `@harness <free-form>` | Direct | Q&A, follow-up |
+| `@harness /<pipeline> <task>` | Pipeline | Repeatable, high-stakes — full guardrails |
+| `@harness /agent <task>` | Agent | Structured task that doesn't fit a pipeline |
+
+**Philosophy split.** Pipeline mode = *harness controls everything* (routing
+in `pipeline.yaml`). Agent mode = *LLM picks verbs, harness enforces grammar*
+(planner picks next agents; harness still enforces firewall, validation,
+skill injection, retry, audit at every step). Direct mode = no orchestration.
+
+**Frontmatter as contract.** Every agent file declares its constraints in
+frontmatter. The harness reads these at session start; planner cannot bypass
+them.
+
+```yaml
+---
+name: security-reviewer
+version: 1.0.0
+role: reviewer                       # writes to "review" stage
+sees: [code]                          # firewall — harness pushes only these
+inject_skills: [code-review, owasp-top-10]
+output_schema: reviewer               # verifier.py key
+allowed_next: []                      # terminates the chain
+---
+```
+
+When the planner emits `next_agents: ["security-reviewer"]`:
+1. **Catalog allowlist** — agent must exist in `.github/agents/`. Fail-closed.
+2. **Firewall** — context built from `sees`. Planner cannot pass plan/design through.
+3. **Skill injection** — skills from `inject_skills`. Planner can suggest, harness enforces floor.
+4. **Validation** — output validated against `output_schema`.
+5. **Bounded delegation** — agent's own `next_agents` filtered through its `allowed_next`.
+
+**Build order — 8 steps, ~7-9 sessions total:**
+
+```
+Step 1. agents/ subpackage (Python harness)                          1 session   [low risk]
+  [ ] copilot-harness/agents/frontmatter.py    parse .agent.md frontmatter
+  [ ] copilot-harness/agents/catalog.py        list + lookup agents
+  [ ] copilot-harness/agents/policies.py       translate frontmatter → runtime constraints
+  [ ] tests/test_agents_frontmatter.py
+  [ ] tests/test_agents_catalog.py
+  Pipeline cũ chưa dùng — pure addition.
+
+Step 2. Frontmatter migration                                        ½ session   [low risk]
+  [ ] Add sees / inject_skills / output_schema / allowed_next to:
+       planner, designer, coder, reviewer (canonical)
+       pipeline-builder-{planner,designer,coder,reviewer}
+       skill-builder
+  [ ] Defaults preserve current behavior (sees mirrors _STAGE_PERMISSIONS,
+       inject_skills mirrors _STAGE_SKILL_MAP, output_schema = role name)
+
+Step 3. Refactor context_builder.py                                  1 session   [medium risk]
+  [ ] _STAGE_PERMISSIONS reads from agents/catalog at session start
+  [ ] Hardcoded map removed
+  [ ] Test: Pipeline mode firewall behavior identical (390 tests pass)
+
+Step 4. Refactor server.py::_STAGE_SKILL_MAP                         ½ session   [low risk]
+  [ ] Skill injection map reads from agents/catalog
+  [ ] Hardcoded map removed
+  [ ] Test: Pipeline mode skill injection identical
+
+Step 5. Generalize state schema (option A)                           1-2 session [medium risk]
+  [ ] storage/db.py: stages table → steps table
+       columns: session_id, step_index, agent_name, attempt, output, status
+  [ ] session/state.py: STAGES list still defines pipeline-mode order;
+       Agent mode steps have agent_name from runtime
+  [ ] Migration script for existing audit DBs (optional — dev DBs reset OK)
+  [ ] Pipeline mode resume_stage still works on canonical names
+
+Step 6. Split copilot-harness-extension/src/pipeline.ts              1 session   [low risk]
+  [ ] runners/core.ts        callHarness, runAgentLM, writeStage,
+                              loadAgentPrompt, readWorkspaceTree, helpers
+  [ ] runners/pipeline.ts    runPipeline + runStep + runCorrectionLoop
+  [ ] runners/direct.ts      runDirect (move from extension.ts)
+  [ ] extension.ts re-imports from runners/
+
+Step 7. runAgentChain (Agent mode runtime)                           1-2 session [medium risk]
+  [ ] runners/agentChain.ts   walks planner → next_agents loop
+  [ ] Each step calls shared core.ts primitives
+  [ ] MAX_STEPS budget (default 8) prevents runaway chains
+  [ ] Self-loop allowed (planner → research → planner attempt 2)
+  [ ] Validation retry budget per step (3 attempts)
+  [ ] Append-only steps in DB
+
+Step 8. /agent slash command + research agent                        1 session   [low risk]
+  [ ] commands/agent.md       slash command frontmatter (action: agent)
+  [ ] agents/research.agent.md   task-context-gathering agent
+       sees: [request, workspace_tree]
+       inject_skills: []
+       output_schema: research (relevant_files: [...], snippets: {...})
+       allowed_next: [planner]
+  [ ] planner.agent.md output schema gains next_agents: [{agent, reason}]
+  [ ] Integration test: /agent <task> → planner → research → planner → coder
+
+END-OF-PHASE checkpoint:
+  [ ] 390 + new tests green
+  [ ] Pipeline mode unchanged (regression suite)
+  [ ] Direct mode unchanged
+  [ ] /agent <task> runs end-to-end with real Copilot model
+```
+
+**Agent mode + Sub agents (Week 5) compose.** Sub agents are orthogonal to
+which mode they're spawned from — Pipeline stage agent, Agent-mode chain
+agent, or Direct main can all spawn sub agents (subject to
+`SUBAGENT_POLICIES` allowlist). Build order: Week 5 first (mechanical
+plumbing), Week 6 second (depends on agents/catalog from Step 1).
+
+**What Agent mode does NOT do:**
+- Replace Pipeline mode — Pipeline stays for repeatable high-stakes workflows.
+- Replace Direct mode — Direct stays for Q&A and follow-up.
+- Allow LLM-decided firewalls — frontmatter is fixed, planner cannot widen `sees`.
+- Allow infinite delegation — `MAX_STEPS` budget enforced.
+- Skip validation — every step's output runs through `verifier.py`.
+
+**Promotion rule for new agents in catalog.** Same as pipeline-stage agents:
+3+ observed cases where existing agents would not have produced the right
+output. Do not add agents speculatively.
+
+---
+
 ## Promotion Checklist — Adding an Agent
 
 Before promoting any pipeline from Level 0→1 or Level 1→2:

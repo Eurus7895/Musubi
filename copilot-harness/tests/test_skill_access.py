@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-import context_builder
+from validation import context_builder
 import server
-import skill_loader
-import state
-from context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
+from skills import skill_loader
+from session import state
+from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
 
 # ── check_skill_permission ────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ def test_no_required_skills_falls_back_to_static_map(monkeypatch: pytest.MonkeyP
 
 def _patch_server_with_memory(monkeypatch: pytest.MonkeyPatch, plan_extra: dict | None = None) -> None:
     """Like _patch_server but also stubs memory_loader to return non-empty memory."""
-    import memory_loader
+    from memory import memory_loader
     _patch_server(monkeypatch, plan_extra)
     monkeypatch.setattr(
         memory_loader, "get_memory_context",
@@ -234,7 +234,7 @@ def test_coder_still_gets_memory_injection(monkeypatch: pytest.MonkeyPatch) -> N
 # ── verifier: required_skills is optional and validated as list ───────────────
 
 def test_planner_output_with_required_skills_passes_validation() -> None:
-    import verifier
+    from validation import verifier
     output = {
         "summary": "build login",
         "tasks": [],
@@ -245,7 +245,7 @@ def test_planner_output_with_required_skills_passes_validation() -> None:
 
 
 def test_planner_output_required_skills_wrong_type_fails() -> None:
-    import verifier
+    from validation import verifier
     output = {
         "summary": "build login",
         "tasks": [],
@@ -257,7 +257,7 @@ def test_planner_output_required_skills_wrong_type_fails() -> None:
 
 
 def test_planner_output_without_required_skills_still_valid() -> None:
-    import verifier
+    from validation import verifier
     output = {"summary": "build login", "tasks": []}
     result = verifier.validate(output, "planner")
     assert result.valid

@@ -21,7 +21,8 @@ def _resolve_skills_dir() -> Path:
     if harness_root:
         return Path(harness_root) / ".github" / "skills"
     # Development: resolve relative to this file's repo root.
-    return Path(__file__).parent.parent / ".github" / "skills"
+    # __file__ = copilot-harness/skills/skill_loader.py → repo root is 3 up.
+    return Path(__file__).parent.parent.parent / ".github" / "skills"
 
 
 _SKILLS_DIR = _resolve_skills_dir()

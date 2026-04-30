@@ -255,29 +255,34 @@ async function callHarness(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function loadAgentPrompt(workspaceRoot: string, pipelineName: string, agentName: string): string {
-  // Resolution order:
-  //   1. The named pipeline's own agents/   (so /pipeline-builder loads its agents,
-  //      not feature-dev's)
-  //   2. feature-dev/agents/                 (default fallback — pipelines that
-  //      don't override an agent inherit feature-dev's)
-  //   3. legacy .github/agents/              (cross-pipeline meta-agents like
-  //      skill-builder)
-  // The first hit wins. Calls without a pipelineName (or with "feature-dev")
-  // collapse to the original two-candidate path.
-  const candidates: string[] = [];
-  if (pipelineName && pipelineName !== "feature-dev") {
-    candidates.push(path.join(workspaceRoot, ".github", "pipelines", pipelineName, "agents", `${agentName}.agent.md`));
-  }
-  candidates.push(
-    path.join(workspaceRoot, ".github", "pipelines", "feature-dev", "agents", `${agentName}.agent.md`),
-    path.join(workspaceRoot, ".github", "agents", `${agentName}.agent.md`),
-  );
-  for (const filePath of candidates) {
-    try {
-      return fs.readFileSync(filePath, "utf-8");
-    } catch {
-      // try next candidate
+function loadAgentPrompt(
+  roots: string | string[],
+  pipelineName: string,
+  agentName: string,
+): string {
+  // Agents live in a flat shared catalog at .github/agents/. Pipelines
+  // compose them by reference. Resolution order, per root (workspace first,
+  // extension bundle as fallback):
+  //   1. .github/agents/<pipelineName>-<agentName>.agent.md
+  //        (pipeline-specific variant — e.g. pipeline-builder-planner)
+  //   2. .github/agents/<agentName>.agent.md
+  //        (canonical / feature-dev / shared agents like skill-builder)
+  // The first hit wins. Without the extension-bundle fallback, opening the
+  // extension in any other workspace would silently drop to the generic
+  // placeholder prompt below.
+  const rootList = Array.isArray(roots) ? roots.filter(Boolean) : [roots];
+  for (const root of rootList) {
+    const candidates: string[] = [];
+    if (pipelineName && pipelineName !== "feature-dev") {
+      candidates.push(path.join(root, ".github", "agents", `${pipelineName}-${agentName}.agent.md`));
+    }
+    candidates.push(path.join(root, ".github", "agents", `${agentName}.agent.md`));
+    for (const filePath of candidates) {
+      try {
+        return fs.readFileSync(filePath, "utf-8");
+      } catch {
+        // try next candidate
+      }
     }
   }
   return (
@@ -293,6 +298,56 @@ function extractJson(text: string): unknown {
   const objMatch = text.match(/\{[\s\S]*\}/);
   if (objMatch) { try { return JSON.parse(objMatch[0]); } catch { /* fall through */ } }
   throw new Error(`Cannot extract JSON from model response:\n${text.substring(0, 500)}`);
+}
+
+/**
+ * Walk the workspace root and return a list of file paths (relative to root)
+ * the planner / designer can use to ground their module choices in the real
+ * project layout. Without this, agents fall back to placeholders like
+ * "path/to/test_file.py" because they have no view of the workspace.
+ *
+ * Skips heavy / irrelevant trees (node_modules, .git, dist, build, __pycache__,
+ * venv, .venv, .harness, .vscode) and caps the result at MAX_ENTRIES to keep
+ * the prompt bounded in large repos. Directories are listed before their
+ * contents so the agent sees structure even when the cap truncates files.
+ */
+function readWorkspaceTree(workspaceRoot: string): string[] {
+  const SKIP = new Set([
+    "node_modules", ".git", "dist", "build", "__pycache__",
+    "venv", ".venv", ".harness", ".vscode", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", "out", "target",
+  ]);
+  const MAX_ENTRIES = 400;
+  const MAX_DEPTH = 6;
+
+  const entries: string[] = [];
+  const walk = (abs: string, rel: string, depth: number): void => {
+    if (entries.length >= MAX_ENTRIES || depth > MAX_DEPTH) { return; }
+    let children: fs.Dirent[];
+    try {
+      children = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    children.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const child of children) {
+      if (entries.length >= MAX_ENTRIES) { return; }
+      if (child.name.startsWith(".") && child.name !== ".github") { continue; }
+      if (SKIP.has(child.name)) { continue; }
+      const childRel = rel ? `${rel}/${child.name}` : child.name;
+      if (child.isDirectory()) {
+        entries.push(childRel + "/");
+        walk(path.join(abs, child.name), childRel, depth + 1);
+      } else if (child.isFile()) {
+        entries.push(childRel);
+      }
+    }
+  };
+  walk(workspaceRoot, "", 0);
+  return entries;
 }
 
 /**
@@ -431,16 +486,82 @@ async function writeStage(
   stage: string,
   agentName: string,
   output: unknown,
-): Promise<void> {
-  const result = (await callHarness(client, "harness_write_stage", {
+): Promise<HarnessWriteResult> {
+  return (await callHarness(client, "harness_write_stage", {
     session_id: sessionId, stage, output: JSON.stringify(output), agent_name: agentName,
   })) as HarnessWriteResult;
+}
 
-  if (result.status !== "stored") {
-    const details = result.validation_errors?.join("\n") ?? "";
-    throw new Error(
-      `harness_write_stage failed for '${stage}': ${result.error ?? "unknown"}\n${details}`.trim(),
+/**
+ * Run an agent and write its output, retrying on validation failure.
+ *
+ * harness_write_stage can reject output for schema/secrets/contract reasons
+ * (e.g. coder writes a file not in design.modules). Without a retry loop,
+ * the user sees "Output rejected" with no recovery — they have to abandon
+ * the session and start over. This function feeds validation_errors back
+ * into the agent context so it can self-correct, sharing the 3-attempt
+ * budget with the reviewer loop.
+ */
+async function runAgentWithValidationRetry(
+  client: McpClient,
+  model: vscode.LanguageModelChat,
+  agentName: string,
+  agentPrompt: string,
+  baseContext: Record<string, unknown>,
+  sessionId: string,
+  stage: string,
+  initialAttempt: number,
+  workspaceRoot: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+  onChange?: () => void,
+): Promise<{ output: unknown; finalAttempt: number }> {
+  let attempt = initialAttempt;
+  let context = baseContext;
+
+  for (;;) {
+    if (token.isCancellationRequested) {
+      throw new Error("cancelled");
+    }
+    const output = await runAgentLM(
+      model, agentName, agentPrompt, context, token,
+      { workspaceRoot, sessionId, stage, attempt },
     );
+    const result = await writeStage(client, sessionId, stage, agentName, output);
+    if (result.status === "stored") {
+      return { output, finalAttempt: attempt };
+    }
+
+    const details = result.validation_errors?.join("\n") ?? "";
+    const errLine = `${result.error ?? "unknown"}${details ? "\n" + details : ""}`;
+
+    if (attempt >= MAX_CODE_ATTEMPTS) {
+      throw new Error(
+        `harness_write_stage failed for '${stage}' after ${attempt} attempt(s): ${errLine}`.trim(),
+      );
+    }
+
+    stream.markdown(
+      `\n> ⚠️ **${agentName} → validation failed** (attempt ${attempt}/${MAX_CODE_ATTEMPTS})` +
+      (details ? `\n>\n> ${details.split("\n").join("\n> ")}` : "") +
+      `\n\n`,
+    );
+
+    await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage });
+    attempt += 1;
+    onChange?.();
+
+    context = {
+      ...baseContext,
+      validation_feedback: {
+        previous_attempt: attempt - 1,
+        error: result.error,
+        validation_errors: result.validation_errors ?? [],
+        instruction:
+          "Your previous output was rejected by the harness validator. " +
+          "Fix the listed errors and produce a corrected output that conforms to your Output Contract.",
+      },
+    };
   }
 }
 
@@ -636,6 +757,7 @@ async function runCorrectionLoop(
   model: vscode.LanguageModelChat,
   sessionId: string,
   workspaceRoot: string,
+  promptRoots: string[],
   pipelineName: string,
   initialReview: ReviewOutput,
   codeAttempt: number,
@@ -675,11 +797,11 @@ async function runCorrectionLoop(
     emitStageStart(stream, "coder", codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
     onChange?.();
     const coderT0 = Date.now();
-    const fixedCode = await runAgentLM(
-      model, "coder", loadAgentPrompt(workspaceRoot, pipelineName, "coder"), coderCtx, token,
-      { workspaceRoot, sessionId, stage: "code", attempt: codeAttempt },
+    const { output: fixedCode, finalAttempt: coderFinalAttempt } = await runAgentWithValidationRetry(
+      client, model, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
+      coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange,
     );
-    await writeStage(client, sessionId, "code", "coder", fixedCode);
+    codeAttempt = coderFinalAttempt;
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
     emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
@@ -691,12 +813,12 @@ async function runCorrectionLoop(
     emitStageStart(stream, "reviewer", codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
     onChange?.();
     const reviewerT0 = Date.now();
-    const newReview = (await runAgentLM(
-      model, "reviewer", loadAgentPrompt(workspaceRoot, pipelineName, "reviewer"), reviewerCtx, token,
-      { workspaceRoot, sessionId, stage: "review", attempt: codeAttempt },
-    )) as ReviewOutput;
-    await writeStage(client, sessionId, "review", "reviewer", newReview);
-    materializeStageOutput(workspaceRoot, sessionId, "review", codeAttempt, newReview);
+    const { output: newReviewOutput, finalAttempt: reviewerFinalAttempt } = await runAgentWithValidationRetry(
+      client, model, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
+      reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange,
+    );
+    const newReview = newReviewOutput as ReviewOutput;
+    materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
     emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
     emitStageOutputDetails(stream, "review", newReview);
     onChange?.();
@@ -738,10 +860,11 @@ function emitStageComplete(
 }
 
 /**
- * Render the stage's structured output as a collapsible <details> block
- * in the chat. GFM supports <details>/<summary> in CommonMark; chat
- * renders it as an expandable section. We emit the whole block as ONE
- * markdown call so partial streaming can't break the HTML.
+ * Render the stage's structured output as an indented markdown block.
+ *
+ * Copilot Chat does NOT render raw <details>/<summary> HTML as a
+ * collapsible — the tags appear as literal text. We use a blockquote
+ * instead so the structured fields render cleanly without HTML.
  */
 function emitStageOutputDetails(
   stream: vscode.ChatResponseStream,
@@ -751,7 +874,10 @@ function emitStageOutputDetails(
   if (typeof output !== "object" || output === null) return;
   const body = formatStageOutput(stage, output as Record<string, unknown>);
   if (!body) return;
-  stream.markdown(`\n<details><summary>output</summary>\n\n${body}\n\n</details>\n`);
+  // Prefix every line with "> " so the entire block renders as one
+  // continuous blockquote. Empty lines need "> " too or the quote breaks.
+  const quoted = body.split("\n").map(l => `> ${l}`).join("\n");
+  stream.markdown(`\n${quoted}\n`);
 }
 
 function formatStageOutput(stage: string, o: Record<string, unknown>): string {
@@ -836,6 +962,7 @@ export async function runPipeline(
   client: McpClient,
   request: string,
   workspaceRoot: string,
+  promptRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   pipelineMeta?: { route: string; pipelineName: string; level: number },
@@ -849,18 +976,13 @@ export async function runPipeline(
   logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
   logger().show(true);
 
-  // ── Session setup (with crash recovery) ──────────────────────────────────────
-
-  const active = (await callHarness(client, "harness_get_active_session", {})) as ActiveSession;
-  let sessionId: string;
-
-  if (active.session_id) {
-    sessionId = active.session_id;
-    stream.progress(`Resuming session ${sessionId} (interrupted at '${active.resume_stage}')`);
-  } else {
-    const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
-    sessionId = session.session_id;
-  }
+  // ── Session setup ────────────────────────────────────────────────────────────
+  // A slash-command invocation with an explicit request is always a new session.
+  // Resume is the job of /continue (runStep without a request) — folding crash
+  // recovery into runPipeline silently inherited stale stages from the prior
+  // run and skipped planner/designer with "already complete".
+  const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
+  const sessionId = session.session_id;
 
   const stageOutputs: Record<string, unknown> = {};
   const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
@@ -895,6 +1017,14 @@ export async function runPipeline(
       context["request"] = request;
     }
 
+    // Inject the workspace file tree into planner/designer context so they
+    // ground module paths in the actual project layout instead of falling
+    // back to placeholders like "path/to/test_file.py" that the coder then
+    // dutifully creates on disk.
+    if (agent.name === "planner" || agent.name === "designer") {
+      context["workspace_tree"] = readWorkspaceTree(workspaceRoot);
+    }
+
     // Inject existing workspace file contents into coder context so the model
     // can see what already exists and produce real modifications rather than
     // writing from scratch with no knowledge of the current codebase.
@@ -909,13 +1039,12 @@ export async function runPipeline(
     emitStageStart(stream, agent.name, attempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agent.writeStage] ?? {});
     onChange?.();
     const stageT0 = Date.now();
-    const agentOutput = await runAgentLM(
-      model, agent.name, loadAgentPrompt(workspaceRoot, meta.pipelineName, agent.name), context, token,
-      { workspaceRoot, sessionId, stage: agent.writeStage, attempt },
+    const { output: agentOutput, finalAttempt } = await runAgentWithValidationRetry(
+      client, model, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
+      context, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
     );
-    await writeStage(client, sessionId, agent.writeStage, agent.name, agentOutput);
     stageOutputs[agent.writeStage] = agentOutput;
-    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, attempt, agentOutput);
+    materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, finalAttempt, agentOutput);
     if (agent.name === "coder") {
       materializeCoderFiles(workspaceRoot, agentOutput, stream);
     }
@@ -938,7 +1067,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, meta.pipelineName, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -962,6 +1091,7 @@ export async function runPipeline(
 export async function runStep(
   client: McpClient,
   workspaceRoot: string,
+  promptRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   options: {
@@ -1039,6 +1169,9 @@ export async function runStep(
   if (agentDef.name === "planner") {
     context["request"] = sessionRequest;
   }
+  if (agentDef.name === "planner" || agentDef.name === "designer") {
+    context["workspace_tree"] = readWorkspaceTree(workspaceRoot);
+  }
 
   const stepAttempt = statusData.stages[agentDef.writeStage]?.attempt ?? 1;
   emitStageStart(stream, agentDef.name, stepAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agentDef.writeStage] ?? {});
@@ -1048,13 +1181,12 @@ export async function runStep(
   // and `continue` always operate on feature-dev. The slash command path uses
   // runPipeline, which threads pipelineName explicitly.
   const stepPipeline = "feature-dev";
-  const agentOutput = await runAgentLM(
-    model, agentDef.name, loadAgentPrompt(workspaceRoot, stepPipeline, agentDef.name), context, token,
-    { workspaceRoot, sessionId, stage: agentDef.writeStage, attempt: stepAttempt },
+  const { output: agentOutput, finalAttempt: stepFinalAttempt } = await runAgentWithValidationRetry(
+    client, model, agentDef.name, loadAgentPrompt(promptRoots, stepPipeline, agentDef.name),
+    context, sessionId, agentDef.writeStage, stepAttempt, workspaceRoot, stream, token, onChange,
   );
-  await writeStage(client, sessionId, agentDef.writeStage, agentDef.name, agentOutput);
 
-  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepAttempt, agentOutput);
+  materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepFinalAttempt, agentOutput);
   if (agentDef.name === "coder") {
     materializeCoderFiles(workspaceRoot, agentOutput, stream);
   }
@@ -1076,7 +1208,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, stepPipeline, review, currentAttempt, stream, token, onChange,
+        client, model, sessionId, workspaceRoot, promptRoots, stepPipeline, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {
@@ -1089,6 +1221,11 @@ export async function runStep(
   }
 
   // ── Determine what comes next ─────────────────────────────────────────────────
+  //
+  // Start the search AFTER the agent we just ran. Walking from index 0 made
+  // /coder suggest "Next: planner" when the user jumped ahead — the message
+  // implied planner runs after coder, which is nonsense. The natural
+  // successor (planner → designer → coder → reviewer) is what users expect.
 
   let nextAgent: string | null = null;
   let pipelineComplete = false;
@@ -1097,7 +1234,9 @@ export async function runStep(
     const updated = (await callHarness(
       client, "harness_get_status", { session_id: sessionId },
     )) as SessionStatus;
-    for (const agent of AGENT_PIPELINE) {
+    const justRanIdx = AGENT_PIPELINE.findIndex(a => a.name === agentDef.name);
+    for (let i = justRanIdx + 1; i < AGENT_PIPELINE.length; i++) {
+      const agent = AGENT_PIPELINE[i];
       if (updated.stages[agent.writeStage]?.status !== "complete") {
         nextAgent = agent.name;
         break;
@@ -1111,4 +1250,57 @@ export async function runStep(
     completedAgent: agentDef.name, completedStage: agentDef.writeStage,
     output: finalOutput, nextAgent, pipelineComplete, escalated, escalation,
   };
+}
+
+// ── One-shot agent — single LLM call, no harness session, no stage validation
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Used by slash commands with `action: agent`. Loads the agent prompt, sends
+// the user's request as context, materialises any file_contents the agent
+// produces. Aligns with the project's "don't invent agents speculatively"
+// rule: low-frequency dev tools (e.g. /pipeline-builder) don't need a
+// 4-stage pipeline.
+
+export interface OneShotResult {
+  success: boolean;
+  agentName: string;
+  output: unknown;
+}
+
+export async function runOneShotAgent(
+  workspaceRoot: string,
+  promptRoots: string[],
+  agentName: string,
+  request: string,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+): Promise<OneShotResult> {
+  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
+  if (!models.length) {
+    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
+  }
+  const model = models[0];
+  logLine(`Selected LM: id=${model.id} for one-shot ${agentName}`);
+
+  const agentPrompt = loadAgentPrompt(promptRoots, "", agentName);
+  const context: Record<string, unknown> = {
+    request,
+    workspace_tree: readWorkspaceTree(workspaceRoot),
+  };
+
+  stream.markdown(`\n### ⏳ ${agentName}\n*one-shot · no pipeline state*\n\n`);
+  const t0 = Date.now();
+  const output = await runAgentLM(model, agentName, agentPrompt, context, token);
+  const elapsed = Date.now() - t0;
+
+  // Agents that emit file_contents (like pipeline-builder) get materialised
+  // to disk via the same helper the coder uses inside the pipeline.
+  if (typeof output === "object" && output !== null && "file_contents" in output) {
+    materializeCoderFiles(workspaceRoot, output, stream);
+  }
+
+  stream.markdown(`\n✓ **${agentName}** — ${fmtSeconds(elapsed)}\n`);
+  emitStageOutputDetails(stream, "code", output);
+
+  return { success: true, agentName, output };
 }

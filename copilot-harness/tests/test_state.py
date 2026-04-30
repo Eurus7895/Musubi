@@ -3,7 +3,7 @@
 import pytest
 from pathlib import Path
 
-import state
+from session import state
 
 
 @pytest.fixture()

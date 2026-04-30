@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import state
+from session import state
 from memory import pattern_detector as pd
 from storage import db as _db
 
@@ -192,7 +192,7 @@ def test_two_sessions_below_threshold_no_patch(db: Path, tmp_path: Path) -> None
 
 def test_correction_loop_records_failures_to_pattern_detector(db: Path) -> None:
     """correction_loop.run() records issue descriptions for pattern detection."""
-    import correction_loop
+    from session import correction_loop
 
     issue_desc = "missing authentication check"
     for i in range(pd.PATTERN_THRESHOLD):
@@ -219,7 +219,7 @@ def test_correction_loop_triggers_patch_when_repo_root_given(
     db: Path, tmp_path: Path
 ) -> None:
     """correction_loop.run() writes patch file when repo_root provided and threshold met."""
-    import correction_loop
+    from session import correction_loop
 
     for i in range(pd.PATTERN_THRESHOLD):
         sid = _make_session(db, f"req {i}")

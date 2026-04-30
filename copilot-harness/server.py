@@ -32,15 +32,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 
-import context_builder
-import executor
-import memory_loader
-import session_distiller
-import skill_loader
-import state
-import verifier
-from context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
+from execution import executor
+from memory import memory_loader, session_distiller
+from session import state
+from skills import skill_loader
 from storage import db as _db
+from validation import context_builder, verifier
+from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
 # Ensure DB directory + schema exist before any tool call (critical for first run
 # when HARNESS_ROOT points to the extension install dir which has no data/ folder yet).

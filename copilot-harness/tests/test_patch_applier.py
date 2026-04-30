@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-import proposed_patch_applier as pa
-from context_builder import validate_skill_builder_write
+from execution import proposed_patch_applier as pa
+from validation.context_builder import validate_skill_builder_write
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

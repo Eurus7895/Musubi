@@ -1,35 +1,69 @@
-# .github/agents/ — Cross-Pipeline Agents
+# .github/agents/ — Shared Agent Catalog
 
-This directory holds agents that are **not scoped to a single pipeline**.
-Pipeline-specific stage agents live under `.github/pipelines/<name>/agents/`
-(e.g. `planner`, `designer`, `coder`, `reviewer` for `feature-dev`, moved
-there in Week 3b).
+All agents live here in a flat catalog. Pipelines compose them by
+reference from `pipeline.yaml`. An agent is never bound to one pipeline
+by file location — if two pipelines want the same reviewer, they both
+point at the same file.
 
-## Who lives here
+## Layout
 
-- **`skill-builder.agent.md`** — meta-agent that proposes patches to
-  other agents. Not part of any pipeline; spawned on its own.
-- **`proposed/`** — skill-builder's output directory for proposed
-  patches. Validated by `context_builder.validate_skill_builder_write`.
-- **Sub agent roles** (planned, Week 5) — `explorer`, `investigator`,
-  `reviewer-aux`. Same `.agent.md` format, invoked by a *main* agent
-  mid-task to offload evidence gathering. See `CLAUDE.md § Week 5`.
+```
+.github/agents/
+├── planner.agent.md                       (canonical = feature-dev's)
+├── designer.agent.md
+├── coder.agent.md
+├── reviewer.agent.md
+├── pipeline-builder-planner.agent.md      (variant — different prompt)
+├── pipeline-builder-designer.agent.md
+├── pipeline-builder-coder.agent.md
+├── pipeline-builder-reviewer.agent.md
+├── skill-builder.agent.md                 (cross-pipeline meta-agent)
+└── proposed/                              (skill-builder's patch outputs)
+```
 
-A "sub agent" here means the *invocation contract*, not the agent file:
-the same `.agent.md` can be spawned by another agent (firewalled context,
-returns summary only) or — in principle — run as a stand-alone main. The
-three Week-5 role files are authored specifically for the sub-agent
-invocation contract.
+- **Bare role names** (`planner.agent.md`) are the canonical / default
+  variant. feature-dev uses these directly.
+- **`<pipeline>-<role>.agent.md`** is a pipeline-specific variant — same
+  role, different prompt. pipeline-builder's coder writes pipeline
+  scaffolds, not feature code, so it needs its own file.
+- **Other top-level files** are pipeline-agnostic agents (skill-builder,
+  plus the planned Week-5 sub agents `explorer`/`investigator`/`reviewer-aux`).
+
+## Composition from pipeline.yaml
+
+```yaml
+generator:
+  agents:
+    - name: planner                          # canonical role name
+      agent: agents/planner.agent.md         # path under .github/
+```
+
+pipeline-builder pulls its variants:
+
+```yaml
+generator:
+  agents:
+    - name: planner
+      agent: agents/pipeline-builder-planner.agent.md
+```
+
+To reuse another pipeline's agent, point at its file directly — no
+duplication needed.
 
 ## Loader behavior
 
-Both `copilot-harness/state.py::lock_agent_versions` and
-`copilot-harness-extension/src/pipeline.ts::loadAgentPrompt` check the
-pipeline-scoped directory first (`.github/pipelines/<name>/agents/`) and
-fall back to this directory. Cross-pipeline agents are only found here.
+- `copilot-harness/session/state.py::lock_agent_versions` reads every
+  `*.agent.md` in `.github/agents/` and locks one version per file. The
+  agent name is the filename stem (with `.agent` stripped).
+- `copilot-harness-extension/src/pipeline.ts::loadAgentPrompt` resolves
+  in this order:
+  1. `agents/<pipelineName>-<agentName>.agent.md` — pipeline-specific variant
+  2. `agents/<agentName>.agent.md` — canonical / shared agent
+  (For `pipelineName == "feature-dev"` the prefixed lookup is skipped
+  since feature-dev uses canonical names.)
 
 ## Naming
 
-`<role>.agent.md`. Role is the invocation name (`skill-builder`,
-`explorer`, etc.). Policy lookups and slash-command routing use the
-role name as-is.
+`<role>.agent.md` for canonical / shared agents.
+`<pipeline>-<role>.agent.md` for pipeline-specific variants.
+The `name:` field in the agent's frontmatter must match the filename stem.

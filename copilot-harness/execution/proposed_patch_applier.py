@@ -82,7 +82,7 @@ def validate_patch(patch_path: Path) -> PatchValidationResult:
     if not _is_in_proposed(patch_path):
         errors.append("Patch file must be inside .github/agents/proposed/")
 
-    content = patch_path.read_text()
+    content = patch_path.read_text(encoding="utf-8")
 
     name_match = _AGENT_NAME_RE.search(content)
     if not name_match:
@@ -130,8 +130,8 @@ def apply_patch(
     if not validation.valid:
         return ApplyResult(applied=False, patch_path=patch_path, errors=validation.errors)
 
-    # proposed_patch_applier.py lives in copilot-harness/, one level below repo root
-    root = repo_root or Path(__file__).parent.parent
+    # proposed_patch_applier.py lives in copilot-harness/execution/, two levels below repo root
+    root = repo_root or Path(__file__).parent.parent.parent
     agent_name = validation.target_agent
     addition = validation.addition
 
@@ -143,7 +143,7 @@ def apply_patch(
             errors=[f"Target agent file not found: {agent_path}"],
         )
 
-    agent_text = agent_path.read_text()
+    agent_text = agent_path.read_text(encoding="utf-8")
     if not _BEHAVIOR_RULES_RE.search(agent_text):
         return ApplyResult(
             applied=False,
@@ -161,7 +161,7 @@ def apply_patch(
 
     # Append the new rule(s) at the end of the Behavior Rules section (end of file)
     new_text = agent_text.rstrip("\n") + "\n" + addition + "\n"
-    agent_path.write_text(new_text)
+    agent_path.write_text(new_text, encoding="utf-8")
 
     return ApplyResult(
         applied=True,
