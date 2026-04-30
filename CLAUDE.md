@@ -23,9 +23,9 @@ These cannot be broken without an explicit design discussion. If a change
 would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Python harness + TS extension orchestrate; only `vscode.lm.sendRequest` calls the model. New code must not import an LLM SDK.
-2. **Skills are pushed, not pulled.** In pipeline mode the harness injects skill content via `harness_read_stage`. Agents cannot opt out. Pull-on-demand exists only in **direct mode** (no evaluator there).
+2. **Skills are pushed, not pulled.** In pipeline mode (and agent mode, when shipped) the harness injects skill content based on the agent's `inject_skills` frontmatter. Agents cannot opt out. Pull-on-demand exists only in **direct mode**.
 3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `validation/context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
-4. **Zero-cost routing.** Slash command → pipeline. `--pipeline` flag → pipeline. Everything else → direct. No LLM call to decide.
+4. **Zero-cost routing.** `/feature-dev` etc → pipeline. `/agent` → agent (Week 6 — planned). `--pipeline` flag → pipeline. Bare `@harness <prompt>` → direct. No LLM call to decide which mode.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
 6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); a pipeline-specific variant of a role would be filename-prefixed (`<pipeline>-<role>.agent.md`) — but only when 3+ specific failures of the canonical agent justify it. The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
 7. **Append-only stage store.** Stage outputs are written once; retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
