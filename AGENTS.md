@@ -24,7 +24,9 @@ their declared action; bare `@harness <prompt>` goes direct.
 AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
-.github/agents/                       cross-pipeline: skill-builder + sub agent roles
+.github/agents/                       shared catalog: main agents (skill-builder)
+                                      + sub-agent roles (explorer / investigator
+                                      / reviewer-aux — Phase A.3)
 .github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
 copilot-harness/                      Python MCP server (zero LLM)
 copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
