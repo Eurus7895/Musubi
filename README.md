@@ -122,7 +122,9 @@ Add a command by dropping a new `.md` — no code change required.
 .github/
     pipelines/feature-dev/      pipeline.yaml + agents/*.agent.md
     commands/                   slash command files (frontmatter-driven)
-    agents/                     cross-pipeline agents (skill-builder, sub-agent roles)
+    agents/                     shared catalog: main agents (skill-builder)
+                                + sub-agent roles (explorer, investigator,
+                                reviewer-aux — Phase A.3)
     instructions/               priority-ranked rules
     skills/                     domain skills (SKILL.md + assets/ + references/)
     memory/                     3-tier memory (MEMORY.md + Tier 2)
@@ -146,7 +148,8 @@ Detailed file-by-file breakdown lives in
 CopilotHarness v<version> activating...
 Checking: ...\bin\copilot-harness.exe — found
 Starting MCP server...
-Tools available (18): harness_get_active_session, harness_new_session, ...
+Tools available (24): harness_get_active_session, harness_new_session, ...
+                       harness_spawn_subagent, harness_complete_subagent, ...
 CopilotHarness ready. Use @harness in Copilot Chat.
 ```
 

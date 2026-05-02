@@ -66,6 +66,7 @@ db.sqlite3-journal
 
 # CopilotHarness runtime database
 copilot-harness/storage/copilot_harness.db
+copilot-harness/storage/audit.db
 copilot-harness/memory/cross_session.db
 
 # CopilotHarness build output — copy-assets.sh stages .github/ assets and

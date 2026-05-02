@@ -3,15 +3,19 @@
 Zero LLM calls. Pure routing: MCP tool call → harness component → structured result.
 
 Tools:
-    harness_new_session       → state.py
-    harness_read_stage        → context_builder.py (firewall) + skill auto-injection
-    harness_write_stage       → verifier.py (schema + secrets + contracts) + state.py
-    harness_get_status        → state.py
-    harness_get_skill         → skill_loader.py
-    harness_get_reference     → skill_loader.py
-    harness_run_lint          → executor.py (ruff)
-    harness_run_typecheck     → executor.py (mypy)
-    harness_run_tests         → executor.py (pytest)
+    harness_new_session         → state.py
+    harness_read_stage          → context_builder.py (firewall) + skill auto-injection
+    harness_write_stage         → verifier.py (schema + secrets + contracts) + state.py
+    harness_get_status          → state.py
+    harness_get_skill           → skill_loader.py
+    harness_get_reference       → skill_loader.py
+    harness_run_lint            → executor.py (ruff)
+    harness_run_typecheck       → executor.py (mypy)
+    harness_run_tests           → executor.py (pytest)
+    harness_spawn_subagent      → sub_sessions.spawn (Phase A.1)
+    harness_complete_subagent   → sub_sessions.complete (extension-side runner)
+    harness_await_subagent      → polls until terminal / wall-clock kill
+    harness_list_subagents      → policy_engine spawn allow-list
 
 Skill auto-injection:
     harness_read_stage automatically appends relevant SKILL.md content
@@ -24,6 +28,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,15 +39,43 @@ from mcp.server.fastmcp import FastMCP
 
 from execution import executor
 from memory import memory_loader, session_distiller
-from session import state
+from session import state, sub_sessions
 from skills import skill_loader
 from storage import db as _db
-from validation import context_builder, verifier
+from storage import subagent_audit
+from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
+
+
+def _add_scripts_to_path() -> None:
+    """policy_engine lives in scripts/ at repo root; the extension binary
+    sets HARNESS_ROOT to the bundled install dir. Add both candidates so
+    the import works in dev (parent.parent) and in the packaged extension.
+    """
+    candidates: list[Path] = []
+    env = os.environ.get("HARNESS_ROOT")
+    if env:
+        candidates.append(Path(env) / "scripts")
+    candidates.append(Path(__file__).parent.parent / "scripts")
+    for c in candidates:
+        if c.exists() and str(c) not in sys.path:
+            sys.path.insert(0, str(c))
+
+
+_add_scripts_to_path()
+
+import policy_engine as _policy
 
 # Ensure DB directory + schema exist before any tool call (critical for first run
 # when HARNESS_ROOT points to the extension install dir which has no data/ folder yet).
 _db.init_db()
+
+# Startup orphan sweep — any sub-session left in 'running' from a prior crashed
+# harness becomes 'abandoned'. Idempotent; runs once at import time.
+try:
+    sub_sessions.sweep_orphans()
+except Exception:
+    pass  # Don't block server start on a sweep failure.
 
 # ── Skill auto-injection map ──────────────────────────────────────────────────
 # (stage, agent_name) → list of skill IDs whose SKILL.md is injected into
@@ -528,6 +561,428 @@ def harness_distill_session(session_id: str) -> str:
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({"status": "ok", "appended": appended})
+
+
+# ── Sub-agent tools (Phase A.1) ───────────────────────────────────────────────
+#
+# A *sub-session* is the row for an agent-spawned-by-another-agent invocation.
+# The harness validates the spawn (policy intersection), records the row, and
+# tracks lifecycle. The actual sub-agent loop runs in the VS Code extension —
+# the harness never calls an LLM. The extension calls `harness_complete_*`
+# when the sub-agent finishes; the parent agent calls `harness_await_*` to
+# block until that happens (or until the wall-clock cap fires).
+
+# Polling cadence for harness_await_subagent. Tests can override via the
+# HARNESS_SUBAGENT_POLL_S env var to keep the suite fast.
+_AWAIT_POLL_S: float = float(os.environ.get("HARNESS_SUBAGENT_POLL_S", "0.25"))
+
+
+@mcp.tool()
+def harness_spawn_subagent(
+    parent_session_id: str,
+    parent_agent_name: str,
+    role: str,
+    brief: str,
+    allowed_tools: list[str] | None = None,
+    max_turns: int = sub_sessions.DEFAULT_MAX_TURNS,
+    per_turn_timeout_s: int = sub_sessions.DEFAULT_PER_TURN_TIMEOUT_S,
+    wall_clock_timeout_s: int = sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+    output_schema: str | None = None,
+) -> str:
+    """Spawn a sub-agent run. Returns a handle_id the parent can await.
+
+    Validation (fail-closed):
+      1. role must exist in SUBAGENT_POLICIES.
+      2. parent_agent_name must list role in MAIN_SUBAGENT_ALLOWLIST.
+      3. effective_tools = SUBAGENT_POLICIES[role] ∩ allowed_tools.
+         Empty intersection → reject; the sub-agent would have nothing to do.
+
+    Four-layer timeouts are recorded on the row:
+      - max_turns                 (caller arg)
+      - per_turn_timeout_s        (default 60)
+      - wall_clock_timeout_s      (default 300)
+      - await max_wait_s          (default 300, harness_await_subagent arg)
+
+    Returns: { handle_id, role, parent_session_id, effective_tools,
+               max_turns, per_turn_timeout_s, wall_clock_timeout_s }.
+    """
+    # 1. Role + main allow-list intersection.
+    if not _policy.check_subagent_allowed(parent_agent_name, role):
+        return json.dumps({
+            "status": "error",
+            "error": _policy.subagent_deny_reason(parent_agent_name, role),
+        })
+
+    # 2. Parent session must exist (foreign-key safety + clearer error).
+    if state.get_session(parent_session_id) is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"parent session {parent_session_id!r} not found",
+        })
+
+    # 3. Effective tools = role ∩ requested. Caller's main-tool list is the
+    #    cap that pre_tool_use.py enforces at run-time via PIPELINE_POLICIES;
+    #    we intersect with `allowed_tools` here so the sub-agent's recorded
+    #    set never exceeds what the caller passes in.
+    requested = list(allowed_tools) if allowed_tools is not None else None
+    role_tools = _policy.get_subagent_tools(role)
+    if requested is None:
+        effective_tools = role_tools
+    else:
+        effective_tools = [t for t in role_tools if t in requested]
+    if not effective_tools:
+        return json.dumps({
+            "status": "error",
+            "error": (
+                f"No tools available for sub-agent role {role!r} after "
+                f"intersecting with caller's allow-list. "
+                f"Role tools: {role_tools}; requested: {requested}."
+            ),
+        })
+
+    try:
+        handle_id = sub_sessions.spawn(
+            parent_session_id=parent_session_id,
+            parent_agent_name=parent_agent_name,
+            role=role,
+            brief=brief,
+            allowed_tools=effective_tools,
+            max_turns=max_turns,
+            per_turn_timeout_s=per_turn_timeout_s,
+            wall_clock_timeout_s=wall_clock_timeout_s,
+            output_schema=output_schema,
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+
+    # Phase A.3 — durable spawn audit row. The chat-marker side is
+    # extension-side (Phase A.3 TS work); this guarantees the spawn is
+    # provable post-hoc even if the marker scrolls off-screen.
+    try:
+        subagent_audit.record_spawn(
+            handle_id=handle_id,
+            parent_session_id=parent_session_id,
+            parent_agent_name=parent_agent_name,
+            role=role,
+            brief=brief,
+            allowed_tools=effective_tools,
+            max_turns=max_turns,
+            wall_clock_timeout_s=wall_clock_timeout_s,
+        )
+    except Exception:
+        # Audit failure must not silently drop a spawn — but it also must
+        # not block the spawn itself. We swallow here and rely on the
+        # extension's own pre-spawn marker for visibility; durable audit
+        # for this run is lost only if the audit DB is unwritable.
+        pass
+
+    return json.dumps({
+        "status": "spawned",
+        "handle_id": handle_id,
+        "role": role,
+        "parent_session_id": parent_session_id,
+        "parent_agent_name": parent_agent_name,
+        "effective_tools": effective_tools,
+        "max_turns": max_turns,
+        "per_turn_timeout_s": per_turn_timeout_s,
+        "wall_clock_timeout_s": wall_clock_timeout_s,
+    })
+
+
+@mcp.tool()
+def harness_complete_subagent(
+    handle_id: str,
+    summary: str | None = None,
+    structured: Any | None = None,
+    tools_used: list[str] | None = None,
+    turns: int = 0,
+    status: str = "done",
+    max_summary_tokens: int = verifier.DEFAULT_SUBAGENT_MAX_TOKENS,
+) -> str:
+    """Record the terminal result of a sub-agent run.
+
+    Called by the VS Code extension's sub-agent runner after the sub-agent
+    produces its summary. The harness applies four-layer timeout checks
+    here — even if the runner reports `status='done'`, exceeding max_turns
+    or wall_clock_timeout_s coerces the row to status='escalated' with an
+    explanatory note appended to the summary.
+
+    Phase A.2 firewall — the recorded summary is also passed through
+    `verifier.verify_subagent_summary`:
+      - over-cap text is truncated with a marker (cap = max_summary_tokens
+        ≈ chars/4),
+      - secrets / instruction-injection in the summary force status='failed'
+        with a structured error so the parent never sees the offending text,
+      - if `output_schema` was set at spawn time and `structured` is given,
+        the structured payload is validated against that schema.
+
+    `status` ∈ {'done', 'failed', 'escalated', 'abandoned'}.
+    `structured` may be any JSON-serialisable value (or null).
+    """
+    # Pull the recorded output_schema (set at spawn time) so the runner
+    # cannot dodge the schema check by omitting it on completion.
+    existing_row = sub_sessions.get(handle_id)
+    schema_dict: dict[str, Any] | None = None
+    if existing_row is not None and existing_row.get("output_schema"):
+        try:
+            schema_dict = json.loads(existing_row["output_schema"])
+        except (TypeError, json.JSONDecodeError):
+            schema_dict = None
+
+    verify = verifier.verify_subagent_summary(
+        summary,
+        structured=structured,
+        max_tokens=max_summary_tokens,
+        schema=schema_dict,
+    )
+
+    final_status = status
+    safe_summary = verify.summary
+    if not verify.valid:
+        # Treat as hard fail — but persist it so the audit trail records
+        # the rejection. We replace the summary with a structured error
+        # so the parent never sees the rejected content.
+        final_status = "failed"
+        safe_summary = (
+            "[harness] sub-agent result rejected by verify_subagent_summary: "
+            + "; ".join(verify.errors)
+        )
+        structured = None  # don't propagate a malformed structured payload
+
+    try:
+        final = sub_sessions.complete(
+            handle_id,
+            summary=safe_summary,
+            structured=structured,
+            tools_used=tools_used,
+            turns=turns,
+            status=final_status,
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+
+    # Phase A.3 — durable completion audit row, mirror of the spawn row.
+    try:
+        subagent_audit.record_complete(
+            handle_id=handle_id,
+            parent_session_id=final["parent_session_id"],
+            parent_agent_name=final["parent_agent_name"],
+            role=final["role"],
+            brief=final["brief"],
+            final_status=final["status"],
+            escalated=bool(final["escalated"]),
+            turns=int(final.get("turns", 0) or 0),
+            tools_used=final.get("tools_used"),
+            summary_truncated=verify.truncated,
+            verification_errors=verify.errors if verify.errors else None,
+        )
+    except Exception:
+        pass
+
+    response: dict[str, Any] = {
+        "status": "recorded",
+        "handle_id": handle_id,
+        "final_status": final["status"],
+        "escalated": bool(final["escalated"]),
+        "summary": final.get("result_summary"),
+        "structured": final.get("result_structured"),
+        "tools_used": final.get("tools_used"),
+        "turns": final.get("turns", 0),
+    }
+    if verify.truncated:
+        response["summary_truncated"] = True
+    if not verify.valid:
+        response["verification_errors"] = verify.errors
+    return json.dumps(response)
+
+
+@mcp.tool()
+def harness_await_subagent(
+    handle_id: str, max_wait_s: int = sub_sessions.DEFAULT_AWAIT_MAX_WAIT_S
+) -> str:
+    """Block until the sub-session is terminal or the wall-clock cap fires.
+
+    Polls the row in-process. If the sub-session is still running after
+    `max_wait_s`, returns the current row with `still_running: true` so the
+    parent can retry. If the row's `wall_clock_timeout_s` has elapsed since
+    creation while we were waiting, the harness coerces the row to
+    `status='escalated'` and returns the escalated final state — this is
+    the wall-clock kill the design.md spec requires.
+
+    Result on terminal:
+      { status: 'recorded', final_status, escalated, summary, structured,
+        tools_used, turns }
+
+    Result on still-running after max_wait_s:
+      { status: 'pending', still_running: true, handle_id, snapshot: {...} }
+    """
+    if max_wait_s < 0:
+        return json.dumps({
+            "status": "error",
+            "error": "max_wait_s must be >= 0",
+        })
+
+    deadline = time.monotonic() + float(max_wait_s)
+    poll = max(0.05, _AWAIT_POLL_S)
+
+    while True:
+        row = sub_sessions.get(handle_id)
+        if row is None:
+            return json.dumps({
+                "status": "error",
+                "error": f"handle {handle_id!r} not found",
+            })
+
+        if row["status"] != "running":
+            return json.dumps({
+                "status": "recorded",
+                "handle_id": handle_id,
+                "final_status": row["status"],
+                "escalated": bool(row["escalated"]),
+                "summary": row.get("result_summary"),
+                "structured": row.get("result_structured"),
+                "tools_used": row.get("tools_used"),
+                "turns": row.get("turns", 0),
+            })
+
+        # Wall-clock kill: harness escalates a long-running sub-session even
+        # if the runner never reports completion. Computed by complete()
+        # when called with the row's existing turn count.
+        created = sub_sessions._parse_iso(row["created_at"])
+        elapsed = (sub_sessions._now_dt() - created).total_seconds()
+        if elapsed > row["wall_clock_timeout_s"]:
+            try:
+                final = sub_sessions.complete(
+                    handle_id,
+                    summary=row.get("result_summary"),
+                    structured=row.get("result_structured"),
+                    tools_used=row.get("tools_used"),
+                    turns=row.get("turns", 0) or 0,
+                    status="escalated",
+                )
+            except ValueError:
+                # Already terminal — re-read.
+                final = sub_sessions.get(handle_id) or row
+            return json.dumps({
+                "status": "recorded",
+                "handle_id": handle_id,
+                "final_status": final["status"],
+                "escalated": bool(final["escalated"]),
+                "summary": final.get("result_summary"),
+                "structured": final.get("result_structured"),
+                "tools_used": final.get("tools_used"),
+                "turns": final.get("turns", 0),
+            })
+
+        if time.monotonic() >= deadline:
+            return json.dumps({
+                "status": "pending",
+                "still_running": True,
+                "handle_id": handle_id,
+                "snapshot": {
+                    "role": row["role"],
+                    "parent_agent_name": row["parent_agent_name"],
+                    "turns": row.get("turns", 0),
+                    "elapsed_s": int(elapsed),
+                    "wall_clock_timeout_s": row["wall_clock_timeout_s"],
+                },
+            })
+
+        time.sleep(poll)
+
+
+@mcp.tool()
+def harness_get_subagent_context(handle_id: str) -> str:
+    """Return the firewalled pre-prompt payload for a spawned sub-session.
+
+    Phase A.2 firewall — sub-agents see exactly two things: the spawn
+    `brief` and the role's SKILL.md (when registered). They never see the
+    parent's session state, memory, or sibling sub-agents. The runner
+    (Phase A.3) calls this once per spawn and uses the result verbatim.
+
+    Result on success:
+      { status: 'ok', brief, role, role_skill, allowed_tools }
+    Result on missing handle:
+      { status: 'error', error: 'handle … not found' }
+    """
+    row = sub_sessions.get(handle_id)
+    if row is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"handle {handle_id!r} not found",
+        })
+    try:
+        ctx = subagent_context.build_subagent_context(
+            brief=row["brief"], role=row["role"]
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+
+    return json.dumps({
+        "status": "ok",
+        "handle_id": handle_id,
+        "brief": ctx.brief,
+        "role": ctx.role,
+        "role_skill": ctx.role_skill,
+        "allowed_tools": list(ctx.allowed_tools),
+    })
+
+
+@mcp.tool()
+def harness_query_subagent_events(
+    parent_session_id: str | None = None,
+    handle_id: str | None = None,
+    since_ts: float | None = None,
+    limit: int = 200,
+) -> str:
+    """Return the durable audit log for sub-agent spawns + completions.
+
+    Phase A.3 — the extension polls this tool to render chat markers
+    ("explorer spawned with brief X", "investigator done in 4 turns").
+    The audit is also evidence-of-record for the "no silent sub agents"
+    invariant: a spawn that produces no chat marker still leaves a row
+    here.
+
+    Filters are AND-combined; pass None / omit to skip a filter.
+
+    Result: { events: [...], count: N }. Each event has:
+      ts, handle_id, parent_session_id, parent_agent_name, role, brief,
+      event ('spawned' | 'completed'),
+      + spawn-only: allowed_tools, max_turns, wall_clock_timeout_s,
+      + complete-only: final_status, escalated, turns, tools_used,
+                       summary_truncated, verification_errors.
+    """
+    try:
+        events = subagent_audit.query_events(
+            parent_session_id=parent_session_id,
+            handle_id=handle_id,
+            since_ts=since_ts,
+            limit=limit,
+        )
+    except Exception as exc:
+        return json.dumps({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    return json.dumps({"events": events, "count": len(events)})
+
+
+@mcp.tool()
+def harness_list_subagents(main_agent_name: str) -> str:
+    """Return the spawn allow-list for a main agent.
+
+    The VS Code extension's runner injects this into the main agent's
+    tool catalog so the LLM only sees roles it is permitted to spawn.
+
+    Result: { main_agent, roles: [ {role, allowed_tools}, ... ] }.
+    Unknown / un-allow-listed mains return an empty roles array (fail-closed).
+    """
+    roles = _policy.list_subagent_roles(main_agent_name)
+    catalog = [
+        {"role": r, "allowed_tools": _policy.get_subagent_tools(r)}
+        for r in roles
+    ]
+    return json.dumps({"main_agent": main_agent_name, "roles": catalog})
 
 
 # ── Hook loader (Week 3c) ─────────────────────────────────────────────────────

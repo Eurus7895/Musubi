@@ -18,6 +18,9 @@ point at the same file.
 ├── pipeline-builder-coder.agent.md
 ├── pipeline-builder-reviewer.agent.md
 ├── skill-builder.agent.md                 (cross-pipeline meta-agent)
+├── explorer.agent.md                      (sub-agent role — Phase A.3)
+├── investigator.agent.md                  (sub-agent role — Phase A.3)
+├── reviewer-aux.agent.md                  (sub-agent role — Phase A.3)
 └── proposed/                              (skill-builder's patch outputs)
 ```
 
@@ -26,8 +29,13 @@ point at the same file.
 - **`<pipeline>-<role>.agent.md`** is a pipeline-specific variant — same
   role, different prompt. pipeline-builder's coder writes pipeline
   scaffolds, not feature code, so it needs its own file.
-- **Other top-level files** are pipeline-agnostic agents (skill-builder,
-  plus the planned Week-5 sub agents `explorer`/`investigator`/`reviewer-aux`).
+- **`explorer` / `investigator` / `reviewer-aux`** are sub-agent roles
+  spawned via `harness_spawn_subagent`. They run under the firewall in
+  `validation/subagent_context.py` and never read parent session state.
+  Their tool allow-lists live in `scripts/policy_engine.SUBAGENT_POLICIES`
+  and the orchestrator's per-main allow-list is `MAIN_SUBAGENT_ALLOWLIST`.
+- **Other top-level files** are pipeline-agnostic main agents
+  (skill-builder).
 
 ## Composition from pipeline.yaml
 

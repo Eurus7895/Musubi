@@ -903,54 +903,106 @@ Detailed memory contract: see `docs/memory.md`.
 #### Phase A — Sub-agent primitives (3 days, foundation for orchestrator)
 
 ```
-Day A.1 — MCP plumbing + policy + storage + timeouts
-  [ ] storage/db.py: sub_sessions table + CRUD helpers
-  [ ] copilot-harness/session/sub_sessions.py: lifecycle, handle_id
+Day A.1 ✅ MCP plumbing + policy + storage + timeouts (commits 0606ed0, fcd9c9c)
+  [x] storage/db.py: sub_sessions table + CRUD helpers (0606ed0)
+  [x] copilot-harness/session/sub_sessions.py: lifecycle, handle_id
       (uuid hex[:12]), status transitions
       (running → done/failed/escalated/abandoned), orphan cleanup
       (parent end + harness startup sweep)
-  [ ] scripts/policy_engine.py: SUBAGENT_POLICIES (per-role allow-list)
+  [x] scripts/policy_engine.py: SUBAGENT_POLICIES (per-role allow-list)
       + MAIN_SUBAGENT_ALLOWLIST (per-main allow-list of roles) + helpers
-  [ ] server.py: register harness_spawn_subagent / harness_await_subagent
-      / harness_list_subagents MCP tools
-  [ ] Four-layer timeout parameters wired through spawn:
+      (check_subagent_allowed, list_subagent_roles, get_subagent_tools,
+      effective_subagent_tools, subagent_deny_reason)
+  [x] server.py: register harness_spawn_subagent / harness_complete_subagent
+      / harness_await_subagent / harness_list_subagents MCP tools.
+      harness_complete_subagent records the runner's terminal result;
+      harness_await_subagent polls until terminal or wall-clock kill.
+      Startup orphan sweep wired at module-import time.
+  [x] Four-layer timeout parameters wired through spawn:
       max_turns (caller arg), per_turn_timeout_s (default 60),
-      wall_clock_timeout_s (default 300), await max_wait_s (default 300)
-  [ ] Tests: tests/test_sub_sessions.py + tests/test_subagent_policy.py
-      (handle uniqueness, status transitions, cascade-on-parent-end,
-      policy intersection, list_subagents filters by caller, unknown role
-      rejected, max_turns / wall_clock kills produce escalated=true with
-      structured timeout summary)
+      wall_clock_timeout_s (default 300), await max_wait_s (default 300).
+      Auto-escalation in complete() when turns >= max_turns or elapsed
+      > wall_clock_timeout_s, with reason appended to the summary.
+  [x] Tests: tests/test_sub_sessions.py + tests/test_subagent_policy.py
+      (+71 tests; covers handle uniqueness, status transitions,
+      cascade-on-parent-end, policy intersection, list_subagents
+      filters by caller, unknown role rejected, max_turns / wall_clock
+      kills produce escalated=true with structured timeout summary,
+      MCP-tool integration of spawn → complete → await flow)
 
-Day A.2 — Firewall + result verification
-  [ ] copilot-harness/validation/subagent_context.py:
-      build_subagent_context(brief, role) — returns {brief, role_skill}.
-      Never reads main session state, memory, sibling subs.
-  [ ] verifier.py: verify_subagent_summary(summary, max_tokens=2000,
-      schema=None) with truncate-with-marker on overrun + optional JSON
-      schema validation
-  [ ] Tests: sub agent cannot read main session state; over-cap summary
-      truncated with marker; schema-rejection path for malformed structured
-      returns
+Day A.2 ✅ Firewall + result verification
+  [x] copilot-harness/validation/subagent_context.py:
+      build_subagent_context(brief, role) — returns the frozen
+      SubagentContext(brief, role, role_skill, allowed_tools). Function
+      signature deliberately excludes session_id / db_path so the
+      firewall is enforceable at the type level. SUBAGENT_ROLE_SKILLS
+      table maps each role → SKILL.md id (Phase A.3 lands the files).
+      assert_no_session_leakage helper rejects forbidden keys defensively.
+  [x] verifier.py: verify_subagent_summary(summary, structured,
+      max_tokens=2000, schema=None). Truncates over-cap text with
+      `[truncated by harness — exceeded max_tokens cap]`. Reuses the
+      secrets + injection scanners as hard-fails. Optional schema check
+      (required / types / enum) accepts string type names so JSON-encoded
+      schemas from the extension work without a jsonschema dep.
+  [x] server.py: harness_complete_subagent now passes the runner's
+      summary + structured through verify_subagent_summary; failures
+      coerce the row to status='failed' with a structured error. New
+      harness_get_subagent_context MCP tool returns the firewalled
+      payload to the runner (consumed in Phase A.3).
+  [x] Tests: tests/test_subagent_context.py (signature firewall,
+      closed key set, leakage detection) + tests/test_subagent_summary_verify.py
+      (token cap, marker text, secrets / injection rejection, schema
+      type-name coercion, MCP integration through harness_complete_subagent
+      and harness_get_subagent_context). +46 tests; total 487.
 
-Day A.3 — Role files + spawn-event surface
-  [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
-  [ ] .github/agents/investigator.agent.md (+ Bash for test runs)
-  [ ] .github/agents/reviewer-aux.agent.md (Read + View, per-file checklist)
+Day A.3 ◐ Role files + spawn-event surface (Python side ✅; TS side pending)
+  [x] .github/agents/explorer.agent.md       (Read + View + Grep + Glob)
+  [x] .github/agents/investigator.agent.md   (+ Bash for read-only diagnostics)
+  [x] .github/agents/reviewer-aux.agent.md   (Read + View, per-file checklist)
+  [x] .github/skills/{explorer,investigator,reviewer-aux}/SKILL.md —
+      role procedures pushed by the harness through
+      validation/subagent_context.SUBAGENT_ROLE_SKILLS.
+  [x] copilot-harness/storage/subagent_audit.py — durable audit table
+      `subagent_audit` in audit.db with record_spawn, record_complete,
+      query_events. Indexed on ts / parent_session_id / handle_id.
+  [x] server.py: harness_spawn_subagent + harness_complete_subagent now
+      write a row to subagent_audit on every spawn / completion. New
+      harness_query_subagent_events MCP tool exposes the log so the
+      extension's chat-marker layer can poll it.
   [ ] copilot-harness-extension/src/mcpClient.ts: replace notification
       ignore with EventEmitter; expose onNotification subscription
+      (TS — Phase A.3 extension portion, not yet shipped).
   [ ] server.py: emit subagent_spawned / subagent_done MCP notifications
+      (FastMCP-side push; deferred — the extension can poll
+      harness_query_subagent_events instead until the EventEmitter
+      lands).
   [ ] copilot-harness-extension/src/subagentRendering.ts: chat marker
       helpers (brief, turn count, tool histogram, summary line)
-  [ ] scripts/post_tool_use.py: record every spawn (caller, role, brief,
-      turns, tools, result_status) in storage/audit.db
-  [ ] Tests: every spawn produces a chat marker; audit row written per
-      spawn; no silent sub agents
+      (TS — Phase A.3 extension portion).
+  [x] Tests: every spawn writes an audit row, every completion writes
+      its mirror row, escalation / verification-failure / truncation are
+      all captured, and the no-silent-sub-agents invariant is checked
+      end-to-end across explorer + investigator + reviewer-aux roles.
+      +20 tests; total 507.
 
 End-of-A checkpoint:
-  [ ] 379 + ~25 new tests green
-  [ ] Spawn → simulated complete → fetch summary path works in unit tests
-  [ ] No regressions in existing pipeline mode + memory + skill paths
+  [x] 507 tests green after A.1 + A.2 + A.3 Python side
+      (was 370 — A.1 +71, A.2 +46, A.3 +20).
+  [x] Spawn → simulated complete → fetch summary path works in unit tests
+      (test_sub_sessions.test_mcp_spawn_then_complete_then_await_returns_summary)
+  [x] Sub-agent firewall enforced at type level + tested against every
+      forbidden main-session key
+  [x] Over-cap summary truncated with marker;
+      malformed structured payload rejected against output_schema
+  [x] No silent sub agents — durable audit row per spawn + completion
+      with ts / handle / parent / role / brief / event / final_status /
+      escalated / verification_errors. Extension polls
+      harness_query_subagent_events to render chat markers.
+  [x] No regressions in existing pipeline mode + memory + skill paths
+  [~] Extension-side runner (mcpClient EventEmitter +
+      subagentRendering.ts chat markers) — TS work, not yet shipped.
+      Replaces polling once it lands; until then, polling
+      harness_query_subagent_events is the contract.
 ```
 
 #### Phase B — Orchestrator core (2 days)
@@ -1138,9 +1190,9 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Week 5 plan — sub agents (explorer / investigator / reviewer-aux) |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 + A.2 + A.3 Python ✅ (storage + lifecycle + policy + firewall + verifier + 6 MCP tools + role .agent.md / SKILL.md + durable audit). A.3 TS-side chat markers + Phase B pipeline-main spawning still pending. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
-| 15 | Subagents for parallel reads / summarization | ⚠️ | Week 5 (Phase A core primitives + Phase B pipeline-main spawning) |
+| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A complete on the Python side. Phase B (orchestrator + pipeline-main spawning) still pending. |
 | **6. Prompt Engineering** | | | |
 | 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
 | 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
@@ -1311,10 +1363,17 @@ DEFERRED (needs discussion first):
 
 ---
 
-*Updated: April 2026*
+*Updated: May 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 complete + in-chat rendering + Tasks sidebar — rich stage markdown in chat, activity-bar Tasks view showing the live session and a filesystem-scanned history of past runs; click any stage to open its .md artifact. 379 tests.*
-*Next: Phase A Day 1 — sub-agent primitives (storage table, MCP tools, policy, timeouts)*
+*Current: Week 4 + Phase A.1 + A.2 + A.3 (Python) complete — sub-agent
+storage + lifecycle + policy + firewall + verifier + role files +
+SKILL.md + durable audit log; 6 MCP tools (spawn / complete / await /
+list / get_context / query_events) wired with four-layer timeouts,
+runner-side cap enforcement, and durable per-spawn / per-completion
+audit rows. 507 tests (was 370 — +71 A.1, +46 A.2, +20 A.3).*
+*Next: Phase A.3 extension-side TS work — mcpClient EventEmitter +
+subagentRendering.ts chat markers (replaces audit polling). Then Phase
+B (orchestrator + pipeline-main spawning).*
 *Planned: Week 5+ Orchestrator Pivot — see § Build Roadmap. 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*

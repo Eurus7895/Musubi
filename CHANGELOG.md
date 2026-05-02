@@ -7,6 +7,184 @@ as a `.vsix`.
 
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+**Headline:** Phase A of the orchestrator pivot is complete on the
+Python side — sub-agent foundation, firewall, result verification,
+role .agent.md + SKILL.md files, and a durable audit log shipped at the
+harness layer. The remaining Phase A.3 work (mcpClient EventEmitter +
+subagentRendering.ts chat markers) is TypeScript and lands separately;
+until it does, the extension polls `harness_query_subagent_events` for
+spawn / completion events.
+
+### Phase A.3 — Role files + spawn-event audit (Python side)
+
+- **`.github/agents/explorer.agent.md`** — read-only sub-agent for
+  codebase scans (`Read + View + Grep + Glob`).
+- **`.github/agents/investigator.agent.md`** — read-only diagnostics
+  (`+ Bash`) for narrow `pytest` / `ruff` / `mypy` / `git diff` runs;
+  forbidden-command list in the role file rules out mutation /
+  network operations.
+- **`.github/agents/reviewer-aux.agent.md`** — single-file checklist
+  review (`Read + View`); deliberately omits Grep / Glob so the role
+  cannot wander into the wider codebase.
+- **`.github/skills/{explorer,investigator,reviewer-aux}/SKILL.md`** —
+  procedure docs the harness pushes via
+  `validation/subagent_context.SUBAGENT_ROLE_SKILLS`. Each documents
+  reduce-the-brief, tool-selection, summary format, structured-payload
+  shape, and anti-patterns specific to the role.
+- **`copilot-harness/storage/subagent_audit.py`** — new
+  `subagent_audit` table on `audit.db` with `record_spawn`,
+  `record_complete`, `query_events`. JSON-encoded fields
+  (`allowed_tools`, `tools_used`, `verification_errors`) decoded on
+  read. Indexed on `ts`, `parent_session_id`, and `handle_id`.
+- **`copilot-harness/server.py`**:
+  - `harness_spawn_subagent` — writes a `'spawned'` audit row after a
+    successful spawn (audit failures swallow rather than block the
+    spawn — durable evidence is best-effort, not blocking).
+  - `harness_complete_subagent` — writes a `'completed'` audit row
+    capturing `final_status`, `escalated`, `turns`, `tools_used`,
+    `summary_truncated`, and `verification_errors`. Mirror of the
+    spawn row keyed on the same `handle_id`.
+  - New **`harness_query_subagent_events(parent_session_id?,
+    handle_id?, since_ts?, limit=200)`** MCP tool exposes the audit
+    log so the extension can poll for spawn / completion events and
+    render chat markers without losing visibility on a window reload.
+- **+20 tests:** `tests/test_subagent_audit.py` covers writer field
+  coverage, query filters (parent / handle / since_ts), limit /
+  ordering, server-wired audit on spawn / complete / escalation /
+  verification-failure / truncation, MCP-tool query semantics,
+  end-to-end no-silent-sub-agents invariant across all three roles,
+  and presence of the role .agent.md + SKILL.md files.
+- Total: **507 passing** (was 487; +20 from A.3).
+
+### Phase A.2 — Firewall + result verification
+
+- **`copilot-harness/validation/subagent_context.py`** — frozen
+  `SubagentContext(brief, role, role_skill, allowed_tools)` produced by
+  `build_subagent_context(brief, role)`. Function signature deliberately
+  excludes `session_id` / `db_path` so the firewall is enforced at the
+  type level. `SUBAGENT_ROLE_SKILLS` table maps each role to a SKILL.md
+  id (Phase A.3 ships the actual files). `assert_no_session_leakage`
+  helper rejects payloads that look like main session state.
+- **`copilot-harness/validation/verifier.py`** — new
+  `verify_subagent_summary(summary, structured, max_tokens=2000,
+  schema=None)` returning `SubagentVerifyResult(valid, summary,
+  truncated, errors)`. Truncates over-cap text with the marker
+  `[truncated by harness — exceeded max_tokens cap]`. Reuses the
+  existing secrets + instruction-injection scanners as hard-fails.
+  Optional schema check (required / types / enum) accepts string type
+  names (`"int"`, `"list"`, …) so JSON-encoded schemas from the
+  extension validate without a `jsonschema` dependency.
+- **`copilot-harness/server.py`**:
+  - `harness_complete_subagent` now passes `summary` + `structured`
+    through `verify_subagent_summary` against the row's
+    `output_schema`. Rejected summaries coerce status → `failed` with
+    a structured error; the offending text is replaced before
+    persisting so the parent never sees secrets / injection.
+  - New `harness_get_subagent_context(handle_id)` MCP tool — returns
+    the firewalled `{brief, role, role_skill, allowed_tools}` payload
+    consumed by the Phase A.3 runner.
+- **+46 tests:**
+  - `tests/test_subagent_context.py` (15) — signature firewall, frozen
+    dataclass, closed key set, role-skill mapping completeness,
+    leakage detection, static no-session-import assertion.
+  - `tests/test_subagent_summary_verify.py` (31) — token cap +
+    truncation marker, secrets / injection rejection, schema type-name
+    coercion, MCP-layer integration through harness_complete_subagent
+    and harness_get_subagent_context.
+- Total: **487 passing** (was 441 after A.1; +46 from A.2).
+
+### Phase A.1 — Sub-agent foundation
+
+- **`copilot-harness/storage/db.py`** — `sub_sessions` table + 6 CRUD
+  helpers: `insert_sub_session`, `get_sub_session`,
+  `update_sub_session_result`, `get_sub_sessions_by_parent`,
+  `mark_sub_sessions_abandoned_for_parent`,
+  `mark_orphan_running_sub_sessions_abandoned`. JSON-encoded fields
+  (`allowed_tools`, `tools_used`, `result_structured`) decoded on read.
+  Indexed on `parent_session_id` and `status` (commit `0606ed0`).
+- **`copilot-harness/session/sub_sessions.py`** — lifecycle module:
+  `spawn` (uuid hex[:12] handle, validates row-level invariants),
+  `complete` (terminal recording + auto-escalation when
+  `turns >= max_turns` or `elapsed > wall_clock_timeout_s`, with reason
+  appended to summary), `abandon`, `cascade_abandon_for_parent`,
+  `sweep_orphans`, `list_for_parent`. Status set is closed:
+  `running → done | failed | escalated | abandoned`.
+- **`scripts/policy_engine.py`** — sub-agent slice:
+  - `SUBAGENT_POLICIES` — per-role tool allow-list
+    (`explorer = Read+View+Grep+Glob`,
+    `investigator = + Bash`,
+    `reviewer-aux = Read+View`).
+  - `MAIN_SUBAGENT_ALLOWLIST` — per-main set of roles. `orchestrator`
+    gets all three; pipeline stages (`planner` / `designer` / `coder` /
+    `reviewer`) start empty (Phase B opts them in via
+    `pipeline.yaml subagents:`).
+  - Helpers: `check_subagent_allowed`, `list_subagent_roles`,
+    `get_subagent_tools`, `effective_subagent_tools`
+    (`role ∩ main ∩ requested`), `subagent_deny_reason`.
+- **`copilot-harness/server.py`** — four MCP tools:
+  - `harness_spawn_subagent` — validates role / main / parent FK,
+    intersects requested tools with role policy, returns handle +
+    `effective_tools` + recorded timeout caps.
+  - `harness_complete_subagent` — extension-side runner records
+    summary / structured / tools_used / turns / status; harness
+    auto-escalates on cap breach.
+  - `harness_await_subagent` — polls in-process until terminal or
+    `wall_clock_timeout_s` exceeded (wall-clock kill); returns
+    `still_running` snapshot if `max_wait_s` exhausted first.
+  - `harness_list_subagents` — spawn allow-list catalogue for a
+    main agent; pipeline stages return `[]` until `pipeline.yaml`
+    opts in.
+  - Server import-time `sub_sessions.sweep_orphans()` — startup
+    sweep marks any `running` row whose parent isn't `active` as
+    `abandoned`, recovering from a crashed harness without leaving
+    dangling state.
+  - `policy_engine.py` import path: `_add_scripts_to_path` resolves
+    against `HARNESS_ROOT` first (extension binary) then the dev tree.
+
+### Changed
+
+- **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 24
+  (`harness_spawn_subagent`, `harness_complete_subagent`,
+  `harness_await_subagent`, `harness_list_subagents`,
+  `harness_get_subagent_context`, `harness_query_subagent_events`).
+- **Hard Invariant #8** in `CLAUDE.md` rewritten — every spawn writes a
+  durable `subagent_audit` row and surfaces via
+  `harness_query_subagent_events`; the chat-marker UX layer
+  (`subagentRendering.ts`) consumes the same audit log.
+
+### Tests (combined A.1 + A.2)
+
+- **+117 tests** across four new files:
+  - A.1: `tests/test_sub_sessions.py` (43) — handle uniqueness, status
+    transitions, auto-escalation on max_turns + wall-clock breach,
+    cascade-on-parent-end, startup orphan sweep, abandon, list-for-parent
+    ordering, MCP-tool integration covering spawn → complete → await
+    + wall-clock kill via await.
+  - A.1: `tests/test_subagent_policy.py` (28) — policy table shape,
+    intersection rules, per-main filtering, fail-closed on unknown
+    main / role / disjoint tools, `deny_reason` ergonomics.
+  - A.2: `tests/test_subagent_context.py` (15) — signature firewall,
+    frozen dataclass, closed key set, role-skill mapping completeness,
+    leakage detection, static no-session-import assertion.
+  - A.2: `tests/test_subagent_summary_verify.py` (31) — token cap +
+    truncation marker, secrets / injection rejection, schema type-name
+    coercion, MCP-layer integration through `harness_complete_subagent`
+    and `harness_get_subagent_context`.
+- Total: **487 passing** (was 370).
+
+### Roadmap impact
+
+- `docs/design.md` § Phase A — Day A.1 + Day A.2 flipped from `[ ]`
+  to `[x]`. Phase A.3 (role files + spawn-event chat markers + audit
+  rows) is the only remaining task before End-of-A checkpoint flips
+  fully ✅.
+- BP 13 / BP 15 in § Best Practices Compliance: status note bumped
+  to "Phase A.1 + A.2 ✅ shipped — A.3 pending".
+
+---
+
 ## [v0.4.0] — 2026-04-24
 
 **Headline:** Sidebar Tasks view + in-chat ergonomics (Show Tasks button,
