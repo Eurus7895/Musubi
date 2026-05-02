@@ -1,0 +1,218 @@
+"""Tests for the sub-agent slice of scripts/policy_engine.py
+(SUBAGENT_POLICIES + MAIN_SUBAGENT_ALLOWLIST + helpers)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+# scripts/ is not a package — same import-path trick as test_policy_engine.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+
+from policy_engine import (
+    MAIN_SUBAGENT_ALLOWLIST,
+    SUBAGENT_POLICIES,
+    check_subagent_allowed,
+    effective_subagent_tools,
+    get_subagent_tools,
+    list_subagent_roles,
+    subagent_deny_reason,
+)
+
+
+# ── shape ────────────────────────────────────────────────────────────────────
+
+def test_three_canonical_roles_present() -> None:
+    assert set(SUBAGENT_POLICIES.keys()) == {
+        "explorer", "investigator", "reviewer-aux"
+    }
+
+
+def test_orchestrator_can_spawn_all_three_roles() -> None:
+    assert set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"]) == {
+        "explorer", "investigator", "reviewer-aux"
+    }
+
+
+def test_pipeline_stages_have_empty_allowlist_until_pipeline_yaml_opts_in() -> None:
+    # Phase B will populate these via pipeline.yaml subagents: blocks. For
+    # Phase A.1 the harness must deny by default.
+    for stage in ("planner", "designer", "coder", "reviewer"):
+        assert MAIN_SUBAGENT_ALLOWLIST[stage] == []
+
+
+def test_explorer_is_read_only() -> None:
+    assert "Bash" not in SUBAGENT_POLICIES["explorer"]
+    assert "Write" not in SUBAGENT_POLICIES["explorer"]
+    assert "Edit" not in SUBAGENT_POLICIES["explorer"]
+
+
+def test_investigator_can_run_bash() -> None:
+    assert "Bash" in SUBAGENT_POLICIES["investigator"]
+
+
+def test_reviewer_aux_only_reads() -> None:
+    assert SUBAGENT_POLICIES["reviewer-aux"] == ["Read", "View"]
+
+
+# ── check_subagent_allowed ──────────────────────────────────────────────────
+
+def test_orchestrator_can_spawn_explorer() -> None:
+    assert check_subagent_allowed("orchestrator", "explorer") is True
+
+
+def test_check_subagent_allowed_is_case_insensitive_main() -> None:
+    assert check_subagent_allowed("ORCHESTRATOR", "explorer") is True
+
+
+def test_coder_cannot_spawn_explorer_in_phase_a() -> None:
+    """Pipeline stages must opt in via pipeline.yaml — Phase A keeps the
+    list empty, so the harness denies."""
+    assert check_subagent_allowed("coder", "explorer") is False
+
+
+def test_unknown_main_denies_all() -> None:
+    assert check_subagent_allowed("villain", "explorer") is False
+
+
+def test_unknown_role_denies_for_orchestrator() -> None:
+    assert check_subagent_allowed("orchestrator", "saboteur") is False
+
+
+# ── list_subagent_roles ─────────────────────────────────────────────────────
+
+def test_list_subagent_roles_for_orchestrator() -> None:
+    roles = list_subagent_roles("orchestrator")
+    assert sorted(roles) == ["explorer", "investigator", "reviewer-aux"]
+
+
+def test_list_subagent_roles_for_pipeline_stage_is_empty() -> None:
+    assert list_subagent_roles("coder") == []
+
+
+def test_list_subagent_roles_for_unknown_main_is_empty() -> None:
+    assert list_subagent_roles("nobody") == []
+
+
+def test_list_subagent_roles_returns_a_copy() -> None:
+    """Mutating the returned list must not affect the global table."""
+    roles = list_subagent_roles("orchestrator")
+    roles.append("hacker")
+    assert "hacker" not in MAIN_SUBAGENT_ALLOWLIST["orchestrator"]
+
+
+# ── get_subagent_tools ──────────────────────────────────────────────────────
+
+def test_get_subagent_tools_known_role() -> None:
+    assert "Read" in get_subagent_tools("explorer")
+    assert "Bash" in get_subagent_tools("investigator")
+
+
+def test_get_subagent_tools_unknown_role() -> None:
+    assert get_subagent_tools("ghost") == []
+
+
+def test_get_subagent_tools_returns_copy() -> None:
+    tools = get_subagent_tools("explorer")
+    tools.append("Bash")
+    assert "Bash" not in SUBAGENT_POLICIES["explorer"]
+
+
+# ── effective_subagent_tools (intersection) ─────────────────────────────────
+
+def test_effective_tools_role_capped_by_main() -> None:
+    """Even if main has Write, explorer is read-only."""
+    main_tools = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"]
+    eff = effective_subagent_tools(
+        "orchestrator", main_tools, "explorer"
+    )
+    assert "Write" not in eff
+    assert "Bash" not in eff
+    assert "Read" in eff
+
+
+def test_effective_tools_main_capped_by_role() -> None:
+    """If main has fewer tools than the role allows, intersect down."""
+    main_tools = ["Read"]
+    eff = effective_subagent_tools(
+        "orchestrator", main_tools, "investigator"
+    )
+    assert eff == ["Read"]
+
+
+def test_effective_tools_unknown_role_is_empty() -> None:
+    assert effective_subagent_tools(
+        "orchestrator", ["Read", "Bash"], "ghost"
+    ) == []
+
+
+def test_effective_tools_with_caller_narrowing() -> None:
+    """`requested_tools` further intersects below role∩main."""
+    main_tools = ["Read", "Grep", "Glob", "Bash"]
+    eff = effective_subagent_tools(
+        "orchestrator",
+        main_tools,
+        "investigator",
+        requested_tools=["Read", "Glob"],
+    )
+    assert sorted(eff) == ["Glob", "Read"]
+
+
+def test_effective_tools_disjoint_intersection_is_empty() -> None:
+    eff = effective_subagent_tools(
+        "orchestrator", ["Write", "Edit"], "explorer"
+    )
+    assert eff == []
+
+
+def test_effective_tools_empty_main_tools_is_empty() -> None:
+    assert effective_subagent_tools(
+        "orchestrator", [], "explorer"
+    ) == []
+
+
+# ── subagent_deny_reason ────────────────────────────────────────────────────
+
+def test_deny_reason_unknown_role_lists_valid_roles() -> None:
+    msg = subagent_deny_reason("orchestrator", "ghost")
+    assert "ghost" in msg
+    assert "explorer" in msg
+
+
+def test_deny_reason_unknown_main_says_fail_closed() -> None:
+    msg = subagent_deny_reason("villain", "explorer")
+    assert "villain" in msg
+    assert "fail-closed" in msg
+
+
+def test_deny_reason_for_disallowed_pair_lists_allowed_roles() -> None:
+    msg = subagent_deny_reason("coder", "explorer")
+    assert "coder" in msg
+    assert "explorer" in msg
+    # Coder's allow-list is empty in Phase A.
+    assert "Allowed roles" in msg
+
+
+# ── helpers must not allow Phase B to silently widen policy ─────────────────
+
+def test_explorer_tools_match_design_md_spec() -> None:
+    """design.md Phase A.3 says Read + Grep + Glob (View is read-equivalent
+    in our scheme; treat as a superset, but the read-only invariant must
+    hold)."""
+    tools = set(SUBAGENT_POLICIES["explorer"])
+    assert {"Read", "Grep", "Glob"}.issubset(tools)
+    assert tools.isdisjoint({"Write", "Edit", "Bash"})
+
+
+def test_investigator_tools_match_design_md_spec() -> None:
+    tools = set(SUBAGENT_POLICIES["investigator"])
+    assert {"Read", "Grep", "Glob", "Bash"}.issubset(tools)
+    assert tools.isdisjoint({"Write", "Edit"})
+
+
+def test_reviewer_aux_tools_match_design_md_spec() -> None:
+    tools = set(SUBAGENT_POLICIES["reviewer-aux"])
+    assert tools == {"Read", "View"}
