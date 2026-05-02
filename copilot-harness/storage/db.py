@@ -46,6 +46,31 @@ CREATE TABLE IF NOT EXISTS fail_patterns (
     recorded_at TEXT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
+CREATE TABLE IF NOT EXISTS sub_sessions (
+    handle_id            TEXT PRIMARY KEY,
+    parent_session_id    TEXT NOT NULL,
+    parent_agent_name    TEXT NOT NULL,
+    role                 TEXT NOT NULL,
+    brief                TEXT NOT NULL,
+    allowed_tools        TEXT,
+    max_turns            INTEGER NOT NULL,
+    per_turn_timeout_s   INTEGER NOT NULL DEFAULT 60,
+    wall_clock_timeout_s INTEGER NOT NULL DEFAULT 300,
+    output_schema        TEXT,
+    status               TEXT NOT NULL DEFAULT 'running',
+    result_summary       TEXT,
+    result_structured    TEXT,
+    tools_used           TEXT,
+    turns                INTEGER NOT NULL DEFAULT 0,
+    escalated            INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL,
+    completed_at         TEXT,
+    FOREIGN KEY (parent_session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sub_sessions_parent
+    ON sub_sessions (parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
+    ON sub_sessions (status);
 """
 
 def _default_db_path() -> Path:
@@ -294,3 +319,154 @@ def get_all_sessions(db_path: Path | None = None) -> list[dict]:
             "SELECT * FROM sessions ORDER BY created_at ASC"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── sub_sessions ──────────────────────────────────────────────────────────
+#
+# A sub-session is the row for an agent-spawned-by-another-agent invocation.
+# Lifecycle: insert (status='running') → update_result (status='done' /
+# 'failed' / 'escalated') → mark_abandoned (cleanup on parent end / startup).
+# Sub-sessions are firewalled: they cannot read parent state or other subs.
+
+def insert_sub_session(
+    handle_id: str,
+    parent_session_id: str,
+    parent_agent_name: str,
+    role: str,
+    brief: str,
+    allowed_tools: list[str] | None,
+    max_turns: int,
+    per_turn_timeout_s: int,
+    wall_clock_timeout_s: int,
+    output_schema: str | None,
+    now: str,
+    db_path: Path | None = None,
+) -> None:
+    tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sub_sessions ("
+            " handle_id, parent_session_id, parent_agent_name, role, brief,"
+            " allowed_tools, max_turns, per_turn_timeout_s, wall_clock_timeout_s,"
+            " output_schema, status, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            (
+                handle_id, parent_session_id, parent_agent_name, role, brief,
+                tools_json, max_turns, per_turn_timeout_s, wall_clock_timeout_s,
+                output_schema, now,
+            ),
+        )
+
+
+def get_sub_session(
+    handle_id: str, db_path: Path | None = None
+) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM sub_sessions WHERE handle_id = ?", (handle_id,)
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    # Decode JSON fields back into Python types for callers.
+    if result.get("allowed_tools"):
+        result["allowed_tools"] = json.loads(result["allowed_tools"])
+    if result.get("tools_used"):
+        result["tools_used"] = json.loads(result["tools_used"])
+    if result.get("result_structured"):
+        result["result_structured"] = json.loads(result["result_structured"])
+    result["escalated"] = bool(result["escalated"])
+    return result
+
+
+def update_sub_session_result(
+    handle_id: str,
+    status: str,
+    summary: str | None,
+    structured: Any | None,
+    tools_used: list[str] | None,
+    turns: int,
+    escalated: bool,
+    completed_at: str,
+    db_path: Path | None = None,
+) -> None:
+    """Persist the terminal result of a sub-session.
+
+    `status` must be one of: 'done', 'failed', 'escalated', 'abandoned'.
+    """
+    structured_json = json.dumps(structured) if structured is not None else None
+    tools_json = json.dumps(tools_used) if tools_used is not None else None
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sub_sessions"
+            " SET status = ?, result_summary = ?, result_structured = ?,"
+            "     tools_used = ?, turns = ?, escalated = ?, completed_at = ?"
+            " WHERE handle_id = ?",
+            (
+                status, summary, structured_json, tools_json,
+                turns, 1 if escalated else 0, completed_at, handle_id,
+            ),
+        )
+
+
+def get_sub_sessions_by_parent(
+    parent_session_id: str, db_path: Path | None = None
+) -> list[dict]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM sub_sessions WHERE parent_session_id = ?"
+            " ORDER BY created_at ASC",
+            (parent_session_id,),
+        ).fetchall()
+    results = []
+    for row in rows:
+        d = dict(row)
+        if d.get("allowed_tools"):
+            d["allowed_tools"] = json.loads(d["allowed_tools"])
+        if d.get("tools_used"):
+            d["tools_used"] = json.loads(d["tools_used"])
+        if d.get("result_structured"):
+            d["result_structured"] = json.loads(d["result_structured"])
+        d["escalated"] = bool(d["escalated"])
+        results.append(d)
+    return results
+
+
+def mark_sub_sessions_abandoned_for_parent(
+    parent_session_id: str, now: str, db_path: Path | None = None
+) -> int:
+    """Mark all `running` sub-sessions for a parent as `abandoned`.
+
+    Returns the number of rows updated. Called when the parent session ends
+    so orphan rows don't linger.
+    """
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE sub_sessions"
+            " SET status = 'abandoned', completed_at = ?"
+            " WHERE parent_session_id = ? AND status = 'running'",
+            (now, parent_session_id),
+        )
+        return cursor.rowcount
+
+
+def mark_orphan_running_sub_sessions_abandoned(
+    now: str, db_path: Path | None = None
+) -> int:
+    """Startup sweep: mark `running` sub-sessions whose parent is not active.
+
+    Called at harness startup to recover from crashes. Any sub-session in
+    `running` whose parent session is no longer `active` becomes `abandoned`.
+    Returns the number of rows updated.
+    """
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE sub_sessions"
+            " SET status = 'abandoned', completed_at = ?"
+            " WHERE status = 'running'"
+            "   AND parent_session_id NOT IN ("
+            "     SELECT session_id FROM sessions WHERE status = 'active'"
+            "   )",
+            (now,),
+        )
+        return cursor.rowcount
