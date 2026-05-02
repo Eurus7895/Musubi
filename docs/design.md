@@ -903,24 +903,32 @@ Detailed memory contract: see `docs/memory.md`.
 #### Phase A — Sub-agent primitives (3 days, foundation for orchestrator)
 
 ```
-Day A.1 — MCP plumbing + policy + storage + timeouts
-  [ ] storage/db.py: sub_sessions table + CRUD helpers
-  [ ] copilot-harness/session/sub_sessions.py: lifecycle, handle_id
+Day A.1 ✅ MCP plumbing + policy + storage + timeouts (commits 0606ed0, fcd9c9c)
+  [x] storage/db.py: sub_sessions table + CRUD helpers (0606ed0)
+  [x] copilot-harness/session/sub_sessions.py: lifecycle, handle_id
       (uuid hex[:12]), status transitions
       (running → done/failed/escalated/abandoned), orphan cleanup
       (parent end + harness startup sweep)
-  [ ] scripts/policy_engine.py: SUBAGENT_POLICIES (per-role allow-list)
+  [x] scripts/policy_engine.py: SUBAGENT_POLICIES (per-role allow-list)
       + MAIN_SUBAGENT_ALLOWLIST (per-main allow-list of roles) + helpers
-  [ ] server.py: register harness_spawn_subagent / harness_await_subagent
-      / harness_list_subagents MCP tools
-  [ ] Four-layer timeout parameters wired through spawn:
+      (check_subagent_allowed, list_subagent_roles, get_subagent_tools,
+      effective_subagent_tools, subagent_deny_reason)
+  [x] server.py: register harness_spawn_subagent / harness_complete_subagent
+      / harness_await_subagent / harness_list_subagents MCP tools.
+      harness_complete_subagent records the runner's terminal result;
+      harness_await_subagent polls until terminal or wall-clock kill.
+      Startup orphan sweep wired at module-import time.
+  [x] Four-layer timeout parameters wired through spawn:
       max_turns (caller arg), per_turn_timeout_s (default 60),
-      wall_clock_timeout_s (default 300), await max_wait_s (default 300)
-  [ ] Tests: tests/test_sub_sessions.py + tests/test_subagent_policy.py
-      (handle uniqueness, status transitions, cascade-on-parent-end,
-      policy intersection, list_subagents filters by caller, unknown role
-      rejected, max_turns / wall_clock kills produce escalated=true with
-      structured timeout summary)
+      wall_clock_timeout_s (default 300), await max_wait_s (default 300).
+      Auto-escalation in complete() when turns >= max_turns or elapsed
+      > wall_clock_timeout_s, with reason appended to the summary.
+  [x] Tests: tests/test_sub_sessions.py + tests/test_subagent_policy.py
+      (+71 tests; covers handle uniqueness, status transitions,
+      cascade-on-parent-end, policy intersection, list_subagents
+      filters by caller, unknown role rejected, max_turns / wall_clock
+      kills produce escalated=true with structured timeout summary,
+      MCP-tool integration of spawn → complete → await flow)
 
 Day A.2 — Firewall + result verification
   [ ] copilot-harness/validation/subagent_context.py:
@@ -948,9 +956,11 @@ Day A.3 — Role files + spawn-event surface
       spawn; no silent sub agents
 
 End-of-A checkpoint:
-  [ ] 379 + ~25 new tests green
-  [ ] Spawn → simulated complete → fetch summary path works in unit tests
-  [ ] No regressions in existing pipeline mode + memory + skill paths
+  [~] 441 tests green after A.1 (was 370 — A.1 added +71). A.2 + A.3 still
+      pending — checkpoint flips fully ✅ once those land.
+  [x] Spawn → simulated complete → fetch summary path works in unit tests
+      (test_sub_sessions.test_mcp_spawn_then_complete_then_await_returns_summary)
+  [x] No regressions in existing pipeline mode + memory + skill paths
 ```
 
 #### Phase B — Orchestrator core (2 days)
@@ -1138,9 +1148,9 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Week 5 plan — sub agents (explorer / investigator / reviewer-aux) |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 ✅ shipped (storage + lifecycle + policy + 4 MCP tools). Phase A.2 (firewall) + A.3 (role files + chat markers) pending. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
-| 15 | Subagents for parallel reads / summarization | ⚠️ | Week 5 (Phase A core primitives + Phase B pipeline-main spawning) |
+| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A.1 ✅ shipped. Phase B pipeline-main spawning + orchestrator integration pending. |
 | **6. Prompt Engineering** | | | |
 | 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
 | 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
@@ -1311,10 +1321,13 @@ DEFERRED (needs discussion first):
 
 ---
 
-*Updated: April 2026*
+*Updated: May 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 complete + in-chat rendering + Tasks sidebar — rich stage markdown in chat, activity-bar Tasks view showing the live session and a filesystem-scanned history of past runs; click any stage to open its .md artifact. 379 tests.*
-*Next: Phase A Day 1 — sub-agent primitives (storage table, MCP tools, policy, timeouts)*
+*Current: Week 4 + Phase A.1 (orchestrator-pivot foundation) complete — sub-agent
+storage + lifecycle + policy engine + four MCP tools (spawn / complete / await /
+list) wired with four-layer timeouts. 441 tests (was 370 — +71 from A.1).*
+*Next: Phase A.2 — validation/subagent_context.py (firewall) +
+verifier.verify_subagent_summary (token cap + optional schema).*
 *Planned: Week 5+ Orchestrator Pivot — see § Build Roadmap. 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*
