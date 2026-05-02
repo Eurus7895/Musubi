@@ -42,6 +42,7 @@ from memory import memory_loader, session_distiller
 from session import state, sub_sessions
 from skills import skill_loader
 from storage import db as _db
+from storage import subagent_audit
 from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
@@ -654,6 +655,27 @@ def harness_spawn_subagent(
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
 
+    # Phase A.3 — durable spawn audit row. The chat-marker side is
+    # extension-side (Phase A.3 TS work); this guarantees the spawn is
+    # provable post-hoc even if the marker scrolls off-screen.
+    try:
+        subagent_audit.record_spawn(
+            handle_id=handle_id,
+            parent_session_id=parent_session_id,
+            parent_agent_name=parent_agent_name,
+            role=role,
+            brief=brief,
+            allowed_tools=effective_tools,
+            max_turns=max_turns,
+            wall_clock_timeout_s=wall_clock_timeout_s,
+        )
+    except Exception:
+        # Audit failure must not silently drop a spawn — but it also must
+        # not block the spawn itself. We swallow here and rely on the
+        # extension's own pre-spawn marker for visibility; durable audit
+        # for this run is lost only if the audit DB is unwritable.
+        pass
+
     return json.dumps({
         "status": "spawned",
         "handle_id": handle_id,
@@ -738,6 +760,24 @@ def harness_complete_subagent(
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
+
+    # Phase A.3 — durable completion audit row, mirror of the spawn row.
+    try:
+        subagent_audit.record_complete(
+            handle_id=handle_id,
+            parent_session_id=final["parent_session_id"],
+            parent_agent_name=final["parent_agent_name"],
+            role=final["role"],
+            brief=final["brief"],
+            final_status=final["status"],
+            escalated=bool(final["escalated"]),
+            turns=int(final.get("turns", 0) or 0),
+            tools_used=final.get("tools_used"),
+            summary_truncated=verify.truncated,
+            verification_errors=verify.errors if verify.errors else None,
+        )
+    except Exception:
+        pass
 
     response: dict[str, Any] = {
         "status": "recorded",
@@ -886,6 +926,45 @@ def harness_get_subagent_context(handle_id: str) -> str:
         "role_skill": ctx.role_skill,
         "allowed_tools": list(ctx.allowed_tools),
     })
+
+
+@mcp.tool()
+def harness_query_subagent_events(
+    parent_session_id: str | None = None,
+    handle_id: str | None = None,
+    since_ts: float | None = None,
+    limit: int = 200,
+) -> str:
+    """Return the durable audit log for sub-agent spawns + completions.
+
+    Phase A.3 — the extension polls this tool to render chat markers
+    ("explorer spawned with brief X", "investigator done in 4 turns").
+    The audit is also evidence-of-record for the "no silent sub agents"
+    invariant: a spawn that produces no chat marker still leaves a row
+    here.
+
+    Filters are AND-combined; pass None / omit to skip a filter.
+
+    Result: { events: [...], count: N }. Each event has:
+      ts, handle_id, parent_session_id, parent_agent_name, role, brief,
+      event ('spawned' | 'completed'),
+      + spawn-only: allowed_tools, max_turns, wall_clock_timeout_s,
+      + complete-only: final_status, escalated, turns, tools_used,
+                       summary_truncated, verification_errors.
+    """
+    try:
+        events = subagent_audit.query_events(
+            parent_session_id=parent_session_id,
+            handle_id=handle_id,
+            since_ts=since_ts,
+            limit=limit,
+        )
+    except Exception as exc:
+        return json.dumps({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    return json.dumps({"events": events, "count": len(events)})
 
 
 @mcp.tool()

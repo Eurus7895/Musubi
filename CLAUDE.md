@@ -29,7 +29,7 @@ would violate one, stop and ask.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
 6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); a pipeline-specific variant of a role would be filename-prefixed (`<pipeline>-<role>.agent.md`) — but only when 3+ specific failures of the canonical agent justify it. The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
 7. **Append-only stage store.** Stage outputs are written once; retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
-8. **No silent sub agents.** Every spawn must emit a chat marker and an audit-log row. The harness primitives (`harness_spawn_subagent` / `_complete_subagent` / `_await_subagent` / `_list_subagents`) shipped in Phase A.1; the chat-marker + audit surface lands in Phase A.3.
+8. **No silent sub agents.** Every spawn writes a durable row to `storage/audit.db::subagent_audit` (Phase A.3 — see `storage/subagent_audit.py`) and surfaces via `harness_query_subagent_events`. Every completion writes its mirror row with `final_status`, `escalated`, `turns`, `tools_used`, `summary_truncated`, and `verification_errors`. The chat-marker UX layer (TS, `subagentRendering.ts`) consumes the same audit log.
 
 ---
 
@@ -100,7 +100,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 # Python harness
 cd copilot-harness
 pip install -e .
-pytest tests/ -v                 # 487 tests
+pytest tests/ -v                 # 507 tests
 
 # Per-component checks
 ruff check copilot-harness/
@@ -146,6 +146,7 @@ Names + one-line purpose. Full schemas and behavior in `docs/design.md` § MCP T
 | `harness_await_subagent` | Poll until terminal or wall-clock kill; return summary + structured + tools_used + turns + escalated (Phase A.1) |
 | `harness_list_subagents` | Return spawn allow-list for the calling main agent (Phase A.1) |
 | `harness_get_subagent_context` | Return firewalled `{brief, role, role_skill, allowed_tools}` for a handle (Phase A.2) |
+| `harness_query_subagent_events` | Read durable audit log of sub-agent spawns + completions (Phase A.3) |
 
 ---
 

@@ -9,10 +9,54 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
-**Headline:** Phase A.1 + A.2 of the orchestrator pivot — sub-agent
-foundation + firewall + result verification shipped at the harness
-layer. The extension-side runner (Phase A.3) and orchestrator (Phase B)
-now have everything they need to build on top without re-plumbing.
+**Headline:** Phase A of the orchestrator pivot is complete on the
+Python side — sub-agent foundation, firewall, result verification,
+role .agent.md + SKILL.md files, and a durable audit log shipped at the
+harness layer. The remaining Phase A.3 work (mcpClient EventEmitter +
+subagentRendering.ts chat markers) is TypeScript and lands separately;
+until it does, the extension polls `harness_query_subagent_events` for
+spawn / completion events.
+
+### Phase A.3 — Role files + spawn-event audit (Python side)
+
+- **`.github/agents/explorer.agent.md`** — read-only sub-agent for
+  codebase scans (`Read + View + Grep + Glob`).
+- **`.github/agents/investigator.agent.md`** — read-only diagnostics
+  (`+ Bash`) for narrow `pytest` / `ruff` / `mypy` / `git diff` runs;
+  forbidden-command list in the role file rules out mutation /
+  network operations.
+- **`.github/agents/reviewer-aux.agent.md`** — single-file checklist
+  review (`Read + View`); deliberately omits Grep / Glob so the role
+  cannot wander into the wider codebase.
+- **`.github/skills/{explorer,investigator,reviewer-aux}/SKILL.md`** —
+  procedure docs the harness pushes via
+  `validation/subagent_context.SUBAGENT_ROLE_SKILLS`. Each documents
+  reduce-the-brief, tool-selection, summary format, structured-payload
+  shape, and anti-patterns specific to the role.
+- **`copilot-harness/storage/subagent_audit.py`** — new
+  `subagent_audit` table on `audit.db` with `record_spawn`,
+  `record_complete`, `query_events`. JSON-encoded fields
+  (`allowed_tools`, `tools_used`, `verification_errors`) decoded on
+  read. Indexed on `ts`, `parent_session_id`, and `handle_id`.
+- **`copilot-harness/server.py`**:
+  - `harness_spawn_subagent` — writes a `'spawned'` audit row after a
+    successful spawn (audit failures swallow rather than block the
+    spawn — durable evidence is best-effort, not blocking).
+  - `harness_complete_subagent` — writes a `'completed'` audit row
+    capturing `final_status`, `escalated`, `turns`, `tools_used`,
+    `summary_truncated`, and `verification_errors`. Mirror of the
+    spawn row keyed on the same `handle_id`.
+  - New **`harness_query_subagent_events(parent_session_id?,
+    handle_id?, since_ts?, limit=200)`** MCP tool exposes the audit
+    log so the extension can poll for spawn / completion events and
+    render chat markers without losing visibility on a window reload.
+- **+20 tests:** `tests/test_subagent_audit.py` covers writer field
+  coverage, query filters (parent / handle / since_ts), limit /
+  ordering, server-wired audit on spawn / complete / escalation /
+  verification-failure / truncation, MCP-tool query semantics,
+  end-to-end no-silent-sub-agents invariant across all three roles,
+  and presence of the role .agent.md + SKILL.md files.
+- Total: **507 passing** (was 487; +20 from A.3).
 
 ### Phase A.2 — Firewall + result verification
 
@@ -101,13 +145,14 @@ now have everything they need to build on top without re-plumbing.
 
 ### Changed
 
-- **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 23
+- **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 24
   (`harness_spawn_subagent`, `harness_complete_subagent`,
   `harness_await_subagent`, `harness_list_subagents`,
-  `harness_get_subagent_context`).
-- **Hard Invariant #8** in `CLAUDE.md` reworded — sub-agent harness
-  primitives are now shipped (Phase A.1); the chat-marker / audit
-  surface is what's still pending in Phase A.3.
+  `harness_get_subagent_context`, `harness_query_subagent_events`).
+- **Hard Invariant #8** in `CLAUDE.md` rewritten — every spawn writes a
+  durable `subagent_audit` row and surfaces via
+  `harness_query_subagent_events`; the chat-marker UX layer
+  (`subagentRendering.ts`) consumes the same audit log.
 
 ### Tests (combined A.1 + A.2)
 

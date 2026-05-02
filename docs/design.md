@@ -955,31 +955,54 @@ Day A.2 ✅ Firewall + result verification
       type-name coercion, MCP integration through harness_complete_subagent
       and harness_get_subagent_context). +46 tests; total 487.
 
-Day A.3 — Role files + spawn-event surface
-  [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
-  [ ] .github/agents/investigator.agent.md (+ Bash for test runs)
-  [ ] .github/agents/reviewer-aux.agent.md (Read + View, per-file checklist)
+Day A.3 ◐ Role files + spawn-event surface (Python side ✅; TS side pending)
+  [x] .github/agents/explorer.agent.md       (Read + View + Grep + Glob)
+  [x] .github/agents/investigator.agent.md   (+ Bash for read-only diagnostics)
+  [x] .github/agents/reviewer-aux.agent.md   (Read + View, per-file checklist)
+  [x] .github/skills/{explorer,investigator,reviewer-aux}/SKILL.md —
+      role procedures pushed by the harness through
+      validation/subagent_context.SUBAGENT_ROLE_SKILLS.
+  [x] copilot-harness/storage/subagent_audit.py — durable audit table
+      `subagent_audit` in audit.db with record_spawn, record_complete,
+      query_events. Indexed on ts / parent_session_id / handle_id.
+  [x] server.py: harness_spawn_subagent + harness_complete_subagent now
+      write a row to subagent_audit on every spawn / completion. New
+      harness_query_subagent_events MCP tool exposes the log so the
+      extension's chat-marker layer can poll it.
   [ ] copilot-harness-extension/src/mcpClient.ts: replace notification
       ignore with EventEmitter; expose onNotification subscription
+      (TS — Phase A.3 extension portion, not yet shipped).
   [ ] server.py: emit subagent_spawned / subagent_done MCP notifications
+      (FastMCP-side push; deferred — the extension can poll
+      harness_query_subagent_events instead until the EventEmitter
+      lands).
   [ ] copilot-harness-extension/src/subagentRendering.ts: chat marker
       helpers (brief, turn count, tool histogram, summary line)
-  [ ] scripts/post_tool_use.py: record every spawn (caller, role, brief,
-      turns, tools, result_status) in storage/audit.db
-  [ ] Tests: every spawn produces a chat marker; audit row written per
-      spawn; no silent sub agents
+      (TS — Phase A.3 extension portion).
+  [x] Tests: every spawn writes an audit row, every completion writes
+      its mirror row, escalation / verification-failure / truncation are
+      all captured, and the no-silent-sub-agents invariant is checked
+      end-to-end across explorer + investigator + reviewer-aux roles.
+      +20 tests; total 507.
 
 End-of-A checkpoint:
-  [~] 487 tests green after A.1 + A.2 (was 370 — A.1 +71, A.2 +46).
-      Phase A.3 (role files + chat-marker surface + audit log) still
-      pending; checkpoint flips fully ✅ once it lands.
+  [x] 507 tests green after A.1 + A.2 + A.3 Python side
+      (was 370 — A.1 +71, A.2 +46, A.3 +20).
   [x] Spawn → simulated complete → fetch summary path works in unit tests
       (test_sub_sessions.test_mcp_spawn_then_complete_then_await_returns_summary)
   [x] Sub-agent firewall enforced at type level + tested against every
       forbidden main-session key
   [x] Over-cap summary truncated with marker;
       malformed structured payload rejected against output_schema
+  [x] No silent sub agents — durable audit row per spawn + completion
+      with ts / handle / parent / role / brief / event / final_status /
+      escalated / verification_errors. Extension polls
+      harness_query_subagent_events to render chat markers.
   [x] No regressions in existing pipeline mode + memory + skill paths
+  [~] Extension-side runner (mcpClient EventEmitter +
+      subagentRendering.ts chat markers) — TS work, not yet shipped.
+      Replaces polling once it lands; until then, polling
+      harness_query_subagent_events is the contract.
 ```
 
 #### Phase B — Orchestrator core (2 days)
@@ -1167,9 +1190,9 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 ✅ + Phase A.2 ✅ shipped (storage + lifecycle + policy + firewall + summary verifier + 5 MCP tools). Phase A.3 (role files + chat markers) pending. |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 + A.2 + A.3 Python ✅ (storage + lifecycle + policy + firewall + verifier + 6 MCP tools + role .agent.md / SKILL.md + durable audit). A.3 TS-side chat markers + Phase B pipeline-main spawning still pending. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
-| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A.1 + A.2 ✅ shipped. Phase B pipeline-main spawning + orchestrator integration pending. |
+| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A complete on the Python side. Phase B (orchestrator + pipeline-main spawning) still pending. |
 | **6. Prompt Engineering** | | | |
 | 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
 | 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
@@ -1344,12 +1367,13 @@ DEFERRED (needs discussion first):
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 + Phase A.1 + A.2 complete — sub-agent storage +
-lifecycle + policy + firewall (validation/subagent_context.py) +
-result verifier (verify_subagent_summary) + 5 MCP tools (spawn /
-complete / await / list / get_context) wired with four-layer timeouts
-and runner-side cap enforcement. 487 tests (was 370 — +71 from A.1, +46
-from A.2).*
-*Next: Phase A.3 — role files (.github/agents/{explorer,investigator,reviewer-aux}.agent.md) +
-mcpClient EventEmitter + spawn-event chat markers + post_tool_use audit row per spawn.*
+*Current: Week 4 + Phase A.1 + A.2 + A.3 (Python) complete — sub-agent
+storage + lifecycle + policy + firewall + verifier + role files +
+SKILL.md + durable audit log; 6 MCP tools (spawn / complete / await /
+list / get_context / query_events) wired with four-layer timeouts,
+runner-side cap enforcement, and durable per-spawn / per-completion
+audit rows. 507 tests (was 370 — +71 A.1, +46 A.2, +20 A.3).*
+*Next: Phase A.3 extension-side TS work — mcpClient EventEmitter +
+subagentRendering.ts chat markers (replaces audit polling). Then Phase
+B (orchestrator + pipeline-main spawning).*
 *Planned: Week 5+ Orchestrator Pivot — see § Build Roadmap. 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*
