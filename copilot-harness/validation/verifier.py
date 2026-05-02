@@ -321,3 +321,200 @@ def validate(
             errors.extend(_check_code_only_modifies_declared_files(output, design))
 
     return ValidationResult.failed(errors) if errors else ValidationResult.ok()
+
+
+# ── Sub-agent result verification (Phase A.2) ────────────────────────────────
+#
+# Sub-agents return a `summary` string and an optional `structured` payload.
+# The harness applies two checks here, both deterministic:
+#   1. Token cap on the summary — runaway summaries blow the parent's
+#      context window, which is exactly what sub-agents exist to avoid.
+#      Over-cap text is truncated with a single explicit marker so the
+#      parent agent can detect the truncation.
+#   2. Optional JSON-shape check on `structured` — the parent specifies
+#      an `output_schema` at spawn time when it expects a particular
+#      shape (e.g. orchestrator asking explorer for `{matches: list}`).
+#      Malformed output is rejected, not silently accepted.
+
+# Char-per-token approximation. Tiktoken would be more precise but pulls
+# a heavy dep; 4 chars/token is the standard rule-of-thumb the GPT-4
+# token estimator emits within 20% across English prose.
+_CHARS_PER_TOKEN: int = 4
+_TRUNCATION_MARKER: str = "\n\n[truncated by harness — exceeded max_tokens cap]"
+
+DEFAULT_SUBAGENT_MAX_TOKENS: int = 2000
+
+
+@dataclass
+class SubagentVerifyResult:
+    """Outcome of `verify_subagent_summary`.
+
+    `summary` is the (possibly truncated) text safe to hand back to the
+    parent. `truncated` records whether the cap fired so the parent /
+    extension can render a chat marker. `errors` lists schema problems
+    on the structured payload — non-empty errors mean `valid` is False
+    and the runner should mark the sub-session 'failed'.
+    """
+    valid: bool
+    summary: str
+    truncated: bool
+    errors: list[str] = field(default_factory=list)
+
+
+def _truncate_to_token_budget(
+    text: str, max_tokens: int
+) -> tuple[str, bool]:
+    """Return (possibly-truncated text, did_truncate)."""
+    if max_tokens <= 0:
+        return _TRUNCATION_MARKER.lstrip(), True
+    char_cap = max_tokens * _CHARS_PER_TOKEN
+    if len(text) <= char_cap:
+        return text, False
+    # Reserve space for the marker so the final string is <= char_cap +
+    # marker. A character-cap counted in "tokens" is approximate anyway;
+    # the marker keeps the output legible.
+    reserved = char_cap - len(_TRUNCATION_MARKER)
+    if reserved <= 0:
+        return _TRUNCATION_MARKER.lstrip(), True
+    return text[:reserved] + _TRUNCATION_MARKER, True
+
+
+# Schema type names accepted in JSON-encoded schemas (the extension cannot
+# encode Python `type` objects, so it sends names). Mirrors typing in
+# OUTPUT_SCHEMAS but reachable via JSON.
+_TYPE_NAME_MAP: dict[str, type | tuple[type, ...]] = {
+    "str":    str,
+    "string": str,
+    "int":    int,
+    "float":  (int, float),
+    "number": (int, float),
+    "bool":   bool,
+    "list":   list,
+    "array":  list,
+    "dict":   dict,
+    "object": dict,
+    "null":   type(None),
+}
+
+
+def _coerce_type(t: Any) -> type | tuple[type, ...] | None:
+    """Accept either a Python `type` (in-process callers) or a string
+    (JSON-encoded schemas from the extension)."""
+    if isinstance(t, type):
+        return t
+    if isinstance(t, tuple) and all(isinstance(x, type) for x in t):
+        return t
+    if isinstance(t, str):
+        return _TYPE_NAME_MAP.get(t.lower())
+    if isinstance(t, list):
+        coerced: list[type] = []
+        for x in t:
+            mapped = _TYPE_NAME_MAP.get(x.lower()) if isinstance(x, str) else x
+            if isinstance(mapped, type):
+                coerced.append(mapped)
+            elif isinstance(mapped, tuple):
+                coerced.extend(mapped)
+        return tuple(coerced) if coerced else None
+    return None
+
+
+def _type_label(t: Any) -> str:
+    if isinstance(t, type):
+        return t.__name__
+    if isinstance(t, tuple):
+        return " | ".join(getattr(x, "__name__", str(x)) for x in t)
+    return str(t)
+
+
+def _check_structured_against_schema(
+    structured: Any, schema: dict[str, Any]
+) -> list[str]:
+    """Lightweight structural match. Same shape as `OUTPUT_SCHEMAS` above.
+
+    Schema keys:
+      - required: list[str]
+      - types:    dict[str, type | tuple | str]   string names supported so
+                  the extension can JSON-encode the schema (e.g. "int").
+      - enum:     dict[str, set | list]   (optional — value-set check)
+    """
+    if not isinstance(structured, dict):
+        return [
+            f"structured must be a JSON object, got {type(structured).__name__}"
+        ]
+    errors: list[str] = []
+    for key in schema.get("required", []):
+        if key not in structured:
+            errors.append(f"structured missing required field: {key!r}")
+    for key, raw_type in schema.get("types", {}).items():
+        coerced = _coerce_type(raw_type)
+        if coerced is None:
+            # An unparseable type entry is a schema-author error, not a
+            # sub-agent error — surface it but don't block the run.
+            errors.append(
+                f"schema.types.{key} unrecognised type spec: {raw_type!r}"
+            )
+            continue
+        if key in structured and not isinstance(structured[key], coerced):
+            errors.append(
+                f"structured.{key} must be {_type_label(coerced)}, "
+                f"got {type(structured[key]).__name__}"
+            )
+    for key, allowed in schema.get("enum", {}).items():
+        allowed_seq = list(allowed) if not isinstance(allowed, list) else allowed
+        if key in structured and structured[key] not in allowed_seq:
+            errors.append(
+                f"structured.{key} must be one of {sorted(allowed_seq)}, "
+                f"got {structured[key]!r}"
+            )
+    return errors
+
+
+def verify_subagent_summary(
+    summary: str | None,
+    structured: Any | None = None,
+    *,
+    max_tokens: int = DEFAULT_SUBAGENT_MAX_TOKENS,
+    schema: dict[str, Any] | None = None,
+) -> SubagentVerifyResult:
+    """Sanitise + validate a sub-agent's terminal result.
+
+    1. `summary` is coerced to a string; over-cap text is truncated with
+       an explicit marker (`_TRUNCATION_MARKER`) so the caller can see
+       the cut.
+    2. `summary` is also scanned for instruction-injection attempts and
+       leaked secrets. Either is a hard-fail — the runner must not
+       forward such content to the parent.
+    3. `structured`, when present, must be a JSON object matching `schema`
+       (when given). `schema` shape mirrors `OUTPUT_SCHEMAS` —
+       `{required, types, enum}` — so callers don't need an extra dep.
+
+    Used by `harness_complete_subagent` so the runner cannot bypass the
+    cap by handing the harness an oversize string.
+    """
+    raw = "" if summary is None else str(summary)
+    safe_summary, truncated = _truncate_to_token_budget(raw, max_tokens)
+
+    errors: list[str] = []
+
+    # Reuse the secrets scanner from validate(): a sub-agent dumping a
+    # private key into its summary is the same threat as a coder doing it.
+    for hit in _scan_secrets(safe_summary):
+        errors.append(f"sub-agent summary contains potential secret: {hit}")
+
+    # Instruction-injection in the summary would propagate up to the
+    # parent's prompt. Re-use the scanner from context_builder.
+    from validation.context_builder import scan_injection
+    if scan_injection(safe_summary):
+        errors.append(
+            "sub-agent summary contains instruction-injection patterns"
+        )
+
+    if structured is not None and schema is not None:
+        errors.extend(_check_structured_against_schema(structured, schema))
+
+    return SubagentVerifyResult(
+        valid=not errors,
+        summary=safe_summary,
+        truncated=truncated,
+        errors=errors,
+    )

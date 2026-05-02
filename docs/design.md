@@ -930,16 +930,30 @@ Day A.1 ✅ MCP plumbing + policy + storage + timeouts (commits 0606ed0, fcd9c9c
       kills produce escalated=true with structured timeout summary,
       MCP-tool integration of spawn → complete → await flow)
 
-Day A.2 — Firewall + result verification
-  [ ] copilot-harness/validation/subagent_context.py:
-      build_subagent_context(brief, role) — returns {brief, role_skill}.
-      Never reads main session state, memory, sibling subs.
-  [ ] verifier.py: verify_subagent_summary(summary, max_tokens=2000,
-      schema=None) with truncate-with-marker on overrun + optional JSON
-      schema validation
-  [ ] Tests: sub agent cannot read main session state; over-cap summary
-      truncated with marker; schema-rejection path for malformed structured
-      returns
+Day A.2 ✅ Firewall + result verification
+  [x] copilot-harness/validation/subagent_context.py:
+      build_subagent_context(brief, role) — returns the frozen
+      SubagentContext(brief, role, role_skill, allowed_tools). Function
+      signature deliberately excludes session_id / db_path so the
+      firewall is enforceable at the type level. SUBAGENT_ROLE_SKILLS
+      table maps each role → SKILL.md id (Phase A.3 lands the files).
+      assert_no_session_leakage helper rejects forbidden keys defensively.
+  [x] verifier.py: verify_subagent_summary(summary, structured,
+      max_tokens=2000, schema=None). Truncates over-cap text with
+      `[truncated by harness — exceeded max_tokens cap]`. Reuses the
+      secrets + injection scanners as hard-fails. Optional schema check
+      (required / types / enum) accepts string type names so JSON-encoded
+      schemas from the extension work without a jsonschema dep.
+  [x] server.py: harness_complete_subagent now passes the runner's
+      summary + structured through verify_subagent_summary; failures
+      coerce the row to status='failed' with a structured error. New
+      harness_get_subagent_context MCP tool returns the firewalled
+      payload to the runner (consumed in Phase A.3).
+  [x] Tests: tests/test_subagent_context.py (signature firewall,
+      closed key set, leakage detection) + tests/test_subagent_summary_verify.py
+      (token cap, marker text, secrets / injection rejection, schema
+      type-name coercion, MCP integration through harness_complete_subagent
+      and harness_get_subagent_context). +46 tests; total 487.
 
 Day A.3 — Role files + spawn-event surface
   [ ] .github/agents/explorer.agent.md (Read + Grep + Glob)
@@ -956,10 +970,15 @@ Day A.3 — Role files + spawn-event surface
       spawn; no silent sub agents
 
 End-of-A checkpoint:
-  [~] 441 tests green after A.1 (was 370 — A.1 added +71). A.2 + A.3 still
-      pending — checkpoint flips fully ✅ once those land.
+  [~] 487 tests green after A.1 + A.2 (was 370 — A.1 +71, A.2 +46).
+      Phase A.3 (role files + chat-marker surface + audit log) still
+      pending; checkpoint flips fully ✅ once it lands.
   [x] Spawn → simulated complete → fetch summary path works in unit tests
       (test_sub_sessions.test_mcp_spawn_then_complete_then_await_returns_summary)
+  [x] Sub-agent firewall enforced at type level + tested against every
+      forbidden main-session key
+  [x] Over-cap summary truncated with marker;
+      malformed structured payload rejected against output_schema
   [x] No regressions in existing pipeline mode + memory + skill paths
 ```
 
@@ -1148,9 +1167,9 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 ✅ shipped (storage + lifecycle + policy + 4 MCP tools). Phase A.2 (firewall) + A.3 (role files + chat markers) pending. |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 ✅ + Phase A.2 ✅ shipped (storage + lifecycle + policy + firewall + summary verifier + 5 MCP tools). Phase A.3 (role files + chat markers) pending. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
-| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A.1 ✅ shipped. Phase B pipeline-main spawning + orchestrator integration pending. |
+| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A.1 + A.2 ✅ shipped. Phase B pipeline-main spawning + orchestrator integration pending. |
 | **6. Prompt Engineering** | | | |
 | 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
 | 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
@@ -1325,9 +1344,12 @@ DEFERRED (needs discussion first):
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 + Phase A.1 (orchestrator-pivot foundation) complete — sub-agent
-storage + lifecycle + policy engine + four MCP tools (spawn / complete / await /
-list) wired with four-layer timeouts. 441 tests (was 370 — +71 from A.1).*
-*Next: Phase A.2 — validation/subagent_context.py (firewall) +
-verifier.verify_subagent_summary (token cap + optional schema).*
+*Current: Week 4 + Phase A.1 + A.2 complete — sub-agent storage +
+lifecycle + policy + firewall (validation/subagent_context.py) +
+result verifier (verify_subagent_summary) + 5 MCP tools (spawn /
+complete / await / list / get_context) wired with four-layer timeouts
+and runner-side cap enforcement. 487 tests (was 370 — +71 from A.1, +46
+from A.2).*
+*Next: Phase A.3 — role files (.github/agents/{explorer,investigator,reviewer-aux}.agent.md) +
+mcpClient EventEmitter + spawn-event chat markers + post_tool_use audit row per spawn.*
 *Planned: Week 5+ Orchestrator Pivot — see § Build Roadmap. 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*

@@ -9,13 +9,49 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
-**Headline:** Phase A.1 of the orchestrator pivot — sub-agent foundation
-shipped at the harness layer. Storage table + lifecycle module + policy
-engine extension + four MCP tools, all wired with four-layer timeouts.
-The extension-side runner (Phase A.3) and orchestrator (Phase B) build
-on top of these primitives without re-plumbing.
+**Headline:** Phase A.1 + A.2 of the orchestrator pivot — sub-agent
+foundation + firewall + result verification shipped at the harness
+layer. The extension-side runner (Phase A.3) and orchestrator (Phase B)
+now have everything they need to build on top without re-plumbing.
 
-### Added
+### Phase A.2 — Firewall + result verification
+
+- **`copilot-harness/validation/subagent_context.py`** — frozen
+  `SubagentContext(brief, role, role_skill, allowed_tools)` produced by
+  `build_subagent_context(brief, role)`. Function signature deliberately
+  excludes `session_id` / `db_path` so the firewall is enforced at the
+  type level. `SUBAGENT_ROLE_SKILLS` table maps each role to a SKILL.md
+  id (Phase A.3 ships the actual files). `assert_no_session_leakage`
+  helper rejects payloads that look like main session state.
+- **`copilot-harness/validation/verifier.py`** — new
+  `verify_subagent_summary(summary, structured, max_tokens=2000,
+  schema=None)` returning `SubagentVerifyResult(valid, summary,
+  truncated, errors)`. Truncates over-cap text with the marker
+  `[truncated by harness — exceeded max_tokens cap]`. Reuses the
+  existing secrets + instruction-injection scanners as hard-fails.
+  Optional schema check (required / types / enum) accepts string type
+  names (`"int"`, `"list"`, …) so JSON-encoded schemas from the
+  extension validate without a `jsonschema` dependency.
+- **`copilot-harness/server.py`**:
+  - `harness_complete_subagent` now passes `summary` + `structured`
+    through `verify_subagent_summary` against the row's
+    `output_schema`. Rejected summaries coerce status → `failed` with
+    a structured error; the offending text is replaced before
+    persisting so the parent never sees secrets / injection.
+  - New `harness_get_subagent_context(handle_id)` MCP tool — returns
+    the firewalled `{brief, role, role_skill, allowed_tools}` payload
+    consumed by the Phase A.3 runner.
+- **+46 tests:**
+  - `tests/test_subagent_context.py` (15) — signature firewall, frozen
+    dataclass, closed key set, role-skill mapping completeness,
+    leakage detection, static no-session-import assertion.
+  - `tests/test_subagent_summary_verify.py` (31) — token cap +
+    truncation marker, secrets / injection rejection, schema type-name
+    coercion, MCP-layer integration through harness_complete_subagent
+    and harness_get_subagent_context.
+- Total: **487 passing** (was 441 after A.1; +46 from A.2).
+
+### Phase A.1 — Sub-agent foundation
 
 - **`copilot-harness/storage/db.py`** — `sub_sessions` table + 6 CRUD
   helpers: `insert_sub_session`, `get_sub_session`,
@@ -65,34 +101,42 @@ on top of these primitives without re-plumbing.
 
 ### Changed
 
-- **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 22
+- **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 23
   (`harness_spawn_subagent`, `harness_complete_subagent`,
-  `harness_await_subagent`, `harness_list_subagents`).
+  `harness_await_subagent`, `harness_list_subagents`,
+  `harness_get_subagent_context`).
 - **Hard Invariant #8** in `CLAUDE.md` reworded — sub-agent harness
   primitives are now shipped (Phase A.1); the chat-marker / audit
   surface is what's still pending in Phase A.3.
 
-### Tests
+### Tests (combined A.1 + A.2)
 
-- **+71 tests** across two new files:
-  - `copilot-harness/tests/test_sub_sessions.py` (43) — handle
-    uniqueness, status transitions, auto-escalation on max_turns +
-    wall-clock breach, cascade-on-parent-end, startup orphan sweep,
-    abandon, list-for-parent ordering, MCP-tool integration covering
-    spawn → complete → await flow + wall-clock kill via await.
-  - `copilot-harness/tests/test_subagent_policy.py` (28) — policy
-    table shape, intersection rules, per-main filtering, fail-closed
-    on unknown main / role / disjoint tools, `deny_reason` ergonomics.
-- Total: **441 passing** (was 370).
+- **+117 tests** across four new files:
+  - A.1: `tests/test_sub_sessions.py` (43) — handle uniqueness, status
+    transitions, auto-escalation on max_turns + wall-clock breach,
+    cascade-on-parent-end, startup orphan sweep, abandon, list-for-parent
+    ordering, MCP-tool integration covering spawn → complete → await
+    + wall-clock kill via await.
+  - A.1: `tests/test_subagent_policy.py` (28) — policy table shape,
+    intersection rules, per-main filtering, fail-closed on unknown
+    main / role / disjoint tools, `deny_reason` ergonomics.
+  - A.2: `tests/test_subagent_context.py` (15) — signature firewall,
+    frozen dataclass, closed key set, role-skill mapping completeness,
+    leakage detection, static no-session-import assertion.
+  - A.2: `tests/test_subagent_summary_verify.py` (31) — token cap +
+    truncation marker, secrets / injection rejection, schema type-name
+    coercion, MCP-layer integration through `harness_complete_subagent`
+    and `harness_get_subagent_context`.
+- Total: **487 passing** (was 370).
 
 ### Roadmap impact
 
-- `docs/design.md` § Phase A — Day A.1 flipped from `[ ]` to `[x]`
-  (commits `0606ed0`, `fcd9c9c`); End-of-A checkpoint partially
-  green (test floor met; A.2 firewall + A.3 role files / chat
-  markers still pending).
+- `docs/design.md` § Phase A — Day A.1 + Day A.2 flipped from `[ ]`
+  to `[x]`. Phase A.3 (role files + spawn-event chat markers + audit
+  rows) is the only remaining task before End-of-A checkpoint flips
+  fully ✅.
 - BP 13 / BP 15 in § Best Practices Compliance: status note bumped
-  to "Phase A.1 ✅ shipped — A.2 / A.3 pending".
+  to "Phase A.1 + A.2 ✅ shipped — A.3 pending".
 
 ---
 

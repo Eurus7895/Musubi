@@ -119,5 +119,5 @@ code change.
 
 ---
 
-*CopilotHarness | v0.4.0 | 441 tests (Phase A.1 ✅) | May 2026*
+*CopilotHarness | v0.4.0 | 487 tests (Phase A.1 + A.2 ✅) | May 2026*
 *Status, roadmap, and full design → docs/design.md.*

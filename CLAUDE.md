@@ -100,7 +100,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 # Python harness
 cd copilot-harness
 pip install -e .
-pytest tests/ -v                 # 441 tests
+pytest tests/ -v                 # 487 tests
 
 # Per-component checks
 ruff check copilot-harness/
@@ -142,9 +142,10 @@ Names + one-line purpose. Full schemas and behavior in `docs/design.md` § MCP T
 | `harness_run_tests` | pytest |
 | `harness_run_hook` | Execute `hooks.json` lifecycle hook |
 | `harness_spawn_subagent` | Validate spawn (policy ∩ caller tools) + insert sub-session row, return handle (Phase A.1) |
-| `harness_complete_subagent` | Record terminal result; auto-escalate on max_turns / wall-clock breach (Phase A.1) |
+| `harness_complete_subagent` | Record terminal result; verify_subagent_summary cap + secrets / injection / schema check; auto-escalate on max_turns / wall-clock breach (Phase A.1 + A.2) |
 | `harness_await_subagent` | Poll until terminal or wall-clock kill; return summary + structured + tools_used + turns + escalated (Phase A.1) |
 | `harness_list_subagents` | Return spawn allow-list for the calling main agent (Phase A.1) |
+| `harness_get_subagent_context` | Return firewalled `{brief, role, role_skill, allowed_tools}` for a handle (Phase A.2) |
 
 ---
 

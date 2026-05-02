@@ -42,7 +42,7 @@ from memory import memory_loader, session_distiller
 from session import state, sub_sessions
 from skills import skill_loader
 from storage import db as _db
-from validation import context_builder, verifier
+from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
 
@@ -675,6 +675,7 @@ def harness_complete_subagent(
     tools_used: list[str] | None = None,
     turns: int = 0,
     status: str = "done",
+    max_summary_tokens: int = verifier.DEFAULT_SUBAGENT_MAX_TOKENS,
 ) -> str:
     """Record the terminal result of a sub-agent run.
 
@@ -684,22 +685,61 @@ def harness_complete_subagent(
     or wall_clock_timeout_s coerces the row to status='escalated' with an
     explanatory note appended to the summary.
 
+    Phase A.2 firewall — the recorded summary is also passed through
+    `verifier.verify_subagent_summary`:
+      - over-cap text is truncated with a marker (cap = max_summary_tokens
+        ≈ chars/4),
+      - secrets / instruction-injection in the summary force status='failed'
+        with a structured error so the parent never sees the offending text,
+      - if `output_schema` was set at spawn time and `structured` is given,
+        the structured payload is validated against that schema.
+
     `status` ∈ {'done', 'failed', 'escalated', 'abandoned'}.
     `structured` may be any JSON-serialisable value (or null).
     """
+    # Pull the recorded output_schema (set at spawn time) so the runner
+    # cannot dodge the schema check by omitting it on completion.
+    existing_row = sub_sessions.get(handle_id)
+    schema_dict: dict[str, Any] | None = None
+    if existing_row is not None and existing_row.get("output_schema"):
+        try:
+            schema_dict = json.loads(existing_row["output_schema"])
+        except (TypeError, json.JSONDecodeError):
+            schema_dict = None
+
+    verify = verifier.verify_subagent_summary(
+        summary,
+        structured=structured,
+        max_tokens=max_summary_tokens,
+        schema=schema_dict,
+    )
+
+    final_status = status
+    safe_summary = verify.summary
+    if not verify.valid:
+        # Treat as hard fail — but persist it so the audit trail records
+        # the rejection. We replace the summary with a structured error
+        # so the parent never sees the rejected content.
+        final_status = "failed"
+        safe_summary = (
+            "[harness] sub-agent result rejected by verify_subagent_summary: "
+            + "; ".join(verify.errors)
+        )
+        structured = None  # don't propagate a malformed structured payload
+
     try:
         final = sub_sessions.complete(
             handle_id,
-            summary=summary,
+            summary=safe_summary,
             structured=structured,
             tools_used=tools_used,
             turns=turns,
-            status=status,
+            status=final_status,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
 
-    return json.dumps({
+    response: dict[str, Any] = {
         "status": "recorded",
         "handle_id": handle_id,
         "final_status": final["status"],
@@ -708,7 +748,12 @@ def harness_complete_subagent(
         "structured": final.get("result_structured"),
         "tools_used": final.get("tools_used"),
         "turns": final.get("turns", 0),
-    })
+    }
+    if verify.truncated:
+        response["summary_truncated"] = True
+    if not verify.valid:
+        response["verification_errors"] = verify.errors
+    return json.dumps(response)
 
 
 @mcp.tool()
@@ -804,6 +849,43 @@ def harness_await_subagent(
             })
 
         time.sleep(poll)
+
+
+@mcp.tool()
+def harness_get_subagent_context(handle_id: str) -> str:
+    """Return the firewalled pre-prompt payload for a spawned sub-session.
+
+    Phase A.2 firewall — sub-agents see exactly two things: the spawn
+    `brief` and the role's SKILL.md (when registered). They never see the
+    parent's session state, memory, or sibling sub-agents. The runner
+    (Phase A.3) calls this once per spawn and uses the result verbatim.
+
+    Result on success:
+      { status: 'ok', brief, role, role_skill, allowed_tools }
+    Result on missing handle:
+      { status: 'error', error: 'handle … not found' }
+    """
+    row = sub_sessions.get(handle_id)
+    if row is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"handle {handle_id!r} not found",
+        })
+    try:
+        ctx = subagent_context.build_subagent_context(
+            brief=row["brief"], role=row["role"]
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+
+    return json.dumps({
+        "status": "ok",
+        "handle_id": handle_id,
+        "brief": ctx.brief,
+        "role": ctx.role,
+        "role_skill": ctx.role_skill,
+        "allowed_tools": list(ctx.allowed_tools),
+    })
 
 
 @mcp.tool()
