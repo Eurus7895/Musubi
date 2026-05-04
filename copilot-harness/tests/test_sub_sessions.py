@@ -576,7 +576,11 @@ def test_mcp_list_subagents_for_orchestrator(mcp_db: Path) -> None:
     payload = json.loads(raw)
     assert payload["main_agent"] == "orchestrator"
     role_names = {r["role"] for r in payload["roles"]}
-    assert role_names == {"explorer", "investigator", "reviewer-aux"}
+    # Phase A.1 roles plus Phase B.1 ad-hoc-spawnable pipeline roles.
+    assert role_names >= {
+        "explorer", "investigator", "reviewer-aux",
+        "planner", "coder", "reviewer",
+    }
     # Each entry exposes the role's own tool allow-list.
     for r in payload["roles"]:
         assert isinstance(r["allowed_tools"], list)

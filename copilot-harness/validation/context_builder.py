@@ -16,6 +16,9 @@ Per-agent firewall rules:
     coder         → plan + design; reading "review" → fix_instructions only
     reviewer      → code only  (evaluator firewall — no request, plan, design)
     skill-builder → fail patterns only  (no session state, no user code)
+    orchestrator  → memory_tier1 only  (no pipeline state of any kind;
+                    user_message + conversation_history are runner-supplied
+                    in Phase B.2 + Phase C, not built here)
 """
 
 import os
@@ -23,6 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from memory import memory_loader
 from session import state
 from storage import db
 
@@ -66,6 +70,11 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
         {"api-design", "database-patterns", "documentation"}  # designer
         | {"python", "testing", "database-patterns", "api-design"}  # coder
     ),
+    # Phase B.1 — orchestrator. Routing skill is pushed via inject_skills
+    # frontmatter; the allowlist entry exists so harness_get_skill /
+    # harness_list_skills resolve without policy denial when the runner
+    # asks for it by id.
+    "orchestrator": {"orchestrator-routing"},
 }
 
 
@@ -114,10 +123,13 @@ def build_context(
         return _context_reviewer(session_id, db_path)
     if agent == "skill-builder":
         return _context_skill_builder(db_path)
+    if agent == "orchestrator":
+        return _context_orchestrator()
 
     raise ValueError(
         f"Unknown agent {agent_name!r}. "
-        "Valid agents: planner, designer, coder, reviewer, skill-builder"
+        "Valid agents: planner, designer, coder, reviewer, skill-builder, "
+        "orchestrator"
     )
 
 
@@ -166,6 +178,16 @@ def _context_skill_builder(db_path: Path | None) -> dict[str, Any]:
     return {"fail_patterns": patterns}
 
 
+def _context_orchestrator() -> dict[str, Any]:
+    # The orchestrator holds the user-facing chat across turns. The harness
+    # owns Tier-1 memory; user_message + conversation_history are passed by
+    # the extension runner at request-build time (Phase B.2 + Phase C) and
+    # are deliberately not synthesised here. Pipeline session state
+    # (request, plan, design, code, review, fail_patterns) is firewalled —
+    # the orchestrator never spawns a pipeline and must not peek at one.
+    return {"memory_tier1": memory_loader.get_memory_context()}
+
+
 # ── Per-stage MCP access (used by harness_read_stage tool) ───────────────────
 
 # Which stages each agent is permitted to read via harness_read_stage.
@@ -175,6 +197,10 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     "coder":         {"plan", "design", "review"},
     "reviewer":      {"code"},
     "skill-builder": set(),
+    # Orchestrator never reads pipeline stages. Pipelines are user-invoked
+    # and run in their own session; the orchestrator must not peek at
+    # in-flight or completed pipeline state via harness_read_stage.
+    "orchestrator":  set(),
 }
 
 
