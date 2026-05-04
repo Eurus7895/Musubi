@@ -14,7 +14,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _COMMANDS_DIR = _REPO_ROOT / ".github" / "commands"
 
-VALID_ACTIONS = {"pipeline", "step", "continue", "status", "help", "agent"}
+VALID_ACTIONS = {"pipeline", "step", "continue", "status", "help", "agent", "orchestrator"}
 # Step actions must use a canonical pipeline role. `action: agent` (one-shot)
 # accepts any agent file in `.github/agents/`.
 VALID_STEP_AGENTS = {"planner", "designer", "coder", "reviewer"}

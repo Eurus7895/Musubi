@@ -72,7 +72,52 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "languageModelTools": [
+      {
+        "name": "harness_spawn_subagent",
+        "displayName": "Spawn sub-agent (CopilotHarness)",
+        "modelDescription": "Spawn a read-only sub-agent (explorer, investigator, reviewer-aux, planner, coder, reviewer) with a one-sentence brief. Returns a handle_id you must pass to harness_await_subagent. Sub-agents see only the brief — no conversation history, memory, or other sub-agent results.",
+        "toolReferenceName": "harness_spawn_subagent",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "role": { "type": "string" },
+            "brief": { "type": "string" },
+            "allowed_tools": { "type": "array", "items": { "type": "string" } },
+            "output_schema": { "type": "object" }
+          },
+          "required": ["role", "brief"]
+        }
+      },
+      {
+        "name": "harness_await_subagent",
+        "displayName": "Await sub-agent (CopilotHarness)",
+        "modelDescription": "Block until a spawned sub-agent reaches a terminal state (done, failed, escalated, abandoned) or its wall-clock cap fires. Returns the sub-agent's summary + structured payload.",
+        "toolReferenceName": "harness_await_subagent",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "handle_id": { "type": "string" },
+            "max_wait_s": { "type": "number" }
+          },
+          "required": ["handle_id"]
+        }
+      },
+      {
+        "name": "harness_list_subagents",
+        "displayName": "List spawnable sub-agents (CopilotHarness)",
+        "modelDescription": "List the sub-agent roles the orchestrator is permitted to spawn, with each role's tool allow-list. Call before spawning when unsure which role fits.",
+        "toolReferenceName": "harness_list_subagents",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
   },
   "scripts": {
     "setup": "bash scripts/setup.sh",
