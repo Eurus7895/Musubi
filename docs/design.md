@@ -294,7 +294,12 @@ copilot-harness-extension/       ← VS Code extension (TypeScript, v0.4.0)
         extension.ts             ← direct-mode routing + slash dispatch
                                    + pipeline/step summary + plan.md anchor
                                    + Tasks view provider registration
-        mcpClient.ts             ← JSON-RPC stdio client
+        mcpClient.ts             ← JSON-RPC stdio client + notification
+                                   EventEmitter (Phase A.3) for the
+                                   sub-agent rendering layer
+        subagentRendering.ts     ← Phase A.3: chat marker formatters
+                                   + SubagentEventTracker that polls
+                                   harness_query_subagent_events
         pipeline.ts              ← agent driver + correction loop
                                    + rich in-chat stage rendering
                                    (STAGE_TAGS, emitStageStart/Complete,
@@ -775,7 +780,7 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 + A.2 + A.3 Python ✅ (storage + lifecycle + policy + firewall + verifier + 6 MCP tools + role .agent.md / SKILL.md + durable audit). A.3 TS-side chat markers + Phase B pipeline-main spawning still pending. |
+| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 + A.2 + A.3 ✅ (Python storage + lifecycle + policy + firewall + verifier + 6 MCP tools + role .agent.md / SKILL.md + durable audit; TS mcpClient EventEmitter + subagentRendering.ts formatters + SubagentEventTracker poller). Phase B pipeline-main spawning still pending. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
 | 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A complete on the Python side. Phase B (orchestrator + pipeline-main spawning) still pending. |
 | **6. Prompt Engineering** | | | |
@@ -952,13 +957,16 @@ DEFERRED (needs discussion first):
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 + Phase A.1 + A.2 + A.3 (Python) complete — sub-agent
-storage + lifecycle + policy + firewall + verifier + role files +
-SKILL.md + durable audit log; 6 MCP tools (spawn / complete / await /
-list / get_context / query_events) wired with four-layer timeouts,
-runner-side cap enforcement, and durable per-spawn / per-completion
-audit rows. 507 tests (was 370 — +71 A.1, +46 A.2, +20 A.3).*
-*Next: Phase A.3 extension-side TS work — mcpClient EventEmitter +
-subagentRendering.ts chat markers (replaces audit polling). Then Phase
-B (orchestrator + pipeline-main spawning).*
+*Current: Week 4 + Phase A.1 + A.2 + A.3 complete — sub-agent storage +
+lifecycle + policy + firewall + verifier + role files + SKILL.md +
+durable audit log on the Python side; mcpClient notification
+EventEmitter + subagentRendering.ts formatters + SubagentEventTracker
+poller on the TS side, with a tsx + node --test runner. 6 MCP tools
+(spawn / complete / await / list / get_context / query_events) wired
+with four-layer timeouts, runner-side cap enforcement, and durable
+per-spawn / per-completion audit rows. 507 Python tests (was 370 — +71
+A.1, +46 A.2, +20 A.3) + 24 TS tests.*
+*Next: Phase B — orchestrator agent file + extension-side runner that
+calls vscode.lm.registerTool for spawn / await / list, wires the
+SubagentEventTracker into the chat stream.*
 *Planned: Week 5+ Orchestrator Pivot — see [`docs/roadmap.md`](./roadmap.md). 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*
