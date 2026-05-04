@@ -25,16 +25,32 @@ from policy_engine import (
 
 # ── shape ────────────────────────────────────────────────────────────────────
 
-def test_three_canonical_roles_present() -> None:
-    assert set(SUBAGENT_POLICIES.keys()) == {
-        "explorer", "investigator", "reviewer-aux"
-    }
+def test_three_phase_a_roles_present() -> None:
+    """Phase A roles are a subset of SUBAGENT_POLICIES; Phase B.1 added the
+    pipeline roles as ad-hoc spawnable. Both must be present."""
+    assert {"explorer", "investigator", "reviewer-aux"}.issubset(
+        SUBAGENT_POLICIES.keys()
+    )
 
 
-def test_orchestrator_can_spawn_all_three_roles() -> None:
-    assert set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"]) == {
-        "explorer", "investigator", "reviewer-aux"
-    }
+def test_phase_b1_pipeline_roles_present_as_subagents() -> None:
+    """Phase B.1 — orchestrator can spawn pipeline roles ad-hoc. The role
+    must therefore appear in SUBAGENT_POLICIES with its pipeline tool set."""
+    assert {"planner", "coder", "reviewer"}.issubset(SUBAGENT_POLICIES.keys())
+
+
+def test_orchestrator_can_spawn_phase_a_roles() -> None:
+    assert {"explorer", "investigator", "reviewer-aux"}.issubset(
+        set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"])
+    )
+
+
+def test_orchestrator_can_spawn_pipeline_roles() -> None:
+    """Locked decision #4 — orchestrator may spawn individual pipeline roles
+    ad-hoc but never a whole pipeline."""
+    assert {"planner", "coder", "reviewer"}.issubset(
+        set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"])
+    )
 
 
 def test_pipeline_stages_have_empty_allowlist_until_pipeline_yaml_opts_in() -> None:
@@ -86,7 +102,10 @@ def test_unknown_role_denies_for_orchestrator() -> None:
 
 def test_list_subagent_roles_for_orchestrator() -> None:
     roles = list_subagent_roles("orchestrator")
-    assert sorted(roles) == ["explorer", "investigator", "reviewer-aux"]
+    assert set(roles) >= {
+        "explorer", "investigator", "reviewer-aux",
+        "planner", "coder", "reviewer",
+    }
 
 
 def test_list_subagent_roles_for_pipeline_stage_is_empty() -> None:

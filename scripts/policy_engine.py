@@ -41,16 +41,30 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     "explorer":     ["Read", "View", "Grep", "Glob"],
     "investigator": ["Read", "View", "Grep", "Glob", "Bash"],
     "reviewer-aux": ["Read", "View"],
+    # Phase B.1 — pipeline roles spawnable as ad-hoc sub-agents by the
+    # orchestrator. Tool sets mirror PIPELINE_POLICIES["feature-dev"] so
+    # an ad-hoc spawn cannot exceed what the same role gets inside a
+    # pipeline. Kept in sync manually; if PIPELINE_POLICIES changes,
+    # update here too.
+    "planner":      ["Read", "View", "Grep", "Glob"],
+    "coder":        ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
+    "reviewer":     ["Read", "View", "Grep", "Glob"],
 }
 
 # MAIN_SUBAGENT_ALLOWLIST — which roles each main agent may spawn.
-# - "orchestrator" gets the full set (Phase B introduces the agent file).
+# - "orchestrator" (Phase B.1) may spawn the read-only Phase A roles plus
+#   the pipeline roles ad-hoc. It must NOT spawn an entire pipeline —
+#   that is reserved for user-invoked slash commands. Locked decision #4
+#   in docs/roadmap.md.
 # - Pipeline stages opt in via `pipeline.yaml subagents:` (Phase B); we
 #   keep their entries empty here so the harness denies any spawn until
 #   the pipeline runner explicitly adds the stage to this table at
 #   load-time. Empty dict entry = "agent exists, but cannot spawn".
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
-    "orchestrator": ["explorer", "investigator", "reviewer-aux"],
+    "orchestrator": [
+        "explorer", "investigator", "reviewer-aux",
+        "planner", "coder", "reviewer",
+    ],
     "planner":  [],
     "designer": [],
     "coder":    [],
