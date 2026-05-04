@@ -10,10 +10,13 @@ independently. Order is by observed ROI, not priority.
 
 Highest ROI: these fix bugs we have actually seen in production runs.
 
-- **T1.1 — Coder: severity-rubric awareness.**
-  Update `coder.agent.md` to tell the coder that medium/low issues in a
-  review are advisory; prioritize correctness/security; do not degrade code
-  quality chasing nits. Pairs with the reviewer-side rubric change.
+- **T1.1 — Coder: severity-rubric awareness.** ✅ done
+  Updated `coder.agent.md` with the severity rubric (mirroring the
+  reviewer's) plus a Behavior Rule: medium/low fix_instructions are
+  advisory, correctness/security come first, do not degrade code quality
+  chasing nits. Coder uses fix_instruction wording (explicit "consider…",
+  "would be nicer…", style-only) to identify nits, since the Reviewer's
+  severity tag is not forwarded through the retry context.
 
 - **T1.2 — Surface rubric coercions to the user.**
   Server already sets `status_coerced: true` on the review write

@@ -2,7 +2,7 @@
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
-> Rules and conventions → `CLAUDE.md`. Architecture and roadmap → `docs/design.md`.
+> Rules and conventions → `CLAUDE.md`. Architecture → `docs/design.md`. Build roadmap and status → `docs/roadmap.md`.
 
 ---
 
@@ -122,4 +122,4 @@ code change.
 ---
 
 *CopilotHarness | v0.4.0 | 507 tests (Phase A complete on Python side ✅) | May 2026*
-*Status, roadmap, and full design → docs/design.md.*
+*Full design → docs/design.md. Status and roadmap → docs/roadmap.md.*

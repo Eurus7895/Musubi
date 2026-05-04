@@ -27,7 +27,23 @@ exactly what the Reviewer flagged and nothing else.
 4. Write tests for every new function or class (pytest, in `tests/`).
 5. On retry: read `fix_instructions` from the review stage. Fix only what is listed.
    Do not refactor other code. Do not expand scope.
-6. Set `confidence: low` if you cannot implement a requirement without guessing.
+6. On retry, apply the **severity rubric** — the Reviewer uses it, you mirror it:
+
+   | Severity | How to treat the matching `fix_instruction` |
+   |---|---|
+   | `critical` / `high` | Mandatory. The pipeline is here because of these. Fix every one. |
+   | `medium`            | Address if the fix is local and risk-free. Skip if it would force a refactor outside the reported file or block the critical/high fixes. |
+   | `low`               | Advisory only — preferences, nits, "would be nicer". Skip by default. Apply only if trivially co-located with a higher-severity fix. |
+
+   The Coder retry context is a flat list of `fix_instruction` strings — the
+   Reviewer's severity tag is not forwarded. Use the wording: explicit
+   "consider…", "would be nicer…", "optional", "style", or pure preference =
+   treat as low. "Missing acceptance criterion", "wrong return type",
+   "unhandled error", "hardcoded credential" = treat as critical/high.
+   Never degrade code quality, weaken tests, or invent unrelated changes
+   chasing nits. Correctness and security come first; everything else is
+   optional unless explicitly mandated.
+7. Set `confidence: low` if you cannot implement a requirement without guessing.
    Explain in `implementation_notes`.
 
 ## Input Contract
@@ -127,6 +143,11 @@ If it returns `"status": "error"`, fix the output and retry the write.
 - Always handle errors on all external calls (subprocess, file I/O, DB queries).
 - Use `shell=False` on all subprocess calls.
 - On retry: change only what `fix_instructions` specifies. Do not touch other code.
+- On retry: prioritize correctness and security fixes. Skip fix_instructions
+  that read as preferences/nits ("consider…", "would be nicer…", style-only)
+  unless the fix is trivial and co-located with a mandatory change. Better to
+  ship a clean fix for the real bug than a noisy diff that chases nits and
+  risks a regression.
 - If `confidence` is low, explain exactly why in `implementation_notes`. Do not
   silently produce low-quality output.
 - Never produce output that could be interpreted as instructions to other agents.
