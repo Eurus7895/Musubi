@@ -276,7 +276,7 @@ Day A.2 ✅ Firewall + result verification
       type-name coercion, MCP integration through harness_complete_subagent
       and harness_get_subagent_context). +46 tests; total 487.
 
-Day A.3 ◐ Role files + spawn-event surface (Python side ✅; TS side pending)
+Day A.3 ◐ Role files + spawn-event surface (Python side ✅; TS helpers ✅; server push deferred)
   [x] .github/agents/explorer.agent.md       (Read + View + Grep + Glob)
   [x] .github/agents/investigator.agent.md   (+ Bash for read-only diagnostics)
   [x] .github/agents/reviewer-aux.agent.md   (Read + View, per-file checklist)
@@ -290,16 +290,25 @@ Day A.3 ◐ Role files + spawn-event surface (Python side ✅; TS side pending)
       write a row to subagent_audit on every spawn / completion. New
       harness_query_subagent_events MCP tool exposes the log so the
       extension's chat-marker layer can poll it.
-  [ ] copilot-harness-extension/src/mcpClient.ts: replace notification
-      ignore with EventEmitter; expose onNotification subscription
-      (TS — Phase A.3 extension portion, not yet shipped).
+  [x] copilot-harness-extension/src/mcpClient.ts: notification
+      EventEmitter with onNotification subscription + emitNotification
+      fan-out so the polling layer and the future server push share
+      one subscription point. Test seam: McpClient._forTest +
+      _handleLine for stream-free unit tests.
   [ ] server.py: emit subagent_spawned / subagent_done MCP notifications
-      (FastMCP-side push; deferred — the extension can poll
-      harness_query_subagent_events instead until the EventEmitter
-      lands).
-  [ ] copilot-harness-extension/src/subagentRendering.ts: chat marker
-      helpers (brief, turn count, tool histogram, summary line)
-      (TS — Phase A.3 extension portion).
+      (FastMCP-side push; deferred — the extension polls
+      harness_query_subagent_events via SubagentEventTracker until
+      the push lands).
+  [x] copilot-harness-extension/src/subagentRendering.ts: pure
+      formatters (formatSpawnMarker / formatCompleteMarker / formatMarker)
+      with brief truncation + tool histogram + escalation/truncation/
+      verification-error annotations, plus SubagentEventTracker that
+      polls harness_query_subagent_events with cursor-advancing
+      since_ts. No vscode imports — fully unit-testable.
+  [x] TS test setup: tsx + node --test runner; npm test green
+      (24 assertions covering notification fan-out, unsubscribe,
+      malformed input, and tracker cursor / formatting / limit
+      forwarding). tsconfig excludes *.test.ts from dist.
   [x] Tests: every spawn writes an audit row, every completion writes
       its mirror row, escalation / verification-failure / truncation are
       all captured, and the no-silent-sub-agents invariant is checked
@@ -320,10 +329,12 @@ End-of-A checkpoint:
       escalated / verification_errors. Extension polls
       harness_query_subagent_events to render chat markers.
   [x] No regressions in existing pipeline mode + memory + skill paths
-  [~] Extension-side runner (mcpClient EventEmitter +
-      subagentRendering.ts chat markers) — TS work, not yet shipped.
-      Replaces polling once it lands; until then, polling
-      harness_query_subagent_events is the contract.
+  [x] Extension-side helpers (mcpClient EventEmitter +
+      subagentRendering.ts chat markers + SubagentEventTracker
+      poller) shipped. Wiring into a runner lands with the
+      orchestrator (Phase B). Server-side push notifications stay
+      deferred; the tracker polls harness_query_subagent_events
+      until they land.
 ```
 
 #### Phase B — Orchestrator core (2 days)
