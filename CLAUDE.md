@@ -178,6 +178,7 @@ mypy copilot-harness/
 # VS Code extension
 cd copilot-harness-extension
 npm install
+npm test                         # node --test via tsx
 npm run package                  # builds copilot-harness-extension-<v>.vsix
 
 # Install built extension
