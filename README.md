@@ -18,7 +18,8 @@ skills, enforces a correction loop, and runs code verification.
 | `README.md` *(you are here)* | Install · build · run · contribute |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · invariants · conventions · commands (Claude Code memory) |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map for agents |
-| [`docs/design.md`](./docs/design.md) | Full architecture · schemas · roadmap · status |
+| [`docs/design.md`](./docs/design.md) | Full architecture · schemas |
+| [`docs/roadmap.md`](./docs/roadmap.md) | Build roadmap · status · phase plans |
 
 Read `CLAUDE.md` before making code changes — it lists the hard invariants
 (zero LLM in harness, evaluator firewall, fail-closed policy, etc.).
@@ -132,7 +133,8 @@ Add a command by dropping a new `.md` — no code change required.
 copilot-harness/                Python MCP server (zero LLM)
 copilot-harness-extension/      VS Code extension (TypeScript)
 hooks.json + scripts/           SessionStart / PreToolUse / PostToolUse
-docs/design.md                  full architecture + roadmap + status
+docs/design.md                  full architecture + schemas
+docs/roadmap.md                 build roadmap + status
 ```
 
 Detailed file-by-file breakdown lives in
@@ -163,8 +165,8 @@ binary path it tried to spawn.
 1. Read [`CLAUDE.md`](./CLAUDE.md) first — it lists the hard invariants
    that cannot be broken without an explicit design discussion.
 2. Skim [`AGENTS.md`](./AGENTS.md) for the file-layout map.
-3. Look at [`docs/design.md`](./docs/design.md) § Build Roadmap and
-   § Known TODOs for the current backlog.
+3. Look at [`docs/roadmap.md`](./docs/roadmap.md) and
+   [`docs/design.md`](./docs/design.md) § Known TODOs for the current backlog.
 4. Run the checks listed in [`CLAUDE.md`](./CLAUDE.md) § Commands before
    opening a PR.
 5. Don't add new pipelines until `feature-dev` is validated (see roadmap).

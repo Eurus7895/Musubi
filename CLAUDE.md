@@ -1,7 +1,8 @@
 # CLAUDE.md — CopilotHarness
 
 > Rules, conventions, and commands for working in this repo.
-> Architecture, roadmap, and status → [`docs/design.md`](./docs/design.md).
+> Architecture and schemas → [`docs/design.md`](./docs/design.md).
+> Build roadmap and status → [`docs/roadmap.md`](./docs/roadmap.md).
 > Agent session-start map → [`AGENTS.md`](./AGENTS.md).
 
 ---
@@ -75,7 +76,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 **Adding things:**
 - New slash command → drop a `.md` file in `.github/commands/`. No code change.
 - New skill → add directory under `.github/skills/`. Wire injection in `pipeline.yaml`.
-- New pipeline → not yet — feature-dev must be validated first (see `docs/design.md` § Build Roadmap).
+- New pipeline → not yet — feature-dev must be validated first (see [`docs/roadmap.md`](./docs/roadmap.md)).
 
 **Editing:**
 - Prefer editing existing files. Don't create new top-level docs.
