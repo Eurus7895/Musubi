@@ -375,6 +375,30 @@ Day B.2 ✅ Extension-side runner
       tool catalog shape, dispatch arg translation, SpawnTracker bookkeeping,
       cleanup best-effort, disk loader root precedence). 53 TS tests +
       544 Python tests green.
+
+B.2 follow-up ✅ Frontmatter-driven model selection
+  [x] All five vscode.lm.selectChatModels call sites previously hardcoded
+      `family: "gpt-4o"` regardless of what each agent's frontmatter
+      declared. Replaced with copilot-harness-extension/src/modelSelector.ts
+      + modelSelectorCore.ts. Resolution chain: skill model: → agent
+      model: → fallback (claude-sonnet-4.5) → any vendor=copilot model.
+  [x] Skill-level override: any active SKILL.md whose frontmatter
+      declares model: lifts the agent onto that family for the
+      invocation (first skill wins by load order). Pipeline.ts reads
+      active skills from context.injected_skills; orchestrator runner
+      passes its inject_skills list. No skill currently declares one —
+      the hook is plumbing, ready for procedures that genuinely demand
+      heavier capacity.
+  [x] Default switched from gpt-4o to claude-sonnet-4.5 across all 10
+      agent files (planner, designer, coder, reviewer, orchestrator,
+      pipeline-builder, skill-builder, explorer, investigator,
+      reviewer-aux). Convention recorded in CLAUDE.md § Conventions
+      ("agent = wage; skill = bonus").
+  [x] Tests: +23 TS assertions in modelSelectorCore.test.ts covering
+      frontmatter parsing edge cases, agent + skill disk readers, root
+      precedence, multi-skill first-wins, and a regression check that
+      every shipped .agent.md declares a model. 76 TS + 544 Python
+      tests green.
 ```
 
 #### Phase C — Conversation continuity (1.5 days)

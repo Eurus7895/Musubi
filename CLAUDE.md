@@ -161,6 +161,32 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 - Same rule for `json.load`/`json.dump` when the file handle is opened by
   this codebase — open with `encoding="utf-8"` first.
 
+**Model selection — frontmatter-driven, agent-primary.**
+Both `<agent>.agent.md` and `<skill>/SKILL.md` may declare a `model:`
+family. The runtime resolves the model in `modelSelector.ts` per
+invocation; agents and skills are not allowed to override at the call
+site. Resolution chain (first match wins):
+
+1. First active skill whose `SKILL.md` declares `model:`, in load order.
+2. Agent file's `model:` field.
+3. Configured fallback (`claude-sonnet-4.5`).
+4. Any `vendor=copilot` model VS Code surfaces.
+
+The convention for *where* to declare:
+
+| Location | Means | When to use |
+|---|---|---|
+| **Agent** | "Wage" — economic default for this persona's typical work | **Always.** Every agent file should declare one. |
+| **Skill** | "Bonus" — this procedure intrinsically requires more capacity, regardless of which agent loads it | Rare. Only when the *procedure* (not the role) demands the upgrade and any agent loading it should pay the cost. |
+
+Rationale: agents are personas with a baseline brain set by budget; skills
+are procedures with intrinsic capability requirements. Most decisions
+belong on the agent so the role is self-describing in one file. The skill
+override is the budget exception — it lets a particular procedure earn
+the upgrade without giving the persona a permanent raise. See
+`copilot-harness-extension/src/modelSelector.ts` for the resolver and
+`modelSelectorCore.ts` for the parser.
+
 ---
 
 ## Commands
