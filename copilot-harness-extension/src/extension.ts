@@ -16,6 +16,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
+import { selectModelForAgent } from "./modelSelector";
 import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
 import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrator";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
@@ -420,13 +421,18 @@ async function runDirect(
   chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  roots: string[],
+  log: (msg: string) => void,
 ): Promise<void> {
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
+  // Direct mode has no agent file, so selectModelForAgent will fall back
+  // through declared family → fallback (gpt-4o) → any copilot model.
+  let model: vscode.LanguageModelChat;
+  try {
+    model = await selectModelForAgent({ roots, agentName: "direct", log });
+  } catch (err) {
     stream.markdown("**Error:** No Copilot language model available.");
     return;
   }
-  const model = models[0];
 
   // 1. Fetch catalog + memory concurrently — one round-trip of latency, not two.
   const [catalog, memory] = await Promise.all([
@@ -603,7 +609,7 @@ async function handler(
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, context, stream, token);
+        await runDirect(cmd.prompt, client, context, stream, token, slashRoots, log);
         break;
 
       case "slash":

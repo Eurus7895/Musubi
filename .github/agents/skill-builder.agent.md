@@ -6,6 +6,7 @@ description: >
   rules or new skills. Invoked automatically when pattern_detector.py detects
   3 or more sessions with the same failure type. Writes proposals to
   .github/agents/proposed/ only — never modifies active agent files directly.
+model: gpt-4o
 tools: ["view", "edit"]
 ---
 

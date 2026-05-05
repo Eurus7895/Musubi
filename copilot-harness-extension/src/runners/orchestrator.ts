@@ -14,6 +14,7 @@
 
 import * as vscode from "vscode";
 import { McpClient } from "../mcpClient";
+import { selectModelForAgent } from "../modelSelector";
 import {
   buildOrchestratorSystemPrompt,
   cleanupOutstandingSubagents,
@@ -217,12 +218,17 @@ export interface RunOrchestratorOptions {
 export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
   const { prompt, client, chatContext, stream, token, roots, log } = opts;
 
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
+  // Honors the orchestrator agent's `model:` frontmatter; falls back to
+  // gpt-4o → any copilot model if the declared family isn't available.
+  let model: vscode.LanguageModelChat;
+  try {
+    model = await selectModelForAgent({
+      roots, agentName: ORCHESTRATOR_AGENT_NAME, log,
+    });
+  } catch {
     stream.markdown("**Error:** No Copilot language model available.");
     return;
   }
-  const model = models[0];
 
   const { agentMd, routingSkill } = loadOrchestratorPrompts(roots);
   const memory = await fetchMemoryContext(client);
