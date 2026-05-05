@@ -34,6 +34,7 @@ import {
   type OrchestratorMessage,
   type ToolDispatchContext,
 } from "./orchestratorCore";
+import { runSummarizerSubagent } from "./summarizerRunner";
 
 export {
   ORCHESTRATOR_AGENT_NAME,
@@ -373,16 +374,37 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     if (directive.kind !== "none") {
       log(`[orchestrator] compaction strategy: ${directive.kind} (≈${tokenTotal} tokens)`);
     }
-    const compacted = applyCompaction(directive, fetched);
+    let compacted = applyCompaction(directive, fetched);
 
-    // 90% branch — summarize the oldest half. The summarizer sub-agent
-    // runs via the dedicated runner (Phase C.2 §7); falls through to
-    // hard-truncate on failure. Wired in step 3 of this phase; for now
-    // the directive is honored locally only (drop oldest half) until
-    // summarizerRunner is available.
+    // 90% branch — spawn the summarizer over the oldest half. On failure
+    // (LM unavailable, verification rejected, empty output), fall through
+    // to hard-truncate against half the model window.
     if (directive.kind === "summarize-old") {
-      log("[orchestrator] summarize-old: summarizer runner not wired yet, " +
-          "keeping recent-half slice");
+      const result = await runSummarizerSubagent({
+        client, parentSessionId, oldHalf: directive.oldestHalf,
+        roots, log, token,
+      });
+      if (result.ok && result.summary) {
+        // Persist the summary so subsequent turns reuse it instead of
+        // resummarizing the same window.
+        const summaryMsg =
+          "## Earlier in this chat (summarized by harness)\n\n" + result.summary;
+        await appendMessage(client, chatId, "system", summaryMsg, log);
+        // Splice into the LM-side history: synthetic system message + recent half.
+        compacted = [
+          { role: "system", content: summaryMsg },
+          ...applyCompaction(
+            { kind: "summarize-old", oldestHalf: directive.oldestHalf }, fetched,
+          ),
+        ];
+        log(`[orchestrator] summarized ${directive.oldestHalf.length} older turns`);
+      } else {
+        log(`[orchestrator] summarizer fell through: ${result.reason ?? "unknown"}`);
+        compacted = applyCompaction(
+          { kind: "hard-truncate", budgetTokens: Math.floor(MODEL_CONTEXT_TOKENS * 0.5) },
+          fetched,
+        );
+      }
     }
 
     // Step 4: build the LM messages array.

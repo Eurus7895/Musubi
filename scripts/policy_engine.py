@@ -49,6 +49,10 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     "planner":      ["Read", "View", "Grep", "Glob"],
     "coder":        ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
     "reviewer":     ["Read", "View", "Grep", "Glob"],
+    # Phase C.2 — text-only sub-agent driving 90% reactive compaction.
+    # No tools: the brief already carries the older conversation window
+    # serialized as text, and the output is plain markdown.
+    "summarizer":   [],
 }
 
 # MAIN_SUBAGENT_ALLOWLIST — which roles each main agent may spawn.
@@ -64,6 +68,7 @@ MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "orchestrator": [
         "explorer", "investigator", "reviewer-aux",
         "planner", "coder", "reviewer",
+        "summarizer",
     ],
     "planner":  [],
     "designer": [],
