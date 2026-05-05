@@ -19,6 +19,7 @@ import {
   applyCompaction,
   buildOrchestratorSystemPrompt,
   cleanupOutstandingSubagents,
+  detectFrustration,
   dispatchOrchestratorTool,
   loadOrchestratorPrompts,
   MAX_TOOL_CYCLES,
@@ -30,6 +31,7 @@ import {
   resolveChatId,
   SpawnTracker,
   totalHistoryTokens,
+  TriggerDedup,
   type CompactionStrategy,
   type OrchestratorMessage,
   type ToolDispatchContext,
@@ -208,6 +210,55 @@ interface ActiveOrchestrator {
   parentSessionId: string;
   chatId: string;
   tracker: SpawnTracker;
+  triggers: TriggerDedup;
+  log: (msg: string) => void;
+}
+
+/**
+ * Best-effort distillation trigger. Records a `(agent, issue, source)`
+ * row through harness_append_failure_pattern. Per-turn dedup via
+ * TriggerDedup keeps the same trigger firing once per turn even when
+ * the same condition recurs (e.g. the user repeats their complaint).
+ */
+async function fireDistillationTrigger(
+  active: ActiveOrchestrator,
+  agent: string,
+  issue: string,
+  source: string,
+): Promise<void> {
+  const key = `${source}:${agent}:${issue}`;
+  if (!active.triggers.shouldFire(key)) { return; }
+  try {
+    await active.client.callTool("harness_append_failure_pattern", {
+      agent, issue, source,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    active.log(`[orchestrator] append_failure_pattern threw: ${msg}`);
+  }
+}
+
+const REVIEWER_ROLES = new Set(["reviewer", "reviewer-aux"]);
+
+/**
+ * Phase C.2 trigger (c). Inspects a `harness_await_subagent` result; if
+ * the awaited sub-agent's role was reviewer/reviewer-aux and the
+ * `final_status` was 'failed', record a failure pattern.
+ */
+async function maybeFireReviewerFailTrigger(
+  active: ActiveOrchestrator,
+  args: Record<string, unknown>,
+  awaitResultJson: string,
+): Promise<void> {
+  const handleId = typeof args.handle_id === "string" ? args.handle_id : null;
+  if (!handleId) { return; }
+  const role = active.tracker.roleFor(handleId);
+  if (!role || !REVIEWER_ROLES.has(role)) { return; }
+  let parsed: { status?: string; final_status?: string; summary?: string };
+  try { parsed = JSON.parse(awaitResultJson); } catch { return; }
+  if (parsed.status !== "recorded" || parsed.final_status !== "failed") { return; }
+  const issue = (parsed.summary ?? "reviewer reported failure").trim().slice(0, 280);
+  await fireDistillationTrigger(active, role, issue, "reviewer-fail");
 }
 
 let _active: ActiveOrchestrator | null = null;
@@ -271,9 +322,14 @@ export function registerOrchestratorTools(
             ]);
           }
           if (def.name === "harness_spawn_subagent") {
-            active.tracker.recordSpawn(def.name, raw);
+            const role = typeof args.role === "string" ? args.role : undefined;
+            active.tracker.recordSpawn(def.name, raw, role);
           } else if (def.name === "harness_await_subagent") {
             active.tracker.recordAwait(raw);
+            // Phase C.2 trigger (c) — reviewer-fail. If a reviewer-aux
+            // or reviewer sub-agent finished with final_status='failed',
+            // record the issue so the pattern detector can pick it up.
+            await maybeFireReviewerFailTrigger(active, args, raw);
           }
           return new vscode.LanguageModelToolResult([
             new vscode.LanguageModelTextPart(raw),
@@ -338,6 +394,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
   const parentSessionId = await createOrchestratorSession(client, prompt);
   const tracker = new SpawnTracker();
+  const triggers = new TriggerDedup();
 
   // chat_id: stable across turns within this VS Code chat panel. See
   // resolveChatId() docstring — best-effort heuristic until VS Code ships
@@ -348,7 +405,10 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     workspacePath: roots[0],
   });
 
-  _setActiveOrchestrator({ client, parentSessionId, chatId, tracker });
+  const active: ActiveOrchestrator = {
+    client, parentSessionId, chatId, tracker, triggers, log,
+  };
+  _setActiveOrchestrator(active);
   log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
 
   // Buffer all assistant text emitted during the turn so the conversation
@@ -362,6 +422,17 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     // we proceed (the in-memory `prompt` is still used to compose the LM
     // request below).
     await appendMessage(client, chatId, "user", prompt, log);
+
+    // Phase C.2 trigger (d) — frustration regex on the just-appended
+    // user message. A match records a failure pattern keyed on the
+    // matched label so a recurring pattern surfaces in
+    // .github/memory/failure-patterns.md.
+    const frustrationLabel = detectFrustration(prompt);
+    if (frustrationLabel) {
+      await fireDistillationTrigger(
+        active, "user", `frustration:${frustrationLabel}`, "frustration",
+      );
+    }
 
     // Step 2: fetch token-budgeted history from the harness. The 80-99%
     // compaction policy (planCompaction) decides what to drop locally.

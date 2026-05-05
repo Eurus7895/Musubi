@@ -218,13 +218,17 @@ export async function dispatchOrchestratorTool(
 
 export class SpawnTracker {
   private readonly outstanding = new Set<string>();
+  private readonly roleByHandle = new Map<string, string>();
 
-  recordSpawn(toolName: string, mcpResultJson: string): void {
+  recordSpawn(
+    toolName: string, mcpResultJson: string, role?: string,
+  ): void {
     if (toolName !== "harness_spawn_subagent") { return; }
     try {
       const parsed = JSON.parse(mcpResultJson) as { handle_id?: string };
       if (typeof parsed.handle_id === "string") {
         this.outstanding.add(parsed.handle_id);
+        if (role) { this.roleByHandle.set(parsed.handle_id, role); }
       }
     } catch {
       // server returned non-JSON; nothing to track
@@ -246,6 +250,11 @@ export class SpawnTracker {
 
   outstandingHandles(): string[] {
     return [...this.outstanding];
+  }
+
+  /** Return the spawn role recorded for `handleId`, or null if unknown. */
+  roleFor(handleId: string): string | null {
+    return this.roleByHandle.get(handleId) ?? null;
   }
 }
 
@@ -478,4 +487,51 @@ export function totalHistoryTokens(
   let total = estimateTokens(systemPrompt) + estimateTokens(currentPrompt);
   for (const m of messages) { total += estimateTokens(m.content); }
   return total;
+}
+
+// ── Distillation triggers (Phase C.2) ─────────────────────────────────────
+
+/**
+ * Bundled frustration regexes — TS mirror of pattern_detector's bank, used
+ * extension-side because the trigger fires before any MCP round-trip. The
+ * Python side keeps its own copy in `.github/memory/sentiment-patterns.json`
+ * for tests + future hot-reload wiring; both lists must stay in sync. If
+ * you change one, change the other.
+ */
+const FRUSTRATION_PATTERNS: ReadonlyArray<{ label: string; regex: RegExp }> = [
+  { label: "wrong/broken assertion",   regex: /\bthat'?s?\s+(wrong|broken|stupid|garbage)\b/i },
+  { label: "still not working",        regex: /\bthis\s+(isn'?t|is\s+not)\s+(working|right|what)\b/i },
+  { label: "stop doing X",             regex: /\bstop\s+(doing|telling|saying)\b/i },
+  { label: "repeated correction",      regex: /\b(no|nope),?\s+(again|i\s+(said|told))\b/i },
+  { label: "give up",                  regex: /\bgive\s+up\b/i },
+  { label: "never mind",               regex: /\bnever\s+mind\b/i },
+  { label: "forget it",                regex: /\bforget\s+it\b/i },
+  { label: "ugh",                      regex: /^\s*ugh[!.]?\s*$/i },
+];
+
+/** Return the first frustration label that matches `text`, or null. */
+export function detectFrustration(text: string): string | null {
+  if (!text || !text.trim()) { return null; }
+  for (const { label, regex } of FRUSTRATION_PATTERNS) {
+    if (regex.test(text)) { return label; }
+  }
+  return null;
+}
+
+/**
+ * Per-turn dedup tracker for distillation triggers. The orchestrator
+ * keeps one of these alive for the duration of a single user turn; once
+ * the turn ends the tracker is discarded so the next turn starts fresh.
+ * Persistent dedup (across turns) is enforced server-side by
+ * `session_distiller.append_pattern`'s `_load_existing_patterns` index.
+ */
+export class TriggerDedup {
+  private fired = new Set<string>();
+
+  /** Returns true the first time `key` is checked, false on subsequent calls. */
+  shouldFire(key: string): boolean {
+    if (this.fired.has(key)) { return false; }
+    this.fired.add(key);
+    return true;
+  }
 }

@@ -7,12 +7,15 @@ import {
   COMPACT_T1_DROP_TOOLS,
   COMPACT_T2_SUMMARIZE,
   COMPACT_T3_TRUNCATE,
+  detectFrustration,
   estimateTokens,
   MODEL_CONTEXT_TOKENS,
   parseConversationResponse,
   planCompaction,
   resolveChatId,
+  SpawnTracker,
   totalHistoryTokens,
+  TriggerDedup,
   type OrchestratorMessage,
 } from "./orchestratorCore";
 
@@ -241,4 +244,71 @@ test("applyCompaction: 'hard-truncate' returns at least one message even if over
     { kind: "hard-truncate", budgetTokens: 5 }, history,
   );
   assert.equal(out.length, 1);
+});
+
+// ── detectFrustration ───────────────────────────────────────────────────────
+
+test("detectFrustration: matches each shipped pattern", () => {
+  const cases: Array<[string, string]> = [
+    ["That's wrong",                "wrong/broken assertion"],
+    ["This isn't working again",    "still not working"],
+    ["Stop doing that",             "stop doing X"],
+    ["No, I told you twice",        "repeated correction"],
+    ["I give up",                   "give up"],
+    ["Never mind",                  "never mind"],
+    ["Forget it",                   "forget it"],
+    ["ugh",                         "ugh"],
+  ];
+  for (const [text, label] of cases) {
+    assert.equal(detectFrustration(text), label, `text=${text}`);
+  }
+});
+
+test("detectFrustration: no match on neutral text", () => {
+  for (const text of [
+    "Please add a unit test for parseCommand.",
+    "Could you explain what /clear does?",
+    "Run the tests and let me know.",
+  ]) {
+    assert.equal(detectFrustration(text), null, `text=${text}`);
+  }
+});
+
+test("detectFrustration: empty / whitespace returns null", () => {
+  assert.equal(detectFrustration(""), null);
+  assert.equal(detectFrustration("   "), null);
+});
+
+// ── TriggerDedup ────────────────────────────────────────────────────────────
+
+test("TriggerDedup: first call returns true, subsequent return false", () => {
+  const dedup = new TriggerDedup();
+  assert.equal(dedup.shouldFire("k"), true);
+  assert.equal(dedup.shouldFire("k"), false);
+  assert.equal(dedup.shouldFire("k"), false);
+});
+
+test("TriggerDedup: distinct keys fire independently", () => {
+  const dedup = new TriggerDedup();
+  assert.equal(dedup.shouldFire("a"), true);
+  assert.equal(dedup.shouldFire("b"), true);
+  assert.equal(dedup.shouldFire("a"), false);
+  assert.equal(dedup.shouldFire("b"), false);
+});
+
+// ── SpawnTracker.roleFor ────────────────────────────────────────────────────
+
+test("SpawnTracker: roleFor returns the role passed at recordSpawn", () => {
+  const t = new SpawnTracker();
+  t.recordSpawn(
+    "harness_spawn_subagent",
+    JSON.stringify({ status: "spawned", handle_id: "abc" }),
+    "reviewer-aux",
+  );
+  assert.equal(t.roleFor("abc"), "reviewer-aux");
+});
+
+test("SpawnTracker: roleFor returns null for unknown handle", () => {
+  const t = new SpawnTracker();
+  assert.equal(t.roleFor("nope"), null);
 });

@@ -581,10 +581,15 @@ def test_mcp_list_subagents_for_orchestrator(mcp_db: Path) -> None:
         "explorer", "investigator", "reviewer-aux",
         "planner", "coder", "reviewer",
     }
-    # Each entry exposes the role's own tool allow-list.
+    # Each entry exposes the role's tool allow-list as a list. Phase A/B
+    # roles each get at least Read; Phase C.2 introduces the text-only
+    # summarizer with an empty tools list.
     for r in payload["roles"]:
         assert isinstance(r["allowed_tools"], list)
-        assert r["allowed_tools"]  # non-empty
+        if r["role"] == "summarizer":
+            assert r["allowed_tools"] == []
+        else:
+            assert r["allowed_tools"]  # non-empty for tool-using roles
 
 
 def test_mcp_list_subagents_for_pipeline_stage_is_empty(mcp_db: Path) -> None:

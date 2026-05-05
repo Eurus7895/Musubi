@@ -519,3 +519,35 @@ def get_conversation_messages(
             (chat_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── sub-session housekeeping (Phase C.2) ──────────────────────────────────
+
+def delete_terminal_sub_sessions_for_parent(
+    parent_session_id: str,
+    *,
+    older_than_iso: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Delete terminal sub-sessions for a parent. Audit-safe pruner.
+
+    Only rows whose `status` is one of {'done','failed','escalated','abandoned'}
+    are eligible — never `running`. When `older_than_iso` is provided, only
+    rows whose `completed_at` is strictly less than that ISO8601 timestamp
+    are deleted.
+
+    Returns the row count removed. The mirror rows in `subagent_audit`
+    are NOT touched — the audit log stays intact.
+    """
+    sql = (
+        "DELETE FROM sub_sessions"
+        " WHERE parent_session_id = ?"
+        "   AND status IN ('done','failed','escalated','abandoned')"
+    )
+    params: list[Any] = [parent_session_id]
+    if older_than_iso is not None:
+        sql += " AND completed_at IS NOT NULL AND completed_at < ?"
+        params.append(older_than_iso)
+    with _connect(db_path) as conn:
+        cursor = conn.execute(sql, tuple(params))
+        return cursor.rowcount
