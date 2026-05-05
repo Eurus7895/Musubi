@@ -16,17 +16,27 @@ import * as vscode from "vscode";
 import { McpClient } from "../mcpClient";
 import { selectModelForAgent } from "../modelSelector";
 import {
+  applyCompaction,
   buildOrchestratorSystemPrompt,
   cleanupOutstandingSubagents,
+  detectFrustration,
   dispatchOrchestratorTool,
   loadOrchestratorPrompts,
-  MAX_HISTORY_TURNS,
   MAX_TOOL_CYCLES,
+  MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
   ORCHESTRATOR_TOOLS,
+  parseConversationResponse,
+  planCompaction,
+  resolveChatId,
   SpawnTracker,
+  totalHistoryTokens,
+  TriggerDedup,
+  type CompactionStrategy,
+  type OrchestratorMessage,
   type ToolDispatchContext,
 } from "./orchestratorCore";
+import { runSummarizerSubagent } from "./summarizerRunner";
 
 export {
   ORCHESTRATOR_AGENT_NAME,
@@ -60,6 +70,90 @@ async function createOrchestratorSession(
     throw new Error("harness_new_session returned no session_id");
   }
   return parsed.session_id;
+}
+
+// ── Phase C.2: conversation persistence (replay + append) ───────────────────
+
+const PARTICIPANT_ID = "copilot-harness.harness";
+
+/**
+ * Best-effort append of a single message to the conversation log. A
+ * harness append failure must NOT break a chat turn; we log and move on.
+ */
+async function appendMessage(
+  client: McpClient,
+  chatId: string,
+  role: OrchestratorMessage["role"],
+  content: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  if (!content) { return; }
+  try {
+    const raw = await client.callTool("harness_append_message", {
+      chat_id: chatId, role, content,
+    });
+    const parsed = JSON.parse(raw) as { status?: string; error?: string };
+    if (parsed.status !== "ok") {
+      log(`[orchestrator] append_message non-ok: ${parsed.error ?? raw}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[orchestrator] append_message threw: ${msg}`);
+  }
+}
+
+async function fetchConversationHistory(
+  client: McpClient,
+  chatId: string,
+  maxTokens: number,
+  log: (msg: string) => void,
+): Promise<OrchestratorMessage[]> {
+  try {
+    const raw = await client.callTool("harness_get_conversation", {
+      chat_id: chatId, max_tokens: maxTokens,
+    });
+    return parseConversationResponse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[orchestrator] get_conversation threw: ${msg}`);
+    return [];
+  }
+}
+
+/**
+ * Walk the VS Code ChatContext history for the earliest user prompt
+ * issued to our participant. Used only as input to the chat_id hash —
+ * the prompt itself never leaves the runner.
+ */
+function firstUserPromptInThread(
+  chatContext: vscode.ChatContext,
+  fallback: string,
+): string {
+  for (const turn of chatContext.history) {
+    const tid = (turn as { participant?: string }).participant;
+    if (tid && tid !== PARTICIPANT_ID) { continue; }
+    const prompt = (turn as { prompt?: string }).prompt;
+    if (typeof prompt === "string" && prompt.length > 0) { return prompt; }
+  }
+  return fallback;
+}
+
+/** Convert harness-side OrchestratorMessage rows into vscode chat messages. */
+function toLmMessages(
+  messages: ReadonlyArray<OrchestratorMessage>,
+): vscode.LanguageModelChatMessage[] {
+  const out: vscode.LanguageModelChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      out.push(vscode.LanguageModelChatMessage.Assistant(m.content));
+    } else {
+      // user / tool / system all map to User-role text in the LM API
+      // surface; tool-call protocol pairs (within a turn) are handled
+      // via LanguageModelToolCallPart / LanguageModelToolResultPart.
+      out.push(vscode.LanguageModelChatMessage.User(m.content));
+    }
+  }
+  return out;
 }
 
 // ── Chat-history replay (mirrors extension.ts::extractChatHistory) ───────────
@@ -114,7 +208,57 @@ export function extractChatHistory(
 interface ActiveOrchestrator {
   client: McpClient;
   parentSessionId: string;
+  chatId: string;
   tracker: SpawnTracker;
+  triggers: TriggerDedup;
+  log: (msg: string) => void;
+}
+
+/**
+ * Best-effort distillation trigger. Records a `(agent, issue, source)`
+ * row through harness_append_failure_pattern. Per-turn dedup via
+ * TriggerDedup keeps the same trigger firing once per turn even when
+ * the same condition recurs (e.g. the user repeats their complaint).
+ */
+async function fireDistillationTrigger(
+  active: ActiveOrchestrator,
+  agent: string,
+  issue: string,
+  source: string,
+): Promise<void> {
+  const key = `${source}:${agent}:${issue}`;
+  if (!active.triggers.shouldFire(key)) { return; }
+  try {
+    await active.client.callTool("harness_append_failure_pattern", {
+      agent, issue, source,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    active.log(`[orchestrator] append_failure_pattern threw: ${msg}`);
+  }
+}
+
+const REVIEWER_ROLES = new Set(["reviewer", "reviewer-aux"]);
+
+/**
+ * Phase C.2 trigger (c). Inspects a `harness_await_subagent` result; if
+ * the awaited sub-agent's role was reviewer/reviewer-aux and the
+ * `final_status` was 'failed', record a failure pattern.
+ */
+async function maybeFireReviewerFailTrigger(
+  active: ActiveOrchestrator,
+  args: Record<string, unknown>,
+  awaitResultJson: string,
+): Promise<void> {
+  const handleId = typeof args.handle_id === "string" ? args.handle_id : null;
+  if (!handleId) { return; }
+  const role = active.tracker.roleFor(handleId);
+  if (!role || !REVIEWER_ROLES.has(role)) { return; }
+  let parsed: { status?: string; final_status?: string; summary?: string };
+  try { parsed = JSON.parse(awaitResultJson); } catch { return; }
+  if (parsed.status !== "recorded" || parsed.final_status !== "failed") { return; }
+  const issue = (parsed.summary ?? "reviewer reported failure").trim().slice(0, 280);
+  await fireDistillationTrigger(active, role, issue, "reviewer-fail");
 }
 
 let _active: ActiveOrchestrator | null = null;
@@ -178,9 +322,14 @@ export function registerOrchestratorTools(
             ]);
           }
           if (def.name === "harness_spawn_subagent") {
-            active.tracker.recordSpawn(def.name, raw);
+            const role = typeof args.role === "string" ? args.role : undefined;
+            active.tracker.recordSpawn(def.name, raw, role);
           } else if (def.name === "harness_await_subagent") {
             active.tracker.recordAwait(raw);
+            // Phase C.2 trigger (c) — reviewer-fail. If a reviewer-aux
+            // or reviewer sub-agent finished with final_status='failed',
+            // record the issue so the pattern detector can pick it up.
+            await maybeFireReviewerFailTrigger(active, args, raw);
           }
           return new vscode.LanguageModelToolResult([
             new vscode.LanguageModelTextPart(raw),
@@ -245,15 +394,101 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
   const parentSessionId = await createOrchestratorSession(client, prompt);
   const tracker = new SpawnTracker();
-  _setActiveOrchestrator({ client, parentSessionId, tracker });
-  log(`[orchestrator] turn started — parent_session_id=${parentSessionId}`);
+  const triggers = new TriggerDedup();
+
+  // chat_id: stable across turns within this VS Code chat panel. See
+  // resolveChatId() docstring — best-effort heuristic until VS Code ships
+  // a real chat-thread id.
+  const chatId = resolveChatId({
+    participantId: PARTICIPANT_ID,
+    firstUserPrompt: firstUserPromptInThread(chatContext, prompt),
+    workspacePath: roots[0],
+  });
+
+  const active: ActiveOrchestrator = {
+    client, parentSessionId, chatId, tracker, triggers, log,
+  };
+  _setActiveOrchestrator(active);
+  log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
+
+  // Buffer all assistant text emitted during the turn so the conversation
+  // log gets one chronological row at end-of-turn (or in `finally` on
+  // cancel / throw — partial replies must not vanish).
+  const assistantBuf: string[] = [];
 
   try {
+    // Step 1: append the user message FIRST so the history we fetch in
+    // step 2 already contains it. Best-effort: a write failure logs and
+    // we proceed (the in-memory `prompt` is still used to compose the LM
+    // request below).
+    await appendMessage(client, chatId, "user", prompt, log);
+
+    // Phase C.2 trigger (d) — frustration regex on the just-appended
+    // user message. A match records a failure pattern keyed on the
+    // matched label so a recurring pattern surfaces in
+    // .github/memory/failure-patterns.md.
+    const frustrationLabel = detectFrustration(prompt);
+    if (frustrationLabel) {
+      await fireDistillationTrigger(
+        active, "user", `frustration:${frustrationLabel}`, "frustration",
+      );
+    }
+
+    // Step 2: fetch token-budgeted history from the harness. The 80-99%
+    // compaction policy (planCompaction) decides what to drop locally.
+    const turnBudget = Math.floor(MODEL_CONTEXT_TOKENS * 0.95);
+    const fetched = await fetchConversationHistory(client, chatId, turnBudget, log);
+
+    // Step 3: reactive compaction.
+    const tokenTotal = totalHistoryTokens(fetched, systemPrompt, "");
+    const directive: CompactionStrategy = planCompaction(fetched, tokenTotal);
+    if (directive.kind !== "none") {
+      log(`[orchestrator] compaction strategy: ${directive.kind} (≈${tokenTotal} tokens)`);
+    }
+    let compacted = applyCompaction(directive, fetched);
+
+    // 90% branch — spawn the summarizer over the oldest half. On failure
+    // (LM unavailable, verification rejected, empty output), fall through
+    // to hard-truncate against half the model window.
+    if (directive.kind === "summarize-old") {
+      const result = await runSummarizerSubagent({
+        client, parentSessionId, oldHalf: directive.oldestHalf,
+        roots, log, token,
+      });
+      if (result.ok && result.summary) {
+        // Persist the summary so subsequent turns reuse it instead of
+        // resummarizing the same window.
+        const summaryMsg =
+          "## Earlier in this chat (summarized by harness)\n\n" + result.summary;
+        await appendMessage(client, chatId, "system", summaryMsg, log);
+        // Splice into the LM-side history: synthetic system message + recent half.
+        compacted = [
+          { role: "system", content: summaryMsg },
+          ...applyCompaction(
+            { kind: "summarize-old", oldestHalf: directive.oldestHalf }, fetched,
+          ),
+        ];
+        log(`[orchestrator] summarized ${directive.oldestHalf.length} older turns`);
+      } else {
+        log(`[orchestrator] summarizer fell through: ${result.reason ?? "unknown"}`);
+        compacted = applyCompaction(
+          { kind: "hard-truncate", budgetTokens: Math.floor(MODEL_CONTEXT_TOKENS * 0.5) },
+          fetched,
+        );
+      }
+    }
+
+    // Step 4: build the LM messages array.
     const history: vscode.LanguageModelChatMessage[] = [
       vscode.LanguageModelChatMessage.User(systemPrompt),
-      ...extractChatHistory(chatContext, MAX_HISTORY_TURNS),
-      vscode.LanguageModelChatMessage.User(prompt),
+      ...toLmMessages(compacted),
     ];
+    // If the user message was lost from the fetched history (e.g. append
+    // failed silently), splice it back as a final tail so the LM at
+    // least sees the current question.
+    if (!compacted.some(m => m.role === "user" && m.content === prompt)) {
+      history.push(vscode.LanguageModelChatMessage.User(prompt));
+    }
 
     const lmTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS.map(t => ({
       name: t.name,
@@ -278,6 +513,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         }
       }
 
+      if (textBuf.length > 0) { assistantBuf.push(textBuf); }
       if (toolCalls.length === 0) { return; }
 
       // Reflect the assistant's tool-call turn into the history, then run
@@ -289,6 +525,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
       for (const call of toolCalls) {
+        let resultText: string;
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
@@ -298,15 +535,23 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           resultParts.push(new vscode.LanguageModelToolResultPart(
             call.callId, invokeResult.content,
           ));
+          resultText = stringifyToolResult(invokeResult.content);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[orchestrator] invokeTool(${call.name}) failed: ${msg}`);
+          resultText = JSON.stringify({ status: "error", error: msg });
           resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
-            new vscode.LanguageModelTextPart(
-              JSON.stringify({ status: "error", error: msg }),
-            ),
+            new vscode.LanguageModelTextPart(resultText),
           ]));
         }
+        // Persist the tool result as a role:"tool" entry so reactive
+        // compaction (80% branch) has something to drop and a future
+        // turn can reconstruct what happened.
+        await appendMessage(
+          client, chatId, "tool",
+          JSON.stringify({ tool: call.name, result: resultText }),
+          log,
+        );
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
     }
@@ -316,8 +561,24 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       "\n\n_[harness] Tool-call budget exhausted — orchestrator forced to wrap up._",
     );
   } finally {
+    if (assistantBuf.length > 0) {
+      await appendMessage(client, chatId, "assistant", assistantBuf.join(""), log);
+    }
     await cleanupOutstandingSubagents(client, tracker);
     _setActiveOrchestrator(null);
-    log(`[orchestrator] turn ended — parent_session_id=${parentSessionId}`);
+    log(`[orchestrator] turn ended — chat_id=${chatId} parent_session_id=${parentSessionId}`);
   }
+}
+
+/** Best-effort string extraction from an LM tool-result content array. */
+function stringifyToolResult(
+  content: ReadonlyArray<unknown>,
+): string {
+  const parts: string[] = [];
+  for (const p of content) {
+    if (p instanceof vscode.LanguageModelTextPart) { parts.push(p.value); continue; }
+    const v = (p as { value?: unknown }).value;
+    if (typeof v === "string") { parts.push(v); }
+  }
+  return parts.join("");
 }

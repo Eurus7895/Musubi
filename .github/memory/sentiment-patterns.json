@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "description": "Frustration regexes consumed by memory/pattern_detector.detect_frustration. Each pattern is matched against the user message at append time; a single match fires one distillation trigger per turn (see runners/orchestrator.ts). Hot-reloadable per turn.",
+  "patterns": [
+    {
+      "label": "wrong/broken assertion",
+      "regex": "(?i)\\bthat'?s?\\s+(wrong|broken|stupid|garbage)\\b"
+    },
+    {
+      "label": "still not working",
+      "regex": "(?i)\\bthis\\s+(isn'?t|is\\s+not)\\s+(working|right|what)\\b"
+    },
+    {
+      "label": "stop doing X",
+      "regex": "(?i)\\bstop\\s+(doing|telling|saying)\\b"
+    },
+    {
+      "label": "repeated correction",
+      "regex": "(?i)\\b(no|nope),?\\s+(again|i\\s+(said|told))\\b"
+    },
+    {
+      "label": "give up",
+      "regex": "(?i)\\bgive\\s+up\\b"
+    },
+    {
+      "label": "never mind",
+      "regex": "(?i)\\bnever\\s+mind\\b"
+    },
+    {
+      "label": "forget it",
+      "regex": "(?i)\\bforget\\s+it\\b"
+    },
+    {
+      "label": "ugh",
+      "regex": "(?i)^\\s*ugh[!.]?\\s*$"
+    }
+  ]
+}

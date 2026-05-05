@@ -58,6 +58,9 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     "planner":      None,
     "coder":        None,
     "reviewer":     None,
+    # Phase C.2 — summarizer drives the 90% reactive-compaction branch.
+    # The procedure lives in `.github/skills/summarizer/SKILL.md`.
+    "summarizer":   "summarizer",
 }
 
 

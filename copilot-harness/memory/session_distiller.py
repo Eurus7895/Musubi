@@ -136,6 +136,53 @@ def distill_session(
     return appended
 
 
+def append_pattern(
+    agent: str,
+    issue: str,
+    *,
+    source: str = "orchestrator",
+    repo_root: Path | None = None,
+) -> str | None:
+    """Append a single (agent, issue) row to failure-patterns.md.
+
+    Phase C.2 — orchestrator-driven entry point for distillation triggers
+    (reviewer fail, frustration regex match). Mirrors the dedup +
+    formatting rules of `distill_session` but operates on one issue at a
+    time, without needing a session_id or a review-stage row.
+
+    Returns the appended issue text if a new row was written, or None if
+    the (agent, issue_prefix) pair was already present (deduped).
+
+    `source` is recorded in place of the session id so the audit log
+    still tracks where the trigger fired.
+    """
+    if not agent or not isinstance(agent, str):
+        return None
+    if not issue or not isinstance(issue, str):
+        return None
+
+    root = _repo_root(repo_root)
+    path = _patterns_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = _load_existing_patterns(path)
+    desc = issue.strip()
+    if not desc:
+        return None
+    key = (agent, desc[:_MAX_ISSUE_LEN])
+    if key in existing:
+        return None
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    entry = _format_entry(agent, desc, 1, [source], date_str)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+    # Auto-compact when the file grows past threshold; safe no-op below.
+    compact_failure_patterns(repo_root=root)
+    return desc
+
+
 def distill_all_completed(
     db_path: Path | None = None,
     repo_root: Path | None = None,

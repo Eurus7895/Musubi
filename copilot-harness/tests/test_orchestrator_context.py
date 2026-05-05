@@ -329,6 +329,45 @@ def test_pipeline_roles_register_no_role_skill() -> None:
 
 # ── No regressions: non-orchestrator paths unchanged ────────────────────────
 
+# ── Phase C.2: summarizer role wiring ────────────────────────────────────────
+
+
+def test_orchestrator_can_spawn_summarizer() -> None:
+    """C.2 — the orchestrator must be able to spawn the summarizer for
+    the 90% reactive-compaction branch."""
+    assert check_subagent_allowed("orchestrator", "summarizer") is True
+
+
+def test_summarizer_role_has_no_tools() -> None:
+    """C.2 — summarizer is text-only. No tools, no spawns, no Read/Write."""
+    from policy_engine import SUBAGENT_POLICIES
+    assert "summarizer" in SUBAGENT_POLICIES
+    assert SUBAGENT_POLICIES["summarizer"] == []
+
+
+def test_summarizer_role_has_skill() -> None:
+    """C.2 — summarizer's procedure is pushed via a SKILL.md."""
+    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
+    assert SUBAGENT_ROLE_SKILLS.get("summarizer") == "summarizer"
+
+
+def test_summarizer_agent_file_exists() -> None:
+    p = Path(_REPO_ROOT) / ".github" / "agents" / "summarizer.agent.md"
+    assert p.exists()
+    body = p.read_text(encoding="utf-8")
+    assert "name: Summarizer" in body
+    # Hard guarantees from the agent file.
+    assert "tools: []" in body
+    assert "maxTurns: 1" in body
+
+
+def test_summarizer_skill_file_exists() -> None:
+    p = Path(_REPO_ROOT) / ".github" / "skills" / "summarizer" / "SKILL.md"
+    assert p.exists()
+    body = p.read_text(encoding="utf-8")
+    assert "name: summarizer" in body
+
+
 def test_planner_context_unchanged_by_orchestrator_addition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -71,6 +71,15 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_parent
     ON sub_sessions (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT    NOT NULL,
+    role       TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    ts         TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conv_chat_ts
+    ON conversation_messages (chat_id, ts);
 """
 
 def _default_db_path() -> Path:
@@ -469,4 +478,76 @@ def mark_orphan_running_sub_sessions_abandoned(
             "   )",
             (now,),
         )
+        return cursor.rowcount
+
+
+# ── conversation_messages (Phase C.1) ─────────────────────────────────────
+#
+# Per-chat append-only message log driving orchestrator replay-on-each-turn.
+# Role validation lives in session/conversations.py; this layer is pure SQL.
+
+def insert_conversation_message(
+    chat_id: str,
+    role: str,
+    content: str,
+    ts: str,
+    db_path: Path | None = None,
+) -> int:
+    """Insert a message and return its row id."""
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO conversation_messages (chat_id, role, content, ts)"
+            " VALUES (?, ?, ?, ?)",
+            (chat_id, role, content, ts),
+        )
+        return int(cursor.lastrowid or 0)
+
+
+def get_conversation_messages(
+    chat_id: str,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return every message for `chat_id` ordered chronologically.
+
+    Secondary sort by id keeps ordering deterministic when timestamps collide
+    under fast appends (sqlite's TEXT comparison handles ISO8601 lexically).
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, chat_id, role, content, ts FROM conversation_messages"
+            " WHERE chat_id = ? ORDER BY ts ASC, id ASC",
+            (chat_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── sub-session housekeeping (Phase C.2) ──────────────────────────────────
+
+def delete_terminal_sub_sessions_for_parent(
+    parent_session_id: str,
+    *,
+    older_than_iso: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Delete terminal sub-sessions for a parent. Audit-safe pruner.
+
+    Only rows whose `status` is one of {'done','failed','escalated','abandoned'}
+    are eligible — never `running`. When `older_than_iso` is provided, only
+    rows whose `completed_at` is strictly less than that ISO8601 timestamp
+    are deleted.
+
+    Returns the row count removed. The mirror rows in `subagent_audit`
+    are NOT touched — the audit log stays intact.
+    """
+    sql = (
+        "DELETE FROM sub_sessions"
+        " WHERE parent_session_id = ?"
+        "   AND status IN ('done','failed','escalated','abandoned')"
+    )
+    params: list[Any] = [parent_session_id]
+    if older_than_iso is not None:
+        sql += " AND completed_at IS NOT NULL AND completed_at < ?"
+        params.append(older_than_iso)
+    with _connect(db_path) as conn:
+        cursor = conn.execute(sql, tuple(params))
         return cursor.rowcount

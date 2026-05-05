@@ -78,3 +78,24 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_parent
     ON sub_sessions (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
+
+-- Conversation messages (Phase C.1). One row per user / assistant / tool /
+-- system turn in an orchestrator chat. The orchestrator runner replays the
+-- chronological history on every user turn (locked decision: replay-on-each-
+-- turn). Truncation is token-budgeted and newest-first; see
+-- session/conversations.py::get_history.
+--
+-- chat_id is opaque to the harness — the runner mints it (Phase C.2 plugs a
+-- stable id; Phase B.2 used a heuristic). Roles are validated against
+-- session/conversations.py::VALID_ROLES.
+-- This schema mirrors the embedded `_SCHEMA_SQL` constant in db.py — keep
+-- them in sync.
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT    NOT NULL,
+    role       TEXT    NOT NULL,    -- 'user' | 'assistant' | 'tool' | 'system'
+    content    TEXT    NOT NULL,
+    ts         TEXT    NOT NULL     -- ISO8601 UTC
+);
+CREATE INDEX IF NOT EXISTS idx_conv_chat_ts
+    ON conversation_messages (chat_id, ts);
