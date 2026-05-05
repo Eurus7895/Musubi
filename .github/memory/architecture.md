@@ -52,13 +52,14 @@ Each pipeline lives at `.github/pipelines/<name>/` with its own
 `skill-builder.agent.md`; `state.AGENTS_DIRS` globs the pipeline
 directory first and falls back to the legacy path.
 
-## Routing & Hooks (Week 3c)
+## Routing & Hooks (Phase D)
 
 The extension routes at string-match cost (no LLM):
-- Input starts with `/` → slash command dispatch via
+- Input starts with `/<pipeline-name>` → pipeline mode (full guardrails
+  + evaluator firewall). Other slash commands dispatch via
   `.github/commands/*.md` frontmatter.
-- Input contains `--pipeline` → force pipeline mode.
-- Otherwise → direct mode: single `vscode.lm.sendRequest`, no harness.
+- Otherwise → orchestrator: persistent chat per chat_id, spawns
+  sub-agents on demand, Tier-1 memory injected, reactive compaction.
 
 `hooks.json` + `scripts/` wire deterministic Python scripts to
 `SessionStart` (baseline checks), `PreToolUse` (policy gate,

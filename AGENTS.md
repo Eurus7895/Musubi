@@ -101,15 +101,13 @@ No new pipelines until feature-dev is validated.
 ## Key Interactions
 
 ```
-# Direct mode (single vscode.lm call, no harness)
-@harness explain this error
-
-# Pipeline mode (4 agents + correction loop, enterprise / frozen)
+# Pipeline mode (governed pipeline + evaluator firewall)
 @harness /feature-dev add a login endpoint
-@harness add a login endpoint --pipeline          # flag form
 
-# Agent mode (planner-led delegation, Week 6 — planned)
-@harness /agent <task>
+# Orchestrator mode (default for non-slash input — persistent chat,
+# spawns sub-agents on demand)
+@harness explain this error
+@harness add a login endpoint
 
 # Single step / status
 @harness /planner <task>  /coder  /continue  /status
@@ -121,5 +119,5 @@ code change.
 
 ---
 
-*CopilotHarness | v0.4.0 | 507 tests (Phase A complete on Python side ✅) | May 2026*
+*CopilotHarness | 586 Py + 112 TS tests | Phases A–D shipped; E in progress | May 2026*
 *Full design → docs/design.md. Status and roadmap → docs/roadmap.md.*

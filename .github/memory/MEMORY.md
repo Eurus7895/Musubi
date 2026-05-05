@@ -44,12 +44,12 @@ Write-once per attempt. Reviewer "fail" → correction loop (max 3) → escalate
 Reviewer runs under the Week 3a evaluator firewall — sees `code` only, no
 plan/design/memory/dynamic skills.
 
-## Routing (Week 3c)
+## Routing (Phase D)
 
 Zero-LLM-cost string match in `extension.ts`:
-- `/<name> …` → slash command (loads `.github/commands/<name>.md`)
-- `… --pipeline …` → force pipeline
-- otherwise → direct mode (single `vscode.lm.sendRequest`, no harness)
+- `/<pipeline-name> <task>` → pipeline (full guardrails + evaluator firewall)
+- `/<other-slash>` → step / agent / status / help / orchestrator dispatch
+- otherwise → orchestrator (persistent chat, spawns sub-agents on demand)
 
 ---
 

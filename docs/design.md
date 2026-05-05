@@ -68,18 +68,18 @@ action needed. The extension drives agents automatically via `vscode.lm.sendRequ
 ```
 User types "@harness add a login endpoint" in Copilot Chat
         ↓
-Intent Router (extension.ts)
-  Slash command (/feature-dev) → pipeline mode (deterministic, no LLM call)
-  Everything else → direct mode (no LLM routing call needed)
-  User override: --pipeline forces pipeline for non-slash input
+Intent Router (extension.ts) — zero LLM cost
+  Slash command (/feature-dev) → pipeline mode
+  Everything else              → orchestrator mode
         ↓
   ┌─────────────────────┬────────────────────────────────┐
-  │  DIRECT MODE        │  PIPELINE MODE                 │
+  │  ORCHESTRATOR       │  PIPELINE MODE                 │
   │                     │                                │
-  │  Single LLM call    │  Governed pipeline             │
-  │  No schema, no      │  Agents + evaluator +          │
-  │  evaluator, no      │  validation + correction       │
-  │  plan JSON, no hooks│  + plan JSON + audit           │
+  │  Persistent chat,   │  Governed pipeline             │
+  │  spawns sub-agents  │  Agents + evaluator +          │
+  │  on demand, Tier-1  │  validation + correction       │
+  │  memory, replay,    │  + plan JSON + audit           │
+  │  reactive compaction│                                │
   │                     │                                │
   │  "@harness explain  │  /feature-dev add OAuth        │
   │   this error"       │  /code-review PR-421           │
@@ -126,19 +126,19 @@ PIPELINE MODE:
 ```
 
 **Routing rule (zero cost — no LLM call):**
-- Input starts with `/` → pipeline (slash command)
-- Input has `--pipeline` flag → pipeline
-- Everything else → direct
+- Input starts with `/<pipeline-name>` → pipeline
+- Everything else → orchestrator
 
 ---
 
 ## Agent Complexity Levels
 
 ```
-Direct     Single LLM call. No pipeline, no schema, no evaluator.
-           Just: prompt → Copilot → stream response → done.
-           When: simple questions, explanations, quick lookups.
-           Speed: fastest possible — no harness overhead.
+Orchestrator
+           One main agent + on-demand sub-agents (read-only by default).
+           Persistent chat per chat_id, replay, reactive compaction.
+           When: anything that isn't a slash-invoked pipeline.
+           Default for non-pipeline turns.
 
 Level 0    Single agent pipeline. Baseline checks, skill injection, plan JSON.
            No evaluator. Team feedback is the evaluator.
@@ -223,12 +223,12 @@ FEATURE-DEV PIPELINE TODAY:
   at .github/pipelines/feature-dev-level1-probe/, awaiting a measurement
   run.
 
-ROUTING:
-  Slash-command input          → pipeline mode (harness_* tools, session)
-  Input with --pipeline flag   → pipeline mode
-  Everything else              → direct mode (one MCP round-trip for
-                                 skill catalog, then vscode.lm call;
-                                 LLM may pull skills on demand)
+ROUTING (Phase D):
+  /<pipeline-name> <task>      → pipeline mode (harness_* tools, session,
+                                 evaluator firewall)
+  Everything else              → orchestrator mode (persistent chat,
+                                 spawns sub-agents on demand, Tier-1
+                                 memory, reactive compaction)
 
 CHAT SURFACE:
   Every @harness interaction — direct AND pipeline — lives inline in
@@ -354,7 +354,7 @@ Agent loads additional references on demand via `harness_get_reference()`.
 
 ## In-Chat Pipeline Rendering (v0.3.1)
 
-The whole harness experience — direct mode AND pipeline mode — renders
+The whole harness experience — orchestrator AND pipeline mode — renders
 inline in Copilot Chat. No separate panel, no webview. This matches the
 Copilot Chat / Claude Chat idiom: the assistant speaks, you read in the
 same surface.
@@ -916,15 +916,17 @@ WEEK 5+ — Orchestrator Pivot (active plan, supersedes prior Week 5 / Week 6):
   See [`docs/roadmap.md`](./roadmap.md) → "Week 5+ — Orchestrator Pivot" for the canonical plan.
   5 phases (A → E) covering: sub-agent primitives, orchestrator core,
   conversation continuity, routing pivot + deletions, documentation.
-  6 of 30 best-practice rows improve. Direct mode and planned Agent Mode
-  are deleted (superseded). Memory contract: docs/memory.md.
+  6 of 30 best-practice rows improve. Direct mode and the planned (never
+  shipped) Agent Mode are deleted (superseded). Memory contract:
+  docs/memory.md.
 
 DEFERRED (needs discussion first):
   - Model-invoked skill loading **inside pipeline mode** (agent decides
     which skill to load during plan/design/code). Breaks the
     "harness pushes, agent cannot opt out" invariant that the evaluator
     firewall and stage-specific injection depend on. (Direct-mode pull
-    is deleted by the orchestrator pivot — see [`docs/roadmap.md`](./roadmap.md) Phase D.)
+    was the only place this existed; it was deleted in Phase D — see
+    [`docs/roadmap.md`](./roadmap.md).)
 
   - Sub agents reading memory. Default is *no memory for sub agents*.
     Opt-in per role via `memory: [<entry>]` in the role file only after
@@ -969,4 +971,4 @@ A.1, +46 A.2, +20 A.3) + 24 TS tests.*
 *Next: Phase B — orchestrator agent file + extension-side runner that
 calls vscode.lm.registerTool for spawn / await / list, wires the
 SubagentEventTracker into the chat stream.*
-*Planned: Week 5+ Orchestrator Pivot — see [`docs/roadmap.md`](./roadmap.md). 5 phases A→E. Two modes after pivot: pipeline + orchestrator. Direct mode + planned Agent Mode deleted.*
+*Status: Week 5+ Orchestrator Pivot — Phases A, B, C, D shipped; Phase E (this doc + memory.md + AGENTS.md polish) in progress. Two modes: pipeline + orchestrator. Direct mode and the never-shipped Agent Mode are removed. See [`docs/roadmap.md`](./roadmap.md) for status churn.*

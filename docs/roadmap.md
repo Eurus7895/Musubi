@@ -162,13 +162,13 @@ CONDITIONAL (triggered by Day 5 outcome, once probe is run):
 
 ### Week 5+ — Orchestrator Pivot (active plan, supersedes prior Week 5 / Week 6)
 
-**Why.** Three modes (pipeline + direct + planned agent mode) is one mode too
-many. The proven pattern across modern coding agents (Claude Code, Cursor,
-Aider) is one orchestrator + sub-agents on demand. We're collapsing to **two
+**Why.** Direct mode + the planned agent mode were one mode too many on top of
+pipelines. The proven pattern across modern coding agents (Claude Code, Cursor,
+Aider) is one orchestrator + sub-agents on demand. We collapsed to **two
 modes**: pipeline (for high-stakes, repeatable workflows) + orchestrator (for
-everything else). The planned Agent Mode (`/agent` slash + `runAgentChain`
-chain runtime) is superseded — its intent (LLM picks verbs, harness enforces
-grammar) is fulfilled more cleanly by an orchestrator that spawns sub-agents.
+everything else). The intent of the never-shipped agent mode (LLM picks verbs,
+harness enforces grammar) is fulfilled more cleanly by the orchestrator
+spawning sub-agents.
 
 **Architecture invariants preserved.** Zero LLM calls in harness, evaluator
 firewall, skills pushed not pulled, fail-closed policy, append-only state —
@@ -184,12 +184,10 @@ addressable via the orchestrator's system prompt + redefining
 | `/<pipeline-name> <task>` | Pipeline | Fixed sequence, full guardrails, evaluator firewall (unchanged) |
 | Anything else | Orchestrator | One main agent, persistent conversation, spawns sub-agents on demand |
 
-**What gets deleted:**
-- Direct mode (`runDirect`, `AGENT_SKILL_ALLOWLIST["direct"]`, the bare-prompt path)
-- Planned `/agent` slash command
-- Planned `runAgentChain` runtime (replaced by orchestrator runner)
-- Planned `research.agent.md` (orchestrator handles task-context-gathering directly)
-- The `--pipeline` flag (no longer needed — slash decides)
+**What gets deleted (delivered in Phase D):**
+- Direct mode — `runDirect`, `AGENT_SKILL_ALLOWLIST["direct"]`, the bare-prompt path, and its 4 tests
+- The `--pipeline` flag — `stripPipelineFlag` + `pipelineForced` variant in `parseCommand`
+- Never-shipped agent-mode plumbing (`runAgentChain`, `research.agent.md`, `commands/agent.md`) — never built, dropped from the plan
 
 **Locked decisions** (settled before code; recorded for future reference):
 
@@ -504,27 +502,52 @@ skill + omits empty skill + null skill).
 Total: 590 Py + 112 TS (was 568 Py + 76 TS at C.1 close).
 ```
 
-#### Phase D — Routing pivot + deletions (1 day)
+#### Phase D ✅ Routing pivot + deletions
 
 ```
-[ ] copilot-harness-extension/src/extension.ts::parseCommand: new rule —
-    /<known-pipeline-name> → pipeline; everything else → orchestrator.
-    Drop --pipeline flag; drop bare-prompt direct path.
-[ ] Delete runDirect path (extension + AGENT_SKILL_ALLOWLIST["direct"] +
-    direct-mode skill-catalog round-trip in server.py)
-[ ] Delete direct-mode tests (~30 tests; migrate skill allowlist behavior
-    to orchestrator's spawn_allowlist)
-[ ] Strip planned Agent Mode references from this section + README files
-[ ] Update .github/commands/help.md to reflect 2-mode reality
+[x] copilot-harness-extension/src/extension.ts::parseCommand: new rule —
+    `/` → slash command; legacy bare keyword → its existing handler;
+    everything else → orchestrator. Dropped --pipeline flag,
+    pipelineForced variant, stripPipelineFlag, direct variant.
+[x] Deleted runDirect path entirely — runDirect, parseSkillPullRequest,
+    fetchDirectCatalog, fetchMemoryContext, extractChatHistory (the
+    orchestrator runner has its own copy), DIRECT_AGENT_NAME,
+    MAX_PULL_ROUNDS, MAX_HISTORY_TURNS, SkillCatalog/MemoryContext
+    interfaces, the now-unused selectModelForAgent import. ~290
+    deletions in extension.ts.
+[x] Dropped AGENT_SKILL_ALLOWLIST["direct"] from
+    validation/context_builder.py. Generator skills reach the
+    orchestrator only through spawned sub-agents whose allowlists
+    already cover them — see MAIN_SUBAGENT_ALLOWLIST.
+[x] Deleted 4 direct-mode tests in test_skill_access.py
+    (allowlist_includes_generator_skills, excludes_evaluator_skill,
+    rejects_disallowed_skill_via_server, authorized_skill_passes_allowlist).
+    Migrated test_harness_list_skills_filters_to_caller_allowlist
+    to exercise "coder" instead of "direct".
+[x] Stripped planned Agent Mode references from roadmap (this section
+    + supersedes block) and README files.
+[x] Rewrote .github/commands/help.md for 2-mode reality (pipeline +
+    orchestrator).
+[x] Updated CLAUDE.md Hard Invariants #2 + #4 and the Decision Rules
+    table (Direct row → Orchestrator row); test counts bumped to
+    586 Py + 112 TS.
 ```
+
+**Note on roadmap projection:** the original "−34 tests" estimate was
+speculative. Direct-mode test coverage was concentrated in 4 tests
+in test_skill_access.py; the rest of the deletion was TS code with
+no test surface. Actual: 590 → 586 Py.
 
 #### Phase E — Documentation (0.5 day)
 
 ```
-[ ] CLAUDE.md Hard Invariant #4: replace zero-cost-routing rule with
-    /<pipeline> → pipeline; else → orchestrator
-[ ] CLAUDE.md Decision Rules table: replace "Direct" row with
-    "Orchestrator"
+[x] CLAUDE.md Hard Invariant #2: pull-on-demand clause removed; skills
+    are pushed via inject_skills frontmatter for both pipeline agents
+    and the orchestrator.
+[x] CLAUDE.md Hard Invariant #4: zero-cost-routing rule rewritten to
+    /<pipeline-name> → pipeline; everything else → orchestrator.
+[x] CLAUDE.md Decision Rules table: "Direct" row replaced with
+    "Orchestrator".
 [ ] docs/design.md § Current State: rewrite for v0.5+ (orchestrator +
     pipeline)
 [ ] docs/design.md § Best Practices Compliance: re-mark BP 2, 13, 15, 19,
@@ -535,12 +558,12 @@ Total: 590 Py + 112 TS (was 568 Py + 76 TS at C.1 close).
 
 **Test count trajectory:**
 ```
-Today:        379
-After A:    ~ 404  (+25 from sub-agent primitives)
-After B:    ~ 419  (+15 orchestrator)
-After C:    ~ 429  (+10 conversation continuity)
-After D:    ~ 395  (−34 direct-mode deletions)
-After E:    ~ 395  (docs only, no test impact)
+Pre-A:        379 Py
+After A:      507 Py
+After B:      544 Py + 76 TS
+After C:      590 Py + 112 TS = 702
+After D:      586 Py + 112 TS = 698  (−4; original −34 estimate was speculative)
+After E:    ~ 698  (docs only, no test impact)
 ```
 
 **Risk areas:**
@@ -556,8 +579,8 @@ After E:    ~ 395  (docs only, no test impact)
 - Prior Week 5 (sub agents standalone) — folded into Phase A as the
   foundation.
 - Prior Week 6 Agent Mode (`/agent` slash + chain runtime) — replaced by
-  orchestrator. Files referenced in the prior plan
+  the orchestrator. The files that the prior plan would have built
   (`runners/agentChain.ts`, `commands/agent.md`, `agents/research.agent.md`)
-  are not built.
+  were never built and have been removed from the plan.
 
 ---
