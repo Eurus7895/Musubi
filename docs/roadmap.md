@@ -404,14 +404,28 @@ B.2 follow-up ✅ Frontmatter-driven model selection
 #### Phase C — Conversation continuity (1.5 days)
 
 ```
-Day C.1 — Storage + replay
-  [ ] copilot-harness/session/conversations.py: append_message, get_history
-      (token-budgeted, newest-first truncation)
-  [ ] storage/db.py: conversation_messages table
-      (chat_id, role, content, ts) + idx_conv_chat_ts index
-  [ ] server.py: harness_append_message + harness_get_conversation MCP
-      tools
-  [ ] tests/test_conversations.py
+Day C.1 ✅ Storage + replay
+  [x] copilot-harness/session/conversations.py: append_message, get_history
+      (token-budgeted, newest-first truncation; estimator mirrors
+      verifier._CHARS_PER_TOKEN so budgets agree across the codebase).
+      Roles validated fail-closed against VALID_ROLES =
+      {user, assistant, tool, system}; chat_id opaque to the harness.
+  [x] storage/db.py: conversation_messages table (id PK, chat_id, role,
+      content, ts) + idx_conv_chat_ts index. Schema mirrored in both
+      schema.sql and the embedded _SCHEMA_SQL constant. CRUD helpers
+      insert_conversation_message + get_conversation_messages stay in
+      db.py to match the sub_sessions split.
+  [x] server.py: harness_append_message + harness_get_conversation MCP
+      tools. Both return JSON {status, ...}; bad input fails closed
+      with status='error'.
+  [x] tests/test_conversations.py: 19 assertions covering id/ts/tokens
+      shape, role + content + chat_id validation, round-trip
+      chronological order, multi-chat isolation, newest-first
+      truncation, single-oversized-message survival, role_filter,
+      same-ts deterministic ordering by id, unicode round-trip
+      (UTF-8 invariant), schema migration on a fresh DB, and MCP
+      integration through server.harness_append_message /
+      harness_get_conversation. Total: 563 (was 544).
 
 Day C.2 — Wire into orchestrator + reactive compaction
   [ ] orchestrator.ts: append user msg → fetch history (reactive cap) →

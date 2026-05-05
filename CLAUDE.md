@@ -243,6 +243,8 @@ Names + one-line purpose. Full schemas and behavior in `docs/design.md` § MCP T
 | `harness_list_subagents` | Return spawn allow-list for the calling main agent (Phase A.1) |
 | `harness_get_subagent_context` | Return firewalled `{brief, role, role_skill, allowed_tools}` for a handle (Phase A.2) |
 | `harness_query_subagent_events` | Read durable audit log of sub-agent spawns + completions (Phase A.3) |
+| `harness_append_message` | Append a `user` / `assistant` / `tool` / `system` row to a chat (Phase C.1) |
+| `harness_get_conversation` | Return token-budgeted, chronological history for a chat — newest-first truncation (Phase C.1) |
 
 ---
 

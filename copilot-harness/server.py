@@ -16,6 +16,8 @@ Tools:
     harness_complete_subagent   → sub_sessions.complete (extension-side runner)
     harness_await_subagent      → polls until terminal / wall-clock kill
     harness_list_subagents      → policy_engine spawn allow-list
+    harness_append_message      → conversations.append_message (Phase C.1)
+    harness_get_conversation    → conversations.get_history (Phase C.1)
 
 Skill auto-injection:
     harness_read_stage automatically appends relevant SKILL.md content
@@ -39,7 +41,7 @@ from mcp.server.fastmcp import FastMCP
 
 from execution import executor
 from memory import memory_loader, session_distiller
-from session import state, sub_sessions
+from session import conversations, state, sub_sessions
 from skills import skill_loader
 from storage import db as _db
 from storage import subagent_audit
@@ -983,6 +985,61 @@ def harness_list_subagents(main_agent_name: str) -> str:
         for r in roles
     ]
     return json.dumps({"main_agent": main_agent_name, "roles": catalog})
+
+
+# ── Conversation continuity (Phase C.1) ───────────────────────────────────────
+# Storage seam for orchestrator replay-on-each-turn. Roles are validated
+# fail-closed against `conversations.VALID_ROLES`. `chat_id` is opaque to the
+# harness — the runner mints it.
+
+@mcp.tool()
+def harness_append_message(chat_id: str, role: str, content: str) -> str:
+    """Append a message to an orchestrator conversation.
+
+    Roles: 'user' | 'assistant' | 'tool' | 'system'. Anything else
+    rejects fail-closed. `chat_id` is opaque — the runner is responsible
+    for mint stability across turns.
+
+    Result on success:
+      { status: 'ok', message_id, ts, tokens_estimate }
+    Result on bad input:
+      { status: 'error', error: '...' }
+    """
+    try:
+        result = conversations.append_message(
+            chat_id=chat_id, role=role, content=content
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    return json.dumps({"status": "ok", **result})
+
+
+@mcp.tool()
+def harness_get_conversation(
+    chat_id: str,
+    max_tokens: int = conversations.DEFAULT_MAX_TOKENS,
+    role_filter: list[str] | None = None,
+) -> str:
+    """Return a token-budgeted, chronological history for `chat_id`.
+
+    Newest-first truncation: when the running token total would exceed
+    `max_tokens`, older messages are dropped first. The returned list is
+    chronological so the runner can splice it into `LanguageModelChatMessage[]`
+    directly. A single oversized message is still returned (with
+    `truncated=true`) so the runner always has at least one prior turn.
+
+    Result:
+      { status: 'ok', messages: [...], total_tokens, truncated, dropped_count }
+    """
+    try:
+        history = conversations.get_history(
+            chat_id=chat_id,
+            max_tokens=max_tokens,
+            role_filter=role_filter,
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    return json.dumps({"status": "ok", **history})
 
 
 # ── Hook loader (Week 3c) ─────────────────────────────────────────────────────
