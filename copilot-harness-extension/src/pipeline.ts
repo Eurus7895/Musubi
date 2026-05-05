@@ -432,12 +432,17 @@ async function runAgentLM(
   token: vscode.CancellationToken,
   obs?: AgentObs,
 ): Promise<unknown> {
-  // Honor the agent's `model:` frontmatter — each agent runs against its
-  // declared family. Selection happens per call so different stages can
-  // run on different models within one pipeline (e.g. coder=gpt-4o,
-  // explorer=gpt-4o-mini).
+  // Honor the agent's `model:` frontmatter — and let any skill the harness
+  // already injected into this context override it via `model:` in its
+  // own SKILL.md. First skill with a declared model wins; otherwise the
+  // agent default applies. See modelSelector.ts for the full chain.
+  const injected = context["injected_skills"];
+  const activeSkills =
+    injected && typeof injected === "object"
+      ? Object.keys(injected as Record<string, unknown>)
+      : [];
   const model = await selectModelForAgent({
-    roots, agentName, log: logLine,
+    roots, agentName, skills: activeSkills, log: logLine,
   });
   const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
   const systemMsg =

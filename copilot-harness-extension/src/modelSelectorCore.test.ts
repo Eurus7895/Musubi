@@ -6,7 +6,10 @@ import * as path from "path";
 
 import {
   parseAgentModelFamily,
+  parseFrontmatterModel,
+  pickSkillModelFamily,
   readAgentModelFamily,
+  readSkillModelFamily,
 } from "./modelSelectorCore";
 
 // ── parseAgentModelFamily ────────────────────────────────────────────
@@ -166,6 +169,101 @@ test("readAgentModelFamily: skips empty / falsy roots", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ── parseFrontmatterModel alias ──────────────────────────────────────
+
+test("parseFrontmatterModel and parseAgentModelFamily are the same function", () => {
+  assert.equal(parseFrontmatterModel, parseAgentModelFamily);
+  assert.equal(
+    parseFrontmatterModel("---\nmodel: gpt-4.1\n---\n"),
+    "gpt-4.1",
+  );
+});
+
+// ── readSkillModelFamily ─────────────────────────────────────────────
+
+test("readSkillModelFamily: reads model from .github/skills/<id>/SKILL.md", () => {
+  const root = withTmpRoots(r => {
+    fs.mkdirSync(path.join(r, ".github", "skills", "complex-reasoning"), { recursive: true });
+    fs.writeFileSync(
+      path.join(r, ".github", "skills", "complex-reasoning", "SKILL.md"),
+      "---\nname: complex-reasoning\nmodel: claude-opus-4\n---\nbody",
+      "utf-8",
+    );
+  });
+  try {
+    assert.equal(readSkillModelFamily([root], "complex-reasoning"), "claude-opus-4");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readSkillModelFamily: returns null when SKILL.md doesn't declare model", () => {
+  const root = withTmpRoots(r => {
+    fs.mkdirSync(path.join(r, ".github", "skills", "plain"), { recursive: true });
+    fs.writeFileSync(
+      path.join(r, ".github", "skills", "plain", "SKILL.md"),
+      "---\nname: plain\n---\n",
+      "utf-8",
+    );
+  });
+  try {
+    assert.equal(readSkillModelFamily([root], "plain"), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readSkillModelFamily: returns null when skill folder doesn't exist", () => {
+  const root = withTmpRoots(() => { /* empty */ });
+  try {
+    assert.equal(readSkillModelFamily([root], "ghost"), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── pickSkillModelFamily ─────────────────────────────────────────────
+
+test("pickSkillModelFamily: returns the first skill that declares a model", () => {
+  const root = withTmpRoots(r => {
+    const mk = (id: string, body: string) => {
+      fs.mkdirSync(path.join(r, ".github", "skills", id), { recursive: true });
+      fs.writeFileSync(
+        path.join(r, ".github", "skills", id, "SKILL.md"),
+        body, "utf-8",
+      );
+    };
+    mk("plain-a", "---\nname: plain-a\n---\n");
+    mk("heavy-b", "---\nname: heavy-b\nmodel: claude-opus-4\n---\n");
+    mk("heavy-c", "---\nname: heavy-c\nmodel: claude-sonnet-4.5\n---\n");
+  });
+  try {
+    const pick = pickSkillModelFamily([root], ["plain-a", "heavy-b", "heavy-c"]);
+    assert.deepEqual(pick, { skillId: "heavy-b", family: "claude-opus-4" });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pickSkillModelFamily: returns null when no skill declares a model", () => {
+  const root = withTmpRoots(r => {
+    fs.mkdirSync(path.join(r, ".github", "skills", "plain"), { recursive: true });
+    fs.writeFileSync(
+      path.join(r, ".github", "skills", "plain", "SKILL.md"),
+      "---\nname: plain\n---\n", "utf-8",
+    );
+  });
+  try {
+    assert.equal(pickSkillModelFamily([root], ["plain", "absent"]), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pickSkillModelFamily: returns null on empty skills list", () => {
+  assert.equal(pickSkillModelFamily(["/anywhere"], []), null);
 });
 
 // Regression: every agent file shipped in this repo declares a model so

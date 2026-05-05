@@ -218,12 +218,16 @@ export interface RunOrchestratorOptions {
 export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
   const { prompt, client, chatContext, stream, token, roots, log } = opts;
 
-  // Honors the orchestrator agent's `model:` frontmatter; falls back to
-  // gpt-4o → any copilot model if the declared family isn't available.
+  // Honors the orchestrator agent's `model:` frontmatter, and lets the
+  // pushed `orchestrator-routing` skill (or any future complicated skill)
+  // override via `model:` in its own SKILL.md — see modelSelector.ts.
   let model: vscode.LanguageModelChat;
   try {
     model = await selectModelForAgent({
-      roots, agentName: ORCHESTRATOR_AGENT_NAME, log,
+      roots,
+      agentName: ORCHESTRATOR_AGENT_NAME,
+      skills: ["orchestrator-routing"],
+      log,
     });
   } catch {
     stream.markdown("**Error:** No Copilot language model available.");

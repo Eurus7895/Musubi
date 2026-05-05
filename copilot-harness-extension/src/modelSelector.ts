@@ -1,24 +1,34 @@
 /**
  * modelSelector.ts — vscode shell that resolves an agent's chat model from
- * its frontmatter (via modelSelectorCore) and asks Copilot for it.
+ * its frontmatter (and any active skills' frontmatter), then asks Copilot
+ * for it.
  *
  * Selection chain, in order:
- *   1. Family declared in `.agent.md` frontmatter (`model:` field).
- *   2. Provided fallback family (caller's preferred default).
- *   3. Any vendor=copilot model.
- * Throws only when (3) is empty — i.e. Copilot Chat isn't installed /
+ *   1. First active skill that declares `model:` in its SKILL.md (load
+ *      order). Lets a "complicated skill" lift a small agent onto a
+ *      heavier family for that one invocation.
+ *   2. Family declared in `<agent>.agent.md` frontmatter.
+ *   3. Provided fallback family.
+ *   4. Any vendor=copilot model.
+ * Throws only when (4) is empty — i.e. Copilot Chat isn't installed /
  * signed in. Family-not-available is logged and falls through.
  */
 
 import * as vscode from "vscode";
-import { readAgentModelFamily } from "./modelSelectorCore";
+import { pickSkillModelFamily, readAgentModelFamily } from "./modelSelectorCore";
 
 export interface SelectModelOptions {
   roots: readonly string[];
   agentName: string;
-  /** Used when the agent file has no `model:` (e.g. direct mode). */
+  /** Used when no skill or agent file declares `model:` (e.g. direct mode). */
   fallbackFamily?: string;
-  /** Receives one informational line per fallback step. */
+  /**
+   * Skill IDs active for this invocation, in the load order the harness
+   * uses. The first skill that declares `model:` overrides the agent
+   * default — earlier entries win.
+   */
+  skills?: readonly string[];
+  /** Receives one informational line per resolution / fallback step. */
   log?: (msg: string) => void;
 }
 
@@ -28,19 +38,39 @@ export async function selectModelForAgent(
   opts: SelectModelOptions,
 ): Promise<vscode.LanguageModelChat> {
   const log = opts.log ?? (() => { /* no-op */ });
-  const declared = readAgentModelFamily(opts.roots, opts.agentName);
   const fallback = opts.fallbackFamily ?? DEFAULT_FALLBACK_FAMILY;
-  const requested = declared ?? fallback;
+
+  // 1. Skill override — first skill with `model:` wins.
+  const skillPick = opts.skills && opts.skills.length > 0
+    ? pickSkillModelFamily(opts.roots, opts.skills)
+    : null;
+
+  // 2. Agent default.
+  const agentFamily = readAgentModelFamily(opts.roots, opts.agentName);
+
+  // 3. Resolve to one requested family.
+  let source: "skill" | "agent" | "fallback";
+  let requested: string;
+  if (skillPick) {
+    source = "skill";
+    requested = skillPick.family;
+  } else if (agentFamily) {
+    source = "agent";
+    requested = agentFamily;
+  } else {
+    source = "fallback";
+    requested = fallback;
+  }
+
+  const sourceLabel = source === "skill" ? `skill=${skillPick!.skillId}`
+    : source === "agent" ? "frontmatter"
+    : "fallback (no frontmatter)";
 
   let models = await vscode.lm.selectChatModels({
     vendor: "copilot", family: requested,
   });
   if (models.length > 0) {
-    if (declared) {
-      log(`[model] ${opts.agentName}: family=${requested} (from frontmatter)`);
-    } else {
-      log(`[model] ${opts.agentName}: family=${requested} (fallback — no frontmatter)`);
-    }
+    log(`[model] ${opts.agentName}: family=${requested} (${sourceLabel})`);
     return models[0];
   }
 
