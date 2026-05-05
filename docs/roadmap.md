@@ -427,18 +427,81 @@ Day C.1 ✅ Storage + replay
       integration through server.harness_append_message /
       harness_get_conversation. Total: 563 (was 544).
 
-Day C.2 — Wire into orchestrator + reactive compaction
-  [ ] orchestrator.ts: append user msg → fetch history (reactive cap) →
-      send → append assistant reply
-  [ ] Sub-agent spawn results appended as role:"tool" entries
-  [ ] Reactive compaction at 80% / 90% / 99% of model context
-      (Claude Code pattern):
-       80% → drop oldest sub-agent tool transcripts (already summarized)
-       90% → summarize oldest 50% of user/assistant turns via summarizer
-             sub-agent
-       99% → hard truncate
-  [ ] Sub-session cleanup at user-turn-end (mark done, delete rows)
-  [ ] Distillation trigger wiring (4 triggers per docs/memory.md)
+Day C.2 ✅ Wire into orchestrator + reactive compaction
+  [x] orchestrator.ts replays via harness_get_conversation: append user
+      message before send, fetch token-budgeted history, append the
+      assistant text in finally (so partial replies survive cancel),
+      append each tool result as role:"tool". Best-effort everywhere
+      — a harness write failure logs and the turn proceeds.
+  [x] Sub-agent spawn results appended as role:"tool" entries by the
+      orchestrator runner. JSON envelope `{tool, result}` so future
+      compaction passes can identify and drop them.
+  [x] Reactive compaction at 80% / 90% / 99%:
+       80% — drop role:"tool" rows from the per-turn render (storage
+             stays canonical; nothing is deleted).
+       90% — spawn the new summarizer sub-agent over the oldest half;
+             persist the verified summary as role:"system" so
+             subsequent turns reuse it; on failure fall through to
+             hard-truncate.
+       99% — hard-truncate to 50% of model context window. Pure-fn
+             planCompaction + applyCompaction in orchestratorCore so
+             threshold logic is unit-tested in isolation.
+  [x] Summarizer sub-agent (.github/agents/summarizer.agent.md +
+      .github/skills/summarizer/SKILL.md) — text-only, single-turn,
+      tools=[]. SUBAGENT_POLICIES["summarizer"]=[];
+      MAIN_SUBAGENT_ALLOWLIST["orchestrator"] += summarizer;
+      SUBAGENT_ROLE_SKILLS["summarizer"]="summarizer".
+  [x] Extension-side sub-agent runner — runners/summarizerRunner.ts is
+      the FIRST end-to-end LM session that turns a Phase-A `running`
+      sub_sessions row into a terminal one. Spawn → fetch firewalled
+      context → selectModelForAgent → one-shot vscode.lm.sendRequest
+      → harness_complete_subagent. Phase D promotes this shape into a
+      generic runSubagent(role, brief).
+  [x] Sub-session cleanup at user-turn-end already correct in B.2
+      (cleanupOutstandingSubagents calls harness_complete_subagent
+      with status='abandoned'). Roadmap line "mark done, delete rows"
+      was misleading — `done` is wrong for never-awaited handles, and
+      deleting destroys audit rows. Resolution: keep the abandon
+      transition; new harness_delete_subsessions_for_parent MCP tool
+      (status-gated, age-gated, audit-safe) is exposed for a future
+      low-priority background pruner timer; not wired in C.2.
+  [x] Distillation triggers — two of four wired:
+       (c) reviewer-fail: when a reviewer / reviewer-aux sub-agent
+           returns final_status='failed', the runner records a
+           failure pattern via harness_append_failure_pattern.
+           SpawnTracker.roleFor lets the await callback recover the
+           spawned role for the dispatch.
+       (d) user frustration regex: 8 patterns in
+           .github/memory/sentiment-patterns.json (mirror in
+           orchestratorCore.detectFrustration regex bank). On match,
+           the runner records a `frustration:<label>` pattern.
+       Per-turn dedup via TriggerDedup; persistent dedup via the
+       existing _load_existing_patterns index in session_distiller.
+       (a) per-turn noteworthy events and (b) /clear / chat-closed
+       deferred — overlaps with reviewer-fail in this iteration; (b)
+       requires a VS Code chat lifecycle API that does not exist in
+       1.93.
+  [x] chat_id stability heuristic: sha256(participant + first user
+      prompt + workspace path) truncated to 16 hex. Stable across
+      turns within a chat panel because chatContext.history[0] never
+      reorders. Documented as best-effort; swap when VS Code ships
+      a real chat-thread id (likely 1.95+).
+
+Tests: +27 Python (5 in test_orchestrator_context.py for summarizer
+spawn allow-list + agent + skill files; 22 in test_distillation_triggers.py
+for detect_frustration each pattern + neutral text + missing file +
+hot-reload, append_pattern dedup + format + reject empty, MCP
+append_failure_pattern round-trip + dedup + reject empty, MCP
+delete_subsessions prunes only terminal + age-gates) + 36 TS
+(29 in orchestratorCompaction.test.ts: estimateTokens, parse +
+resolveChatId stability + sensitivity, totalHistoryTokens,
+planCompaction at each threshold + <2-msg fallthrough,
+applyCompaction strategies, detectFrustration each pattern +
+neutral + empty, TriggerDedup, SpawnTracker.roleFor; 7 in
+summarizerRunner.test.ts: serialize emits [role] blocks + drops
+empty + empty input; build prompt strips frontmatter + appends
+skill + omits empty skill + null skill).
+Total: 590 Py + 112 TS (was 568 Py + 76 TS at C.1 close).
 ```
 
 #### Phase D — Routing pivot + deletions (1 day)
