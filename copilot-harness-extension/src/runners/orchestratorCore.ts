@@ -1,5 +1,5 @@
 /**
- * runners/orchestratorCore.ts — Phase B.2 orchestrator helpers.
+ * runners/orchestratorCore.ts — Orchestrator helpers (Phase B.2 + C.2).
  *
  * Pure helpers (no vscode imports) so they can be unit-tested with
  * node:test. The vscode-using shell lives in runners/orchestrator.ts.
@@ -11,8 +11,11 @@
  *   • SpawnTracker — bookkeeping for outstanding handles per turn
  *   • cleanupOutstandingSubagents — best-effort sweep at turn end
  *   • loadOrchestratorPrompts — disk loader for agent.md + routing skill
+ *   • C.2: chat_id resolver, conversation-row parsing, token estimator,
+ *     reactive compaction planner.
  */
 
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -292,4 +295,187 @@ export function loadOrchestratorPrompts(roots: string[]): LoadedPrompts {
     roots, path.join(".github", "skills", "orchestrator-routing", "SKILL.md"),
   ) ?? "";
   return { agentMd, routingSkill };
+}
+
+// ── Phase C.2: chat_id, conversation rows, token budget, compaction ─────────
+
+/** Mirror of validation/verifier._CHARS_PER_TOKEN — must stay in sync. */
+export const CHARS_PER_TOKEN = 4;
+
+/**
+ * Single-call estimate; same heuristic as conversations.estimate_tokens
+ * on the harness side so budget math agrees across the boundary.
+ */
+export function estimateTokens(text: string): number {
+  if (!text) { return 0; }
+  return Math.max(1, Math.floor(text.length / CHARS_PER_TOKEN));
+}
+
+/**
+ * Assumed model context window. Sonnet/Opus 4.x land at 200k; the value
+ * is intentionally a constant rather than read off the live model so
+ * `planCompaction` stays a pure function. Tune here if a smaller model
+ * is wired in.
+ */
+export const MODEL_CONTEXT_TOKENS = 200_000;
+
+/** Reactive compaction thresholds (Claude Code pattern). */
+export const COMPACT_T1_DROP_TOOLS = 0.80;
+export const COMPACT_T2_SUMMARIZE  = 0.90;
+export const COMPACT_T3_TRUNCATE   = 0.99;
+
+/**
+ * Plain in-memory shape for a conversation row. Mirrors the JSON the
+ * harness's `harness_get_conversation` returns; deliberately vscode-free
+ * so this module stays unit-testable.
+ */
+export interface OrchestratorMessage {
+  role: "user" | "assistant" | "tool" | "system";
+  content: string;
+  id?: number;
+  ts?: string;
+}
+
+/**
+ * Parse the JSON envelope returned by harness_get_conversation. Returns an
+ * empty array on any malformed input — callers may proceed with no
+ * replayed history rather than crash a turn over a parser blip.
+ */
+export function parseConversationResponse(raw: string): OrchestratorMessage[] {
+  if (!raw) { return []; }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!parsed || typeof parsed !== "object") { return []; }
+  const obj = parsed as { status?: string; messages?: unknown };
+  if (obj.status !== "ok" || !Array.isArray(obj.messages)) { return []; }
+  const out: OrchestratorMessage[] = [];
+  for (const m of obj.messages) {
+    if (!m || typeof m !== "object") { continue; }
+    const row = m as { role?: unknown; content?: unknown; id?: unknown; ts?: unknown };
+    if (typeof row.role !== "string" || typeof row.content !== "string") { continue; }
+    if (row.role !== "user" && row.role !== "assistant"
+        && row.role !== "tool" && row.role !== "system") { continue; }
+    out.push({
+      role: row.role,
+      content: row.content,
+      id: typeof row.id === "number" ? row.id : undefined,
+      ts: typeof row.ts === "string" ? row.ts : undefined,
+    });
+  }
+  return out;
+}
+
+/**
+ * Stable per-chat identifier across turns within a single chat panel.
+ *
+ * VS Code 1.93's ChatRequest exposes no thread id; the only stable
+ * proxy we have is the first user prompt in `chatContext.history`,
+ * combined with the participant id and workspace path. On the very
+ * first turn (history empty) we fall back to the current prompt —
+ * which becomes `chatContext.history[0]` on turn 2, so the hash stays
+ * stable. Truncated SHA-256 (16 hex chars) keeps the chat_id short
+ * enough for SQLite indexes while leaving collision space generous.
+ *
+ * Replace with whatever VS Code adds when it ships a stable session
+ * id (likely 1.95+).
+ */
+export function resolveChatId(input: {
+  participantId: string;
+  firstUserPrompt: string;
+  workspacePath?: string;
+}): string {
+  const h = crypto.createHash("sha256");
+  h.update("v1\0");
+  h.update(input.participantId);
+  h.update("\0");
+  h.update(input.firstUserPrompt);
+  h.update("\0");
+  h.update(input.workspacePath ?? "");
+  return h.digest("hex").slice(0, 16);
+}
+
+// ── Reactive compaction (Phase C.2) ───────────────────────────────────────
+
+export type CompactionStrategy =
+  | { kind: "none" }
+  | { kind: "drop-tools" }
+  | { kind: "summarize-old"; oldestHalf: OrchestratorMessage[] }
+  | { kind: "hard-truncate"; budgetTokens: number };
+
+/**
+ * Decide which compaction strategy to apply for a turn, given the
+ * pre-prompt token total. Pure function; the runner separately drives
+ * the side-effecting parts (re-fetch with role_filter, spawn summarizer,
+ * re-fetch with smaller budget).
+ *
+ *   <80%  → none
+ *   80-90 → drop role:"tool" rows for this turn's render
+ *   90-99 → summarize the oldest half via the summarizer sub-agent
+ *   ≥99   → hard-truncate to 50% of the model window
+ */
+export function planCompaction(
+  history: OrchestratorMessage[],
+  totalTokens: number,
+  modelContextTokens: number = MODEL_CONTEXT_TOKENS,
+): CompactionStrategy {
+  if (modelContextTokens <= 0) { return { kind: "none" }; }
+  const ratio = totalTokens / modelContextTokens;
+
+  if (ratio < COMPACT_T1_DROP_TOOLS) { return { kind: "none" }; }
+  if (ratio < COMPACT_T2_SUMMARIZE)  { return { kind: "drop-tools" }; }
+  if (ratio < COMPACT_T3_TRUNCATE) {
+    if (history.length < 2) {
+      // Nothing to summarize — fall through to hard truncate.
+      return { kind: "hard-truncate", budgetTokens: Math.floor(modelContextTokens * 0.5) };
+    }
+    const half = Math.floor(history.length / 2);
+    return { kind: "summarize-old", oldestHalf: history.slice(0, half) };
+  }
+  return { kind: "hard-truncate", budgetTokens: Math.floor(modelContextTokens * 0.5) };
+}
+
+/**
+ * Apply the local part of a compaction directive. The `summarize-old`
+ * branch returns the *recent half* unchanged; the runner is expected to
+ * spawn the summarizer separately and prepend its result as a
+ * `role:"system"` synthetic message.
+ */
+export function applyCompaction(
+  directive: CompactionStrategy,
+  history: OrchestratorMessage[],
+): OrchestratorMessage[] {
+  switch (directive.kind) {
+    case "none":
+      return history;
+    case "drop-tools":
+      return history.filter(m => m.role !== "tool");
+    case "summarize-old": {
+      const half = Math.floor(history.length / 2);
+      return history.slice(half);
+    }
+    case "hard-truncate": {
+      // Keep newest messages whose cumulative tokens fit the budget.
+      const kept: OrchestratorMessage[] = [];
+      let total = 0;
+      for (let i = history.length - 1; i >= 0; i--) {
+        const cost = estimateTokens(history[i].content);
+        if (kept.length === 0) { kept.push(history[i]); total = cost; continue; }
+        if (total + cost > directive.budgetTokens) { continue; }
+        kept.push(history[i]);
+        total += cost;
+      }
+      return kept.reverse();
+    }
+  }
+}
+
+/** Sum tokens across messages plus the explicit prompt + system prompt. */
+export function totalHistoryTokens(
+  messages: ReadonlyArray<OrchestratorMessage>,
+  systemPrompt: string,
+  currentPrompt: string,
+): number {
+  let total = estimateTokens(systemPrompt) + estimateTokens(currentPrompt);
+  for (const m of messages) { total += estimateTokens(m.content); }
+  return total;
 }

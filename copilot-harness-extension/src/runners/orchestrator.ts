@@ -16,15 +16,22 @@ import * as vscode from "vscode";
 import { McpClient } from "../mcpClient";
 import { selectModelForAgent } from "../modelSelector";
 import {
+  applyCompaction,
   buildOrchestratorSystemPrompt,
   cleanupOutstandingSubagents,
   dispatchOrchestratorTool,
   loadOrchestratorPrompts,
-  MAX_HISTORY_TURNS,
   MAX_TOOL_CYCLES,
+  MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
   ORCHESTRATOR_TOOLS,
+  parseConversationResponse,
+  planCompaction,
+  resolveChatId,
   SpawnTracker,
+  totalHistoryTokens,
+  type CompactionStrategy,
+  type OrchestratorMessage,
   type ToolDispatchContext,
 } from "./orchestratorCore";
 
@@ -60,6 +67,90 @@ async function createOrchestratorSession(
     throw new Error("harness_new_session returned no session_id");
   }
   return parsed.session_id;
+}
+
+// ── Phase C.2: conversation persistence (replay + append) ───────────────────
+
+const PARTICIPANT_ID = "copilot-harness.harness";
+
+/**
+ * Best-effort append of a single message to the conversation log. A
+ * harness append failure must NOT break a chat turn; we log and move on.
+ */
+async function appendMessage(
+  client: McpClient,
+  chatId: string,
+  role: OrchestratorMessage["role"],
+  content: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  if (!content) { return; }
+  try {
+    const raw = await client.callTool("harness_append_message", {
+      chat_id: chatId, role, content,
+    });
+    const parsed = JSON.parse(raw) as { status?: string; error?: string };
+    if (parsed.status !== "ok") {
+      log(`[orchestrator] append_message non-ok: ${parsed.error ?? raw}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[orchestrator] append_message threw: ${msg}`);
+  }
+}
+
+async function fetchConversationHistory(
+  client: McpClient,
+  chatId: string,
+  maxTokens: number,
+  log: (msg: string) => void,
+): Promise<OrchestratorMessage[]> {
+  try {
+    const raw = await client.callTool("harness_get_conversation", {
+      chat_id: chatId, max_tokens: maxTokens,
+    });
+    return parseConversationResponse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[orchestrator] get_conversation threw: ${msg}`);
+    return [];
+  }
+}
+
+/**
+ * Walk the VS Code ChatContext history for the earliest user prompt
+ * issued to our participant. Used only as input to the chat_id hash —
+ * the prompt itself never leaves the runner.
+ */
+function firstUserPromptInThread(
+  chatContext: vscode.ChatContext,
+  fallback: string,
+): string {
+  for (const turn of chatContext.history) {
+    const tid = (turn as { participant?: string }).participant;
+    if (tid && tid !== PARTICIPANT_ID) { continue; }
+    const prompt = (turn as { prompt?: string }).prompt;
+    if (typeof prompt === "string" && prompt.length > 0) { return prompt; }
+  }
+  return fallback;
+}
+
+/** Convert harness-side OrchestratorMessage rows into vscode chat messages. */
+function toLmMessages(
+  messages: ReadonlyArray<OrchestratorMessage>,
+): vscode.LanguageModelChatMessage[] {
+  const out: vscode.LanguageModelChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      out.push(vscode.LanguageModelChatMessage.Assistant(m.content));
+    } else {
+      // user / tool / system all map to User-role text in the LM API
+      // surface; tool-call protocol pairs (within a turn) are handled
+      // via LanguageModelToolCallPart / LanguageModelToolResultPart.
+      out.push(vscode.LanguageModelChatMessage.User(m.content));
+    }
+  }
+  return out;
 }
 
 // ── Chat-history replay (mirrors extension.ts::extractChatHistory) ───────────
@@ -114,6 +205,7 @@ export function extractChatHistory(
 interface ActiveOrchestrator {
   client: McpClient;
   parentSessionId: string;
+  chatId: string;
   tracker: SpawnTracker;
 }
 
@@ -245,15 +337,65 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
   const parentSessionId = await createOrchestratorSession(client, prompt);
   const tracker = new SpawnTracker();
-  _setActiveOrchestrator({ client, parentSessionId, tracker });
-  log(`[orchestrator] turn started — parent_session_id=${parentSessionId}`);
+
+  // chat_id: stable across turns within this VS Code chat panel. See
+  // resolveChatId() docstring — best-effort heuristic until VS Code ships
+  // a real chat-thread id.
+  const chatId = resolveChatId({
+    participantId: PARTICIPANT_ID,
+    firstUserPrompt: firstUserPromptInThread(chatContext, prompt),
+    workspacePath: roots[0],
+  });
+
+  _setActiveOrchestrator({ client, parentSessionId, chatId, tracker });
+  log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
+
+  // Buffer all assistant text emitted during the turn so the conversation
+  // log gets one chronological row at end-of-turn (or in `finally` on
+  // cancel / throw — partial replies must not vanish).
+  const assistantBuf: string[] = [];
 
   try {
+    // Step 1: append the user message FIRST so the history we fetch in
+    // step 2 already contains it. Best-effort: a write failure logs and
+    // we proceed (the in-memory `prompt` is still used to compose the LM
+    // request below).
+    await appendMessage(client, chatId, "user", prompt, log);
+
+    // Step 2: fetch token-budgeted history from the harness. The 80-99%
+    // compaction policy (planCompaction) decides what to drop locally.
+    const turnBudget = Math.floor(MODEL_CONTEXT_TOKENS * 0.95);
+    const fetched = await fetchConversationHistory(client, chatId, turnBudget, log);
+
+    // Step 3: reactive compaction.
+    const tokenTotal = totalHistoryTokens(fetched, systemPrompt, "");
+    const directive: CompactionStrategy = planCompaction(fetched, tokenTotal);
+    if (directive.kind !== "none") {
+      log(`[orchestrator] compaction strategy: ${directive.kind} (≈${tokenTotal} tokens)`);
+    }
+    const compacted = applyCompaction(directive, fetched);
+
+    // 90% branch — summarize the oldest half. The summarizer sub-agent
+    // runs via the dedicated runner (Phase C.2 §7); falls through to
+    // hard-truncate on failure. Wired in step 3 of this phase; for now
+    // the directive is honored locally only (drop oldest half) until
+    // summarizerRunner is available.
+    if (directive.kind === "summarize-old") {
+      log("[orchestrator] summarize-old: summarizer runner not wired yet, " +
+          "keeping recent-half slice");
+    }
+
+    // Step 4: build the LM messages array.
     const history: vscode.LanguageModelChatMessage[] = [
       vscode.LanguageModelChatMessage.User(systemPrompt),
-      ...extractChatHistory(chatContext, MAX_HISTORY_TURNS),
-      vscode.LanguageModelChatMessage.User(prompt),
+      ...toLmMessages(compacted),
     ];
+    // If the user message was lost from the fetched history (e.g. append
+    // failed silently), splice it back as a final tail so the LM at
+    // least sees the current question.
+    if (!compacted.some(m => m.role === "user" && m.content === prompt)) {
+      history.push(vscode.LanguageModelChatMessage.User(prompt));
+    }
 
     const lmTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS.map(t => ({
       name: t.name,
@@ -278,6 +420,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         }
       }
 
+      if (textBuf.length > 0) { assistantBuf.push(textBuf); }
       if (toolCalls.length === 0) { return; }
 
       // Reflect the assistant's tool-call turn into the history, then run
@@ -289,6 +432,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
       for (const call of toolCalls) {
+        let resultText: string;
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
@@ -298,15 +442,23 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           resultParts.push(new vscode.LanguageModelToolResultPart(
             call.callId, invokeResult.content,
           ));
+          resultText = stringifyToolResult(invokeResult.content);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[orchestrator] invokeTool(${call.name}) failed: ${msg}`);
+          resultText = JSON.stringify({ status: "error", error: msg });
           resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
-            new vscode.LanguageModelTextPart(
-              JSON.stringify({ status: "error", error: msg }),
-            ),
+            new vscode.LanguageModelTextPart(resultText),
           ]));
         }
+        // Persist the tool result as a role:"tool" entry so reactive
+        // compaction (80% branch) has something to drop and a future
+        // turn can reconstruct what happened.
+        await appendMessage(
+          client, chatId, "tool",
+          JSON.stringify({ tool: call.name, result: resultText }),
+          log,
+        );
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
     }
@@ -316,8 +468,24 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       "\n\n_[harness] Tool-call budget exhausted — orchestrator forced to wrap up._",
     );
   } finally {
+    if (assistantBuf.length > 0) {
+      await appendMessage(client, chatId, "assistant", assistantBuf.join(""), log);
+    }
     await cleanupOutstandingSubagents(client, tracker);
     _setActiveOrchestrator(null);
-    log(`[orchestrator] turn ended — parent_session_id=${parentSessionId}`);
+    log(`[orchestrator] turn ended — chat_id=${chatId} parent_session_id=${parentSessionId}`);
   }
+}
+
+/** Best-effort string extraction from an LM tool-result content array. */
+function stringifyToolResult(
+  content: ReadonlyArray<unknown>,
+): string {
+  const parts: string[] = [];
+  for (const p of content) {
+    if (p instanceof vscode.LanguageModelTextPart) { parts.push(p.value); continue; }
+    const v = (p as { value?: unknown }).value;
+    if (typeof v === "string") { parts.push(v); }
+  }
+  return parts.join("");
 }
