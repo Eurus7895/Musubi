@@ -263,52 +263,20 @@ def test_planner_output_without_required_skills_still_valid() -> None:
     assert result.valid
 
 
-# ── Week 4 Day 3: direct-mode allowlist + harness_list_skills ────────────────
-
-
-def test_direct_mode_allowlist_includes_generator_skills() -> None:
-    """Direct mode's allowlist is the union of designer + coder skills."""
-    assert check_skill_permission("direct", "python") is True
-    assert check_skill_permission("direct", "api-design") is True
-    assert check_skill_permission("direct", "database-patterns") is True
-    assert check_skill_permission("direct", "testing") is True
-    assert check_skill_permission("direct", "documentation") is True
-
-
-def test_direct_mode_excludes_evaluator_skill() -> None:
-    """Reviewer's code-review skill is an evaluator checklist — not a generator tool.
-
-    Leaking it into direct mode would blur the evaluator/generator boundary.
-    """
-    assert check_skill_permission("direct", "code-review") is False
-
-
-def test_direct_mode_rejects_disallowed_skill_via_server() -> None:
-    """harness_get_skill refuses code-review for the direct agent."""
-    result = json.loads(server.harness_get_skill("code-review", "direct"))
-    assert "error" in result
-    assert "not permitted" in result["error"].lower()
-
-
-def test_direct_mode_authorized_skill_passes_allowlist() -> None:
-    """python IS allowed in direct mode — error (if any) must not be permission-related."""
-    raw = server.harness_get_skill("python", "direct")
-    if raw.startswith("{"):
-        result = json.loads(raw)
-        assert "not permitted" not in result.get("error", "").lower()
+# ── harness_list_skills filtering ────────────────────────────────────────────
 
 
 def test_harness_list_skills_filters_to_caller_allowlist() -> None:
     """Catalog returned to a caller must contain only skills it can load."""
-    raw = server.harness_list_skills("direct")
+    raw = server.harness_list_skills("coder")
     payload = json.loads(raw)
-    assert payload["agent_name"] == "direct"
+    assert payload["agent_name"] == "coder"
     ids = [s["skill_id"] for s in payload["skills"]]
-    # Every returned id must be in the direct allowlist.
-    direct_allowed = AGENT_SKILL_ALLOWLIST["direct"]
+    coder_allowed = AGENT_SKILL_ALLOWLIST["coder"]
     for sid in ids:
-        assert sid in direct_allowed, f"catalog leaked disallowed skill {sid!r}"
-    # code-review must never appear for direct mode.
+        assert sid in coder_allowed, f"catalog leaked disallowed skill {sid!r}"
+    # code-review is a reviewer-only evaluator checklist — must never appear
+    # in a generator agent's catalog.
     assert "code-review" not in ids
 
 
@@ -326,13 +294,9 @@ def test_harness_list_skills_reviewer_contains_code_review_only() -> None:
 
 
 def test_pipeline_read_stage_unchanged_for_coder(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression guard: adding 'direct' to the allowlist must not change pipeline behaviour.
-
-    Coder's harness_read_stage response is still push-only — no catalog injected.
-    """
+    """Regression guard: pipeline reads stay push-only — no catalog injected."""
     _patch_server(monkeypatch, {"required_skills": ["testing"]})
     result = json.loads(server.harness_read_stage("sess-reg", "design", "coder"))
-    # No skill catalog appears in pipeline reads — only direct mode uses the catalog.
     assert "skills_catalog" not in result
     # Static-map + required_skills injection still works as before.
     assert "python" in result.get("injected_skills", {})
