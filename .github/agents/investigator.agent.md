@@ -8,7 +8,7 @@ description: >
   needs ground truth from the toolchain rather than reasoning about it.
   Returns a tight summary of what passed / failed and the smallest
   reproducible signal; the harness caps the summary at 2000 tokens.
-model: gpt-4o-mini
+model: claude-sonnet-4.5
 maxTurns: 6
 tools: ["Read", "View", "Grep", "Glob", "Bash"]
 disallowedTools: ["Write", "Edit"]

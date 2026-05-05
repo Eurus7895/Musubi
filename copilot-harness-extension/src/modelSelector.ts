@@ -22,7 +22,7 @@ export interface SelectModelOptions {
   log?: (msg: string) => void;
 }
 
-const DEFAULT_FALLBACK_FAMILY = "gpt-4o";
+const DEFAULT_FALLBACK_FAMILY = "claude-sonnet-4.5";
 
 export async function selectModelForAgent(
   opts: SelectModelOptions,

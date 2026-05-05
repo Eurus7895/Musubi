@@ -6,7 +6,7 @@ description: >
   after the Planner completes. Defines module structure, public interfaces, data
   schemas, and integration points. Use this agent when a plan exists and you need
   an architecture before writing code.
-model: gpt-4o
+model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
