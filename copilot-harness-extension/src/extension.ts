@@ -16,7 +16,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
+import { selectModelForAgent } from "./modelSelector";
 import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
+import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrator";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 
@@ -59,6 +61,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   context.subscriptions.push({ dispose: () => client.dispose() });
+
+  // Phase B.2 — register the orchestrator's vscode.lm tools (spawn / await /
+  // list). Must run before any chat turn invokes runOrchestrator. Failures
+  // are logged but non-fatal; the runner gracefully degrades to no-tool turns.
+  context.subscriptions.push(registerOrchestratorTools((m) => out.appendLine(m)));
 
   // ── Tasks sidebar view (v0.4.0) ───────────────────────────────────────────
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionPath;
@@ -105,9 +112,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     refreshTimer = setTimeout(() => tasksProvider.refresh(), 150);
   };
 
+  const log = (msg: string): void => out.appendLine(msg);
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
-    (req, ctx, stream, token) => handler(req, ctx, stream, token, client, refreshTasks, context.extensionPath),
+    (req, ctx, stream, token) => handler(
+      req, ctx, stream, token, client, refreshTasks, context.extensionPath, log,
+    ),
   );
   // Use our own harness mark for the chat avatar rather than the generic
   // robot codicon. iconPath accepts a Uri; VS Code theming the SVG works
@@ -411,13 +421,18 @@ async function runDirect(
   chatContext: vscode.ChatContext,
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
+  roots: string[],
+  log: (msg: string) => void,
 ): Promise<void> {
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
+  // Direct mode has no agent file, so selectModelForAgent will fall back
+  // through declared family → fallback (gpt-4o) → any copilot model.
+  let model: vscode.LanguageModelChat;
+  try {
+    model = await selectModelForAgent({ roots, agentName: "direct", log });
+  } catch (err) {
     stream.markdown("**Error:** No Copilot language model available.");
     return;
   }
-  const model = models[0];
 
   // 1. Fetch catalog + memory concurrently — one round-trip of latency, not two.
   const [catalog, memory] = await Promise.all([
@@ -541,6 +556,7 @@ async function handler(
   client: McpClient,
   refreshTasks: () => void,
   extensionPath: string,
+  log: (msg: string) => void,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -593,11 +609,11 @@ async function handler(
       }
 
       case "direct":
-        await runDirect(cmd.prompt, client, context, stream, token);
+        await runDirect(cmd.prompt, client, context, stream, token, slashRoots, log);
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, workspaceRoot, slashRoots, stream, token, refreshTasks);
+        await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log);
         break;
     }
   } catch (err) {
@@ -664,11 +680,13 @@ async function runSlash(
   name: string,
   args: string,
   client: McpClient,
+  chatContext: vscode.ChatContext,
   workspaceRoot: string,
   slashRoots: string[],
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   refreshTasks: () => void,
+  log: (msg: string) => void,
 ): Promise<void> {
   const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
@@ -731,5 +749,21 @@ async function runSlash(
     case "help":
       stream.markdown(buildHelpMarkdown(slashRoots));
       return;
+    case "orchestrator": {
+      if (!args) {
+        stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
+        return;
+      }
+      await runOrchestrator({
+        prompt: args,
+        client,
+        chatContext,
+        stream,
+        token,
+        roots: slashRoots,
+        log,
+      });
+      return;
+    }
   }
 }

@@ -6,7 +6,7 @@ description: >
   session to break the request into tasks, identify affected files, and define
   acceptance criteria. Use this agent when a new feature, fix, or task needs
   to be scoped before implementation begins.
-model: gpt-4o
+model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

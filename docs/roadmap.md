@@ -350,16 +350,55 @@ Day B.1 — Agent file + harness wiring
   [ ] scripts/policy_engine.py: MAIN_SUBAGENT_ALLOWLIST["orchestrator"]
   [ ] tests/test_orchestrator_context.py
 
-Day B.2 — Extension-side runner
-  [ ] copilot-harness-extension/src/runners/orchestrator.ts
-      (vscode.lm.sendRequest with system prompt + replayed history + new
-      user message; spawn-tool-call handling; sub-session cleanup on
-      user-turn-end)
-  [ ] Register harness_spawn_subagent + harness_await_subagent +
-      harness_list_subagents via vscode.lm.registerTool (real LM tool
-      calls, not JSON markers)
-  [ ] copilot-harness-extension/src/extension.ts: thin wrapper, delegates
-      to runners/orchestrator.ts and runners/pipeline.ts
+Day B.2 ✅ Extension-side runner
+  [x] copilot-harness-extension/src/runners/orchestratorCore.ts +
+      runners/orchestrator.ts. Core file holds pure helpers (system-
+      prompt builder, MCP dispatch, SpawnTracker, cleanup,
+      loadOrchestratorPrompts) so node:test can exercise them without
+      the vscode runtime. The thin shell composes them into runOrchestrator
+      with vscode.lm.sendRequest + replayed chat history + tool-call loop
+      (max 8 cycles) + finally-cleanup of any handles spawned-but-never-
+      awaited (best-effort harness_complete_subagent with status='abandoned').
+  [x] Registered harness_spawn_subagent + harness_await_subagent +
+      harness_list_subagents via vscode.lm.registerTool — real LM tool
+      calls, not JSON markers. Manifest entries added to package.json
+      `contributes.languageModelTools` (canBeReferencedInPrompt=false so
+      they don't pollute the user's # autocomplete).
+  [x] extension.ts wires registerOrchestratorTools into activate() and
+      delegates the new `/orchestrate` slash command (action: orchestrator
+      in slashCommands.ts) to runOrchestrator. Pipeline + direct paths
+      unchanged — Phase D will pivot routing so non-pipeline turns auto-
+      route here.
+  [x] Tests: tests/test_slash_commands.py VALID_ACTIONS picks up the new
+      "orchestrator" action; +28 TS assertions in
+      runners/orchestrator.test.ts (frontmatter strip, prompt assembly,
+      tool catalog shape, dispatch arg translation, SpawnTracker bookkeeping,
+      cleanup best-effort, disk loader root precedence). 53 TS tests +
+      544 Python tests green.
+
+B.2 follow-up ✅ Frontmatter-driven model selection
+  [x] All five vscode.lm.selectChatModels call sites previously hardcoded
+      `family: "gpt-4o"` regardless of what each agent's frontmatter
+      declared. Replaced with copilot-harness-extension/src/modelSelector.ts
+      + modelSelectorCore.ts. Resolution chain: skill model: → agent
+      model: → fallback (claude-sonnet-4.5) → any vendor=copilot model.
+  [x] Skill-level override: any active SKILL.md whose frontmatter
+      declares model: lifts the agent onto that family for the
+      invocation (first skill wins by load order). Pipeline.ts reads
+      active skills from context.injected_skills; orchestrator runner
+      passes its inject_skills list. No skill currently declares one —
+      the hook is plumbing, ready for procedures that genuinely demand
+      heavier capacity.
+  [x] Default switched from gpt-4o to claude-sonnet-4.5 across all 10
+      agent files (planner, designer, coder, reviewer, orchestrator,
+      pipeline-builder, skill-builder, explorer, investigator,
+      reviewer-aux). Convention recorded in CLAUDE.md § Conventions
+      ("agent = wage; skill = bonus").
+  [x] Tests: +23 TS assertions in modelSelectorCore.test.ts covering
+      frontmatter parsing edge cases, agent + skill disk readers, root
+      precedence, multi-skill first-wins, and a regression check that
+      every shipped .agent.md declares a model. 76 TS + 544 Python
+      tests green.
 ```
 
 #### Phase C — Conversation continuity (1.5 days)

@@ -7,7 +7,7 @@ description: >
   review staging, no evaluator. Pipeline-authoring is bounded enough that the
   4-agent ceremony was overkill; one careful agent + the harness's hard
   constraints does the job.
-model: gpt-4o
+model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

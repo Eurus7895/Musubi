@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
+import { selectModelForAgent } from "./modelSelector";
 
 // ── Stage tag presets — mirrors the "push-not-pull" injection contract ────
 // The harness pushes these to each stage; we render them so the user can
@@ -424,13 +425,25 @@ interface AgentObs {
 }
 
 async function runAgentLM(
-  model: vscode.LanguageModelChat,
+  roots: readonly string[],
   agentName: string,
   agentPrompt: string,
   context: Record<string, unknown>,
   token: vscode.CancellationToken,
   obs?: AgentObs,
 ): Promise<unknown> {
+  // Honor the agent's `model:` frontmatter — and let any skill the harness
+  // already injected into this context override it via `model:` in its
+  // own SKILL.md. First skill with a declared model wins; otherwise the
+  // agent default applies. See modelSelector.ts for the full chain.
+  const injected = context["injected_skills"];
+  const activeSkills =
+    injected && typeof injected === "object"
+      ? Object.keys(injected as Record<string, unknown>)
+      : [];
+  const model = await selectModelForAgent({
+    roots, agentName, skills: activeSkills, log: logLine,
+  });
   const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
   const systemMsg =
     agentPrompt +
@@ -504,7 +517,7 @@ async function writeStage(
  */
 async function runAgentWithValidationRetry(
   client: McpClient,
-  model: vscode.LanguageModelChat,
+  roots: readonly string[],
   agentName: string,
   agentPrompt: string,
   baseContext: Record<string, unknown>,
@@ -524,7 +537,7 @@ async function runAgentWithValidationRetry(
       throw new Error("cancelled");
     }
     const output = await runAgentLM(
-      model, agentName, agentPrompt, context, token,
+      roots, agentName, agentPrompt, context, token,
       { workspaceRoot, sessionId, stage, attempt },
     );
     const result = await writeStage(client, sessionId, stage, agentName, output);
@@ -754,7 +767,6 @@ function materializeStageOutput(
 
 async function runCorrectionLoop(
   client: McpClient,
-  model: vscode.LanguageModelChat,
   sessionId: string,
   workspaceRoot: string,
   promptRoots: string[],
@@ -798,7 +810,7 @@ async function runCorrectionLoop(
     onChange?.();
     const coderT0 = Date.now();
     const { output: fixedCode, finalAttempt: coderFinalAttempt } = await runAgentWithValidationRetry(
-      client, model, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
+      client, promptRoots, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
       coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange,
     );
     codeAttempt = coderFinalAttempt;
@@ -814,7 +826,7 @@ async function runCorrectionLoop(
     onChange?.();
     const reviewerT0 = Date.now();
     const { output: newReviewOutput, finalAttempt: reviewerFinalAttempt } = await runAgentWithValidationRetry(
-      client, model, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
+      client, promptRoots, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
       reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange,
     );
     const newReview = newReviewOutput as ReviewOutput;
@@ -968,12 +980,9 @@ export async function runPipeline(
   pipelineMeta?: { route: string; pipelineName: string; level: number },
   onChange?: () => void,
 ): Promise<PipelineResult> {
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
-    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
-  }
-  const model = models[0];
-  logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
+  // Per-agent model selection happens inside runAgentLM via
+  // selectModelForAgent — each stage runs against its declared `model:`
+  // frontmatter (gpt-4o, gpt-4o-mini, etc). No global pre-selection.
   logger().show(true);
 
   // ── Session setup ────────────────────────────────────────────────────────────
@@ -1040,7 +1049,7 @@ export async function runPipeline(
     onChange?.();
     const stageT0 = Date.now();
     const { output: agentOutput, finalAttempt } = await runAgentWithValidationRetry(
-      client, model, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
+      client, promptRoots, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
       context, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
     );
     stageOutputs[agent.writeStage] = agentOutput;
@@ -1067,7 +1076,7 @@ export async function runPipeline(
 
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
+        client, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
       );
       stageOutputs["review"] = finalReview;
 
@@ -1100,12 +1109,7 @@ export async function runStep(
   },
   onChange?: () => void,
 ): Promise<StepResult> {
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
-    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
-  }
-  const model = models[0];
-  logLine(`Selected LM: id=${model.id} vendor=${model.vendor} family=${model.family} name=${model.name}`);
+  // Per-agent model selection happens inside runAgentLM (see runPipeline).
   logger().show(true);
 
   // ── Session setup ─────────────────────────────────────────────────────────────
@@ -1182,7 +1186,7 @@ export async function runStep(
   // runPipeline, which threads pipelineName explicitly.
   const stepPipeline = "feature-dev";
   const { output: agentOutput, finalAttempt: stepFinalAttempt } = await runAgentWithValidationRetry(
-    client, model, agentDef.name, loadAgentPrompt(promptRoots, stepPipeline, agentDef.name),
+    client, promptRoots, agentDef.name, loadAgentPrompt(promptRoots, stepPipeline, agentDef.name),
     context, sessionId, agentDef.writeStage, stepAttempt, workspaceRoot, stream, token, onChange,
   );
 
@@ -1208,7 +1212,7 @@ export async function runStep(
     } else if (review.status === "fail") {
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
-        client, model, sessionId, workspaceRoot, promptRoots, stepPipeline, review, currentAttempt, stream, token, onChange,
+        client, sessionId, workspaceRoot, promptRoots, stepPipeline, review, currentAttempt, stream, token, onChange,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {
@@ -1275,13 +1279,7 @@ export async function runOneShotAgent(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
 ): Promise<OneShotResult> {
-  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: "gpt-4o" });
-  if (!models.length) {
-    throw new Error("No Copilot language model found. Ensure GitHub Copilot Chat is installed and signed in.");
-  }
-  const model = models[0];
-  logLine(`Selected LM: id=${model.id} for one-shot ${agentName}`);
-
+  // Model selection (frontmatter-honored) happens inside runAgentLM.
   const agentPrompt = loadAgentPrompt(promptRoots, "", agentName);
   const context: Record<string, unknown> = {
     request,
@@ -1290,7 +1288,7 @@ export async function runOneShotAgent(
 
   stream.markdown(`\n### ⏳ ${agentName}\n*one-shot · no pipeline state*\n\n`);
   const t0 = Date.now();
-  const output = await runAgentLM(model, agentName, agentPrompt, context, token);
+  const output = await runAgentLM(promptRoots, agentName, agentPrompt, context, token);
   const elapsed = Date.now() - t0;
 
   // Agents that emit file_contents (like pipeline-builder) get materialised
