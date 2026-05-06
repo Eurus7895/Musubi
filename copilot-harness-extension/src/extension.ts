@@ -44,9 +44,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let client: McpClient;
   try {
     out.appendLine("Starting MCP server...");
-    client = await McpClient.create(serverBin, ["serve"], {
-      HARNESS_ROOT: context.extensionPath,
-    });
+    client = await McpClient.create(
+      serverBin,
+      ["serve"],
+      { HARNESS_ROOT: context.extensionPath },
+      {
+        // Pipe the server's stderr into our output channel so Python
+        // tracebacks are visible during activation instead of being lost
+        // to VS Code's main stderr.
+        onStderr: (line) => out.appendLine(`[server] ${line}`),
+      },
+    );
     out.appendLine("MCP server started. Listing tools...");
     const tools = await client.listTools();
     out.appendLine(`Tools available (${tools.length}): ${tools.map(t => t.name).join(", ")}`);
