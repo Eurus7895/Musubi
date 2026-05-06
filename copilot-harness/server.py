@@ -995,18 +995,30 @@ def harness_list_subagents(main_agent_name: str) -> str:
 # harness — the runner mints it.
 
 @mcp.tool()
-def harness_append_message(chat_id: str, role: str, content: str) -> str:
+def harness_append_message(chat_id: str, role: str, content: Any) -> str:
     """Append a message to an orchestrator conversation.
 
     Roles: 'user' | 'assistant' | 'tool' | 'system'. Anything else
     rejects fail-closed. `chat_id` is opaque — the runner is responsible
     for mint stability across turns.
 
+    `content` is annotated `Any` rather than `str` because FastMCP's
+    Pydantic layer was rejecting JSON-object-shaped string content
+    ("Input should be a valid string ... input_type=dict") for the
+    orchestrator's tool-result rows. Whatever path turns the wire
+    string back into a dict, this entrypoint accepts both shapes and
+    coerces dict → JSON-string before storage.
+
     Result on success:
       { status: 'ok', message_id, ts, tokens_estimate }
     Result on bad input:
       { status: 'error', error: '...' }
     """
+    if not isinstance(content, str):
+        try:
+            content = json.dumps(content)
+        except (TypeError, ValueError) as exc:
+            return json.dumps({"status": "error", "error": f"content not serializable: {exc}"})
     try:
         result = conversations.append_message(
             chat_id=chat_id, role=role, content=content

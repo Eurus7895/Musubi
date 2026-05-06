@@ -552,11 +552,15 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         // Persist the tool result as a role:"tool" entry so reactive
         // compaction (80% branch) has something to drop and a future
         // turn can reconstruct what happened.
-        await appendMessage(
-          client, chatId, "tool",
-          JSON.stringify({ tool: call.name, result: resultText }),
-          log,
-        );
+        //
+        // Plaintext format with a marker prefix — NOT a JSON-stringified
+        // object. FastMCP/Pydantic was deserializing JSON-object-shaped
+        // string content back into a dict before reaching the tool
+        // handler ("Input should be a valid string ... input_type=dict").
+        // The marker prefix preserves the tool name for compaction-time
+        // inspection while staying impossible to misparse.
+        const toolContent = `[tool ${call.name}]\n${resultText}`;
+        await appendMessage(client, chatId, "tool", toolContent, log);
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
     }
