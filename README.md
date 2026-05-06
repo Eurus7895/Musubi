@@ -148,19 +148,92 @@ Detailed file-by-file breakdown lives in
 
 ## Diagnostics
 
-`Ctrl+Shift+U` → **CopilotHarness** output channel:
+`Ctrl+Shift+U` → **CopilotHarness** output channel. A healthy startup looks
+like:
 
 ```
 CopilotHarness v<version> activating...
 Checking: ...\bin\copilot-harness.exe — found
 Starting MCP server...
+MCP server started. Listing tools...
 Tools available (24): harness_get_active_session, harness_new_session, ...
-                       harness_spawn_subagent, harness_complete_subagent, ...
 CopilotHarness ready. Use @harness in Copilot Chat.
 ```
 
-If the server fails to start, the channel shows the exact error and the
-binary path it tried to spawn.
+Any line beginning `[server]` is the harness server's stderr piped through
+the extension — Python tracebacks land there during activation.
+
+---
+
+## Troubleshooting
+
+Symptom-first guide. Open the **CopilotHarness** output channel before
+anything else; nine times out of ten it tells you exactly what failed.
+
+### `@harness` doesn't respond / chat input frozen
+
+1. **Check the chat mode.** Chat participants only work in Copilot Chat's
+   **Ask** mode. The dropdown above the model picker must say **Ask**, not
+   **Agent** or **Edit**. In Agent mode `@harness` mentions are silently
+   dropped.
+2. **Check the output channel.** Match the last line you see against the
+   table below.
+
+| Last line in the channel | Diagnosis | Fix |
+|---|---|---|
+| `Server binary not found...` | The `.vsix` was installed without its PyInstaller binary. | From `copilot-harness-extension/`: `npm run package`, then `code --install-extension copilot-harness-extension-<v>.vsix --force`. Reload window. |
+| `Starting MCP server...` then nothing | Server launched but never replied to the JSON-RPC `initialize` handshake. After 15 s the extension surfaces `MCP call initialize timed out after 15000 ms`. | Look for `[server] ...` lines just below — they carry the Python traceback. If there are none, the binary is writing JSON to stderr instead of stdout, or to neither (built with the wrong entrypoint). |
+| `[server] Traceback (most recent call last):` | The Python server crashed on startup. | Read the traceback. Common cause: an editable install picked up stale `.pyc` files or a missing dep — `pip install -e copilot-harness/` from a fresh venv usually fixes it. |
+| `ERROR starting server: ...` | The extension caught the failure cleanly. | The error message is the actual reason — file not executable, antivirus quarantine, wrong arch, bad shebang. |
+| `MCP server started. Listing tools...` | Server is fine; the freeze is elsewhere. | Disable other Copilot Chat extensions one at a time and reload. |
+
+### `npm run setup` fails on Windows with `not a Python project`
+
+```
+ERROR: file:///C:/mnt/c/Workspace/.../copilot-harness does not appear to be a Python project
+```
+
+This is Git Bash / WSL passing a Unix-style path (`/mnt/c/...`) to a
+Windows Python (`.venv\Scripts\python.exe`). Fixed in this branch —
+`setup.sh` now runs `wslpath -w` on the server dir before handing it to
+pip.
+
+If you still hit it, run the two pip steps directly from PowerShell where
+paths are native:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .\copilot-harness
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+```
+
+Then `npm run package` from `copilot-harness-extension/`.
+
+### Slash commands don't autocomplete after `@harness /`
+
+VS Code only shows autocomplete for slash commands declared in the
+participant's `package.json` `chatParticipants[].commands` array. The
+parser handles `/<command>` typed manually regardless, but discoverability
+relies on the manifest. Tracked separately — see open issues.
+
+### `npm run package` fails at `build:server`
+
+```
+Error: PyInstaller not found in .venv
+```
+
+The venv exists but `pyinstaller` was never installed. Either rerun
+`npm run setup` (or the manual fallback above), or install just
+PyInstaller: `.venv/Scripts/python.exe -m pip install pyinstaller`.
+
+### Asking the harness for help
+
+Anything not covered above is fair game for `@harness` itself once the
+server is running:
+
+```
+@harness why does my pipeline keep escalating?
+@harness explain the evaluator firewall
+```
 
 ---
 
