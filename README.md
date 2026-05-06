@@ -229,6 +229,28 @@ participant's `package.json` `chatParticipants[].commands` array. The
 parser handles `/<command>` typed manually regardless, but discoverability
 relies on the manifest. Tracked separately — see open issues.
 
+### `npm run install:vsix` tries to download the VS Code Server
+
+```
+Updating VS Code Server to version ...
+ERROR: Failed to download https://update.code.visualstudio.com/...
+```
+
+You ran the install step from inside WSL. The WSL `code` command is a
+wrapper that downloads the VS Code Server inside WSL (for Remote-WSL
+development) — it doesn't install extensions into your Windows host VS
+Code, and it can't even start without internet access from the WSL
+distro.
+
+The script now auto-detects WSL and prefers `code.exe` (the Windows VS
+Code launcher). If `code.exe` isn't on your WSL PATH, run the install
+step from PowerShell instead, or invoke `code.exe` directly:
+
+```bash
+/mnt/c/Users/<you>/AppData/Local/Programs/'Microsoft VS Code'/bin/code.cmd \
+    --install-extension copilot-harness-extension-0.4.0.vsix --force
+```
+
 ### `npm run package` fails at `build:server`
 
 ```
