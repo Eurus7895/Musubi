@@ -209,6 +209,29 @@ participant's `package.json` `chatParticipants[].commands` array. The
 parser handles `/<command>` typed manually regardless, but discoverability
 relies on the manifest. Tracked separately — see open issues.
 
+### `npm run install:vsix` fails with `EPERM: operation not permitted, rename ...`
+
+```
+[node.js fs] rename failed after 1091 retries with error:
+  Error: EPERM: operation not permitted, rename '...\copilot-harness-extension-0.4.0' -> '...vsctmp'
+Error: Please restart VS Code before reinstalling CopilotHarness.
+```
+
+Windows holds a file lock on the extension folder while VS Code is
+running. Either:
+
+1. **Close all VS Code windows** and re-run `npm run install:vsix`. The
+   script now detects this case and prints a clear banner with both
+   options.
+2. **Skip the install entirely — use the Extension Development Host:**
+   - Open `copilot-harness-extension/` as the workspace
+   - Press **F5** to launch a second VS Code with the extension loaded
+     directly from `dist/` (no `.vsix`, no install)
+   - Edit code, run `npm run build`, then `Ctrl+R` in the dev host to reload
+
+   This is the fastest iteration loop for harness work. Use the .vsix
+   install only when you want to test the shipped extension.
+
 ### `npm run install:vsix` exits with `running under WSL`
 
 The build / install scripts are not supported under WSL — see

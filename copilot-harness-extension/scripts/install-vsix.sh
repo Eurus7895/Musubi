@@ -50,6 +50,33 @@ fi
 
 echo "Using: $CODE_BIN"
 # --force is critical: same version (0.4.0 → 0.4.0) is otherwise a no-op.
-"$CODE_BIN" --install-extension "$VSIX" --force
+# Capture stderr so we can detect the "VS Code is running" lock failure and
+# re-emit a clear instruction instead of leaving the user squinting at a
+# Node.js stack trace.
+INSTALL_LOG="$(mktemp)"
+set +e
+"$CODE_BIN" --install-extension "$VSIX" --force 2>&1 | tee "$INSTALL_LOG"
+RC=${PIPESTATUS[0]}
+set -e
+
+if [[ "$RC" -ne 0 ]]; then
+    if grep -qiE "EPERM|operation not permitted|restart VS Code" "$INSTALL_LOG"; then
+        echo
+        echo "─────────────────────────────────────────────────────────────────────────"
+        echo "VS Code is running and holding the extension folder open."
+        echo
+        echo "Close ALL VS Code windows, then re-run:"
+        echo "  npm run install:vsix"
+        echo
+        echo "Or skip the install entirely and use the Extension Development Host:"
+        echo "  - Open copilot-harness-extension/ as the workspace"
+        echo "  - Press F5 → spawns a second VS Code with this extension loaded"
+        echo "  - Edit, run 'npm run build', Ctrl+R in the dev host to reload"
+        echo "─────────────────────────────────────────────────────────────────────────"
+    fi
+    rm -f "$INSTALL_LOG"
+    exit "$RC"
+fi
+rm -f "$INSTALL_LOG"
 echo
 echo "Installed. Reload VS Code: Ctrl+Shift+P → 'Developer: Reload Window'."
