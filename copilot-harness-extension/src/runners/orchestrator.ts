@@ -103,44 +103,23 @@ const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
 const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set();
 
 /**
- * External tool allowlist. The orchestrator should default to read-only
- * lookup tools and a couple of light-edit tools. Names match what Copilot
- * Chat and a handful of common extensions register; entries that don't
- * resolve are silently dropped at filter time.
+ * External tool policy. Default is "all available" — every LM tool the
+ * workbench has registered (Copilot's read/edit/terminal/etc. plus any
+ * other extension's tools) is passed through to the orchestrator. The
+ * trade-off vs the previous allowlist:
  *
- * Anything outside this list is excluded from the catalog passed to
- * sendRequest, which is the single largest tunable knob on per-turn token
- * spend (every tool advertised costs description + schema tokens, and the
- * catalog is re-sent on every cycle).
+ *   - PRO: the orchestrator can do anything Copilot Agent mode can —
+ *     run terminal commands, delete files, etc. No more "I don't have
+ *     that tool" replies for legitimate destructive intent.
+ *   - CON: catalog token cost grows with every extension that
+ *     contributes tools. The per-cycle log line surfaces this so it's
+ *     visible.
  *
- * Add entries here when a workflow needs them — keep this list small.
+ * If a specific tool starts misbehaving (e.g. an LM that compulsively
+ * reaches for run_in_terminal on every turn), add the name here and
+ * it gets filtered out. Empty by default — denylist, not allowlist.
  */
-const EXTERNAL_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
-  // Read-only lookup
-  "copilot_readFile",
-  "copilot_listDirectory",
-  "copilot_searchWorkspace",
-  "copilot_findFiles",
-  "copilot_searchSymbols",
-  "copilot_getErrors",
-  "copilot_semanticSearch",
-  "copilot_fetchWebPage",
-  "copilot_getChangedFiles",
-  "read_file",
-  "list_dir",
-  "grep_search",
-  "file_search",
-  "semantic_search",
-  "get_errors",
-  "fetch_webpage",
-  // Light edit — used only when the user explicitly asks the orchestrator
-  // to make a change. For larger changes the user should run /feature-dev.
-  "copilot_replaceString",
-  "copilot_insertEdit",
-  "replace_string_in_file",
-  "insert_edit_into_file",
-  "create_file",
-]);
+const EXTERNAL_TOOL_DENYLIST: ReadonlySet<string> = new Set();
 
 /**
  * Best-effort append of a single message to the conversation log. A
@@ -576,7 +555,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       ORCHESTRATOR_TOOLS.map(t => t.name),
     );
     const externalCandidates = vscode.lm.tools.filter(
-      t => !orchestratorToolNames.has(t.name) && EXTERNAL_TOOL_ALLOWLIST.has(t.name),
+      t => !orchestratorToolNames.has(t.name) && !EXTERNAL_TOOL_DENYLIST.has(t.name),
     );
     const externalTools: vscode.LanguageModelChatTool[] = externalCandidates.map(t => ({
       name: t.name,
