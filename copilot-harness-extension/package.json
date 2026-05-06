@@ -128,9 +128,10 @@
     "build": "bash scripts/build-parallel.sh",
     "build:serial": "npm run build:server && npm run build:assets && npm run compile",
     "package": "npm run build && vsce package",
+    "install:vsix": "bash scripts/install-vsix.sh",
     "test": "node --test --import tsx 'src/**/*.test.ts'",
     "test:watch": "node --test --watch --import tsx 'src/**/*.test.ts'",
-    "all": "npm run setup && npm run build"
+    "all": "npm run setup && npm run package && npm run install:vsix"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -39,16 +39,30 @@ Python setup required.
 
 ## Build & Install
 
+One-shot install:
+
 ```bash
 cd copilot-harness-extension
 npm install -g @vscode/vsce      # one-time, if not already installed
-npm run setup                    # one-time: venv + server (editable) + PyInstaller + npm deps
-npm run package                  # builds binary, compiles TS, produces .vsix
-code --install-extension copilot-harness-extension-<version>.vsix
+npm run all                      # setup + package + install:vsix
+# Ctrl+Shift+P → "Developer: Reload Window"
 ```
 
-Reopen VS Code. The **CopilotHarness** output channel confirms the server
-started. Then in Copilot Chat:
+`npm run all` runs setup (venv + PyInstaller + npm deps), packages the
+`.vsix`, and installs it via `code --install-extension --force`. Each step
+is also exposed individually if you want to skip one:
+
+| Script | Does |
+|---|---|
+| `npm run setup` | One-time: create `.venv`, editable-install the server, install PyInstaller, install npm deps. |
+| `npm run build` | `build:server` (PyInstaller binary) + `build:assets` (bundle `.github/`) + `compile` (TypeScript) — in parallel. |
+| `npm run package` | `build` + `vsce package` (produces `copilot-harness-extension-<version>.vsix`). |
+| `npm run install:vsix` | `code --install-extension --force` on the newest local `.vsix`. Requires `code` on PATH. |
+| `npm run all` | `setup` + `package` + `install:vsix` — full bringup from a fresh checkout. |
+
+Reload VS Code after install. The **CopilotHarness** output channel confirms
+the server started. Then in Copilot Chat (in **Ask** mode — chat
+participants don't work in Agent or Edit mode):
 
 ```
 @harness /feature-dev add a login endpoint that validates email + password
@@ -181,7 +195,7 @@ anything else; nine times out of ten it tells you exactly what failed.
 
 | Last line in the channel | Diagnosis | Fix |
 |---|---|---|
-| `Server binary not found...` | The `.vsix` was installed without its PyInstaller binary. | From `copilot-harness-extension/`: `npm run package`, then `code --install-extension copilot-harness-extension-<v>.vsix --force`. Reload window. |
+| `Server binary not found...` | The `.vsix` was installed without its PyInstaller binary. | From `copilot-harness-extension/`: `npm run all`. Reload window. |
 | `Starting MCP server...` then nothing | Server launched but never replied to the JSON-RPC `initialize` handshake. After 15 s the extension surfaces `MCP call initialize timed out after 15000 ms`. | Look for `[server] ...` lines just below — they carry the Python traceback. If there are none, the binary is writing JSON to stderr instead of stdout, or to neither (built with the wrong entrypoint). |
 | `[server] Traceback (most recent call last):` | The Python server crashed on startup. | Read the traceback. Common cause: an editable install picked up stale `.pyc` files or a missing dep — `pip install -e copilot-harness/` from a fresh venv usually fixes it. |
 | `ERROR starting server: ...` | The extension caught the failure cleanly. | The error message is the actual reason — file not executable, antivirus quarantine, wrong arch, bad shebang. |
