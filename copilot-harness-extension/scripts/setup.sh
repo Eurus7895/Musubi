@@ -12,6 +12,16 @@
 
 set -euo pipefail
 
+# Refuse to run under WSL — the Windows-targeted bringup needs Git Bash or
+# PowerShell. Under WSL, /mnt/c/... paths break Windows Python's pip and the
+# bundled `code` command targets the wrong VS Code.
+if [[ -r /proc/sys/kernel/osrelease ]] && grep -qi "microsoft" /proc/sys/kernel/osrelease 2>/dev/null; then
+    echo "ERROR: running under WSL. Use Git Bash or PowerShell on Windows."
+    echo "  PowerShell:  npm run setup"
+    echo "  Git Bash:    same command, from a 'Git Bash Here' shell."
+    exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 EXT_DIR="$REPO_ROOT/copilot-harness-extension"
 SERVER_DIR="$REPO_ROOT/copilot-harness"
@@ -46,18 +56,9 @@ else
     VENV_PY="$VENV_DIR/bin/python"
 fi
 
-# When the venv Python is a Windows .exe, it cannot read /mnt/c/... or /c/...
-# bash paths and silently reinterprets them as URLs (file:///C:/mnt/c/...) —
-# pip then reports "not a Python project". Convert SERVER_DIR to a native
-# Windows path before handing it to pip, the same way build-server.sh does.
-SERVER_PIP_TARGET="$SERVER_DIR"
-if [[ "$VENV_PY" == *".exe" ]] && command -v wslpath &>/dev/null; then
-    SERVER_PIP_TARGET="$(wslpath -w "$SERVER_DIR")"
-fi
-
 "$VENV_PY" -m pip install --upgrade pip --quiet
 # Editable install of the server package + PyInstaller for build:server.
-"$VENV_PY" -m pip install --quiet -e "$SERVER_PIP_TARGET"
+"$VENV_PY" -m pip install --quiet -e "$SERVER_DIR"
 "$VENV_PY" -m pip install --quiet pyinstaller
 
 # 3. Summary.

@@ -31,6 +31,7 @@ Read `CLAUDE.md` before making code changes — it lists the hard invariants
 - Python 3.11+
 - Node.js 18+
 - VS Code with the GitHub Copilot Chat extension
+- **On Windows:** Git Bash (bundled with [Git for Windows](https://git-scm.com/download/win)) or PowerShell. **WSL is not supported** for the build / install scripts — the harness runs as a Windows binary inside Windows VS Code, and routing through WSL only adds a translation layer (path mangling, VS Code Server downloads) that breaks bringup.
 
 `npm run setup` handles the Python venv and PyInstaller — no manual
 Python setup required.
@@ -201,27 +202,6 @@ anything else; nine times out of ten it tells you exactly what failed.
 | `ERROR starting server: ...` | The extension caught the failure cleanly. | The error message is the actual reason — file not executable, antivirus quarantine, wrong arch, bad shebang. |
 | `MCP server started. Listing tools...` | Server is fine; the freeze is elsewhere. | Disable other Copilot Chat extensions one at a time and reload. |
 
-### `npm run setup` fails on Windows with `not a Python project`
-
-```
-ERROR: file:///C:/mnt/c/Workspace/.../copilot-harness does not appear to be a Python project
-```
-
-This is Git Bash / WSL passing a Unix-style path (`/mnt/c/...`) to a
-Windows Python (`.venv\Scripts\python.exe`). Fixed in this branch —
-`setup.sh` now runs `wslpath -w` on the server dir before handing it to
-pip.
-
-If you still hit it, run the two pip steps directly from PowerShell where
-paths are native:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -e .\copilot-harness
-.\.venv\Scripts\python.exe -m pip install pyinstaller
-```
-
-Then `npm run package` from `copilot-harness-extension/`.
-
 ### Slash commands don't autocomplete after `@harness /`
 
 VS Code only shows autocomplete for slash commands declared in the
@@ -229,27 +209,28 @@ participant's `package.json` `chatParticipants[].commands` array. The
 parser handles `/<command>` typed manually regardless, but discoverability
 relies on the manifest. Tracked separately — see open issues.
 
-### `npm run install:vsix` tries to download the VS Code Server
+### `npm run install:vsix` exits with `running under WSL`
+
+The build / install scripts are not supported under WSL — see
+**Prerequisites** above. The WSL `code` command targets the WSL distro,
+not the Windows host VS Code, and silently breaks bringup.
+
+Use **Git Bash** (right-click in the repo folder → "Git Bash Here") or
+**PowerShell** instead, then re-run:
+
+```powershell
+npm run all
+```
+
+### `npm run setup` fails on Windows with `not a Python project`
 
 ```
-Updating VS Code Server to version ...
-ERROR: Failed to download https://update.code.visualstudio.com/...
+ERROR: file:///C:/mnt/c/Workspace/.../copilot-harness does not appear to be a Python project
 ```
 
-You ran the install step from inside WSL. The WSL `code` command is a
-wrapper that downloads the VS Code Server inside WSL (for Remote-WSL
-development) — it doesn't install extensions into your Windows host VS
-Code, and it can't even start without internet access from the WSL
-distro.
-
-The script now auto-detects WSL and prefers `code.exe` (the Windows VS
-Code launcher). If `code.exe` isn't on your WSL PATH, run the install
-step from PowerShell instead, or invoke `code.exe` directly:
-
-```bash
-/mnt/c/Users/<you>/AppData/Local/Programs/'Microsoft VS Code'/bin/code.cmd \
-    --install-extension copilot-harness-extension-0.4.0.vsix --force
-```
+The `/mnt/c/...` prefix in that error means you're running under WSL —
+same root cause as the install error above. Re-run from Git Bash or
+PowerShell.
 
 ### `npm run package` fails at `build:server`
 
