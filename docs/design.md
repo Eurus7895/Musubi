@@ -540,6 +540,11 @@ CopilotHarness            ← activity-bar icon ($(checklist))
 harness_get_active_session()
     → returns { session_id, request, resume_stage, attempt } | { session_id: null }
 
+harness_clear_active_session()
+    → resets the active-session pointer to null; stage outputs + audit
+      rows preserved. Use to abandon a stuck pipeline without resuming.
+      Idempotent.
+
 harness_new_session(request)
     → create_session() + lock_agent_versions() + set_active_session()
 
@@ -577,9 +582,12 @@ harness_distill_session(session_id)    → appends to failure-patterns.md
 harness_compact_memory()               # Week 4 Day 4 — prunes failure-patterns.md when > 5 KB
 ```
 
-**Total: 18 MCP tools** (harness_get_active_session, harness_new_session,
-harness_read_stage, harness_write_stage, harness_get_status,
-harness_increment_attempt + the 12 above).
+**Total: 19 state + skill + execution + memory MCP tools**
+(harness_get_active_session, harness_clear_active_session,
+harness_new_session, harness_read_stage, harness_write_stage,
+harness_get_status, harness_increment_attempt + the 12 above).
+Sub-agent tools (Phase A.1 / A.2 / A.3) and conversation tools (Phase
+C.1 / C.2) are listed separately in `CLAUDE.md` § MCP Tools.
 
 ---
 
@@ -1001,14 +1009,19 @@ DEFERRED (needs discussion first):
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
 *Runtime: Extension mode (v0.5.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Status: Week 5+ Orchestrator Pivot — Phases A through E shipped. Two
-modes: pipeline + orchestrator. Sub-agent primitives (spawn / await /
-list / get_context / complete / query_events) wired with four-layer
-timeouts, firewalled context, summary verifier, and durable audit rows.
+*Status: Week 5+ Orchestrator Pivot — Phases A through E shipped, plus
+a post-E bringup-and-token-cost hardening pass (PR #37). Two modes:
+pipeline + orchestrator. Sub-agent primitives (spawn / await / list /
+get_context / complete / query_events) wired with four-layer timeouts,
+firewalled context, summary verifier, and durable audit rows.
 Orchestrator runs on real `vscode.lm` tool calls, replays via
 `harness_get_conversation` each turn, and reactively compacts at 80 /
 90 / 99 % of model context (drop tool rows → spawn summarizer → hard
 truncate). Reviewer-fail and frustration-regex distillation triggers
 record patterns through `harness_append_failure_pattern`. Direct mode
-and the never-shipped Agent Mode are removed. 586 Python tests + 112
-TS tests. See [`docs/roadmap.md`](./roadmap.md) for status churn.*
+and the never-shipped Agent Mode are removed. Tool catalog is
+declarative — sourced from each agent's `lm_tools:` frontmatter, no
+hardcoded TS list. New `harness_clear_active_session` MCP tool +
+sidebar inline action lets users abandon a stuck pipeline without
+deleting audit data. **591 Python + 125 TS tests.** See
+[`docs/roadmap.md`](./roadmap.md) for status churn.*

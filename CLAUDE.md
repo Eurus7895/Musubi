@@ -220,6 +220,7 @@ Names + one-line purpose. Full schemas and behavior in `docs/design.md` § MCP T
 | Tool | Purpose |
 |---|---|
 | `harness_get_active_session` | Crash recovery — returns interrupted session or null |
+| `harness_clear_active_session` | Clear the active-session pointer (abandon a stuck pipeline; preserves stage outputs + audit) |
 | `harness_new_session` | Start pipeline, lock agent versions |
 | `harness_read_stage` | Read with firewall + skill + memory injection |
 | `harness_write_stage` | Validate output + injection scan + append-only store |
