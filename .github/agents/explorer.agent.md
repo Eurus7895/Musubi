@@ -12,6 +12,19 @@ model: claude-sonnet-4.5
 maxTurns: 6
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Concrete VS Code LM tool names. Explorer is the workspace-scan
+# sub-agent — read + search only, no edit, no terminal. Consumed when
+# an extension-side runner ships for this role; no LM-facing call site
+# today.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
 ---
 
 ## Role

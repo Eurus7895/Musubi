@@ -1,9 +1,12 @@
 """Tests for state.py — all use a temp SQLite DB to stay isolated."""
 
+import json
+
 import pytest
 from pathlib import Path
 
 from session import state
+from storage import db as _db
 
 
 @pytest.fixture()
@@ -222,6 +225,38 @@ def test_create_session_sets_active_session(db: Path) -> None:
     active = state.get_active_session(db_path=db)
     assert active is not None
     assert active["session_id"] == sid
+
+
+def test_clear_active_session_resets_pointer_but_preserves_data(db: Path) -> None:
+    sid = state.create_session("build something", db_path=db)
+    assert state.get_active_session(db_path=db) is not None
+
+    state.clear_active_session(db_path=db)
+    assert state.get_active_session(db_path=db) is None
+
+    # Underlying session row is preserved — only the pointer is cleared.
+    from storage import db as _db
+    assert _db.get_session(sid, db_path=db) is not None
+
+
+def test_clear_active_session_is_idempotent(db: Path) -> None:
+    state.clear_active_session(db_path=db)
+    state.clear_active_session(db_path=db)
+    assert state.get_active_session(db_path=db) is None
+
+
+def test_mcp_clear_active_session_via_server(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
+    import server
+
+    state.create_session("stuck pipeline", db_path=db)
+    out = json.loads(server.harness_clear_active_session())
+    assert out["status"] == "ok"
+
+    after = json.loads(server.harness_get_active_session())
+    assert after.get("session_id") is None
 
 
 def test_get_active_session_returns_request(db: Path) -> None:

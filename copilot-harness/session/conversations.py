@@ -36,9 +36,12 @@ VALID_ROLES: frozenset[str] = frozenset(
     {"user", "assistant", "tool", "system"}
 )
 
-# Generous default — enough room that callers who don't think about budgets
-# get the full history but the call doesn't OOM on a runaway chat.
-DEFAULT_MAX_TOKENS: int = 100_000
+# Per-turn replay budget. Was 100 k and dominated token spend on long chats —
+# the orchestrator replays the budgeted history on every user message, so a
+# default that fills the entire window every turn is wasted spend. 50 k keeps
+# enough recent context for typical multi-turn debugging while letting the
+# 80%/90% reactive compaction in orchestratorCore drop the rest.
+DEFAULT_MAX_TOKENS: int = 50_000
 
 
 def _now_iso() -> str:

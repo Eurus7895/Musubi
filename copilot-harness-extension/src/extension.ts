@@ -44,9 +44,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let client: McpClient;
   try {
     out.appendLine("Starting MCP server...");
-    client = await McpClient.create(serverBin, ["serve"], {
-      HARNESS_ROOT: context.extensionPath,
-    });
+    client = await McpClient.create(
+      serverBin,
+      ["serve"],
+      { HARNESS_ROOT: context.extensionPath },
+      {
+        // Pipe the server's stderr into our output channel so Python
+        // tracebacks are visible during activation instead of being lost
+        // to VS Code's main stderr.
+        //
+        // Filter out the MCP SDK's per-tool-call heartbeat ("Processing
+        // request of type CallToolRequest") — every harness_* call emits
+        // one, which drowns out actual errors. The orchestrator runner
+        // already logs each tool call with name + duration, so the
+        // heartbeat adds nothing diagnostic.
+        onStderr: (line) => {
+          if (/Processing request of type CallToolRequest/.test(line)) { return; }
+          out.appendLine(`[server] ${line}`);
+        },
+      },
+    );
     out.appendLine("MCP server started. Listing tools...");
     const tools = await client.listTools();
     out.appendLine(`Tools available (${tools.length}): ${tools.map(t => t.name).join(", ")}`);
@@ -73,6 +90,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("copilot-harness.refreshTasks", () => tasksProvider.refresh()),
+    vscode.commands.registerCommand("copilot-harness.clearActiveSession", async () => {
+      // Confirmation isn't strictly necessary — the operation only resets
+      // the pointer, all stage outputs and audit rows survive — but the
+      // user types this from a TreeView click without a way to undo, so
+      // a single Yes/No prompt is worth the friction.
+      const choice = await vscode.window.showWarningMessage(
+        "Clear the active pipeline session? Stage outputs and audit logs are preserved; only the pointer that crash-recovery reads is reset.",
+        { modal: true },
+        "Clear",
+      );
+      if (choice !== "Clear") { return; }
+      try {
+        await client.callTool("harness_clear_active_session", {});
+        tasksProvider.refresh();
+        vscode.window.showInformationMessage("CopilotHarness: active session cleared.");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`CopilotHarness: clear failed — ${msg}`);
+      }
+    }),
     vscode.commands.registerCommand(
       "copilot-harness.openSessionArtifact",
       async (sessionId: string, stage: string) => {

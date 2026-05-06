@@ -10,6 +10,28 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "edit", "bash"]
 disallowedTools: []
+# Concrete VS Code LM tool names. Coder is the only pipeline agent that
+# writes; full read + edit + terminal surface is intentional. Forward-
+# looking — pipeline.ts does not yet pass tools to sendRequest, so this
+# is consumed only when a runner is wired (orchestrator-style).
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
+  - copilot_getErrors
+  - get_errors
+  - copilot_replaceString
+  - replace_string_in_file
+  - copilot_insertEdit
+  - insert_edit_into_file
+  - create_file
+  - copilot_runInTerminal
+  - run_in_terminal
 ---
 
 ## Role

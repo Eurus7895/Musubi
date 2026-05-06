@@ -40,6 +40,61 @@ export function parseFrontmatterModel(text: string): string | null {
 export const parseAgentModelFamily = parseFrontmatterModel;
 
 /**
+ * Pull `lm_tools:` out of a YAML frontmatter block as a list of strings.
+ * Accepts both block-list shape:
+ *
+ *     lm_tools:
+ *       - copilot_readFile
+ *       - copilot_searchWorkspace
+ *
+ * and inline shape:
+ *
+ *     lm_tools: ["copilot_readFile", "copilot_searchWorkspace"]
+ *
+ * Returns an empty array when the field is missing — callers treat
+ * "no field" and "field present but empty" identically (both opt out
+ * of advertising any external tools to the LM).
+ *
+ * Names are returned untrimmed-of-quotes; quotes are stripped here so
+ * the caller can put them in a Set without worrying about quoting.
+ */
+export function parseFrontmatterLmTools(text: string): string[] {
+  if (!text.startsWith("---")) { return []; }
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) { return []; }
+  const block = text.slice(3, end);
+  const lines = block.split("\n");
+
+  // Find the `lm_tools:` line.
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*lm_tools:\s*(.*)$/);
+    if (m) {
+      // Inline form: lm_tools: ["a", "b"]
+      const tail = m[1].trim();
+      if (tail.startsWith("[") && tail.endsWith("]")) {
+        return tail.slice(1, -1)
+          .split(",")
+          .map(s => s.trim().replace(/^['"]|['"]$/g, ""))
+          .filter(s => s.length > 0);
+      }
+      startIdx = i + 1;
+      break;
+    }
+  }
+  if (startIdx === -1) { return []; }
+
+  // Block-list form: collect '  - <name>' lines until the next non-list line.
+  const out: string[] = [];
+  for (let i = startIdx; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*-\s*['"]?([^'"#\s]+)['"]?\s*(?:#.*)?$/);
+    if (!m) { break; }
+    out.push(m[1]);
+  }
+  return out;
+}
+
+/**
  * Resolve `<root>/.github/agents/<agentName>.agent.md` across the
  * provided roots (workspace first, extension bundle second), parse its
  * `model:` frontmatter, and return the family. Returns null if the file

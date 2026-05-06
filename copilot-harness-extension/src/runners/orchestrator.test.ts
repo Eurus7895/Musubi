@@ -161,12 +161,12 @@ test("dispatchOrchestratorTool: await passes through handle_id and max_wait_s", 
   assert.equal(stub.calls[0].args.max_wait_s, 30);
 });
 
-test("dispatchOrchestratorTool: await omits max_wait_s when not numeric", async () => {
+test("dispatchOrchestratorTool: await defaults max_wait_s to 30 when caller omits it", async () => {
   const stub = new StubClient();
   await dispatchOrchestratorTool(stub, ctx, "harness_await_subagent", {
     handle_id: "abc",
   });
-  assert.equal(stub.calls[0].args.max_wait_s, undefined);
+  assert.equal(stub.calls[0].args.max_wait_s, 30);
 });
 
 test("dispatchOrchestratorTool: list_subagents forwards parent_agent_name as main_agent_name", async () => {

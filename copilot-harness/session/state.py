@@ -120,6 +120,17 @@ def set_active_session(session_id: str, db_path: Path | None = None) -> None:
     db.set_active_session_id(session_id, _now(), db_path)
 
 
+def clear_active_session(db_path: Path | None = None) -> None:
+    """Clear the active-session pointer without deleting any session data.
+
+    Use to abandon an interrupted pipeline that's stuck pending and the
+    user does not want to resume. Stage outputs, audit rows, and the
+    session row in `sessions` are preserved; only the pointer is reset.
+    Idempotent — clearing an already-empty pointer is a no-op.
+    """
+    db.set_active_session_id(None, _now(), db_path)
+
+
 def get_active_session(db_path: Path | None = None) -> dict | None:
     """Return crash-recovery info for the current active session, or None.
 

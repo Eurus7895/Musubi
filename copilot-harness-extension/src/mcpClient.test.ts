@@ -90,3 +90,38 @@ test("emitNotification: lets the polling layer fan out through the same emitter"
   client.emitNotification("synthetic_event", { foo: 1 });
   assert.equal(seen[0], "synthetic_event");
 });
+
+test("call: rejects with a timeout error when no response arrives in time", async () => {
+  const { client } = makeClient();
+  await assert.rejects(
+    () => client.call("never_replies", undefined, 25),
+    /MCP call never_replies timed out after 25 ms/,
+  );
+});
+
+test("call: a late response after timeout does not crash and is dropped", async () => {
+  const { client } = makeClient();
+  await assert.rejects(
+    () => client.call("late", undefined, 10),
+    /timed out/,
+  );
+  assert.doesNotThrow(() =>
+    client._handleLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } })),
+  );
+});
+
+test("call: clears the timeout when a response arrives in time", async () => {
+  const { client } = makeClient();
+  const pending = client.call("quick", undefined, 50);
+  client._handleLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }));
+  const result = await pending;
+  assert.deepEqual(result, { ok: true });
+});
+
+test("dispose: in-flight call rejects with a clear error and follow-up calls reject too", async () => {
+  const { client } = makeClient();
+  const pending = client.call("inflight", undefined, 5_000);
+  client.dispose();
+  await assert.rejects(pending, /MCP client disposed/);
+  await assert.rejects(client.call("after_dispose"), /already terminated/);
+});

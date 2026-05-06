@@ -12,6 +12,23 @@ model: claude-sonnet-4.5
 maxTurns: 6
 tools: ["Read", "View", "Grep", "Glob", "Bash"]
 disallowedTools: ["Write", "Edit"]
+# Concrete VS Code LM tool names. Investigator runs read-only
+# diagnostics — read + search + terminal (for pytest/ruff/mypy etc.) —
+# but never writes files. Consumed when an extension-side runner ships
+# for this role.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
+  - copilot_getErrors
+  - get_errors
+  - copilot_runInTerminal
+  - run_in_terminal
 ---
 
 ## Role

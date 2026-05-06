@@ -8,6 +8,22 @@ description: >
   .github/agents/proposed/ only — never modifies active agent files directly.
 model: claude-sonnet-4.5
 tools: ["view", "edit"]
+# Concrete VS Code LM tool names. Skill-Builder reads existing skills
+# and writes proposals to .github/agents/proposed/. Read + edit + create.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
+  - copilot_replaceString
+  - replace_string_in_file
+  - copilot_insertEdit
+  - insert_edit_into_file
+  - create_file
 ---
 
 ## Role

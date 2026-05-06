@@ -248,6 +248,43 @@ def test_mcp_append_rejects_bad_role(
     assert "role" in out["error"]
 
 
+def test_mcp_append_coerces_dict_content_to_json_string(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When FastMCP/Pydantic delivers content as a dict (the orchestrator
+    tool-result path used to hit this), the entrypoint json.dumps it
+    rather than rejecting. The stored row reads back as the JSON string."""
+    monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
+    import server
+
+    appended = json.loads(server.harness_append_message(
+        "chat-X", "tool",
+        {"tool": "harness_spawn_subagent", "result": "{\"ok\": true}"},
+    ))
+    assert appended["status"] == "ok"
+
+    fetched = json.loads(server.harness_get_conversation("chat-X"))
+    assert fetched["status"] == "ok"
+    stored = fetched["messages"][0]["content"]
+    # Round-trip — the dict became a JSON string, parseable back to the original.
+    assert json.loads(stored) == {
+        "tool": "harness_spawn_subagent",
+        "result": "{\"ok\": true}",
+    }
+
+
+def test_mcp_append_rejects_unserializable_content(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
+    import server
+
+    # A set isn't JSON-serializable. Should fail closed with a clear error.
+    out = json.loads(server.harness_append_message("chat-X", "user", {1, 2, 3}))
+    assert out["status"] == "error"
+    assert "not serializable" in out["error"]
+
+
 # ── token estimator parity with verifier ─────────────────────────────────────
 
 

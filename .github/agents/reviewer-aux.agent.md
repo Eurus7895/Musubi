@@ -12,6 +12,12 @@ model: claude-sonnet-4.5
 maxTurns: 4
 tools: ["Read", "View"]
 disallowedTools: ["Write", "Edit", "Bash", "Grep", "Glob"]
+# Concrete VS Code LM tool names. Reviewer-Aux runs a per-file
+# checklist — read only, no search, no edit. Tightest read surface in
+# the catalog so the brief can't drift into a workspace tour.
+lm_tools:
+  - copilot_readFile
+  - read_file
 ---
 
 ## Role

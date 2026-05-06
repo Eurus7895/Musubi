@@ -18,6 +18,10 @@ disallowedTools:
   - Write
   - Edit
   - Bash
+# Concrete VS Code LM tool names. Summarizer is text-only — it
+# compresses a window of conversation rows and returns prose. No tools
+# of any kind. Empty list intentional.
+lm_tools: []
 sees:
   - brief
 spawn_allowlist: []

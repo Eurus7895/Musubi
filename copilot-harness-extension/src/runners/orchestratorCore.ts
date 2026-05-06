@@ -19,6 +19,8 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+import { parseFrontmatterLmTools } from "../modelSelectorCore";
+
 export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 
 export const ORCHESTRATOR_TOOL_NAMES = [
@@ -167,7 +169,7 @@ export interface ToolDispatchContext {
 }
 
 export interface ToolDispatchClient {
-  callTool(name: string, args: Record<string, unknown>): Promise<string>;
+  callTool(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<string>;
 }
 
 /**
@@ -202,8 +204,14 @@ export async function dispatchOrchestratorTool(
       const out: Record<string, unknown> = {
         handle_id: args.handle_id,
       };
-      if (typeof args.max_wait_s === "number") { out.max_wait_s = args.max_wait_s; }
-      return client.callTool("harness_await_subagent", out);
+      // 30 s default — long enough for a real sub-agent run, short enough
+      // that a hung sub-agent surfaces fast instead of holding up the turn
+      // for the server's 300 s wall-clock cap.
+      const maxWaitS = typeof args.max_wait_s === "number" ? args.max_wait_s : 30;
+      out.max_wait_s = maxWaitS;
+      // Client-side timeout must exceed the server-side wait, plus a small
+      // grace window for the server to write its terminal response.
+      return client.callTool("harness_await_subagent", out, (maxWaitS + 5) * 1000);
     }
     case "harness_list_subagents":
       return client.callTool("harness_list_subagents", {
@@ -294,6 +302,11 @@ function readFirstExisting(roots: string[], rel: string): string | null {
 export interface LoadedPrompts {
   agentMd: string;
   routingSkill: string;
+  /** Concrete VS Code LM tool names parsed from the agent.md frontmatter
+   *  `lm_tools:` field. Empty array when the field is missing — callers
+   *  treat that as "advertise no external tools to the LM."
+   */
+  lmTools: string[];
 }
 
 /** Load orchestrator agent.md + routing skill from .github/. */
@@ -303,7 +316,8 @@ export function loadOrchestratorPrompts(roots: string[]): LoadedPrompts {
   const routingSkill = readFirstExisting(
     roots, path.join(".github", "skills", "orchestrator-routing", "SKILL.md"),
   ) ?? "";
-  return { agentMd, routingSkill };
+  const lmTools = parseFrontmatterLmTools(agentMd);
+  return { agentMd, routingSkill, lmTools };
 }
 
 // ── Phase C.2: chat_id, conversation rows, token budget, compaction ─────────

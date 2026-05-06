@@ -26,6 +26,7 @@ import {
   MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
   ORCHESTRATOR_TOOLS,
+  estimateTokens,
   parseConversationResponse,
   planCompaction,
   resolveChatId,
@@ -77,6 +78,46 @@ async function createOrchestratorSession(
 const PARTICIPANT_ID = "copilot-harness.harness";
 
 /**
+ * Cap on a single tool-result row stored in the conversation log. Stops a
+ * 50 KB grep dump from sitting in the replay forever — every subsequent
+ * turn pays its full cost. Storage stays the truncation primitive (rather
+ * than fetch-time truncation) so the saved row is also what the user sees
+ * if they inspect history.
+ */
+const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
+
+/**
+ * Sub-agent roles that have an extension-side LM runner. The orchestrator
+ * advertises harness_spawn_subagent / await / list ONLY when this set is
+ * non-empty — otherwise the LM ends up looping spawn → 30 s wall-clock kill
+ * → retry on roles that have no runner to drive them, burning tokens for
+ * no result.
+ *
+ * Currently empty. summarizer is invoked from inside the runner's 90 %
+ * compaction path, NOT by the LM, so it does not count here.
+ *
+ * When you ship a runner for explorer / investigator / reviewer-aux,
+ * add the role name and re-package the extension. Catalog inclusion
+ * flips automatically.
+ */
+const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set();
+
+/**
+ * The external tool allowlist used to live here as a hardcoded constant.
+ * It is now declarative — sourced from `lm_tools:` in the agent's
+ * frontmatter (see `.github/agents/orchestrator.agent.md`). The runner
+ * reads the list at startup via loadOrchestratorPrompts and uses it as
+ * the per-turn allowlist below. Edit the agent file to add or remove a
+ * tool; no TypeScript change required.
+ *
+ * If the field is missing or empty, the orchestrator advertises NO
+ * external tools — only its own harness sub-agent tools (which are
+ * themselves gated on LM_FACING_SUBAGENT_ROLES). That fail-safe
+ * behaviour means a bad edit produces a useless orchestrator, not an
+ * orchestrator with full Copilot Agent surface.
+ */
+
+/**
  * Best-effort append of a single message to the conversation log. A
  * harness append failure must NOT break a chat turn; we log and move on.
  */
@@ -88,8 +129,9 @@ async function appendMessage(
   log: (msg: string) => void,
 ): Promise<void> {
   if (!content) { return; }
+  let raw = "";
   try {
-    const raw = await client.callTool("harness_append_message", {
+    raw = await client.callTool("harness_append_message", {
       chat_id: chatId, role, content,
     });
     const parsed = JSON.parse(raw) as { status?: string; error?: string };
@@ -98,7 +140,11 @@ async function appendMessage(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[orchestrator] append_message threw: ${msg}`);
+    // Surface the raw server response too — when the server returns a
+    // FastMCP "Error executing tool ..." string, JSON.parse swallows the
+    // useful part of the message; logging `raw` recovers it.
+    const rawHint = raw ? ` raw=${JSON.stringify(raw.slice(0, 500))}` : "";
+    log(`[orchestrator] append_message threw: ${msg}${rawHint}`);
   }
 }
 
@@ -383,7 +429,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     return;
   }
 
-  const { agentMd, routingSkill } = loadOrchestratorPrompts(roots);
+  const { agentMd, routingSkill, lmTools: agentLmTools } = loadOrchestratorPrompts(roots);
   const memory = await fetchMemoryContext(client);
   const systemPrompt = buildOrchestratorSystemPrompt({
     agentMd,
@@ -490,20 +536,81 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       history.push(vscode.LanguageModelChatMessage.User(prompt));
     }
 
-    const lmTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS.map(t => ({
+    // Tools the LM can call. Three layers:
+    //   1. Harness sub-agent tools (spawn / await / list) — preserve the
+    //      orchestrator's context window when a useful runner exists.
+    //   2. Every other LM tool the workbench has registered — Copilot's
+    //      read_file / grep / list_dir / etc. The orchestrator falls back
+    //      to these directly while sub-agent runners (explorer, etc.) are
+    //      still in progress, so questions like "describe this project"
+    //      can be answered without a hung sub-agent spawn.
+    // Dedup against ORCHESTRATOR_TOOL_NAMES so our own registered tools
+    // aren't advertised twice. Skip `canBeReferencedInPrompt: false` tools
+    // — they are intentionally hidden from prompt surfaces by their owners.
+    const orchestratorToolNames = new Set<string>(
+      ORCHESTRATOR_TOOLS.map(t => t.name),
+    );
+    const agentLmToolSet = new Set(agentLmTools);
+    const externalCandidates = vscode.lm.tools.filter(
+      t => !orchestratorToolNames.has(t.name) && agentLmToolSet.has(t.name),
+    );
+    const externalTools: vscode.LanguageModelChatTool[] = externalCandidates.map(t => ({
       name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
+      description: t.description ?? t.name,
+      inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
     }));
+    // Hide the harness sub-agent tools when no LM-facing runner is wired.
+    // Otherwise the LM keeps spawning roles whose only outcome is a 30 s
+    // wall-clock kill → retry → kill loop, burning tokens with no result.
+    // Once a runner ships, add the role name to LM_FACING_SUBAGENT_ROLES.
+    const includeHarnessSubagentTools = LM_FACING_SUBAGENT_ROLES.size > 0;
+    const harnessTools: vscode.LanguageModelChatTool[] = includeHarnessSubagentTools
+      ? ORCHESTRATOR_TOOLS.map(t => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }))
+      : [];
+    const lmTools: vscode.LanguageModelChatTool[] = [...harnessTools, ...externalTools];
+    // Token cost of the catalog: the full LanguageModelChatTool payload
+    // gets serialized once per sendRequest cycle. Estimating from the
+    // serialized JSON gives a stable proxy for what the API charges.
+    const catalogTokenEstimate = estimateTokens(JSON.stringify(lmTools));
+    const subagentNote = includeHarnessSubagentTools ? "" : " (harness sub-agent tools hidden — no LM-facing runner)";
+    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
+    const turnStart = Date.now();
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
 
+      // Per-cycle token-out estimate. The history grows every cycle (each
+      // assistant turn + tool results gets pushed), so we re-estimate
+      // before each sendRequest. Logging here means the user can spot a
+      // single cycle that ballooned.
+      let historyChars = 0;
+      for (const m of history) {
+        for (const part of m.content) {
+          if (part instanceof vscode.LanguageModelTextPart) {
+            historyChars += part.value.length;
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            historyChars += JSON.stringify(part.input ?? {}).length + part.name.length;
+          } else if (part instanceof vscode.LanguageModelToolResultPart) {
+            for (const r of part.content) {
+              if (r instanceof vscode.LanguageModelTextPart) { historyChars += r.value.length; }
+            }
+          }
+        }
+      }
+      const historyTokenEstimate = Math.max(1, Math.floor(historyChars / 4));
+      log(`[orchestrator] cycle ${cycle} sendRequest: history~${historyTokenEstimate}t + catalog~${catalogTokenEstimate}t = ~${historyTokenEstimate + catalogTokenEstimate}t out`);
+
+      const cycleStart = Date.now();
       const response = await model.sendRequest(history, { tools: lmTools }, token);
 
       let textBuf = "";
       const toolCalls: vscode.LanguageModelToolCallPart[] = [];
 
+      const streamStart = Date.now();
       for await (const part of response.stream) {
         if (part instanceof vscode.LanguageModelTextPart) {
           textBuf += part.value;
@@ -512,9 +619,14 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           toolCalls.push(part);
         }
       }
+      const lmMs = Date.now() - streamStart;
+      log(`[orchestrator] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
 
       if (textBuf.length > 0) { assistantBuf.push(textBuf); }
-      if (toolCalls.length === 0) { return; }
+      if (toolCalls.length === 0) {
+        log(`[orchestrator] turn done — total=${Date.now() - turnStart}ms cycles=${cycle + 1}`);
+        return;
+      }
 
       // Reflect the assistant's tool-call turn into the history, then run
       // each tool and append the result as a user-role tool-result message.
@@ -526,6 +638,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
       for (const call of toolCalls) {
         let resultText: string;
+        const toolStart = Date.now();
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
@@ -536,9 +649,10 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             call.callId, invokeResult.content,
           ));
           resultText = stringifyToolResult(invokeResult.content);
+          log(`[orchestrator]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[orchestrator] invokeTool(${call.name}) failed: ${msg}`);
+          log(`[orchestrator]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
           resultText = JSON.stringify({ status: "error", error: msg });
           resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
             new vscode.LanguageModelTextPart(resultText),
@@ -547,11 +661,26 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         // Persist the tool result as a role:"tool" entry so reactive
         // compaction (80% branch) has something to drop and a future
         // turn can reconstruct what happened.
-        await appendMessage(
-          client, chatId, "tool",
-          JSON.stringify({ tool: call.name, result: resultText }),
-          log,
-        );
+        //
+        // Plaintext format with a marker prefix — NOT a JSON-stringified
+        // object. FastMCP/Pydantic was deserializing JSON-object-shaped
+        // string content back into a dict before reaching the tool
+        // handler ("Input should be a valid string ... input_type=dict").
+        // The marker prefix preserves the tool name for compaction-time
+        // inspection while staying impossible to misparse.
+        //
+        // Cap at TOOL_RESULT_STORE_CHAR_CAP — a single 50 KB grep dump
+        // would otherwise sit in replay forever, paying its full cost on
+        // every subsequent turn. Truncate-with-marker so a future reader
+        // can tell the storage cap fired.
+        let storedResult = resultText;
+        if (storedResult.length > TOOL_RESULT_STORE_CHAR_CAP) {
+          const dropped = storedResult.length - TOOL_RESULT_STORE_CHAR_CAP;
+          storedResult = storedResult.slice(0, TOOL_RESULT_STORE_CHAR_CAP) +
+            `\n…[truncated by harness — ${dropped} more chars dropped at storage time]`;
+        }
+        const toolContent = `[tool ${call.name}]\n${storedResult}`;
+        await appendMessage(client, chatId, "tool", toolContent, log);
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
     }
