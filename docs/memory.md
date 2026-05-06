@@ -71,20 +71,27 @@ Tier 1 is "the map." Tier 2 is the chapters. Tier 3 is the historical archive.
 
 ### Write — distillation triggers
 
-`failure-patterns.md` (Tier 2) gets new entries from four triggers. All four
-funnel through `session_distiller.append_pattern(pattern, source)` which
-deduplicates at append time.
+`failure-patterns.md` (Tier 2) gets new entries from up to four triggers. All
+shipped triggers funnel through
+`session_distiller.append_pattern(pattern, source)` which deduplicates at
+append time, and through the `harness_append_failure_pattern` MCP tool from
+the extension side.
 
-| Trigger | When it fires | Captures |
-|---|---|---|
-| **Per-turn (gated)** | After every orchestrator reply, only if a noteworthy event happened (sub-agent failed, retry occurred, spawn cap hit) | Turn summary + flagged event |
-| **Chat closed** | User runs `/clear` or chat panel is closed | Final sweep — anything not yet distilled |
-| **Reviewer fail** | A `reviewer` sub-agent returns `passed: false` | Failure cause + offending code excerpt |
-| **User frustration** | Deterministic regex match on negative-sentiment patterns in user message — no LLM | User's frustration phrase + the prior assistant turn that caused it + recent context |
+| Trigger | When it fires | Status | Captures |
+|---|---|---|---|
+| **Reviewer fail** | A `reviewer` / `reviewer-aux` sub-agent returns `final_status='failed'` | ✅ shipped (Phase C.2) | Role + failure cause |
+| **User frustration** | Deterministic regex match on negative-sentiment patterns in the user message — no LLM | ✅ shipped (Phase C.2) | `frustration:<label>` pattern keyed off the matched phrase |
+| **Per-turn (gated)** | After every orchestrator reply, only if a noteworthy event happened (sub-agent failed, retry occurred, spawn cap hit) | ⏳ deferred — overlaps with reviewer-fail | Turn summary + flagged event |
+| **Chat closed** | User runs `/clear` or chat panel is closed | ⏳ deferred — needs a VS Code chat lifecycle API not in 1.93 | Final sweep — anything not yet distilled |
+
+Per-turn dedup runs through `TriggerDedup` in
+`orchestratorCore.ts`; persistent dedup runs through
+`session_distiller._load_existing_patterns`.
 
 **Why deterministic frustration detection.** Hard Invariant #1: zero LLM calls
 inside the harness. Frustration patterns live in
-`.github/memory/sentiment-patterns.json` as a configurable regex list.
+`.github/memory/sentiment-patterns.json` as a configurable regex list and are
+mirrored in `orchestratorCore.detectFrustration`.
 
 ### Compact
 
@@ -109,8 +116,10 @@ this mode:
 
 This keeps best-practice 8 ("one task per session") honest: each user turn is
 one task. The orchestrator's persistent context across turns is held by the
-extension's conversation transcript (`storage/conversations/<chat_id>.jsonl`),
-not by extending the session abstraction.
+`conversation_messages` SQLite table (Phase C.1), keyed by `chat_id`, not by
+extending the session abstraction. The `chat_id` is a stable
+`sha256(participant + first user prompt + workspace path)` truncated to
+16 hex — best-effort until VS Code ships a real chat-thread id.
 
 **Tier 1 is auto-injected into the orchestrator on every turn** — same path as
 pipeline agents.
@@ -129,14 +138,14 @@ Separate from memory; documented here because they are easily confused.
 
 | | Memory (3 tiers) | Conversation transcript |
 |---|---|---|
-| Lives in | `.github/memory/` (Tier 1, 2) + DB sessions table (Tier 3) | `storage/conversations/<chat_id>.jsonl` |
+| Lives in | `.github/memory/` (Tier 1, 2) + DB sessions table (Tier 3) | `storage/audit.db::conversation_messages` (Phase C.1), keyed by `chat_id` |
 | Persists across | All sessions, all chats | One chat (one `chat_id`) |
-| Granularity | Distilled patterns, decisions | Full message history |
-| Loaded into | Agent context as injected fields | LLM call as message array |
-| Compacted by | `harness_compact_memory` (5 KB cap) | Reactive: 80%/90%/99% of model window (per Claude Code's pattern) |
+| Granularity | Distilled patterns, decisions | Full message history (`user` / `assistant` / `tool` / `system`) |
+| Loaded into | Agent context as injected fields | LLM call as message array via `harness_get_conversation` (token-budgeted, newest-first truncation) |
+| Compacted by | `harness_compact_memory` (5 KB cap) | Reactive: 80% drops `tool` rows from per-turn render; 90% spawns the summarizer sub-agent and persists the verified summary as `system`; 99% hard-truncates to 50% of model window |
 
-The transcript is replayed verbatim to give the orchestrator continuity.
-Memory is consulted for cross-conversation knowledge.
+The transcript is replayed verbatim (subject to compaction) to give the
+orchestrator continuity. Memory is consulted for cross-conversation knowledge.
 
 ---
 
@@ -177,5 +186,8 @@ copilot-harness/memory/
 
 copilot-harness/server.py      MCP tools: harness_get_memory_context,
                                 harness_get_memory_entry,
-                                harness_query_sessions, harness_compact_memory
+                                harness_query_sessions, harness_compact_memory,
+                                harness_append_failure_pattern (Phase C.2),
+                                harness_append_message,
+                                harness_get_conversation (Phase C.1)
 ```

@@ -538,7 +538,7 @@ speculative. Direct-mode test coverage was concentrated in 4 tests
 in test_skill_access.py; the rest of the deletion was TS code with
 no test surface. Actual: 590 → 586 Py.
 
-#### Phase E — Documentation (0.5 day)
+#### Phase E ✅ Documentation
 
 ```
 [x] CLAUDE.md Hard Invariant #2: pull-on-demand clause removed; skills
@@ -548,12 +548,90 @@ no test surface. Actual: 590 → 586 Py.
     /<pipeline-name> → pipeline; everything else → orchestrator.
 [x] CLAUDE.md Decision Rules table: "Direct" row replaced with
     "Orchestrator".
-[ ] docs/design.md § Current State: rewrite for v0.5+ (orchestrator +
-    pipeline)
-[ ] docs/design.md § Best Practices Compliance: re-mark BP 2, 13, 15, 19,
-    28, 30 as ✅ if they actually moved
-[ ] docs/memory.md: expand with whatever shipped beyond the skeleton
-[ ] AGENTS.md: point at orchestrator as the default-entry agent
+[x] docs/design.md § Current State: rewritten for v0.5 (Phases A–E,
+    orchestrator + pipeline; sub-agent primitives, conversation
+    replay, reactive compaction, summarizer, distillation triggers).
+[x] docs/design.md § Best Practices Compliance: BP 2, 13, 15, 19,
+    28, 30 lifted to ✅ with pivot-aware notes; gap list reduced to
+    BP 3, 25, 27, 29.
+[x] docs/memory.md: trigger table now flags reviewer-fail + frustration
+    as shipped (Phase C.2) and per-turn / chat-closed as deferred;
+    conversation transcript section retargeted from JSONL files to
+    `conversation_messages` (Phase C.1) with the chat_id heuristic;
+    file map adds harness_append_failure_pattern + append_message +
+    get_conversation.
+[x] AGENTS.md: orchestrator is named the default-entry agent; mode
+    table collapsed from three (Direct/Pipeline/Agent) to two
+    (Orchestrator/Pipeline); session protocol covers replay + reactive
+    compaction; duplicated invariants pruned (CLAUDE.md is the source).
+```
+
+#### Post-E ✅ Bringup hardening + token-cost guards (PR #37)
+
+```
+Real-world bringup uncovered a stack of issues that all surfaced
+together once the user tried to install the extension and run a turn.
+Shipped on fix/mcp-init-timeout, merged at bce6d2e.
+
+Build + install pipeline:
+  [x] McpClient.initialize is time-bound (15 s). A hung server fails
+      activation with a clean error toast instead of freezing the
+      chat input. stderr piped into the CopilotHarness output channel
+      as [server] <line>; was inheriting to invisible main stderr.
+  [x] Git Bash on Windows is the supported shell; WSL refused with a
+      clear redirect. scripts/run-bash.js Node wrapper hardcodes Git
+      Bash candidate paths so npm scripts work regardless of PATH order.
+  [x] npm run all is one-shot: setup → package → install:vsix.
+      install-vsix.sh detects EPERM (VS Code is running) and surfaces
+      the actionable banner. setup + build:server idempotent — no-op
+      re-run is ~5 s instead of ~60 s.
+  [x] PyInstaller spec rewritten with collect_submodules so
+      session.sub_sessions / session.conversations /
+      validation.subagent_context / storage.subagent_audit /
+      policy_engine all bundle automatically. Fixes the runtime
+      ModuleNotFoundError: No module named 'policy_engine' crash.
+
+Orchestrator runtime:
+  [x] Catalog includes Copilot read tools — orchestrator can answer
+      "describe this project" without spawning a sub-agent.
+  [x] harness_await_subagent capped at 30 s (was 5 min wait for
+      runners that don't exist yet).
+  [x] harness_append_message accepts Any and json.dumps non-string
+      content; tool-result rows use plaintext '[tool name]\nresult'
+      format instead of JSON envelope (Pydantic was deserializing
+      JSON-shaped strings back into dicts).
+  [x] Per-cycle + per-tool timing logs:
+        [orchestrator] cycle 0: lm=2800ms text=42ch tool_calls=1
+        [orchestrator]   tool copilot_searchWorkspace: ok 412ms
+        [orchestrator] turn done — total=7800ms cycles=3
+      MCP SDK heartbeat ('Processing request of type CallToolRequest')
+      filtered out of the server stderr stream.
+
+Token-cost reductions:
+  [x] DEFAULT_MAX_TOKENS lowered 100_000 → 50_000 (replay budget).
+  [x] Tool-result rows capped at 4 000 chars at storage time.
+  [x] Sub-agent tools hidden from the catalog while
+      LM_FACING_SUBAGENT_ROLES is empty (all roles today). Prevents
+      spawn → 30 s wall-clock → retry token-burning loop.
+  [x] orchestrator.agent.md + orchestrator-routing/SKILL.md trimmed
+      ~51 % on the static system prompt (~2,525 t → ~1,225 t).
+  [x] Declarative tool catalog: every .agent.md declares lm_tools:
+      in frontmatter. parseFrontmatterLmTools reads it; runner uses
+      it as the per-turn allowlist. EXTERNAL_TOOL_ALLOWLIST constant
+      deleted. Editing tool surface is now a YAML edit + rebuild.
+
+UX:
+  [x] harness_clear_active_session MCP tool + sidebar inline action
+      (right-click "Active session" → Clear). Idempotent.
+  [x] Destructive-intent protocol in the routing skill: orchestrator
+      must (1) name the risk, (2) suggest a path that can do it,
+      (3) confirm on ambiguous intent. No more silent "I don't have
+      that tool" replies.
+  [x] Killed the preemptive /feature-dev pitch. Pipelines are
+      strictly process/workflow only — the LM is forbidden from
+      listing them as a "thing you could do" in capability summaries.
+
+Tests: 591 Py + 125 TS green; tsc clean.
 ```
 
 **Test count trajectory:**
@@ -564,6 +642,9 @@ After B:      544 Py + 76 TS
 After C:      590 Py + 112 TS = 702
 After D:      586 Py + 112 TS = 698  (−4; original −34 estimate was speculative)
 After E:    ~ 698  (docs only, no test impact)
+After PR #37: 591 Py + 125 TS = 716  (+18; clear-active-session,
+              dict-coercion, parseFrontmatterLmTools, mcp timeout,
+              and per-agent lm_tools assertion)
 ```
 
 **Risk areas:**

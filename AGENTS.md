@@ -8,13 +8,18 @@
 
 ## What CopilotHarness Is
 
-Harness layer for GitHub Copilot Chat in VS Code. Three modes:
-- **Direct:** simple requests → single LLM call → fast answer, no overhead
-- **Pipeline:** repeatable high-stakes workflows → predetermined chain in `pipeline.yaml` → full guardrails (enterprise feature, frozen in current scope)
-- **Agent:** structured tasks → planner-led delegation across agent catalog → harness still enforces firewall, validation, skills, retry, audit *(Week 6 — planned, see `docs/design.md`)*
+Harness layer for GitHub Copilot Chat in VS Code. Two modes:
+- **Orchestrator (default):** anything that isn't a slash-invoked pipeline →
+  one main agent with persistent chat per `chat_id`, replay on every turn,
+  reactive compaction, Tier-1 memory auto-injected, spawns sub-agents
+  (explorer / investigator / reviewer-aux / summarizer) on demand.
+- **Pipeline:** repeatable high-stakes workflows → predetermined chain in
+  `pipeline.yaml` → full guardrails (evaluator firewall, validation,
+  correction loop, append-only stage store, audit).
 
-The `@harness` chat participant routes automatically: slash commands go to
-their declared action; bare `@harness <prompt>` goes direct.
+The `@harness` chat participant routes automatically: input that starts with
+`/<pipeline-name>` goes to that pipeline; everything else goes to the
+orchestrator. Zero LLM call decides which mode — pure prefix match.
 
 ---
 
@@ -24,9 +29,7 @@ their declared action; bare `@harness <prompt>` goes direct.
 AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
-.github/agents/                       shared catalog: main agents (skill-builder)
-                                      + sub-agent roles (explorer / investigator
-                                      / reviewer-aux — Phase A.3)
+.github/agents/                       orchestrator, skill-builder, sub-agent roles
 .github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
 copilot-harness/                      Python MCP server (zero LLM)
 copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
@@ -38,10 +41,12 @@ hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
 ## Agent Complexity Levels
 
 ```
-Direct   Single LLM call. No pipeline. No harness.
-Level 0  Single agent + skill injection + plan JSON. No evaluator.
-Level 1  Single agent + separate evaluator + correction loop.
-Level 2  Multi-agent + evaluator. Promotion checklist required.
+Orchestrator  One main agent + on-demand sub-agents (read-only by default).
+              Persistent chat per chat_id, replay, reactive compaction.
+              Default for non-pipeline turns.
+Level 0       Single-agent pipeline + skill injection + plan JSON. No evaluator.
+Level 1       Single agent + separate evaluator + correction loop.
+Level 2       Multi-agent + evaluator. Promotion checklist required.
 ```
 
 ---
@@ -49,14 +54,19 @@ Level 2  Multi-agent + evaluator. Promotion checklist required.
 ## Session Protocol
 
 ```
-DIRECT:   @harness <text> → vscode.lm → stream → done
-PIPELINE: orient → baseline → generator → evaluator (fresh session)
-          → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
+ORCHESTRATOR: @harness <text> → harness_append_message → harness_get_conversation
+              → vscode.lm.sendRequest with replayed history + Tier-1 memory
+              → tool-call loop (spawn / await / list sub-agents)
+              → reactive compaction at 80% / 90% / 99% of model context
+              → persist assistant + tool turns; never exit silent
+PIPELINE:     orient → baseline → generator → evaluator (fresh session)
+              → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
 ```
 
 Renders inline in Copilot Chat (per-stage sections, tag lines, retry
-blockquote, plan.md anchor) and in the activity-bar Tasks TreeView
-(Active session + clickable History). Details in README.md.
+blockquote, plan.md anchor; sub-agent spawn / done markers in orchestrator
+mode) and in the activity-bar Tasks TreeView (Active session + clickable
+History). Details in README.md.
 
 ---
 
@@ -79,23 +89,6 @@ No new pipelines until feature-dev is validated.
 | PreToolUse | Before tool call | Policy gate (deterministic, fail-closed) |
 | PostToolUse | After tool call | SQLite audit log (storage/audit.db) |
 
-`on-eval-fail` and `on-escalate` are reserved hook events — not wired yet.
-
----
-
-## Rules That Cannot Be Broken
-
-```
-✅ Evaluator runs in a separate session — reviewer sees code only (Week 3a firewall)
-✅ Baseline checks before every pipeline run — never silently skip
-✅ Bad output → fix skill file first, before promoting pipeline level
-✅ Level 2 needs promotion checklist; feature-dev grandfathered pending Week 4 probe
-✅ PreToolUse policy (scripts/policy_engine.py) fail-closed, never removed
-✅ Each pipeline is self-contained under .github/pipelines/<name>/
-❌ Do not add pipelines until feature-dev is validated with real usage
-❌ Do not add routing paths without preserving zero-LLM-cost routing
-```
-
 ---
 
 ## Key Interactions
@@ -104,8 +97,7 @@ No new pipelines until feature-dev is validated.
 # Pipeline mode (governed pipeline + evaluator firewall)
 @harness /feature-dev add a login endpoint
 
-# Orchestrator mode (default for non-slash input — persistent chat,
-# spawns sub-agents on demand)
+# Orchestrator mode (default — persistent chat, spawns sub-agents on demand)
 @harness explain this error
 @harness add a login endpoint
 
@@ -114,10 +106,13 @@ No new pipelines until feature-dev is validated.
 ```
 
 Commands are `.github/commands/*.md` frontmatter (loaded by
-`slashCommands.ts`). Add a command by dropping a new `.md` — no
-code change.
+`slashCommands.ts`). Add a command by dropping a new `.md` — no code change.
+
+Hard rules (evaluator firewall, sub-agent firewall, fail-closed policy,
+zero-LLM-cost routing, append-only stage store, no silent sub-agents) live
+in `CLAUDE.md` § Hard Invariants. Do not duplicate them here.
 
 ---
 
-*CopilotHarness | 586 Py + 112 TS tests | Phases A–D shipped; E in progress | May 2026*
+*CopilotHarness | 586 Py + 112 TS tests | Phases A–E shipped | May 2026*
 *Full design → docs/design.md. Status and roadmap → docs/roadmap.md.*

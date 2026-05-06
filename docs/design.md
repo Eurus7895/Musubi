@@ -181,32 +181,73 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Week 4 complete + Tasks sidebar, v0.4.0)
+## Current State (Phases A–E complete, v0.5.0)
 
 ```
 WHAT EXISTS NOW:
-  ✅ 379 tests passing (Python harness — TS extension has no unit tests)
+  ✅ 586 Python tests + 112 TypeScript tests
   ✅ Harness core: state, context_builder, verifier, executor,
        correction_loop, skill_loader
   ✅ 3-tier memory: MEMORY.md, memory_loader, session_distiller
-       + Tier 2 compaction + cross-session query (Week 4 Day 4)
+       + Tier 2 compaction + cross-session query
   ✅ Pattern detector + proposed patch applier
-  ✅ VS Code extension v0.4.0 with McpClient + rich in-chat rendering + sidebar Tasks view
+  ✅ VS Code extension v0.5.0 with McpClient + rich in-chat rendering +
+       sidebar Tasks view + orchestrator runner + sub-agent runner
   ✅ PyInstaller binary distribution
-  ✅ Separate evaluator session (Week 3a)
+  ✅ Separate evaluator session (Week 3a firewall)
   ✅ Pipeline directory layout at .github/pipelines/feature-dev/ (Week 3b)
-  ✅ Direct mode + slash commands + hooks.json (Week 3c)
-  ✅ /help slash command (dynamic, data-driven)           (Week 4 Day 1)
-  ✅ .claude-plugin/plugin.json manifest                  (Week 4 Day 2)
-  ✅ Direct-mode skill catalog + pull-on-demand           (Week 4 Day 3)
-  ✅ harness_query_sessions + harness_compact_memory      (Week 4 Day 4)
-  ✅ feature-dev-level1-probe (built, not yet run)        (Week 4 Day 5)
+  ✅ Slash commands + hooks.json + policy engine (Week 3c)
+  ✅ Sub-agent primitives (Phase A): spawn / await / list / get_context /
+       complete / query_events MCP tools, four-layer timeouts
+       (max_turns + per-turn + wall-clock + await), firewall
+       (build_subagent_context excludes session_id at the type level),
+       summary verifier (token cap + secrets + injection + schema), durable
+       audit log in storage/audit.db::subagent_audit, three role files
+       (explorer, investigator, reviewer-aux) with matching SKILL.md.
+  ✅ Orchestrator (Phases B + D): orchestrator.agent.md +
+       orchestrator-routing SKILL.md, extension-side runner
+       (runners/orchestratorCore.ts + orchestrator.ts) using real
+       vscode.lm tool calls (not JSON markers) for spawn/await/list,
+       SpawnTracker bookkeeping, finally-cleanup of un-awaited handles
+       (status='abandoned'). Routing is /<pipeline-name> → pipeline,
+       everything else → orchestrator. Direct mode and the never-shipped
+       Agent Mode were deleted in Phase D.
+  ✅ Frontmatter-driven model selection (Phase B.2 follow-up):
+       modelSelectorCore.ts resolves skill model: → agent model: →
+       fallback (claude-sonnet-4.5) → any vendor=copilot model. Skill
+       overrides agent (procedure can earn the upgrade). Default flipped
+       from gpt-4o to claude-sonnet-4.5 across all 10 agent files.
+  ✅ Conversation continuity (Phase C):
+       conversation_messages SQLite table (Phase C.1) with
+       harness_append_message + harness_get_conversation MCP tools
+       (token-budgeted, newest-first truncation, role validation
+       fail-closed). Orchestrator replays via harness_get_conversation
+       on every turn; appends user message before send, assistant text
+       in finally, each tool result as role:"tool". Reactive compaction
+       at 80% (drop tool rows from per-turn render) / 90% (summarizer
+       sub-agent over oldest half, persist as system) / 99% (hard
+       truncate to 50% of model window) — pure-fn planCompaction +
+       applyCompaction in orchestratorCore.
+  ✅ Summarizer sub-agent (Phase C.2):
+       summarizer.agent.md + summarizer SKILL.md, runners/summarizerRunner.ts
+       — first end-to-end LM session that turns a `running` sub_sessions
+       row into a terminal one. Tools=[], single-turn, text-only.
+  ✅ Distillation triggers (Phase C.2 — 2 of 4 wired):
+       reviewer-fail (sub-agent returns final_status='failed') +
+       user-frustration (deterministic regex over 8 patterns in
+       sentiment-patterns.json, mirrored in detectFrustration). Per-turn
+       dedup via TriggerDedup; persistent dedup via
+       _load_existing_patterns. Per-turn-noteworthy and chat-closed
+       triggers deferred. harness_append_failure_pattern +
+       harness_delete_subsessions_for_parent MCP tools wired.
   ✅ Rich in-chat pipeline rendering — per-stage ### markdown sections,
        status emoji (⏳ ↻ ✓ ✗), governance tags (◆ memory / ◈ skill /
        { } schema / ⟡ firewall / ◇ policy), elapsed seconds, retry
        blockquote with reviewer verdict + fix_instructions, plan.md anchor.
-  ✅ Tasks sidebar TreeView (v0.4.0) — native vscode.TreeDataProvider under
-       a new activity-bar container. Two sections:
+       Sub-agent spawn / done markers via subagentRendering.ts
+       (SubagentEventTracker polls harness_query_subagent_events).
+  ✅ Tasks sidebar TreeView — native vscode.TreeDataProvider under
+       a dedicated activity-bar container. Two sections:
          Active session — stages (pending / in_progress / complete / failed),
                           codicon status markers, attempt counter,
                           auto-refresh on pipeline stage transitions.
@@ -225,21 +266,23 @@ FEATURE-DEV PIPELINE TODAY:
 
 ROUTING (Phase D):
   /<pipeline-name> <task>      → pipeline mode (harness_* tools, session,
-                                 evaluator firewall)
+                                 evaluator firewall, correction loop)
+  Legacy bare keyword          → its existing slash handler
   Everything else              → orchestrator mode (persistent chat,
                                  spawns sub-agents on demand, Tier-1
                                  memory, reactive compaction)
 
 CHAT SURFACE:
-  Every @harness interaction — direct AND pipeline — lives inline in
-  Copilot Chat. No separate panel. The VS Code chat API supports
+  Every @harness interaction — orchestrator AND pipeline — lives inline
+  in Copilot Chat. No separate panel. The VS Code chat API supports
   markdown + progress + button + anchor; we use all four:
     - markdown: pipeline header, per-stage ### sections, tag lines,
-                retry blockquote, stage-complete lines, footer summary
+                retry blockquote, stage-complete lines, footer summary,
+                sub-agent spawn / done markers
     - progress: ephemeral "Resuming session ..." hints
     - anchor:   final "View plan.md" link to the materialised artifact
   No colors, no animations — the chat renders CommonMark — but all
-  governance information the pipeline enforces is visible inline.
+  governance information the harness enforces is visible inline.
 ```
 
 ---
@@ -497,6 +540,11 @@ CopilotHarness            ← activity-bar icon ($(checklist))
 harness_get_active_session()
     → returns { session_id, request, resume_stage, attempt } | { session_id: null }
 
+harness_clear_active_session()
+    → resets the active-session pointer to null; stage outputs + audit
+      rows preserved. Use to abandon a stuck pipeline without resuming.
+      Idempotent.
+
 harness_new_session(request)
     → create_session() + lock_agent_versions() + set_active_session()
 
@@ -534,9 +582,12 @@ harness_distill_session(session_id)    → appends to failure-patterns.md
 harness_compact_memory()               # Week 4 Day 4 — prunes failure-patterns.md when > 5 KB
 ```
 
-**Total: 18 MCP tools** (harness_get_active_session, harness_new_session,
-harness_read_stage, harness_write_stage, harness_get_status,
-harness_increment_attempt + the 12 above).
+**Total: 19 state + skill + execution + memory MCP tools**
+(harness_get_active_session, harness_clear_active_session,
+harness_new_session, harness_read_stage, harness_write_stage,
+harness_get_status, harness_increment_attempt + the 12 above).
+Sub-agent tools (Phase A.1 / A.2 / A.3) and conversation tools (Phase
+C.1 / C.2) are listed separately in `CLAUDE.md` § MCP Tools.
 
 ---
 
@@ -765,7 +816,7 @@ is one of the 30 numbered practices from that doc.
 |---|---|---|---|
 | **1. Architecture** | | | |
 | 1 | Specialized agents (Planner / Generator / Evaluator) | ✅ | feature-dev: planner→designer→coder→reviewer; reviewer = evaluator |
-| 2 | Start single-agent before multi-agent | ⚠️ | Built Level-2 first; Level-1 probe infra exists, run pending (Wk4 D5) |
+| 2 | Start single-agent before multi-agent | ✅ | Orchestrator is the single-agent default for non-pipeline turns (Phase D); pipeline mode is the multi-agent escalation. Level-1 probe infra still exists for feature-dev itself. |
 | 3 | Fresh context windows + structured handoff | ⚠️ | Evaluator gets fresh session (Wk3a). Handoff schemas still TODO (conditional on probe) |
 | **2. State & Persistence** | | | |
 | 4 | All state in structured files | ✅ | `.harness/sessions/<sid>/<stage>.md` + SQLite audit (`storage/audit.db`) |
@@ -780,14 +831,14 @@ is one of the 30 numbered practices from that doc.
 | 11 | UI/browser automation for feature validation | ❌ | Out of scope — harness is for code workflows, not app UI testing |
 | 12 | Concrete gradable evaluator criteria | ✅ | code-review SKILL.md checklist + `review-criteria.json` schema |
 | **5. Context Window** | | | |
-| 13 | Treat context as scarce, offload to subagents | ⚠️ | Phase A.1 + A.2 + A.3 ✅ (Python storage + lifecycle + policy + firewall + verifier + 6 MCP tools + role .agent.md / SKILL.md + durable audit; TS mcpClient EventEmitter + subagentRendering.ts formatters + SubagentEventTracker poller). Phase B pipeline-main spawning still pending. |
+| 13 | Treat context as scarce, offload to subagents | ✅ | Phases A + B + C complete: orchestrator spawns explorer / investigator / reviewer-aux / summarizer via real `vscode.lm` tool calls; reactive compaction at 80 / 90 / 99% offloads tool turns + summarizes oldest half. Pipeline-main spawning still per-pipeline opt-in. |
 | 14 | Deterministically load core files each loop | ✅ | `harness_read_stage` pushes Tier-1 memory + skill on every read |
-| 15 | Subagents for parallel reads / summarization | ⚠️ | Phase A complete on the Python side. Phase B (orchestrator + pipeline-main spawning) still pending. |
+| 15 | Subagents for parallel reads / summarization | ✅ | Phase B orchestrator spawns explorer / investigator / reviewer-aux for read-only lookup; Phase C.2 summarizer sub-agent runs the 90% compaction pass and persists the verified summary as `system`. |
 | **6. Prompt Engineering** | | | |
 | 16 | Prohibit placeholders; require complete code | ✅ | reviewer.agent.md rejects placeholders; verifier scans for TODO/FIXME stubs |
 | 17 | Document reasoning in code comments | ⚠️ | Coder skill encourages it; not mechanically enforced |
 | 18 | Agents improve their own instructions | ✅ | skill-builder meta-agent writes proposals to `.github/agents/proposed/` |
-| 19 | Capture bugs immediately in task list | ✅ | session_distiller appends to `failure-patterns.md` (auto-compacted) |
+| 19 | Capture bugs immediately in task list | ✅ | session_distiller appends to `failure-patterns.md` (auto-compacted); Phase C.2 wires reviewer-fail + frustration-regex triggers through `harness_append_failure_pattern` so the orchestrator records patterns mid-conversation. |
 | **7. Security** | | | |
 | 20 | Three-layer defense (sandbox / FS / allowlist) | ⚠️ | Layer 3 ✅ (PIPELINE_POLICIES fail-closed). Layers 1–2 inherited from VS Code/OS |
 | **8. Code Quality** | | | |
@@ -800,9 +851,9 @@ is one of the 30 numbered practices from that doc.
 | 26 | Plan for failures; reset to known-good state | ✅ | Append-only stage store + `harness_increment_attempt` retry; max-3 escalate |
 | 27 | Periodically regenerate plans against spec | ❌ | Not built — single plan per session today |
 | **10. Evolving the Harness** | | | |
-| 28 | Strip scaffolding after model upgrades | ⚠️ | Wk3a Level-1 probe is exactly this exercise — not yet run |
+| 28 | Strip scaffolding after model upgrades | ✅ | Phase D deleted Direct mode (`runDirect`, the `--pipeline` flag, the bare-prompt path) and the never-shipped Agent Mode plumbing; default model flipped to `claude-sonnet-4.5`. Wk3a Level-1 probe still owed for feature-dev itself. |
 | 29 | Calibrate evaluator involvement to task difficulty | ⚠️ | Levels 0/1/2 defined; promotion checklist exists; calibration data pending probe |
-| 30 | Increase complexity only when ceilings force it | ✅ | Promotion rule: 3+ observed failures before adding an agent (§ Promotion Checklist) |
+| 30 | Increase complexity only when ceilings force it | ✅ | Promotion rule: 3+ observed failures before adding an agent (§ Promotion Checklist). Phase D collapsed three modes (direct + pipeline + planned agent) into two (orchestrator + pipeline) — the inverse move when scaffolding fails to earn its keep. |
 
 **Legend:** ✅ done · ⚠️ partial / planned · ❌ out of scope or not yet built.
 
@@ -810,10 +861,9 @@ is one of the 30 numbered practices from that doc.
 or [`docs/roadmap.md`](./roadmap.md) — listed here so the alignment is
 auditable, not duplicated):
 
-- BP 2, 3, 28, 29 — **Level-1 probe** (Wk4 D5 deferred). Running it
-  unblocks the multi-vs-single-agent calibration.
-- BP 13, 15 — **Sub agents** (Week 5 main feature). Phase A→B→C plan
-  already specced.
+- BP 3, 29 — **Level-1 probe** (Wk4 D5 deferred). Running it unblocks
+  the multi-vs-single-agent calibration for feature-dev itself; the
+  orchestrator already covers BP 2 / 28 for non-pipeline turns.
 - BP 25 (history half) — **Read git log at SessionStart**. Cheap to
   add to `scripts/session_start.py`; not yet wired.
 - BP 27 — **Plan regeneration**. Defer until a real session shows
@@ -958,17 +1008,20 @@ DEFERRED (needs discussion first):
 *Updated: May 2026*
 *Project: CopilotHarness*
 *Repo: https://github.com/Eurus7895/CopilotHarness*
-*Runtime: Extension mode (v0.4.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
-*Current: Week 4 + Phase A.1 + A.2 + A.3 complete — sub-agent storage +
-lifecycle + policy + firewall + verifier + role files + SKILL.md +
-durable audit log on the Python side; mcpClient notification
-EventEmitter + subagentRendering.ts formatters + SubagentEventTracker
-poller on the TS side, with a tsx + node --test runner. 6 MCP tools
-(spawn / complete / await / list / get_context / query_events) wired
-with four-layer timeouts, runner-side cap enforcement, and durable
-per-spawn / per-completion audit rows. 507 Python tests (was 370 — +71
-A.1, +46 A.2, +20 A.3) + 24 TS tests.*
-*Next: Phase B — orchestrator agent file + extension-side runner that
-calls vscode.lm.registerTool for spawn / await / list, wires the
-SubagentEventTracker into the chat stream.*
-*Status: Week 5+ Orchestrator Pivot — Phases A, B, C, D shipped; Phase E (this doc + memory.md + AGENTS.md polish) in progress. Two modes: pipeline + orchestrator. Direct mode and the never-shipped Agent Mode are removed. See [`docs/roadmap.md`](./roadmap.md) for status churn.*
+*Runtime: Extension mode (v0.5.0) — @harness in Copilot Chat + Tasks sidebar TreeView*
+*Status: Week 5+ Orchestrator Pivot — Phases A through E shipped, plus
+a post-E bringup-and-token-cost hardening pass (PR #37). Two modes:
+pipeline + orchestrator. Sub-agent primitives (spawn / await / list /
+get_context / complete / query_events) wired with four-layer timeouts,
+firewalled context, summary verifier, and durable audit rows.
+Orchestrator runs on real `vscode.lm` tool calls, replays via
+`harness_get_conversation` each turn, and reactively compacts at 80 /
+90 / 99 % of model context (drop tool rows → spawn summarizer → hard
+truncate). Reviewer-fail and frustration-regex distillation triggers
+record patterns through `harness_append_failure_pattern`. Direct mode
+and the never-shipped Agent Mode are removed. Tool catalog is
+declarative — sourced from each agent's `lm_tools:` frontmatter, no
+hardcoded TS list. New `harness_clear_active_session` MCP tool +
+sidebar inline action lets users abandon a stuck pipeline without
+deleting audit data. **591 Python + 125 TS tests.** See
+[`docs/roadmap.md`](./roadmap.md) for status churn.*
