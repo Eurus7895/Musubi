@@ -84,14 +84,19 @@ The extension spawns the bundled server binary on VS Code start (JSON-RPC
 over stdio). When you type `@harness <input>`, `extension.ts` routes by
 pure string check — zero LLM cost:
 
-- Starts with `/` → **pipeline mode** (governed agents, validation, audit trail)
-- Contains `--pipeline` → **pipeline mode** (forced)
-- Everything else → **direct mode** (single `vscode.lm.sendRequest`, no harness)
+- `/<pipeline-name> <task>` → **pipeline mode** (governed agents, validation, audit trail)
+- Anything else → **orchestrator mode** (persistent chat, spawns sub-agents
+  on demand, Tier-1 memory injected, reactive compaction)
 
 In pipeline mode, the harness pushes context per stage (firewall + skill
 injection + memory), the agent reasons via Copilot, the harness validates
 and stores the output, and the reviewer evaluates in a fresh session. A
 fail triggers up to 3 retries before escalation.
+
+In orchestrator mode, one main agent holds the chat. It can spawn
+read-only sub-agents (`explorer`, `investigator`, `reviewer-aux`,
+`summarizer`) or governed pipeline-stage agents via `harness_spawn_subagent`,
+budgeted to 3 spawns per role per turn.
 
 Full pipeline diagram, MCP tool list, schemas, hooks, and YAML format live
 in [`docs/design.md`](./docs/design.md).
@@ -106,14 +111,13 @@ Add a command by dropping a new `.md` — no code change required.
 
 | Command | Mode | What it does |
 |---|---|---|
-| `@harness <question>` | direct | Single Copilot call, no pipeline |
+| `@harness <prompt>` | orchestrator | Persistent chat, spawns sub-agents on demand |
 | `@harness /feature-dev <task>` | pipeline | 4-agent governed pipeline |
 | `@harness /planner <task>` | pipeline | Planner only (new session) |
 | `@harness /designer` `/coder` `/reviewer` | pipeline | Run a single stage on the active session |
 | `@harness /continue` | pipeline | Run the next pending stage |
 | `@harness /status` | pipeline | Show active session progress |
 | `@harness /help` | — | List available commands |
-| `@harness <task> --pipeline` | pipeline | Force pipeline for free-form input |
 
 ---
 

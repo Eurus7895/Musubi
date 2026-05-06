@@ -24,9 +24,9 @@ These cannot be broken without an explicit design discussion. If a change
 would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Python harness + TS extension orchestrate; only `vscode.lm.sendRequest` calls the model. New code must not import an LLM SDK.
-2. **Skills are pushed, not pulled.** In pipeline mode (and agent mode, when shipped) the harness injects skill content based on the agent's `inject_skills` frontmatter. Agents cannot opt out. Pull-on-demand exists only in **direct mode**.
+2. **Skills are pushed, not pulled.** In pipeline mode the harness injects skill content based on the agent's `inject_skills` frontmatter. The orchestrator gets its routing skill the same way. Agents cannot opt out.
 3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `validation/context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
-4. **Zero-cost routing.** `/feature-dev` etc → pipeline. `/agent` → agent (Week 6 — planned). `--pipeline` flag → pipeline. Bare `@harness <prompt>` → direct. No LLM call to decide which mode.
+4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else (`@harness <prompt>` or chat) → orchestrator. No LLM call to decide which mode.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
 6. **Agents live in a flat shared catalog at `.github/agents/`.** Pipelines compose them by reference from `pipeline.yaml` (`agent: agents/planner.agent.md`). Canonical role files use the bare name (`planner.agent.md`); a pipeline-specific variant of a role would be filename-prefixed (`<pipeline>-<role>.agent.md`) — but only when 3+ specific failures of the canonical agent justify it. The pipeline directory itself contains only `pipeline.yaml` + `README.md`.
 7. **Append-only stage store.** Stage outputs are written once; retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
@@ -106,7 +106,7 @@ re-read this section, rename the branch.
 
 | Level | Shape | When |
 |---|---|---|
-| Direct | 1 LLM call, no harness | Simple questions, lookups |
+| Orchestrator | 1 main agent + on-demand sub-agents (read-only by default) | Default for non-pipeline turns; questions, lookups, exploration |
 | 0 | 1 agent + skill + plan JSON | Well-defined task, simple schema |
 | 1 | 1 agent + separate evaluator + correction loop | Wrong output has real cost |
 | 2 | Multi-agent + evaluator | ONLY when single-agent demonstrably fails |
@@ -123,7 +123,7 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 
 **Instructions vs skills:**
 - `instructions/` = always-loaded, priority-ranked rules (P1 universal > P2 org > P3 domain > P4 project). P1 cannot be overridden.
-- `skills/` = procedures and knowledge. Pushed by the harness in pipeline mode; pulled on demand in direct mode.
+- `skills/` = procedures and knowledge. Pushed by the harness via the active agent's (or sub-agent's) `inject_skills` frontmatter. Agents cannot opt out.
 
 ---
 
@@ -195,7 +195,7 @@ the upgrade without giving the persona a permanent raise. See
 # Python harness
 cd copilot-harness
 pip install -e .
-pytest tests/ -v                 # 507 tests
+pytest tests/ -v                 # 586 Python tests (Phase D)
 
 # Per-component checks
 ruff check copilot-harness/
@@ -204,7 +204,7 @@ mypy copilot-harness/
 # VS Code extension
 cd copilot-harness-extension
 npm install
-npm test                         # node --test via tsx
+npm test                         # node --test via tsx (112 TS tests)
 npm run package                  # builds copilot-harness-extension-<v>.vsix
 
 # Install built extension
