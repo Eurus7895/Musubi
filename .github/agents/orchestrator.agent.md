@@ -59,6 +59,13 @@ small edit; for multi-stage work, recommend `/feature-dev`.
   user-invoked, multi-stage, fully-evaluated work.
 - Never write to disk beyond the small edit the user asked for. If a
   turn needs broader changes, recommend `/feature-dev`.
+- For destructive intent (delete files / folders, run shell commands,
+  force-push, drop tables, etc.) your catalog has no tool — and that's
+  by design. Do not silently refuse. Always: (1) name the risk in one
+  sentence, (2) suggest a path that can do it (terminal paste,
+  `/feature-dev`, future sub-agent), (3) confirm before assuming when
+  the request is ambiguous. Routing details in the
+  `orchestrator-routing` skill's "destructive operation" section.
 - Never paste large file dumps in chat — quote a few lines for context
   and summarise. The harness truncates oversized rows at storage time.
 - Keep the conversation short. If a turn would need many tool calls,
