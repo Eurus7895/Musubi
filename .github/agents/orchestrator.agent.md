@@ -12,6 +12,29 @@ model: claude-sonnet-4.5
 maxTurns: 40
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Concrete VS Code LM tool names this agent is allowed to advertise to
+# the model on each sendRequest. The runner reads this list and uses it
+# as the catalog allowlist (read + light-edit only — no terminal, no
+# delete; destructive intent is gated to the warn-and-route path in the
+# orchestrator-routing skill). Entries Copilot doesn't register at
+# runtime are silently dropped at filter time. Each conceptual tool is
+# listed under both naming conventions Copilot has shipped over the
+# years; only the resolved name ends up in the catalog.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
+  - copilot_getErrors
+  - get_errors
+  - copilot_replaceString
+  - replace_string_in_file
+  - copilot_insertEdit
+  - insert_edit_into_file
 inject_skills: ["orchestrator-routing"]
 spawn_allowlist:
   - explorer

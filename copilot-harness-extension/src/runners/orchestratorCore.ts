@@ -19,6 +19,8 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+import { parseFrontmatterLmTools } from "../modelSelectorCore";
+
 export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
 
 export const ORCHESTRATOR_TOOL_NAMES = [
@@ -300,6 +302,11 @@ function readFirstExisting(roots: string[], rel: string): string | null {
 export interface LoadedPrompts {
   agentMd: string;
   routingSkill: string;
+  /** Concrete VS Code LM tool names parsed from the agent.md frontmatter
+   *  `lm_tools:` field. Empty array when the field is missing — callers
+   *  treat that as "advertise no external tools to the LM."
+   */
+  lmTools: string[];
 }
 
 /** Load orchestrator agent.md + routing skill from .github/. */
@@ -309,7 +316,8 @@ export function loadOrchestratorPrompts(roots: string[]): LoadedPrompts {
   const routingSkill = readFirstExisting(
     roots, path.join(".github", "skills", "orchestrator-routing", "SKILL.md"),
   ) ?? "";
-  return { agentMd, routingSkill };
+  const lmTools = parseFrontmatterLmTools(agentMd);
+  return { agentMd, routingSkill, lmTools };
 }
 
 // ── Phase C.2: chat_id, conversation rows, token budget, compaction ─────────

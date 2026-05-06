@@ -11,6 +11,23 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Concrete VS Code LM tool names. PipelineBuilder reads the existing
+# tree to model conventions, then writes new pipeline files. Read +
+# light-edit + create_file; no terminal needed.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
+  - copilot_replaceString
+  - replace_string_in_file
+  - copilot_insertEdit
+  - insert_edit_into_file
+  - create_file
 ---
 
 ## Role

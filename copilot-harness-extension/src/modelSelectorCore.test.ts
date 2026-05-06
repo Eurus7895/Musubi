@@ -6,6 +6,7 @@ import * as path from "path";
 
 import {
   parseAgentModelFamily,
+  parseFrontmatterLmTools,
   parseFrontmatterModel,
   pickSkillModelFamily,
   readAgentModelFamily,
@@ -280,4 +281,103 @@ test("repo agents: every shipped .agent.md declares a model", () => {
     if (parseAgentModelFamily(md) === null) { missing.push(f); }
   }
   assert.deepEqual(missing, [], `agents missing 'model:' frontmatter: ${missing.join(", ")}`);
+});
+
+// ── parseFrontmatterLmTools ───────────────────────────────────────────
+
+test("parseFrontmatterLmTools: block-list shape returns the entries", () => {
+  const md = [
+    "---",
+    "name: foo",
+    "lm_tools:",
+    "  - copilot_readFile",
+    "  - copilot_searchWorkspace",
+    "  - read_file",
+    "---",
+    "body",
+  ].join("\n");
+  assert.deepEqual(parseFrontmatterLmTools(md), [
+    "copilot_readFile",
+    "copilot_searchWorkspace",
+    "read_file",
+  ]);
+});
+
+test("parseFrontmatterLmTools: inline shape returns the entries", () => {
+  const md = [
+    "---",
+    "name: foo",
+    'lm_tools: ["copilot_readFile", "copilot_searchWorkspace", "read_file"]',
+    "---",
+  ].join("\n");
+  assert.deepEqual(parseFrontmatterLmTools(md), [
+    "copilot_readFile",
+    "copilot_searchWorkspace",
+    "read_file",
+  ]);
+});
+
+test("parseFrontmatterLmTools: no field returns []", () => {
+  const md = ["---", "name: foo", "model: claude-sonnet-4.5", "---"].join("\n");
+  assert.deepEqual(parseFrontmatterLmTools(md), []);
+});
+
+test("parseFrontmatterLmTools: empty block-list returns []", () => {
+  const md = ["---", "name: foo", "lm_tools:", "sees:", "  - brief", "---"].join("\n");
+  // No '- ' lines after lm_tools: → empty.
+  assert.deepEqual(parseFrontmatterLmTools(md), []);
+});
+
+test("parseFrontmatterLmTools: empty inline list returns []", () => {
+  const md = ["---", "name: foo", "lm_tools: []", "---"].join("\n");
+  assert.deepEqual(parseFrontmatterLmTools(md), []);
+});
+
+test("parseFrontmatterLmTools: comments after entries are ignored", () => {
+  const md = [
+    "---",
+    "lm_tools:",
+    "  - copilot_readFile  # primary read tool",
+    "  - read_file",
+    "---",
+  ].join("\n");
+  assert.deepEqual(parseFrontmatterLmTools(md), ["copilot_readFile", "read_file"]);
+});
+
+test("parseFrontmatterLmTools: list stops at first non-list line", () => {
+  const md = [
+    "---",
+    "lm_tools:",
+    "  - copilot_readFile",
+    "sees:",
+    "  - brief",
+    "---",
+  ].join("\n");
+  // 'sees:' is not a '- ' continuation — block-list ends after copilot_readFile.
+  assert.deepEqual(parseFrontmatterLmTools(md), ["copilot_readFile"]);
+});
+
+test("parseFrontmatterLmTools: no frontmatter returns []", () => {
+  assert.deepEqual(parseFrontmatterLmTools("just some markdown body"), []);
+});
+
+test("repo agents: every shipped .agent.md declares lm_tools", () => {
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const agentsDir = path.join(repoRoot, ".github", "agents");
+  if (!fs.existsSync(agentsDir)) { return; }
+  const files = fs.readdirSync(agentsDir).filter(f => f.endsWith(".agent.md"));
+  const missing: string[] = [];
+  for (const f of files) {
+    const md = fs.readFileSync(path.join(agentsDir, f), "utf-8");
+    // Field must be present — parseFrontmatterLmTools returns [] both when
+    // missing AND when explicitly empty, so we re-check the raw frontmatter
+    // for the literal key. Empty list is fine (e.g. summarizer); absent
+    // key is not.
+    if (!md.startsWith("---")) { missing.push(`${f}: no frontmatter`); continue; }
+    const end = md.indexOf("\n---", 3);
+    if (end === -1) { missing.push(`${f}: unterminated frontmatter`); continue; }
+    const block = md.slice(3, end);
+    if (!/^\s*lm_tools\s*:/m.test(block)) { missing.push(f); }
+  }
+  assert.deepEqual(missing, [], `agents missing 'lm_tools:' frontmatter: ${missing.join(", ")}`);
 });

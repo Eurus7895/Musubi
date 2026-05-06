@@ -10,6 +10,17 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Concrete VS Code LM tool names. Designer reads existing code to anchor
+# the design but does not write files. Read + search only.
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
 ---
 
 ## Role

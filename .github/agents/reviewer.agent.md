@@ -10,6 +10,19 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Concrete VS Code LM tool names. Reviewer judges code-as-artifact; the
+# evaluator firewall narrows what it sees to code only, but the
+# read-tool surface is the standard read + search subset for sanity
+# lookups (e.g. peeking at a referenced helper).
+lm_tools:
+  - copilot_readFile
+  - read_file
+  - copilot_listDirectory
+  - list_dir
+  - copilot_searchWorkspace
+  - grep_search
+  - copilot_findFiles
+  - file_search
 ---
 
 ## Role
