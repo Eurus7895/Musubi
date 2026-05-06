@@ -495,11 +495,36 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       history.push(vscode.LanguageModelChatMessage.User(prompt));
     }
 
-    const lmTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    }));
+    // Tools the LM can call. Three layers:
+    //   1. Harness sub-agent tools (spawn / await / list) — preserve the
+    //      orchestrator's context window when a useful runner exists.
+    //   2. Every other LM tool the workbench has registered — Copilot's
+    //      read_file / grep / list_dir / etc. The orchestrator falls back
+    //      to these directly while sub-agent runners (explorer, etc.) are
+    //      still in progress, so questions like "describe this project"
+    //      can be answered without a hung sub-agent spawn.
+    // Dedup against ORCHESTRATOR_TOOL_NAMES so our own registered tools
+    // aren't advertised twice. Skip `canBeReferencedInPrompt: false` tools
+    // — they are intentionally hidden from prompt surfaces by their owners.
+    const orchestratorToolNames = new Set<string>(
+      ORCHESTRATOR_TOOLS.map(t => t.name),
+    );
+    const externalTools: vscode.LanguageModelChatTool[] = vscode.lm.tools
+      .filter(t => !orchestratorToolNames.has(t.name))
+      .map(t => ({
+        name: t.name,
+        description: t.description ?? t.name,
+        inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+      }));
+    const lmTools: vscode.LanguageModelChatTool[] = [
+      ...ORCHESTRATOR_TOOLS.map(t => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+      ...externalTools,
+    ];
+    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${ORCHESTRATOR_TOOLS.length} harness + ${externalTools.length} external)`);
 
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
