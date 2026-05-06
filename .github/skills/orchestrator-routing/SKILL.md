@@ -21,6 +21,42 @@ tools you actually have.
 A turn that doesn't need a tool should not get one. "Just to be safe"
 is the most common waste.
 
+## When the request is vague — ASK FIRST, do not explore
+
+For requests that don't name a specific file, function, or concrete
+target, **ask one clarifying question before any tool call**:
+
+- *"create a unit test for project"* → which file/module? which test
+  framework? "the project" is too broad.
+- *"add tests"* / *"fix this"* / *"improve performance"* / *"refactor it"*
+  → ask what they want changed and where.
+- *"explain how it works"* without an antecedent → ask what `it` refers to.
+
+Exploration tool calls on a vague request usually:
+1. Hallucinate paths or patterns the workspace doesn't have.
+2. Get back empty results.
+3. Trigger more tool calls trying a different angle.
+4. Burn through the cycle budget without producing anything.
+
+The harness will hard-stop you after 2 consecutive cycles of empty /
+errored tool results — and the user will be unhappy with the
+result-less response. ASKING is always cheaper than guessing.
+
+## Stop on no-progress
+
+If a tool call returns empty (`result=0ch`) or errors, that is data:
+the LM picked the wrong target. **Do not just try a slightly different
+input.** Either:
+
+- Stop and ask the user to clarify the path or pattern, OR
+- Use a broader query that's more likely to hit (e.g. switch from
+  `findFiles` with a specific name to `searchWorkspace` with a
+  keyword).
+
+Two empty / errored cycles in a row is the runner's bail threshold.
+If you hit it the user gets an "I couldn't find anything — please be
+more specific" message and you've spent ~2× tokens for zero output.
+
 ## When to use a read tool
 
 Pick the cheapest one in your catalog that answers the question:

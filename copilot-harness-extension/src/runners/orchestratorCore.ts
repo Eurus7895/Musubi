@@ -114,7 +114,30 @@ export const ORCHESTRATOR_TOOLS: readonly OrchestratorTool[] = [
 ];
 
 /** Maximum number of (LLM round-trip → tool dispatch) cycles per user turn. */
-export const MAX_TOOL_CYCLES = 8;
+/**
+ * Hard ceiling on tool-call cycles per turn. The LM gets at most this
+ * many sendRequest rounds; anything beyond is forced to a final answer.
+ *
+ * Lowered from 8 to 5 after a real session showed the LM thrashing
+ * through 8 cycles of empty tool results without producing any useful
+ * work. With the no-progress backoff (CONSECUTIVE_EMPTY_CYCLE_LIMIT)
+ * also in place, the cap rarely fires anyway — but a tighter ceiling
+ * means worst-case token spend per turn is bounded.
+ */
+export const MAX_TOOL_CYCLES = 5;
+
+/**
+ * If this many tool-emitting cycles in a row produce zero useful
+ * results (every tool call returned empty content OR failed), bail
+ * to the force-final-answer path. Catches the "LM hallucinates a path,
+ * tool returns empty, LM tries another path, also empty, ..." loop
+ * that wastes both wall-clock and tokens.
+ *
+ * 2 is the minimum that distinguishes "noisy first attempt → recovery"
+ * from "stuck loop". One bad cycle is normal; two in a row is a sign
+ * the LM has nothing to anchor on and should ask the user.
+ */
+export const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 2;
 
 /** Cap on the chat history we replay per turn. Phase C replaces this. */
 export const MAX_HISTORY_TURNS = 10;

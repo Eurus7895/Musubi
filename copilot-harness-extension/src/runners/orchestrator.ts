@@ -22,6 +22,7 @@ import {
   detectFrustration,
   dispatchOrchestratorTool,
   loadOrchestratorPrompts,
+  CONSECUTIVE_EMPTY_CYCLE_LIMIT,
   MAX_TOOL_CYCLES,
   MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
@@ -608,6 +609,11 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
     const turnStart = Date.now();
+    // Track consecutive cycles whose tools all returned empty content or
+    // failed. The LM's typical thrashing pattern is to hallucinate a path,
+    // get an empty result, try a different path, also empty, etc. Bail to
+    // the force-final-answer path after CONSECUTIVE_EMPTY_CYCLE_LIMIT.
+    let consecutiveEmptyCycles = 0;
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
 
@@ -674,8 +680,13 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       ]));
 
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
+      // Per-cycle progress tracking. A tool call counts as useful if it
+      // returned non-empty content AND did not error. Used to detect the
+      // hallucinate-and-retry loop (every cycle's results are empty/fail).
+      let cycleUsefulCount = 0;
       for (const call of toolCalls) {
         let resultText: string;
+        let callOk = false;
         const toolStart = Date.now();
         try {
           const invokeResult = await vscode.lm.invokeTool(
@@ -688,6 +699,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           ));
           resultText = stringifyToolResult(invokeResult.content);
           log(`[orchestrator]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
+          callOk = resultText.trim().length > 0;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[orchestrator]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
@@ -696,6 +708,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             new vscode.LanguageModelTextPart(resultText),
           ]));
         }
+        if (callOk) { cycleUsefulCount++; }
         // Persist the tool result as a role:"tool" entry so reactive
         // compaction (80% branch) has something to drop and a future
         // turn can reconstruct what happened.
@@ -721,6 +734,27 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         await appendMessage(client, chatId, "tool", toolContent, log);
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+      // No-progress backoff. If every tool call this cycle was empty/error,
+      // increment the counter; reset on any useful result. After
+      // CONSECUTIVE_EMPTY_CYCLE_LIMIT in a row, break to the
+      // force-final-answer path so we don't spend the rest of MAX_TOOL_CYCLES
+      // watching the LM hallucinate paths.
+      if (cycleUsefulCount === 0) {
+        consecutiveEmptyCycles++;
+        if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
+          log(`[orchestrator] ${consecutiveEmptyCycles} consecutive cycles with no useful tool results — bailing to final answer`);
+          stream.markdown(
+            "\n\n_[harness] Tool calls returned no useful results — stopping. " +
+            "Try a more specific request (e.g. name a file or function)._",
+          );
+          // Surface the bail-out as the turn's outcome instead of falling
+          // through to the MAX_TOOL_CYCLES message below.
+          return;
+        }
+      } else {
+        consecutiveEmptyCycles = 0;
+      }
     }
 
     log(`[orchestrator] hit MAX_TOOL_CYCLES (${MAX_TOOL_CYCLES}) — forcing final answer`);
