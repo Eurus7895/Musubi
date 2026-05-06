@@ -11,6 +11,7 @@
  * for muscle-memory; prefer the slash form.
  */
 
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -148,10 +149,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   const log = (msg: string): void => out.appendLine(msg);
+
+  // Per-extension-activation salt threaded into resolveChatId so identical
+  // first prompts in distinct chat panels mint distinct chat_ids. Closing
+  // and reopening VS Code resets the salt — by design, "new VS Code session
+  // = new chat state". Multi-turn within an activation stays stable because
+  // the salt is unchanged.
+  const sessionSalt = crypto.randomBytes(8).toString("hex");
+  log(`Session salt: ${sessionSalt}`);
+
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",
     (req, ctx, stream, token) => handler(
-      req, ctx, stream, token, client, refreshTasks, context.extensionPath, log,
+      req, ctx, stream, token, client, refreshTasks, context.extensionPath, log, sessionSalt,
     ),
   );
   // Use our own harness mark for the chat avatar rather than the generic
@@ -331,6 +341,7 @@ async function handler(
   refreshTasks: () => void,
   extensionPath: string,
   log: (msg: string) => void,
+  sessionSalt: string,
 ): Promise<vscode.ChatResult> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) {
@@ -390,11 +401,12 @@ async function handler(
           token,
           roots: slashRoots,
           log,
+          sessionSalt,
         });
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log);
+        await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log, sessionSalt);
         break;
     }
   } catch (err) {
@@ -468,6 +480,7 @@ async function runSlash(
   token: vscode.CancellationToken,
   refreshTasks: () => void,
   log: (msg: string) => void,
+  sessionSalt: string,
 ): Promise<void> {
   const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
@@ -543,6 +556,7 @@ async function runSlash(
         token,
         roots: slashRoots,
         log,
+        sessionSalt,
       });
       return;
     }

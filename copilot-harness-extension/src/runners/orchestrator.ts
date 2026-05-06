@@ -399,6 +399,13 @@ export interface RunOrchestratorOptions {
   token: vscode.CancellationToken;
   roots: string[];
   log: (msg: string) => void;
+  /**
+   * Per-extension-activation random salt. Threaded into resolveChatId
+   * so identical first prompts in distinct chat panels mint distinct
+   * chat_ids; multi-turn within the same activation stays stable.
+   * Generated once in extension.ts:activate().
+   */
+  sessionSalt: string;
 }
 
 /**
@@ -411,7 +418,7 @@ export interface RunOrchestratorOptions {
  * even if the LLM call throws or the user cancels.
  */
 export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
-  const { prompt, client, chatContext, stream, token, roots, log } = opts;
+  const { prompt, client, chatContext, stream, token, roots, log, sessionSalt } = opts;
 
   // Honors the orchestrator agent's `model:` frontmatter, and lets the
   // pushed `orchestrator-routing` skill (or any future complicated skill)
@@ -449,6 +456,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     participantId: PARTICIPANT_ID,
     firstUserPrompt: firstUserPromptInThread(chatContext, prompt),
     workspacePath: roots[0],
+    sessionSalt,
   });
 
   const active: ActiveOrchestrator = {
@@ -535,6 +543,18 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     if (!compacted.some(m => m.role === "user" && m.content === prompt)) {
       history.push(vscode.LanguageModelChatMessage.User(prompt));
     }
+    // Capture the static prefix lengths once so the per-cycle log can split
+    // out system / replay growth / catalog clearly. These don't change as
+    // the loop appends assistant + tool-result rows on later cycles.
+    const systemPromptChars = systemPrompt.length;
+    const initialReplayChars = history.slice(1).reduce((sum, m) => {
+      for (const part of m.content) {
+        if (part instanceof vscode.LanguageModelTextPart) {
+          sum += part.value.length;
+        }
+      }
+      return sum;
+    }, 0);
 
     // Tools the LM can call. Three layers:
     //   1. Harness sub-agent tools (spawn / await / list) — preserve the
@@ -601,8 +621,18 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           }
         }
       }
-      const historyTokenEstimate = Math.max(1, Math.floor(historyChars / 4));
-      log(`[orchestrator] cycle ${cycle} sendRequest: history~${historyTokenEstimate}t + catalog~${catalogTokenEstimate}t = ~${historyTokenEstimate + catalogTokenEstimate}t out`);
+      // Split the history walk into the three components the user actually
+      // cares about. system + replay are constant per turn; turnGrowth is
+      // the assistant + tool-result rows added by previous cycles in THIS
+      // turn (zero on cycle 0, grows after each tool round).
+      const turnGrowthChars = Math.max(0, historyChars - systemPromptChars - initialReplayChars);
+      const systemTokens  = Math.max(1, Math.floor(systemPromptChars   / 4));
+      const replayTokens  = Math.max(0, Math.floor(initialReplayChars  / 4));
+      const turnTokens    = Math.max(0, Math.floor(turnGrowthChars     / 4));
+      const totalTokens   = systemTokens + replayTokens + turnTokens + catalogTokenEstimate;
+      log(`[orchestrator] cycle ${cycle} sendRequest:`
+        + ` system~${systemTokens}t + replay~${replayTokens}t + this-turn~${turnTokens}t`
+        + ` + catalog~${catalogTokenEstimate}t = ~${totalTokens}t out`);
 
       const cycleStart = Date.now();
       const response = await model.sendRequest(history, { tools: lmTools }, token);

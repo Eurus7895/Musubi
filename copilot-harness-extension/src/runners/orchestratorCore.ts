@@ -399,6 +399,18 @@ export function parseConversationResponse(raw: string): OrchestratorMessage[] {
  * stable. Truncated SHA-256 (16 hex chars) keeps the chat_id short
  * enough for SQLite indexes while leaving collision space generous.
  *
+ * `sessionSalt` is a per-extension-activation random string that the
+ * runner mints once when activate() runs. Including it means: identical
+ * first prompts in two separate chat panels (or two separate VS Code
+ * sessions) hash to DIFFERENT chat_ids, so a brand-new chat doesn't
+ * silently inherit the prior chat's history. Multi-turn within the
+ * same activation still hashes the same because the salt is unchanged.
+ *
+ * Trade-off: closing and reopening VS Code resets the salt and hence
+ * abandons the prior chat's replay. Conversation rows stay in the DB
+ * (orphaned) but won't be loaded. That matches the user expectation of
+ * "new VS Code session = new chat state."
+ *
  * Replace with whatever VS Code adds when it ships a stable session
  * id (likely 1.95+).
  */
@@ -406,14 +418,18 @@ export function resolveChatId(input: {
   participantId: string;
   firstUserPrompt: string;
   workspacePath?: string;
+  sessionSalt?: string;
 }): string {
   const h = crypto.createHash("sha256");
-  h.update("v1\0");
+  // Bump version when the input list changes to invalidate stale ids.
+  h.update("v2\0");
   h.update(input.participantId);
   h.update("\0");
   h.update(input.firstUserPrompt);
   h.update("\0");
   h.update(input.workspacePath ?? "");
+  h.update("\0");
+  h.update(input.sessionSalt ?? "");
   return h.digest("hex").slice(0, 16);
 }
 

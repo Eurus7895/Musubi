@@ -119,6 +119,61 @@ test("resolveChatId: differs across workspaces with the same prompt", () => {
   assert.notEqual(a, b);
 });
 
+test("resolveChatId: identical prompts in different sessions mint distinct ids", () => {
+  // The whole point of sessionSalt — two new chats with the same first
+  // prompt in the same workspace must NOT collide on chat_id, otherwise
+  // the second chat silently inherits the first's history rows.
+  const a = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "create unit test",
+    workspacePath: "/repo",
+    sessionSalt: "abc123",
+  });
+  const b = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "create unit test",
+    workspacePath: "/repo",
+    sessionSalt: "def456",
+  });
+  assert.notEqual(a, b);
+});
+
+test("resolveChatId: same salt + same prompt is stable across calls", () => {
+  // Multi-turn within one extension activation must keep returning the
+  // same chat_id so conversation rows accumulate correctly.
+  const a = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "create unit test",
+    workspacePath: "/repo",
+    sessionSalt: "abc123",
+  });
+  const b = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "create unit test",
+    workspacePath: "/repo",
+    sessionSalt: "abc123",
+  });
+  assert.equal(a, b);
+});
+
+test("resolveChatId: omitting salt is equivalent to empty salt", () => {
+  // Existing call sites that don't pass sessionSalt (e.g. tests, future
+  // callers) get a deterministic id rather than a runtime error. The id
+  // is just whatever salt="" hashes to — distinct from any real session.
+  const a = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "x",
+    workspacePath: "/repo",
+  });
+  const b = resolveChatId({
+    participantId: "copilot-harness.harness",
+    firstUserPrompt: "x",
+    workspacePath: "/repo",
+    sessionSalt: "",
+  });
+  assert.equal(a, b);
+});
+
 // ── totalHistoryTokens ───────────────────────────────────────────────────────
 
 test("totalHistoryTokens: sums system prompt + history + current prompt", () => {
