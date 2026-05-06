@@ -406,6 +406,14 @@ export interface RunOrchestratorOptions {
    * Generated once in extension.ts:activate().
    */
   sessionSalt: string;
+  /**
+   * From the originating ChatRequest. Forwarded into every
+   * vscode.lm.invokeTool call. Required by tools that produce
+   * workspace edits with a user-confirmation UI (e.g.
+   * copilot_insertEdit, copilot_replaceString, create_file). Tools
+   * that don't need it ignore it.
+   */
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 /**
@@ -418,7 +426,7 @@ export interface RunOrchestratorOptions {
  * even if the LLM call throws or the user cancels.
  */
 export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
-  const { prompt, client, chatContext, stream, token, roots, log, sessionSalt } = opts;
+  const { prompt, client, chatContext, stream, token, roots, log, sessionSalt, toolInvocationToken } = opts;
 
   // Honors the orchestrator agent's `model:` frontmatter, and lets the
   // pushed `orchestrator-routing` skill (or any future complicated skill)
@@ -672,7 +680,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
-            { input: call.input, toolInvocationToken: undefined },
+            { input: call.input, toolInvocationToken },
             token,
           );
           resultParts.push(new vscode.LanguageModelToolResultPart(

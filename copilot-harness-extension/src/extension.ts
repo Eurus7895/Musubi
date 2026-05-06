@@ -402,11 +402,12 @@ async function handler(
           roots: slashRoots,
           log,
           sessionSalt,
+          toolInvocationToken: request.toolInvocationToken,
         });
         break;
 
       case "slash":
-        await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log, sessionSalt);
+        await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log, sessionSalt, request.toolInvocationToken);
         break;
     }
   } catch (err) {
@@ -481,6 +482,7 @@ async function runSlash(
   refreshTasks: () => void,
   log: (msg: string) => void,
   sessionSalt: string,
+  toolInvocationToken: vscode.ChatParticipantToolToken | undefined,
 ): Promise<void> {
   const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
@@ -557,6 +559,7 @@ async function runSlash(
         roots: slashRoots,
         log,
         sessionSalt,
+        toolInvocationToken,
       });
       return;
     }
