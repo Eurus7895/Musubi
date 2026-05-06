@@ -31,6 +31,39 @@ if ! "$PYTHON" -m PyInstaller --version &>/dev/null; then
     exit 1
 fi
 
+# Pick the platform-native binary name. On Windows PyInstaller emits .exe;
+# elsewhere no extension. Both candidates are checked because bash on WSL
+# (now refused, but harmless to keep robust) reports linux-gnu even though
+# the underlying Python produces .exe.
+if [[ -f "$BIN_DIR/copilot-harness.exe" ]]; then
+    BIN_NAME="copilot-harness.exe"
+elif [[ -f "$BIN_DIR/copilot-harness" ]]; then
+    BIN_NAME="copilot-harness"
+else
+    BIN_NAME=""
+fi
+
+# Idempotency: skip the PyInstaller pass when the existing binary is newer
+# than every source file that would feed into it. PyInstaller takes 30-60 s
+# on a warm machine even when nothing changed, which is the bulk of why
+# 'npm run all' felt heavy in the iterative loop. The check below uses
+# `find -newer`: it lists files newer than the binary, and we skip when
+# the list is empty.
+if [[ -n "$BIN_NAME" && -f "$BIN_DIR/$BIN_NAME" ]]; then
+    BIN_PATH="$BIN_DIR/$BIN_NAME"
+    SOURCES_NEWER="$(find "$SERVER_DIR" \
+        -path "$SERVER_DIR/build" -prune -o \
+        -path "$SERVER_DIR/dist" -prune -o \
+        -path "$SERVER_DIR/__pycache__" -prune -o \
+        -path "$SERVER_DIR/tests" -prune -o \
+        \( -name "*.py" -o -name "*.spec" \) -newer "$BIN_PATH" -print 2>/dev/null | head -n 1)"
+    SCRIPTS_NEWER="$(find "$REPO_ROOT/scripts" -maxdepth 2 -name "*.py" -newer "$BIN_PATH" -print 2>/dev/null | head -n 1)"
+    if [[ -z "$SOURCES_NEWER" && -z "$SCRIPTS_NEWER" ]]; then
+        echo "Binary at $BIN_PATH is newer than every harness source — skipping PyInstaller."
+        exit 0
+    fi
+fi
+
 cd "$SERVER_DIR"
 
 # WSL bash passes /mnt/c/... paths to Windows Python, which misreads them as
