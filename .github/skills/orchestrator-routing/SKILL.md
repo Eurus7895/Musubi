@@ -1,19 +1,36 @@
 ---
 name: orchestrator-routing
-description: Routing rules for the Orchestrator — which sub-agent to spawn for which kind of turn, when to spawn nothing at all, and how to size the brief. Pushed by the harness via the orchestrator's inject_skills frontmatter.
+description: Routing rules for the Orchestrator — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the orchestrator's inject_skills frontmatter.
 ---
 
 ## Purpose
 
-Help the Orchestrator pick the smallest sub-agent that can handle each
-user turn, without invoking pipelines and without doing the work
-itself. Routing wrong wastes spawn budget and pollutes the
-conversation; routing right keeps the parent context small and the
-answer fast.
+Help the Orchestrator answer each user turn cheaply, using the
+smallest amount of work that produces a real result. Today that means:
+**answer directly from your context and the available read tools, or
+suggest a pipeline. Do not try to spawn sub-agents — the runners are
+not wired yet, and any spawn will hang for ~30 s and return nothing.**
 
-## When NOT to spawn
+## Current state — read this first
 
-Answer directly, no sub-agent, in these cases:
+Phase B shipped the sub-agent primitives (spawn, await, list, audit
+log) on the Python side. The extension-side runners that turn a
+`running` sub_sessions row into an actual LM session for `explorer`,
+`investigator`, and `reviewer-aux` have **not** shipped. Until they
+do, the harness deliberately hides the sub-agent tools from the
+catalog so you cannot call them by accident.
+
+If you ever see `harness_spawn_subagent` in your tool catalog, that
+means a runner has been wired and the rest of this skill (sub-agent
+picker, sequencing, budget) becomes live again. Until then, treat
+the sub-agent guidance lower in this file as reference, not as the
+current playbook.
+
+## How to answer turns today
+
+### 1. Direct answer from context
+
+Answer directly, no tools, in these cases:
 
 - The user is asking about prior decisions you can answer from
   `memory_tier1` or `conversation_history`.
@@ -22,86 +39,75 @@ Answer directly, no sub-agent, in these cases:
 - The user wants you to summarise or rephrase something already in the
   conversation.
 - The user is correcting or redirecting your previous answer — adjust
-  course in prose, not by re-spawning.
+  course in prose.
 
-A turn that does NOT need a sub-agent should not get one. Spawning
-"just to be safe" is the most common routing mistake.
+A turn that does NOT need a tool call should not get one. Calling a
+read tool "just to be safe" is the most common waste.
 
-## Sub-agent picker
+### 2. Direct lookup with the read tools you have
+
+For "where is X?" / "show me the structure" / "what does file F
+contain?" use the read tools your catalog actually advertises —
+typically Copilot's `copilot_readFile`, `copilot_searchWorkspace`,
+`copilot_findFiles`, `copilot_listDirectory`, `copilot_getErrors`,
+and similar. They run synchronously in the user's workbench and
+return real results in a few hundred milliseconds.
+
+Pick the cheapest one that answers the question:
+
+- "Find file by name" → `copilot_findFiles` (fastest)
+- "Find code by content" → `copilot_searchWorkspace` (workspace search)
+- "Read file F" → `copilot_readFile` (only when you have the path)
+- "Browse a directory" → `copilot_listDirectory`
+- "Diagnose a build break" → `copilot_getErrors`
+
+### 3. Light edits when explicitly asked
+
+If the user says "change foo to bar in file X", use the edit tools in
+the catalog (`copilot_replaceString`, `copilot_insertEdit`, or their
+equivalents). One edit per request — for anything multi-step, suggest
+the pipeline (next section).
+
+### 4. Hand off to a pipeline for multi-stage work
+
+You may not invoke pipelines directly. Suggest one when:
+
+- The work needs plan + design + code + review with the evaluator
+  firewall preserved across stages.
+- Multiple back-and-forth correction loops are likely.
+- The user explicitly wants the durable, append-only stage record.
+
+Say: *"This looks like work for `/feature-dev` — try `/feature-dev
+<one-line goal>`."* Do not try to recreate the pipeline by chaining
+read + edit calls; the pipeline carries state, schemas, and the
+correction loop that an ad-hoc orchestrator turn does not.
+
+## Anti-patterns
+
+- **Calling a tool whose result you already have** in the conversation.
+  Re-reading the same file three times in one turn is pure waste.
+- **Looking up scaffolding the user can already see.** They opened the
+  file; they don't need you to confirm its line count.
+- **Pasting a 50 KB tool result into the chat.** Quote a few lines for
+  context, summarise the rest. The harness already truncates oversized
+  rows at storage time, but the user still has to read the chat.
+- **Summarising the conversation before answering.** They wrote it;
+  they remember. Just answer.
+
+## When sub-agent runners ship — reference
+
+This section becomes live once `harness_spawn_subagent` shows up in
+your catalog. Until then, ignore it.
 
 | Kind of work | Spawn | Brief shape |
 |---|---|---|
-| "Where is X defined / referenced?" | `explorer` | `Locate-X` / `Layout` / `Confirm-X` (one verifiable question) |
+| "Where is X defined / referenced?" | `explorer` | One verifiable question |
 | "What does this command output? / Why is the test failing?" | `investigator` | One diagnostic question + the command(s) allowed |
 | "Does file F satisfy checklist C?" | `reviewer-aux` | File path + checklist items, per-file |
 | "Scope this multi-task feature" | `planner` | The user's request, verbatim or tightened |
 | "Implement change X in file F" | `coder` | Plan-shaped brief: tasks, files, acceptance criteria |
 | "Evaluate this code-as-artifact" | `reviewer` | The code blob being judged (no plan/design/intent) |
 
-Rules of thumb:
-
-- Prefer `explorer` over `investigator` when no shell command is
-  needed. Investigator's extra Bash scope is cost; spend it only when
-  earned.
-- Prefer `reviewer-aux` over `reviewer` for checklist-style
-  per-file checks; reserve `reviewer` for whole-artifact evaluation
-  with the full code-review skill.
-- Prefer asking the user over spawning `planner` when the request is
-  small or already well-defined. Planner is for genuinely
-  multi-task work.
-- Spawn `coder` only with a brief tight enough that Coder doesn't have
-  to guess. If you find yourself writing "and also …", stop — split
-  into separate briefs or punt to a pipeline.
-
-## Sequencing
-
-Sub-agents do not see each other. If two depend on each other:
-
-1. Spawn the upstream one (e.g. `explorer` to find the file).
-2. Read its summary into your own working memory.
-3. Spawn the downstream one (e.g. `coder` to edit the file) with a
-   brief that *includes* the relevant facts from step 2.
-
-Never assume a sub-agent will infer context from the chat — they
-cannot see it.
-
-## Budget
-
-The harness caps you at **3 spawns of any one role per user turn**.
-The cap is per-role, not total: 3 explorers + 1 coder is fine; 4
-explorers is denied.
-
-If you hit the cap, the brief was probably wrong. Stop spawning, tell
-the user what you tried and what came back, and ask how to proceed.
-Do not work around the cap by spawning a different role to do the
-same job.
-
-## When to recommend a pipeline
-
-You may NOT spawn a pipeline. But you should suggest one when:
-
-- The user's request needs plan + design + code + review with the
-  evaluator firewall preserved across stages.
-- Multiple back-and-forth correction loops are likely.
-- The user explicitly wants the durable, append-only stage record.
-
-In those cases, reply: "This looks like work for `/feature-dev` — try
-`/feature-dev <one-line goal>`." Do not try to recreate the pipeline
-by hand-spawning planner → coder → reviewer; the pipeline carries
-state, schemas, and the correction loop that ad-hoc spawns do not.
-
-## Anti-patterns
-
-- **Spawning `explorer` to read a single file you already know the
-  path of.** Use your own `Read` tool — that's why you have it.
-- **Pasting the sub-agent's full transcript back to the user.** The
-  chat marker already shows it; quote at most one or two lines for
-  context.
-- **Spawning multiple sub-agents in parallel hoping one works.** Each
-  spawn costs the parent budget and the user's wall-clock. Pick the
-  right one.
-- **Summarising the conversation back to the user before answering.**
-  They wrote it; they remember. Just answer.
-- **Looping on a failed sub-agent.** A `failed` or `escalated` result
-  means the brief was wrong or the work doesn't fit the role. Re-brief
-  or ask the user — don't retry the same call.
+Cap: 3 spawns of any one role per user turn. If you hit it, the brief
+was probably wrong — stop spawning and ask. Sub-agents do not see each
+other; pass facts forward in the next brief.

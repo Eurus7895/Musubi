@@ -87,6 +87,22 @@ const PARTICIPANT_ID = "copilot-harness.harness";
 const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
 
 /**
+ * Sub-agent roles that have an extension-side LM runner. The orchestrator
+ * advertises harness_spawn_subagent / await / list ONLY when this set is
+ * non-empty — otherwise the LM ends up looping spawn → 30 s wall-clock kill
+ * → retry on roles that have no runner to drive them, burning tokens for
+ * no result.
+ *
+ * Currently empty. summarizer is invoked from inside the runner's 90 %
+ * compaction path, NOT by the LM, so it does not count here.
+ *
+ * When you ship a runner for explorer / investigator / reviewer-aux,
+ * add the role name and re-package the extension. Catalog inclusion
+ * flips automatically.
+ */
+const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set();
+
+/**
  * External tool allowlist. The orchestrator should default to read-only
  * lookup tools and a couple of light-edit tools. Names match what Copilot
  * Chat and a handful of common extensions register; entries that don't
@@ -567,19 +583,25 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       description: t.description ?? t.name,
       inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
     }));
-    const lmTools: vscode.LanguageModelChatTool[] = [
-      ...ORCHESTRATOR_TOOLS.map(t => ({
-        name: t.name,
-        description: t.description,
-        inputSchema: t.inputSchema,
-      })),
-      ...externalTools,
-    ];
+    // Hide the harness sub-agent tools when no LM-facing runner is wired.
+    // Otherwise the LM keeps spawning roles whose only outcome is a 30 s
+    // wall-clock kill → retry → kill loop, burning tokens with no result.
+    // Once a runner ships, add the role name to LM_FACING_SUBAGENT_ROLES.
+    const includeHarnessSubagentTools = LM_FACING_SUBAGENT_ROLES.size > 0;
+    const harnessTools: vscode.LanguageModelChatTool[] = includeHarnessSubagentTools
+      ? ORCHESTRATOR_TOOLS.map(t => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }))
+      : [];
+    const lmTools: vscode.LanguageModelChatTool[] = [...harnessTools, ...externalTools];
     // Token cost of the catalog: the full LanguageModelChatTool payload
     // gets serialized once per sendRequest cycle. Estimating from the
     // serialized JSON gives a stable proxy for what the API charges.
     const catalogTokenEstimate = estimateTokens(JSON.stringify(lmTools));
-    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${ORCHESTRATOR_TOOLS.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t`);
+    const subagentNote = includeHarnessSubagentTools ? "" : " (harness sub-agent tools hidden — no LM-facing runner)";
+    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
     const turnStart = Date.now();
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
