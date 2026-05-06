@@ -52,7 +52,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Pipe the server's stderr into our output channel so Python
         // tracebacks are visible during activation instead of being lost
         // to VS Code's main stderr.
-        onStderr: (line) => out.appendLine(`[server] ${line}`),
+        //
+        // Filter out the MCP SDK's per-tool-call heartbeat ("Processing
+        // request of type CallToolRequest") — every harness_* call emits
+        // one, which drowns out actual errors. The orchestrator runner
+        // already logs each tool call with name + duration, so the
+        // heartbeat adds nothing diagnostic.
+        onStderr: (line) => {
+          if (/Processing request of type CallToolRequest/.test(line)) { return; }
+          out.appendLine(`[server] ${line}`);
+        },
       },
     );
     out.appendLine("MCP server started. Listing tools...");

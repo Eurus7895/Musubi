@@ -526,14 +526,17 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     ];
     log(`[orchestrator] tool catalog: ${lmTools.length} tools (${ORCHESTRATOR_TOOLS.length} harness + ${externalTools.length} external)`);
 
+    const turnStart = Date.now();
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
 
+      const cycleStart = Date.now();
       const response = await model.sendRequest(history, { tools: lmTools }, token);
 
       let textBuf = "";
       const toolCalls: vscode.LanguageModelToolCallPart[] = [];
 
+      const streamStart = Date.now();
       for await (const part of response.stream) {
         if (part instanceof vscode.LanguageModelTextPart) {
           textBuf += part.value;
@@ -542,9 +545,14 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           toolCalls.push(part);
         }
       }
+      const lmMs = Date.now() - streamStart;
+      log(`[orchestrator] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
 
       if (textBuf.length > 0) { assistantBuf.push(textBuf); }
-      if (toolCalls.length === 0) { return; }
+      if (toolCalls.length === 0) {
+        log(`[orchestrator] turn done — total=${Date.now() - turnStart}ms cycles=${cycle + 1}`);
+        return;
+      }
 
       // Reflect the assistant's tool-call turn into the history, then run
       // each tool and append the result as a user-role tool-result message.
@@ -556,6 +564,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
       for (const call of toolCalls) {
         let resultText: string;
+        const toolStart = Date.now();
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
@@ -566,9 +575,10 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             call.callId, invokeResult.content,
           ));
           resultText = stringifyToolResult(invokeResult.content);
+          log(`[orchestrator]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[orchestrator] invokeTool(${call.name}) failed: ${msg}`);
+          log(`[orchestrator]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
           resultText = JSON.stringify({ status: "error", error: msg });
           resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
             new vscode.LanguageModelTextPart(resultText),
