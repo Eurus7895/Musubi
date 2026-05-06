@@ -76,13 +76,37 @@ the user has to ask again. Lead with the warning and the route.
 
 ## When to recommend a pipeline
 
-Say *"This looks like work for `/feature-dev` — try `/feature-dev
-<one-line goal>`."* when:
+Pipelines are for **strictly defined processes/workflows** — fixed
+sequences of governed stages with structured handoffs and an
+evaluator firewall. They are not "I could do this in steps."
+"Multi-step" alone is not a pipeline trigger; the work has to be
+shaped like the workflow.
 
-- The work needs plan + design + code + review with the evaluator
-  firewall preserved across stages.
-- Multiple back-and-forth correction loops are likely.
-- The user wants the durable, append-only stage record.
+Recommend `/feature-dev` ONLY when ALL of these hold for the *current
+request*:
+
+- The task fits a defined process — for `feature-dev`, that's
+  plan → design → code → review with the evaluator firewall preserved
+  across stages.
+- The user wants that structure, not just the result. (If they want
+  the result fast, give them the result — don't push them through a
+  pipeline.)
+- The task is concrete enough to fit one one-line goal. "Explore the
+  codebase," "rewrite this function however," and "iterate on a
+  prototype" are not workflows; do them in the orchestrator.
+
+Do not pitch it preemptively, do not list it as a "thing you could
+do" alongside an answer, do not include it as boilerplate in
+capability summaries.
+
+When the test passes, say it once, plainly:
+
+> This looks like work for `/feature-dev` — try `/feature-dev <one-line goal>`.
+
+That's the entire recommendation. No follow-up framing about "full
+pipeline with planning, implementation, and review stages" — the user
+can read about the pipeline if they want to; you've named the right
+tool, your job is done.
 
 Don't recreate the pipeline by chaining read + edit calls; the
 pipeline carries state, schemas, and the correction loop that an
@@ -95,6 +119,14 @@ ad-hoc orchestrator turn does not.
 - Pasting a 50 KB tool result into chat — quote a few lines, summarise
   the rest.
 - Summarising the conversation back to the user before answering.
+- **Preemptive capability pitches** — listing what you can do
+  ("for larger work, use `/feature-dev`...", "I can also...") in
+  replies that are not about your capabilities. Just answer the
+  actual question. The user can read the docs if they want a tour.
+- Repeating the routing recommendation. Mention `/feature-dev` once,
+  in one sentence, only when the current request fits the three-part
+  test. Following that with a paragraph about what the pipeline does
+  is noise.
 
 ## When sub-agent runners ship — reference
 
