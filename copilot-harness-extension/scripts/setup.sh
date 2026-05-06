@@ -30,15 +30,30 @@ VENV_DIR="$REPO_ROOT/.venv"
 echo "── CopilotHarness setup ──"
 echo "Repo root: $REPO_ROOT"
 
-# 1. Node / npm deps for the extension. Use `npm ci` when a lockfile exists —
-#    it's reproducible and typically 2–3× faster than `npm install`.
+# 1. Node / npm deps for the extension. Skip when node_modules is already
+#    populated AND no lockfile changes are pending — the slow `npm ci` step
+#    dominates a re-run otherwise.
 echo
 echo "[1/3] npm deps (extension)"
 cd "$EXT_DIR"
-if [[ -f "package-lock.json" ]]; then
-    npm ci --no-audit --no-fund
+NEED_NPM_INSTALL=1
+if [[ -d "node_modules" && -f "node_modules/.package-lock.json" ]]; then
+    # node_modules' .package-lock.json is npm's cached resolver state; if its
+    # mtime matches the project lockfile, deps are already in sync.
+    if [[ -f "package-lock.json" && "node_modules/.package-lock.json" -nt "package-lock.json" ]]; then
+        NEED_NPM_INSTALL=0
+    elif [[ ! -f "package-lock.json" && "node_modules/.package-lock.json" -nt "package.json" ]]; then
+        NEED_NPM_INSTALL=0
+    fi
+fi
+if [[ "$NEED_NPM_INSTALL" == "1" ]]; then
+    if [[ -f "package-lock.json" ]]; then
+        npm ci --no-audit --no-fund
+    else
+        npm install --no-audit --no-fund
+    fi
 else
-    npm install --no-audit --no-fund
+    echo "node_modules up to date — skipping."
 fi
 
 # 2. Python venv at repo root.
@@ -56,10 +71,19 @@ else
     VENV_PY="$VENV_DIR/bin/python"
 fi
 
-"$VENV_PY" -m pip install --upgrade pip --quiet
-# Editable install of the server package + PyInstaller for build:server.
-"$VENV_PY" -m pip install --quiet -e "$SERVER_DIR"
-"$VENV_PY" -m pip install --quiet pyinstaller
+# Skip the pip steps when the venv already has both the editable server
+# install and pyinstaller. `pip show` is cheap (~100 ms) compared to the
+# 5-30 s cost of even a no-op pip install.
+NEED_PIP_INSTALL=0
+if ! "$VENV_PY" -m pip show --quiet copilot-harness 2>/dev/null; then NEED_PIP_INSTALL=1; fi
+if ! "$VENV_PY" -m pip show --quiet pyinstaller    2>/dev/null; then NEED_PIP_INSTALL=1; fi
+if [[ "$NEED_PIP_INSTALL" == "1" ]]; then
+    "$VENV_PY" -m pip install --upgrade pip --quiet
+    "$VENV_PY" -m pip install --quiet -e "$SERVER_DIR"
+    "$VENV_PY" -m pip install --quiet pyinstaller
+else
+    echo "venv up to date — skipping."
+fi
 
 # 3. Summary.
 echo
