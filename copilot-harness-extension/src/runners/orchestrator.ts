@@ -88,8 +88,9 @@ async function appendMessage(
   log: (msg: string) => void,
 ): Promise<void> {
   if (!content) { return; }
+  let raw = "";
   try {
-    const raw = await client.callTool("harness_append_message", {
+    raw = await client.callTool("harness_append_message", {
       chat_id: chatId, role, content,
     });
     const parsed = JSON.parse(raw) as { status?: string; error?: string };
@@ -98,7 +99,11 @@ async function appendMessage(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[orchestrator] append_message threw: ${msg}`);
+    // Surface the raw server response too — when the server returns a
+    // FastMCP "Error executing tool ..." string, JSON.parse swallows the
+    // useful part of the message; logging `raw` recovers it.
+    const rawHint = raw ? ` raw=${JSON.stringify(raw.slice(0, 500))}` : "";
+    log(`[orchestrator] append_message threw: ${msg}${rawHint}`);
   }
 }
 

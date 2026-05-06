@@ -183,8 +183,8 @@ export class McpClient {
     return result.tools ?? [];
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<string> {
-    const result = await this.call("tools/call", { name, arguments: args }) as {
+  async callTool(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<string> {
+    const result = await this.call("tools/call", { name, arguments: args }, timeoutMs) as {
       content: Array<{ type: string; text?: string }>;
     };
     return (result.content ?? []).map((c) => c.text ?? "").join("");

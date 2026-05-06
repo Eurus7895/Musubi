@@ -167,7 +167,7 @@ export interface ToolDispatchContext {
 }
 
 export interface ToolDispatchClient {
-  callTool(name: string, args: Record<string, unknown>): Promise<string>;
+  callTool(name: string, args: Record<string, unknown>, timeoutMs?: number): Promise<string>;
 }
 
 /**
@@ -202,8 +202,14 @@ export async function dispatchOrchestratorTool(
       const out: Record<string, unknown> = {
         handle_id: args.handle_id,
       };
-      if (typeof args.max_wait_s === "number") { out.max_wait_s = args.max_wait_s; }
-      return client.callTool("harness_await_subagent", out);
+      // 30 s default — long enough for a real sub-agent run, short enough
+      // that a hung sub-agent surfaces fast instead of holding up the turn
+      // for the server's 300 s wall-clock cap.
+      const maxWaitS = typeof args.max_wait_s === "number" ? args.max_wait_s : 30;
+      out.max_wait_s = maxWaitS;
+      // Client-side timeout must exceed the server-side wait, plus a small
+      // grace window for the server to write its terminal response.
+      return client.callTool("harness_await_subagent", out, (maxWaitS + 5) * 1000);
     }
     case "harness_list_subagents":
       return client.callTool("harness_list_subagents", {
