@@ -120,15 +120,15 @@
     ]
   },
   "scripts": {
-    "setup": "bash scripts/setup.sh",
+    "setup": "node scripts/run-bash.js scripts/setup.sh",
     "compile": "npx tsc -p ./",
     "watch": "npx tsc --watch -p ./",
-    "build:server": "bash scripts/build-server.sh",
-    "build:assets": "bash scripts/copy-assets.sh",
-    "build": "bash scripts/build-parallel.sh",
+    "build:server": "node scripts/run-bash.js scripts/build-server.sh",
+    "build:assets": "node scripts/run-bash.js scripts/copy-assets.sh",
+    "build": "node scripts/run-bash.js scripts/build-parallel.sh",
     "build:serial": "npm run build:server && npm run build:assets && npm run compile",
     "package": "npm run build && vsce package",
-    "install:vsix": "bash scripts/install-vsix.sh",
+    "install:vsix": "node scripts/run-bash.js scripts/install-vsix.sh",
     "test": "node --test --import tsx 'src/**/*.test.ts'",
     "test:watch": "node --test --watch --import tsx 'src/**/*.test.ts'",
     "all": "npm run setup && npm run package && npm run install:vsix"
