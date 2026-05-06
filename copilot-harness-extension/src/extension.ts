@@ -90,6 +90,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("copilot-harness.refreshTasks", () => tasksProvider.refresh()),
+    vscode.commands.registerCommand("copilot-harness.clearActiveSession", async () => {
+      // Confirmation isn't strictly necessary — the operation only resets
+      // the pointer, all stage outputs and audit rows survive — but the
+      // user types this from a TreeView click without a way to undo, so
+      // a single Yes/No prompt is worth the friction.
+      const choice = await vscode.window.showWarningMessage(
+        "Clear the active pipeline session? Stage outputs and audit logs are preserved; only the pointer that crash-recovery reads is reset.",
+        { modal: true },
+        "Clear",
+      );
+      if (choice !== "Clear") { return; }
+      try {
+        await client.callTool("harness_clear_active_session", {});
+        tasksProvider.refresh();
+        vscode.window.showInformationMessage("CopilotHarness: active session cleared.");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`CopilotHarness: clear failed — ${msg}`);
+      }
+    }),
     vscode.commands.registerCommand(
       "copilot-harness.openSessionArtifact",
       async (sessionId: string, stage: string) => {

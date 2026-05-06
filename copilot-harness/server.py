@@ -109,6 +109,21 @@ mcp = FastMCP("copilot-harness")
 # ── State tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
+def harness_clear_active_session() -> str:
+    """Clear the active-session pointer without deleting any session data.
+
+    Use to abandon an interrupted pipeline that's stuck pending. Stage
+    outputs, audit rows, and the session row are preserved; only the
+    pointer that crash-recovery reads is reset. Idempotent.
+
+    Returns:
+      { "status": "ok" }
+    """
+    state.clear_active_session()
+    return json.dumps({"status": "ok"})
+
+
+@mcp.tool()
 def harness_get_active_session() -> str:
     """Check for an active session that needs resuming after a crash or restart.
 

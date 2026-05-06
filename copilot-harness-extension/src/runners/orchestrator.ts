@@ -26,6 +26,7 @@ import {
   MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
   ORCHESTRATOR_TOOLS,
+  estimateTokens,
   parseConversationResponse,
   planCompaction,
   resolveChatId,
@@ -75,6 +76,55 @@ async function createOrchestratorSession(
 // ── Phase C.2: conversation persistence (replay + append) ───────────────────
 
 const PARTICIPANT_ID = "copilot-harness.harness";
+
+/**
+ * Cap on a single tool-result row stored in the conversation log. Stops a
+ * 50 KB grep dump from sitting in the replay forever — every subsequent
+ * turn pays its full cost. Storage stays the truncation primitive (rather
+ * than fetch-time truncation) so the saved row is also what the user sees
+ * if they inspect history.
+ */
+const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
+
+/**
+ * External tool allowlist. The orchestrator should default to read-only
+ * lookup tools and a couple of light-edit tools. Names match what Copilot
+ * Chat and a handful of common extensions register; entries that don't
+ * resolve are silently dropped at filter time.
+ *
+ * Anything outside this list is excluded from the catalog passed to
+ * sendRequest, which is the single largest tunable knob on per-turn token
+ * spend (every tool advertised costs description + schema tokens, and the
+ * catalog is re-sent on every cycle).
+ *
+ * Add entries here when a workflow needs them — keep this list small.
+ */
+const EXTERNAL_TOOL_ALLOWLIST: ReadonlySet<string> = new Set([
+  // Read-only lookup
+  "copilot_readFile",
+  "copilot_listDirectory",
+  "copilot_searchWorkspace",
+  "copilot_findFiles",
+  "copilot_searchSymbols",
+  "copilot_getErrors",
+  "copilot_semanticSearch",
+  "copilot_fetchWebPage",
+  "copilot_getChangedFiles",
+  "read_file",
+  "list_dir",
+  "grep_search",
+  "file_search",
+  "semantic_search",
+  "get_errors",
+  "fetch_webpage",
+  // Light edit — used only when the user explicitly asks the orchestrator
+  // to make a change. For larger changes the user should run /feature-dev.
+  "copilot_replaceString",
+  "copilot_insertEdit",
+  "replace_string_in_file",
+  "insert_edit_into_file",
+  "create_file",
+]);
 
 /**
  * Best-effort append of a single message to the conversation log. A
@@ -509,13 +559,14 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     const orchestratorToolNames = new Set<string>(
       ORCHESTRATOR_TOOLS.map(t => t.name),
     );
-    const externalTools: vscode.LanguageModelChatTool[] = vscode.lm.tools
-      .filter(t => !orchestratorToolNames.has(t.name))
-      .map(t => ({
-        name: t.name,
-        description: t.description ?? t.name,
-        inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
-      }));
+    const externalCandidates = vscode.lm.tools.filter(
+      t => !orchestratorToolNames.has(t.name) && EXTERNAL_TOOL_ALLOWLIST.has(t.name),
+    );
+    const externalTools: vscode.LanguageModelChatTool[] = externalCandidates.map(t => ({
+      name: t.name,
+      description: t.description ?? t.name,
+      inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+    }));
     const lmTools: vscode.LanguageModelChatTool[] = [
       ...ORCHESTRATOR_TOOLS.map(t => ({
         name: t.name,
@@ -524,11 +575,36 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       })),
       ...externalTools,
     ];
-    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${ORCHESTRATOR_TOOLS.length} harness + ${externalTools.length} external)`);
+    // Token cost of the catalog: the full LanguageModelChatTool payload
+    // gets serialized once per sendRequest cycle. Estimating from the
+    // serialized JSON gives a stable proxy for what the API charges.
+    const catalogTokenEstimate = estimateTokens(JSON.stringify(lmTools));
+    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${ORCHESTRATOR_TOOLS.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t`);
 
     const turnStart = Date.now();
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
+
+      // Per-cycle token-out estimate. The history grows every cycle (each
+      // assistant turn + tool results gets pushed), so we re-estimate
+      // before each sendRequest. Logging here means the user can spot a
+      // single cycle that ballooned.
+      let historyChars = 0;
+      for (const m of history) {
+        for (const part of m.content) {
+          if (part instanceof vscode.LanguageModelTextPart) {
+            historyChars += part.value.length;
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            historyChars += JSON.stringify(part.input ?? {}).length + part.name.length;
+          } else if (part instanceof vscode.LanguageModelToolResultPart) {
+            for (const r of part.content) {
+              if (r instanceof vscode.LanguageModelTextPart) { historyChars += r.value.length; }
+            }
+          }
+        }
+      }
+      const historyTokenEstimate = Math.max(1, Math.floor(historyChars / 4));
+      log(`[orchestrator] cycle ${cycle} sendRequest: history~${historyTokenEstimate}t + catalog~${catalogTokenEstimate}t = ~${historyTokenEstimate + catalogTokenEstimate}t out`);
 
       const cycleStart = Date.now();
       const response = await model.sendRequest(history, { tools: lmTools }, token);
@@ -594,7 +670,18 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         // handler ("Input should be a valid string ... input_type=dict").
         // The marker prefix preserves the tool name for compaction-time
         // inspection while staying impossible to misparse.
-        const toolContent = `[tool ${call.name}]\n${resultText}`;
+        //
+        // Cap at TOOL_RESULT_STORE_CHAR_CAP — a single 50 KB grep dump
+        // would otherwise sit in replay forever, paying its full cost on
+        // every subsequent turn. Truncate-with-marker so a future reader
+        // can tell the storage cap fired.
+        let storedResult = resultText;
+        if (storedResult.length > TOOL_RESULT_STORE_CHAR_CAP) {
+          const dropped = storedResult.length - TOOL_RESULT_STORE_CHAR_CAP;
+          storedResult = storedResult.slice(0, TOOL_RESULT_STORE_CHAR_CAP) +
+            `\n…[truncated by harness — ${dropped} more chars dropped at storage time]`;
+        }
+        const toolContent = `[tool ${call.name}]\n${storedResult}`;
         await appendMessage(client, chatId, "tool", toolContent, log);
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));

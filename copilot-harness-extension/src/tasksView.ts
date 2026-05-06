@@ -71,7 +71,10 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
       case "section": {
         const label = node.section === "active" ? "Active session" : "History";
         const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Expanded);
-        item.contextValue = "section";
+        // Differentiate active vs history so the "Clear" inline action only
+        // shows on the active-session header. Bound via package.json
+        // contributes.menus["view/item/context"] when=viewItem==section-active.
+        item.contextValue = node.section === "active" ? "section-active" : "section-history";
         item.iconPath = new vscode.ThemeIcon(node.section === "active" ? "pulse" : "history");
         return item;
       }

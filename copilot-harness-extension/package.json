@@ -43,6 +43,12 @@
         "title": "Show Tasks",
         "category": "CopilotHarness",
         "icon": "$(checklist)"
+      },
+      {
+        "command": "copilot-harness.clearActiveSession",
+        "title": "Clear Active Session",
+        "category": "CopilotHarness",
+        "icon": "$(clear-all)"
       }
     ],
     "viewsContainers": {
@@ -70,6 +76,13 @@
           "command": "copilot-harness.refreshTasks",
           "when": "view == copilotHarness.tasks",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "copilot-harness.clearActiveSession",
+          "when": "view == copilotHarness.tasks && viewItem == section-active",
+          "group": "inline"
         }
       ]
     },
