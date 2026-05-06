@@ -1,59 +1,19 @@
 # MEMORY.md — Tier 1 Index
 
-> Always loaded by the harness (~200 tokens). Pointers to where knowledge lives.
-> Load Tier 2 entries on demand via `harness_get_reference("memory", "<name>.md")`.
+> Always loaded by the harness (~200 tokens). Pointers only — load
+> Tier 2 entries on demand via `harness_get_memory_entry(<name>)`.
 
----
-
-## What This Project Is
-
-CopilotHarness: Python MCP stdio server. Harness layer for GitHub Copilot Chat.
-Controls what each agent sees, validates output, enforces correction loops, injects skills.
-**Zero LLM calls inside the harness.** Copilot Chat is the LLM; harness is the environment.
-
----
-
-## Key Architecture Decisions
-
-| Decision | Choice | Reason |
-|---|---|---|
-| Persistence | SQLite WAL | Zero infra, works in PyInstaller one-file binary |
-| Agent communication | MCP stdio | Copilot agents cannot bypass the harness |
-| LLM interface | vscode.lm.sendRequest | No `api.githubcopilot.com` — works behind corporate firewall |
-| Distribution | PyInstaller one-file | No Python on user machine required |
-| Schema | Embedded string in db.py | No file dependency in one-file binary |
-
-Full rationale → load `architecture.md` from this folder.
-
----
-
-## Known Failure Patterns
-
-Load `failure-patterns.md` from this folder for coder/reviewer failure history.
-
----
-
-## Pipeline Stages
-
-```
-plan → design → code → review
-```
-
-Write-once per attempt. Reviewer "fail" → correction loop (max 3) → escalate.
-
-Reviewer runs under the Week 3a evaluator firewall — sees `code` only, no
-plan/design/memory/dynamic skills.
-
-## Routing (Phase D)
-
-Zero-LLM-cost string match in `extension.ts`:
-- `/<pipeline-name> <task>` → pipeline (full guardrails + evaluator firewall)
-- `/<other-slash>` → step / agent / status / help / orchestrator dispatch
-- otherwise → orchestrator (persistent chat, spawns sub-agents on demand)
-
----
+CopilotHarness — a Python MCP stdio server. Harness layer for GitHub
+Copilot Chat. Zero LLM calls inside the harness; Copilot Chat is the
+LLM, the harness is the environment. Two modes:
+`/<pipeline-name>` → pipeline; everything else → orchestrator.
 
 ## Active Tier 2 Files
 
-- `architecture.md` — SQLite choice, MCP rationale, PyInstaller constraints
-- `failure-patterns.md` — recurring coder/reviewer failures, distilled from sessions
+- `architecture.md` — SQLite/WAL choice, MCP stdio rationale,
+  PyInstaller constraints, embedded-schema decision, vscode.lm
+  interface trade-offs.
+- `failure-patterns.md` — recurring coder/reviewer failures, distilled
+  from prior sessions and live triggers (reviewer-fail, frustration
+  regex).
+
