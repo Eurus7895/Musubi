@@ -3,96 +3,65 @@ name: orchestrator-routing
 description: Routing rules for the Orchestrator — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the orchestrator's inject_skills frontmatter.
 ---
 
-## Purpose
+## Today's playbook
 
-Help the Orchestrator answer each user turn cheaply, using the
-smallest amount of work that produces a real result. Today that means:
-**answer directly from your context and the available read tools, or
-suggest a pipeline. Do not try to spawn sub-agents — the runners are
-not wired yet, and any spawn will hang for ~30 s and return nothing.**
+Sub-agent runners (`explorer`, `investigator`, `reviewer-aux`) are not
+wired yet, so the harness hides `harness_spawn_subagent` /
+`harness_await_subagent` / `harness_list_subagents` from your tool
+catalog. Don't try to call them — they aren't there. Answer with the
+tools you actually have.
 
-## Current state — read this first
+## When to answer with no tool call
 
-Phase B shipped the sub-agent primitives (spawn, await, list, audit
-log) on the Python side. The extension-side runners that turn a
-`running` sub_sessions row into an actual LM session for `explorer`,
-`investigator`, and `reviewer-aux` have **not** shipped. Until they
-do, the harness deliberately hides the sub-agent tools from the
-catalog so you cannot call them by accident.
+- Question about prior decisions in `memory_tier1` or the conversation.
+- Discussion, recommendation, or trade-off — reasoning, not lookup.
+- Summarising or rephrasing something already in the chat.
+- Correcting a previous answer — reply in prose.
 
-If you ever see `harness_spawn_subagent` in your tool catalog, that
-means a runner has been wired and the rest of this skill (sub-agent
-picker, sequencing, budget) becomes live again. Until then, treat
-the sub-agent guidance lower in this file as reference, not as the
-current playbook.
+A turn that doesn't need a tool should not get one. "Just to be safe"
+is the most common waste.
 
-## How to answer turns today
+## When to use a read tool
 
-### 1. Direct answer from context
+Pick the cheapest one in your catalog that answers the question:
 
-Answer directly, no tools, in these cases:
+| Question | Tool |
+|---|---|
+| Find file by name | `copilot_findFiles` |
+| Find code by content | `copilot_searchWorkspace` |
+| Read a known file | `copilot_readFile` |
+| Browse a directory | `copilot_listDirectory` |
+| Diagnose a build break | `copilot_getErrors` |
 
-- The user is asking about prior decisions you can answer from
-  `memory_tier1` or `conversation_history`.
-- The user wants a discussion, recommendation, or trade-off analysis —
-  reasoning, not lookup.
-- The user wants you to summarise or rephrase something already in the
-  conversation.
-- The user is correcting or redirecting your previous answer — adjust
-  course in prose.
+One call per question; don't pre-fetch context "in case." If the user
+already mentioned the file path, use `copilot_readFile`, not search.
 
-A turn that does NOT need a tool call should not get one. Calling a
-read tool "just to be safe" is the most common waste.
+## When to use an edit tool
 
-### 2. Direct lookup with the read tools you have
+Only when the user explicitly asks for a small change. One edit per
+turn — for multi-step changes, recommend `/feature-dev` instead.
 
-For "where is X?" / "show me the structure" / "what does file F
-contain?" use the read tools your catalog actually advertises —
-typically Copilot's `copilot_readFile`, `copilot_searchWorkspace`,
-`copilot_findFiles`, `copilot_listDirectory`, `copilot_getErrors`,
-and similar. They run synchronously in the user's workbench and
-return real results in a few hundred milliseconds.
+## When to recommend a pipeline
 
-Pick the cheapest one that answers the question:
-
-- "Find file by name" → `copilot_findFiles` (fastest)
-- "Find code by content" → `copilot_searchWorkspace` (workspace search)
-- "Read file F" → `copilot_readFile` (only when you have the path)
-- "Browse a directory" → `copilot_listDirectory`
-- "Diagnose a build break" → `copilot_getErrors`
-
-### 3. Light edits when explicitly asked
-
-If the user says "change foo to bar in file X", use the edit tools in
-the catalog (`copilot_replaceString`, `copilot_insertEdit`, or their
-equivalents). One edit per request — for anything multi-step, suggest
-the pipeline (next section).
-
-### 4. Hand off to a pipeline for multi-stage work
-
-You may not invoke pipelines directly. Suggest one when:
+Say *"This looks like work for `/feature-dev` — try `/feature-dev
+<one-line goal>`."* when:
 
 - The work needs plan + design + code + review with the evaluator
   firewall preserved across stages.
 - Multiple back-and-forth correction loops are likely.
-- The user explicitly wants the durable, append-only stage record.
+- The user wants the durable, append-only stage record.
 
-Say: *"This looks like work for `/feature-dev` — try `/feature-dev
-<one-line goal>`."* Do not try to recreate the pipeline by chaining
-read + edit calls; the pipeline carries state, schemas, and the
-correction loop that an ad-hoc orchestrator turn does not.
+Don't recreate the pipeline by chaining read + edit calls; the
+pipeline carries state, schemas, and the correction loop that an
+ad-hoc orchestrator turn does not.
 
 ## Anti-patterns
 
-- **Calling a tool whose result you already have** in the conversation.
-  Re-reading the same file three times in one turn is pure waste.
-- **Looking up scaffolding the user can already see.** They opened the
-  file; they don't need you to confirm its line count.
-- **Pasting a 50 KB tool result into the chat.** Quote a few lines for
-  context, summarise the rest. The harness already truncates oversized
-  rows at storage time, but the user still has to read the chat.
-- **Summarising the conversation before answering.** They wrote it;
-  they remember. Just answer.
+- Calling a tool for a result already in the conversation.
+- Re-reading the same file in one turn.
+- Pasting a 50 KB tool result into chat — quote a few lines, summarise
+  the rest.
+- Summarising the conversation back to the user before answering.
 
 ## When sub-agent runners ship — reference
 
@@ -101,13 +70,13 @@ your catalog. Until then, ignore it.
 
 | Kind of work | Spawn | Brief shape |
 |---|---|---|
-| "Where is X defined / referenced?" | `explorer` | One verifiable question |
-| "What does this command output? / Why is the test failing?" | `investigator` | One diagnostic question + the command(s) allowed |
-| "Does file F satisfy checklist C?" | `reviewer-aux` | File path + checklist items, per-file |
-| "Scope this multi-task feature" | `planner` | The user's request, verbatim or tightened |
-| "Implement change X in file F" | `coder` | Plan-shaped brief: tasks, files, acceptance criteria |
-| "Evaluate this code-as-artifact" | `reviewer` | The code blob being judged (no plan/design/intent) |
+| Where is X? | `explorer` | One verifiable question |
+| Why is the test failing? | `investigator` | One diagnostic question |
+| Does file F satisfy checklist C? | `reviewer-aux` | Path + checklist items |
+| Scope a multi-task feature | `planner` | User's request, tightened |
+| Implement change X in file F | `coder` | Plan-shaped brief |
+| Evaluate code-as-artifact | `reviewer` | The code blob, no plan/design |
 
-Cap: 3 spawns of any one role per user turn. If you hit it, the brief
-was probably wrong — stop spawning and ask. Sub-agents do not see each
-other; pass facts forward in the next brief.
+Cap: 3 spawns per role per turn. Sub-agents do not see each other; if
+two depend on each other, sequence them and pass facts forward in the
+next brief.
