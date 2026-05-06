@@ -538,7 +538,7 @@ speculative. Direct-mode test coverage was concentrated in 4 tests
 in test_skill_access.py; the rest of the deletion was TS code with
 no test surface. Actual: 590 → 586 Py.
 
-#### Phase E — Documentation (0.5 day)
+#### Phase E ✅ Documentation
 
 ```
 [x] CLAUDE.md Hard Invariant #2: pull-on-demand clause removed; skills
@@ -548,12 +548,22 @@ no test surface. Actual: 590 → 586 Py.
     /<pipeline-name> → pipeline; everything else → orchestrator.
 [x] CLAUDE.md Decision Rules table: "Direct" row replaced with
     "Orchestrator".
-[ ] docs/design.md § Current State: rewrite for v0.5+ (orchestrator +
-    pipeline)
-[ ] docs/design.md § Best Practices Compliance: re-mark BP 2, 13, 15, 19,
-    28, 30 as ✅ if they actually moved
-[ ] docs/memory.md: expand with whatever shipped beyond the skeleton
-[ ] AGENTS.md: point at orchestrator as the default-entry agent
+[x] docs/design.md § Current State: rewritten for v0.5 (Phases A–E,
+    orchestrator + pipeline; sub-agent primitives, conversation
+    replay, reactive compaction, summarizer, distillation triggers).
+[x] docs/design.md § Best Practices Compliance: BP 2, 13, 15, 19,
+    28, 30 lifted to ✅ with pivot-aware notes; gap list reduced to
+    BP 3, 25, 27, 29.
+[x] docs/memory.md: trigger table now flags reviewer-fail + frustration
+    as shipped (Phase C.2) and per-turn / chat-closed as deferred;
+    conversation transcript section retargeted from JSONL files to
+    `conversation_messages` (Phase C.1) with the chat_id heuristic;
+    file map adds harness_append_failure_pattern + append_message +
+    get_conversation.
+[x] AGENTS.md: orchestrator is named the default-entry agent; mode
+    table collapsed from three (Direct/Pipeline/Agent) to two
+    (Orchestrator/Pipeline); session protocol covers replay + reactive
+    compaction; duplicated invariants pruned (CLAUDE.md is the source).
 ```
 
 **Test count trajectory:**
