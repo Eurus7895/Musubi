@@ -77,10 +77,18 @@ test("buildOrchestratorSystemPrompt: omits memory section when memoryTier1 is em
 
 // ── ORCHESTRATOR_TOOLS shape ─────────────────────────────────────────
 
-test("ORCHESTRATOR_TOOLS: exposes exactly the three Phase B.2 tools", () => {
+test("ORCHESTRATOR_TOOLS: exposes the Phase B.2 sub-agent tools + pull-on-demand skill tool", () => {
+  // After the Hard Invariant #2 relaxation, harness_get_skill joined
+  // the always-advertised set so the orchestrator can pull skill content
+  // instead of paying for it in the system prompt every turn.
   assert.deepEqual(
     ORCHESTRATOR_TOOLS.map(t => t.name).sort(),
-    ["harness_await_subagent", "harness_list_subagents", "harness_spawn_subagent"],
+    [
+      "harness_await_subagent",
+      "harness_get_skill",
+      "harness_list_subagents",
+      "harness_spawn_subagent",
+    ],
   );
 });
 
@@ -182,6 +190,27 @@ test("dispatchOrchestratorTool: rejects unknown tool name", async () => {
     () => dispatchOrchestratorTool(stub, ctx, "harness_destroy_universe", {}),
     /unknown orchestrator tool/,
   );
+});
+
+test("dispatchOrchestratorTool: get_skill forwards skill_id + parent agent_name", async () => {
+  // The LM passes skill_id only; the dispatcher fills in agent_name from
+  // the dispatch context so the LM can't request a skill outside the
+  // orchestrator's allowlist by passing a bogus name.
+  const stub = new StubClient();
+  await dispatchOrchestratorTool(stub, ctx, "harness_get_skill", {
+    skill_id: "orchestrator-routing",
+  });
+  assert.equal(stub.calls[0].name, "harness_get_skill");
+  assert.equal(stub.calls[0].args.skill_id, "orchestrator-routing");
+  assert.equal(stub.calls[0].args.agent_name, ctx.parentAgentName);
+});
+
+test("dispatchOrchestratorTool: get_skill defaults to empty string when skill_id is non-string", async () => {
+  // The MCP tool will reject the empty string fail-closed, but the
+  // dispatcher itself shouldn't crash on a malformed args dict.
+  const stub = new StubClient();
+  await dispatchOrchestratorTool(stub, ctx, "harness_get_skill", {});
+  assert.equal(stub.calls[0].args.skill_id, "");
 });
 
 // ── SpawnTracker ─────────────────────────────────────────────────────

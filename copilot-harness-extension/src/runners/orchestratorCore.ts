@@ -27,9 +27,23 @@ export const ORCHESTRATOR_TOOL_NAMES = [
   "harness_spawn_subagent",
   "harness_await_subagent",
   "harness_list_subagents",
+  "harness_get_skill",
 ] as const;
 
 export type OrchestratorToolName = typeof ORCHESTRATOR_TOOL_NAMES[number];
+
+/**
+ * Subset of ORCHESTRATOR_TOOLS gated on LM_FACING_SUBAGENT_ROLES (see
+ * orchestrator.ts). When no extension-side runner exists for a sub-agent
+ * role, advertising spawn / await / list to the LM just produces a
+ * 30 s-wall-clock-then-retry loop, so we hide them. harness_get_skill
+ * is always advertised; it works even when no sub-agent runner is wired.
+ */
+export const ORCHESTRATOR_SUBAGENT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "harness_spawn_subagent",
+  "harness_await_subagent",
+  "harness_list_subagents",
+]);
 
 export interface OrchestratorTool {
   name: OrchestratorToolName;
@@ -108,6 +122,30 @@ export const ORCHESTRATOR_TOOLS: readonly OrchestratorTool[] = [
     inputSchema: {
       type: "object",
       properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "harness_get_skill",
+    description:
+      "Fetch the body of an installed skill (e.g. 'orchestrator-routing') when " +
+      "you need detailed routing rules, picker tables, or anti-patterns that " +
+      "aren't covered by your inline core rules. The harness used to push the " +
+      "full skill body into your system prompt every turn (~841 t); now you " +
+      "pull on demand. Call this when you need detail about: tool selection, " +
+      "pipeline recommendation, sub-agent runners status, anti-patterns, or " +
+      "anything else not covered in the agent's inline 'Core rules' section. " +
+      "Do NOT call on every turn — most simple Q&A doesn't need it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill_id: {
+          type: "string",
+          description:
+            "Skill identifier — directory name under .github/skills/ (e.g. 'orchestrator-routing').",
+        },
+      },
+      required: ["skill_id"],
       additionalProperties: false,
     },
   },
@@ -240,6 +278,16 @@ export async function dispatchOrchestratorTool(
       return client.callTool("harness_list_subagents", {
         main_agent_name: ctx.parentAgentName,
       });
+    case "harness_get_skill": {
+      // Fill in agent_name from the dispatch context so the LM doesn't
+      // have to hand-author it (and can't accidentally request a skill
+      // not on the orchestrator's allowlist by passing a different name).
+      const skillId = typeof args.skill_id === "string" ? args.skill_id : "";
+      return client.callTool("harness_get_skill", {
+        skill_id: skillId,
+        agent_name: ctx.parentAgentName,
+      });
+    }
     default:
       throw new Error(`unknown orchestrator tool: ${toolName}`);
   }

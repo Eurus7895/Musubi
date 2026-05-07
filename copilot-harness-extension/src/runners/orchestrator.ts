@@ -26,6 +26,7 @@ import {
   MAX_TOOL_CYCLES,
   MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
+  ORCHESTRATOR_SUBAGENT_TOOL_NAMES,
   ORCHESTRATOR_TOOLS,
   estimateTokens,
   parseConversationResponse,
@@ -445,11 +446,16 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     return;
   }
 
-  const { agentMd, routingSkill, lmTools: agentLmTools } = loadOrchestratorPrompts(roots);
+  // routingSkill is intentionally discarded — Hard Invariant #2 was
+  // relaxed for the orchestrator: SKILL.md is now pulled on demand via
+  // the harness_get_skill LM tool, not pushed into the system prompt.
+  // loadOrchestratorPrompts still reads it from disk so existing tests
+  // exercising the field stay valid; the runner just doesn't use it.
+  const { agentMd, lmTools: agentLmTools } = loadOrchestratorPrompts(roots);
   const memory = await fetchMemoryContext(client);
   const systemPrompt = buildOrchestratorSystemPrompt({
     agentMd,
-    routingSkill,
+    routingSkill: "",
     memoryTier1: memory.tier1_index,
     tier2Available: memory.tier2_available,
   });
@@ -588,18 +594,25 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       description: t.description ?? t.name,
       inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
     }));
-    // Hide the harness sub-agent tools when no LM-facing runner is wired.
-    // Otherwise the LM keeps spawning roles whose only outcome is a 30 s
-    // wall-clock kill → retry → kill loop, burning tokens with no result.
-    // Once a runner ships, add the role name to LM_FACING_SUBAGENT_ROLES.
+    // Hide the harness sub-agent tools (spawn / await / list) when no
+    // LM-facing runner is wired. Otherwise the LM keeps spawning roles
+    // whose only outcome is a 30 s wall-clock kill → retry → kill loop,
+    // burning tokens with no result. Once a runner ships, add the role
+    // name to LM_FACING_SUBAGENT_ROLES.
+    //
+    // harness_get_skill is NOT gated — it works regardless of sub-agent
+    // runner availability, and the orchestrator needs it to pull
+    // routing detail on demand (Hard Invariant #2 relaxation).
     const includeHarnessSubagentTools = LM_FACING_SUBAGENT_ROLES.size > 0;
-    const harnessTools: vscode.LanguageModelChatTool[] = includeHarnessSubagentTools
-      ? ORCHESTRATOR_TOOLS.map(t => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }))
-      : [];
+    const harnessTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS
+      .filter(t =>
+        includeHarnessSubagentTools || !ORCHESTRATOR_SUBAGENT_TOOL_NAMES.has(t.name),
+      )
+      .map(t => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
     const lmTools: vscode.LanguageModelChatTool[] = [...harnessTools, ...externalTools];
     // Token cost of the catalog: the full LanguageModelChatTool payload
     // gets serialized once per sendRequest cycle. Estimating from the
