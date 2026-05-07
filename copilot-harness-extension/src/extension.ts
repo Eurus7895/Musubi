@@ -157,6 +157,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // the salt is unchanged.
   const sessionSalt = crypto.randomBytes(8).toString("hex");
   log(`Session salt: ${sessionSalt}`);
+  log("[cache-probe] modelOptions.cache_control sent on every sendRequest. " +
+      "If Copilot's proxy honours it, expect lm= timings on later turns of " +
+      "the same chat to be noticeably faster than the first turn (cache hit).");
 
   const participant = vscode.chat.createChatParticipant(
     "copilot-harness.harness",

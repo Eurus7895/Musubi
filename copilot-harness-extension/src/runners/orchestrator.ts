@@ -649,7 +649,27 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         + ` + catalog~${catalogTokenEstimate}t = ~${totalTokens}t out`);
 
       const cycleStart = Date.now();
-      const response = await model.sendRequest(history, { tools: lmTools }, token);
+      // Cache-control probe: try the standard provider hints in modelOptions.
+      // VS Code's LanguageModelChatRequestOptions.modelOptions is a
+      // free-form pass-through; whether the underlying Copilot proxy
+      // honours these depends on the provider routing. If they're
+      // ignored, the call still succeeds. If they're honoured, the
+      // static prefix becomes cache-eligible and turn 2+ should show a
+      // noticeable lm= speedup.
+      //
+      // We send both the snake_case (Anthropic convention) and
+      // camelCase (Copilot convention) keys to maximise the chance one
+      // resolves. Per-message-block cache_control isn't reachable
+      // through this API — only request-level, which works for OpenAI
+      // automatic prefix caching but is best-effort for Anthropic.
+      const requestOptions: vscode.LanguageModelChatRequestOptions = {
+        tools: lmTools,
+        modelOptions: {
+          cache_control: { type: "ephemeral" },
+          cacheControl: { type: "ephemeral" },
+        },
+      };
+      const response = await model.sendRequest(history, requestOptions, token);
 
       let textBuf = "";
       const toolCalls: vscode.LanguageModelToolCallPart[] = [];
