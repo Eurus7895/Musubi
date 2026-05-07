@@ -748,3 +748,388 @@ Documented in `CLAUDE.md`, `AGENTS.md`, `docs/design.md`,
 
 ---
 
+### Phase G — Foundation (planned)
+
+> **Status: planned, not started.** Sequential — `G.1` → `G.2` → `G.3`.
+> Each sub-phase ships as its own PR. Acceptance criteria below are a
+> starting point; expect updates as the work uncovers new constraints.
+
+**Goal.** Make the pipeline runner ready to support more pipelines
+without rewriting feature-dev each time. Three foundational pieces:
+sub-agent runners that pipeline stages can spawn, hardened policy +
+schema layer, and audit-DB primitives for observability.
+
+#### G.1 — Pipeline-side sub-agent runners
+
+**What ships:**
+
+- `copilot-harness-extension/src/runners/explorerRunner.ts` —
+  read-only workspace scan. Tools: `copilot_searchWorkspace`,
+  `copilot_readFile`, `copilot_listDirectory`. Fetches firewalled
+  context via `harness_get_subagent_context`, runs a single LM
+  session, calls `harness_complete_subagent`.
+- `copilot-harness-extension/src/runners/investigatorRunner.ts` —
+  read + diagnostic shell. Tools include `copilot_runInTerminal`.
+  Same lifecycle as explorerRunner.
+- `copilot-harness-extension/src/runners/reviewerAuxRunner.ts` —
+  per-file checklist review. Tools: `copilot_readFile` only.
+- `copilot-harness-extension/src/runners/subagentRunnerCore.ts` —
+  shared lifecycle: fetch context → resolve model → sendRequest →
+  capture summary + structured → complete. Pure helpers,
+  vscode-free; the per-role files are thin shells around it.
+- Pipeline runner (`pipeline.ts`) gains a `spawnSubAgent()` helper
+  that pipeline stages can call mid-execution. Behind a feature flag
+  initially; feature-dev opts in stage by stage.
+
+**Acceptance criteria:**
+
+- [ ] All three runners pass unit tests (mock `vscode.lm`,
+      `harness_*` MCP responses).
+- [ ] Integration test: feature-dev's `coder` stage spawns an
+      `explorer` sub-agent for a "find callers of X" lookup; the
+      summary lands in the coder's next prompt; the audit DB shows
+      the spawn + completion rows.
+- [ ] No regressions in feature-dev's existing 4-stage path.
+- [ ] Sub-agent timeout / wall-clock kill / retry semantics from
+      Phase A.1-A.2 still hold (the new runners use the same
+      primitives).
+
+**Open questions:**
+
+- Whether sub-agents during a pipeline stage can themselves spawn
+  sub-agents (depth-2). Default: no, until a measured need.
+- Per-stage budget on sub-agent spawns. Pipeline.yaml field, or
+  fixed cap per role?
+- How sub-agent results enter the parent stage's prompt — append as
+  a `tool` row (orchestrator pattern) or fold into the next read
+  via `harness_read_stage`?
+
+#### G.2 — Pipeline policy hardening
+
+**What ships:**
+
+- Versioned output schemas in `verifier.py` (`v1` is current; `v2`
+  introduces explicit migration rules). Each pipeline declares
+  `schema_version` in `pipeline.yaml`; the runner validates against
+  the matching schema.
+- Tighter evaluator firewall enforcement: `_STAGE_PERMISSIONS` gets
+  a runtime assertion that the reviewer's context dict has exactly
+  `{code}` — fails closed if anything else slipped through.
+- Per-pipeline correction-loop budget. `pipeline.yaml::correction.max_retries`
+  is already there; expose `correction.escalate_on_*` rules so a
+  pipeline can declare "escalate immediately on critical security
+  issues, allow 5 retries on style issues."
+- `scripts/policy_engine.py::PIPELINE_POLICIES` schema check —
+  startup-time validation that every entry has a known set of tools
+  and known agent names.
+
+**Acceptance criteria:**
+
+- [ ] Schema migration test: a v1 stage output loads through v2
+      reader cleanly via the migration rule.
+- [ ] Firewall regression test: reviewer context that sneaks a
+      `plan` field through is rejected before `harness_read_stage`
+      returns it.
+- [ ] Policy-engine startup test: a pipeline.yaml with an unknown
+      agent name fails harness boot, not first runtime tool call.
+
+**Open questions:**
+
+- How aggressive on schema migrations? Auto-migrate, or fail-loud?
+- Whether `escalate_on_*` rules belong in `pipeline.yaml` or in the
+  evaluator skill (closer to where the severity is judged).
+
+#### G.3 — Observability primitives (data layer)
+
+**What ships:**
+
+- `storage/audit.db::pipeline_runs` table — one row per
+  `harness_new_session` call, with `pipeline_name`, `started_at`,
+  `ended_at`, `final_status`, `total_tokens_estimate`,
+  `correction_attempts`, `escalated`.
+- `storage/audit.db::stage_metrics` table — one row per stage
+  attempt, with `session_id`, `stage`, `attempt`, `tokens_in`,
+  `tokens_out`, `lm_ms`, `tool_count`, `tool_failures`.
+- New MCP tools (read-only): `harness_query_pipeline_runs(pipeline_name?, limit, since?)`,
+  `harness_query_stage_metrics(session_id)`,
+  `harness_pipeline_stats(pipeline_name)` returning aggregate
+  success / escalate / median-tokens / median-wall-clock.
+- Token estimates plumbed: `pipeline.ts` writes `tokens_in`,
+  `tokens_out` to `stage_metrics` after each `vscode.lm.sendRequest`.
+
+**Acceptance criteria:**
+
+- [ ] Running feature-dev once populates `pipeline_runs` + 4 rows
+      in `stage_metrics` (one per stage).
+- [ ] Aggregate query returns sensible numbers on a 5-run history.
+- [ ] Tables migrate cleanly from existing audit.db (no data loss
+      on existing sessions).
+
+**Open questions:**
+
+- Whether to backfill stage_metrics from existing
+  `<stage>.attemptN.md` artifacts, or start counting from G.3.
+- Sampling: do we want 100% capture or sample beyond N rows?
+
+---
+
+### Phase H — Catalog growth (planned)
+
+> **Status: planned, depends on Phase G.** Sequential within phase
+> (`H.1` → `H.2` → `H.3` → `H.4`); each sub-phase ships as its own PR.
+
+**Goal.** Grow from one pipeline (`feature-dev`) to a small catalog
+(3-4 pipelines) and mature the composer so authoring a new pipeline
+is a plan→design→code→review process, not a hand-written YAML.
+
+#### H.1 — `/code-review` pipeline
+
+First non-`feature-dev` pipeline. Picked because it's:
+- well-bounded (PR-shaped input → review report output),
+- forces real design discussion about what's pipeline-shaped vs
+  orchestrator-shaped,
+- stress-tests assumptions feature-dev's runner has baked in.
+
+**What ships:**
+
+- `.github/pipelines/code-review/pipeline.yaml`
+- `.github/pipelines/code-review/README.md`
+- `.github/commands/code-review.md` (slash command frontmatter)
+- Possibly a `code-review-analyzer.agent.md` if the canonical
+  reviewer doesn't fit; otherwise reuses the `reviewer` agent.
+- `.github/skills/code-review/SKILL.md` exists; check whether new
+  references / assets are needed.
+
+**Acceptance criteria:**
+
+- [ ] `/code-review <PR-or-diff>` runs end-to-end with the audit
+      trail captured.
+- [ ] Output schema decided + documented (issue list with severity,
+      file/line citations, fix suggestions).
+- [ ] Promotion checklist completed if Level 2 is chosen, or
+      explicit Level 1 rationale documented.
+
+**Open questions:**
+
+- Does it run on a diff, a PR number (via `gh`), or a list of
+  changed files?
+- Does it spawn sub-agents (Phase G.1) for per-file
+  `reviewer-aux` checks, or run sequentially?
+
+#### H.2 — Composer improvements
+
+Based on what H.1 surfaces. Pre-allocated bucket; fill in once we
+see what feature-dev assumed that `code-review` violates.
+
+**Likely candidates (concrete after H.1):**
+
+- pipeline.yaml schema tightening + validation reporting.
+- Agent inheritance / composition (canonical `reviewer` +
+  pipeline-specific behaviour overrides).
+- Better stage handoff schemas (today plan→design→code→review is
+  fixed; code-review may want a different chain).
+- `state.STAGES` cleanup — currently hard-coded; needs a
+  pipeline-declared override mechanism if H.1 has different stages.
+
+**Acceptance criteria:**
+
+- [ ] H.1's pipeline.yaml validates cleanly without special-cases.
+- [ ] Composer changes don't break feature-dev (regression suite).
+
+**Open questions:** all of them — scope drives this section.
+
+#### H.3 — Second new pipeline
+
+Next-most-valuable shape. Candidates: `/refactor` (extract /
+rename / split-module), `/migration` (framework upgrade,
+deprecation sweep), `/test-gen` (generate tests for a target file).
+
+**What ships (TBD):**
+
+- `.github/pipelines/<name>/pipeline.yaml + README.md`
+- `.github/commands/<name>.md`
+- Possibly new agents under `.github/agents/`
+- Skill additions under `.github/skills/` if needed.
+
+**Acceptance criteria:** same shape as H.1.
+
+**Open questions:**
+
+- Which of `/refactor` / `/migration` / `/test-gen` is most useful?
+- Does this pipeline need composer features H.2 didn't ship?
+
+#### H.4 — Composer-as-pipeline
+
+The `pipeline-builder` agent is currently a one-shot. Mature it
+into a real plan→design→code→review pipeline that *authors* new
+pipelines through the same machinery used to ship features:
+
+```
+/pipeline-builder <brief>
+  ↓
+plan stage     — break the brief into pipeline-yaml + agent files
+                  + slash command + skill needs.
+design stage   — pick the level (1 or 2), choose canonical-vs-
+                  variant agents, define output schemas.
+code stage     — emit all files (one-shot today; this is the
+                  current pipeline-builder output schema).
+review stage   — validate against pipeline.yaml schema, run a
+                  dry-run on a synthetic input, sanity-check
+                  agent prompts read coherent.
+```
+
+**What ships:**
+
+- `.github/pipelines/pipeline-builder/pipeline.yaml`
+- `.github/agents/pipeline-builder-{planner,designer,coder,reviewer}.agent.md`
+  (filename-prefixed variants of the canonical roles, since the
+  brief is "build a pipeline" not "ship a feature").
+- `.github/skills/pipeline-authoring/SKILL.md` — pipeline.yaml
+  conventions, hard constraints from `state.py:STAGES`, etc.
+- The current one-shot `pipeline-builder.agent.md` stays for users
+  who want it; the new pipeline runs alongside.
+
+**Acceptance criteria:**
+
+- [ ] `/pipeline-builder <brief>` runs the full 4-stage chain.
+- [ ] The output validates against the pipeline.yaml schema (G.2).
+- [ ] A synthetic test brief produces files that pass `pytest`'s
+      pipeline-loader smoke test.
+
+**Open questions:**
+
+- Whether the pipeline reuses canonical `planner`/`designer`/etc.
+  with skill overrides, or ships its own variants.
+- How to test "the generated pipeline actually runs" without
+  spawning real LM calls.
+
+---
+
+### Phase I — Ship + scale (planned)
+
+> **Status: planned, depends on Phases G + H.** Sequential within
+> phase (`I.1` → `I.2` → `I.3`); I.3 is optional and can defer.
+
+**Goal.** Make pipelines visible (observability surface), portable
+(distribution mechanics), and discoverable (marketplace prep).
+
+#### I.1 — Observability surface
+
+The Phase G.3 data layer captured per-pipeline / per-stage stats.
+This sub-phase surfaces them to the user.
+
+**What ships:**
+
+- `Tasks` sidebar TreeView gains a "Pipelines" section listing every
+  pipeline with rolling 30-day success rate, median tokens, median
+  wall-clock. Updates on session-end.
+- `/pipeline-status <pipeline-name>` slash command — last-N runs,
+  outcome, token spend per stage.
+- End-of-pipeline footer in chat: `total: 18.4s · 3,200t · pass`
+  (already partly there for tokens; add cost summary).
+- Optional: in-chat warning when a pipeline run exceeds its rolling
+  median by 2× ("this run cost ~3× average — investigate").
+
+**Acceptance criteria:**
+
+- [ ] Sidebar "Pipelines" section renders with at least one
+      pipeline's stats after one feature-dev run.
+- [ ] `/pipeline-status feature-dev` returns a table.
+- [ ] Footer cost summary appears on every pipeline completion.
+
+**Open questions:**
+
+- Do we surface raw counts or normalize against a baseline?
+- Where does the warning threshold live — pipeline.yaml or
+  user setting?
+
+#### I.2 — Distribution mechanics
+
+`feature-dev` already has a `.claude-plugin/plugin.json` manifest.
+Formalize the convention so any pipeline can be copy-pasted between
+repos cleanly.
+
+**What ships:**
+
+- `.claude-plugin/plugin.json` schema doc — required fields,
+  pipeline / agent / skill / hook / mcpServer / skillLocality
+  declarations.
+- `harness_validate_pipeline_dir(path)` MCP tool — checks that all
+  referenced agents / skills / hooks exist and resolve, before
+  install.
+- `pipeline-builder` (Phase H.4 output) emits a valid plugin.json.
+- Documentation: "how to copy a pipeline into a new repo" with
+  the dependency-declaration story (skills can be global or
+  pipeline-local; today they default global).
+
+**Acceptance criteria:**
+
+- [ ] `harness_validate_pipeline_dir(.github/pipelines/feature-dev)`
+      passes; a tampered version fails with a clear error.
+- [ ] Copy-paste an entire pipeline directory into a sibling repo,
+      install the harness extension there — pipeline runs without
+      manual fix-ups.
+
+**Open questions:**
+
+- Skill locality: default-global breaks portability when a target
+  repo doesn't have the dependent skills. How do we declare
+  pipeline-local skill copies vs requirements?
+- Whether to ship a `harness install <pipeline-dir>` command that
+  validates + symlinks / copies into `.github/`.
+
+#### I.3 — Marketplace prep (deferrable)
+
+Only worth the work once 3-5 pipelines exist (post-Phase H). Defer
+indefinitely otherwise.
+
+**What ships (TBD when invoked):**
+
+- README format for a shipped pipeline (purpose, inputs, outputs,
+  example, costs).
+- `pipeline-lint` tooling — validates a pipeline directory against
+  the marketplace schema.
+- "Verified pipeline" criteria: tests pass, audit clean, costs
+  documented, README complete.
+- Aggregator repo or doc page listing community pipelines.
+
+**Acceptance criteria:** TBD when the work begins.
+
+**Open questions:** all of them; section is a placeholder until
+Phase H demonstrates pipeline-template demand.
+
+---
+
+### Phase G/H/I — sequencing notes
+
+**Why this order:**
+
+- G.1 (sub-agent runners) is foundation — H.1's `/code-review`
+  pipeline can use them for per-file checks; without them, every
+  reviewer-aux is a synchronous in-stage call.
+- G.2 (policy hardening) is cheaper to do before pipeline count
+  grows — a schema change touches every pipeline.yaml.
+- G.3 (observability data) needs to land before I.1 can surface
+  anything; landing it during G means H pipelines auto-populate.
+- H.1 must come before H.2 — composer improvements are reactive to
+  what H.1 surfaces.
+- H.4 (composer-as-pipeline) only makes sense after H.2 — it
+  consumes the matured composer.
+- I.1 needs G.3 + at least one pipeline beyond feature-dev to be
+  worth the UI work.
+- I.2 needs the pipeline catalog of H to validate against.
+- I.3 needs the catalog AND user demand.
+
+**Working separately means:**
+
+- Each sub-phase is its own branch + PR. No long-lived feature
+  branches.
+- Phases G, H, I are NOT committed — only G is committed. Phase H
+  scope is reviewed at the end of G with the benefit of what we
+  learned. Same for I after H.
+- Acceptance criteria above are starting points. Updates expected.
+  When updating, edit this section in a follow-up doc PR (don't
+  inflate the implementation PR with retroactive scope).
+
+---
+
