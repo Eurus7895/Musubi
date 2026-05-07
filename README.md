@@ -9,6 +9,11 @@ skills, enforces a correction loop, and runs code verification.
 > Same model + same task + changed environment = better outcomes.
 > (Princeton SWE-agent paper: 64% improvement from harness design alone.)
 
+> **Scope (May 2026):** governed pipelines — `@harness /feature-dev <task>`
+> and successors — are the active product surface. The orchestrator chat
+> mode (bare `@harness <prompt>`) is feature-frozen; for casual chat use
+> plain Copilot Chat. Cost rationale: [`docs/roadmap.md`](./docs/roadmap.md) § Phase F.
+
 ---
 
 ## Documentation

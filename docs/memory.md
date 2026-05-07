@@ -107,7 +107,12 @@ instead of writing a duplicate. `frequency` feeds the compaction ranking.
 
 ---
 
-## Orchestrator integration
+## Orchestrator integration (frozen — May 2026)
+
+> The orchestrator is feature-frozen as of May 2026 — the integration
+> below still works, but no new development lands against it. New
+> memory work targets pipeline mode. Decision context:
+> [`docs/roadmap.md`](./roadmap.md) § Phase F.
 
 The orchestrator runs as a continuous conversation. "Session" is redefined for
 this mode:

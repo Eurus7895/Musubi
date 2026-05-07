@@ -18,13 +18,28 @@ verification — and contains zero LLM calls itself.
 
 ---
 
+## Active development scope (read before opening a new feature PR)
+
+- **Pipelines (`/feature-dev` and successors) are the primary product.**
+  New skills, new pipeline agents, new pipeline composers, schema
+  refinements, evaluator improvements, audit additions — all welcome.
+- **The orchestrator is feature-frozen.** Bare `@harness <prompt>` still
+  routes to the orchestrator and the code stays in the tree, but no new
+  features, skill additions, or optimizations land against it. Real-world
+  cost data showed ~3-5× plain Copilot Agent per chat turn due to
+  provider-side prompt caching that `vscode.lm.sendRequest` doesn't
+  expose. Casual chat belongs in plain Copilot Chat, not `@harness`.
+  Full context: [`docs/roadmap.md`](./docs/roadmap.md) § Phase F.
+
+---
+
 ## Hard Invariants
 
 These cannot be broken without an explicit design discussion. If a change
 would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Python harness + TS extension orchestrate; only `vscode.lm.sendRequest` calls the model. New code must not import an LLM SDK.
-2. **Skills are pushed, not pulled.** In pipeline mode the harness injects skill content based on the agent's `inject_skills` frontmatter. The orchestrator gets its routing skill the same way. Agents cannot opt out.
+2. **Skills are pushed, not pulled.** In pipeline mode the harness injects skill content based on the agent's `inject_skills` frontmatter. The orchestrator gets its routing skill the same way. Agents cannot opt out. (A pull-on-demand relaxation was drafted in PR #40 to lower orchestrator per-turn cost; it was abandoned when the orchestrator was feature-frozen — see `docs/roadmap.md` § Phase F.)
 3. **Evaluator firewall.** The reviewer runs in a fresh session and sees `code` only — no request, plan, design, or memory. Enforced in `validation/context_builder.py` (`_STAGE_PERMISSIONS["reviewer"] = {"code"}`) and mirrored in `pipeline.ts`.
 4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else (`@harness <prompt>` or chat) → orchestrator. No LLM call to decide which mode.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py` `PIPELINE_POLICIES` denies unknown pipeline/agent combinations. Never relax to fail-open.
