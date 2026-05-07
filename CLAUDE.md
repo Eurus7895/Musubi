@@ -18,6 +18,21 @@ verification — and contains zero LLM calls itself.
 
 ---
 
+## Active development scope (read before opening a new feature PR)
+
+- **Pipelines (`/feature-dev` and successors) are the primary product.**
+  New skills, new pipeline agents, new pipeline composers, schema
+  refinements, evaluator improvements, audit additions — all welcome.
+- **The orchestrator is feature-frozen.** Bare `@harness <prompt>` still
+  routes to the orchestrator and the code stays in the tree, but no new
+  features, skill additions, or optimizations land against it. Real-world
+  cost data showed ~3-5× plain Copilot Agent per chat turn due to
+  provider-side prompt caching that `vscode.lm.sendRequest` doesn't
+  expose. Casual chat belongs in plain Copilot Chat, not `@harness`.
+  Full context: [`docs/roadmap.md`](./docs/roadmap.md) § Phase F.
+
+---
+
 ## Hard Invariants
 
 These cannot be broken without an explicit design discussion. If a change

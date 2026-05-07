@@ -15,8 +15,10 @@ produces, enforces the correction loop, injects skills, and runs code verificati
 
 **Copilot Chat reasons. CopilotHarness controls the environment it reasons about.**
 
-Simple requests get a direct response. Complex workflows route to governed
-pipelines with validation, correction loops, and audit trails.
+Governed multi-stage workflows (`/feature-dev` and successors) are the
+primary product surface. Casual chat belongs in plain Copilot Chat,
+not in this harness — see § Boundaries and `docs/roadmap.md` § Phase F
+for the orchestrator-freeze decision and the cost data behind it.
 
 > Public-facing summary lives in [`README.md`](./README.md). This file is the
 > internal source of truth for architecture and schemas. Build roadmap and
@@ -181,7 +183,15 @@ pipeline runner validates this. You cannot have Level 1 with multiple agents.
 
 ---
 
-## Current State (Phases A–E complete, v0.5.0)
+## Current State (Phases A–E complete + Phase F freeze, v0.5.0)
+
+> **Phase F (orchestrator freeze, May 2026):** the orchestrator runner,
+> agent file, routing skill, summarizer compaction, and conversation-
+> messages MCP tools are all preserved on disk and continue to work,
+> but they are feature-frozen. No new development lands against them.
+> Pipelines (`/feature-dev` and successors) are the active surface.
+> Cost rationale and decision context: `docs/roadmap.md` § Phase F.
+
 
 ```
 WHAT EXISTS NOW:
@@ -872,6 +882,20 @@ auditable, not duplicated):
 ---
 
 ## Boundaries
+
+**vs Copilot Chat / Copilot Agent (the most-asked question):**
+Copilot Chat is the right tool for casual chat, quick lookups, and
+single-turn coding help. CopilotHarness is the right tool for
+**governed multi-stage workflows** — work that benefits from a
+plan/design/code/review chain with an evaluator firewall, schema
+validation, correction loops, and an append-only audit trail.
+Real-world cost data (Phase F freeze, May 2026) showed the
+orchestrator running 3-5× plain Copilot Agent per chat turn because
+provider-side prompt caching isn't reachable through
+`vscode.lm.sendRequest`. Use the right tool for the job: `@harness
+/feature-dev <task>` for governed work, plain Copilot Chat for
+chat. Bare `@harness <prompt>` continues to route to the (frozen)
+orchestrator if you want that UX, but it pays the per-turn overhead.
 
 **vs AgentShield:** AgentShield secures individual tool calls.
 CopilotHarness governs what a pipeline produces across a full workflow.

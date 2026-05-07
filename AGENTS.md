@@ -8,18 +8,25 @@
 
 ## What CopilotHarness Is
 
-Harness layer for GitHub Copilot Chat in VS Code. Two modes:
-- **Orchestrator (default):** anything that isn't a slash-invoked pipeline →
-  one main agent with persistent chat per `chat_id`, replay on every turn,
-  reactive compaction, Tier-1 memory auto-injected, spawns sub-agents
-  (explorer / investigator / reviewer-aux / summarizer) on demand.
-- **Pipeline:** repeatable high-stakes workflows → predetermined chain in
-  `pipeline.yaml` → full guardrails (evaluator firewall, validation,
-  correction loop, append-only stage store, audit).
+Harness layer for GitHub Copilot Chat in VS Code. The product is
+**governed pipelines** — multi-stage workflows with evaluator firewall,
+correction loop, and append-only audit. The orchestrator chat mode
+exists in the codebase but is **feature-frozen**; new development
+goes into pipelines.
+
+- **Pipeline (active development):** repeatable high-stakes workflows →
+  predetermined chain in `pipeline.yaml` → full guardrails (evaluator
+  firewall, validation, correction loop, append-only stage store, audit).
+  Invoked via `/<pipeline-name> <task>`.
+- **Orchestrator (frozen, May 2026):** bare `@harness <prompt>` still
+  routes here, but no new features land. Real-world cost data showed
+  3-5× plain Copilot Agent per chat turn because provider-side prompt
+  caching isn't reachable through `vscode.lm.sendRequest`. Use plain
+  Copilot Chat for casual chat. Decision: `docs/roadmap.md` § Phase F.
 
 The `@harness` chat participant routes automatically: input that starts with
 `/<pipeline-name>` goes to that pipeline; everything else goes to the
-orchestrator. Zero LLM call decides which mode — pure prefix match.
+(frozen) orchestrator. Zero LLM call decides which mode — pure prefix match.
 
 ---
 
@@ -54,19 +61,14 @@ Level 2       Multi-agent + evaluator. Promotion checklist required.
 ## Session Protocol
 
 ```
-ORCHESTRATOR: @harness <text> → harness_append_message → harness_get_conversation
-              → vscode.lm.sendRequest with replayed history + Tier-1 memory
-              → tool-call loop (spawn / await / list sub-agents)
-              → reactive compaction at 80% / 90% / 99% of model context
-              → persist assistant + tool turns; never exit silent
 PIPELINE:     orient → baseline → generator → evaluator (fresh session)
               → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
+ORCHESTRATOR: (frozen) replay → vscode.lm → tool loop → persist; see runners/orchestrator.ts
 ```
 
 Renders inline in Copilot Chat (per-stage sections, tag lines, retry
-blockquote, plan.md anchor; sub-agent spawn / done markers in orchestrator
-mode) and in the activity-bar Tasks TreeView (Active session + clickable
-History). Details in README.md.
+blockquote, plan.md anchor) and in the activity-bar Tasks TreeView
+(Active session + clickable History). Details in README.md.
 
 ---
 
@@ -114,5 +116,4 @@ in `CLAUDE.md` § Hard Invariants. Do not duplicate them here.
 
 ---
 
-*CopilotHarness | 586 Py + 112 TS tests | Phases A–E shipped | May 2026*
-*Full design → docs/design.md. Status and roadmap → docs/roadmap.md.*
+*CopilotHarness | 591 Py + 125 TS | Phase F (orchestrator frozen) | May 2026 | docs/design.md · docs/roadmap.md*

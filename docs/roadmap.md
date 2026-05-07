@@ -665,3 +665,86 @@ After PR #37: 591 Py + 125 TS = 716  (+18; clear-active-session,
   were never built and have been removed from the plan.
 
 ---
+
+### Phase F — Orchestrator feature-freeze
+
+**Decision: feature-frozen as of May 2026.** No new features, no
+optimizations, no skill additions land against the orchestrator. The
+existing code stays in the tree and continues to work; bare
+`@harness <prompt>` still routes to `runOrchestrator`. Open
+development focuses on pipelines.
+
+**The cost data that drove the decision:**
+
+Real-world measurement (a typical chat turn after every reasonable
+trim — declarative `lm_tools`, skill body trimmed to ~841 t,
+MEMORY.md compressed to a pointer index, no-progress backoff,
+tool-result storage cap):
+
+```
+[orchestrator] cycle 0 sendRequest:
+  system~1563t + replay~1t + this-turn~0t + catalog~716t = ~2280t out
+```
+
+Per the user's own measurement, two orchestrator turns consumed ~1%
+of a Copilot Pro monthly token budget. At that rate the budget runs
+out in ~200 prompts. Plain Copilot Agent on the same chats was
+estimated to last 3-5× longer — the gap is structural:
+
+- Copilot Agent's stock system prompt + tool catalog get **provider-
+  side prompt-cached**. After turn 1, the static prefix is effectively
+  free.
+- The orchestrator's custom system prompt is **not cache-eligible**.
+  We probed `vscode.lm.sendRequest` `modelOptions: { cache_control }`
+  in PR #39 — Copilot's proxy ignored the hint. Turn 2 was no faster
+  per char than turn 1, confirming no automatic caching happens for
+  custom prefixes.
+- Pull-on-demand for the routing skill (PR #40, drafted but not
+  merged) saved another ~424 t / turn average but didn't close the
+  3-5× gap.
+
+The harness was designed for **governed multi-stage workflows**
+(pipeline mode), where the audit trail + evaluator firewall + correction
+loop earn the per-turn overhead. The orchestrator was a Phase B
+addition to give `@harness` a chat mode; in retrospect it put the
+harness in direct competition with Copilot Agent on Copilot Agent's
+home turf, where Copilot wins on cost.
+
+**What stays untouched:**
+
+- `runners/orchestrator.ts`, `runners/orchestratorCore.ts`,
+  `runners/summarizerRunner.ts` — code stays.
+- `.github/agents/orchestrator.agent.md`, `summarizer.agent.md`,
+  `.github/skills/orchestrator-routing/SKILL.md` — files stay.
+- Server-side `harness_append_message`, `harness_get_conversation`,
+  `harness_append_failure_pattern`, `conversation_messages` table
+  — stay (no migration needed).
+- Bare `@harness <prompt>` continues to route to the orchestrator;
+  users who want it can use it.
+
+**What's closed:**
+
+- PR #40 (`feat/pull-on-demand-skill`, relax Hard Invariant #2) —
+  closed without merging. The architectural change isn't worth
+  pursuing for a frozen subsystem.
+- Hard Invariant #2 stays at the original wording: *"Skills are
+  pushed, not pulled."*
+
+**Recommended usage going forward:**
+
+| Use case | Tool |
+|---|---|
+| Governed multi-stage engineering work | `@harness /feature-dev <task>` |
+| Casual chat, quick lookups, file Q&A | Plain Copilot Chat (no `@harness` prefix) |
+| Bare `@harness <prompt>` | Works, but pays the orchestrator overhead |
+
+Documented in `CLAUDE.md`, `AGENTS.md`, `docs/design.md`,
+`docs/memory.md`, and `README.md`.
+
+**What this section supersedes:**
+
+- The "Week 5+ Orchestrator Pivot" thrust as the active-development
+  banner. Pipelines are now the active-development banner.
+
+---
+
