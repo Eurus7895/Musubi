@@ -22,6 +22,7 @@ import {
   detectFrustration,
   dispatchOrchestratorTool,
   loadOrchestratorPrompts,
+  CONSECUTIVE_EMPTY_CYCLE_LIMIT,
   MAX_TOOL_CYCLES,
   MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
@@ -399,6 +400,21 @@ export interface RunOrchestratorOptions {
   token: vscode.CancellationToken;
   roots: string[];
   log: (msg: string) => void;
+  /**
+   * Per-extension-activation random salt. Threaded into resolveChatId
+   * so identical first prompts in distinct chat panels mint distinct
+   * chat_ids; multi-turn within the same activation stays stable.
+   * Generated once in extension.ts:activate().
+   */
+  sessionSalt: string;
+  /**
+   * From the originating ChatRequest. Forwarded into every
+   * vscode.lm.invokeTool call. Required by tools that produce
+   * workspace edits with a user-confirmation UI (e.g.
+   * copilot_insertEdit, copilot_replaceString, create_file). Tools
+   * that don't need it ignore it.
+   */
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 /**
@@ -411,7 +427,7 @@ export interface RunOrchestratorOptions {
  * even if the LLM call throws or the user cancels.
  */
 export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
-  const { prompt, client, chatContext, stream, token, roots, log } = opts;
+  const { prompt, client, chatContext, stream, token, roots, log, sessionSalt, toolInvocationToken } = opts;
 
   // Honors the orchestrator agent's `model:` frontmatter, and lets the
   // pushed `orchestrator-routing` skill (or any future complicated skill)
@@ -449,6 +465,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     participantId: PARTICIPANT_ID,
     firstUserPrompt: firstUserPromptInThread(chatContext, prompt),
     workspacePath: roots[0],
+    sessionSalt,
   });
 
   const active: ActiveOrchestrator = {
@@ -535,6 +552,18 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     if (!compacted.some(m => m.role === "user" && m.content === prompt)) {
       history.push(vscode.LanguageModelChatMessage.User(prompt));
     }
+    // Capture the static prefix lengths once so the per-cycle log can split
+    // out system / replay growth / catalog clearly. These don't change as
+    // the loop appends assistant + tool-result rows on later cycles.
+    const systemPromptChars = systemPrompt.length;
+    const initialReplayChars = history.slice(1).reduce((sum, m) => {
+      for (const part of m.content) {
+        if (part instanceof vscode.LanguageModelTextPart) {
+          sum += part.value.length;
+        }
+      }
+      return sum;
+    }, 0);
 
     // Tools the LM can call. Three layers:
     //   1. Harness sub-agent tools (spawn / await / list) — preserve the
@@ -580,6 +609,11 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
     const turnStart = Date.now();
+    // Track consecutive cycles whose tools all returned empty content or
+    // failed. The LM's typical thrashing pattern is to hallucinate a path,
+    // get an empty result, try a different path, also empty, etc. Bail to
+    // the force-final-answer path after CONSECUTIVE_EMPTY_CYCLE_LIMIT.
+    let consecutiveEmptyCycles = 0;
     for (let cycle = 0; cycle < MAX_TOOL_CYCLES; cycle++) {
       if (token.isCancellationRequested) { return; }
 
@@ -601,11 +635,41 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           }
         }
       }
-      const historyTokenEstimate = Math.max(1, Math.floor(historyChars / 4));
-      log(`[orchestrator] cycle ${cycle} sendRequest: history~${historyTokenEstimate}t + catalog~${catalogTokenEstimate}t = ~${historyTokenEstimate + catalogTokenEstimate}t out`);
+      // Split the history walk into the three components the user actually
+      // cares about. system + replay are constant per turn; turnGrowth is
+      // the assistant + tool-result rows added by previous cycles in THIS
+      // turn (zero on cycle 0, grows after each tool round).
+      const turnGrowthChars = Math.max(0, historyChars - systemPromptChars - initialReplayChars);
+      const systemTokens  = Math.max(1, Math.floor(systemPromptChars   / 4));
+      const replayTokens  = Math.max(0, Math.floor(initialReplayChars  / 4));
+      const turnTokens    = Math.max(0, Math.floor(turnGrowthChars     / 4));
+      const totalTokens   = systemTokens + replayTokens + turnTokens + catalogTokenEstimate;
+      log(`[orchestrator] cycle ${cycle} sendRequest:`
+        + ` system~${systemTokens}t + replay~${replayTokens}t + this-turn~${turnTokens}t`
+        + ` + catalog~${catalogTokenEstimate}t = ~${totalTokens}t out`);
 
       const cycleStart = Date.now();
-      const response = await model.sendRequest(history, { tools: lmTools }, token);
+      // Cache-control probe: try the standard provider hints in modelOptions.
+      // VS Code's LanguageModelChatRequestOptions.modelOptions is a
+      // free-form pass-through; whether the underlying Copilot proxy
+      // honours these depends on the provider routing. If they're
+      // ignored, the call still succeeds. If they're honoured, the
+      // static prefix becomes cache-eligible and turn 2+ should show a
+      // noticeable lm= speedup.
+      //
+      // We send both the snake_case (Anthropic convention) and
+      // camelCase (Copilot convention) keys to maximise the chance one
+      // resolves. Per-message-block cache_control isn't reachable
+      // through this API — only request-level, which works for OpenAI
+      // automatic prefix caching but is best-effort for Anthropic.
+      const requestOptions: vscode.LanguageModelChatRequestOptions = {
+        tools: lmTools,
+        modelOptions: {
+          cache_control: { type: "ephemeral" },
+          cacheControl: { type: "ephemeral" },
+        },
+      };
+      const response = await model.sendRequest(history, requestOptions, token);
 
       let textBuf = "";
       const toolCalls: vscode.LanguageModelToolCallPart[] = [];
@@ -636,13 +700,18 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       ]));
 
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
+      // Per-cycle progress tracking. A tool call counts as useful if it
+      // returned non-empty content AND did not error. Used to detect the
+      // hallucinate-and-retry loop (every cycle's results are empty/fail).
+      let cycleUsefulCount = 0;
       for (const call of toolCalls) {
         let resultText: string;
+        let callOk = false;
         const toolStart = Date.now();
         try {
           const invokeResult = await vscode.lm.invokeTool(
             call.name,
-            { input: call.input, toolInvocationToken: undefined },
+            { input: call.input, toolInvocationToken },
             token,
           );
           resultParts.push(new vscode.LanguageModelToolResultPart(
@@ -650,6 +719,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
           ));
           resultText = stringifyToolResult(invokeResult.content);
           log(`[orchestrator]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
+          callOk = resultText.trim().length > 0;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           log(`[orchestrator]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
@@ -658,6 +728,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             new vscode.LanguageModelTextPart(resultText),
           ]));
         }
+        if (callOk) { cycleUsefulCount++; }
         // Persist the tool result as a role:"tool" entry so reactive
         // compaction (80% branch) has something to drop and a future
         // turn can reconstruct what happened.
@@ -683,6 +754,27 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         await appendMessage(client, chatId, "tool", toolContent, log);
       }
       history.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+      // No-progress backoff. If every tool call this cycle was empty/error,
+      // increment the counter; reset on any useful result. After
+      // CONSECUTIVE_EMPTY_CYCLE_LIMIT in a row, break to the
+      // force-final-answer path so we don't spend the rest of MAX_TOOL_CYCLES
+      // watching the LM hallucinate paths.
+      if (cycleUsefulCount === 0) {
+        consecutiveEmptyCycles++;
+        if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
+          log(`[orchestrator] ${consecutiveEmptyCycles} consecutive cycles with no useful tool results — bailing to final answer`);
+          stream.markdown(
+            "\n\n_[harness] Tool calls returned no useful results — stopping. " +
+            "Try a more specific request (e.g. name a file or function)._",
+          );
+          // Surface the bail-out as the turn's outcome instead of falling
+          // through to the MAX_TOOL_CYCLES message below.
+          return;
+        }
+      } else {
+        consecutiveEmptyCycles = 0;
+      }
     }
 
     log(`[orchestrator] hit MAX_TOOL_CYCLES (${MAX_TOOL_CYCLES}) — forcing final answer`);
