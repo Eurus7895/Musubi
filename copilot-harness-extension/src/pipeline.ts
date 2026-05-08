@@ -832,6 +832,7 @@ async function runCorrectionLoop(
     materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
     emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
     emitStageOutputDetails(stream, "code", fixedCode);
+    emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "code", codeAttempt);
     onChange?.();
 
     // Evaluator firewall: reviewer sees only the (new) code artifact.
@@ -847,6 +848,7 @@ async function runCorrectionLoop(
     materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
     emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
     emitStageOutputDetails(stream, "review", newReview);
+    emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "review", reviewerFinalAttempt);
     onChange?.();
 
     currentReview = newReview;
@@ -904,6 +906,36 @@ function emitStageOutputDetails(
   // continuous blockquote. Empty lines need "> " too or the quote breaks.
   const quoted = body.split("\n").map(l => `> ${l}`).join("\n");
   stream.markdown(`\n${quoted}\n`);
+}
+
+/**
+ * Emit a clickable anchor pointing at the materialised stage MD file
+ * (`.harness/sessions/<sessionId>/<stage>[.attemptN].md`). The file is
+ * written by `materializeStageOutput`; this is the chat-side
+ * affordance to open it without leaving the panel.
+ *
+ * No-ops when the file isn't on disk yet (e.g. a stage that didn't
+ * have a renderer) — `stream.anchor` would point at a 404.
+ */
+function emitStageArtifactAnchor(
+  stream: vscode.ChatResponseStream,
+  workspaceRoot: string,
+  sessionId: string,
+  stage: string,
+  attempt: number,
+): void {
+  if (!_STAGE_RENDERER[stage]) { return; }  // no MD produced for this stage
+  const suffix = attempt > 1 ? `.attempt${attempt}` : "";
+  const fileName = `${stage}${suffix}.md`;
+  const absPath = path.join(workspaceRoot, ".harness", "sessions", sessionId, fileName);
+  if (!fs.existsSync(absPath)) { return; }
+  const uri = vscode.Uri.file(absPath);
+  try {
+    stream.anchor(uri, `View ${fileName}`);
+  } catch {
+    // stream.anchor throws on older VS Code; the file is still on
+    // disk for the user to open manually via the Tasks tree.
+  }
 }
 
 function formatStageOutput(stage: string, o: Record<string, unknown>): string {
@@ -1080,6 +1112,7 @@ export async function runPipeline(
     }
     emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
     emitStageOutputDetails(stream, agent.writeStage, agentOutput);
+    emitStageArtifactAnchor(stream, workspaceRoot, sessionId, agent.writeStage, finalAttempt);
     onChange?.();
 
     // ── Phase G.1.5 review gate (planner / designer / coder only) ────────────
@@ -1262,6 +1295,7 @@ export async function runStep(
   }
   emitStageComplete(stream, agentDef.name, Date.now() - stepT0, summarizeStageOutput(agentDef.writeStage, agentOutput));
   emitStageOutputDetails(stream, agentDef.writeStage, agentOutput);
+  emitStageArtifactAnchor(stream, workspaceRoot, sessionId, agentDef.writeStage, stepFinalAttempt);
   onChange?.();
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────
