@@ -6,9 +6,12 @@ action: help
 
 # /help
 
-Lists every slash command that lives under `.github/commands/`. The table is
-built at runtime from the on-disk frontmatter, so new command files show up
-automatically — nothing to rebuild, nothing to re-register.
+Lists every slash command that lives under `.github/commands/`,
+grouped into three sections — **Pipelines**, **Agents**, and
+**Commands** — so the routing-mode distinction is visible at a glance.
+The tables are built at runtime from on-disk frontmatter, so new
+command files show up automatically — nothing to rebuild, nothing to
+re-register.
 
 The listing also reminds users of the two routing modes:
 

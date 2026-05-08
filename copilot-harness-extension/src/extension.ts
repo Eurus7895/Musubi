@@ -325,26 +325,58 @@ const USAGE_FOOTER = [
   "any time to see the current list.",
 ].join("\n");
 
-/** Build the /help body by listing every on-disk slash command. */
+/** Build the /help body by listing every on-disk slash command, grouped
+ *  into Pipelines (full multi-stage runs), Agents (one-shot or
+ *  single-stage agent invocations), and Commands (everything else —
+ *  status / continue / orchestrator / help). The grouping makes the
+ *  routing-mode distinction visible at a glance instead of buried in
+ *  one alphabetical table.
+ */
 function buildHelpMarkdown(roots: string[]): string {
   const commands = listSlashCommands(roots).sort((a, b) => a.name.localeCompare(b.name));
-  const rows: string[] = [
-    USAGE_HEADER,
-    "",
-    "| Command | Action | Description |",
-    "|---|---|---|",
-  ];
+  const pipelineCmds: typeof commands = [];
+  const agentCmds:    typeof commands = [];
+  const otherCmds:    typeof commands = [];
   for (const cmd of commands) {
-    const target =
-      cmd.action === "pipeline" ? `pipeline \`${cmd.pipeline ?? "?"}\`` :
-      cmd.action === "step"     ? `step \`${cmd.agent ?? "?"}\`` :
-      cmd.action;
-    rows.push(`| \`/${cmd.name}\` | ${target} | ${cmd.description || "—"} |`);
+    if (cmd.action === "pipeline") {
+      pipelineCmds.push(cmd);
+    } else if (cmd.action === "agent" || cmd.action === "step") {
+      agentCmds.push(cmd);
+    } else {
+      otherCmds.push(cmd);
+    }
   }
-  if (commands.length === 0) {
-    rows.push("| _(no commands found)_ | — | check `.github/commands/` |");
-  }
-  rows.push("", USAGE_FOOTER);
+
+  const rows: string[] = [USAGE_HEADER, ""];
+
+  const renderTable = (
+    title: string,
+    list: typeof commands,
+    emptyHint: string,
+  ): void => {
+    rows.push(`### ${title}`, "");
+    rows.push("| Command | Action | Description |");
+    rows.push("|---|---|---|");
+    if (list.length === 0) {
+      rows.push(`| _(none)_ | — | ${emptyHint} |`);
+    } else {
+      for (const cmd of list) {
+        const target =
+          cmd.action === "pipeline" ? `pipeline \`${cmd.pipeline ?? "?"}\`` :
+          cmd.action === "step"     ? `step \`${cmd.agent ?? "?"}\`` :
+          cmd.action === "agent"    ? `agent \`${cmd.agent ?? cmd.name}\`` :
+          cmd.action;
+        rows.push(`| \`/${cmd.name}\` | ${target} | ${cmd.description || "—"} |`);
+      }
+    }
+    rows.push("");
+  };
+
+  renderTable("Pipelines", pipelineCmds, "no pipelines registered yet");
+  renderTable("Agents",    agentCmds,    "no agent commands registered");
+  renderTable("Commands",  otherCmds,    "no other commands registered");
+
+  rows.push(USAGE_FOOTER);
   return rows.join("\n");
 }
 
