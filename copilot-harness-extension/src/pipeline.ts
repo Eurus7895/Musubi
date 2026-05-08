@@ -12,6 +12,19 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { selectModelForAgent } from "./modelSelector";
+import {
+  spawnAndRunSubagent,
+  type RunSubagentResult,
+} from "./runners/subagentRunner";
+import type { SubagentRoleId } from "./runners/subagentRunnerCore";
+import {
+  StageSpawnBudget,
+  SubagentBudgetExhausted,
+} from "./runners/pipelineSubagentBudget";
+
+// Re-export so external callers can import budget primitives + helper
+// from a single module (the pipeline runner is the public surface).
+export { StageSpawnBudget, SubagentBudgetExhausted };
 
 // ── Stage tag presets — mirrors the "push-not-pull" injection contract ────
 // The harness pushes these to each stage; we render them so the user can
@@ -1301,4 +1314,81 @@ export async function runOneShotAgent(
   emitStageOutputDetails(stream, "code", output);
 
   return { success: true, agentName, output };
+}
+
+// ── Pipeline-side sub-agent spawn helper (Phase G.1) ─────────────────────────
+//
+// `spawnSubAgent` lets a pipeline stage dispatch an explorer / investigator /
+// reviewer-aux mid-execution. It enforces two harness invariants before the
+// sub-agent runs:
+//
+//   1. Per-stage spawn budget — caps how many spawns a single stage attempt
+//      may issue. Without it, a stuck stage can spam the same lookup until
+//      it exhausts its context window. Tracked by `StageSpawnBudget`.
+//
+//   2. Depth ceiling — a sub-agent's own runner does not advertise
+//      harness_spawn_subagent as an LM tool, so depth-2 is structurally
+//      impossible today. The `maxDepth` config field is the forward-looking
+//      knob: when sub-agents-spawn-sub-agents lands, this caps it.
+//
+// The escalation UX (ask the user when the budget is exhausted) is Phase
+// G.1.5 work — for G.1 the helper throws a typed error and the caller
+// decides what to do. Today no caller exists; feature-dev opts in during
+// G.1.6, at which point the stage runner wires this to the chat gate.
+
+export interface SpawnSubAgentOptions {
+  client: McpClient;
+  /** Parent context — the harness uses this to set parent_* on the spawn row. */
+  parentSessionId: string;
+  parentAgentName: string;
+  /** Stage-attempt budget; mutated on a successful spawn. */
+  budget: StageSpawnBudget;
+  /** Role to spawn — one of the runners shipped in this PR. */
+  role: SubagentRoleId;
+  /** One-sentence task description. The sub-agent sees only this. */
+  brief: string;
+  /** Optional spawn-time tool narrowing (subset of the role's allow-list). */
+  allowedTools?: readonly string[];
+  /** Optional JSON schema for the structured payload. */
+  outputSchema?: Record<string, unknown>;
+  /** Workspace + extension roots passed to the runner. */
+  roots: string[];
+  log: (msg: string) => void;
+  token: vscode.CancellationToken;
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
+}
+
+/**
+ * Spawn a sub-agent on behalf of the current pipeline stage. Returns the
+ * harness-verified summary (and structured echo, when present).
+ *
+ * Throws `SubagentBudgetExhausted` when the stage's budget is already
+ * full. All other failure modes — LM unavailable, policy denial,
+ * verification rejection — surface as a `RunSubagentResult` with
+ * `ok=false`, so callers can degrade gracefully rather than crash.
+ */
+export async function spawnSubAgent(
+  opts: SpawnSubAgentOptions,
+): Promise<RunSubagentResult> {
+  if (opts.budget.exhausted) {
+    throw new SubagentBudgetExhausted(opts.budget);
+  }
+  opts.budget.consume();
+  opts.log(
+    `[pipeline] spawn ${opts.role} for ${opts.budget.stageKey} ` +
+    `(budget ${opts.budget.used}/${opts.budget.limit})`,
+  );
+  return spawnAndRunSubagent({
+    client: opts.client,
+    parentSessionId: opts.parentSessionId,
+    parentAgentName: opts.parentAgentName,
+    role: opts.role,
+    brief: opts.brief,
+    allowedTools: opts.allowedTools,
+    outputSchema: opts.outputSchema,
+    roots: opts.roots,
+    log: opts.log,
+    token: opts.token,
+    toolInvocationToken: opts.toolInvocationToken,
+  });
 }
