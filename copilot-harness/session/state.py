@@ -208,15 +208,44 @@ def get_attempt(
 
 
 def increment_attempt(
-    session_id: str, stage: str, db_path: Path | None = None
+    session_id: str,
+    stage: str,
+    db_path: Path | None = None,
+    *,
+    user_hint: str | None = None,
 ) -> int:
-    """Insert a new attempt row and return the new attempt number."""
+    """Insert a new attempt row and return the new attempt number.
+
+    `user_hint` (Phase G.1.5) is the optional one-line note the gate UI's
+    "Retry this stage" input box collects. Persisted to the new attempt
+    row so `read_stage_user_hint` can surface it on the next read.
+    """
     row = db.get_stage_row(session_id, stage, db_path=db_path)
     if row is None:
         raise ValueError(f"Stage {stage!r} not found for session {session_id!r}")
     new_attempt = row["attempt"] + 1
-    db.insert_stage(session_id, stage, new_attempt, db_path)
+    cleaned = user_hint.strip() if isinstance(user_hint, str) and user_hint.strip() else None
+    db.insert_stage(session_id, stage, new_attempt, db_path, user_hint=cleaned)
     return new_attempt
+
+
+def read_stage_user_hint(
+    session_id: str, stage: str, db_path: Path | None = None,
+) -> str | None:
+    """Return the `user_hint` on the latest attempt of `stage`, or None.
+
+    Used by `harness_read_stage` to surface a retry hint into the
+    calling agent's context — so a coder retrying after the user typed
+    "the previous attempt skipped error handling" sees that note in its
+    next read.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    row = db.get_stage_row(session_id, stage, db_path=db_path)
+    if row is None:
+        return None
+    hint = row.get("user_hint")
+    return hint if isinstance(hint, str) and hint.strip() else None
 
 
 def mark_in_progress(
@@ -226,6 +255,114 @@ def mark_in_progress(
     row = db.get_stage_row(session_id, stage, db_path=db_path)
     if row and row["status"] == "pending":
         db.set_stage_in_progress(session_id, stage, row["attempt"], db_path)
+
+
+# ── Phase G.1.5: review-gate pause / resume ───────────────────────────────
+
+VALID_PAUSE_REASONS: frozenset[str] = frozenset({"stage_review", "budget_exhausted"})
+
+# Resume actions and which pause_reason they apply to. The runner uses
+# this table to validate before persisting.
+VALID_RESUME_ACTIONS: dict[str, frozenset[str]] = {
+    "approve":            frozenset({"stage_review"}),
+    "retry":              frozenset({"stage_review"}),
+    "abort":              frozenset({"stage_review", "budget_exhausted"}),
+    "auto_approve_rest":  frozenset({"stage_review"}),
+    "grant":              frozenset({"budget_exhausted"}),
+    "force":              frozenset({"budget_exhausted"}),
+}
+
+
+def pause_session(
+    session_id: str, stage: str, reason: str, db_path: Path | None = None,
+) -> None:
+    """Mark the session paused at `stage`. Stage must be a known pipeline
+    stage; reason must be one of `VALID_PAUSE_REASONS`."""
+    if stage not in STAGES:
+        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    if reason not in VALID_PAUSE_REASONS:
+        raise ValueError(
+            f"Unknown pause_reason {reason!r}. Valid: {sorted(VALID_PAUSE_REASONS)}"
+        )
+    if get_session(session_id, db_path) is None:
+        raise ValueError(f"Session {session_id!r} not found")
+    db.set_session_paused(session_id, stage, reason, _now(), db_path)
+
+
+def resume_session(
+    session_id: str,
+    action: str,
+    db_path: Path | None = None,
+    *,
+    user_hint: str | None = None,
+    extra_budget: int = 0,
+) -> dict:
+    """Record the user's resume decision. Returns the post-update session row.
+
+    The runner picks up the action via `consume_pending_action` on its
+    next entry and dispatches: approve→next stage, retry→same stage new
+    attempt with hint, abort→close session, auto_approve_rest→approve+set
+    flag, grant→same stage with extra budget, force→same stage with
+    explicit no-spawns signal.
+    """
+    sess = get_session(session_id, db_path)
+    if sess is None:
+        raise ValueError(f"Session {session_id!r} not found")
+
+    if action not in VALID_RESUME_ACTIONS:
+        raise ValueError(
+            f"Unknown resume action {action!r}. Valid: {sorted(VALID_RESUME_ACTIONS)}"
+        )
+    pause_reason = sess.get("pause_reason")
+    if pause_reason is None:
+        raise ValueError(f"Session {session_id!r} is not paused")
+    if pause_reason not in VALID_RESUME_ACTIONS[action]:
+        raise ValueError(
+            f"Action {action!r} does not apply to pause_reason {pause_reason!r}"
+        )
+
+    set_auto: bool | None = None
+    if action == "auto_approve_rest":
+        set_auto = True
+
+    cleaned_hint = (
+        user_hint.strip()
+        if isinstance(user_hint, str) and user_hint.strip()
+        else None
+    )
+    eb = max(0, int(extra_budget)) if action in {"grant"} else 0
+
+    db.set_session_resumed(
+        session_id,
+        action,
+        _now(),
+        db_path,
+        user_hint=cleaned_hint,
+        extra_budget=eb,
+        set_auto_approve_remaining=set_auto,
+    )
+    return get_session(session_id, db_path) or {}
+
+
+def consume_pending_action(
+    session_id: str, db_path: Path | None = None,
+) -> dict | None:
+    """Return + clear the `pending_*` payload (read-once)."""
+    return db.consume_pending_action(session_id, db_path)
+
+
+def get_pause_state(
+    session_id: str, db_path: Path | None = None,
+) -> dict | None:
+    """Return `{paused_at_stage, pause_reason, auto_approve_remaining}` or None."""
+    sess = get_session(session_id, db_path)
+    if sess is None:
+        return None
+    return {
+        "paused_at_stage":         sess.get("paused_at_stage"),
+        "pause_reason":            sess.get("pause_reason"),
+        "auto_approve_remaining":  bool(sess.get("auto_approve_remaining") or 0),
+    }
 
 
 def resume(session_id: str, db_path: Path | None = None) -> str | None:

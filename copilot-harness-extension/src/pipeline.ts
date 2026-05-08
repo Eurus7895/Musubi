@@ -21,6 +21,7 @@ import {
   StageSpawnBudget,
   SubagentBudgetExhausted,
 } from "./runners/pipelineSubagentBudget";
+import { runStageReviewGate, type StageGateOutcome } from "./pipelineGateUi";
 
 // Re-export so external callers can import budget primitives + helper
 // from a single module (the pipeline runner is the public surface).
@@ -1021,8 +1022,15 @@ export async function runPipeline(
   onChange?.();
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
+  //
+  // Indexed while-loop (instead of for-of) so the Phase G.1.5 review gate
+  // can request a stage retry without advancing to the next agent. The
+  // gate fires after planner/designer/coder write their output; the
+  // reviewer is gated by its own correction loop, not the user-facing
+  // gate.
 
-  for (const agent of AGENT_PIPELINE) {
+  for (let agentIdx = 0; agentIdx < AGENT_PIPELINE.length; agentIdx++) {
+    const agent = AGENT_PIPELINE[agentIdx];
     if (token.isCancellationRequested) { break; }
 
     const statusData = (await callHarness(
@@ -1073,6 +1081,51 @@ export async function runPipeline(
     emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
     emitStageOutputDetails(stream, agent.writeStage, agentOutput);
     onChange?.();
+
+    // ── Phase G.1.5 review gate (planner / designer / coder only) ────────────
+    //
+    // Reviewer is gated by its own correction loop below, not the user
+    // gate. For the others, persist a pause row + render the four-button
+    // gate (or auto-approve through if the user setting / per-run flag
+    // says so). On `retry`: increment the attempt and re-run THIS stage.
+    // On `abort`: surface as escalation.
+    if (agent.name !== "reviewer") {
+      const gateOutcome: StageGateOutcome = await runStageReviewGate({
+        client,
+        stream,
+        sessionId,
+        pipelineName: meta.pipelineName,
+        stage: agent.writeStage,
+        attempt: finalAttempt,
+        elapsedMs: Date.now() - stageT0,
+        log: logLine,
+      });
+
+      if (gateOutcome.kind === "aborted") {
+        stream.markdown("\n\n_Pipeline aborted at stage gate._\n");
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: "User aborted at stage review gate.",
+        };
+      }
+      if (gateOutcome.kind === "retry") {
+        // Bump attempt with the optional hint (passed straight through to
+        // harness_increment_attempt; surfaces in the next read context as
+        // `user_hint`). Re-run THIS agent by holding agentIdx steady.
+        await callHarness(client, "harness_increment_attempt", {
+          session_id: sessionId,
+          stage: agent.writeStage,
+          user_hint: gateOutcome.userHint ?? null,
+        });
+        const hintMsg = gateOutcome.userHint
+          ? ` with hint: ${gateOutcome.userHint}`
+          : "";
+        stream.markdown(`\n↻ retrying **${agent.name}**${hintMsg}\n`);
+        agentIdx -= 1;  // counter the loop's `i++`
+        continue;
+      }
+      // approved | auto_approved → fall through to next agent.
+    }
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
     if (agent.name === "reviewer") {

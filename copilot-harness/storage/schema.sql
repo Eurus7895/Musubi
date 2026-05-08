@@ -1,9 +1,22 @@
+-- Phase G.1.5 adds six review-gate columns to this table; ALTER-based
+-- migration in db.py::init_db handles existing DBs. Keep this CREATE in
+-- sync with the embedded `_SCHEMA_SQL` in db.py and with the migration
+-- list in `_PAUSE_RESUME_COLUMNS`.
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     request    TEXT NOT NULL,
     status     TEXT NOT NULL DEFAULT 'active',   -- active | complete | escalated
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- Review gate (Phase G.1.5). Set when a stage completes and the gate
+    -- is active; the runner reads on entry and either resumes (action
+    -- recorded by harness_resume_session) or renders the gate UI.
+    paused_at_stage         TEXT,                              -- stage just paused at, NULL when running
+    pause_reason            TEXT,                              -- 'stage_review' | 'budget_exhausted' | NULL
+    auto_approve_remaining  INTEGER NOT NULL DEFAULT 0,        -- session-scoped escape hatch (per-run)
+    pending_action          TEXT,                              -- 'approve' | 'retry' | 'abort' | 'auto_approve_rest' | 'grant' | 'force' | NULL
+    pending_user_hint       TEXT,                              -- one-line free text from the retry input box
+    pending_extra_budget    INTEGER NOT NULL DEFAULT 0         -- additional spawns granted on a budget_exhausted resume
 );
 
 CREATE TABLE IF NOT EXISTS agent_versions (
@@ -16,6 +29,10 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 
 -- Append-only: one row per stage per attempt.
 -- output is NULL until the agent writes it; then it is write-once.
+-- Phase G.1.5 adds `user_hint` so a retry from the gate UI can carry
+-- the user's "what was wrong with this attempt" note into the next
+-- attempt's read context — populated when `harness_increment_attempt`
+-- is called with a non-empty hint.
 CREATE TABLE IF NOT EXISTS stage_outputs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT    NOT NULL,
@@ -24,6 +41,7 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     status     TEXT    NOT NULL DEFAULT 'pending',  -- pending | in_progress | complete
     output     TEXT,               -- JSON blob, NULL until written
     written_at TEXT,
+    user_hint  TEXT,                -- optional: one-line retry hint from the gate UI
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 

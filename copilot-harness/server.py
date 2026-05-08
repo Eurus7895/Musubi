@@ -237,6 +237,20 @@ def harness_read_stage(session_id: str, stage: str, agent_name: str) -> str:
         if mem:
             result["memory"] = mem
 
+    # Phase G.1.5 — surface the retry hint set by the gate UI's "Retry
+    # this stage" input box. The hint lives on the calling agent's
+    # current attempt of its own output stage, so reading any input
+    # stage exposes the same hint regardless of which `stage` was asked
+    # for. The reviewer doesn't get hints (output-stage='review'; the
+    # gate is meant for generator-side correction, not evaluator-side).
+    if output_stage and agent_name.lower() != "reviewer":
+        try:
+            hint = state.read_stage_user_hint(session_id, output_stage)
+        except ValueError:
+            hint = None
+        if hint:
+            result["user_hint"] = hint
+
     return json.dumps(result)
 
 
@@ -327,18 +341,25 @@ def harness_get_status(session_id: str) -> str:
 
 
 @mcp.tool()
-def harness_increment_attempt(session_id: str, stage: str) -> str:
+def harness_increment_attempt(
+    session_id: str,
+    stage: str,
+    user_hint: str | None = None,
+) -> str:
     """Increment the attempt counter for a stage, enabling a retry write.
 
-    Used by the Phase 2 VS Code extension correction loop:
-      after a failed review, the extension calls this for both "code" and "review"
-      before re-running the coder and reviewer agents.
+    Used by the Phase 2 VS Code extension correction loop and the Phase
+    G.1.5 review-gate's "Retry this stage" path. `user_hint` (Phase G.1.5)
+    is the optional one-line note from the gate UI's input box; persisted
+    on the new attempt row so `harness_read_stage` surfaces it to the
+    retrying agent.
 
-    state.py enforces write-once per attempt; incrementing creates a new attempt
-    row so the next harness_write_stage call succeeds without overwriting history.
+    state.py enforces write-once per attempt; incrementing creates a new
+    attempt row so the next harness_write_stage call succeeds without
+    overwriting history.
     """
     try:
-        state.increment_attempt(session_id, stage)
+        state.increment_attempt(session_id, stage, user_hint=user_hint)
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
     attempt = state.get_attempt(session_id, stage)
@@ -347,6 +368,115 @@ def harness_increment_attempt(session_id: str, stage: str) -> str:
         "session_id": session_id,
         "stage": stage,
         "attempt": attempt,
+    })
+
+
+# ── Phase G.1.5: review-gate pause / resume tools ─────────────────────────
+
+@mcp.tool()
+def harness_pause_session(session_id: str, stage: str, reason: str) -> str:
+    """Mark a session paused at `stage` for `reason`.
+
+    Called by the pipeline runner when a review gate fires (after a stage
+    completes) or when a sub-agent budget is exhausted mid-stage. The
+    pause survives a VS Code restart — `@harness continue` resumes from
+    `paused_at_stage`.
+
+    `reason` must be one of: 'stage_review' | 'budget_exhausted'.
+    """
+    try:
+        state.pause_session(session_id, stage, reason)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    return json.dumps({
+        "status": "paused",
+        "session_id": session_id,
+        "paused_at_stage": stage,
+        "pause_reason": reason,
+    })
+
+
+@mcp.tool()
+def harness_resume_session(
+    session_id: str,
+    action: str,
+    user_hint: str | None = None,
+    extra_budget: int = 0,
+) -> str:
+    """Record a user resume decision for a paused session.
+
+    Valid actions per pause_reason:
+      - stage_review:     'approve' | 'retry' | 'abort' | 'auto_approve_rest'
+      - budget_exhausted: 'grant' | 'force' | 'abort'
+
+    `user_hint` is the inline retry-box text (only used when action='retry').
+    `extra_budget` is the additional spawn count granted on a 'grant' action
+    (Phase G.1.5 ships +3 fixed; pipeline.yaml may parameterise it later).
+
+    Clears `paused_at_stage`/`pause_reason` and stages the action under
+    `pending_*` columns. The runner reads-and-clears via
+    `consume_pending_action` on its next entry.
+    """
+    try:
+        sess = state.resume_session(
+            session_id,
+            action,
+            user_hint=user_hint,
+            extra_budget=extra_budget,
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    return json.dumps({
+        "status": "resumed",
+        "session_id": session_id,
+        "action": action,
+        "auto_approve_remaining": bool(sess.get("auto_approve_remaining") or 0),
+    })
+
+
+@mcp.tool()
+def harness_get_pause_state(session_id: str) -> str:
+    """Return the session's pause flags. Runner calls on entry.
+
+    `{paused_at_stage, pause_reason, auto_approve_remaining,
+       pending_action, pending_user_hint, pending_extra_budget}`
+
+    `pending_*` are returned read-only here — to consume them (and clear
+    in one shot) call `harness_consume_pending_action`.
+    """
+    sess = state.get_session(session_id)
+    if sess is None:
+        return json.dumps({"status": "error", "error": f"session {session_id!r} not found"})
+    return json.dumps({
+        "status": "ok",
+        "session_id": session_id,
+        "paused_at_stage":         sess.get("paused_at_stage"),
+        "pause_reason":            sess.get("pause_reason"),
+        "auto_approve_remaining":  bool(sess.get("auto_approve_remaining") or 0),
+        "pending_action":          sess.get("pending_action"),
+        "pending_user_hint":       sess.get("pending_user_hint"),
+        "pending_extra_budget":    sess.get("pending_extra_budget") or 0,
+    })
+
+
+@mcp.tool()
+def harness_consume_pending_action(session_id: str) -> str:
+    """Atomically read-and-clear the session's `pending_*` payload.
+
+    Returns `{status: "ok", action, user_hint, extra_budget}` when an
+    action was pending, or `{status: "ok", action: null}` when none.
+    Calling twice in a row returns `null` on the second call — the
+    runner relies on this single-consume invariant to avoid double-
+    applying a resume decision.
+    """
+    payload = state.consume_pending_action(session_id)
+    if payload is None:
+        return json.dumps({"status": "ok", "action": None})
+    return json.dumps({
+        "status": "ok",
+        "action":       payload["action"],
+        "user_hint":    payload.get("user_hint"),
+        "extra_budget": payload.get("extra_budget", 0),
     })
 
 

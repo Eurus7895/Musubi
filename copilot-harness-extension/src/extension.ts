@@ -18,6 +18,7 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
 import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrator";
+import { registerGateCommands } from "./pipelineGateUi";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 
@@ -82,6 +83,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // list). Must run before any chat turn invokes runOrchestrator. Failures
   // are logged but non-fatal; the runner gracefully degrades to no-tool turns.
   context.subscriptions.push(registerOrchestratorTools((m) => out.appendLine(m)));
+
+  // Phase G.1.5 — register the review-gate commands (resume + auto-approve
+  // toggle). Buttons rendered in chat by pipelineGateUi point at these.
+  context.subscriptions.push(registerGateCommands({
+    client,
+    log: (m) => out.appendLine(m),
+  }));
 
   // ── Tasks sidebar view (v0.4.0) ───────────────────────────────────────────
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionPath;
