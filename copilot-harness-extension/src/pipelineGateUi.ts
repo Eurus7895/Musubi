@@ -64,6 +64,11 @@ export interface ResumedDecision {
   extraBudget?: number;
   /** Echo from the harness — true when the click set auto_approve_remaining. */
   autoApproveRemaining?: boolean;
+  /**
+   * Phase G.1.7 — echoed from the click args so the runner knows which
+   * chunk's attempt to bump on `retry`. Undefined for non-chunked gates.
+   */
+  chunkId?: string;
 }
 
 const _pending = new Map<string, PendingDecision>();
@@ -107,6 +112,10 @@ export interface RenderStageGateOptions {
   attempt: number;
   tokenEstimate?: number | null;
   elapsedMs?: number | null;
+  /** Phase G.1.7 — chunk identifier when the gate fires inside a chunked stage run. */
+  chunkId?: string;
+  /** Phase G.1.7 — human label for the chunk ("T1 — write tests …"). */
+  chunkLabel?: string;
 }
 
 /**
@@ -126,6 +135,9 @@ export function renderStageReviewGate(
     elapsedMs: opts.elapsedMs ?? null,
     autoApproveOn,
   }));
+  if (opts.chunkLabel) {
+    opts.stream.markdown(`*Chunk: **${opts.chunkLabel}***\n`);
+  }
 
   const base = {
     sessionId: opts.sessionId,
@@ -133,6 +145,7 @@ export function renderStageReviewGate(
     stage: opts.stage,
     attempt: opts.attempt,
     pauseReason: "stage_review" as const,
+    ...(opts.chunkId ? { chunkId: opts.chunkId } : {}),
   };
 
   const pendingPromise = registerPendingDecision(opts.sessionId);
@@ -269,6 +282,10 @@ export function registerGateCommands(opts: RegisterCommandsOptions): CommandRegi
           user_hint: userHint ?? null,
           extra_budget: extraBudget,
         });
+      // Note: harness_resume_session itself doesn't take chunk_id —
+      // pause_session already recorded which chunk was paused, and
+      // resume_session simply clears it. The runner reads the chunk
+      // id back via the resolved Promise's `chunkId` field on retry.
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         opts.log(`[gate] resume MCP threw: ${msg}`);
@@ -304,6 +321,7 @@ export function registerGateCommands(opts: RegisterCommandsOptions): CommandRegi
           userHint,
           extraBudget: parsed.action === "grant" ? extraBudget : undefined,
           autoApproveRemaining: parsedResume.auto_approve_remaining,
+          chunkId: parsed.chunkId,
         });
       } else {
         opts.log(`[gate] no pending decision for session ${parsed.sessionId} — resume recorded; user may need to '@harness continue'`);
@@ -355,12 +373,16 @@ export interface RunStageReviewGateOptions {
   log: (msg: string) => void;
   /** Test seam — disable the gate entirely (keeps the existing happy path). */
   gateEnabled?: boolean;
+  /** Phase G.1.7 — chunk identifier when gating inside a chunked stage run. */
+  chunkId?: string;
+  /** Phase G.1.7 — human label for the chunk ("T1 — write tests …"). */
+  chunkLabel?: string;
 }
 
 export type StageGateOutcome =
   | { kind: "approved" }
   | { kind: "auto_approved"; autoApproveRemaining: boolean }
-  | { kind: "retry"; userHint?: string }
+  | { kind: "retry"; userHint?: string; chunkId?: string }
   | { kind: "aborted" };
 
 /**
@@ -379,11 +401,13 @@ export async function runStageReviewGate(
   // 1. Persist pause state so a chat-cancel mid-await still recoverable
   //    via `@harness continue`.
   try {
-    await opts.client.callTool("harness_pause_session", {
+    const pauseArgs: Record<string, unknown> = {
       session_id: opts.sessionId,
       stage: opts.stage,
       reason: "stage_review",
-    });
+    };
+    if (opts.chunkId) { pauseArgs.chunk_id = opts.chunkId; }
+    await opts.client.callTool("harness_pause_session", pauseArgs);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     opts.log(`[gate] pause MCP threw: ${msg}`);
@@ -449,6 +473,8 @@ export async function runStageReviewGate(
       attempt: opts.attempt,
       tokenEstimate: opts.tokenEstimate,
       elapsedMs: opts.elapsedMs,
+      chunkId: opts.chunkId,
+      chunkLabel: opts.chunkLabel,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -464,7 +490,7 @@ export async function runStageReviewGate(
     case "auto_approve_rest":
       return { kind: "auto_approved", autoApproveRemaining: true };
     case "retry":
-      return { kind: "retry", userHint: resumed.userHint };
+      return { kind: "retry", userHint: resumed.userHint, chunkId: resumed.chunkId };
     case "abort":
       return { kind: "aborted" };
     default:

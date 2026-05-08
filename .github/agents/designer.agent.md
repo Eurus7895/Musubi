@@ -90,6 +90,7 @@ Produce ONLY valid JSON matching this schema:
         {
             "file": "real/relative/path/from/workspace_tree.py",
             "purpose": "string — reference the task IDs this module implements, e.g. 'Implements T1 and T2'",
+            "task_id": "T1",
             "public_interface": [
                 {
                     "name": "function_or_class_name",
@@ -115,6 +116,13 @@ Produce ONLY valid JSON matching this schema:
 
 `tasks_addressed` MUST list every task ID from the plan (e.g. `["T1", "T2", "T3"]`).
 The harness validates that all plan task IDs appear here — omitting any will cause the write to be rejected.
+
+**`modules[].task_id`** (Phase G.1.7) is the SINGLE plan task each module implements.
+When set on every module, the harness chunks the coder run by task — coder + reviewer
+run once per task instead of once over all modules, so a 21-module design becomes
+three smaller runs instead of one giant one that hits the LM's output-token cap.
+If you legitimately can't pick one task for a module, omit `task_id` and the harness
+will fall back to extracting it from `purpose` (e.g. "Implements T1 — …").
 
 Then call:
 

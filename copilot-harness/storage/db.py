@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     auto_approve_remaining  INTEGER NOT NULL DEFAULT 0,
     pending_action          TEXT,
     pending_user_hint       TEXT,
-    pending_extra_budget    INTEGER NOT NULL DEFAULT 0
+    pending_extra_budget    INTEGER NOT NULL DEFAULT 0,
+    paused_at_chunk         TEXT
 );
 CREATE TABLE IF NOT EXISTS agent_versions (
     session_id TEXT NOT NULL,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     output     TEXT,
     written_at TEXT,
     user_hint  TEXT,
+    chunk_id   TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 CREATE TABLE IF NOT EXISTS active_session (
@@ -114,11 +116,18 @@ _PAUSE_RESUME_COLUMNS: tuple[tuple[str, str], ...] = (
     ("pending_action",         "TEXT"),
     ("pending_user_hint",      "TEXT"),
     ("pending_extra_budget",   "INTEGER NOT NULL DEFAULT 0"),
+    # G.1.7 — paused_at_chunk surfaces the chunk a stage_review pause
+    # belongs to so resume targets the correct chunk run.
+    ("paused_at_chunk",        "TEXT"),
 )
 
-# Same shape for stage_outputs.user_hint.
+# Same shape for stage_outputs columns added after the original schema.
 _STAGE_OUTPUT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("user_hint", "TEXT"),
+    # G.1.7 — chunk_id makes (session_id, stage, chunk_id, attempt) the
+    # composite write-once key so per-task code/review runs are sibling
+    # rows under one session.
+    ("chunk_id",  "TEXT"),
 )
 
 
@@ -202,24 +211,30 @@ def set_session_paused(
     reason: str,
     now: str,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> None:
     """Mark a session as paused at `stage` for `reason`.
 
     Clears any prior pending_action / pending_user_hint / pending_extra_budget
     so a stale resume payload from a previous pause doesn't auto-resolve
     the new one. Invariant: at most one pause is active per session.
+
+    `chunk_id` (Phase G.1.7) records which chunk run the pause belongs
+    to so the resume command + UI can target the right one.
     """
     with _connect(db_path) as conn:
         conn.execute(
             "UPDATE sessions SET"
             "   paused_at_stage = ?,"
+            "   paused_at_chunk = ?,"
             "   pause_reason = ?,"
             "   pending_action = NULL,"
             "   pending_user_hint = NULL,"
             "   pending_extra_budget = 0,"
             "   updated_at = ?"
             " WHERE session_id = ?",
-            (stage, reason, now, session_id),
+            (stage, chunk_id, reason, now, session_id),
         )
 
 
@@ -253,6 +268,7 @@ def set_session_resumed(
             conn.execute(
                 "UPDATE sessions SET"
                 "   paused_at_stage = NULL,"
+                "   paused_at_chunk = NULL,"
                 "   pause_reason = NULL,"
                 "   pending_action = ?,"
                 "   pending_user_hint = ?,"
@@ -265,6 +281,7 @@ def set_session_resumed(
             conn.execute(
                 "UPDATE sessions SET"
                 "   paused_at_stage = NULL,"
+                "   paused_at_chunk = NULL,"
                 "   pause_reason = NULL,"
                 "   pending_action = ?,"
                 "   pending_user_hint = ?,"
@@ -342,19 +359,34 @@ def insert_stage(
     db_path: Path | None = None,
     *,
     user_hint: str | None = None,
+    chunk_id: str | None = None,
 ) -> None:
     """Create a new attempt row.
 
     `user_hint` is set when the gate's "Retry this stage" button passes a
     one-line note — `harness_read_stage` surfaces it in the next attempt's
     context so the agent knows what to fix.
+
+    `chunk_id` (Phase G.1.7) tags the row with a per-task chunk identifier
+    so chunked code/review runs are sibling rows under one session. NULL
+    means a non-chunked stage (plan / design / single-chunk feature).
     """
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO stage_outputs (session_id, stage, attempt, status, user_hint)"
-            " VALUES (?, ?, ?, 'pending', ?)",
-            (session_id, stage, attempt, user_hint),
+            "INSERT INTO stage_outputs (session_id, stage, attempt, status, user_hint, chunk_id)"
+            " VALUES (?, ?, ?, 'pending', ?, ?)",
+            (session_id, stage, attempt, user_hint, chunk_id),
         )
+
+
+def _chunk_clause(chunk_id: str | None) -> tuple[str, tuple]:
+    """Build `chunk_id IS ?` (NULL-safe) plus its bound parameter.
+
+    SQLite's `=` doesn't match NULL, so callers that filter on a
+    nullable column must use `IS`. Centralised here so every chunked
+    query stays NULL-safe in lockstep.
+    """
+    return ("chunk_id IS ?", (chunk_id,))
 
 
 def get_stage_row(
@@ -362,21 +394,28 @@ def get_stage_row(
     stage: str,
     attempt: int | None = None,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> dict | None:
-    """Return the latest attempt row (regardless of output) or a specific attempt."""
+    """Return the latest attempt row (regardless of output) or a specific attempt.
+
+    `chunk_id=None` selects rows where chunk_id IS NULL — the non-chunked
+    stages. Pass an explicit task ID (e.g. 'T1') to scope to one chunk.
+    """
+    chunk_sql, chunk_params = _chunk_clause(chunk_id)
     with _connect(db_path) as conn:
         if attempt is None:
             row = conn.execute(
                 "SELECT * FROM stage_outputs"
-                " WHERE session_id = ? AND stage = ?"
+                f" WHERE session_id = ? AND stage = ? AND {chunk_sql}"
                 " ORDER BY attempt DESC LIMIT 1",
-                (session_id, stage),
+                (session_id, stage, *chunk_params),
             ).fetchone()
         else:
             row = conn.execute(
                 "SELECT * FROM stage_outputs"
-                " WHERE session_id = ? AND stage = ? AND attempt = ?",
-                (session_id, stage, attempt),
+                f" WHERE session_id = ? AND stage = ? AND {chunk_sql} AND attempt = ?",
+                (session_id, stage, *chunk_params, attempt),
             ).fetchone()
     return dict(row) if row else None
 
@@ -385,14 +424,17 @@ def get_latest_written_stage_row(
     session_id: str,
     stage: str,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> dict | None:
     """Return the highest-attempt row that has a non-null output."""
+    chunk_sql, chunk_params = _chunk_clause(chunk_id)
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM stage_outputs"
-            " WHERE session_id = ? AND stage = ? AND output IS NOT NULL"
+            f" WHERE session_id = ? AND stage = ? AND {chunk_sql} AND output IS NOT NULL"
             " ORDER BY attempt DESC LIMIT 1",
-            (session_id, stage),
+            (session_id, stage, *chunk_params),
         ).fetchone()
     return dict(row) if row else None
 
@@ -402,20 +444,24 @@ def get_all_stage_rows(
 ) -> list[dict]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM stage_outputs WHERE session_id = ? ORDER BY stage, attempt",
+            "SELECT * FROM stage_outputs WHERE session_id = ?"
+            " ORDER BY stage, COALESCE(chunk_id, ''), attempt",
             (session_id,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def set_stage_in_progress(
-    session_id: str, stage: str, attempt: int, db_path: Path | None = None
+    session_id: str, stage: str, attempt: int, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> None:
+    chunk_sql, chunk_params = _chunk_clause(chunk_id)
     with _connect(db_path) as conn:
         conn.execute(
             "UPDATE stage_outputs SET status = 'in_progress'"
-            " WHERE session_id = ? AND stage = ? AND attempt = ?",
-            (session_id, stage, attempt),
+            f" WHERE session_id = ? AND stage = ? AND {chunk_sql} AND attempt = ?",
+            (session_id, stage, *chunk_params, attempt),
         )
 
 
@@ -426,14 +472,17 @@ def write_stage_output(
     output: Any,
     now: str,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> None:
     output_json = json.dumps(output)
+    chunk_sql, chunk_params = _chunk_clause(chunk_id)
     with _connect(db_path) as conn:
         conn.execute(
             "UPDATE stage_outputs"
             " SET output = ?, status = 'complete', written_at = ?"
-            " WHERE session_id = ? AND stage = ? AND attempt = ?",
-            (output_json, now, session_id, stage, attempt),
+            f" WHERE session_id = ? AND stage = ? AND {chunk_sql} AND attempt = ?",
+            (output_json, now, session_id, stage, *chunk_params, attempt),
         )
 
 

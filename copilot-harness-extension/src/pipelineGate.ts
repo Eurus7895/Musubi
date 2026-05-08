@@ -187,6 +187,14 @@ export interface ResumeCommandArgs {
    * NOT include the hint. Stored separately by the shell.
    */
   promptForHint?: boolean;
+  /**
+   * Phase G.1.7 — per-task chunk identifier when the gate fires inside
+   * a chunked code/review run. Plumbed through harness_resume_session
+   * (and harness_increment_attempt on retry) so the right chunk row is
+   * targeted. Optional: non-chunked stages (plan / design / single-shot
+   * code-review) don't set it.
+   */
+  chunkId?: string;
 }
 
 export interface ToggleAutoApproveArgs {
@@ -201,6 +209,7 @@ export function buildResumeCommandArgs(
   const out: ResumeCommandArgs = { ...base, action };
   if (typeof extras?.extraBudget === "number") { out.extraBudget = extras.extraBudget; }
   if (extras?.promptForHint) { out.promptForHint = true; }
+  // chunkId is part of the Omit'd base if present — copy through.
   return out;
 }
 
@@ -225,6 +234,7 @@ export function parseResumeCommandArgs(raw: unknown): ResumeCommandArgs | null {
   };
   if (typeof o.extraBudget === "number") { out.extraBudget = o.extraBudget; }
   if (o.promptForHint === true) { out.promptForHint = true; }
+  if (typeof o.chunkId === "string" && o.chunkId.length > 0) { out.chunkId = o.chunkId; }
   return out;
 }
 

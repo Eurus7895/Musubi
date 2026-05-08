@@ -16,7 +16,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     auto_approve_remaining  INTEGER NOT NULL DEFAULT 0,        -- session-scoped escape hatch (per-run)
     pending_action          TEXT,                              -- 'approve' | 'retry' | 'abort' | 'auto_approve_rest' | 'grant' | 'force' | NULL
     pending_user_hint       TEXT,                              -- one-line free text from the retry input box
-    pending_extra_budget    INTEGER NOT NULL DEFAULT 0         -- additional spawns granted on a budget_exhausted resume
+    pending_extra_budget    INTEGER NOT NULL DEFAULT 0,        -- additional spawns granted on a budget_exhausted resume
+    -- Chunked execution (Phase G.1.7). When the gate fires inside a
+    -- chunked code/review run, paused_at_chunk records which chunk so
+    -- the runner can resume the right one.
+    paused_at_chunk         TEXT                               -- e.g. 'T1', NULL for non-chunked stages
 );
 
 CREATE TABLE IF NOT EXISTS agent_versions (
@@ -33,6 +37,11 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 -- the user's "what was wrong with this attempt" note into the next
 -- attempt's read context — populated when `harness_increment_attempt`
 -- is called with a non-empty hint.
+-- Phase G.1.7 adds `chunk_id` so a single stage can have multiple
+-- per-task attempts (e.g. coder runs once for T1, again for T2). NULL
+-- means "global" — the row covers the full stage (plan / design / a
+-- non-chunked code or review). The composite write-once key becomes
+-- (session_id, stage, chunk_id, attempt).
 CREATE TABLE IF NOT EXISTS stage_outputs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT    NOT NULL,
@@ -42,6 +51,7 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     output     TEXT,               -- JSON blob, NULL until written
     written_at TEXT,
     user_hint  TEXT,                -- optional: one-line retry hint from the gate UI
+    chunk_id   TEXT,                -- optional: per-task chunk identifier (e.g. 'T1')
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 
