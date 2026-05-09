@@ -203,6 +203,8 @@ def read_stage_for_agent(
     stage: str,
     agent_name: str,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Return stage output filtered by the calling agent's permissions.
 
@@ -211,6 +213,12 @@ def read_stage_for_agent(
 
     Special case: coder reading 'review' receives only fix_instructions,
     not the full review JSON (context firewall on retry path).
+
+    `chunk_id` (Phase G.1.7) scopes the read to a per-task chunk row.
+    Plan and design stay non-chunked (read with chunk_id=None) because
+    they're pipeline-global; only code and review actually have chunked
+    rows. Without this, a chunked reviewer reads the empty non-chunked
+    code row and escalates with "no code artifact present".
     """
     agent = agent_name.lower().strip()
     permitted = _STAGE_PERMISSIONS.get(agent, set())
@@ -218,7 +226,10 @@ def read_stage_for_agent(
     if stage not in permitted:
         return None
 
-    output = state.read_stage(session_id, stage, db_path)
+    # Plan and design are always pipeline-global; chunk_id only applies
+    # to code/review which fan out per task.
+    effective_chunk_id = chunk_id if stage in {"code", "review"} else None
+    output = state.read_stage(session_id, stage, db_path, chunk_id=effective_chunk_id)
     if output is None:
         return None
 

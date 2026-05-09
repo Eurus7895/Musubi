@@ -188,9 +188,10 @@ def _patch_server_with_memory(monkeypatch: pytest.MonkeyPatch, plan_extra: dict 
         lambda: {"index": "# MEMORY.md\n\narchitecture.md — decisions"},
     )
     # read_stage_for_agent for reviewer reading "code" returns a code stage.
+    # Accepts **kwargs so the chunk_id keyword (Phase G.1.7) doesn't break.
     monkeypatch.setattr(
         context_builder, "read_stage_for_agent",
-        lambda sid, stage, agent, db_path=None: (
+        lambda sid, stage, agent, db_path=None, **_: (
             {"summary": "code output"} if stage == "code" and agent == "reviewer" else None
         ),
     )
