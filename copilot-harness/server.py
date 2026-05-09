@@ -71,6 +71,13 @@ _add_scripts_to_path()
 
 import policy_engine as _policy
 
+# Phase G.2 — startup-time policy validation. Catches misconfiguration
+# (unknown agents/tools/roles in PIPELINE_POLICIES + SUBAGENT_POLICIES
+# + MAIN_SUBAGENT_ALLOWLIST) BEFORE the harness serves any tool calls.
+# Raises RuntimeError with a structured error list so the boot failure
+# surfaces in the extension's MCP-init log immediately.
+_policy.validate_policies_or_raise()
+
 # Ensure DB directory + schema exist before any tool call (critical for first run
 # when HARNESS_ROOT points to the extension install dir which has no data/ folder yet).
 _db.init_db()
@@ -592,6 +599,81 @@ def harness_consume_pending_action(session_id: str) -> str:
         "action":       payload["action"],
         "user_hint":    payload.get("user_hint"),
         "extra_budget": payload.get("extra_budget", 0),
+    })
+
+
+# ── Phase G.2: pipeline correction-rule loading ──────────────────────────
+
+@mcp.tool()
+def harness_get_correction_rules(pipeline_name: str) -> str:
+    """Return the parsed `correction.escalate_on_*` rules for a pipeline.
+
+    The TS runner consults this once per pipeline to know whether to
+    coerce a reviewer's status to 'escalate' on critical/category
+    matches instead of running the correction loop.
+
+    Returns defaults when the pipeline.yaml file is missing, malformed,
+    or omits the `correction` block:
+      - escalate_on_critical: true
+      - escalate_on_categories: []
+    """
+    import yaml  # type: ignore[import-untyped]
+    defaults = {"escalate_on_critical": True, "escalate_on_categories": []}
+    safe_name = (pipeline_name or "").strip()
+    if not safe_name or "/" in safe_name or ".." in safe_name:
+        return json.dumps({"status": "ok", "rules": defaults, "source": "default-invalid-name"})
+    candidate = (
+        Path(__file__).resolve().parent.parent
+        / ".github" / "pipelines" / safe_name / "pipeline.yaml"
+    )
+    if not candidate.exists():
+        return json.dumps({"status": "ok", "rules": defaults, "source": "default-no-file"})
+    try:
+        with candidate.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        return json.dumps({
+            "status": "ok",
+            "rules": defaults,
+            "source": "default-parse-error",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    correction = data.get("correction") if isinstance(data, dict) else None
+    if not isinstance(correction, dict):
+        return json.dumps({"status": "ok", "rules": defaults, "source": "default-no-correction"})
+    on_critical = correction.get("escalate_on_critical")
+    on_categories = correction.get("escalate_on_categories")
+    rules: dict[str, Any] = {
+        "escalate_on_critical":
+            bool(on_critical) if isinstance(on_critical, bool) else True,
+        "escalate_on_categories":
+            [c for c in on_categories if isinstance(c, str) and c]
+            if isinstance(on_categories, list) else [],
+    }
+    return json.dumps({"status": "ok", "rules": rules, "source": str(candidate)})
+
+
+# ── Phase G.2: schema-migration audit query ───────────────────────────────
+
+@mcp.tool()
+def harness_query_schema_migrations(
+    session_id: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Return rows from the `schema_migrations` audit table, newest first.
+
+    Optional `session_id` filters to one session's migrations. `limit`
+    caps the result set (default 100). Hard Invariant #8 ("no silent
+    migrations") — same discipline as `harness_query_subagent_events`.
+    """
+    try:
+        rows = _db.query_schema_migrations(session_id=session_id, limit=limit)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({
+        "status": "ok",
+        "session_id": session_id,
+        "rows": rows,
     })
 
 

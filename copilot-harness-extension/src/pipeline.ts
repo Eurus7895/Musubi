@@ -23,6 +23,12 @@ import {
 } from "./runners/pipelineSubagentBudget";
 import { runStageReviewGate, type StageGateOutcome } from "./pipelineGateUi";
 import { preSpawnAndSplice } from "./subagentDispatcherRun";
+import {
+  coerceToEscalation,
+  parseEscalationRules,
+  shouldEscalate,
+  type EscalationRules,
+} from "./correctionRules";
 
 // Re-export so external callers can import budget primitives + helper
 // from a single module (the pipeline runner is the public surface).
@@ -263,8 +269,12 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
     '  "status"  — "pass" | "fail" | "escalate" | "wrong_plan"',
     '             wrong_plan = plan is flawed, escalates back to Planner (not Coder retry)',
     '  "attempt" — integer',
-    '  "issues"  — array of { severity, description, fix_instruction, checklist_item }',
-    '             severity must be "critical" | "high" | "medium" | "low"',
+    '  "issues"  — array of { severity, category, description, fix_instruction, checklist_item }',
+    '             severity ∈ "critical" | "high" | "medium" | "low"',
+    '             category ∈ "security" | "data-loss" | "performance" | "style" |',
+    '                       "correctness" | "breaking-change" | "other"',
+    '             (Phase G.2: category is REQUIRED. Used by correction.escalate_on_categories',
+    '              to halt retries on critical findings in specific categories.)',
     '  "escalate_reason" — string describing the escalation or wrong_plan reason, or null',
   ].join("\n"),
 };
@@ -835,9 +845,12 @@ async function runCorrectionLoop(
   token: vscode.CancellationToken,
   onChange?: () => void,
   chunkId?: string,
+  correctionRules?: EscalationRules,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
   const chunkLabel = chunkId ? ` · ${chunkId}` : "";
+  // G.2: rules default to escalate_on_critical=true when caller omits them.
+  const rules = correctionRules ?? parseEscalationRules(null);
 
   while (currentReview.status === "fail" && codeAttempt < MAX_CODE_ATTEMPTS) {
     if (token.isCancellationRequested) { break; }
@@ -906,7 +919,10 @@ async function runCorrectionLoop(
       client, promptRoots, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
       reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange, chunkId,
     );
-    const newReview = newReviewOutput as ReviewOutput;
+    const newReviewRaw = newReviewOutput as ReviewOutput;
+    // G.2: apply escalate-on-rules BEFORE materialising / rendering so
+    // the chat marker reflects the coerced status.
+    const newReview = applyCorrectionRules(newReviewRaw, rules, stream, chunkLabel);
     if (!chunkId) {
       materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
     }
@@ -981,6 +997,10 @@ async function runChunkedCodeAndReview(
     `\n📦 **Chunked execution** — ${chunks.length} task chunks. ` +
     `Each runs coder + reviewer scoped to its task; gate fires between chunks.\n`,
   );
+
+  // G.2: load correction rules once for the whole chunked run. All
+  // chunks share the same pipeline.yaml correction config.
+  const chunkRules = await fetchCorrectionRules(client, meta.pipelineName);
 
   for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
     if (token.isCancellationRequested) { break; }
@@ -1118,7 +1138,10 @@ async function runChunkedCodeAndReview(
           reviewerCtxAugmented, sessionId, "review", codeAttempt,
           workspaceRoot, stream, token, onChange, chunk.chunk_id,
         );
-        reviewOutput = r.output as ReviewOutput;
+        // G.2: apply escalate-on-rules to the chunk's first review pass.
+        reviewOutput = applyCorrectionRules(
+          r.output as ReviewOutput, chunkRules, stream, ` · ${chunk.chunk_id}`,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
@@ -1139,6 +1162,7 @@ async function runChunkedCodeAndReview(
         finalReview = await runCorrectionLoop(
           client, sessionId, workspaceRoot, promptRoots, meta.pipelineName,
           reviewOutput, codeAttempt, stream, token, onChange, chunk.chunk_id,
+          chunkRules,
         );
       }
 
@@ -1239,6 +1263,54 @@ async function runChunkedCodeAndReview(
     `\n*total: ${fmtSeconds(Date.now() - pipelineT0)} · ${chunks.length} chunks*\n`,
   );
   return { success: true, sessionId, stages: stageOutputs, escalated: false };
+}
+
+// ── Phase G.2: correction-rule helpers ──────────────────────────────
+
+/**
+ * Fetch the pipeline's `correction.escalate_on_*` rules via the
+ * harness MCP tool. Returns DEFAULT_ESCALATION_RULES on any error
+ * (the helper itself never raises — pipelines must keep running
+ * even when the rules file is malformed).
+ */
+async function fetchCorrectionRules(
+  client: McpClient, pipelineName: string,
+): Promise<EscalationRules> {
+  try {
+    const raw = await callHarness(client, "harness_get_correction_rules", {
+      pipeline_name: pipelineName,
+    });
+    const parsed = (raw as { rules?: unknown }).rules;
+    return parseEscalationRules(parsed);
+  } catch {
+    return parseEscalationRules(null);
+  }
+}
+
+/**
+ * Apply correction rules to a fresh reviewer output. When a rule
+ * matches, log the reason to chat and return a coerced review with
+ * status='escalate'. Otherwise return the input unchanged.
+ *
+ * Called immediately after each reviewer LM round-trip — once on
+ * the initial review, once per iteration of the correction loop.
+ */
+function applyCorrectionRules(
+  review: ReviewOutput,
+  rules: EscalationRules,
+  stream: vscode.ChatResponseStream,
+  chunkLabel: string = "",
+): ReviewOutput {
+  const decision = shouldEscalate(review, rules);
+  if (!decision.shouldEscalate) { return review; }
+  const issuesNote = decision.matchingIssues.length === 1
+    ? "1 matching issue"
+    : `${decision.matchingIssues.length} matching issues`;
+  stream.markdown(
+    `\n> ⛔ **escalate-on-rule fired${chunkLabel}**` +
+    ` · ${issuesNote} · ${decision.reason}\n`,
+  );
+  return coerceToEscalation(review, decision) as ReviewOutput;
 }
 
 // ── Phase G.1.7: chunk filtering helpers ──────────────────────────────
@@ -1644,7 +1716,10 @@ export async function runPipeline(
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
     if (agent.name === "reviewer") {
-      const review = agentOutput as ReviewOutput;
+      // G.2: load escalate-on-rules and apply to the initial review.
+      const correctionRules = await fetchCorrectionRules(client, meta.pipelineName);
+      const review = applyCorrectionRules(agentOutput as ReviewOutput, correctionRules, stream);
+      stageOutputs["review"] = review;
 
       if (review.status === "pass") { continue; }
 
@@ -1658,6 +1733,7 @@ export async function runPipeline(
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
         client, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
+        undefined, correctionRules,
       );
       stageOutputs["review"] = finalReview;
 

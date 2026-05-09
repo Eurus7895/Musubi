@@ -109,6 +109,7 @@ Produce ONLY valid JSON matching this schema:
     "issues": [
         {
             "severity": "critical | high | medium | low",
+            "category": "security | data-loss | performance | style | correctness | breaking-change | other",
             "description": "string — what is wrong",
             "fix_instruction": "string — exactly what the Coder must do to fix it",
             "checklist_item": "string — which review checklist item this maps to"
@@ -117,6 +118,18 @@ Produce ONLY valid JSON matching this schema:
     "escalate_reason": null
 }
 ```
+
+Rules for `category` (Phase G.2):
+- `security`: vulnerabilities, secret leakage, auth/authz gaps, injection vectors.
+- `data-loss`: unsafe migrations, dropped files, destructive ops without backup.
+- `performance`: hot-path inefficiencies, unbounded loops, N+1 queries.
+- `correctness`: bugs that produce wrong behaviour.
+- `style`: naming, formatting, idiom — preferences. Always pair with severity ≤ medium.
+- `breaking-change`: public API / contract / schema breakage that callers don't expect.
+- `other`: doesn't fit above. Use sparingly; prefer a tighter category when possible.
+
+The pipeline's `correction.escalate_on_categories` rules use this field to halt
+retries on critical findings of specific categories. `category` is REQUIRED.
 
 Rules for `status`:
 - `pass`: no critical or high issues. Medium/low issues may be present and

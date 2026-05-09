@@ -35,7 +35,33 @@ class ValidationResult:
 # Lightweight: required top-level keys + expected Python types.
 # Avoids jsonschema dependency — stays zero-dep beyond stdlib + mcp.
 
-OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+# ── Phase G.2: schema versioning ──────────────────────────────────────────
+#
+# OUTPUT_SCHEMAS describes the shape every agent must emit. v2 (G.2)
+# adds a `category` field on reviewer issues so the new
+# correction.escalate_on_categories rules can match against a
+# structured value instead of regex-matching the description.
+#
+# Old `stage_outputs` rows tagged `schema_version='v1'` are migrated
+# on read by `validation/schema_migrations.py` — pre-G.2 reviewer
+# rows get `category='other'` filled in for each issue.
+
+CURRENT_SCHEMA_VERSION = "v2"
+
+# Allowed values for `issues[].category` in v2. Reviewer's prompt
+# instructs it to pick one of these. `other` is the safety valve when
+# a finding doesn't fit cleanly.
+REVIEWER_CATEGORY_ENUM: frozenset[str] = frozenset({
+    "security",
+    "data-loss",
+    "performance",
+    "style",
+    "correctness",
+    "breaking-change",
+    "other",
+})
+
+OUTPUT_SCHEMAS_V1: dict[str, dict[str, Any]] = {
     "planner": {
         "required": ["summary", "tasks"],
         "types": {
@@ -69,6 +95,50 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "status_values": {"pass", "fail", "escalate", "wrong_plan"},
     },
 }
+
+OUTPUT_SCHEMAS_V2: dict[str, dict[str, Any]] = {
+    # Other agents identical to v1; copies kept explicit so a future
+    # divergence is a visible diff rather than a forgotten alias.
+    "planner":  dict(OUTPUT_SCHEMAS_V1["planner"]),
+    "designer": dict(OUTPUT_SCHEMAS_V1["designer"]),
+    "coder":    dict(OUTPUT_SCHEMAS_V1["coder"]),
+    "reviewer": {
+        "required": ["status", "attempt", "issues"],
+        "types": {
+            "status": str, "attempt": int, "issues": list,
+            "escalate_reason": (str, type(None)),
+        },
+        "status_values": {"pass", "fail", "escalate", "wrong_plan"},
+        # G.2: every issue now requires a `category` field; value must
+        # be one of REVIEWER_CATEGORY_ENUM.
+        "issue_category_required": True,
+        "issue_category_enum": REVIEWER_CATEGORY_ENUM,
+    },
+}
+
+_SCHEMAS_BY_VERSION: dict[str, dict[str, dict[str, Any]]] = {
+    "v1": OUTPUT_SCHEMAS_V1,
+    "v2": OUTPUT_SCHEMAS_V2,
+}
+
+# Back-compat alias — existing callers (`_check_schema`,
+# `_check_reviewer_issues`) read `OUTPUT_SCHEMAS[agent]`. They now
+# transparently get the current-version schema.
+OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = _SCHEMAS_BY_VERSION[CURRENT_SCHEMA_VERSION]
+
+
+def schemas_for_version(version: str) -> dict[str, dict[str, Any]]:
+    """Return the agent → schema map for a specific schema version.
+
+    Used by tests and by future migrate-then-validate flows that need
+    to validate against the source-version schema before running the
+    upgrade migration."""
+    if version not in _SCHEMAS_BY_VERSION:
+        raise ValueError(
+            f"Unknown schema version {version!r}. "
+            f"Known: {sorted(_SCHEMAS_BY_VERSION)}"
+        )
+    return _SCHEMAS_BY_VERSION[version]
 
 
 # ── Secrets patterns ──────────────────────────────────────────────────────────
@@ -179,10 +249,22 @@ def normalize_reviewer_status(output: dict[str, Any]) -> tuple[dict[str, Any], b
 
 
 def _check_reviewer_issues(output: dict[str, Any]) -> list[str]:
-    """Validate each item in the reviewer's issues array."""
+    """Validate each item in the reviewer's issues array.
+
+    v1 (pre-G.2): severity + description + fix_instruction required.
+    v2 (G.2):     above plus `category` ∈ REVIEWER_CATEGORY_ENUM.
+
+    Validation always runs against the CURRENT_SCHEMA_VERSION's
+    reviewer schema. Older v1-stored rows are migrated to v2 BEFORE
+    they reach the validator on read — see
+    `validation/schema_migrations._migrate_reviewer_v1_to_v2`.
+    """
     issues = output.get("issues", [])
     if not isinstance(issues, list):
         return []
+    reviewer_schema = OUTPUT_SCHEMAS.get("reviewer", {})
+    require_category = reviewer_schema.get("issue_category_required", False)
+    category_enum = reviewer_schema.get("issue_category_enum") or frozenset()
     errors: list[str] = []
     for i, item in enumerate(issues):
         if not isinstance(item, dict):
@@ -196,6 +278,14 @@ def _check_reviewer_issues(output: dict[str, Any]) -> list[str]:
             errors.append(
                 f"issues[{i}].severity must be one of {sorted(_VALID_SEVERITIES)}, got '{sev}'"
             )
+        if require_category:
+            cat = item.get("category")
+            if cat is None:
+                errors.append(f"issues[{i}] missing required field: 'category'")
+            elif cat not in category_enum:
+                errors.append(
+                    f"issues[{i}].category must be one of {sorted(category_enum)}, got {cat!r}"
+                )
     return errors
 
 
