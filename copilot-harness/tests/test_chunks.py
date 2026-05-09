@@ -301,3 +301,57 @@ def test_non_chunked_write_still_works(fresh_db: Path) -> None:
     state.write_stage(sid, "plan", {"summary": "ok", "tasks": []}, fresh_db)
     assert state.read_stage(sid, "plan", fresh_db) == {"summary": "ok", "tasks": []}
     assert state.read_stage(sid, "plan", fresh_db, chunk_id="T1") is None
+
+
+# ── Phase G.1.7 firewall regression: chunked reviewer reads chunk's code ─
+
+
+def test_read_stage_for_agent_reads_chunked_code_for_reviewer(
+    fresh_db: Path,
+) -> None:
+    """Bug regression — before this fix, harness_read_stage(stage='code',
+    agent='reviewer', chunk_id='T1') returned None because
+    context_builder.read_stage_for_agent dropped chunk_id and read the
+    empty non-chunked code row. The chunked reviewer then escalated
+    with 'no code stage output available', halting the whole pipeline
+    on the first chunk."""
+    from validation.context_builder import read_stage_for_agent
+
+    sid = state.create_session("do x", fresh_db)
+    state.ensure_chunk_row(sid, "code", "T1", fresh_db)
+    state.write_stage(
+        sid, "code",
+        {"summary": "T1 done", "files_modified": ["a.py"], "file_contents": {"a.py": "ok"}},
+        fresh_db, chunk_id="T1",
+    )
+
+    # Reviewer with chunk_id="T1" must see the chunk's code.
+    code = read_stage_for_agent(sid, "code", "reviewer", fresh_db, chunk_id="T1")
+    assert code is not None
+    assert code["files_modified"] == ["a.py"]
+
+    # Reviewer with no chunk_id reads the (empty) non-chunked row.
+    assert read_stage_for_agent(sid, "code", "reviewer", fresh_db) is None
+
+    # Reviewer with chunk_id="T2" sees nothing — chunks are isolated.
+    assert read_stage_for_agent(sid, "code", "reviewer", fresh_db, chunk_id="T2") is None
+
+
+def test_read_stage_for_agent_keeps_plan_design_global_for_chunked_coder(
+    fresh_db: Path,
+) -> None:
+    """Plan and design are pipeline-global; chunk_id only applies to
+    code/review. A chunked coder must still read the same plan + design
+    that the planner/designer wrote (those stages aren't chunked)."""
+    from validation.context_builder import read_stage_for_agent
+
+    sid = state.create_session("do x", fresh_db)
+    state.write_stage(sid, "plan", {"summary": "p", "tasks": []}, fresh_db)
+    state.write_stage(sid, "design", {"summary": "d", "modules": [], "tasks_addressed": []}, fresh_db)
+
+    # Coder asking for plan/design with chunk_id should still get the
+    # global rows, not None.
+    plan = read_stage_for_agent(sid, "plan", "coder", fresh_db, chunk_id="T1")
+    design = read_stage_for_agent(sid, "design", "coder", fresh_db, chunk_id="T1")
+    assert plan is not None and plan["summary"] == "p"
+    assert design is not None and design["summary"] == "d"
