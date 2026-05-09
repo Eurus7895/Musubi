@@ -197,7 +197,9 @@ def harness_read_stage(
         except Exception:
             pass  # session may not exist yet — don't fail the read
 
-    output = context_builder.read_stage_for_agent(session_id, stage, agent_name)
+    output = context_builder.read_stage_for_agent(
+        session_id, stage, agent_name, chunk_id=chunk_id,
+    )
 
     result: dict = {}
 
