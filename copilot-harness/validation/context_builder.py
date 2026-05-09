@@ -242,4 +242,47 @@ def read_stage_for_agent(
             ]
         }
 
+    # Phase G.2: defense-in-depth runtime assertion that the reviewer
+    # firewall stays tight. _STAGE_PERMISSIONS already restricts what
+    # stages a reviewer may read; this catches the case where a future
+    # refactor accidentally widens the resulting payload to include
+    # generator-side fields (plan / design / request / memory / etc.).
+    if agent == "reviewer":
+        _assert_reviewer_firewall_payload(output, stage)
+
     return output
+
+
+# ── Phase G.2: reviewer firewall runtime assertion ─────────────────────
+
+# Fields that must NEVER appear at the top level of a reviewer's read
+# payload. Mirrors the closed set the evaluator firewall is supposed
+# to enforce. If any of these slip in, raise loudly — silently serving
+# them is exactly the failure mode the firewall exists to prevent.
+_REVIEWER_FORBIDDEN_TOP_LEVEL_KEYS: frozenset[str] = frozenset({
+    "plan", "design", "request", "memory",
+    "fix_instructions", "fail_patterns",
+    "session_id", "agent_versions",
+})
+
+
+def _assert_reviewer_firewall_payload(payload: Any, stage: str) -> None:
+    """Defense-in-depth: a reviewer's read payload must not carry
+    generator-side fields. Called from `read_stage_for_agent` after
+    `_STAGE_PERMISSIONS` already filtered the stage.
+
+    Raises RuntimeError with a clear message naming the leaked keys
+    so the failure surfaces the bug in CI instead of returning a
+    silently-poisoned context.
+    """
+    if not isinstance(payload, dict):
+        return
+    leaked = _REVIEWER_FORBIDDEN_TOP_LEVEL_KEYS & set(payload.keys())
+    if leaked:
+        raise RuntimeError(
+            f"Reviewer firewall breach: read of stage {stage!r} surfaced "
+            f"forbidden top-level keys {sorted(leaked)}. The reviewer "
+            f"must see only the artifact under review, not the "
+            f"generator-side context. Check the recent changes in "
+            f"validation/context_builder.py and state.read_stage."
+        )

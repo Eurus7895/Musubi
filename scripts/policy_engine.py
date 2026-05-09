@@ -172,3 +172,116 @@ def subagent_deny_reason(main_agent: str, role: str) -> str:
         f"Main agent {main_agent!r} may not spawn role {role!r}. "
         f"Allowed roles: {sorted(allowed)}"
     )
+
+
+# ── Phase G.2: startup-time policy validation ────────────────────────────
+#
+# `validate_policy_table` runs at harness boot (called from `init_db` →
+# `validate_policies_or_raise`). Catches misconfiguration loud and
+# early instead of at the first runtime tool call hours into a session.
+
+_KNOWN_AGENT_NAMES: frozenset[str] = frozenset({
+    "planner", "designer", "coder", "reviewer", "skill-builder",
+    "orchestrator", "summarizer",
+    "explorer", "investigator", "reviewer-aux",
+    "pipeline-builder",
+})
+
+# Tool names every policy entry must reference. Sourced from the union
+# of pipeline + sub-agent tools currently shipping. Kept frozen so a
+# typo in a future PIPELINE_POLICIES edit raises at boot.
+_KNOWN_TOOL_NAMES: frozenset[str] = frozenset({
+    "Read", "View", "Grep", "Glob", "List",
+    "Write", "Edit",
+    "Bash",
+    "Errors",
+})
+
+
+def validate_policy_table() -> list[str]:
+    """Walk PIPELINE_POLICIES, SUBAGENT_POLICIES, and
+    MAIN_SUBAGENT_ALLOWLIST. Return human-readable error strings for
+    every misconfiguration. Empty list ⇒ clean boot.
+    """
+    errors: list[str] = []
+
+    # PIPELINE_POLICIES checks: agent names + tool names.
+    for pipeline, agents in PIPELINE_POLICIES.items():
+        if not isinstance(pipeline, str) or not pipeline:
+            errors.append(f"PIPELINE_POLICIES has non-string key {pipeline!r}")
+            continue
+        if not isinstance(agents, dict):
+            errors.append(
+                f"PIPELINE_POLICIES[{pipeline!r}] must be a dict, "
+                f"got {type(agents).__name__}"
+            )
+            continue
+        for agent, tools in agents.items():
+            if agent not in _KNOWN_AGENT_NAMES:
+                errors.append(
+                    f"PIPELINE_POLICIES[{pipeline!r}] references unknown "
+                    f"agent {agent!r}. Known: {sorted(_KNOWN_AGENT_NAMES)}"
+                )
+            if not isinstance(tools, list):
+                errors.append(
+                    f"PIPELINE_POLICIES[{pipeline!r}][{agent!r}] must be "
+                    f"a list, got {type(tools).__name__}"
+                )
+                continue
+            for tool in tools:
+                if tool not in _KNOWN_TOOL_NAMES:
+                    errors.append(
+                        f"PIPELINE_POLICIES[{pipeline!r}][{agent!r}] "
+                        f"references unknown tool {tool!r}. "
+                        f"Known: {sorted(_KNOWN_TOOL_NAMES)}"
+                    )
+
+    # SUBAGENT_POLICIES checks: tool names per role.
+    for role, tools in SUBAGENT_POLICIES.items():
+        if role not in _KNOWN_AGENT_NAMES:
+            errors.append(
+                f"SUBAGENT_POLICIES references unknown role {role!r}"
+            )
+        if not isinstance(tools, list):
+            errors.append(
+                f"SUBAGENT_POLICIES[{role!r}] must be a list, "
+                f"got {type(tools).__name__}"
+            )
+            continue
+        for tool in tools:
+            if tool not in _KNOWN_TOOL_NAMES:
+                errors.append(
+                    f"SUBAGENT_POLICIES[{role!r}] references unknown "
+                    f"tool {tool!r}"
+                )
+
+    # MAIN_SUBAGENT_ALLOWLIST checks: roles must be in SUBAGENT_POLICIES.
+    for main, allowed_roles in MAIN_SUBAGENT_ALLOWLIST.items():
+        if not isinstance(allowed_roles, list):
+            errors.append(
+                f"MAIN_SUBAGENT_ALLOWLIST[{main!r}] must be a list"
+            )
+            continue
+        for role in allowed_roles:
+            if role not in SUBAGENT_POLICIES:
+                errors.append(
+                    f"MAIN_SUBAGENT_ALLOWLIST[{main!r}] references role "
+                    f"{role!r} not declared in SUBAGENT_POLICIES"
+                )
+
+    return errors
+
+
+def validate_policies_or_raise() -> None:
+    """Boot-time gate. Calls `validate_policy_table`; raises
+    `RuntimeError` listing every issue if any are found. Called from
+    `storage/db.init_db` so a bad policy table aborts harness startup
+    instead of producing silent denials at first runtime tool call.
+    """
+    errors = validate_policy_table()
+    if errors:
+        bullets = "\n  - ".join(errors)
+        raise RuntimeError(
+            "Policy table validation failed (Phase G.2). "
+            f"Fix `.github/...` or scripts/policy_engine.py:\n  - {bullets}"
+        )

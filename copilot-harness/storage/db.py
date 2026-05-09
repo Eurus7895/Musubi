@@ -32,17 +32,36 @@ CREATE TABLE IF NOT EXISTS agent_versions (
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 CREATE TABLE IF NOT EXISTS stage_outputs (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT    NOT NULL,
-    stage      TEXT    NOT NULL,
-    attempt    INTEGER NOT NULL DEFAULT 1,
-    status     TEXT    NOT NULL DEFAULT 'pending',
-    output     TEXT,
-    written_at TEXT,
-    user_hint  TEXT,
-    chunk_id   TEXT,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL,
+    stage           TEXT    NOT NULL,
+    attempt         INTEGER NOT NULL DEFAULT 1,
+    status          TEXT    NOT NULL DEFAULT 'pending',
+    output          TEXT,
+    written_at      TEXT,
+    user_hint       TEXT,
+    chunk_id        TEXT,
+    schema_version  TEXT NOT NULL DEFAULT 'v1',
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            REAL NOT NULL,
+    session_id    TEXT NOT NULL,
+    stage         TEXT NOT NULL,
+    chunk_id      TEXT,
+    attempt       INTEGER NOT NULL,
+    agent         TEXT NOT NULL,
+    from_version  TEXT NOT NULL,
+    to_version    TEXT NOT NULL,
+    success       INTEGER NOT NULL DEFAULT 1,
+    error         TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_session
+    ON schema_migrations (session_id);
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_ts
+    ON schema_migrations (ts);
 CREATE TABLE IF NOT EXISTS active_session (
     singleton  INTEGER PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
     session_id TEXT,
@@ -128,6 +147,11 @@ _STAGE_OUTPUT_COLUMNS: tuple[tuple[str, str], ...] = (
     # composite write-once key so per-task code/review runs are sibling
     # rows under one session.
     ("chunk_id",  "TEXT"),
+    # G.2 — schema_version tags each row with the schema generation it
+    # was written under. Default 'v1' covers all pre-G.2 rows; reads
+    # upgrade through `validation/schema_migrations` when the stored
+    # version differs from CURRENT_SCHEMA_VERSION.
+    ("schema_version", "TEXT NOT NULL DEFAULT 'v1'"),
 )
 
 
@@ -360,6 +384,7 @@ def insert_stage(
     *,
     user_hint: str | None = None,
     chunk_id: str | None = None,
+    schema_version: str | None = None,
 ) -> None:
     """Create a new attempt row.
 
@@ -370,12 +395,104 @@ def insert_stage(
     `chunk_id` (Phase G.1.7) tags the row with a per-task chunk identifier
     so chunked code/review runs are sibling rows under one session. NULL
     means a non-chunked stage (plan / design / single-chunk feature).
+
+    `schema_version` (Phase G.2) tags the row with the schema generation
+    its eventual output is expected to match. None ⇒ rely on the column
+    default ('v1'); callers writing under a newer schema must pass it
+    explicitly.
     """
     with _connect(db_path) as conn:
+        if schema_version is None:
+            conn.execute(
+                "INSERT INTO stage_outputs"
+                " (session_id, stage, attempt, status, user_hint, chunk_id)"
+                " VALUES (?, ?, ?, 'pending', ?, ?)",
+                (session_id, stage, attempt, user_hint, chunk_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO stage_outputs"
+                " (session_id, stage, attempt, status, user_hint, chunk_id, schema_version)"
+                " VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+                (session_id, stage, attempt, user_hint, chunk_id, schema_version),
+            )
+
+
+# ── Phase G.2: schema-migration audit ─────────────────────────────────────
+
+def record_schema_migration(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    agent: str,
+    from_version: str,
+    to_version: str,
+    db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+    success: bool = True,
+    error: str | None = None,
+) -> None:
+    """Insert one row in the schema_migrations audit table.
+
+    Called by `validation/schema_migrations.migrate()` after each
+    migration step (whether successful or not). Failures are still
+    audited so a misbehaving migration is post-mortem-able.
+    """
+    import time as _time
+    with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO stage_outputs (session_id, stage, attempt, status, user_hint, chunk_id)"
-            " VALUES (?, ?, ?, 'pending', ?, ?)",
-            (session_id, stage, attempt, user_hint, chunk_id),
+            "INSERT INTO schema_migrations"
+            " (ts, session_id, stage, chunk_id, attempt, agent,"
+            "  from_version, to_version, success, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _time.time(), session_id, stage, chunk_id, attempt, agent,
+                from_version, to_version, 1 if success else 0, error,
+            ),
+        )
+
+
+def query_schema_migrations(
+    session_id: str | None = None,
+    db_path: Path | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Return migration audit rows, newest first. Optionally scoped to
+    one session."""
+    with _connect(db_path) as conn:
+        if session_id is None:
+            rows = conn.execute(
+                "SELECT * FROM schema_migrations ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM schema_migrations WHERE session_id = ?"
+                " ORDER BY ts DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_stage_schema_version(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    new_version: str,
+    db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+) -> None:
+    """Persist the post-migration schema_version on a row so re-reads
+    don't run the migration again. Used by the migrate-on-read path.
+    """
+    chunk_sql, chunk_params = _chunk_clause(chunk_id)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE stage_outputs SET schema_version = ?"
+            f" WHERE session_id = ? AND stage = ? AND {chunk_sql} AND attempt = ?",
+            (new_version, session_id, stage, *chunk_params, attempt),
         )
 
 

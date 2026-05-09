@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from storage import db
+from validation import schema_migrations, verifier
 
 STAGES: list[str] = ["plan", "design", "code", "review"]
 
@@ -65,7 +66,13 @@ def create_session(request: str, db_path: Path | None = None) -> str:
     db.init_db(db_path)
     db.insert_session(session_id, request, now, db_path)
     for stage in STAGES:
-        db.insert_stage(session_id, stage, attempt=1, db_path=db_path)
+        # G.2: tag fresh rows with the current schema version so reads
+        # don't trigger a spurious v1 → vN migration on data that was
+        # written under vN to begin with.
+        db.insert_stage(
+            session_id, stage, attempt=1, db_path=db_path,
+            schema_version=verifier.CURRENT_SCHEMA_VERSION,
+        )
     db.set_active_session_id(session_id, now, db_path)
     return session_id
 
@@ -199,6 +206,18 @@ def write_stage(
     db.touch_session(session_id, now, db_path)
 
 
+# Phase G.2: which agent's schema each stage belongs to. Used by
+# read_stage to choose the right migration when stored schema_version
+# differs from CURRENT_SCHEMA_VERSION. Always single-valued — one
+# agent writes each stage, by construction.
+_STAGE_TO_AGENT: dict[str, str] = {
+    "plan":   "planner",
+    "design": "designer",
+    "code":   "coder",
+    "review": "reviewer",
+}
+
+
 def read_stage(
     session_id: str, stage: str, db_path: Path | None = None,
     *,
@@ -211,6 +230,13 @@ def read_stage(
 
     `chunk_id` (Phase G.1.7) scopes to a per-task chunk; default reads
     the non-chunked row.
+
+    Phase G.2: when the stored row's schema_version differs from
+    `verifier.CURRENT_SCHEMA_VERSION`, run the migration chain via
+    `validation/schema_migrations.migrate()` and persist the upgraded
+    version on the row so future reads skip the migration. Each
+    migration step writes one audit row. Failure raises (the migration
+    itself decides if data is recoverable).
     """
     if stage not in STAGES:
         raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
@@ -219,7 +245,26 @@ def read_stage(
     )
     if row is None:
         return None
-    return json.loads(row["output"])
+    data = json.loads(row["output"])
+    stored_version = row.get("schema_version") or "v1"
+    current_version = verifier.CURRENT_SCHEMA_VERSION
+    if stored_version != current_version:
+        agent = _STAGE_TO_AGENT.get(stage)
+        if agent is None:
+            return data  # unknown stage — pass through
+        data = schema_migrations.migrate(
+            agent, data, stored_version, current_version,
+            session_id=session_id, stage=stage,
+            attempt=row["attempt"], chunk_id=chunk_id,
+            db_path=db_path,
+        )
+        # Persist so re-reads don't migrate again. Idempotent — second
+        # call would no-op (chain is empty when stored == current).
+        db.update_stage_schema_version(
+            session_id, stage, row["attempt"], current_version,
+            db_path, chunk_id=chunk_id,
+        )
+    return data
 
 
 def get_attempt(
@@ -261,6 +306,7 @@ def increment_attempt(
     db.insert_stage(
         session_id, stage, new_attempt, db_path,
         user_hint=cleaned, chunk_id=chunk_id,
+        schema_version=verifier.CURRENT_SCHEMA_VERSION,
     )
     return new_attempt
 
@@ -306,7 +352,11 @@ def ensure_chunk_row(
     chunk_id = chunk_id.strip()
     row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row is None:
-        db.insert_stage(session_id, stage, 1, db_path, chunk_id=chunk_id)
+        db.insert_stage(
+            session_id, stage, 1, db_path,
+            chunk_id=chunk_id,
+            schema_version=verifier.CURRENT_SCHEMA_VERSION,
+        )
         return 1
     return row["attempt"]
 

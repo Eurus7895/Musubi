@@ -42,16 +42,20 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 -- means "global" — the row covers the full stage (plan / design / a
 -- non-chunked code or review). The composite write-once key becomes
 -- (session_id, stage, chunk_id, attempt).
+-- Phase G.2 adds `schema_version` so older rows can be migrated to a
+-- newer schema shape on read. Default 'v1' covers all pre-G.2 rows;
+-- writes go in at `validation/verifier.CURRENT_SCHEMA_VERSION`.
 CREATE TABLE IF NOT EXISTS stage_outputs (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT    NOT NULL,
-    stage      TEXT    NOT NULL,   -- plan | design | code | review
-    attempt    INTEGER NOT NULL DEFAULT 1,
-    status     TEXT    NOT NULL DEFAULT 'pending',  -- pending | in_progress | complete
-    output     TEXT,               -- JSON blob, NULL until written
-    written_at TEXT,
-    user_hint  TEXT,                -- optional: one-line retry hint from the gate UI
-    chunk_id   TEXT,                -- optional: per-task chunk identifier (e.g. 'T1')
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT    NOT NULL,
+    stage           TEXT    NOT NULL,   -- plan | design | code | review
+    attempt         INTEGER NOT NULL DEFAULT 1,
+    status          TEXT    NOT NULL DEFAULT 'pending',  -- pending | in_progress | complete
+    output          TEXT,               -- JSON blob, NULL until written
+    written_at      TEXT,
+    user_hint       TEXT,               -- optional: one-line retry hint from the gate UI
+    chunk_id        TEXT,               -- optional: per-task chunk identifier (e.g. 'T1')
+    schema_version  TEXT NOT NULL DEFAULT 'v1',
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 
@@ -127,3 +131,27 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_chat_ts
     ON conversation_messages (chat_id, ts);
+
+-- Schema-migration audit (Phase G.2). One row per migration applied
+-- to a `stage_outputs` row. `harness_query_schema_migrations` exposes
+-- this for debugging when a migration silently shape-shifts data.
+-- Hard Invariant #8 ("no silent migrations") — same discipline the
+-- subagent_audit table enforces for sub-agent runs.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            REAL NOT NULL,
+    session_id    TEXT NOT NULL,
+    stage         TEXT NOT NULL,
+    chunk_id      TEXT,                              -- NULL for non-chunked stages
+    attempt       INTEGER NOT NULL,
+    agent         TEXT NOT NULL,                     -- planner | designer | coder | reviewer
+    from_version  TEXT NOT NULL,
+    to_version    TEXT NOT NULL,
+    success       INTEGER NOT NULL DEFAULT 1,        -- 0 when migration raised
+    error         TEXT,                              -- non-null when success=0
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_session
+    ON schema_migrations (session_id);
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_ts
+    ON schema_migrations (ts);

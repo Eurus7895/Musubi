@@ -27,3 +27,11 @@ evaluator:
 correction:
   max_retries: 3
   escalate_message: "Feature requires human review — max correction attempts exhausted"
+  # Phase G.2 — fail-loud on critical findings instead of burning retries
+  # on potentially-broken state. The TS runner consults
+  # `harness_get_correction_rules` to read these and coerce reviewer
+  # status='escalate' on the first matching pass.
+  escalate_on_critical: true
+  # Optional: escalate any high+severity issue in these categories. Empty
+  # list ⇒ disabled (only escalate_on_critical applies).
+  escalate_on_categories: []

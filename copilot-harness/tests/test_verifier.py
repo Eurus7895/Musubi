@@ -63,10 +63,16 @@ def test_valid_reviewer_output_pass() -> None:
 
 
 def test_valid_reviewer_output_fail() -> None:
+    # Phase G.2 — v2 reviewer schema requires `category` on every issue.
     output = {
         "status": "fail",
         "attempt": 1,
-        "issues": [{"severity": "high", "description": "no auth", "fix_instruction": "add JWT"}],
+        "issues": [{
+            "severity": "high",
+            "category": "security",
+            "description": "no auth",
+            "fix_instruction": "add JWT",
+        }],
     }
     result = verifier.validate(output, "reviewer")
     assert result.valid is True
