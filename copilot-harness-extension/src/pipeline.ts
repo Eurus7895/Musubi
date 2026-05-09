@@ -1071,18 +1071,57 @@ async function runChunkedCodeAndReview(
         );
       }
 
-      if (finalReview.status === "escalate") {
-        return {
-          success: false, sessionId, stages: stageOutputs, escalated: true,
-          escalation:
-            finalReview.escalate_reason ?? `Chunk ${chunk.chunk_id}: reviewer escalated.`,
-        };
-      }
-      if (finalReview.status !== "pass") {
-        return {
-          success: false, sessionId, stages: stageOutputs, escalated: true,
-          escalation: `Chunk ${chunk.chunk_id}: max correction attempts exhausted.`,
-        };
+      // ── Reviewer didn't pass: render an escalation gate so the user
+      //    can retry-with-hint, force-approve, or abort. Without this,
+      //    a reviewer escalation halted the chunked pipeline silently
+      //    with no UI affordance.
+      const reviewerNotOk = finalReview.status !== "pass";
+      if (reviewerNotOk) {
+        const reason =
+          finalReview.status === "escalate"
+            ? (finalReview.escalate_reason ?? "reviewer escalated")
+            : "max correction attempts exhausted";
+        stream.markdown(
+          `\n> ⚠️ **chunk ${chunk.chunk_id} reviewer → ${finalReview.status}** — ${reason}\n`,
+        );
+        const escGate = await runStageReviewGate({
+          client, stream, sessionId,
+          pipelineName: meta.pipelineName,
+          stage: "code",
+          attempt: codeAttempt,
+          elapsedMs: Date.now() - coderT0,
+          log: logLine,
+          chunkId: chunk.chunk_id,
+          chunkLabel: `${chunk.task_label}  ·  reviewer ${finalReview.status}`,
+        });
+        if (escGate.kind === "aborted") {
+          return {
+            success: false, sessionId, stages: stageOutputs, escalated: true,
+            escalation: `User aborted chunk ${chunk.chunk_id} after reviewer ${finalReview.status}.`,
+          };
+        }
+        if (escGate.kind === "retry") {
+          const incArgs: Record<string, unknown> = {
+            session_id: sessionId, chunk_id: chunk.chunk_id,
+          };
+          await callHarness(client, "harness_increment_attempt", {
+            ...incArgs, stage: "code", user_hint: escGate.userHint ?? null,
+          });
+          await callHarness(client, "harness_increment_attempt", {
+            ...incArgs, stage: "review",
+          });
+          const hint = escGate.userHint ? ` with hint: ${escGate.userHint}` : "";
+          stream.markdown(`\n↻ retrying chunk **${chunk.chunk_id}**${hint}\n`);
+          continue;  // re-run this chunk
+        }
+        // approved | auto_approved → user explicitly accepts the
+        // not-passing result and moves on. Surface a one-line warning so
+        // the trail makes it obvious in the chat history.
+        stream.markdown(
+          `\n_⚠️ chunk ${chunk.chunk_id} accepted despite reviewer ${finalReview.status} (user override)._\n`,
+        );
+        chunkSatisfied = true;
+        continue;
       }
 
       // ── G.1.5 gate per chunk ──────────────────────────────────────────────
