@@ -155,3 +155,51 @@ CREATE INDEX IF NOT EXISTS idx_schema_migrations_session
     ON schema_migrations (session_id);
 CREATE INDEX IF NOT EXISTS idx_schema_migrations_ts
     ON schema_migrations (ts);
+
+-- Phase G.3 — observability primitives. One row per harness_new_session
+-- (pipeline_runs) and one row per stage attempt (stage_metrics). The
+-- `harness_pipeline_stats` MCP tool aggregates these into success-rate /
+-- median-tokens / median-wall-clock dashboards.
+--
+-- Composite key for stage_metrics: (session_id, stage, chunk_id, attempt).
+-- chunk_id is NULL for non-chunked stages (G.1.7); chunked stages get
+-- one stage_metrics row per (chunk, attempt). schema_version follows the
+-- G.2 versioning discipline so a future stats-row schema bump rides the
+-- existing migration registry.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    session_id              TEXT PRIMARY KEY,
+    pipeline_name           TEXT NOT NULL,
+    started_at              REAL NOT NULL,
+    ended_at                REAL,
+    final_status            TEXT,
+    total_tokens_estimate   INTEGER NOT NULL DEFAULT 0,
+    correction_attempts     INTEGER NOT NULL DEFAULT 0,
+    escalated               INTEGER NOT NULL DEFAULT 0,
+    chunked                 INTEGER NOT NULL DEFAULT 0,
+    chunk_count             INTEGER NOT NULL DEFAULT 0,
+    schema_version          TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline
+    ON pipeline_runs (pipeline_name);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
+    ON pipeline_runs (started_at);
+
+CREATE TABLE IF NOT EXISTS stage_metrics (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL,
+    stage               TEXT NOT NULL,
+    chunk_id            TEXT,
+    attempt             INTEGER NOT NULL,
+    started_at          REAL NOT NULL,
+    ended_at            REAL,
+    tokens_in_estimate  INTEGER NOT NULL DEFAULT 0,
+    tokens_out_estimate INTEGER NOT NULL DEFAULT 0,
+    lm_ms               INTEGER NOT NULL DEFAULT 0,
+    tool_count          INTEGER NOT NULL DEFAULT 0,
+    tool_failures       INTEGER NOT NULL DEFAULT 0,
+    schema_version      TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
+    ON stage_metrics (session_id);

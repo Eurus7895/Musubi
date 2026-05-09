@@ -109,6 +109,42 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_conv_chat_ts
     ON conversation_messages (chat_id, ts);
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    session_id              TEXT PRIMARY KEY,
+    pipeline_name           TEXT NOT NULL,
+    started_at              REAL NOT NULL,
+    ended_at                REAL,
+    final_status            TEXT,
+    total_tokens_estimate   INTEGER NOT NULL DEFAULT 0,
+    correction_attempts     INTEGER NOT NULL DEFAULT 0,
+    escalated               INTEGER NOT NULL DEFAULT 0,
+    chunked                 INTEGER NOT NULL DEFAULT 0,
+    chunk_count             INTEGER NOT NULL DEFAULT 0,
+    schema_version          TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_pipeline
+    ON pipeline_runs (pipeline_name);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started
+    ON pipeline_runs (started_at);
+CREATE TABLE IF NOT EXISTS stage_metrics (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL,
+    stage               TEXT NOT NULL,
+    chunk_id            TEXT,
+    attempt             INTEGER NOT NULL,
+    started_at          REAL NOT NULL,
+    ended_at            REAL,
+    tokens_in_estimate  INTEGER NOT NULL DEFAULT 0,
+    tokens_out_estimate INTEGER NOT NULL DEFAULT 0,
+    lm_ms               INTEGER NOT NULL DEFAULT 0,
+    tool_count          INTEGER NOT NULL DEFAULT 0,
+    tool_failures       INTEGER NOT NULL DEFAULT 0,
+    schema_version      TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
+    ON stage_metrics (session_id);
 """
 
 def _default_db_path() -> Path:
@@ -891,3 +927,197 @@ def delete_terminal_sub_sessions_for_parent(
     with _connect(db_path) as conn:
         cursor = conn.execute(sql, tuple(params))
         return cursor.rowcount
+
+
+# ── Phase G.3: pipeline_runs CRUD ─────────────────────────────────────────
+
+def insert_pipeline_run(
+    session_id: str,
+    pipeline_name: str,
+    started_at: float,
+    db_path: Path | None = None,
+) -> None:
+    """Open a `pipeline_runs` row at session creation. ended_at and
+    final_status stay NULL until `finalize_pipeline_run` is called."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO pipeline_runs"
+            " (session_id, pipeline_name, started_at)"
+            " VALUES (?, ?, ?)",
+            (session_id, pipeline_name, started_at),
+        )
+
+
+def finalize_pipeline_run(
+    session_id: str,
+    ended_at: float,
+    final_status: str,
+    total_tokens_estimate: int,
+    correction_attempts: int,
+    escalated: bool,
+    chunked: bool,
+    chunk_count: int,
+    db_path: Path | None = None,
+) -> None:
+    """Close out a `pipeline_runs` row when the runner finishes. Idempotent
+    via UPDATE (caller may finalize twice on a retry; second write
+    overwrites with the latest known state)."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE pipeline_runs SET"
+            "   ended_at = ?,"
+            "   final_status = ?,"
+            "   total_tokens_estimate = ?,"
+            "   correction_attempts = ?,"
+            "   escalated = ?,"
+            "   chunked = ?,"
+            "   chunk_count = ?"
+            " WHERE session_id = ?",
+            (
+                ended_at, final_status, total_tokens_estimate,
+                correction_attempts, 1 if escalated else 0,
+                1 if chunked else 0, chunk_count, session_id,
+            ),
+        )
+
+
+def get_pipeline_run(
+    session_id: str, db_path: Path | None = None,
+) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM pipeline_runs WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def query_pipeline_runs(
+    pipeline_name: str | None = None,
+    limit: int = 50,
+    since_ts: float | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return pipeline_runs rows, newest first. Optional filters: by
+    pipeline_name, by started_at >= since_ts."""
+    sql = "SELECT * FROM pipeline_runs WHERE 1=1"
+    params: list = []
+    if pipeline_name is not None:
+        sql += " AND pipeline_name = ?"
+        params.append(pipeline_name)
+    if since_ts is not None:
+        sql += " AND started_at >= ?"
+        params.append(since_ts)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Phase G.3: stage_metrics CRUD ─────────────────────────────────────────
+
+def insert_stage_metric(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    started_at: float,
+    ended_at: float,
+    tokens_in_estimate: int,
+    tokens_out_estimate: int,
+    lm_ms: int,
+    db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+    tool_count: int = 0,
+    tool_failures: int = 0,
+) -> None:
+    """One row per stage attempt (chunked or not). Caller passes the
+    pre-measured wall-clock + token estimates collected at the
+    `vscode.lm.sendRequest` call site."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO stage_metrics"
+            " (session_id, stage, chunk_id, attempt,"
+            "  started_at, ended_at,"
+            "  tokens_in_estimate, tokens_out_estimate,"
+            "  lm_ms, tool_count, tool_failures)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id, stage, chunk_id, attempt,
+                started_at, ended_at,
+                tokens_in_estimate, tokens_out_estimate,
+                lm_ms, tool_count, tool_failures,
+            ),
+        )
+
+
+def query_stage_metrics(
+    session_id: str, db_path: Path | None = None,
+) -> list[dict]:
+    """Return all stage_metrics rows for a session, ordered chronologically."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM stage_metrics WHERE session_id = ?"
+            " ORDER BY started_at ASC, id ASC",
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def total_tokens_for_session(
+    session_id: str, db_path: Path | None = None,
+) -> int:
+    """Sum tokens_in + tokens_out across all stage_metrics for a session.
+    Used by `finalize_pipeline_run` to populate `total_tokens_estimate`."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(tokens_in_estimate + tokens_out_estimate), 0)"
+            " FROM stage_metrics WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def query_pipeline_runs_for_stats(
+    pipeline_name: str,
+    since_ts: float | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return TERMINAL pipeline_runs rows (ended_at IS NOT NULL) for
+    `pipeline_name` so the stats query can ignore in-flight sessions
+    that would skew aggregates."""
+    sql = (
+        "SELECT * FROM pipeline_runs"
+        " WHERE pipeline_name = ? AND ended_at IS NOT NULL"
+    )
+    params: list = [pipeline_name]
+    if since_ts is not None:
+        sql += " AND started_at >= ?"
+        params.append(since_ts)
+    sql += " ORDER BY started_at DESC"
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def derive_correction_attempts(
+    session_id: str, db_path: Path | None = None,
+) -> int:
+    """G.3 helper: derive `correction_attempts` for finalize_pipeline_run
+    from the highest 'code' attempt count (per-chunk MAX summed) on
+    `stage_outputs`. Each retry past attempt 1 counts as one correction.
+
+    Chunked sessions: sums the (max_code_attempt - 1) per chunk_id so a
+    multi-chunk run with one retry in T1 and two in T2 reports 3.
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, MAX(attempt) FROM stage_outputs"
+            " WHERE session_id = ? AND stage = 'code'"
+            " GROUP BY chunk_id",
+            (session_id,),
+        ).fetchall()
+    if not rows:
+        return 0
+    return sum(max(0, int(r[1]) - 1) for r in rows if r[1] is not None)

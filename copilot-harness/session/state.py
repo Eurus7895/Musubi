@@ -59,8 +59,19 @@ def _parse_version(agent_path: Path) -> str:
 
 # ── Session lifecycle ─────────────────────────────────────────────────────────
 
-def create_session(request: str, db_path: Path | None = None) -> str:
-    """Create a new session and seed all stage rows as pending. Returns session_id."""
+def create_session(
+    request: str,
+    db_path: Path | None = None,
+    *,
+    pipeline_name: str = "feature-dev",
+) -> str:
+    """Create a new session and seed all stage rows as pending. Returns session_id.
+
+    `pipeline_name` (Phase G.3) opens a `pipeline_runs` row for the
+    observability layer. Defaults to "feature-dev" for back-compat with
+    callers (and tests) that don't yet pass it explicitly.
+    """
+    import time as _time
     session_id = uuid.uuid4().hex[:12]
     now = _now()
     db.init_db(db_path)
@@ -74,6 +85,9 @@ def create_session(request: str, db_path: Path | None = None) -> str:
             schema_version=verifier.CURRENT_SCHEMA_VERSION,
         )
     db.set_active_session_id(session_id, now, db_path)
+    # G.3: open the pipeline_runs row. ended_at + final_status stay
+    # NULL until `finalize_pipeline_run` is called from the runner.
+    db.insert_pipeline_run(session_id, pipeline_name, _time.time(), db_path)
     return session_id
 
 
