@@ -167,65 +167,284 @@ def write_stage(
     stage: str,
     output: Any,
     db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> None:
-    """Store output for the current attempt. Write-once — raises if already set."""
+    """Store output for the current attempt. Write-once — raises if already set.
+
+    `chunk_id` (Phase G.1.7) scopes to a per-task chunk row when set.
+    Write-once is enforced per `(session_id, stage, chunk_id, attempt)`,
+    so a chunked code stage can have one row per task and each row is
+    still write-once within its (chunk, attempt) tuple.
+    """
     if stage not in STAGES:
         raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
-    row = db.get_stage_row(session_id, stage, db_path=db_path)
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row is None:
-        raise ValueError(f"Stage {stage!r} row missing for session {session_id!r}")
+        raise ValueError(
+            f"Stage {stage!r} row missing for session {session_id!r}"
+            + (f" chunk {chunk_id!r}" if chunk_id else "")
+        )
     if row["output"] is not None:
         raise ValueError(
-            f"Stage {stage!r} attempt {row['attempt']} already has output (write-once)"
+            f"Stage {stage!r}"
+            + (f" chunk {chunk_id!r}" if chunk_id else "")
+            + f" attempt {row['attempt']} already has output (write-once)"
         )
     now = _now()
-    db.write_stage_output(session_id, stage, row["attempt"], output, now, db_path)
+    db.write_stage_output(
+        session_id, stage, row["attempt"], output, now, db_path,
+        chunk_id=chunk_id,
+    )
     db.touch_session(session_id, now, db_path)
 
 
 def read_stage(
-    session_id: str, stage: str, db_path: Path | None = None
+    session_id: str, stage: str, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> Any | None:
     """Return the latest *written* output for a stage, or None if nothing written yet.
 
     Uses the highest-attempt row with a non-null output so that reading after
     increment_attempt still returns the previous attempt's output.
+
+    `chunk_id` (Phase G.1.7) scopes to a per-task chunk; default reads
+    the non-chunked row.
     """
     if stage not in STAGES:
         raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
-    row = db.get_latest_written_stage_row(session_id, stage, db_path=db_path)
+    row = db.get_latest_written_stage_row(
+        session_id, stage, db_path=db_path, chunk_id=chunk_id,
+    )
     if row is None:
         return None
     return json.loads(row["output"])
 
 
 def get_attempt(
-    session_id: str, stage: str, db_path: Path | None = None
+    session_id: str, stage: str, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> int:
     """Return the current (highest) attempt number for a stage."""
-    row = db.get_stage_row(session_id, stage, db_path=db_path)
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     return row["attempt"] if row else 1
 
 
 def increment_attempt(
-    session_id: str, stage: str, db_path: Path | None = None
+    session_id: str,
+    stage: str,
+    db_path: Path | None = None,
+    *,
+    user_hint: str | None = None,
+    chunk_id: str | None = None,
 ) -> int:
-    """Insert a new attempt row and return the new attempt number."""
-    row = db.get_stage_row(session_id, stage, db_path=db_path)
+    """Insert a new attempt row and return the new attempt number.
+
+    `user_hint` (Phase G.1.5) is the optional one-line note the gate UI's
+    "Retry this stage" input box collects. Persisted to the new attempt
+    row so `read_stage_user_hint` can surface it on the next read.
+
+    `chunk_id` (Phase G.1.7) scopes the attempt counter to a per-task
+    chunk so T1's retries don't bump T2's attempt counter.
+    """
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row is None:
-        raise ValueError(f"Stage {stage!r} not found for session {session_id!r}")
+        raise ValueError(
+            f"Stage {stage!r}"
+            + (f" chunk {chunk_id!r}" if chunk_id else "")
+            + f" not found for session {session_id!r}"
+        )
     new_attempt = row["attempt"] + 1
-    db.insert_stage(session_id, stage, new_attempt, db_path)
+    cleaned = user_hint.strip() if isinstance(user_hint, str) and user_hint.strip() else None
+    db.insert_stage(
+        session_id, stage, new_attempt, db_path,
+        user_hint=cleaned, chunk_id=chunk_id,
+    )
     return new_attempt
 
 
+def read_stage_user_hint(
+    session_id: str, stage: str, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+) -> str | None:
+    """Return the `user_hint` on the latest attempt of `stage`, or None.
+
+    Used by `harness_read_stage` to surface a retry hint into the
+    calling agent's context — so a coder retrying after the user typed
+    "the previous attempt skipped error handling" sees that note in its
+    next read.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
+    if row is None:
+        return None
+    hint = row.get("user_hint")
+    return hint if isinstance(hint, str) and hint.strip() else None
+
+
+def ensure_chunk_row(
+    session_id: str,
+    stage: str,
+    chunk_id: str,
+    db_path: Path | None = None,
+) -> int:
+    """Create the first attempt row for a chunk if it doesn't exist; return
+    the current attempt number.
+
+    Phase G.1.7. The runner calls this when starting a new chunk's
+    coder/review pair so an `attempt=1, chunk_id=<id>` row exists for
+    `mark_in_progress` / `write_stage` to update.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    if not chunk_id or not chunk_id.strip():
+        raise ValueError("ensure_chunk_row requires a non-empty chunk_id")
+    chunk_id = chunk_id.strip()
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
+    if row is None:
+        db.insert_stage(session_id, stage, 1, db_path, chunk_id=chunk_id)
+        return 1
+    return row["attempt"]
+
+
 def mark_in_progress(
-    session_id: str, stage: str, db_path: Path | None = None
+    session_id: str, stage: str, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
 ) -> None:
     """Transition the current attempt to in_progress (idempotent signal for crash recovery)."""
-    row = db.get_stage_row(session_id, stage, db_path=db_path)
+    row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row and row["status"] == "pending":
-        db.set_stage_in_progress(session_id, stage, row["attempt"], db_path)
+        db.set_stage_in_progress(
+            session_id, stage, row["attempt"], db_path, chunk_id=chunk_id,
+        )
+
+
+# ── Phase G.1.5: review-gate pause / resume ───────────────────────────────
+
+VALID_PAUSE_REASONS: frozenset[str] = frozenset({"stage_review", "budget_exhausted"})
+
+# Resume actions and which pause_reason they apply to. The runner uses
+# this table to validate before persisting.
+VALID_RESUME_ACTIONS: dict[str, frozenset[str]] = {
+    "approve":            frozenset({"stage_review"}),
+    "retry":              frozenset({"stage_review"}),
+    "abort":              frozenset({"stage_review", "budget_exhausted"}),
+    "auto_approve_rest":  frozenset({"stage_review"}),
+    "grant":              frozenset({"budget_exhausted"}),
+    "force":              frozenset({"budget_exhausted"}),
+}
+
+
+def pause_session(
+    session_id: str, stage: str, reason: str, db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+) -> None:
+    """Mark the session paused at `stage`. Stage must be a known pipeline
+    stage; reason must be one of `VALID_PAUSE_REASONS`.
+
+    `chunk_id` (Phase G.1.7) records which chunk a chunked-stage pause
+    belongs to so the resume command targets the right chunk run.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    if reason not in VALID_PAUSE_REASONS:
+        raise ValueError(
+            f"Unknown pause_reason {reason!r}. Valid: {sorted(VALID_PAUSE_REASONS)}"
+        )
+    if get_session(session_id, db_path) is None:
+        raise ValueError(f"Session {session_id!r} not found")
+    cleaned_chunk = (
+        chunk_id.strip()
+        if isinstance(chunk_id, str) and chunk_id.strip()
+        else None
+    )
+    db.set_session_paused(
+        session_id, stage, reason, _now(), db_path,
+        chunk_id=cleaned_chunk,
+    )
+
+
+def resume_session(
+    session_id: str,
+    action: str,
+    db_path: Path | None = None,
+    *,
+    user_hint: str | None = None,
+    extra_budget: int = 0,
+) -> dict:
+    """Record the user's resume decision. Returns the post-update session row.
+
+    The runner picks up the action via `consume_pending_action` on its
+    next entry and dispatches: approve→next stage, retry→same stage new
+    attempt with hint, abort→close session, auto_approve_rest→approve+set
+    flag, grant→same stage with extra budget, force→same stage with
+    explicit no-spawns signal.
+    """
+    sess = get_session(session_id, db_path)
+    if sess is None:
+        raise ValueError(f"Session {session_id!r} not found")
+
+    if action not in VALID_RESUME_ACTIONS:
+        raise ValueError(
+            f"Unknown resume action {action!r}. Valid: {sorted(VALID_RESUME_ACTIONS)}"
+        )
+    pause_reason = sess.get("pause_reason")
+    if pause_reason is None:
+        raise ValueError(f"Session {session_id!r} is not paused")
+    if pause_reason not in VALID_RESUME_ACTIONS[action]:
+        raise ValueError(
+            f"Action {action!r} does not apply to pause_reason {pause_reason!r}"
+        )
+
+    set_auto: bool | None = None
+    if action == "auto_approve_rest":
+        set_auto = True
+
+    cleaned_hint = (
+        user_hint.strip()
+        if isinstance(user_hint, str) and user_hint.strip()
+        else None
+    )
+    eb = max(0, int(extra_budget)) if action in {"grant"} else 0
+
+    db.set_session_resumed(
+        session_id,
+        action,
+        _now(),
+        db_path,
+        user_hint=cleaned_hint,
+        extra_budget=eb,
+        set_auto_approve_remaining=set_auto,
+    )
+    return get_session(session_id, db_path) or {}
+
+
+def consume_pending_action(
+    session_id: str, db_path: Path | None = None,
+) -> dict | None:
+    """Return + clear the `pending_*` payload (read-once)."""
+    return db.consume_pending_action(session_id, db_path)
+
+
+def get_pause_state(
+    session_id: str, db_path: Path | None = None,
+) -> dict | None:
+    """Return the pause-state record for `session_id`, or None if missing."""
+    sess = get_session(session_id, db_path)
+    if sess is None:
+        return None
+    return {
+        "paused_at_stage":         sess.get("paused_at_stage"),
+        "paused_at_chunk":         sess.get("paused_at_chunk"),
+        "pause_reason":            sess.get("pause_reason"),
+        "auto_approve_remaining":  bool(sess.get("auto_approve_remaining") or 0),
+    }
 
 
 def resume(session_id: str, db_path: Path | None = None) -> str | None:

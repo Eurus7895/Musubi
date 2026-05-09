@@ -18,6 +18,7 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
 import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrator";
+import { registerGateCommands } from "./pipelineGateUi";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 
@@ -82,6 +83,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // list). Must run before any chat turn invokes runOrchestrator. Failures
   // are logged but non-fatal; the runner gracefully degrades to no-tool turns.
   context.subscriptions.push(registerOrchestratorTools((m) => out.appendLine(m)));
+
+  // Phase G.1.5 — register the review-gate commands (resume + auto-approve
+  // toggle). Buttons rendered in chat by pipelineGateUi point at these.
+  context.subscriptions.push(registerGateCommands({
+    client,
+    log: (m) => out.appendLine(m),
+  }));
 
   // ── Tasks sidebar view (v0.4.0) ───────────────────────────────────────────
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionPath;
@@ -301,35 +309,74 @@ const USAGE_FOOTER = [
   "",
   "**Routing:**",
   "",
-  "- `/<pipeline-name> <task>` — run a pipeline (e.g. `/feature-dev`). Full guardrails, evaluator firewall.",
+  "- `/<pipeline-name> <task>` — run a pipeline (e.g. `/feature-dev`). Full guardrails, evaluator firewall, and a review gate between stages.",
   "- `@harness <prompt>` — orchestrator. Persistent conversation, spawns sub-agents on demand.",
   "- Legacy bare keywords (`continue`, `status`, `full`, `planner`, `designer`, ",
   "  `coder`, `reviewer`) still work for muscle memory but are deprecated — use the slash form.",
+  "",
+  "**Review gate (between stages):**",
+  "",
+  "Pipelines pause after every non-reviewer stage and offer four buttons:",
+  "**✓ Approve · ↻ Retry · ✕ Abort · ⚡ Run remaining without review**.",
+  "Retry opens an optional one-line hint box that the next attempt sees.",
+  "Per-pipeline auto-approve is persisted via the `copilotHarness.autoApprove.<pipeline>` setting (toggle from the chat button or VS Code settings).",
   "",
   "Slash commands are defined in `.github/commands/`. Type `@harness /help` ",
   "any time to see the current list.",
 ].join("\n");
 
-/** Build the /help body by listing every on-disk slash command. */
+/** Build the /help body by listing every on-disk slash command, grouped
+ *  into Pipelines (full multi-stage runs), Agents (one-shot or
+ *  single-stage agent invocations), and Commands (everything else —
+ *  status / continue / orchestrator / help). The grouping makes the
+ *  routing-mode distinction visible at a glance instead of buried in
+ *  one alphabetical table.
+ */
 function buildHelpMarkdown(roots: string[]): string {
   const commands = listSlashCommands(roots).sort((a, b) => a.name.localeCompare(b.name));
-  const rows: string[] = [
-    USAGE_HEADER,
-    "",
-    "| Command | Action | Description |",
-    "|---|---|---|",
-  ];
+  const pipelineCmds: typeof commands = [];
+  const agentCmds:    typeof commands = [];
+  const otherCmds:    typeof commands = [];
   for (const cmd of commands) {
-    const target =
-      cmd.action === "pipeline" ? `pipeline \`${cmd.pipeline ?? "?"}\`` :
-      cmd.action === "step"     ? `step \`${cmd.agent ?? "?"}\`` :
-      cmd.action;
-    rows.push(`| \`/${cmd.name}\` | ${target} | ${cmd.description || "—"} |`);
+    if (cmd.action === "pipeline") {
+      pipelineCmds.push(cmd);
+    } else if (cmd.action === "agent" || cmd.action === "step") {
+      agentCmds.push(cmd);
+    } else {
+      otherCmds.push(cmd);
+    }
   }
-  if (commands.length === 0) {
-    rows.push("| _(no commands found)_ | — | check `.github/commands/` |");
-  }
-  rows.push("", USAGE_FOOTER);
+
+  const rows: string[] = [USAGE_HEADER, ""];
+
+  const renderTable = (
+    title: string,
+    list: typeof commands,
+    emptyHint: string,
+  ): void => {
+    rows.push(`### ${title}`, "");
+    rows.push("| Command | Action | Description |");
+    rows.push("|---|---|---|");
+    if (list.length === 0) {
+      rows.push(`| _(none)_ | — | ${emptyHint} |`);
+    } else {
+      for (const cmd of list) {
+        const target =
+          cmd.action === "pipeline" ? `pipeline \`${cmd.pipeline ?? "?"}\`` :
+          cmd.action === "step"     ? `step \`${cmd.agent ?? "?"}\`` :
+          cmd.action === "agent"    ? `agent \`${cmd.agent ?? cmd.name}\`` :
+          cmd.action;
+        rows.push(`| \`/${cmd.name}\` | ${target} | ${cmd.description || "—"} |`);
+      }
+    }
+    rows.push("");
+  };
+
+  renderTable("Pipelines", pipelineCmds, "no pipelines registered yet");
+  renderTable("Agents",    agentCmds,    "no agent commands registered");
+  renderTable("Commands",  otherCmds,    "no other commands registered");
+
+  rows.push(USAGE_FOOTER);
   return rows.join("\n");
 }
 

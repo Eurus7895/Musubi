@@ -21,6 +21,7 @@ import {
   StageSpawnBudget,
   SubagentBudgetExhausted,
 } from "./runners/pipelineSubagentBudget";
+import { runStageReviewGate, type StageGateOutcome } from "./pipelineGateUi";
 
 // Re-export so external callers can import budget primitives + helper
 // from a single module (the pipeline runner is the public surface).
@@ -201,7 +202,13 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
     'Produce a JSON object with exactly these top-level keys:',
     '  "summary"          — string',
     '  "tasks_addressed"  — array of task IDs from the plan (e.g. ["T1","T2"])',
-    '  "modules"          — array of { file, purpose, public_interface }',
+    '  "modules"          — array of { file, purpose, public_interface, task_id }',
+    '                        task_id (Phase G.1.7): the SINGLE plan task ID this',
+    '                        module implements (e.g. "T1"). Used to chunk large',
+    '                        designs so the coder runs once per task instead of',
+    '                        once over all modules. If a module legitimately',
+    '                        implements multiple tasks, omit task_id; the harness',
+    '                        falls back to extracting it from `purpose` text.',
     '  "data_schemas"     — array of { name, fields } (optional)',
     '  "dependencies"     — array of strings (optional)',
     '  "integration_notes"— string (optional)',
@@ -414,17 +421,23 @@ async function readAgentContext(
   sessionId: string,
   agentName: string,
   readStages: readonly string[],
+  chunkId?: string,
 ): Promise<Record<string, unknown>> {
   const merged: Record<string, unknown> = {};
   for (const stage of readStages) {
-    const result = (await callHarness(client, "harness_read_stage", {
+    const args: Record<string, unknown> = {
       session_id: sessionId, stage, agent_name: agentName,
-    })) as HarnessReadResult;
+    };
+    if (chunkId) { args.chunk_id = chunkId; }
+    const result = (await callHarness(client, "harness_read_stage", args)) as HarnessReadResult & { user_hint?: string };
     if (result.data !== null && result.data !== undefined) {
       merged[stage] = result.data;
     }
     if (result.injected_skills) {
       merged["injected_skills"] = result.injected_skills;
+    }
+    if (typeof result.user_hint === "string" && result.user_hint.trim()) {
+      merged["user_hint"] = result.user_hint;
     }
   }
   return merged;
@@ -512,10 +525,13 @@ async function writeStage(
   stage: string,
   agentName: string,
   output: unknown,
+  chunkId?: string,
 ): Promise<HarnessWriteResult> {
-  return (await callHarness(client, "harness_write_stage", {
+  const args: Record<string, unknown> = {
     session_id: sessionId, stage, output: JSON.stringify(output), agent_name: agentName,
-  })) as HarnessWriteResult;
+  };
+  if (chunkId) { args.chunk_id = chunkId; }
+  return (await callHarness(client, "harness_write_stage", args)) as HarnessWriteResult;
 }
 
 /**
@@ -541,6 +557,7 @@ async function runAgentWithValidationRetry(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   onChange?: () => void,
+  chunkId?: string,
 ): Promise<{ output: unknown; finalAttempt: number }> {
   let attempt = initialAttempt;
   let context = baseContext;
@@ -553,7 +570,7 @@ async function runAgentWithValidationRetry(
       roots, agentName, agentPrompt, context, token,
       { workspaceRoot, sessionId, stage, attempt },
     );
-    const result = await writeStage(client, sessionId, stage, agentName, output);
+    const result = await writeStage(client, sessionId, stage, agentName, output, chunkId);
     if (result.status === "stored") {
       return { output, finalAttempt: attempt };
     }
@@ -573,7 +590,9 @@ async function runAgentWithValidationRetry(
       `\n\n`,
     );
 
-    await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage });
+    const incArgs: Record<string, unknown> = { session_id: sessionId, stage };
+    if (chunkId) { incArgs.chunk_id = chunkId; }
+    await callHarness(client, "harness_increment_attempt", incArgs);
     attempt += 1;
     onChange?.();
 
@@ -789,8 +808,10 @@ async function runCorrectionLoop(
   stream: vscode.ChatResponseStream,
   token: vscode.CancellationToken,
   onChange?: () => void,
+  chunkId?: string,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
+  const chunkLabel = chunkId ? ` · ${chunkId}` : "";
 
   while (currentReview.status === "fail" && codeAttempt < MAX_CODE_ATTEMPTS) {
     if (token.isCancellationRequested) { break; }
@@ -802,15 +823,27 @@ async function runCorrectionLoop(
     const fix = firstFixInstruction(currentReview);
     const issuesCount = currentReview.issues?.length ?? 0;
     stream.markdown(
-      `\n> ⚠️ **reviewer → ${currentReview.status}** · ${issuesCount} issue${issuesCount === 1 ? "" : "s"}` +
+      `\n> ⚠️ **reviewer${chunkLabel} → ${currentReview.status}** · ${issuesCount} issue${issuesCount === 1 ? "" : "s"}` +
       (fix ? `\n>\n> Fix: ${fix}` : "") +
       `\n\n`,
     );
 
-    await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "code" });
-    await callHarness(client, "harness_increment_attempt", { session_id: sessionId, stage: "review" });
+    const incArgs: Record<string, unknown> = { session_id: sessionId };
+    if (chunkId) { incArgs.chunk_id = chunkId; }
+    await callHarness(client, "harness_increment_attempt", { ...incArgs, stage: "code" });
+    await callHarness(client, "harness_increment_attempt", { ...incArgs, stage: "review" });
 
-    const coderCtx = await readAgentContext(client, sessionId, "coder", ["design", "plan", "review"]);
+    const coderCtx = await readAgentContext(
+      client, sessionId, "coder", ["design", "plan", "review"], chunkId,
+    );
+
+    // Filter design to current chunk's modules when running chunked.
+    if (chunkId && typeof coderCtx["design"] === "object" && coderCtx["design"] !== null) {
+      coderCtx["design"] = filterDesignForChunkPaths(
+        coderCtx["design"] as Record<string, unknown>,
+        _chunkFilePathsCache.get(`${sessionId}/${chunkId}`) ?? [],
+      );
+    }
 
     // Re-read workspace files after the previous coder attempt materialised them,
     // so the retry sees the current (possibly partially correct) state on disk.
@@ -819,33 +852,43 @@ async function runCorrectionLoop(
       coderCtx["existing_file_contents"] = existingFiles;
     }
 
-    emitStageStart(stream, "coder", codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
+    emitStageStart(stream, `coder${chunkLabel}`, codeAttempt, MAX_CODE_ATTEMPTS, tagsForRetry());
     onChange?.();
     const coderT0 = Date.now();
     const { output: fixedCode, finalAttempt: coderFinalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
-      coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange,
+      coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange, chunkId,
     );
     codeAttempt = coderFinalAttempt;
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
-    materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
-    emitStageComplete(stream, "coder", Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
+    if (!chunkId) {
+      materializeStageOutput(workspaceRoot, sessionId, "code", codeAttempt, fixedCode);
+    }
+    emitStageComplete(stream, `coder${chunkLabel}`, Date.now() - coderT0, summarizeStageOutput("code", fixedCode));
     emitStageOutputDetails(stream, "code", fixedCode);
+    if (!chunkId) {
+      emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "code", codeAttempt);
+    }
     onChange?.();
 
     // Evaluator firewall: reviewer sees only the (new) code artifact.
-    const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"]);
-    emitStageStart(stream, "reviewer", codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
+    const reviewerCtx = await readAgentContext(client, sessionId, "reviewer", ["code"], chunkId);
+    emitStageStart(stream, `reviewer${chunkLabel}`, codeAttempt, MAX_CODE_ATTEMPTS, STAGE_TAGS["review"]);
     onChange?.();
     const reviewerT0 = Date.now();
     const { output: newReviewOutput, finalAttempt: reviewerFinalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
-      reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange,
+      reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange, chunkId,
     );
     const newReview = newReviewOutput as ReviewOutput;
-    materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
-    emitStageComplete(stream, "reviewer", Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
+    if (!chunkId) {
+      materializeStageOutput(workspaceRoot, sessionId, "review", reviewerFinalAttempt, newReview);
+    }
+    emitStageComplete(stream, `reviewer${chunkLabel}`, Date.now() - reviewerT0, summarizeStageOutput("review", newReview));
     emitStageOutputDetails(stream, "review", newReview);
+    if (!chunkId) {
+      emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "review", reviewerFinalAttempt);
+    }
     onChange?.();
 
     currentReview = newReview;
@@ -853,6 +896,267 @@ async function runCorrectionLoop(
   }
 
   return currentReview;
+}
+
+// ── Phase G.1.7: chunked execution ─────────────────────────────────────
+
+/**
+ * One per-task chunk returned by `harness_compute_chunks`. Mirrors the
+ * Python `Chunk` dataclass; kept TS-side as a plain interface so tests
+ * don't have to spin up the MCP boundary.
+ */
+export interface ChunkInfo {
+  chunk_id: string;
+  task_label: string;
+  file_paths: string[];
+}
+
+interface RunChunkedOptions {
+  client: McpClient;
+  workspaceRoot: string;
+  promptRoots: string[];
+  meta: { route: string; pipelineName: string; level: number };
+  sessionId: string;
+  chunks: ChunkInfo[];
+  stageOutputs: Record<string, unknown>;
+  stream: vscode.ChatResponseStream;
+  token: vscode.CancellationToken;
+  onChange?: () => void;
+  pipelineT0: number;
+}
+
+/**
+ * Run coder + reviewer + correction loop once per chunk, with a stage
+ * review gate after each chunk. Returns a `PipelineResult` so the
+ * caller can exit `runPipeline` early — the AGENT_PIPELINE iteration
+ * never advances past the coder slot when chunked execution kicks in.
+ *
+ * Per-chunk semantics:
+ *   - Coder reads `design` filtered to the chunk's modules.
+ *   - Reviewer sees only the chunk's code attempt (existing firewall
+ *     pass through `harness_read_stage` with `chunk_id`).
+ *   - Correction loop is shared by reviewer + coder for the chunk.
+ *   - Gate asks the user to approve / retry / abort / auto-approve-rest;
+ *     retry bumps `attempt` for code+review of THIS chunk only.
+ *
+ * Aborted or escalated chunks halt the whole pipeline (Phase G.1.7
+ * default — downstream chunks may import upstream code so partial
+ * success isn't safe).
+ */
+async function runChunkedCodeAndReview(
+  opts: RunChunkedOptions,
+): Promise<PipelineResult> {
+  const {
+    client, workspaceRoot, promptRoots, meta,
+    sessionId, chunks, stageOutputs, stream, token, onChange, pipelineT0,
+  } = opts;
+
+  stream.markdown(
+    `\n📦 **Chunked execution** — ${chunks.length} task chunks. ` +
+    `Each runs coder + reviewer scoped to its task; gate fires between chunks.\n`,
+  );
+
+  for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+    if (token.isCancellationRequested) { break; }
+    const chunk = chunks[chunkIdx];
+    _chunkFilePathsCache.set(`${sessionId}/${chunk.chunk_id}`, chunk.file_paths);
+
+    stream.markdown(
+      `\n### 📦 Chunk ${chunkIdx + 1}/${chunks.length} · **${chunk.chunk_id}** — ${chunk.task_label}\n` +
+      `*${chunk.file_paths.length} module${chunk.file_paths.length === 1 ? "" : "s"}*\n`,
+    );
+
+    let chunkSatisfied = false;
+    while (!chunkSatisfied) {
+      if (token.isCancellationRequested) { break; }
+
+      // Ensure attempt rows exist for code + review for this chunk.
+      const codeRowRaw = await callHarness(client, "harness_ensure_chunk_row", {
+        session_id: sessionId, stage: "code", chunk_id: chunk.chunk_id,
+      });
+      await callHarness(client, "harness_ensure_chunk_row", {
+        session_id: sessionId, stage: "review", chunk_id: chunk.chunk_id,
+      });
+      const codeAttempt = (codeRowRaw as { attempt?: number }).attempt ?? 1;
+
+      // ── Coder for this chunk ──────────────────────────────────────────────
+      const coderCtx = await readAgentContext(
+        client, sessionId, "coder", ["plan", "design"], chunk.chunk_id,
+      );
+      if (typeof coderCtx["design"] === "object" && coderCtx["design"] !== null) {
+        coderCtx["design"] = filterDesignForChunkPaths(
+          coderCtx["design"] as Record<string, unknown>,
+          chunk.file_paths,
+        );
+      }
+      coderCtx["chunk"] = {
+        chunk_id: chunk.chunk_id,
+        task_label: chunk.task_label,
+        files: chunk.file_paths,
+      };
+      const existingFiles = readWorkspaceFilesForCoder(workspaceRoot, coderCtx["design"]);
+      if (Object.keys(existingFiles).length > 0) {
+        coderCtx["existing_file_contents"] = existingFiles;
+      }
+
+      emitStageStart(
+        stream, `coder · ${chunk.chunk_id}`, codeAttempt, MAX_CODE_ATTEMPTS,
+        STAGE_TAGS["code"] ?? {},
+      );
+      onChange?.();
+      const coderT0 = Date.now();
+      let coderOutput: unknown;
+      try {
+        const r = await runAgentWithValidationRetry(
+          client, promptRoots, "coder",
+          loadAgentPrompt(promptRoots, meta.pipelineName, "coder"),
+          coderCtx, sessionId, "code", codeAttempt,
+          workspaceRoot, stream, token, onChange, chunk.chunk_id,
+        );
+        coderOutput = r.output;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: `Chunk ${chunk.chunk_id}: coder failed — ${msg}`,
+        };
+      }
+      materializeCoderFiles(workspaceRoot, coderOutput, stream);
+      emitStageComplete(
+        stream, `coder · ${chunk.chunk_id}`, Date.now() - coderT0,
+        summarizeStageOutput("code", coderOutput),
+      );
+      emitStageOutputDetails(stream, "code", coderOutput);
+      onChange?.();
+
+      // ── Reviewer for this chunk ────────────────────────────────────────────
+      const reviewerCtx = await readAgentContext(
+        client, sessionId, "reviewer", ["code"], chunk.chunk_id,
+      );
+      emitStageStart(
+        stream, `reviewer · ${chunk.chunk_id}`, codeAttempt, MAX_CODE_ATTEMPTS,
+        STAGE_TAGS["review"] ?? {},
+      );
+      onChange?.();
+      const reviewerT0 = Date.now();
+      let reviewOutput: ReviewOutput;
+      try {
+        const r = await runAgentWithValidationRetry(
+          client, promptRoots, "reviewer",
+          loadAgentPrompt(promptRoots, meta.pipelineName, "reviewer"),
+          reviewerCtx, sessionId, "review", codeAttempt,
+          workspaceRoot, stream, token, onChange, chunk.chunk_id,
+        );
+        reviewOutput = r.output as ReviewOutput;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: `Chunk ${chunk.chunk_id}: reviewer failed — ${msg}`,
+        };
+      }
+      emitStageComplete(
+        stream, `reviewer · ${chunk.chunk_id}`, Date.now() - reviewerT0,
+        summarizeStageOutput("review", reviewOutput),
+      );
+      emitStageOutputDetails(stream, "review", reviewOutput);
+      onChange?.();
+
+      // ── Correction loop for this chunk ────────────────────────────────────
+      let finalReview: ReviewOutput = reviewOutput;
+      if (reviewOutput.status === "fail") {
+        finalReview = await runCorrectionLoop(
+          client, sessionId, workspaceRoot, promptRoots, meta.pipelineName,
+          reviewOutput, codeAttempt, stream, token, onChange, chunk.chunk_id,
+        );
+      }
+
+      if (finalReview.status === "escalate") {
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation:
+            finalReview.escalate_reason ?? `Chunk ${chunk.chunk_id}: reviewer escalated.`,
+        };
+      }
+      if (finalReview.status !== "pass") {
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: `Chunk ${chunk.chunk_id}: max correction attempts exhausted.`,
+        };
+      }
+
+      // ── G.1.5 gate per chunk ──────────────────────────────────────────────
+      const gate = await runStageReviewGate({
+        client, stream, sessionId,
+        pipelineName: meta.pipelineName,
+        stage: "code",
+        attempt: codeAttempt,
+        elapsedMs: Date.now() - coderT0,
+        log: logLine,
+        chunkId: chunk.chunk_id,
+        chunkLabel: chunk.task_label,
+      });
+
+      if (gate.kind === "aborted") {
+        stream.markdown(`\n_Pipeline aborted at chunk **${chunk.chunk_id}** gate._\n`);
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: `User aborted at chunk ${chunk.chunk_id} gate.`,
+        };
+      }
+      if (gate.kind === "retry") {
+        const incArgs: Record<string, unknown> = {
+          session_id: sessionId, chunk_id: chunk.chunk_id,
+        };
+        await callHarness(client, "harness_increment_attempt", {
+          ...incArgs, stage: "code", user_hint: gate.userHint ?? null,
+        });
+        await callHarness(client, "harness_increment_attempt", {
+          ...incArgs, stage: "review",
+        });
+        const hint = gate.userHint ? ` with hint: ${gate.userHint}` : "";
+        stream.markdown(`\n↻ retrying chunk **${chunk.chunk_id}**${hint}\n`);
+        // Inner while loop: re-run THIS chunk.
+        continue;
+      }
+
+      // approved | auto_approved → next chunk.
+      chunkSatisfied = true;
+    }
+  }
+
+  stream.markdown(
+    `\n*total: ${fmtSeconds(Date.now() - pipelineT0)} · ${chunks.length} chunks*\n`,
+  );
+  return { success: true, sessionId, stages: stageOutputs, escalated: false };
+}
+
+// ── Phase G.1.7: chunk filtering helpers ──────────────────────────────
+//
+// `filterDesignForChunkPaths` is the TS-side mirror of the Python
+// helper in session/chunks.py. It trims `design.modules` to those whose
+// `file` path is in `keep`. The non-chunked branch never calls this.
+//
+// `_chunkFilePathsCache` is keyed `<sessionId>/<chunkId>` and populated
+// by the chunked execution branch in runPipeline before correction
+// loops fire. The cache is process-local — the harness DB is the
+// authoritative store; this avoids re-fetching the same chunk
+// definition on every retry.
+
+const _chunkFilePathsCache = new Map<string, ReadonlyArray<string>>();
+
+function filterDesignForChunkPaths(
+  design: Record<string, unknown>,
+  keep: ReadonlyArray<string>,
+): Record<string, unknown> {
+  if (!Array.isArray(design.modules) || keep.length === 0) { return design; }
+  const keepSet = new Set(keep);
+  const filtered = (design.modules as unknown[]).filter(m => {
+    if (!m || typeof m !== "object") { return false; }
+    const path = (m as { file?: unknown }).file;
+    return typeof path === "string" && keepSet.has(path);
+  });
+  return { ...design, modules: filtered };
 }
 
 // ── Chat rendering helpers ──────────────────────────────────────────────────
@@ -903,6 +1207,36 @@ function emitStageOutputDetails(
   // continuous blockquote. Empty lines need "> " too or the quote breaks.
   const quoted = body.split("\n").map(l => `> ${l}`).join("\n");
   stream.markdown(`\n${quoted}\n`);
+}
+
+/**
+ * Emit a clickable anchor pointing at the materialised stage MD file
+ * (`.harness/sessions/<sessionId>/<stage>[.attemptN].md`). The file is
+ * written by `materializeStageOutput`; this is the chat-side
+ * affordance to open it without leaving the panel.
+ *
+ * No-ops when the file isn't on disk yet (e.g. a stage that didn't
+ * have a renderer) — `stream.anchor` would point at a 404.
+ */
+function emitStageArtifactAnchor(
+  stream: vscode.ChatResponseStream,
+  workspaceRoot: string,
+  sessionId: string,
+  stage: string,
+  attempt: number,
+): void {
+  if (!_STAGE_RENDERER[stage]) { return; }  // no MD produced for this stage
+  const suffix = attempt > 1 ? `.attempt${attempt}` : "";
+  const fileName = `${stage}${suffix}.md`;
+  const absPath = path.join(workspaceRoot, ".harness", "sessions", sessionId, fileName);
+  if (!fs.existsSync(absPath)) { return; }
+  const uri = vscode.Uri.file(absPath);
+  try {
+    stream.anchor(uri, `View ${fileName}`);
+  } catch {
+    // stream.anchor throws on older VS Code; the file is still on
+    // disk for the user to open manually via the Tasks tree.
+  }
 }
 
 function formatStageOutput(stage: string, o: Record<string, unknown>): string {
@@ -1021,8 +1355,15 @@ export async function runPipeline(
   onChange?.();
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
+  //
+  // Indexed while-loop (instead of for-of) so the Phase G.1.5 review gate
+  // can request a stage retry without advancing to the next agent. The
+  // gate fires after planner/designer/coder write their output; the
+  // reviewer is gated by its own correction loop, not the user-facing
+  // gate.
 
-  for (const agent of AGENT_PIPELINE) {
+  for (let agentIdx = 0; agentIdx < AGENT_PIPELINE.length; agentIdx++) {
+    const agent = AGENT_PIPELINE[agentIdx];
     if (token.isCancellationRequested) { break; }
 
     const statusData = (await callHarness(
@@ -1032,6 +1373,27 @@ export async function runPipeline(
     if (statusData.stages[agent.writeStage]?.status === "complete") {
       stream.markdown(`\n✓ **${agent.name}** — already complete (skipped)\n`);
       continue;
+    }
+
+    // ── Phase G.1.7 chunked execution ────────────────────────────────────────
+    //
+    // When the design has multiple plan-task groups, run the coder + reviewer
+    // once per chunk so each LM round-trip stays under the output cap.
+    // Triggered ONLY at the coder iteration; chunks were computed from the
+    // already-written design. If chunks come back empty, fall through to the
+    // existing single-shot flow.
+    if (agent.name === "coder") {
+      const chunksRaw = await callHarness(client, "harness_compute_chunks", {
+        session_id: sessionId,
+      });
+      const chunkList = (chunksRaw as { chunks?: ChunkInfo[] }).chunks ?? [];
+      if (chunkList.length > 0) {
+        return await runChunkedCodeAndReview({
+          client, workspaceRoot, promptRoots, meta,
+          sessionId, chunks: chunkList, stageOutputs,
+          stream, token, onChange, pipelineT0,
+        });
+      }
     }
 
     const context = await readAgentContext(client, sessionId, agent.name, agent.readStages);
@@ -1072,7 +1434,53 @@ export async function runPipeline(
     }
     emitStageComplete(stream, agent.name, Date.now() - stageT0, summarizeStageOutput(agent.writeStage, agentOutput));
     emitStageOutputDetails(stream, agent.writeStage, agentOutput);
+    emitStageArtifactAnchor(stream, workspaceRoot, sessionId, agent.writeStage, finalAttempt);
     onChange?.();
+
+    // ── Phase G.1.5 review gate (planner / designer / coder only) ────────────
+    //
+    // Reviewer is gated by its own correction loop below, not the user
+    // gate. For the others, persist a pause row + render the four-button
+    // gate (or auto-approve through if the user setting / per-run flag
+    // says so). On `retry`: increment the attempt and re-run THIS stage.
+    // On `abort`: surface as escalation.
+    if (agent.name !== "reviewer") {
+      const gateOutcome: StageGateOutcome = await runStageReviewGate({
+        client,
+        stream,
+        sessionId,
+        pipelineName: meta.pipelineName,
+        stage: agent.writeStage,
+        attempt: finalAttempt,
+        elapsedMs: Date.now() - stageT0,
+        log: logLine,
+      });
+
+      if (gateOutcome.kind === "aborted") {
+        stream.markdown("\n\n_Pipeline aborted at stage gate._\n");
+        return {
+          success: false, sessionId, stages: stageOutputs, escalated: true,
+          escalation: "User aborted at stage review gate.",
+        };
+      }
+      if (gateOutcome.kind === "retry") {
+        // Bump attempt with the optional hint (passed straight through to
+        // harness_increment_attempt; surfaces in the next read context as
+        // `user_hint`). Re-run THIS agent by holding agentIdx steady.
+        await callHarness(client, "harness_increment_attempt", {
+          session_id: sessionId,
+          stage: agent.writeStage,
+          user_hint: gateOutcome.userHint ?? null,
+        });
+        const hintMsg = gateOutcome.userHint
+          ? ` with hint: ${gateOutcome.userHint}`
+          : "";
+        stream.markdown(`\n↻ retrying **${agent.name}**${hintMsg}\n`);
+        agentIdx -= 1;  // counter the loop's `i++`
+        continue;
+      }
+      // approved | auto_approved → fall through to next agent.
+    }
 
     // ── Correction loop (after reviewer) ─────────────────────────────────────
     if (agent.name === "reviewer") {
@@ -1209,6 +1617,7 @@ export async function runStep(
   }
   emitStageComplete(stream, agentDef.name, Date.now() - stepT0, summarizeStageOutput(agentDef.writeStage, agentOutput));
   emitStageOutputDetails(stream, agentDef.writeStage, agentOutput);
+  emitStageArtifactAnchor(stream, workspaceRoot, sessionId, agentDef.writeStage, stepFinalAttempt);
   onChange?.();
 
   // ── Reviewer: run inline correction loop ─────────────────────────────────────

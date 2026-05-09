@@ -49,8 +49,29 @@
         "title": "Clear Active Session",
         "category": "CopilotHarness",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "copilot-harness.resumeSession",
+        "title": "Resume paused pipeline",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.toggleAutoApprove",
+        "title": "Toggle auto-approve for a pipeline",
+        "category": "CopilotHarness"
       }
     ],
+    "configuration": {
+      "title": "CopilotHarness",
+      "properties": {
+        "copilotHarness.autoApprove": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "boolean" },
+          "description": "Per-pipeline review-gate auto-approve flag (Phase G.1.5). Maps pipeline name → boolean. When true, the gate UI is skipped between stages of that pipeline. Toggle from the chat-side button or directly in settings (e.g. \"copilotHarness.autoApprove\": { \"feature-dev\": true })."
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
