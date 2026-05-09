@@ -405,17 +405,33 @@ def test_mcp_spawn_unknown_role_rejected(mcp_db: Path) -> None:
 
 
 def test_mcp_spawn_disallowed_main_rejected(mcp_db: Path) -> None:
-    """coder cannot spawn explorer until pipeline.yaml opts in (Phase B)."""
+    """planner / designer remain spawn-locked (Phase G.1.6 only opted
+    coder + reviewer in). The earlier coder→explorer denial moved to
+    test_mcp_spawn_coder_explorer_allowed below."""
     parent = state.create_session("p")
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="coder",
+        parent_agent_name="planner",
         role="explorer",
         brief="x",
     )
     payload = json.loads(raw)
     assert payload["status"] == "error"
-    assert "coder" in payload["error"]
+    assert "planner" in payload["error"]
+
+
+def test_mcp_spawn_coder_explorer_allowed(mcp_db: Path) -> None:
+    """Phase G.1.6 — coder may spawn explorer. The pre-coder dispatcher
+    in the TS pipeline runner relies on this MCP path succeeding."""
+    parent = state.create_session("p")
+    raw = server.harness_spawn_subagent(
+        parent_session_id=parent,
+        parent_agent_name="coder",
+        role="explorer",
+        brief="find callers of FooClass",
+    )
+    payload = json.loads(raw)
+    assert payload["status"] == "spawned", payload
 
 
 def test_mcp_spawn_unknown_parent_rejected(mcp_db: Path) -> None:
@@ -592,10 +608,21 @@ def test_mcp_list_subagents_for_orchestrator(mcp_db: Path) -> None:
             assert r["allowed_tools"]  # non-empty for tool-using roles
 
 
-def test_mcp_list_subagents_for_pipeline_stage_is_empty(mcp_db: Path) -> None:
-    raw = server.harness_list_subagents(main_agent_name="coder")
-    payload = json.loads(raw)
-    assert payload["roles"] == []
+def test_mcp_list_subagents_for_pipeline_stage_phase_g16(mcp_db: Path) -> None:
+    """Phase G.1.6 — coder + reviewer opted into specific roles. The
+    MCP tool reflects MAIN_SUBAGENT_ALLOWLIST, so it now returns the
+    G.1.6 role lists for these stages."""
+    coder_payload = json.loads(server.harness_list_subagents(main_agent_name="coder"))
+    reviewer_payload = json.loads(server.harness_list_subagents(main_agent_name="reviewer"))
+    coder_roles = {r["role"] for r in coder_payload["roles"]}
+    reviewer_roles = {r["role"] for r in reviewer_payload["roles"]}
+    assert coder_roles == {"explorer", "investigator"}
+    assert reviewer_roles == {"reviewer-aux"}
+    # planner / designer remain empty.
+    planner_payload = json.loads(server.harness_list_subagents(main_agent_name="planner"))
+    designer_payload = json.loads(server.harness_list_subagents(main_agent_name="designer"))
+    assert planner_payload["roles"] == []
+    assert designer_payload["roles"] == []
 
 
 def test_mcp_list_subagents_for_unknown_main_is_empty(mcp_db: Path) -> None:

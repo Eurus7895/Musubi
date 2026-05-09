@@ -40,6 +40,45 @@ import {
   type ToolDispatchContext,
 } from "./orchestratorCore";
 import { runSummarizerSubagent } from "./summarizerRunner";
+import { runSubagentForHandle } from "./subagentRunner";
+import type { SubagentRoleId } from "./subagentRunnerCore";
+
+/**
+ * Phase G.1.6 — when the LM successfully calls harness_spawn_subagent
+ * for one of the LM_FACING_SUBAGENT_ROLES, this kicks off the matching
+ * extension-side runner in the background so the LM's later
+ * harness_await_subagent finds a terminal row instead of timing out.
+ */
+function launchSubagentRunnerInBackground(
+  client: McpClient,
+  rawSpawnResponse: string,
+  args: Record<string, unknown>,
+  log: (msg: string) => void,
+  roots: readonly string[],
+  token: vscode.CancellationToken,
+  toolInvocationToken: vscode.ChatParticipantToolToken | undefined,
+): void {
+  let parsed: { status?: string; handle_id?: string };
+  try { parsed = JSON.parse(rawSpawnResponse); } catch { return; }
+  if (parsed.status !== "spawned" || typeof parsed.handle_id !== "string") { return; }
+  const role = typeof args.role === "string" ? args.role : "";
+  if (!LM_FACING_SUBAGENT_ROLES.has(role)) { return; }
+
+  // Fire-and-forget: the await tool will block on the harness row
+  // transitioning to terminal. Errors are logged but don't propagate.
+  void runSubagentForHandle({
+    client,
+    handleId: parsed.handle_id,
+    role: role as SubagentRoleId,
+    roots: [...roots],
+    log,
+    token,
+    toolInvocationToken,
+  }).catch(err => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[orchestrator] background runner ${role} threw: ${msg}`);
+  });
+}
 
 export {
   ORCHESTRATOR_AGENT_NAME,
@@ -95,14 +134,25 @@ const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
  * → retry on roles that have no runner to drive them, burning tokens for
  * no result.
  *
- * Currently empty. summarizer is invoked from inside the runner's 90 %
- * compaction path, NOT by the LM, so it does not count here.
+ * Phase G.1.6: now that explorerRunner / investigatorRunner /
+ * reviewerAuxRunner all ship from G.1, the orchestrator can spawn
+ * them. When the LM calls harness_spawn_subagent below, we ALSO
+ * launch the matching runner in the background so the await side
+ * sees a terminal row.
  *
- * When you ship a runner for explorer / investigator / reviewer-aux,
- * add the role name and re-package the extension. Catalog inclusion
- * flips automatically.
+ * summarizer is invoked from inside the runner's 90% compaction path
+ * (NOT by the LM), so it stays out of this set.
+ *
+ * planner / coder / reviewer don't have generic runners — they're
+ * pipeline-mode-only. Spawning them from the orchestrator would
+ * require the orchestrator to act like a pipeline driver, which is
+ * out of scope for the orchestrator-freeze direction.
  */
-const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set();
+const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set([
+  "explorer",
+  "investigator",
+  "reviewer-aux",
+]);
 
 /**
  * The external tool allowlist used to live here as a hardcoded constant.
@@ -260,6 +310,17 @@ interface ActiveOrchestrator {
   tracker: SpawnTracker;
   triggers: TriggerDedup;
   log: (msg: string) => void;
+  /**
+   * Roots the per-turn runner reads agent.md / SKILL.md from.
+   * Phase G.1.6 — needed so the background sub-agent runner can
+   * resolve role files when the LM calls harness_spawn_subagent.
+   */
+  roots: string[];
+  /**
+   * Forwarded into vscode.lm.invokeTool calls inside spawned
+   * sub-agent runners. Same field as the orchestrator turn's request.
+   */
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 /**
@@ -372,6 +433,13 @@ export function registerOrchestratorTools(
           if (def.name === "harness_spawn_subagent") {
             const role = typeof args.role === "string" ? args.role : undefined;
             active.tracker.recordSpawn(def.name, raw, role);
+            // G.1.6 — launch the extension-side runner so the spawned
+            // handle actually executes. Without this, the LM's await
+            // would block until the harness's wall-clock cap fires.
+            launchSubagentRunnerInBackground(
+              active.client, raw, args, log,
+              active.roots, token, active.toolInvocationToken,
+            );
           } else if (def.name === "harness_await_subagent") {
             active.tracker.recordAwait(raw);
             // Phase C.2 trigger (c) — reviewer-fail. If a reviewer-aux
@@ -476,6 +544,8 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
   const active: ActiveOrchestrator = {
     client, parentSessionId, chatId, tracker, triggers, log,
+    roots: [...roots],
+    toolInvocationToken,
   };
   _setActiveOrchestrator(active);
   log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
