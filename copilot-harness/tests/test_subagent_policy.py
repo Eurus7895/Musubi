@@ -53,11 +53,20 @@ def test_orchestrator_can_spawn_pipeline_roles() -> None:
     )
 
 
-def test_pipeline_stages_have_empty_allowlist_until_pipeline_yaml_opts_in() -> None:
-    # Phase B will populate these via pipeline.yaml subagents: blocks. For
-    # Phase A.1 the harness must deny by default.
-    for stage in ("planner", "designer", "coder", "reviewer"):
-        assert MAIN_SUBAGENT_ALLOWLIST[stage] == []
+def test_pipeline_stages_have_phase_g16_allowlist() -> None:
+    """Phase G.1.6 — feature-dev's coder + reviewer opt into read-only
+    sub-agents. planner + designer remain spawn-locked (the
+    dispatcher's stage routing returns [] for them anyway, but the
+    policy table is the authoritative second line of defence).
+
+    Earlier this test pinned EVERY stage to []; G.1.6 added two
+    entries deliberately. If a future phase widens these, update
+    this test deliberately too — don't relax.
+    """
+    assert MAIN_SUBAGENT_ALLOWLIST["planner"] == []
+    assert MAIN_SUBAGENT_ALLOWLIST["designer"] == []
+    assert MAIN_SUBAGENT_ALLOWLIST["coder"] == ["explorer", "investigator"]
+    assert MAIN_SUBAGENT_ALLOWLIST["reviewer"] == ["reviewer-aux"]
 
 
 def test_explorer_is_read_only() -> None:
@@ -84,10 +93,20 @@ def test_check_subagent_allowed_is_case_insensitive_main() -> None:
     assert check_subagent_allowed("ORCHESTRATOR", "explorer") is True
 
 
-def test_coder_cannot_spawn_explorer_in_phase_a() -> None:
-    """Pipeline stages must opt in via pipeline.yaml — Phase A keeps the
-    list empty, so the harness denies."""
-    assert check_subagent_allowed("coder", "explorer") is False
+def test_coder_can_spawn_explorer_in_phase_g16() -> None:
+    """Phase G.1.6 — coder opts into explorer + investigator. Reviewer
+    opts into reviewer-aux. Planner and designer stay spawn-locked."""
+    assert check_subagent_allowed("coder", "explorer") is True
+    assert check_subagent_allowed("coder", "investigator") is True
+    # Other roles still denied for coder.
+    assert check_subagent_allowed("coder", "reviewer-aux") is False
+    assert check_subagent_allowed("coder", "summarizer") is False
+    # Reviewer can spawn ONLY reviewer-aux.
+    assert check_subagent_allowed("reviewer", "reviewer-aux") is True
+    assert check_subagent_allowed("reviewer", "explorer") is False
+    # Planner / designer stay spawn-locked.
+    assert check_subagent_allowed("planner", "explorer") is False
+    assert check_subagent_allowed("designer", "explorer") is False
 
 
 def test_unknown_main_denies_all() -> None:
@@ -108,8 +127,13 @@ def test_list_subagent_roles_for_orchestrator() -> None:
     }
 
 
-def test_list_subagent_roles_for_pipeline_stage_is_empty() -> None:
-    assert list_subagent_roles("coder") == []
+def test_list_subagent_roles_for_pipeline_stages_phase_g16() -> None:
+    """G.1.6 wiring — list_subagent_roles surfaces coder + reviewer
+    opt-ins, planner + designer stay empty."""
+    assert list_subagent_roles("coder") == ["explorer", "investigator"]
+    assert list_subagent_roles("reviewer") == ["reviewer-aux"]
+    assert list_subagent_roles("planner") == []
+    assert list_subagent_roles("designer") == []
 
 
 def test_list_subagent_roles_for_unknown_main_is_empty() -> None:

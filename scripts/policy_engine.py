@@ -60,10 +60,15 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 #   the pipeline roles ad-hoc. It must NOT spawn an entire pipeline —
 #   that is reserved for user-invoked slash commands. Locked decision #4
 #   in docs/roadmap.md.
-# - Pipeline stages opt in via `pipeline.yaml subagents:` (Phase B); we
-#   keep their entries empty here so the harness denies any spawn until
-#   the pipeline runner explicitly adds the stage to this table at
-#   load-time. Empty dict entry = "agent exists, but cannot spawn".
+# - Phase G.1.6: feature-dev's `coder` and `reviewer` stages opt into
+#   read-only sub-agents:
+#     coder    → explorer (existing-callers scan), investigator (diagnostics)
+#     reviewer → reviewer-aux (per-file checklist)
+#   The pipeline runner's heuristic dispatcher (`subagentDispatcher.ts`)
+#   decides when to fire each spawn based on chunk shape; the policy
+#   table here is the authority on what's allowed.
+# - planner / designer stay empty: planning is scoped from the request
+#   and rarely needs lookups.
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "orchestrator": [
         "explorer", "investigator", "reviewer-aux",
@@ -72,8 +77,8 @@ MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     ],
     "planner":  [],
     "designer": [],
-    "coder":    [],
-    "reviewer": [],
+    "coder":    ["explorer", "investigator"],
+    "reviewer": ["reviewer-aux"],
 }
 
 

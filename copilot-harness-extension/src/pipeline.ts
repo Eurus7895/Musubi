@@ -22,10 +22,36 @@ import {
   SubagentBudgetExhausted,
 } from "./runners/pipelineSubagentBudget";
 import { runStageReviewGate, type StageGateOutcome } from "./pipelineGateUi";
+import { preSpawnAndSplice } from "./subagentDispatcherRun";
 
 // Re-export so external callers can import budget primitives + helper
 // from a single module (the pipeline runner is the public surface).
 export { StageSpawnBudget, SubagentBudgetExhausted };
+
+/**
+ * Phase G.1.6 — default per-stage spawn budget. Pipeline.yaml may
+ * override per-pipeline later (Phase G.2 schema work). For now these
+ * are the values the team agreed on while planning the gate:
+ *
+ *   - planner: 0   (plans don't need lookups; the request describes intent)
+ *   - designer: 1  (rare design-time clarification)
+ *   - coder:    5  (the stage that benefits most from spawns)
+ *   - reviewer: 3  (one reviewer-aux per file in typical small chunks)
+ *
+ * Used by pipeline.ts when constructing a StageSpawnBudget for each
+ * stage (or chunk-stage) attempt.
+ */
+export const DEFAULT_STAGE_SUBAGENT_BUDGET: Readonly<Record<string, number>> = {
+  plan:     0,
+  design:   1,
+  code:     5,
+  review:   3,
+};
+
+/** Resolve the budget cap for a stage; defaults to 0 when unknown. */
+export function defaultBudgetFor(stage: string): number {
+  return DEFAULT_STAGE_SUBAGENT_BUDGET[stage] ?? 0;
+}
 
 // ── Stage tag presets — mirrors the "push-not-pull" injection contract ────
 // The harness pushes these to each stage; we render them so the user can
@@ -999,6 +1025,28 @@ async function runChunkedCodeAndReview(
         coderCtx["existing_file_contents"] = existingFiles;
       }
 
+      // ── Phase G.1.6: pre-spawn explorer scan for existing callers ────────
+      const coderBudget = new StageSpawnBudget(
+        sessionId, `code:${chunk.chunk_id}`, codeAttempt,
+        defaultBudgetFor("code"),
+      );
+      const coderCtxAugmented = await preSpawnAndSplice({
+        client,
+        workspaceRoot,
+        parentSessionId: sessionId,
+        parentAgentName: "coder",
+        budget: coderBudget,
+        stage: "coder",
+        chunkFilePaths: chunk.file_paths,
+        chunkId: chunk.chunk_id,
+        design: (coderCtx["design"] as Record<string, unknown> | undefined) ?? null,
+        baseContext: coderCtx,
+        roots: promptRoots,
+        log: logLine,
+        token,
+        stream,
+      });
+
       emitStageStart(
         stream, `coder · ${chunk.chunk_id}`, codeAttempt, MAX_CODE_ATTEMPTS,
         STAGE_TAGS["code"] ?? {},
@@ -1010,7 +1058,7 @@ async function runChunkedCodeAndReview(
         const r = await runAgentWithValidationRetry(
           client, promptRoots, "coder",
           loadAgentPrompt(promptRoots, meta.pipelineName, "coder"),
-          coderCtx, sessionId, "code", codeAttempt,
+          coderCtxAugmented, sessionId, "code", codeAttempt,
           workspaceRoot, stream, token, onChange, chunk.chunk_id,
         );
         coderOutput = r.output;
@@ -1033,6 +1081,29 @@ async function runChunkedCodeAndReview(
       const reviewerCtx = await readAgentContext(
         client, sessionId, "reviewer", ["code"], chunk.chunk_id,
       );
+
+      // ── Phase G.1.6: pre-spawn reviewer-aux per file when chunk has > 2 ────
+      const reviewerBudget = new StageSpawnBudget(
+        sessionId, `review:${chunk.chunk_id}`, codeAttempt,
+        defaultBudgetFor("review"),
+      );
+      const reviewerCtxAugmented = await preSpawnAndSplice({
+        client,
+        workspaceRoot,
+        parentSessionId: sessionId,
+        parentAgentName: "reviewer",
+        budget: reviewerBudget,
+        stage: "reviewer",
+        chunkFilePaths: chunk.file_paths,
+        chunkId: chunk.chunk_id,
+        design: null,  // reviewer firewall: no design access
+        baseContext: reviewerCtx,
+        roots: promptRoots,
+        log: logLine,
+        token,
+        stream,
+      });
+
       emitStageStart(
         stream, `reviewer · ${chunk.chunk_id}`, codeAttempt, MAX_CODE_ATTEMPTS,
         STAGE_TAGS["review"] ?? {},
@@ -1044,7 +1115,7 @@ async function runChunkedCodeAndReview(
         const r = await runAgentWithValidationRetry(
           client, promptRoots, "reviewer",
           loadAgentPrompt(promptRoots, meta.pipelineName, "reviewer"),
-          reviewerCtx, sessionId, "review", codeAttempt,
+          reviewerCtxAugmented, sessionId, "review", codeAttempt,
           workspaceRoot, stream, token, onChange, chunk.chunk_id,
         );
         reviewOutput = r.output as ReviewOutput;
@@ -1183,6 +1254,26 @@ async function runChunkedCodeAndReview(
 // definition on every retry.
 
 const _chunkFilePathsCache = new Map<string, ReadonlyArray<string>>();
+
+/**
+ * Phase G.1.6 — extract every `modules[].file` from a design.
+ * Used as the pre-spawn dispatcher's chunkFilePaths input on the
+ * non-chunked path; chunked path passes `chunk.file_paths` directly.
+ * Returns `null` when the design isn't shaped right (no modules array)
+ * so the caller can fall through to "no pre-spawns" cleanly.
+ */
+function filePathsFromDesign(
+  design: Record<string, unknown> | null,
+): ReadonlyArray<string> | null {
+  if (!design || !Array.isArray(design.modules)) { return null; }
+  const out: string[] = [];
+  for (const m of design.modules as unknown[]) {
+    if (!m || typeof m !== "object") { continue; }
+    const f = (m as { file?: unknown }).file;
+    if (typeof f === "string" && f.length > 0) { out.push(f); }
+  }
+  return out;
+}
 
 function filterDesignForChunkPaths(
   design: Record<string, unknown>,
@@ -1459,12 +1550,42 @@ export async function runPipeline(
     }
 
     const attempt = statusData.stages[agent.writeStage]?.attempt ?? 1;
+
+    // ── Phase G.1.6: heuristic pre-spawns (coder / reviewer only) ────────────
+    let stageContext = context;
+    if (agent.name === "coder" || agent.name === "reviewer") {
+      const designForDispatcher =
+        agent.name === "coder"
+          ? ((context["design"] as Record<string, unknown> | undefined) ?? null)
+          : null;  // reviewer firewall — no design access
+      const filePaths = filePathsFromDesign(designForDispatcher) ?? [];
+      const stageBudget = new StageSpawnBudget(
+        sessionId, agent.writeStage, attempt, defaultBudgetFor(agent.writeStage),
+      );
+      stageContext = await preSpawnAndSplice({
+        client,
+        workspaceRoot,
+        parentSessionId: sessionId,
+        parentAgentName: agent.name,
+        budget: stageBudget,
+        stage: agent.name,
+        chunkFilePaths: filePaths,
+        chunkId: null,
+        design: designForDispatcher,
+        baseContext: context,
+        roots: promptRoots,
+        log: logLine,
+        token,
+        stream,
+      });
+    }
+
     emitStageStart(stream, agent.name, attempt, MAX_CODE_ATTEMPTS, STAGE_TAGS[agent.writeStage] ?? {});
     onChange?.();
     const stageT0 = Date.now();
     const { output: agentOutput, finalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
-      context, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
+      stageContext, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
     );
     stageOutputs[agent.writeStage] = agentOutput;
     materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, finalAttempt, agentOutput);
