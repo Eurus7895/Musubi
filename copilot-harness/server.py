@@ -156,17 +156,22 @@ def harness_get_active_session() -> str:
 
 
 @mcp.tool()
-def harness_new_session(request: str) -> str:
+def harness_new_session(request: str, pipeline_name: str = "feature-dev") -> str:
     """Create a new pipeline session and lock agent versions.
 
     Call this once at the start of every pipeline run.
     Returns session_id — pass it to every subsequent harness tool call.
+
+    `pipeline_name` (Phase G.3) tags the new `pipeline_runs` observability
+    row so per-pipeline aggregates stay separable. Default 'feature-dev'
+    keeps pre-G.3 callers working unchanged.
     """
-    session_id = state.create_session(request)
+    session_id = state.create_session(request, pipeline_name=pipeline_name)
     versions = state.lock_agent_versions(session_id)
     return json.dumps({
         "session_id": session_id,
         "locked_agent_versions": versions,
+        "pipeline_name": pipeline_name,
     })
 
 
@@ -651,6 +656,152 @@ def harness_get_correction_rules(pipeline_name: str) -> str:
             if isinstance(on_categories, list) else [],
     }
     return json.dumps({"status": "ok", "rules": rules, "source": str(candidate)})
+
+
+# ── Phase G.3: observability primitives ───────────────────────────────────
+
+@mcp.tool()
+def harness_record_stage_metric(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    started_at: float,
+    ended_at: float,
+    tokens_in_estimate: int,
+    tokens_out_estimate: int,
+    lm_ms: int,
+    chunk_id: str | None = None,
+    tool_count: int = 0,
+    tool_failures: int = 0,
+) -> str:
+    """Append one row to `stage_metrics` after a stage's LM round-trip.
+
+    Called by the TS runner immediately after `vscode.lm.sendRequest`
+    completes — the wall-clock ms + token estimates are already on hand
+    there. Token counts are estimates (chars/4 heuristic from
+    `runners/orchestratorCore.estimateTokens`), not billed amounts.
+
+    Failures are non-fatal — observability writes must never abort a
+    pipeline run.
+    """
+    try:
+        _db.insert_stage_metric(
+            session_id, stage, attempt, started_at, ended_at,
+            tokens_in_estimate, tokens_out_estimate, lm_ms,
+            chunk_id=chunk_id, tool_count=tool_count, tool_failures=tool_failures,
+        )
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok"})
+
+
+@mcp.tool()
+def harness_finalize_pipeline_run(
+    session_id: str,
+    final_status: str,
+    escalated: bool = False,
+    chunked: bool = False,
+    chunk_count: int = 0,
+) -> str:
+    """Close out the `pipeline_runs` row for `session_id` when the
+    runner finishes.
+
+    Auto-derives:
+      - `total_tokens_estimate` from accumulated `stage_metrics` rows
+      - `correction_attempts` from the highest 'code' stage attempt
+        per chunk in `stage_outputs` (chunked runs sum across chunks)
+
+    `final_status` ∈ {'success', 'escalated', 'aborted'}. Idempotent
+    via UPDATE — calling twice on a retry simply overwrites with the
+    latest known state.
+    """
+    if final_status not in {"success", "escalated", "aborted"}:
+        return json.dumps({
+            "status": "error",
+            "error": f"final_status must be one of success|escalated|aborted, got {final_status!r}",
+        })
+    import time as _time
+    try:
+        total_tokens = _db.total_tokens_for_session(session_id)
+        correction_attempts = _db.derive_correction_attempts(session_id)
+        _db.finalize_pipeline_run(
+            session_id=session_id,
+            ended_at=_time.time(),
+            final_status=final_status,
+            total_tokens_estimate=total_tokens,
+            correction_attempts=correction_attempts,
+            escalated=escalated,
+            chunked=chunked,
+            chunk_count=chunk_count,
+        )
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({
+        "status": "ok",
+        "total_tokens_estimate": total_tokens,
+        "correction_attempts": correction_attempts,
+    })
+
+
+@mcp.tool()
+def harness_query_pipeline_runs(
+    pipeline_name: str | None = None,
+    limit: int = 50,
+    since_ts: float | None = None,
+) -> str:
+    """Read `pipeline_runs` rows, newest first. Optional filters:
+    pipeline_name (exact match), since_ts (started_at >= ts).
+
+    Includes in-flight rows (ended_at IS NULL) so a UI can show
+    "running now" alongside historical runs. `harness_pipeline_stats`
+    excludes them from aggregates.
+    """
+    try:
+        rows = _db.query_pipeline_runs(
+            pipeline_name=pipeline_name, limit=limit, since_ts=since_ts,
+        )
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "rows": rows})
+
+
+@mcp.tool()
+def harness_query_stage_metrics(session_id: str) -> str:
+    """Per-session breakdown — every stage_metrics row for this session,
+    chronological. Useful for debugging "why did this run cost so many
+    tokens" by walking the per-stage estimates."""
+    try:
+        rows = _db.query_stage_metrics(session_id)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "session_id": session_id, "rows": rows})
+
+
+@mcp.tool()
+def harness_pipeline_stats(
+    pipeline_name: str,
+    since_ts: float | None = None,
+) -> str:
+    """Aggregate stats over TERMINAL `pipeline_runs` for `pipeline_name`.
+
+    Returns success-rate, escalate-rate, median + p90 token estimates,
+    median wall-clock ms, median correction attempts, percentage of
+    chunked runs. Empty input ⇒ a zero-valued summary so UI callers
+    don't crash on "haven't run anything yet."
+    """
+    try:
+        from validation import observability
+        rows = _db.query_pipeline_runs_for_stats(
+            pipeline_name=pipeline_name, since_ts=since_ts,
+        )
+        stats = observability.aggregate_pipeline_stats(rows)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({
+        "status": "ok",
+        "pipeline_name": pipeline_name,
+        **stats,
+    })
 
 
 # ── Phase G.2: schema-migration audit query ───────────────────────────────

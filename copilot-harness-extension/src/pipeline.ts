@@ -484,6 +484,10 @@ interface AgentObs {
   sessionId: string;
   stage: string;
   attempt: number;
+  // G.3: when set, runAgentLM writes a stage_metrics row after each
+  // sendRequest. Fire-and-forget; failures don't abort the pipeline.
+  client?: McpClient;
+  chunkId?: string;
 }
 
 async function runAgentLM(
@@ -550,6 +554,31 @@ async function runAgentLM(
   if (obs) {
     const dumped = dumpRawResponse(obs.workspaceRoot, obs.sessionId, obs.stage, obs.attempt, text);
     if (dumped) { logLine(`  raw response dumped → ${dumped}`); }
+
+    // G.3: append a stage_metrics row. Fire-and-forget — observability
+    // writes must never block / abort a pipeline run. Token counts are
+    // estimates (chars/4 heuristic mirrored from orchestratorCore).
+    if (obs.client) {
+      const startedAt = t0 / 1000;
+      const endedAt = Date.now() / 1000;
+      const tokensIn = Math.max(1, Math.floor(promptChars / 4));
+      const tokensOut = Math.max(0, Math.floor(text.length / 4));
+      const args: Record<string, unknown> = {
+        session_id: obs.sessionId,
+        stage: obs.stage,
+        attempt: obs.attempt,
+        started_at: startedAt,
+        ended_at: endedAt,
+        tokens_in_estimate: tokensIn,
+        tokens_out_estimate: tokensOut,
+        lm_ms: elapsed,
+      };
+      if (obs.chunkId) { args.chunk_id = obs.chunkId; }
+      obs.client.callTool("harness_record_stage_metric", args).catch(err => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logLine(`  (stage_metric write failed: ${msg})`);
+      });
+    }
   }
 
   return extractJson(text);
@@ -604,7 +633,7 @@ async function runAgentWithValidationRetry(
     }
     const output = await runAgentLM(
       roots, agentName, agentPrompt, context, token,
-      { workspaceRoot, sessionId, stage, attempt },
+      { workspaceRoot, sessionId, stage, attempt, client, chunkId },
     );
     const result = await writeStage(client, sessionId, stage, agentName, output, chunkId);
     if (result.status === "stored") {
@@ -1265,6 +1294,45 @@ async function runChunkedCodeAndReview(
   return { success: true, sessionId, stages: stageOutputs, escalated: false };
 }
 
+// ── Phase G.3: pipeline_runs finalizer ──────────────────────────────
+
+/**
+ * Close out the pipeline_runs row for a session. Called from every
+ * runPipeline return path (success, escalation, abort) and from the
+ * chunked branch's terminal returns. Fire-and-forget — observability
+ * write failures must never abort a pipeline run.
+ *
+ * `final_status` derivation:
+ *   - escalated=true ⇒ "escalated"
+ *   - success=true   ⇒ "success"
+ *   - else           ⇒ "aborted"
+ */
+async function emitFinalize(
+  client: McpClient,
+  sessionId: string,
+  result: { escalated: boolean; success: boolean },
+  chunkCount: number,
+): Promise<void> {
+  const finalStatus =
+    result.escalated ? "escalated" :
+    result.success   ? "success"   :
+    "aborted";
+  try {
+    // correction_attempts is auto-derived by the harness from
+    // stage_outputs; the runner doesn't need to track it.
+    await callHarness(client, "harness_finalize_pipeline_run", {
+      session_id: sessionId,
+      final_status: finalStatus,
+      escalated: result.escalated,
+      chunked: chunkCount > 1,
+      chunk_count: chunkCount,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logLine(`(finalize_pipeline_run failed: ${msg})`);
+  }
+}
+
 // ── Phase G.2: correction-rule helpers ──────────────────────────────
 
 /**
@@ -1539,12 +1607,22 @@ export async function runPipeline(
   // Resume is the job of /continue (runStep without a request) — folding crash
   // recovery into runPipeline silently inherited stale stages from the prior
   // run and skipped planner/designer with "already complete".
-  const session = (await callHarness(client, "harness_new_session", { request })) as { session_id: string };
+  const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
+  // G.3: pass pipeline_name so harness_new_session opens a pipeline_runs
+  // row tagged with the right pipeline. Defaults to feature-dev on the
+  // harness side, but be explicit here so future routes (code-review,
+  // refactor, etc.) appear correctly in stats aggregates.
+  const session = (await callHarness(client, "harness_new_session", {
+    request, pipeline_name: meta.pipelineName,
+  })) as { session_id: string };
   const sessionId = session.session_id;
 
   const stageOutputs: Record<string, unknown> = {};
-  const meta = pipelineMeta ?? { route: "/feature-dev", pipelineName: "feature-dev", level: 2 };
   const pipelineT0 = Date.now();
+  // G.3: chunkCount is 0 unless the chunked branch fires (then = chunks.length).
+  // `correctionAttempts` is derived from stage_outputs by the harness at
+  // finalize time, so the runner doesn't track it.
+  let chunkCount = 0;
 
   // Pipeline header — one line so the user knows what's running.
   stream.markdown(
@@ -1555,6 +1633,11 @@ export async function runPipeline(
 
   // Notify the Tasks view so the new session appears under "Active session".
   onChange?.();
+
+  // G.3: wrap the body in an IIFE so every existing `return X` short-
+  // circuits to the outer finalize call below. chunkCount is captured
+  // by closure and set inside the chunked branch before its return.
+  const result: PipelineResult = await (async (): Promise<PipelineResult> => {
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
   //
@@ -1590,6 +1673,8 @@ export async function runPipeline(
       });
       const chunkList = (chunksRaw as { chunks?: ChunkInfo[] }).chunks ?? [];
       if (chunkList.length > 0) {
+        // G.3: stash chunk count for the finalize call below.
+        chunkCount = chunkList.length;
         return await runChunkedCodeAndReview({
           client, workspaceRoot, promptRoots, meta,
           sessionId, chunks: chunkList, stageOutputs,
@@ -1746,10 +1831,16 @@ export async function runPipeline(
     }
   }
 
-  // Pipeline footer — total elapsed. Caller (extension.ts) emits the
-  // pass/fail summary line + action buttons.
-  stream.markdown(`\n*total: ${fmtSeconds(Date.now() - pipelineT0)}*\n`);
-  return { success: true, sessionId, stages: stageOutputs, escalated: false };
+    // Pipeline footer — total elapsed. Caller (extension.ts) emits the
+    // pass/fail summary line + action buttons.
+    stream.markdown(`\n*total: ${fmtSeconds(Date.now() - pipelineT0)}*\n`);
+    return { success: true, sessionId, stages: stageOutputs, escalated: false };
+  })();
+
+  // G.3: close out the pipeline_runs row regardless of which return
+  // path the body took. fire-and-forget on the harness side.
+  await emitFinalize(client, sessionId, result, chunkCount);
+  return result;
 }
 
 // ── Single-step entry point ───────────────────────────────────────────────────
