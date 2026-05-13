@@ -23,7 +23,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
+# PyYAML is loaded lazily inside `_load_pipeline_yaml` (same pattern as
+# scripts/policy_engine.py). Older PyInstaller bundles of the harness were
+# built before composer.py existed and may not include PyYAML — a top-level
+# `import yaml` here would crash the server at boot in those bundles. With
+# the lazy import + soft-fail, the harness still boots; `active_stages` and
+# friends fall back to the canonical feature-dev defaults until a fresh
+# bundle ships with PyYAML (see copilot-harness/copilot-harness.spec).
 
 # Canonical feature-dev defaults — used as a fallback when a pipeline.yaml
 # doesn't declare its `stage:` fields explicitly. New pipelines should always
@@ -70,6 +76,9 @@ def _load_pipeline_yaml(pipeline_name: str) -> dict[str, Any]:
     if cached and cached[0] == mtime:
         return cached[1]
     try:
+        # Lazy import — see module docstring. ImportError here means PyYAML
+        # isn't in the bundle; behave as if the file was unparseable.
+        import yaml  # type: ignore[import-untyped]
         with path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
     except Exception:

@@ -121,6 +121,32 @@ def test_malformed_yaml_returns_empty(
     assert composer.injected_skill_ids("broken", "design", "coder") == []
 
 
+def test_missing_yaml_module_falls_back_to_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: older PyInstaller bundles of the harness don't include
+    PyYAML in their venv. composer.py was rewritten to import yaml lazily
+    inside `_load_pipeline_yaml` and soft-fail on ImportError so the server
+    still boots — `active_stages` and friends fall back to the canonical
+    feature-dev defaults. Without this guard the harness binary fails to
+    activate with `ModuleNotFoundError: No module named 'yaml'`.
+    """
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    composer.reset_cache()
+    # Importing composer is unaffected (lazy import lives inside the loader).
+    # active_stages must return the canonical 4-stage list, not crash.
+    assert composer.active_stages("feature-dev") == ["plan", "design", "code", "review"]
+    # Same for the other helpers — they all funnel through _load_pipeline_yaml
+    # which now soft-fails when yaml is unimportable.
+    assert composer.output_stage_for_agent("feature-dev", "coder") == "code"
+    assert composer.evaluator_input_stage("feature-dev") == "code"
+    # injected_skill_ids — without yaml the loader returns {}, so no skill
+    # is injected. The harness's overall behaviour degrades to "no per-
+    # pipeline customisation" but the server keeps running.
+    assert composer.injected_skill_ids("feature-dev", "design", "coder") == []
+
+
 # ── harness_get_injected_skills MCP tool ─────────────────────────────────────
 
 def test_mcp_tool_feature_dev_designer() -> None:
