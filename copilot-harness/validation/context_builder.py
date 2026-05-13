@@ -69,6 +69,15 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # allowlists already cover them — see MAIN_SUBAGENT_ALLOWLIST in
     # scripts/policy_engine.py.
     "orchestrator": {"orchestrator-routing"},
+    # Phase H.1 — /code-review pipeline roles.
+    # scoper        triages files; needs the scope-detection skill only.
+    # finder        cross-cutting pass; needs per-file-review (its checklist)
+    #               and code-review (for severity rubric + categories).
+    # synthesizer   aggregator; reads code-review for the rubric, per-file-
+    #               review for context on what reviewer-aux was told to do.
+    "scoper":      {"pr-scope-detection"},
+    "finder":      {"per-file-review", "code-review"},
+    "synthesizer": {"code-review", "per-file-review"},
 }
 
 
@@ -195,6 +204,16 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     # and run in their own session; the orchestrator must not peek at
     # in-flight or completed pipeline state via harness_read_stage.
     "orchestrator":  set(),
+    # Phase H.1 — /code-review pipeline roles.
+    # scoper        reads the raw request (diff). No prior stage exists.
+    # finder        reads scope (and request) for cross-cutting analysis.
+    # synthesizer   evaluator: locked to findings only. Reviewer-aux outputs
+    #               reach it via the runner's sub_agent_outputs injection,
+    #               not via stage reads — same evaluator-firewall pattern
+    #               as feature-dev's reviewer.
+    "scoper":       set(),
+    "finder":       {"scope"},
+    "synthesizer":  {"findings"},
 }
 
 

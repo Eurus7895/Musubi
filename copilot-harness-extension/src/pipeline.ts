@@ -10,6 +10,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import {
+  extractFileDiff, isResolveError, resolveCodeReviewInput,
+} from "./codeReviewInput";
+export { extractFileDiff, resolveCodeReviewInput } from "./codeReviewInput";
+export type {
+  CodeReviewInput, CodeReviewResolveError, CodeReviewResolveResult,
+} from "./codeReviewInput";
 import { McpClient } from "./mcpClient";
 import { selectModelForAgent } from "./modelSelector";
 import {
@@ -52,6 +59,12 @@ export const DEFAULT_STAGE_SUBAGENT_BUDGET: Readonly<Record<string, number>> = {
   design:   1,
   code:     5,
   review:   3,
+  // Phase H.1 — /code-review pipeline. The synthesis stage fans out one
+  // reviewer-aux per high/medium-priority file from scope. Cap at 20
+  // so a runaway scope (e.g. 100-file refactor) doesn't burn the LM.
+  scope:     0,
+  findings:  0,
+  synthesis: 20,
 };
 
 /** Resolve the budget cap for a stage; defaults to 0 when unknown. */
@@ -75,6 +88,10 @@ const STAGE_TAGS: Record<string, StageTags> = {
   design: { skill: "api-design", schema: "design.json" },
   code:   { skill: "python", policy: "Read·Write·Edit·Bash" },
   review: { skill: "code-review", firewall: "code only" },
+  // Phase H.1 — /code-review pipeline.
+  scope:     { skill: "pr-scope-detection", policy: "Read·Grep·Glob" },
+  findings:  { skill: "per-file-review", policy: "Read·Grep·Glob" },
+  synthesis: { skill: "code-review", firewall: "findings only" },
 };
 function tagsForRetry(): StageTags {
   return { skill: "python", firewall: "fix_instructions only" };
@@ -276,6 +293,35 @@ const AGENT_OUTPUT_HINTS: Record<string, string> = {
     '             (Phase G.2: category is REQUIRED. Used by correction.escalate_on_categories',
     '              to halt retries on critical findings in specific categories.)',
     '  "escalate_reason" — string describing the escalation or wrong_plan reason, or null',
+  ].join("\n"),
+  // Phase H.1 — /code-review pipeline agents.
+  scoper: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"     — string: one-line overview of what this PR/branch changes',
+    '  "files"       — array of { path, kind, priority, size_lines, reason }',
+    '                  kind ∈ "source" | "test" | "config" | "docs" | "generated" | "lockfile"',
+    '                  priority ∈ "high" | "medium" | "low" | "skip"',
+    '  "scope_notes" — array of strings (cross-cutting concerns)',
+  ].join("\n"),
+  finder: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "summary"               — string: one-line overview of cross-cutting concerns',
+    '  "raw_findings"          — array of { severity, category, files, description, evidence }',
+    '                            severity ∈ "critical" | "high" | "medium" | "low"',
+    '                            category ∈ "architecture" | "contract" | "intent" | "risk" | "other"',
+    '                            files: array of paths the finding touches (1+)',
+    '  "per_file_priorities"   — array of { path, ask_reviewer_aux_to_focus_on } (hint to fan-out)',
+  ].join("\n"),
+  synthesizer: [
+    'Produce a JSON object with exactly these top-level keys:',
+    '  "status"   — "pass" | "fail" | "escalate"',
+    '              pass: no critical/high issues, advisory only',
+    '              fail: critical/high present, surfaced to user inline (no retry)',
+    '              escalate: sub-agent outputs disagree and synthesis cannot reconcile',
+    '  "summary"  — string: one-paragraph overall assessment',
+    '  "report"   — { issues: [{severity, category, file, line, description, fix_suggestion, source}],',
+    '                stats: {files_reviewed, files_skipped, critical_count, high_count, medium_count, low_count} }',
+    '                source ∈ "finder" | "reviewer-aux" | "both"',
   ].join("\n"),
 };
 
@@ -833,13 +879,131 @@ function reviewToMarkdown(o: Record<string, unknown>, sessionId: string, attempt
   return lines.join("\n");
 }
 
+// ── /code-review pipeline renderers (Phase H.1) ──────────────────────────────
+
+function scopeToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const summary = _str(o["summary"], "(no summary)");
+  const files = _list(o["files"]);
+  const notes = _list(o["scope_notes"]);
+  const lines: string[] = [
+    `# Scope`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    summary,
+    ``,
+    `## Files (${files.length})`,
+    ``,
+    `| Priority | Path | Kind | Lines | Reason |`,
+    `|----------|------|------|-------|--------|`,
+  ];
+  for (const f of files) {
+    const r = _obj(f);
+    lines.push(
+      `| ${_str(r["priority"], "?")} ` +
+      `| \`${_str(r["path"], "")}\` ` +
+      `| ${_str(r["kind"], "?")} ` +
+      `| ${_str(r["size_lines"], "?")} ` +
+      `| ${_str(r["reason"], "")} |`,
+    );
+  }
+  if (notes.length > 0) {
+    lines.push(``, `## Scope notes`, ``);
+    for (const n of notes) { lines.push(`- ${_str(n, "")}`); }
+  }
+  return lines.join("\n");
+}
+
+function findingsToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const summary = _str(o["summary"], "(no summary)");
+  const raw = _list(o["raw_findings"]);
+  const focuses = _list(o["per_file_priorities"]);
+  const lines: string[] = [
+    `# Findings (cross-cutting)`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    summary,
+    ``,
+    `## Raw findings (${raw.length})`,
+    ``,
+  ];
+  for (const f of raw) {
+    const r = _obj(f);
+    const files = _list(r["files"]).map(p => `\`${_str(p, "")}\``).join(", ");
+    lines.push(
+      `- **${_str(r["severity"], "?")}** [${_str(r["category"], "?")}] ${files}: ` +
+      _str(r["description"], ""),
+    );
+    const evidence = _str(r["evidence"], "");
+    if (evidence) { lines.push(`  > ${evidence}`); }
+  }
+  if (focuses.length > 0) {
+    lines.push(``, `## Per-file reviewer-aux focuses`, ``);
+    for (const f of focuses) {
+      const r = _obj(f);
+      lines.push(`- \`${_str(r["path"], "")}\` — ${_str(r["ask_reviewer_aux_to_focus_on"], "")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function synthesisToMarkdown(o: Record<string, unknown>, sessionId: string, attempt: number): string {
+  const statusIcon: Record<string, string> = { pass: "✅", fail: "❌", escalate: "🚨" };
+  const status = _str(o["status"], "unknown");
+  const summary = _str(o["summary"], "(no summary)");
+  const report = _obj(o["report"]);
+  const issues = _list(report["issues"]);
+  const stats = _obj(report["stats"]);
+  const lines: string[] = [
+    `# Code Review`,
+    `> ${sessionId} | attempt ${attempt}`,
+    ``,
+    `**Status:** ${statusIcon[status] ?? "❓"} ${status}`,
+    ``,
+    summary,
+    ``,
+    `## Stats`,
+    ``,
+    `- files reviewed: ${_str(stats["files_reviewed"], "?")} ` +
+    `(skipped: ${_str(stats["files_skipped"], "?")})`,
+    `- critical: ${_str(stats["critical_count"], "0")} · ` +
+    `high: ${_str(stats["high_count"], "0")} · ` +
+    `medium: ${_str(stats["medium_count"], "0")} · ` +
+    `low: ${_str(stats["low_count"], "0")}`,
+    ``,
+    `## Issues (${issues.length})`,
+    ``,
+    `| Severity | Category | File:Line | Description | Fix |`,
+    `|----------|----------|-----------|-------------|-----|`,
+  ];
+  for (const i of issues) {
+    const r = _obj(i);
+    const file = _str(r["file"], "");
+    const line = _str(r["line"], "");
+    const loc = file ? (line && line !== "0" ? `\`${file}:${line}\`` : `\`${file}\``) : "—";
+    lines.push(
+      `| ${_str(r["severity"], "?")} ` +
+      `| ${_str(r["category"], "?")} ` +
+      `| ${loc} ` +
+      `| ${_str(r["description"], "")} ` +
+      `| ${_str(r["fix_suggestion"], "")} |`,
+    );
+  }
+  return lines.join("\n");
+}
+
 const _STAGE_RENDERER: Record<
   string,
   (o: Record<string, unknown>, sid: string, attempt: number) => string
 > = {
-  plan:   planToMarkdown,
-  design: designToMarkdown,
-  code:   codeToMarkdown,
+  plan:      planToMarkdown,
+  design:    designToMarkdown,
+  code:      codeToMarkdown,
+  // Phase H.1 — /code-review pipeline.
+  scope:     scopeToMarkdown,
+  findings:  findingsToMarkdown,
+  synthesis: synthesisToMarkdown,
+  // feature-dev's review stage (kept after the H.1 inserts to keep
+  // the legacy entry adjacent to its renderer).
   review: reviewToMarkdown,
 };
 
@@ -1585,6 +1749,257 @@ function formatStageOutput(stage: string, o: Record<string, unknown>): string {
   }
 }
 
+// ── /code-review pipeline runner (Phase H.1) ─────────────────────────────────
+//
+// Bespoke runner for the /code-review pipeline. Parallel to the feature-dev
+// body inside runPipeline (B′ from the design discussion). Reuses every
+// shared helper (callHarness, readAgentContext, runAgentWithValidationRetry,
+// spawnSubAgent, materializeStageOutput, emitStage*) but the orchestration
+// is pipeline-specific: scope → findings → reviewer-aux fan-out → synthesis.
+//
+// Why not generic: feature-dev's runner has stage-specific transforms
+// (filterDesignForChunkPaths, chunked code/review execution, materializeCoderFiles
+// writing files to disk) that don't map onto code-review's flow. A generic
+// yaml-interpreter would either re-encode all of that, or push it down into
+// per-pipeline transform helpers — which is what runCodeReviewBody already
+// IS, just inline instead of registry-indexed. With N=2 pipelines the
+// inline form is more readable.
+
+interface CodeReviewBodyOpts {
+  client: McpClient;
+  request: string;
+  workspaceRoot: string;
+  promptRoots: string[];
+  stream: vscode.ChatResponseStream;
+  token: vscode.CancellationToken;
+  sessionId: string;
+  onChange?: () => void;
+  route: string;
+}
+
+async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResult> {
+  const { client, request, workspaceRoot, promptRoots, stream, token, sessionId, onChange } = opts;
+  const stageOutputs: Record<string, unknown> = {};
+
+  // ── Stage 0: resolve input → diff ─────────────────────────────────────────
+  // The slash command passes the raw "branch" or "#PR" string as request.
+  // Resolve to a unified diff before any agent sees it.
+  const resolved = resolveCodeReviewInput(request, workspaceRoot);
+  if (isResolveError(resolved)) {
+    stream.markdown(`\n**Error:** ${resolved.error}\n`);
+    if (resolved.hint) { stream.markdown(`> ${resolved.hint}\n`); }
+    return { success: false, sessionId, stages: stageOutputs, escalated: false };
+  }
+  if (resolved.empty) {
+    stream.markdown(
+      `\n**No diff** between \`${resolved.base}\` and \`${resolved.ref}\` — nothing to review.\n`,
+    );
+    return { success: true, sessionId, stages: stageOutputs, escalated: false };
+  }
+  stream.markdown(
+    `\n📄 Resolved \`${resolved.ref}\` against \`${resolved.base}\` ` +
+    `— ${resolved.diff.split("\n").length} diff lines\n`,
+  );
+  const diffText = resolved.diff;
+
+  // ── Stage 1: scope ────────────────────────────────────────────────────────
+  // scoper has no prior stage, so harness_read_stage's auto-injection chain
+  // doesn't fire. Pre-load the pr-scope-detection skill manually and supply
+  // the request (the diff) via the runner-constructed context.
+  emitStageStart(stream, "scoper", 1, MAX_CODE_ATTEMPTS, STAGE_TAGS["scope"] ?? {});
+  const scoperPrompt = loadAgentPrompt(promptRoots, "code-review", "scoper");
+  const scoperCtx: Record<string, unknown> = {
+    request: { diff: diffText, ref: resolved.ref, base: resolved.base },
+  };
+  try {
+    const skill = (await callHarness(client, "harness_get_skill", {
+      skill_id: "pr-scope-detection", agent_name: "scoper",
+    })) as { content?: string; error?: string };
+    if (skill && typeof skill.content === "string") {
+      scoperCtx["injected_skills"] = { "pr-scope-detection": skill.content };
+    }
+  } catch {
+    // soft-fail — agent prompt summarises the procedure inline
+  }
+  const scopeT0 = Date.now();
+  const { output: scope, finalAttempt: scopeAttempt } = await runAgentWithValidationRetry(
+    client, promptRoots, "scoper", scoperPrompt, scoperCtx, sessionId, "scope",
+    1, workspaceRoot, stream, token, onChange,
+  );
+  stageOutputs["scope"] = scope;
+  emitStageComplete(stream, "scoper", Date.now() - scopeT0, summarizeStageOutput("scope", scope));
+  emitStageOutputDetails(stream, "scope", scope);
+  materializeStageOutput(workspaceRoot, sessionId, "scope", scopeAttempt, scope);
+  emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "scope", scopeAttempt);
+
+  if (token.isCancellationRequested) {
+    return { success: false, sessionId, stages: stageOutputs, escalated: false };
+  }
+
+  // ── Stage 2: findings ─────────────────────────────────────────────────────
+  // finder reads `scope` via harness_read_stage; the per-file-review skill
+  // is auto-injected on that read by composer.injected_skill_ids. The
+  // runner also passes the raw diff so the finder can quote evidence lines.
+  emitStageStart(stream, "finder", 1, MAX_CODE_ATTEMPTS, STAGE_TAGS["findings"] ?? {});
+  const finderPrompt = loadAgentPrompt(promptRoots, "code-review", "finder");
+  const finderCtx = await readAgentContext(client, sessionId, "finder", ["scope"]);
+  finderCtx["request"] = { diff: diffText, ref: resolved.ref, base: resolved.base };
+  const findT0 = Date.now();
+  const { output: findings, finalAttempt: findingsAttempt } =
+    await runAgentWithValidationRetry(
+      client, promptRoots, "finder", finderPrompt, finderCtx, sessionId, "findings",
+      1, workspaceRoot, stream, token, onChange,
+    );
+  stageOutputs["findings"] = findings;
+  emitStageComplete(stream, "finder", Date.now() - findT0, summarizeStageOutput("findings", findings));
+  emitStageOutputDetails(stream, "findings", findings);
+  materializeStageOutput(workspaceRoot, sessionId, "findings", findingsAttempt, findings);
+
+  if (token.isCancellationRequested) {
+    return { success: false, sessionId, stages: stageOutputs, escalated: false };
+  }
+
+  // ── Fan-out: reviewer-aux per high/medium-priority file ───────────────────
+  // The scoper's `files` array is the source of truth for what to review.
+  // The finder's `per_file_priorities` maps onto file paths to give each
+  // reviewer-aux a focus hint. Fan-out is bounded by
+  // DEFAULT_STAGE_SUBAGENT_BUDGET.synthesis so a 100-file PR doesn't burn
+  // the LM.
+  const scopeFiles = _list((scope as Record<string, unknown> | null)?.["files"]);
+  const focuses = _list(
+    (findings as Record<string, unknown> | null)?.["per_file_priorities"],
+  );
+  const focusMap = new Map<string, string>();
+  for (const f of focuses) {
+    const r = _obj(f);
+    const p = _str(r["path"], "");
+    const focus = _str(r["ask_reviewer_aux_to_focus_on"], "");
+    if (p && focus) { focusMap.set(p, focus); }
+  }
+
+  const filesToReview = scopeFiles
+    .map(f => _obj(f))
+    .filter(f => {
+      const pri = _str(f["priority"], "");
+      return pri === "high" || pri === "medium";
+    });
+
+  type AuxOutput = {
+    role: "reviewer-aux"; file: string;
+    summary: string | null; ok: boolean; reason?: string;
+  };
+  const subAgentOutputs: AuxOutput[] = [];
+
+  if (filesToReview.length > 0) {
+    const fanoutBudget = new StageSpawnBudget(
+      sessionId, "synthesis", 1, defaultBudgetFor("synthesis"),
+    );
+    stream.markdown(
+      `\n🔍 **Reviewer-aux fan-out:** spawning up to ${fanoutBudget.limit} ` +
+      `for ${filesToReview.length} high/medium-priority file(s)\n`,
+    );
+    for (const f of filesToReview) {
+      if (token.isCancellationRequested) { break; }
+      if (fanoutBudget.exhausted) {
+        stream.markdown(
+          `\n  ⚠️ fan-out budget (${fanoutBudget.limit}) exhausted, ` +
+          `${filesToReview.length - subAgentOutputs.length} file(s) not reviewed\n`,
+        );
+        break;
+      }
+      const filePath = _str(f["path"], "");
+      if (!filePath) { continue; }
+      const priority = _str(f["priority"], "");
+      const focus = focusMap.get(filePath) ?? "general per-file review";
+      const fileDiff = extractFileDiff(diffText, filePath);
+      const brief = [
+        `Review the file '${filePath}' (priority: ${priority}).`,
+        `Focus: ${focus}.`,
+        `Apply the per-file-review skill checklist.`,
+        ``,
+        `File diff:`,
+        '```diff',
+        fileDiff || "(no diff section found for this file in the input)",
+        '```',
+      ].join("\n");
+      try {
+        const result = await spawnSubAgent({
+          client,
+          parentSessionId: sessionId,
+          parentAgentName: "synthesizer",
+          budget: fanoutBudget,
+          role: "reviewer-aux",
+          brief,
+          roots: promptRoots,
+          log: logLine,
+          token,
+        });
+        subAgentOutputs.push({
+          role: "reviewer-aux",
+          file: filePath,
+          summary: result.summary,
+          ok: result.ok,
+          reason: result.reason,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logLine(`reviewer-aux fan-out for ${filePath} failed: ${msg}`);
+        subAgentOutputs.push({
+          role: "reviewer-aux",
+          file: filePath,
+          summary: null,
+          ok: false,
+          reason: msg,
+        });
+      }
+    }
+    const okCount = subAgentOutputs.filter(o => o.ok).length;
+    stream.markdown(
+      `\n  ✓ fan-out: ${okCount}/${subAgentOutputs.length} reviewer-aux returned ok\n`,
+    );
+  } else {
+    stream.markdown(
+      `\n🔍 **Reviewer-aux fan-out:** no high/medium priority files to spawn\n`,
+    );
+  }
+
+  if (token.isCancellationRequested) {
+    return { success: false, sessionId, stages: stageOutputs, escalated: false };
+  }
+
+  // ── Stage 3: synthesis ────────────────────────────────────────────────────
+  // The synthesizer reads `findings` (evaluator firewall — see
+  // _STAGE_PERMISSIONS["synthesizer"] = {"findings"}). The reviewer-aux
+  // outputs reach it via the runner-augmented sub_agent_outputs field
+  // since stage permissions don't permit reading scope.
+  emitStageStart(stream, "synthesizer", 1, MAX_CODE_ATTEMPTS, STAGE_TAGS["synthesis"] ?? {});
+  const synthPrompt = loadAgentPrompt(promptRoots, "code-review", "synthesizer");
+  const synthCtx = await readAgentContext(client, sessionId, "synthesizer", ["findings"]);
+  synthCtx["sub_agent_outputs"] = subAgentOutputs;
+  const synthT0 = Date.now();
+  const { output: synthesis, finalAttempt: synthAttempt } =
+    await runAgentWithValidationRetry(
+      client, promptRoots, "synthesizer", synthPrompt, synthCtx, sessionId, "synthesis",
+      1, workspaceRoot, stream, token, onChange,
+    );
+  stageOutputs["synthesis"] = synthesis;
+  emitStageComplete(stream, "synthesizer", Date.now() - synthT0, summarizeStageOutput("synthesis", synthesis));
+  emitStageOutputDetails(stream, "synthesis", synthesis);
+  materializeStageOutput(workspaceRoot, sessionId, "synthesis", synthAttempt, synthesis);
+  emitStageArtifactAnchor(stream, workspaceRoot, sessionId, "synthesis", synthAttempt);
+
+  const synthData = _obj(synthesis);
+  const status = _str(synthData["status"], "pass");
+  const escalated = status === "escalate";
+  return {
+    success: !escalated,
+    sessionId,
+    stages: stageOutputs,
+    escalated,
+    escalation: escalated ? _str(synthData["summary"], "synthesis escalated") : undefined,
+  };
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function runPipeline(
@@ -1638,6 +2053,18 @@ export async function runPipeline(
   // circuits to the outer finalize call below. chunkCount is captured
   // by closure and set inside the chunked branch before its return.
   const result: PipelineResult = await (async (): Promise<PipelineResult> => {
+
+  // Phase H.1 — pipeline dispatcher. The /code-review pipeline runs a
+  // bespoke 3-stage flow (scope → findings → synthesis) with reviewer-aux
+  // fan-out at synthesis. B′ from the design discussion: a parallel runner
+  // function rather than a generic yaml-interpreter, until N>=3 pipelines
+  // gives evidence for what the right abstraction looks like.
+  if (meta.pipelineName === "code-review") {
+    return runCodeReviewBody({
+      client, request, workspaceRoot, promptRoots,
+      stream, token, sessionId, onChange, route: meta.route,
+    });
+  }
 
   // ── Run planner → designer → coder → reviewer ────────────────────────────────
   //

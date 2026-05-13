@@ -890,31 +890,66 @@ First non-`feature-dev` pipeline. Picked because it's:
   orchestrator-shaped,
 - stress-tests assumptions feature-dev's runner has baked in.
 
-**What ships:**
+**Shape locked (during PR 2b design discussion):**
 
-- `.github/pipelines/code-review/pipeline.yaml`
-- `.github/pipelines/code-review/README.md`
-- `.github/commands/code-review.md` (slash command frontmatter)
-- Possibly a `code-review-analyzer.agent.md` if the canonical
-  reviewer doesn't fit; otherwise reuses the `reviewer` agent.
-- `.github/skills/code-review/SKILL.md` exists; check whether new
-  references / assets are needed.
+- Stages: `scope → findings → synthesis` (no `design`). The pipeline-
+  aware composer (PR 2a) lets a pipeline declare its own chain via
+  `pipeline.yaml`'s `stage:` fields rather than mapping onto feature-
+  dev's plan/design/code/review vocabulary.
+- Input: branch name (`/code-review feat/foo` → local `git diff
+  feat/foo..origin/dev`) by default; `#NN` resolves via GitHub MCP.
+- Fan-out: synthesizer (evaluator) stage fans out one `reviewer-aux`
+  per high/medium-priority file from `scope`, then aggregates.
+- TS runner: B′ — `runCodeReviewPipeline()` parallel to
+  `runFeatureDevPipeline()` (see H.2 § generic-runner deferral).
+
+**Ships across multiple PRs:**
+
+- PR 1 (`feat/composer-pipeline-yaml-driven`) — `pipeline.yaml`-driven
+  skill injection + spawn allowlist. Foundation.
+- PR 2a (`feat/composer-pipeline-stages`) — pipeline-aware stage chain
+  (`active_stages`, `output_stage_for_agent`, `evaluator_input_stage`),
+  arbitrary stage names, stage-active guards in read/write tools.
+- PR 2b — declarative layer: `pipeline.yaml`, 3 agent files (scoper,
+  finder, synthesizer), 2 skill files (`pr-scope-detection`,
+  `per-file-review`), slash command, firewall entries
+  (`PIPELINE_POLICIES["code-review"]`, `AGENT_SKILL_ALLOWLIST`,
+  `MAIN_SUBAGENT_ALLOWLIST`, `_STAGE_PERMISSIONS`, `_KNOWN_AGENT_NAMES`).
+  Fixes the evaluator-name lookup in `_load_pipeline_spawns` so
+  pipelines with non-`reviewer` evaluator names route correctly.
+- PR 2c — TS runner: `runCodeReviewBody()` in `pipeline.ts` (parallel
+  to feature-dev's body, dispatched on `pipelineMeta.pipelineName`),
+  `codeReviewInput.ts` leaf module (vscode-free) with `extractFileDiff`
+  + `resolveCodeReviewInput`, scope/findings/synthesis markdown
+  renderers, `AGENT_OUTPUT_HINTS` + `STAGE_TAGS` + `DEFAULT_STAGE_
+  SUBAGENT_BUDGET` entries, reviewer-aux fan-out at the synthesis
+  stage (budget capped at 20). `#PR` input returns a typed
+  "use branch form" error pending GitHub MCP wiring.
 
 **Acceptance criteria:**
 
-- [ ] `/code-review <PR-or-diff>` runs end-to-end with the audit
-      trail captured.
-- [ ] Output schema decided + documented (issue list with severity,
-      file/line citations, fix suggestions).
-- [ ] Promotion checklist completed if Level 2 is chosen, or
-      explicit Level 1 rationale documented.
+- [ ] `/code-review <branch>` runs end-to-end against a real PR with
+      the audit trail captured. (Pending in-VS-Code validation now that
+      PR 2c shipped — needs to be tested against e.g. PR 1 after merge.)
+- [x] Output schema documented in `code-review-synthesizer.agent.md`
+      (issues with severity, category, file/line, fix suggestion;
+      synthesis-level stats; status pass/fail/escalate). Markdown
+      renderer in pipeline.ts surfaces it as a rendered table.
+- [ ] Promotion checklist completed for Level 2 (multi-agent +
+      evaluator + reviewer-aux fan-out — chosen because per-file fan-out
+      is doing real work on PRs > 5 files). To finalise after the first
+      real-PR run.
 
-**Open questions:**
+**Known follow-ups (not in PR 2c, not blockers for "H.1 done"):**
 
-- Does it run on a diff, a PR number (via `gh`), or a list of
-  changed files?
-- Does it spawn sub-agents (Phase G.1) for per-file
-  `reviewer-aux` checks, or run sequentially?
+- `#NN` PR-number resolution (needs a GitHub MCP client threaded
+  through to the runner; the typed error returned today tells the user
+  to use the branch form).
+- Agent prompt tuning based on real-run feedback (the scoper / finder /
+  synthesizer prompts were authored from imagination and will likely
+  need 2-3 iterations).
+- Output materialisation: should the final synthesis report also be
+  posted as a GitHub PR comment? Decision after first real run.
 
 #### H.2 — Composer improvements
 
@@ -930,6 +965,18 @@ see what feature-dev assumed that `code-review` violates.
   fixed; code-review may want a different chain).
 - `state.STAGES` cleanup — currently hard-coded; needs a
   pipeline-declared override mechanism if H.1 has different stages.
+
+**Generic yaml-interpreting runner (deferred from H.1).** During
+H.1 design we considered making `pipeline.ts` a generic interpreter
+that reads each stage's behaviour entirely from `pipeline.yaml`
+(transforms, fan-out config, output schemas, gate UI labels — all
+declared in yaml, dispatched through named TS registries). Rejected
+for H.1 because with N=2 pipelines the right vocabulary isn't
+evidence-supported; B′ (a `runCodeReviewPipeline()` parallel to
+`runFeatureDevPipeline()`) ships in ~700 LOC vs ~2000+ LOC of
+runtime infrastructure that might encode the wrong abstraction.
+Revisit during H.2 or after H.3 when we have 3-4 concrete runners
+to extract the actually-shared shape from. Rule of Three.
 
 **Acceptance criteria:**
 
