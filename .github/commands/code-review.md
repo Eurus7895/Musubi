@@ -31,18 +31,20 @@ The no-args form is the most useful default: it runs `git diff HEAD`,
 which captures both staged and unstaged changes against the last commit.
 Best for interactive review of work in progress.
 
+If the working tree is clean (no uncommitted changes), the no-args form
+falls through to **tree mode**: it synthesises a diff that treats every
+tracked file as new content and runs the same pipeline. Capped at 200
+files / 10,000 total lines / 500 lines per file so a large repo doesn't
+blow the LM context. Files larger than the per-file cap appear as
+header-only stubs; reviewer-aux can read them directly via its `view`
+tool.
+
 The branch form diffs the named branch against `origin/dev` (with
 `origin/main` and `HEAD~1` as fallbacks). Best for reviewing a finished
 feature branch before merging.
 
 The PR form requires the GitHub MCP server to resolve the PR's diff;
 if unavailable, the runner asks you to use the branch form instead.
-
-## Not yet supported
-
-- Reviewing the codebase as-is when the working tree is clean (no diff).
-  Requires a different pipeline shape where the scoper triages by file
-  importance rather than by changed-lines.
 
 ## Output
 

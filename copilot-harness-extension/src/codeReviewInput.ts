@@ -6,6 +6,21 @@
  */
 
 import { spawnSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+
+// ── Synthetic-diff config (Phase H.1, codebase-as-tree mode) ──────────────
+// When /code-review is invoked on a clean working tree, build a synthetic
+// diff that treats every tracked file as new content (entirely +lines).
+// Caps protect against runaway: a 5000-file repo would otherwise blow the
+// LM context.
+
+/** Max files to include in the synthetic tree diff. */
+export const TREE_MODE_MAX_FILES = 200;
+/** Max total lines (across all files) to include. Soft cap; overshoots by one file. */
+export const TREE_MODE_MAX_TOTAL_LINES = 10_000;
+/** Files larger than this are summarised by header line only (no content). */
+export const TREE_MODE_MAX_LINES_PER_FILE = 500;
 
 // ── Unified diff slicer ──────────────────────────────────────────────────
 // Take a multi-file unified diff and return just the hunks for one path.
@@ -75,6 +90,119 @@ export function isResolveError(
   return typeof (r as CodeReviewResolveError).error === "string";
 }
 
+// ── Tree-mode synthetic diff ─────────────────────────────────────────────
+
+const _BINARY_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
+  ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+  ".exe", ".dll", ".so", ".dylib", ".o", ".obj", ".class", ".jar",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".mp3", ".mp4", ".mov", ".avi", ".webm", ".wav", ".ogg",
+  ".db", ".sqlite", ".sqlite3",
+]);
+
+function _trackedFiles(workspaceRoot: string): string[] {
+  // -c: cached (committed) + -o: untracked, with --exclude-standard so
+  // gitignored files are skipped. Catches the working tree exactly.
+  const result = spawnSync(
+    "git",
+    ["ls-files", "-co", "--exclude-standard"],
+    { cwd: workspaceRoot, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+  );
+  if (result.status !== 0) { return []; }
+  return (result.stdout ?? "")
+    .split("\n")
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+
+/**
+ * Build a synthetic unified diff for the entire working tree, where every
+ * file appears as new content (entirely +lines). Used by /code-review's
+ * no-args / clean-tree path so the existing scoper → finder → synthesizer
+ * pipeline can run against the codebase as-is.
+ *
+ * Cuts:
+ *   - non-tracked / gitignored files (via `git ls-files -co --exclude-standard`)
+ *   - binaries (by extension)
+ *   - sections beyond TREE_MODE_MAX_FILES
+ *   - file content beyond TREE_MODE_MAX_LINES_PER_FILE (header only emitted)
+ *   - total lines beyond TREE_MODE_MAX_TOTAL_LINES (soft cap)
+ *
+ * Returns the diff text plus a count of how many files were included
+ * (for the user-facing message).
+ */
+export function buildTreeModeDiff(
+  workspaceRoot: string,
+): { diff: string; filesIncluded: number; filesSkipped: number } {
+  const allFiles = _trackedFiles(workspaceRoot);
+  const sections: string[] = [];
+  let totalLines = 0;
+  let included = 0;
+  let skipped = 0;
+
+  for (const rel of allFiles) {
+    if (included >= TREE_MODE_MAX_FILES) { skipped++; continue; }
+    if (totalLines >= TREE_MODE_MAX_TOTAL_LINES) { skipped++; continue; }
+
+    const ext = path.extname(rel).toLowerCase();
+    if (_BINARY_EXT.has(ext)) { skipped++; continue; }
+
+    const abs = path.join(workspaceRoot, rel);
+    let content: string;
+    try {
+      const stat = fs.statSync(abs);
+      if (!stat.isFile()) { skipped++; continue; }
+      content = fs.readFileSync(abs, "utf-8");
+    } catch {
+      skipped++;
+      continue;
+    }
+    // Detect binary by a NUL byte in the first 8KB (most binaries have one).
+    if (content.indexOf("\x00", 0) >= 0 && content.indexOf("\x00", 0) < 8192) {
+      skipped++;
+      continue;
+    }
+
+    const lines = content.split("\n");
+    const trimmed = lines.length > TREE_MODE_MAX_LINES_PER_FILE;
+    const lineCount = trimmed ? 0 : lines.length;
+
+    const header = [
+      `diff --git a/${rel} b/${rel}`,
+      `new file mode 100644`,
+      `--- /dev/null`,
+      `+++ b/${rel}`,
+    ];
+    if (trimmed) {
+      // Don't include content for huge files — emit a header-only stub
+      // so the scoper still sees the file path + can reason about it.
+      header.push(`@@ -0,0 +0,0 @@`);
+      header.push(
+        `+(file body omitted: ${lines.length} lines > ` +
+        `${TREE_MODE_MAX_LINES_PER_FILE}-line cap. ` +
+        `Reviewer-aux can read the file directly via its 'view' tool.)`,
+      );
+      sections.push(header.join("\n"));
+      included++;
+      totalLines++;
+      continue;
+    }
+
+    const hunkHeader = `@@ -0,0 +1,${lines.length} @@`;
+    const body = lines.map(l => `+${l}`);
+    sections.push([...header, hunkHeader, ...body].join("\n"));
+    included++;
+    totalLines += lineCount;
+  }
+
+  return {
+    diff: sections.join("\n"),
+    filesIncluded: included,
+    filesSkipped: skipped,
+  };
+}
+
 /**
  * Resolve `/code-review` slash command input to a diff.
  *
@@ -92,8 +220,10 @@ export function resolveCodeReviewInput(
 
   // No-args form: review the working tree against HEAD. Captures both
   // staged AND unstaged changes (git diff HEAD includes the index +
-  // working-tree deltas). Most useful default for "what am I about to
-  // commit" or "review the current state of my work."
+  // working-tree deltas). When the tree is clean (no diff vs HEAD),
+  // fall through to tree mode — synthesize a diff treating every tracked
+  // file as new content so the same pipeline can review the codebase
+  // as-is.
   if (!input) {
     const result = spawnSync(
       "git",
@@ -102,18 +232,22 @@ export function resolveCodeReviewInput(
     );
     if (result.status === 0) {
       const diff = (result.stdout ?? "").trim();
-      if (diff.length === 0) {
+      if (diff.length > 0) {
+        return { diff, ref: "working tree", base: "HEAD", empty: false };
+      }
+      // Clean tree — synthesize a tree-mode diff.
+      const tree = buildTreeModeDiff(workspaceRoot);
+      if (tree.filesIncluded === 0) {
         return {
-          error: "Working tree is clean — no uncommitted changes vs HEAD.",
-          hint:
-            "To review a branch's changes vs origin/dev: /code-review <branch-name>. " +
-            "Reviewing a clean codebase without a diff is a separate mode (not yet supported).",
+          error: "Working tree is clean and no tracked files found.",
+          hint: "Make sure this is a git repo with at least one committed file.",
         };
       }
       return {
-        diff,
-        ref: "working tree",
-        base: "HEAD",
+        diff: tree.diff,
+        ref: `codebase scan (${tree.filesIncluded} files` +
+          (tree.filesSkipped > 0 ? `, ${tree.filesSkipped} skipped` : "") + `)`,
+        base: "(empty tree)",
         empty: false,
       };
     }

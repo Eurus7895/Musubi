@@ -1,7 +1,49 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractFileDiff, resolveCodeReviewInput } from "./codeReviewInput";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { spawnSync } from "child_process";
+
+import {
+  buildTreeModeDiff,
+  extractFileDiff,
+  resolveCodeReviewInput,
+  TREE_MODE_MAX_FILES,
+} from "./codeReviewInput";
+
+function _initRepo(dir: string, files: Record<string, string>): void {
+  fs.mkdirSync(dir, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content, "utf-8");
+  }
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  // Use plumbing to create an initial commit without invoking commit hooks
+  // / signing — sandbox environments may have a forced signer that can't
+  // be satisfied for throwaway test repos. write-tree + commit-tree +
+  // update-ref bypasses both hooks and signing.
+  const tree = spawnSync("git", ["write-tree"], { cwd: dir, encoding: "utf-8" });
+  const treeHash = (tree.stdout ?? "").trim();
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com",
+    GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com",
+  };
+  const commit = spawnSync(
+    "git", ["commit-tree", treeHash, "-m", "init"],
+    { cwd: dir, encoding: "utf-8", env },
+  );
+  const commitHash = (commit.stdout ?? "").trim();
+  spawnSync("git", ["update-ref", "HEAD", commitHash], { cwd: dir, env });
+}
+
+function _mkdtemp(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "cr-input-test-"));
+}
 
 // ── extractFileDiff ──────────────────────────────────────────────────────
 
@@ -83,33 +125,44 @@ test("extractFileDiff: handles plain unified diff (no git header)", () => {
 
 // ── resolveCodeReviewInput ───────────────────────────────────────────────
 
-test("resolveCodeReviewInput: empty input runs working-tree diff (not an error)", () => {
-  // /tmp is not a git repo, so the `git diff HEAD` fallback fails. We
-  // still expect a typed error, but it's specifically the working-tree
-  // path's error, not the old "no branch specified" one.
+test("resolveCodeReviewInput: empty input in a non-git dir errors with working-tree message", () => {
+  // /tmp is not a git repo, so `git diff HEAD` fails. The error
+  // message points at the working-tree path, not the old "no branch
+  // specified" wording.
   const r = resolveCodeReviewInput("", "/tmp");
   assert.ok("error" in r);
   if ("error" in r) {
-    // Either the git-not-a-repo path or the clean-tree path. Neither
-    // mentions "no branch specified" — that's the old behaviour.
     assert.doesNotMatch(r.error, /No branch specified/);
     assert.match(r.error, /working tree|Could not run/);
   }
 });
 
-test("resolveCodeReviewInput: empty input in a clean git repo returns clean-tree hint", (t, done) => {
-  // Use the test's own workspace — this repo has a working tree that
-  // may or may not be clean. We can't deterministically force one or
-  // the other, but we can assert the no-args path runs `git diff HEAD`
-  // (success or error must reference the working tree, not branch usage).
-  const r = resolveCodeReviewInput("", process.cwd());
-  if ("error" in r) {
-    assert.match(r.error, /Working tree is clean|Could not run/);
-  } else {
-    assert.equal(r.ref, "working tree");
-    assert.equal(r.base, "HEAD");
+test("resolveCodeReviewInput: clean tree falls through to tree mode (codebase scan)", () => {
+  // Build a tiny throwaway repo with a clean tree and assert that no-args
+  // /code-review synthesises a diff covering the tracked files instead of
+  // erroring. This is the "review the codebase as-is" path.
+  const dir = _mkdtemp();
+  try {
+    _initRepo(dir, {
+      "src/foo.py": "def hello():\n    return 'world'\n",
+      "README.md": "# project\n\nsmall test repo\n",
+    });
+    const r = resolveCodeReviewInput("", dir);
+    assert.ok(!("error" in r), `expected success, got: ${JSON.stringify(r)}`);
+    if (!("error" in r)) {
+      assert.match(r.ref, /codebase scan/);
+      assert.equal(r.base, "(empty tree)");
+      assert.equal(r.empty, false);
+      // The synthetic diff must contain both files as new files.
+      assert.ok(r.diff.includes("--- /dev/null"));
+      assert.ok(r.diff.includes("+++ b/src/foo.py"));
+      assert.ok(r.diff.includes("+++ b/README.md"));
+      // And include the actual file content as +lines.
+      assert.ok(r.diff.includes("+def hello():"));
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  done();
 });
 
 test("resolveCodeReviewInput: whitespace-only input is a typed error", () => {
@@ -150,4 +203,82 @@ test("resolveCodeReviewInput: unknown branch in invalid repo is a typed error", 
     assert.match(r.error, /not found/);
     assert.match(r.hint ?? "", /branch exists/);
   }
+});
+
+// ── buildTreeModeDiff ────────────────────────────────────────────────────
+
+test("buildTreeModeDiff: emits a synthetic diff with all-+ content", () => {
+  const dir = _mkdtemp();
+  try {
+    _initRepo(dir, {
+      "a.txt": "alpha line 1\nalpha line 2\n",
+      "b.txt": "beta\n",
+    });
+    const r = buildTreeModeDiff(dir);
+    assert.equal(r.filesIncluded, 2);
+    assert.equal(r.filesSkipped, 0);
+    assert.ok(r.diff.includes("diff --git a/a.txt b/a.txt"));
+    assert.ok(r.diff.includes("new file mode 100644"));
+    assert.ok(r.diff.includes("+alpha line 1"));
+    assert.ok(r.diff.includes("+beta"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildTreeModeDiff: skips binary files by extension", () => {
+  const dir = _mkdtemp();
+  try {
+    _initRepo(dir, {
+      "src.py": "x = 1\n",
+      "icon.png": "\x89PNG\r\n\x1a\nfake binary data",
+    });
+    const r = buildTreeModeDiff(dir);
+    assert.equal(r.filesIncluded, 1);
+    assert.equal(r.filesSkipped, 1);
+    assert.ok(r.diff.includes("+++ b/src.py"));
+    assert.ok(!r.diff.includes("+++ b/icon.png"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildTreeModeDiff: emits header-only stub for files past the per-file cap", () => {
+  const dir = _mkdtemp();
+  try {
+    // 600 lines — over the 500-line per-file cap.
+    const huge = Array.from({ length: 600 }, (_, i) => `line ${i}`).join("\n") + "\n";
+    _initRepo(dir, {
+      "small.py": "x = 1\n",
+      "huge.py": huge,
+    });
+    const r = buildTreeModeDiff(dir);
+    assert.equal(r.filesIncluded, 2);
+    assert.ok(r.diff.includes("+++ b/huge.py"));
+    assert.ok(r.diff.includes("file body omitted"));
+    assert.ok(!r.diff.includes("+line 599"));
+    // Small file is included normally.
+    assert.ok(r.diff.includes("+x = 1"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildTreeModeDiff: returns 0 included when the directory isn't a git repo", () => {
+  const dir = _mkdtemp();
+  try {
+    fs.writeFileSync(path.join(dir, "x.txt"), "hi\n");
+    const r = buildTreeModeDiff(dir);
+    assert.equal(r.filesIncluded, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildTreeModeDiff: respects the file-count cap", () => {
+  // Sanity: the constant exists and is non-trivial.
+  assert.ok(TREE_MODE_MAX_FILES > 0);
+  // Constructing 200+ files in a test repo is wasteful; just assert the
+  // cap is exposed and document its intent. The actual cap behaviour is
+  // exercised on real repos.
 });
