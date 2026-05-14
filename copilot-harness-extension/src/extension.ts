@@ -551,11 +551,16 @@ async function runSlash(
 
   switch (cmd.action) {
     case "pipeline": {
-      if (!args) {
+      const pipelineName = cmd.pipeline ?? cmd.name;
+      // /code-review supports a no-args form (review working-tree changes
+      // against HEAD — see resolveCodeReviewInput). Other pipelines today
+      // require a request: the planner needs something to plan against.
+      // If a third pipeline ever wants no-args, lift this into a frontmatter
+      // field on the slash command rather than expanding the allowlist.
+      if (!args && pipelineName !== "code-review") {
         stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
         return;
       }
-      const pipelineName = cmd.pipeline ?? cmd.name;
       const result = await runPipeline(
         client, args, workspaceRoot, slashRoots, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
