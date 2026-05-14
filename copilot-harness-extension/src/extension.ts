@@ -478,11 +478,16 @@ async function handler(
 
 function emitPipelineSummary(
   stream: vscode.ChatResponseStream,
-  result: { escalated: boolean; escalation?: string; sessionId: string },
+  result: { success: boolean; escalated: boolean; escalation?: string; sessionId: string },
 ): void {
   stream.markdown("\n---\n");
   if (result.escalated) {
     stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}\n`);
+  } else if (!result.success) {
+    // Pipeline exited cleanly but didn't finish its work — e.g. /code-review
+    // refusing a natural-language input. Reporting "complete" here would be
+    // a lie. The body has already emitted a specific error to the stream.
+    stream.markdown(`❌ **Pipeline did not run.** Session: \`${result.sessionId}\`\n`);
   } else {
     stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\`\n`);
   }

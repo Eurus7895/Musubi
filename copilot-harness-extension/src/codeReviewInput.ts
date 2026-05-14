@@ -91,8 +91,22 @@ export function resolveCodeReviewInput(
   const input = (rawInput ?? "").trim();
   if (!input) {
     return {
-      error: "Empty input.",
-      hint: "Usage: /code-review <branch-name>",
+      error: "No branch specified.",
+      hint: "Usage: /code-review <branch-name>  (e.g. /code-review feat/login).",
+    };
+  }
+  // Natural-language input is a common confusion — users assume
+  // /code-review takes a prose request like /feature-dev does. Whitespace
+  // in the input is the clearest signal. Surface the actual usage rather
+  // than the git error.
+  if (/\s/.test(input)) {
+    return {
+      error:
+        `/code-review takes a branch name, not a description. ` +
+        `Got: ${JSON.stringify(input)}.`,
+      hint:
+        "Usage: /code-review <branch-name>  (e.g. /code-review feat/login). " +
+        "The runner diffs <branch> against origin/dev locally and reviews the diff.",
     };
   }
   if (input.startsWith("#")) {
@@ -119,9 +133,9 @@ export function resolveCodeReviewInput(
     // Keep trying the next candidate.
   }
   return {
-    error: `Could not diff '${input}' against origin/dev, origin/main, or HEAD~1.`,
+    error: `Branch '${input}' not found, or no common base with origin/dev / origin/main.`,
     hint:
-      "Check that the branch exists locally (`git branch -a | grep " + input + "`) " +
-      "and that you have at least one of: origin/dev, origin/main.",
+      `Check the branch exists locally: git branch -a | grep ${input}. ` +
+      `Also confirm at least one of origin/dev or origin/main is fetched.`,
   };
 }

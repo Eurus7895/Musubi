@@ -87,7 +87,7 @@ test("resolveCodeReviewInput: empty input is a typed error", () => {
   const r = resolveCodeReviewInput("", "/tmp");
   assert.ok("error" in r);
   if ("error" in r) {
-    assert.match(r.error, /empty/i);
+    assert.match(r.error, /No branch specified/);
     assert.match(r.hint ?? "", /Usage/);
   }
 });
@@ -95,6 +95,20 @@ test("resolveCodeReviewInput: empty input is a typed error", () => {
 test("resolveCodeReviewInput: whitespace-only input is a typed error", () => {
   const r = resolveCodeReviewInput("   ", "/tmp");
   assert.ok("error" in r);
+});
+
+test("resolveCodeReviewInput: natural-language input is recognised, not git-errored", () => {
+  // Regression: first real /code-review run hit "review this project" and
+  // got an opaque git error. Now the resolver detects whitespace in the
+  // input and returns a usage hint instead.
+  const r = resolveCodeReviewInput("review this project", "/tmp");
+  assert.ok("error" in r);
+  if ("error" in r) {
+    assert.match(r.error, /branch name, not a description/);
+    assert.match(r.hint ?? "", /Usage:/);
+    // The actual input is echoed so the user can see what was parsed.
+    assert.ok(r.error.includes("review this project"));
+  }
 });
 
 test("resolveCodeReviewInput: PR-number input returns a clear hint", () => {
@@ -111,7 +125,7 @@ test("resolveCodeReviewInput: unknown branch in invalid repo is a typed error", 
   const r = resolveCodeReviewInput("does-not-exist", "/tmp");
   assert.ok("error" in r);
   if ("error" in r) {
-    assert.match(r.error, /Could not diff/);
+    assert.match(r.error, /not found/);
     assert.match(r.hint ?? "", /branch exists/);
   }
 });
