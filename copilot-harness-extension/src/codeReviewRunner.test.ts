@@ -83,16 +83,38 @@ test("extractFileDiff: handles plain unified diff (no git header)", () => {
 
 // ── resolveCodeReviewInput ───────────────────────────────────────────────
 
-test("resolveCodeReviewInput: empty input is a typed error", () => {
+test("resolveCodeReviewInput: empty input runs working-tree diff (not an error)", () => {
+  // /tmp is not a git repo, so the `git diff HEAD` fallback fails. We
+  // still expect a typed error, but it's specifically the working-tree
+  // path's error, not the old "no branch specified" one.
   const r = resolveCodeReviewInput("", "/tmp");
   assert.ok("error" in r);
   if ("error" in r) {
-    assert.match(r.error, /No branch specified/);
-    assert.match(r.hint ?? "", /Usage/);
+    // Either the git-not-a-repo path or the clean-tree path. Neither
+    // mentions "no branch specified" — that's the old behaviour.
+    assert.doesNotMatch(r.error, /No branch specified/);
+    assert.match(r.error, /working tree|Could not run/);
   }
 });
 
+test("resolveCodeReviewInput: empty input in a clean git repo returns clean-tree hint", (t, done) => {
+  // Use the test's own workspace — this repo has a working tree that
+  // may or may not be clean. We can't deterministically force one or
+  // the other, but we can assert the no-args path runs `git diff HEAD`
+  // (success or error must reference the working tree, not branch usage).
+  const r = resolveCodeReviewInput("", process.cwd());
+  if ("error" in r) {
+    assert.match(r.error, /Working tree is clean|Could not run/);
+  } else {
+    assert.equal(r.ref, "working tree");
+    assert.equal(r.base, "HEAD");
+  }
+  done();
+});
+
 test("resolveCodeReviewInput: whitespace-only input is a typed error", () => {
+  // After trim() it becomes empty, so it takes the working-tree path
+  // (same as empty input). We just assert *some* error in /tmp.
   const r = resolveCodeReviewInput("   ", "/tmp");
   assert.ok("error" in r);
 });

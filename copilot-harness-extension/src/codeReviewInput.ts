@@ -89,12 +89,42 @@ export function resolveCodeReviewInput(
   rawInput: string, workspaceRoot: string,
 ): CodeReviewResolveResult {
   const input = (rawInput ?? "").trim();
+
+  // No-args form: review the working tree against HEAD. Captures both
+  // staged AND unstaged changes (git diff HEAD includes the index +
+  // working-tree deltas). Most useful default for "what am I about to
+  // commit" or "review the current state of my work."
   if (!input) {
+    const result = spawnSync(
+      "git",
+      ["diff", "HEAD"],
+      { cwd: workspaceRoot, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+    );
+    if (result.status === 0) {
+      const diff = (result.stdout ?? "").trim();
+      if (diff.length === 0) {
+        return {
+          error: "Working tree is clean — no uncommitted changes vs HEAD.",
+          hint:
+            "To review a branch's changes vs origin/dev: /code-review <branch-name>. " +
+            "Reviewing a clean codebase without a diff is a separate mode (not yet supported).",
+        };
+      }
+      return {
+        diff,
+        ref: "working tree",
+        base: "HEAD",
+        empty: false,
+      };
+    }
     return {
-      error: "No branch specified.",
-      hint: "Usage: /code-review <branch-name>  (e.g. /code-review feat/login).",
+      error: "Could not run `git diff HEAD` to review the working tree.",
+      hint:
+        "Make sure this is a git repo with at least one commit. " +
+        "Or pass an explicit branch: /code-review <branch-name>.",
     };
   }
+
   // Natural-language input is a common confusion — users assume
   // /code-review takes a prose request like /feature-dev does. Whitespace
   // in the input is the clearest signal. Surface the actual usage rather
@@ -106,7 +136,7 @@ export function resolveCodeReviewInput(
         `Got: ${JSON.stringify(input)}.`,
       hint:
         "Usage: /code-review <branch-name>  (e.g. /code-review feat/login). " +
-        "The runner diffs <branch> against origin/dev locally and reviews the diff.",
+        "Or /code-review with no args to review your working-tree changes against HEAD.",
     };
   }
   if (input.startsWith("#")) {
