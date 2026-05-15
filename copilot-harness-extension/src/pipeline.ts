@@ -654,7 +654,21 @@ async function writeStage(
  * the session and start over. This function feeds validation_errors back
  * into the agent context so it can self-correct, sharing the 3-attempt
  * budget with the reviewer loop.
+ *
+ * Pre-flight char-count guard (H.1 lesson): if the context serialised to
+ * JSON exceeds the reliable LM-call window, warn or abort before the call
+ * rather than retry the same oversized prompt three times. See CLAUDE.md
+ * § "Execution strategies" for the sizing rule.
  */
+
+/** Pre-flight thresholds for one-shot LM calls. Above WARN we emit a
+ * chat-stream note; above ERROR we abort the stage with a clear message
+ * before any LM call is made. The 394k-char scoper failure that prompted
+ * this guard sat way above ERROR — we lost three full retries before
+ * even attempting compression. */
+const ONE_SHOT_INPUT_WARN_CHARS = 50_000;
+const ONE_SHOT_INPUT_ERROR_CHARS = 200_000;
+
 async function runAgentWithValidationRetry(
   client: McpClient,
   roots: readonly string[],
@@ -672,6 +686,31 @@ async function runAgentWithValidationRetry(
 ): Promise<{ output: unknown; finalAttempt: number }> {
   let attempt = initialAttempt;
   let context = baseContext;
+
+  // Pre-flight: count the chars we're about to send. Above ERROR, abort
+  // before the LM call — retrying the same oversized prompt three times
+  // (the previous failure mode) costs the same in tokens as twelve smaller
+  // calls would, but produces no result. Emit a clear message pointing at
+  // pipeline-author fixes: pre-process, fan-out, or map-reduce.
+  // We size the *serialised* context since that's what runAgentLM sends.
+  const previewChars = JSON.stringify(baseContext).length + agentPrompt.length;
+  if (previewChars > ONE_SHOT_INPUT_ERROR_CHARS) {
+    const msg =
+      `Stage '${stage}' (${agentName}) input is ${previewChars.toLocaleString()} chars — ` +
+      `above the ${ONE_SHOT_INPUT_ERROR_CHARS.toLocaleString()}-char ceiling for a one-shot ` +
+      `LM call. Retrying would burn budget on the same oversized prompt without ` +
+      `succeeding. Restructure the stage: pre-process the input (deterministic ` +
+      `compression), fan out (per-chunk sub-agents), or map-reduce. See CLAUDE.md ` +
+      `§ "Execution strategies."`;
+    stream.markdown(`\n> ❌ **${agentName}** — input too large to call. ${msg}\n`);
+    throw new Error(msg);
+  } else if (previewChars > ONE_SHOT_INPUT_WARN_CHARS) {
+    stream.markdown(
+      `\n> ⚠️ **${agentName}** — ${previewChars.toLocaleString()} chars in input ` +
+      `(above ${ONE_SHOT_INPUT_WARN_CHARS.toLocaleString()}; reliable zone is < 30k). ` +
+      `Consider pre-processing or fan-out for this stage.\n`,
+    );
+  }
 
   for (;;) {
     if (token.isCancellationRequested) {
@@ -1838,12 +1877,54 @@ async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResu
 
   // ── Stage 2: findings ─────────────────────────────────────────────────────
   // finder reads `scope` via harness_read_stage; the per-file-review skill
-  // is auto-injected on that read by composer.injected_skill_ids. The
-  // runner also passes the raw diff so the finder can quote evidence lines.
+  // is auto-injected on that read by composer.injected_skill_ids.
+  //
+  // Two input modes:
+  //   - diff mode (branch comparison): pass the raw diff so the finder
+  //     can quote evidence lines from the actual changes.
+  //   - tree mode (codebase scan): the synthetic diff is header-only
+  //     stubs (path + line count, no content). Sending it to the finder
+  //     wastes input. Instead, read the prioritised files' content from
+  //     disk and pass that — same compression strategy as reviewer-aux.
   emitStageStart(stream, "finder", 1, MAX_CODE_ATTEMPTS, STAGE_TAGS["findings"] ?? {});
   const finderPrompt = loadAgentPrompt(promptRoots, "code-review", "finder");
   const finderCtx = await readAgentContext(client, sessionId, "finder", ["scope"]);
-  finderCtx["request"] = { diff: diffText, ref: resolved.ref, base: resolved.base };
+  const isTreeModeForFinder = resolved.base === "(empty tree)";
+  if (isTreeModeForFinder) {
+    // Tree mode: read content for the prioritised files (high/medium)
+    // from disk, cap at 8KB per file and ~80 files total to keep the
+    // finder's input within the reliable LM window.
+    const scopeForFinder = scope as Record<string, unknown> | null;
+    const prioritisedFiles = _list(scopeForFinder?.["files"])
+      .map(f => _obj(f))
+      .filter(f => {
+        const pri = _str(f["priority"], "");
+        return pri === "high" || pri === "medium";
+      })
+      .slice(0, 80);
+    const fileContents: Array<{ path: string; content: string }> = [];
+    for (const f of prioritisedFiles) {
+      const p = _str(f["path"], "");
+      if (!p) { continue; }
+      try {
+        let content = fs.readFileSync(path.join(workspaceRoot, p), "utf-8");
+        if (content.length > 8_000) {
+          content = content.slice(0, 8_000) + "\n... (truncated for finder; reviewer-aux sees more)";
+        }
+        fileContents.push({ path: p, content });
+      } catch {
+        // Skip unreadable files — finder will operate on what's available.
+      }
+    }
+    finderCtx["request"] = {
+      mode: "tree",
+      ref: resolved.ref,
+      base: resolved.base,
+      files: fileContents,
+    };
+  } else {
+    finderCtx["request"] = { diff: diffText, ref: resolved.ref, base: resolved.base };
+  }
   const findT0 = Date.now();
   const { output: findings, finalAttempt: findingsAttempt } =
     await runAgentWithValidationRetry(
