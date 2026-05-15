@@ -959,24 +959,17 @@ see what feature-dev assumed that `code-review` violates.
 **Likely candidates (concrete after H.1):**
 
 - pipeline.yaml schema tightening + validation reporting.
-- Agent inheritance / composition (canonical `reviewer` +
-  pipeline-specific behaviour overrides).
 - Better stage handoff schemas (today plan→design→code→review is
-  fixed; code-review may want a different chain).
-- `state.STAGES` cleanup — currently hard-coded; needs a
-  pipeline-declared override mechanism if H.1 has different stages.
-
-**Generic yaml-interpreting runner (deferred from H.1).** During
-H.1 design we considered making `pipeline.ts` a generic interpreter
-that reads each stage's behaviour entirely from `pipeline.yaml`
-(transforms, fan-out config, output schemas, gate UI labels — all
-declared in yaml, dispatched through named TS registries). Rejected
-for H.1 because with N=2 pipelines the right vocabulary isn't
-evidence-supported; B′ (a `runCodeReviewPipeline()` parallel to
-`runFeatureDevPipeline()`) ships in ~700 LOC vs ~2000+ LOC of
-runtime infrastructure that might encode the wrong abstraction.
-Revisit during H.2 or after H.3 when we have 3-4 concrete runners
-to extract the actually-shared shape from. Rule of Three.
+  fixed; code-review may want a different chain — composer support
+  for arbitrary chain names ships in H.1 PR 2a already).
+- `state.STAGES` cleanup — currently hard-coded; H.1's
+  pipeline-aware composer (`composer.active_stages`) shipped most
+  of this. Remaining work: drop the hard-coded fallback once
+  feature-dev's pipeline.yaml declares its `stage:` fields
+  explicitly.
+- Per-agent input sizing declared in pipeline.yaml — when we have
+  >1 execution strategy implemented (see Execution-strategy
+  vocabulary below).
 
 **Acceptance criteria:**
 
@@ -984,6 +977,116 @@ to extract the actually-shared shape from. Rule of Three.
 - [ ] Composer changes don't break feature-dev (regression suite).
 
 **Open questions:** all of them — scope drives this section.
+
+---
+
+##### Decisions log — H.1 design discussion
+
+Captured here so future-us doesn't relitigate. The H.1 build surfaced
+several architectural temptations that we *deliberately did not
+pursue* — each is documented with the reason so the next person
+considering it can either find new evidence or accept the prior call.
+
+**Working definitions.** These names mean specific things in this
+codebase; the structure should mirror the definitions.
+
+| Layer | Definition | Reusability profile |
+|---|---|---|
+| **Skill** | Domain procedure ("how to do X well"). Stateless, parameter-free, lives in `.github/skills/<name>/SKILL.md`. | **High.** Skills are shared knowledge — `code-review`, `per-file-review`, `pr-scope-detection`. Every new pipeline picks from this catalog; a genuinely new procedure adds to it and becomes immediately reusable. |
+| **Agent** | Role × skills × tools × schema. A persona that applies skills under permissions to produce a contract-shaped output. Lives in `.github/agents/<role>.agent.md`. | **Sub-agents: high** (`reviewer-aux`, `explorer`, `investigator` work across pipelines unchanged because the brief is the parameter). **Main agents: low** (the contract IS the work; different pipeline → different contract). |
+| **Pipeline** | Ordered chain of agent instances + flow rules (correction loop, fan-out, spawn allowlist). `.github/pipelines/<name>/pipeline.yaml` + a runner function in `pipeline.ts`. | **None across pipelines** — by definition unique. |
+
+**Rejected: small set of role templates as the universal agent abstraction.**
+Tempted to factor every agent into a 4-template enum (triage / generator
+/ evaluator / worker). Real agents vary along ~8 orthogonal axes
+(position-in-chain, input count, output shape, fan-out, correction-loop
+role, tool surface, chunked vs not, firewall scope). Templates either
+collapse this into one axis (under-fit) or explode combinatorially.
+Per-agent files acknowledge the irregularity honestly.
+
+**Rejected: summonable main agents (Claude's `Task` pattern applied to
+main agents).** Observation: the orchestrator already IS the
+summonable-agents pattern; pipelines are orchestrators with hardcoded
+decision rules; unifying them looked elegant. Rejected because Phase F
+already proved the cost: multi-turn LM loops via `vscode.lm.sendRequest`
+pay ~3-5× per turn (no provider-side prompt caching exposed to
+extensions). Unifying main agents would convert each one-shot stage
+into a multi-turn sub-agent invocation, hitting the same cost wall
+that froze the orchestrator. The architectural elegance loses to the
+cost model. Skill / sub-agent reuse is the right level of reuse to
+pursue; main-agent reuse is not affordable at runtime.
+
+**Rejected: generic yaml-interpreting runner (option B″ from H.1).**
+`pipeline.ts` could be a runtime that reads each stage's behaviour
+from yaml (named transforms, fan-out config, output schemas dispatched
+through TS registries). Rejected at H.1 because with N=2 pipelines the
+right vocabulary isn't evidence-supported. B′ (a `runCodeReviewBody()`
+parallel to `runFeatureDevBody()`) ships in ~700 LOC; B″ would be
+~2000+ LOC of runtime infrastructure encoding a vocabulary the third
+pipeline would likely break. Revisit after H.3 with three concrete
+runners to extract the actually-shared shape from. **Rule of Three.**
+
+**Accepted: phase ≠ one-shot.** A *phase* is a contract (takes X,
+produces Y matching a schema). The *execution strategy* is how the
+implementation produces Y — orthogonal to the phase abstraction. This
+distinction is in CLAUDE.md § Decision Rules; copying the table here
+for roadmap context:
+
+| Strategy | When | Examples in tree |
+|---|---|---|
+| One-shot | Input < 30k chars, validation succeeds first try | planner, designer, reviewer |
+| Pre-process + one-shot | Big input that deterministically compresses without loss | scoper (tree mode → file inventory) |
+| Fan-out + aggregate | Per-item work parallelisable, each item fits the window | synthesizer's reviewer-aux per file |
+| Iterative refinement | Schema is complex; LM rarely nails it first try | the validation-retry loop (today as failure recovery) |
+| Map-reduce | Big input + content can't be safely dropped | not implemented; reach for it when needed |
+| Multi-turn LM-driven | Genuinely undecomposable | orchestrator only; Phase F-frozen |
+
+**Sizing rule per LM call (not per stage).** Keep each `sendRequest`
+under ~30k chars of input. Above 50k → warn. Above ~200k → abort
+before the call. The runner enforces this (H.1 commit `657ec54`). The
+394k-char scoper failure that prompted this rule retried the same
+oversized prompt three times before giving up; small input + multiple
+calls beats big input + retries every time. If a stage's natural
+input exceeds the window, restructure the stage (pre-process,
+fan-out, map-reduce) — don't shrink-and-pray.
+
+**Compression layers for large inputs** (use in order):
+
+1. **Drop content irrelevant to this stage's decision.** Most
+   compression value lives here. Scoper triage is path-based; sending
+   file content was waste. Tree mode now sends path + size only.
+2. **Enrich each entry with cheap structural hints.** First non-blank
+   line, top-level signatures (extracted by regex, not LM). Adds back
+   narrow signal without big cost.
+3. **Sample / group, don't enumerate.** 1000-file repo → 30 directory
+   groups with stats. The fan-out drills in at file granularity.
+4. **Two-pass refinement.** First pass triages at coarse granularity,
+   second pass drills into priority groups. More LM calls but each
+   stays in the reliable window.
+
+**Deferred until evidence (after H.3 or later):**
+
+- Agent file structure refactor (move `code-review-*.agent.md` into
+  `.github/pipelines/code-review/agents/` for clearer ownership).
+  Earlier option B from H.1 design discussion; small refactor, but
+  pre-mature without a third pipeline's worth of files to look at.
+- `strategy:` field in pipeline.yaml. Worth adding when there are
+  ≥ 2 non-one-shot strategies implemented in the runner. Today
+  there's only one (fan-out for synthesizer); declaring a field with
+  one option is ceremony.
+- Per-agent input sizing config (`max_input_chars: 30000` in
+  pipeline.yaml). The pre-flight guard in the runner already catches
+  the failure mode; a config field would only matter if pipelines
+  needed *different* limits per stage. No evidence of that yet.
+
+**The standing rule of thumb.** With two pipelines, the right
+abstraction for "reusable across pipelines" is usually invisible.
+With three, the actually-shared shape becomes evident from
+side-by-side comparison. Resist factoring until pipeline #3 has
+written its main-agent files; *then* compare and extract what's
+genuinely repetitive. Each rejected refactor above is rejected on the
+same grounds, not on technical merit — they're plausible end-states
+that need one more example before commitment.
 
 #### H.3 — Second new pipeline
 
@@ -1004,6 +1107,17 @@ deprecation sweep), `/test-gen` (generate tests for a target file).
 
 - Which of `/refactor` / `/migration` / `/test-gen` is most useful?
 - Does this pipeline need composer features H.2 didn't ship?
+
+**Before starting, re-read H.2 § Decisions log — H.1 design
+discussion.** That section captures the architectural temptations
+(role templates, summonable main agents, generic yaml runner, agent
+file structure refactor) that were deliberately deferred at H.1. H.3
+is the third concrete pipeline that decides whether those should be
+revisited. Build pipeline #3 with today's structure first;
+*then* compare its main-agent files to feature-dev's and
+code-review's. If 70%+ of content is duplicated modulo schemas, that
+becomes evidence for an H.4 refactor. If the three look meaningfully
+different, the current per-pipeline-agent structure is correct.
 
 #### H.4 — Composer-as-pipeline
 
