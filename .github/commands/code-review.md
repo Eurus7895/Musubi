@@ -46,6 +46,11 @@ feature branch before merging.
 The PR form requires the GitHub MCP server to resolve the PR's diff;
 if unavailable, the runner asks you to use the branch form instead.
 
+Natural-language input like `/code-review review this codebase` is
+treated as a request for a codebase scan (equivalent to no-args). The
+runner surfaces a note in the chat about how the input was interpreted
+so you can correct if you meant a typo'd branch name.
+
 ## Output
 
 A markdown report ranked by severity. Each issue carries:

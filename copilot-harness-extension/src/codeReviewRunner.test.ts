@@ -172,17 +172,44 @@ test("resolveCodeReviewInput: whitespace-only input is a typed error", () => {
   assert.ok("error" in r);
 });
 
-test("resolveCodeReviewInput: natural-language input is recognised, not git-errored", () => {
-  // Regression: first real /code-review run hit "review this project" and
-  // got an opaque git error. Now the resolver detects whitespace in the
-  // input and returns a usage hint instead.
-  const r = resolveCodeReviewInput("review this project", "/tmp");
+test("resolveCodeReviewInput: natural-language input falls through to tree mode", () => {
+  // After hitting this three times in real testing, the strict
+  // whitespace-rejection became friction. Now the resolver treats any
+  // whitespace-containing input as a request for a codebase scan and
+  // surfaces a note in the `ref` field explaining the interpretation.
+  // In /tmp (no git repo, no tracked files) the fallback fails, so we
+  // still see an error — but the error message itself explains that
+  // tree mode was attempted.
+  const r = resolveCodeReviewInput("review this codebase", "/tmp");
   assert.ok("error" in r);
   if ("error" in r) {
     assert.match(r.error, /branch name, not a description/);
-    assert.match(r.hint ?? "", /Usage:/);
-    // The actual input is echoed so the user can see what was parsed.
-    assert.ok(r.error.includes("review this project"));
+    assert.match(r.hint ?? "", /codebase scan/);
+    assert.ok(r.error.includes("review this codebase"));
+  }
+});
+
+test("resolveCodeReviewInput: natural-language input in a real repo triggers tree mode", () => {
+  // In a real git repo, prose input is interpreted as a codebase scan
+  // request rather than rejected. The `ref` field carries a note about
+  // the interpretation so the user can correct if they meant a typo'd
+  // branch name.
+  const dir = _mkdtemp();
+  try {
+    _initRepo(dir, { "main.py": "print('hi')\n" });
+    const r = resolveCodeReviewInput("review this codebase", dir);
+    assert.ok(!("error" in r), `expected success, got: ${JSON.stringify(r)}`);
+    if (!("error" in r)) {
+      assert.match(r.ref, /codebase scan|working tree/);
+      // The original input is preserved in the ref so the user knows
+      // what was interpreted.
+      assert.ok(
+        r.ref.includes("review this codebase") || r.ref.includes("interpreted"),
+        `ref should reference the input, got: ${r.ref}`,
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

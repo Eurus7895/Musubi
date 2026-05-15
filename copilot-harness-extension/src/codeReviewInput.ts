@@ -259,18 +259,50 @@ export function resolveCodeReviewInput(
     };
   }
 
-  // Natural-language input is a common confusion — users assume
-  // /code-review takes a prose request like /feature-dev does. Whitespace
-  // in the input is the clearest signal. Surface the actual usage rather
-  // than the git error.
+  // Natural-language input — anything with whitespace — is the user
+  // asking for a codebase scan in prose ("/code-review review this
+  // codebase"). The strict rejection was friction; treat it the same as
+  // the no-args path (tree mode). The runner surfaces a one-line note
+  // about the interpretation so the user can correct if they meant a
+  // branch with a typo'd name.
   if (/\s/.test(input)) {
+    const result = spawnSync(
+      "git",
+      ["diff", "HEAD"],
+      { cwd: workspaceRoot, encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+    );
+    if (result.status === 0) {
+      const diff = (result.stdout ?? "").trim();
+      if (diff.length > 0) {
+        return {
+          diff,
+          ref: `working tree (input "${input}" treated as codebase scan)`,
+          base: "HEAD",
+          empty: false,
+        };
+      }
+    }
+    // Fall through to tree mode on clean tree.
+    const tree = buildTreeModeDiff(workspaceRoot);
+    if (tree.filesIncluded === 0) {
+      return {
+        error:
+          `/code-review takes a branch name, not a description. ` +
+          `Got: ${JSON.stringify(input)}.`,
+        hint:
+          "Usage: /code-review <branch-name>  (e.g. /code-review feat/login). " +
+          "Tried to fall through to a codebase scan but the workspace isn't " +
+          "a git repo with tracked files.",
+      };
+    }
     return {
-      error:
-        `/code-review takes a branch name, not a description. ` +
-        `Got: ${JSON.stringify(input)}.`,
-      hint:
-        "Usage: /code-review <branch-name>  (e.g. /code-review feat/login). " +
-        "Or /code-review with no args to review your working-tree changes against HEAD.",
+      diff: tree.diff,
+      ref:
+        `codebase scan (${tree.filesIncluded} files` +
+        (tree.filesSkipped > 0 ? `, ${tree.filesSkipped} skipped` : "") +
+        `) — input "${input}" interpreted as scan request`,
+      base: "(empty tree)",
+      empty: false,
     };
   }
   if (input.startsWith("#")) {
