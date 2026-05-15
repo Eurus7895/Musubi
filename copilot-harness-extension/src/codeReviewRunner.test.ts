@@ -141,6 +141,11 @@ test("resolveCodeReviewInput: clean tree falls through to tree mode (codebase sc
   // Build a tiny throwaway repo with a clean tree and assert that no-args
   // /code-review synthesises a diff covering the tracked files instead of
   // erroring. This is the "review the codebase as-is" path.
+  //
+  // Tree-mode diffs are header-only stubs (no file content) — the scoper
+  // triages by path + size, reviewer-aux reads files from disk at fan-out
+  // time. Real-run feedback: including content here produced 394k-char
+  // scoper inputs that timed out.
   const dir = _mkdtemp();
   try {
     _initRepo(dir, {
@@ -153,12 +158,15 @@ test("resolveCodeReviewInput: clean tree falls through to tree mode (codebase sc
       assert.match(r.ref, /codebase scan/);
       assert.equal(r.base, "(empty tree)");
       assert.equal(r.empty, false);
-      // The synthetic diff must contain both files as new files.
+      // The synthetic diff must contain both files as new-file headers.
       assert.ok(r.diff.includes("--- /dev/null"));
       assert.ok(r.diff.includes("+++ b/src/foo.py"));
       assert.ok(r.diff.includes("+++ b/README.md"));
-      // And include the actual file content as +lines.
-      assert.ok(r.diff.includes("+def hello():"));
+      // The stub line is present (no file content body).
+      assert.ok(r.diff.includes("tree mode"));
+      assert.ok(r.diff.includes("Content read by reviewer-aux"));
+      // No actual file content — the scoper sees a file inventory.
+      assert.ok(!r.diff.includes("def hello():"));
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -234,7 +242,11 @@ test("resolveCodeReviewInput: unknown branch in invalid repo is a typed error", 
 
 // ── buildTreeModeDiff ────────────────────────────────────────────────────
 
-test("buildTreeModeDiff: emits a synthetic diff with all-+ content", () => {
+test("buildTreeModeDiff: emits header-only stubs (no file content)", () => {
+  // Real-run feedback: emitting file content in the synthetic diff blew
+  // the scoper's input to ~400KB and caused 3 consecutive validation
+  // failures. Now every file is a header-only stub with line count;
+  // reviewer-aux reads file content from disk at fan-out time.
   const dir = _mkdtemp();
   try {
     _initRepo(dir, {
@@ -246,8 +258,14 @@ test("buildTreeModeDiff: emits a synthetic diff with all-+ content", () => {
     assert.equal(r.filesSkipped, 0);
     assert.ok(r.diff.includes("diff --git a/a.txt b/a.txt"));
     assert.ok(r.diff.includes("new file mode 100644"));
-    assert.ok(r.diff.includes("+alpha line 1"));
-    assert.ok(r.diff.includes("+beta"));
+    // Header-only stub: includes the line count and a marker, but no
+    // actual file content.
+    assert.ok(r.diff.includes("@@ -0,0 +1,2 @@")); // a.txt has 2 lines
+    assert.ok(r.diff.includes("tree mode: 2 lines"));
+    assert.ok(r.diff.includes("Content read by reviewer-aux"));
+    // No file content leaks through.
+    assert.ok(!r.diff.includes("alpha line 1"));
+    assert.ok(!r.diff.includes("beta"));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -270,10 +288,12 @@ test("buildTreeModeDiff: skips binary files by extension", () => {
   }
 });
 
-test("buildTreeModeDiff: emits header-only stub for files past the per-file cap", () => {
+test("buildTreeModeDiff: reports accurate line count per file", () => {
+  // The line count appears in both the hunk header (@@ -0,0 +1,N @@)
+  // and the stub line ("tree mode: N lines"). reviewer-aux uses it as
+  // a priority signal at fan-out time.
   const dir = _mkdtemp();
   try {
-    // 600 lines — over the 500-line per-file cap.
     const huge = Array.from({ length: 600 }, (_, i) => `line ${i}`).join("\n") + "\n";
     _initRepo(dir, {
       "small.py": "x = 1\n",
@@ -281,11 +301,13 @@ test("buildTreeModeDiff: emits header-only stub for files past the per-file cap"
     });
     const r = buildTreeModeDiff(dir);
     assert.equal(r.filesIncluded, 2);
-    assert.ok(r.diff.includes("+++ b/huge.py"));
-    assert.ok(r.diff.includes("file body omitted"));
-    assert.ok(!r.diff.includes("+line 599"));
-    // Small file is included normally.
-    assert.ok(r.diff.includes("+x = 1"));
+    // huge.py: 600 lines reported.
+    assert.ok(r.diff.includes("tree mode: 600 lines"));
+    // small.py: 1 line reported.
+    assert.ok(r.diff.includes("tree mode: 1 lines"));
+    // No content for either file.
+    assert.ok(!r.diff.includes("line 599"));
+    assert.ok(!r.diff.includes("x = 1"));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -1911,15 +1911,40 @@ async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResu
       if (!filePath) { continue; }
       const priority = _str(f["priority"], "");
       const focus = focusMap.get(filePath) ?? "general per-file review";
-      const fileDiff = extractFileDiff(diffText, filePath);
+      // Tree mode: the synthetic diff is header-only stubs (no content).
+      // Read the file from disk instead so reviewer-aux has something to
+      // review. Diff mode: extract the per-file diff section as before.
+      // The resolved base "(empty tree)" is set by buildTreeModeDiff.
+      const isTreeMode = resolved.base === "(empty tree)";
+      let fileSection: string;
+      if (isTreeMode) {
+        try {
+          const abs = path.join(workspaceRoot, filePath);
+          let content = fs.readFileSync(abs, "utf-8");
+          // 30KB cap per file in the brief so a single 5000-line file
+          // doesn't blow the sub-agent's prompt budget. reviewer-aux can
+          // still use its `view` tool to read past the cap if needed.
+          if (content.length > 30_000) {
+            content = content.slice(0, 30_000) +
+              "\n\n... (file truncated at 30KB; use view tool to read the rest)";
+          }
+          fileSection = `(tree mode — full file content)\n${content}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          fileSection = `(could not read file: ${msg})`;
+        }
+      } else {
+        const fileDiff = extractFileDiff(diffText, filePath);
+        fileSection = fileDiff || "(no diff section found for this file in the input)";
+      }
       const brief = [
         `Review the file '${filePath}' (priority: ${priority}).`,
         `Focus: ${focus}.`,
         `Apply the per-file-review skill checklist.`,
         ``,
-        `File diff:`,
-        '```diff',
-        fileDiff || "(no diff section found for this file in the input)",
+        `${isTreeMode ? "File content:" : "File diff:"}`,
+        isTreeMode ? '```' : '```diff',
+        fileSection,
         '```',
       ].join("\n");
       try {

@@ -32,12 +32,14 @@ which captures both staged and unstaged changes against the last commit.
 Best for interactive review of work in progress.
 
 If the working tree is clean (no uncommitted changes), the no-args form
-falls through to **tree mode**: it synthesises a diff that treats every
-tracked file as new content and runs the same pipeline. Capped at 200
-files / 10,000 total lines / 500 lines per file so a large repo doesn't
-blow the LM context. Files larger than the per-file cap appear as
-header-only stubs; reviewer-aux can read them directly via its `view`
-tool.
+falls through to **tree mode**: it synthesises a file inventory (one
+header-only stub per tracked file, no content) so the scoper can triage
+which files matter. Reviewer-aux then reads each prioritised file from
+disk at fan-out time, capped at 30KB per file in the brief so the LM
+context stays manageable. Tree mode skips binaries by extension and by
+NUL-byte detection. Capped at 500 tracked files (the scoper picks high/
+medium priority from this list; reviewer-aux fan-out is separately
+capped at 20).
 
 The branch form diffs the named branch against `origin/dev` (with
 `origin/main` and `HEAD~1` as fallbacks). Best for reviewing a finished

@@ -11,16 +11,15 @@ import * as path from "path";
 
 // ── Synthetic-diff config (Phase H.1, codebase-as-tree mode) ──────────────
 // When /code-review is invoked on a clean working tree, build a synthetic
-// diff that treats every tracked file as new content (entirely +lines).
-// Caps protect against runaway: a 5000-file repo would otherwise blow the
-// LM context.
+// diff that lists every tracked file as a header-only stub. The scoper
+// triages by path + size; reviewer-aux at fan-out time reads each file
+// from disk directly. Including file content here would balloon the
+// scoper's input (a real run hit 394k chars and timed out three times).
 
-/** Max files to include in the synthetic tree diff. */
-export const TREE_MODE_MAX_FILES = 200;
-/** Max total lines (across all files) to include. Soft cap; overshoots by one file. */
-export const TREE_MODE_MAX_TOTAL_LINES = 10_000;
-/** Files larger than this are summarised by header line only (no content). */
-export const TREE_MODE_MAX_LINES_PER_FILE = 500;
+/** Max files to include in the synthetic tree diff. The scoper triages
+ * what to actually review; this cap protects the LM context for repos
+ * with thousands of tracked files. */
+export const TREE_MODE_MAX_FILES = 500;
 
 // ── Unified diff slicer ──────────────────────────────────────────────────
 // Take a multi-file unified diff and return just the hunks for one path.
@@ -117,17 +116,21 @@ function _trackedFiles(workspaceRoot: string): string[] {
 }
 
 /**
- * Build a synthetic unified diff for the entire working tree, where every
- * file appears as new content (entirely +lines). Used by /code-review's
- * no-args / clean-tree path so the existing scoper → finder → synthesizer
- * pipeline can run against the codebase as-is.
+ * Build a synthetic unified diff for the entire working tree as a
+ * **file inventory** the scoper can triage. Every file gets a header-only
+ * section (no content body) — the scoper does triage, not review, so it
+ * only needs the path + size. Reviewer-aux at fan-out time reads each
+ * file from disk directly (see `runCodeReviewBody` in pipeline.ts).
+ *
+ * Real-run feedback: emitting full file content here produced 394k-char
+ * inputs to the scoper, which timed out and failed validation. Header-
+ * only stubs are ~120 bytes/file (~24KB for 200 files) and let the
+ * scoper succeed.
  *
  * Cuts:
  *   - non-tracked / gitignored files (via `git ls-files -co --exclude-standard`)
- *   - binaries (by extension)
+ *   - binaries (by extension, then by NUL-byte detection)
  *   - sections beyond TREE_MODE_MAX_FILES
- *   - file content beyond TREE_MODE_MAX_LINES_PER_FILE (header only emitted)
- *   - total lines beyond TREE_MODE_MAX_TOTAL_LINES (soft cap)
  *
  * Returns the diff text plus a count of how many files were included
  * (for the user-facing message).
@@ -137,63 +140,50 @@ export function buildTreeModeDiff(
 ): { diff: string; filesIncluded: number; filesSkipped: number } {
   const allFiles = _trackedFiles(workspaceRoot);
   const sections: string[] = [];
-  let totalLines = 0;
   let included = 0;
   let skipped = 0;
 
   for (const rel of allFiles) {
     if (included >= TREE_MODE_MAX_FILES) { skipped++; continue; }
-    if (totalLines >= TREE_MODE_MAX_TOTAL_LINES) { skipped++; continue; }
 
     const ext = path.extname(rel).toLowerCase();
     if (_BINARY_EXT.has(ext)) { skipped++; continue; }
 
     const abs = path.join(workspaceRoot, rel);
-    let content: string;
+    let lineCount = 0;
     try {
       const stat = fs.statSync(abs);
       if (!stat.isFile()) { skipped++; continue; }
-      content = fs.readFileSync(abs, "utf-8");
+      // Read first 8KB to detect binary by NUL byte. Then count newlines
+      // from a single read of the whole file (size_lines is metadata the
+      // scoper uses for triage priority).
+      const head = fs.readFileSync(abs);
+      if (head.indexOf(0x00, 0) >= 0 && head.indexOf(0x00, 0) < 8192) {
+        skipped++;
+        continue;
+      }
+      // Count newlines without keeping the full string. For very large
+      // files this stays cheap; for normal files the buffer is already
+      // in memory.
+      for (const b of head) { if (b === 0x0a) { lineCount++; } }
+      if (head.length > 0 && head[head.length - 1] !== 0x0a) { lineCount++; }
     } catch {
       skipped++;
       continue;
     }
-    // Detect binary by a NUL byte in the first 8KB (most binaries have one).
-    if (content.indexOf("\x00", 0) >= 0 && content.indexOf("\x00", 0) < 8192) {
-      skipped++;
-      continue;
-    }
 
-    const lines = content.split("\n");
-    const trimmed = lines.length > TREE_MODE_MAX_LINES_PER_FILE;
-    const lineCount = trimmed ? 0 : lines.length;
-
-    const header = [
+    // Header-only stub: scoper sees the path + line count, that's all
+    // it needs for triage. Reviewer-aux reads the file via its own
+    // `view` tool when it spawns.
+    sections.push([
       `diff --git a/${rel} b/${rel}`,
       `new file mode 100644`,
       `--- /dev/null`,
       `+++ b/${rel}`,
-    ];
-    if (trimmed) {
-      // Don't include content for huge files — emit a header-only stub
-      // so the scoper still sees the file path + can reason about it.
-      header.push(`@@ -0,0 +0,0 @@`);
-      header.push(
-        `+(file body omitted: ${lines.length} lines > ` +
-        `${TREE_MODE_MAX_LINES_PER_FILE}-line cap. ` +
-        `Reviewer-aux can read the file directly via its 'view' tool.)`,
-      );
-      sections.push(header.join("\n"));
-      included++;
-      totalLines++;
-      continue;
-    }
-
-    const hunkHeader = `@@ -0,0 +1,${lines.length} @@`;
-    const body = lines.map(l => `+${l}`);
-    sections.push([...header, hunkHeader, ...body].join("\n"));
+      `@@ -0,0 +1,${lineCount} @@`,
+      `+(tree mode: ${lineCount} lines. Content read by reviewer-aux from disk.)`,
+    ].join("\n"));
     included++;
-    totalLines += lineCount;
   }
 
   return {
