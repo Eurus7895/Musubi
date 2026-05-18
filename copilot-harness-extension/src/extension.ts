@@ -478,11 +478,16 @@ async function handler(
 
 function emitPipelineSummary(
   stream: vscode.ChatResponseStream,
-  result: { escalated: boolean; escalation?: string; sessionId: string },
+  result: { success: boolean; escalated: boolean; escalation?: string; sessionId: string },
 ): void {
   stream.markdown("\n---\n");
   if (result.escalated) {
     stream.markdown(`⚠️ **Escalated:** ${result.escalation ?? "reviewer escalated"}\n`);
+  } else if (!result.success) {
+    // Pipeline exited cleanly but didn't finish its work — e.g. /code-review
+    // refusing a natural-language input. Reporting "complete" here would be
+    // a lie. The body has already emitted a specific error to the stream.
+    stream.markdown(`❌ **Pipeline did not run.** Session: \`${result.sessionId}\`\n`);
   } else {
     stream.markdown(`✅ **Pipeline complete.** Session: \`${result.sessionId}\`\n`);
   }
@@ -546,11 +551,16 @@ async function runSlash(
 
   switch (cmd.action) {
     case "pipeline": {
-      if (!args) {
+      const pipelineName = cmd.pipeline ?? cmd.name;
+      // /code-review supports a no-args form (review working-tree changes
+      // against HEAD — see resolveCodeReviewInput). Other pipelines today
+      // require a request: the planner needs something to plan against.
+      // If a third pipeline ever wants no-args, lift this into a frontmatter
+      // field on the slash command rather than expanding the allowlist.
+      if (!args && pipelineName !== "code-review") {
         stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
         return;
       }
-      const pipelineName = cmd.pipeline ?? cmd.name;
       const result = await runPipeline(
         client, args, workspaceRoot, slashRoots, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },

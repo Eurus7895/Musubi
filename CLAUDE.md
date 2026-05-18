@@ -140,6 +140,35 @@ If any item is unchecked, fix the skill file first. **Do not invent agents specu
 - `instructions/` = always-loaded, priority-ranked rules (P1 universal > P2 org > P3 domain > P4 project). P1 cannot be overridden.
 - `skills/` = procedures and knowledge. Pushed by the harness via the active agent's (or sub-agent's) `inject_skills` frontmatter. Agents cannot opt out.
 
+**Execution strategies (Phase H.1 lesson):** a *phase* is a contract
+(takes X, produces Y matching a schema). The *execution strategy* is
+how the implementation produces Y — orthogonal to the phase abstraction.
+One-shot is the default and the cheap path; reach for richer strategies
+only when the input shape demands it.
+
+| Strategy | When to use | Examples in tree |
+|---|---|---|
+| **One-shot** | Input fits in ~30k chars and validation rarely fails | planner, designer, reviewer |
+| **Pre-process + one-shot** | Input is big but deterministic compression preserves correctness for this stage's job | scoper (tree mode → file inventory) |
+| **Fan-out + aggregate** | Per-item work is parallelisable and each item fits the reliable window | synthesizer's reviewer-aux per file |
+| **Map-reduce** | Input is big AND content can't be safely dropped (e.g. finder cross-cutting) | not yet implemented; use when needed |
+| **Iterative refinement** | Schema is complex; LM rarely nails it first try | runAgentWithValidationRetry's loop |
+| **Multi-turn LM-driven** | Work genuinely can't be statically decomposed | orchestrator only — feature-frozen for cost (Phase F) |
+
+**Sizing rule per LM call (not per stage):** keep each `sendRequest`
+under ~30k chars of input. Above 50k → warn. Above ~200k → abort
+before the call (the runner enforces this in
+`runAgentWithValidationRetry`). The 394k-char scoper failure that
+prompted this rule retried the same oversized prompt three times before
+giving up; small input + multiple calls beats big input + retries every
+time. If a stage's natural input exceeds the window, restructure the
+stage (pre-process, fan-out, map-reduce) — don't shrink-and-pray.
+
+The `strategy:` field is *not* declared in `pipeline.yaml` today —
+authors pick the execution path in the runner code per stage. A YAML
+declaration becomes worthwhile once map-reduce or multi-call strategies
+are implemented and there are 2+ choices to declare between.
+
 ---
 
 ## Conventions

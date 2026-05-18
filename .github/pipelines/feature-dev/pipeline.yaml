@@ -13,16 +13,24 @@ generator:
     - name: planner
       agent: agents/planner.agent.md
       skill: null
+      # no spawns: planner has no sub-agents
     - name: designer
       agent: agents/designer.agent.md
       skill: skills/api-design/SKILL.md
+      # no spawns: designer has no sub-agents
     - name: coder
       agent: agents/coder.agent.md
       skill: skills/python/SKILL.md
+      # Phase G.1.6 — coder may pre-spawn an explorer (existing-callers
+      # scan) and an investigator (diagnostics). The runtime allow-list is
+      # `spawns ∩ MAIN_SUBAGENT_ALLOWLIST['coder']` in scripts/policy_engine.py.
+      spawns: [explorer, investigator]
 
 evaluator:
   agent: agents/reviewer.agent.md
   skill: skills/code-review/SKILL.md
+  # Phase G.1.6 — reviewer may pre-spawn reviewer-aux for per-file checklists.
+  spawns: [reviewer-aux]
 
 correction:
   max_retries: 3

@@ -9,7 +9,13 @@ Rules:
   - A tool is allowed only if it appears in the agent's ALLOWED list.
     Any tool not in the list is denied — explicit allowlists > denylists.
   - A main agent may spawn a sub-agent role only if the role appears in
-    `MAIN_SUBAGENT_ALLOWLIST[main]`.
+    `MAIN_SUBAGENT_ALLOWLIST[main]`. This dict is the *firewall* — the
+    maximum set per role. Pipelines narrow further via their
+    `pipeline.yaml::generator.agents[].spawns` (and `evaluator.spawns`)
+    field. When `pipeline_name` is passed, the effective set is
+    `pipeline.yaml's spawns ∩ MAIN_SUBAGENT_ALLOWLIST[main]`. When
+    `pipeline_name` is None (orchestrator path, or callers without a
+    pipeline context), the firewall is returned directly.
   - The sub-agent's effective tools are
     `SUBAGENT_POLICIES[role] ∩ main's tool allow-list`. Unknown role
     → deny. Unknown main → deny.
@@ -21,12 +27,24 @@ tools (fail-closed).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 PIPELINE_POLICIES: dict[str, dict[str, list[str]]] = {
     "feature-dev": {
         "planner":  ["Read", "View", "Grep", "Glob"],
         "designer": ["Read", "View", "Grep", "Glob"],
         "coder":    ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
         "reviewer": ["Read", "View", "Grep", "Glob"],
+    },
+    # Phase H.1 — /code-review pipeline. Three read-only agents; the
+    # synthesizer fans out reviewer-aux per file but never writes itself.
+    # No Bash for scoper/finder/synthesizer — diff parsing happens in the
+    # TS runner before the agents see the data.
+    "code-review": {
+        "scoper":      ["Read", "View", "Grep", "Glob"],
+        "finder":      ["Read", "View", "Grep", "Glob"],
+        "synthesizer": ["Read", "View", "Grep", "Glob"],
     },
 }
 
@@ -55,20 +73,24 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     "summarizer":   [],
 }
 
-# MAIN_SUBAGENT_ALLOWLIST — which roles each main agent may spawn.
+# MAIN_SUBAGENT_ALLOWLIST — firewall: the maximum set of sub-agent roles
+# each main agent may EVER spawn, across all pipelines. Pipelines narrow
+# further via their `pipeline.yaml::generator.agents[].spawns` field; a
+# pipeline.yaml cannot widen this dict.
 # - "orchestrator" (Phase B.1) may spawn the read-only Phase A roles plus
 #   the pipeline roles ad-hoc. It must NOT spawn an entire pipeline —
 #   that is reserved for user-invoked slash commands. Locked decision #4
-#   in docs/roadmap.md.
+#   in docs/roadmap.md. Orchestrator has no pipeline.yaml, so this entry
+#   IS the effective list.
 # - Phase G.1.6: feature-dev's `coder` and `reviewer` stages opt into
 #   read-only sub-agents:
 #     coder    → explorer (existing-callers scan), investigator (diagnostics)
 #     reviewer → reviewer-aux (per-file checklist)
-#   The pipeline runner's heuristic dispatcher (`subagentDispatcher.ts`)
-#   decides when to fire each spawn based on chunk shape; the policy
-#   table here is the authority on what's allowed.
-# - planner / designer stay empty: planning is scoped from the request
-#   and rarely needs lookups.
+#   For feature-dev these values are now declared in
+#   `.github/pipelines/feature-dev/pipeline.yaml`; the firewall here is
+#   sized to match so the intersection is identical.
+# - planner / designer stay empty in the firewall: even a future pipeline
+#   that declares spawns for them gets dropped to [].
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "orchestrator": [
         "explorer", "investigator", "reviewer-aux",
@@ -79,7 +101,107 @@ MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "designer": [],
     "coder":    ["explorer", "investigator"],
     "reviewer": ["reviewer-aux"],
+    # Phase H.1 — /code-review pipeline roles. scoper + finder don't spawn
+    # sub-agents; only synthesizer fans out reviewer-aux per file.
+    "scoper":      [],
+    "finder":      [],
+    "synthesizer": ["reviewer-aux"],
 }
+
+
+# ── Pipeline.yaml-driven spawns cache ────────────────────────────────────
+#
+# Read `.github/pipelines/<name>/pipeline.yaml` to discover per-pipeline,
+# per-agent declared spawns. Cached by (path, mtime). The yaml is the
+# *declaration*; MAIN_SUBAGENT_ALLOWLIST is the *firewall*. Effective
+# = declaration ∩ firewall.
+
+_PIPELINE_SPAWNS_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+
+
+def _pipelines_root() -> Path:
+    """Resolve `.github/pipelines/`. HARNESS_ROOT wins when set."""
+    env = os.environ.get("HARNESS_ROOT")
+    if env:
+        candidate = Path(env) / ".github" / "pipelines"
+        if candidate.is_dir():
+            return candidate
+    return Path(__file__).resolve().parent.parent / ".github" / "pipelines"
+
+
+def _load_pipeline_spawns(pipeline_name: str) -> dict[str, list[str]]:
+    """Per-agent spawns declared in `pipeline_name`'s pipeline.yaml.
+
+    Returns {} when the file is missing, malformed, or omits all
+    `spawns:` fields. Cached by mtime.
+    """
+    safe = (pipeline_name or "").strip()
+    if not safe or "/" in safe or ".." in safe:
+        return {}
+    path = _pipelines_root() / safe / "pipeline.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _PIPELINE_SPAWNS_CACHE.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        import yaml  # type: ignore[import-untyped]
+        with path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    gen = data.get("generator") or {}
+    if isinstance(gen, dict):
+        for entry in (gen.get("agents") or []):
+            if not isinstance(entry, dict):
+                continue
+            name = (entry.get("name") or "").lower()
+            spawns = entry.get("spawns")
+            if name and isinstance(spawns, list):
+                out[name] = [s for s in spawns if isinstance(s, str)]
+    ev = data.get("evaluator") or {}
+    if isinstance(ev, dict):
+        ev_spawns = ev.get("spawns")
+        if isinstance(ev_spawns, list):
+            # Evaluator role name comes from `evaluator.name` (defaulting to
+            # "reviewer" for back-compat with feature-dev's yaml, which
+            # doesn't declare it). PR 2b — H.1 needs this so code-review's
+            # `synthesizer` evaluator gets its spawns keyed correctly.
+            ev_name = (ev.get("name") or "reviewer").lower()
+            out[ev_name] = [s for s in ev_spawns if isinstance(s, str)]
+    _PIPELINE_SPAWNS_CACHE[str(path)] = (mtime, out)
+    return out
+
+
+def _reset_pipeline_spawns_cache() -> None:
+    """Test hook — drop the cache so a mid-test rewrite is picked up."""
+    _PIPELINE_SPAWNS_CACHE.clear()
+
+
+def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[str]:
+    """Resolve `main_agent`'s spawn list under `pipeline_name`.
+
+    - main_agent == 'orchestrator' OR pipeline_name is None →
+      firewall entry verbatim (back-compat / orchestrator path).
+    - else → pipeline.yaml's `spawns:` for that agent ∩ firewall.
+      If the pipeline declares no `spawns:` for the agent → [].
+    """
+    agent = main_agent.lower()
+    firewall = MAIN_SUBAGENT_ALLOWLIST.get(agent, [])
+    if agent == "orchestrator" or pipeline_name is None:
+        return list(firewall)
+    declared = _load_pipeline_spawns(pipeline_name).get(agent)
+    if declared is None:
+        return []
+    firewall_set = set(firewall)
+    return [r for r in declared if r in firewall_set]
 
 
 def check_tool_allowed(pipeline: str, agent: str, tool: str) -> bool:
@@ -111,14 +233,25 @@ def deny_reason(pipeline: str, agent: str, tool: str) -> str:
 
 # ── Sub-agent helpers ─────────────────────────────────────────────────────
 
-def list_subagent_roles(main_agent: str) -> list[str]:
-    """Roles that `main_agent` is allowed to spawn. [] if none / unknown."""
-    return list(MAIN_SUBAGENT_ALLOWLIST.get(main_agent.lower(), []))
+def list_subagent_roles(
+    main_agent: str, pipeline_name: str | None = None,
+) -> list[str]:
+    """Roles that `main_agent` is allowed to spawn under `pipeline_name`.
+
+    `pipeline_name=None` returns the firewall verbatim — the back-compat
+    path for the orchestrator and for callers without a pipeline context.
+    When `pipeline_name` is supplied, the result is the intersection of
+    the pipeline.yaml-declared `spawns:` and the firewall (fail-closed:
+    pipelines that omit the field get []).
+    """
+    return _effective_spawn_roles(main_agent, pipeline_name)
 
 
-def check_subagent_allowed(main_agent: str, role: str) -> bool:
-    """True iff `main_agent` may spawn the sub-agent `role`."""
-    return role in MAIN_SUBAGENT_ALLOWLIST.get(main_agent.lower(), [])
+def check_subagent_allowed(
+    main_agent: str, role: str, pipeline_name: str | None = None,
+) -> bool:
+    """True iff `main_agent` may spawn `role` under `pipeline_name`."""
+    return role in _effective_spawn_roles(main_agent, pipeline_name)
 
 
 def get_subagent_tools(role: str) -> list[str]:
@@ -155,7 +288,9 @@ def effective_subagent_tools(
     return out
 
 
-def subagent_deny_reason(main_agent: str, role: str) -> str:
+def subagent_deny_reason(
+    main_agent: str, role: str, pipeline_name: str | None = None,
+) -> str:
     """Human-readable reason a spawn was denied."""
     if role not in SUBAGENT_POLICIES:
         return (
@@ -167,10 +302,16 @@ def subagent_deny_reason(main_agent: str, role: str) -> str:
             f"Main agent {main_agent!r} has no spawn allow-list "
             f"(fail-closed)."
         )
-    allowed = MAIN_SUBAGENT_ALLOWLIST[main_agent.lower()]
+    effective = _effective_spawn_roles(main_agent, pipeline_name)
+    if pipeline_name and main_agent.lower() != "orchestrator":
+        return (
+            f"Main agent {main_agent!r} may not spawn role {role!r} under "
+            f"pipeline {pipeline_name!r}. "
+            f"Declared spawns ∩ firewall = {sorted(effective)}."
+        )
     return (
         f"Main agent {main_agent!r} may not spawn role {role!r}. "
-        f"Allowed roles: {sorted(allowed)}"
+        f"Allowed roles: {sorted(effective)}"
     )
 
 
@@ -185,6 +326,8 @@ _KNOWN_AGENT_NAMES: frozenset[str] = frozenset({
     "orchestrator", "summarizer",
     "explorer", "investigator", "reviewer-aux",
     "pipeline-builder",
+    # Phase H.1 — /code-review pipeline roles.
+    "scoper", "finder", "synthesizer",
 })
 
 # Tool names every policy entry must reference. Sourced from the union

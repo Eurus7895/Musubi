@@ -41,13 +41,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 
+import composer
 from execution import executor
 from memory import memory_loader, session_distiller
+from session import chunks as session_chunks
 from session import conversations, state, sub_sessions
 from skills import skill_loader
 from storage import db as _db
 from storage import subagent_audit
-from session import chunks as session_chunks
 from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
@@ -88,26 +89,6 @@ try:
     sub_sessions.sweep_orphans()
 except Exception:
     pass  # Don't block server start on a sweep failure.
-
-# ── Skill auto-injection map ──────────────────────────────────────────────────
-# (stage, agent_name) → list of skill IDs whose SKILL.md is injected into
-# the harness_read_stage response. Agent cannot opt out.
-
-_STAGE_SKILL_MAP: dict[tuple[str, str], list[str]] = {
-    ("plan",   "designer"):  ["api-design"],
-    ("design", "coder"):     ["python"],
-    ("code",   "reviewer"):  ["code-review"],   # always — reviewer must use it
-}
-
-# Agent → the stage that agent writes to.
-# Used to auto-mark that stage in_progress when the agent calls harness_read_stage,
-# so crash recovery can identify where the pipeline was interrupted.
-_AGENT_OUTPUT_STAGE: dict[str, str] = {
-    "planner":  "plan",
-    "designer": "design",
-    "coder":    "code",
-    "reviewer": "review",
-}
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -200,9 +181,33 @@ def harness_read_stage(
     Relevant skills are automatically injected into the response based on
     the (stage, agent_name) pair — agents cannot opt out of skill content.
     """
+    # Resolve the pipeline name first — needed for the stage-active guard,
+    # the in-progress mark, and skill injection below.
+    pipeline_name = "feature-dev"
+    try:
+        run = _db.get_pipeline_run(session_id)
+        if run and run.get("pipeline_name"):
+            pipeline_name = run["pipeline_name"]
+    except Exception:
+        pass
+
+    # Stage-active guard: reject reads for stages this pipeline doesn't run.
+    # Soft on unknown pipelines (defaults to feature-dev's canonical 4 stages).
+    active = composer.active_stages(pipeline_name)
+    if stage not in active:
+        return json.dumps({
+            "data": None,
+            "note": (
+                f"stage {stage!r} is not active for pipeline "
+                f"{pipeline_name!r}; active stages: {active}"
+            ),
+        })
+
     # Mark the calling agent's output stage as in_progress for crash recovery.
     # Planner reading "plan" → marks plan in_progress before writing.
-    output_stage = _AGENT_OUTPUT_STAGE.get(agent_name.lower())
+    # composer.output_stage_for_agent consults pipeline.yaml, falling back to
+    # the canonical map for back-compat with agents not declared in the yaml.
+    output_stage = composer.output_stage_for_agent(pipeline_name, agent_name)
     if output_stage:
         try:
             state.mark_in_progress(session_id, output_stage)
@@ -224,22 +229,29 @@ def harness_read_stage(
     else:
         result["data"] = output
 
-    # Auto-inject skills — static map floor + plan-declared required_skills.
-    # Static map: always injected regardless of task (e.g. reviewer always gets code-review).
-    # required_skills: declared by Planner in plan output, filtered through agent's allowlist
-    #   so a wrong or irrelevant skill cannot reach an agent that shouldn't see it.
-    skill_ids: set[str] = set(_STAGE_SKILL_MAP.get((stage, agent_name.lower()), []))
+    # Auto-inject skills — pipeline.yaml-declared floor + plan-declared
+    # required_skills. The pipeline.yaml floor is read via `composer`; that
+    # module reads `.github/pipelines/<name>/pipeline.yaml` and returns the
+    # skill its `generator.agents[].skill` or `evaluator.skill` field
+    # declares. AGENT_SKILL_ALLOWLIST below intersects against that to
+    # block any pipeline.yaml-declared skill the agent isn't permitted to
+    # see (firewall).
+    allowed_skills: set[str] = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+    skill_ids: set[str] = {
+        sid
+        for sid in composer.injected_skill_ids(pipeline_name, stage, agent_name)
+        if sid in allowed_skills
+    }
 
     # Reviewer is an evaluator — plan-declared required_skills are a generator
     # hint, not relevant to judging the artifact. Skip dynamic injection for
-    # the reviewer; only the static code-review skill is injected.
+    # the reviewer; only the pipeline.yaml-declared skill is injected.
     if agent_name.lower() != "reviewer":
-        allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
         try:
             plan = state.read_stage(session_id, "plan")
             if isinstance(plan, dict):
                 for sid in plan.get("required_skills", []):
-                    if sid in allowed:
+                    if sid in allowed_skills:
                         skill_ids.add(sid)
         except Exception:
             pass  # plan not yet written — skip dynamic injection
@@ -306,6 +318,27 @@ def harness_write_stage(
     same session.
     """
     try:
+        # Stage-active guard: reject writes to a stage the pipeline doesn't run.
+        # Soft-fails if the pipeline can't be determined (legacy session, no
+        # pipeline_runs row) — default to feature-dev's canonical 4-stage list.
+        try:
+            run = _db.get_pipeline_run(session_id)
+            pipeline_name = (
+                run.get("pipeline_name") if run and run.get("pipeline_name")
+                else "feature-dev"
+            )
+        except Exception:
+            pipeline_name = "feature-dev"
+        active = composer.active_stages(pipeline_name)
+        if stage not in active:
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    f"stage {stage!r} is not active for pipeline "
+                    f"{pipeline_name!r}; active stages: {active}"
+                ),
+            })
+
         # Accept both JSON-string and native JSON object from MCP clients.
         if isinstance(output, str):
             stripped = output.strip()
@@ -656,6 +689,59 @@ def harness_get_correction_rules(pipeline_name: str) -> str:
             if isinstance(on_categories, list) else [],
     }
     return json.dumps({"status": "ok", "rules": rules, "source": str(candidate)})
+
+
+@mcp.tool()
+def harness_get_injected_skills(
+    pipeline_name: str, stage: str, agent_name: str,
+) -> str:
+    """Return the skill IDs the pipeline.yaml declares for `(stage, agent)`.
+
+    Mechanical lookup: `agent_name`'s `skill:` is injected when that agent
+    reads its prior stage. The result is intersected against the agent's
+    `AGENT_SKILL_ALLOWLIST` firewall — pipeline.yaml may not widen what an
+    agent is permitted to see.
+
+    Returns:
+      { status: 'ok', skill_ids: [...], pipeline_name, stage, agent_name }
+
+    Empty `skill_ids` covers all the soft-fail cases (missing pipeline.yaml,
+    no skill declared, firewall-rejected) — same shape, no error to mishandle.
+    """
+    declared = composer.injected_skill_ids(pipeline_name, stage, agent_name)
+    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+    effective = [sid for sid in declared if sid in allowed]
+    return json.dumps({
+        "status": "ok",
+        "skill_ids": effective,
+        "pipeline_name": pipeline_name,
+        "stage": stage,
+        "agent_name": agent_name,
+    })
+
+
+@mcp.tool()
+def harness_get_pipeline_stages(pipeline_name: str) -> str:
+    """Return the ordered stage list this pipeline runs.
+
+    Reads `.github/pipelines/<name>/pipeline.yaml`. The order follows
+    `generator.agents[]` first (in declaration order) then `evaluator` last.
+    Each stage name comes from each agent's `stage:` field, falling back to
+    canonical feature-dev names (planner→plan, designer→design, …) when the
+    field is missing — so feature-dev's existing yaml resolves correctly
+    without migration.
+
+    Result:
+      { status: 'ok', pipeline_name, stages: [...] }
+
+    Falls back to the canonical 4-stage list when the yaml is missing or
+    malformed, matching the soft-fail posture of other pipeline.yaml readers.
+    """
+    return json.dumps({
+        "status": "ok",
+        "pipeline_name": pipeline_name,
+        "stages": composer.active_stages(pipeline_name),
+    })
 
 
 # ── Phase G.3: observability primitives ───────────────────────────────────
@@ -1103,11 +1189,27 @@ def harness_spawn_subagent(
     Returns: { handle_id, role, parent_session_id, effective_tools,
                max_turns, per_turn_timeout_s, wall_clock_timeout_s }.
     """
+    # Resolve the parent's pipeline so the spawn check uses pipeline.yaml's
+    # declared `spawns:`. Missing pipeline_run row → fall back to firewall
+    # (back-compat with sessions opened before Phase H or with non-pipeline
+    # callers like the orchestrator path).
+    pipeline_name: str | None = None
+    try:
+        run = _db.get_pipeline_run(parent_session_id)
+        if run and run.get("pipeline_name"):
+            pipeline_name = run["pipeline_name"]
+    except Exception:
+        pipeline_name = None
+
     # 1. Role + main allow-list intersection.
-    if not _policy.check_subagent_allowed(parent_agent_name, role):
+    if not _policy.check_subagent_allowed(
+        parent_agent_name, role, pipeline_name=pipeline_name,
+    ):
         return json.dumps({
             "status": "error",
-            "error": _policy.subagent_deny_reason(parent_agent_name, role),
+            "error": _policy.subagent_deny_reason(
+                parent_agent_name, role, pipeline_name=pipeline_name,
+            ),
         })
 
     # 2. Parent session must exist (foreign-key safety + clearer error).
@@ -1465,21 +1567,59 @@ def harness_query_subagent_events(
 
 
 @mcp.tool()
-def harness_list_subagents(main_agent_name: str) -> str:
+def harness_list_subagents(
+    main_agent_name: str, pipeline_name: str | None = None,
+) -> str:
     """Return the spawn allow-list for a main agent.
 
     The VS Code extension's runner injects this into the main agent's
     tool catalog so the LLM only sees roles it is permitted to spawn.
 
-    Result: { main_agent, roles: [ {role, allowed_tools}, ... ] }.
+    When `pipeline_name` is supplied, the result is the intersection of
+    that pipeline.yaml's `spawns:` declarations and the firewall in
+    `MAIN_SUBAGENT_ALLOWLIST`. When omitted, the firewall is returned
+    directly (orchestrator path / back-compat).
+
+    Result: { main_agent, pipeline_name, roles: [ {role, allowed_tools}, ... ] }.
     Unknown / un-allow-listed mains return an empty roles array (fail-closed).
     """
-    roles = _policy.list_subagent_roles(main_agent_name)
+    roles = _policy.list_subagent_roles(main_agent_name, pipeline_name=pipeline_name)
     catalog = [
         {"role": r, "allowed_tools": _policy.get_subagent_tools(r)}
         for r in roles
     ]
-    return json.dumps({"main_agent": main_agent_name, "roles": catalog})
+    return json.dumps({
+        "main_agent": main_agent_name,
+        "pipeline_name": pipeline_name,
+        "roles": catalog,
+    })
+
+
+@mcp.tool()
+def harness_list_subagent_spawns(
+    pipeline_name: str, main_agent_name: str,
+) -> str:
+    """Per-pipeline spawn list resolved from pipeline.yaml + firewall.
+
+    Lighter than `harness_list_subagents` — returns just role names, no
+    per-role tool catalog. Used by callers that already know each role's
+    tool set (the heuristic dispatcher).
+
+    Result:
+      { status: 'ok', pipeline_name, main_agent_name, roles: [...] }
+
+    Roles is empty when:
+      - pipeline.yaml is missing / malformed
+      - pipeline.yaml omits `spawns:` for this agent
+      - declared spawns are all rejected by the firewall
+    """
+    roles = _policy.list_subagent_roles(main_agent_name, pipeline_name=pipeline_name)
+    return json.dumps({
+        "status": "ok",
+        "pipeline_name": pipeline_name,
+        "main_agent_name": main_agent_name,
+        "roles": roles,
+    })
 
 
 # ── Conversation continuity (Phase C.1) ───────────────────────────────────────

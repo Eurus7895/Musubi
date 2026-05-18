@@ -31,6 +31,20 @@ for pkg in (
 # can't follow that, so the module has to be both on pathex AND named here.
 hidden.append("policy_engine")
 
+# composer.py is a top-level module (not inside any of the first-party
+# packages above), and PyInstaller's static scan doesn't always pick up the
+# `import composer` in server.py reliably across builds. Name it explicitly
+# so a clean build always includes it.
+hidden.append("composer")
+
+# Phase H.1 — composer.py and policy_engine.py both load pipeline.yaml at
+# runtime. Both import yaml *lazily* (so the server boots even without
+# PyYAML in the bundle and falls back to canonical feature-dev defaults),
+# but a properly-built bundle should include PyYAML so the new pipelines
+# (and feature-dev's own pipeline.yaml-driven skill injection) actually
+# work. PyInstaller's import-graph misses lazy imports, so list yaml here.
+hidden.append("yaml")
+
 a = Analysis(
     ["cli.py"],
     pathex=[".", "../scripts"],
