@@ -4,6 +4,11 @@
  * for it.
  *
  * Selection chain, in order:
+ *   0. VS Code setting `copilotHarness.modelOverride` (if non-empty).
+ *      Bypasses skill / agent / fallback resolution entirely. Lets a user
+ *      switch every harness LM call to a cheap family when they've run
+ *      out of quota on the agent defaults. Falls through to (1-4) only
+ *      when the override family is unavailable on Copilot's side.
  *   1. First active skill that declares `model:` in its SKILL.md (load
  *      order). Lets a "complicated skill" lift a small agent onto a
  *      heavier family for that one invocation.
@@ -39,6 +44,22 @@ export async function selectModelForAgent(
 ): Promise<vscode.LanguageModelChat> {
   const log = opts.log ?? (() => { /* no-op */ });
   const fallback = opts.fallbackFamily ?? DEFAULT_FALLBACK_FAMILY;
+
+  // 0. Settings override — wins everything when set.
+  const overrideFamily = vscode.workspace
+    .getConfiguration("copilotHarness")
+    .get<string>("modelOverride", "")
+    .trim();
+  if (overrideFamily) {
+    const overrideModels = await vscode.lm.selectChatModels({
+      vendor: "copilot", family: overrideFamily,
+    });
+    if (overrideModels.length > 0) {
+      log(`[model] ${opts.agentName}: family=${overrideFamily} (settings override)`);
+      return overrideModels[0];
+    }
+    log(`[model] ${opts.agentName}: override family=${overrideFamily} unavailable on this Copilot subscription, falling through to frontmatter resolution`);
+  }
 
   // 1. Skill override — first skill with `model:` wins.
   const skillPick = opts.skills && opts.skills.length > 0
