@@ -740,16 +740,23 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       // static prefix becomes cache-eligible and turn 2+ should show a
       // noticeable lm= speedup.
       //
-      // We send both the snake_case (Anthropic convention) and
-      // camelCase (Copilot convention) keys to maximise the chance one
-      // resolves. Per-message-block cache_control isn't reachable
-      // through this API — only request-level, which works for OpenAI
-      // automatic prefix caching but is best-effort for Anthropic.
+      // We send three naming conventions to maximise the chance one
+      // resolves:
+      //   - cache_control: Anthropic snake_case spec
+      //   - cacheControl: TypeScript-idiomatic camelCase guess
+      //   - copilot_cache_control: Copilot's proprietary field name
+      //     observed in extension log output for both GPT and Claude
+      //     responses (Microsoft's proxy uses this prefix internally
+      //     before translating to provider-native cache directives).
+      // Per-message-block cache_control isn't reachable through this
+      // API — only request-level, which works for OpenAI automatic
+      // prefix caching but is best-effort for Anthropic.
       const requestOptions: vscode.LanguageModelChatRequestOptions = {
         tools: lmTools,
         modelOptions: {
           cache_control: { type: "ephemeral" },
           cacheControl: { type: "ephemeral" },
+          copilot_cache_control: { type: "ephemeral" },
         },
       };
       const response = await model.sendRequest(history, requestOptions, token);
