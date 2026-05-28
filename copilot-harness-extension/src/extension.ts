@@ -218,7 +218,8 @@ type ParsedCommand =
   | { type: "agent";        agentName: AgentName; request?: string }
   | { type: "full";         request: string }
   | { type: "status" }
-  | { type: "help" };
+  | { type: "help" }
+  | { type: "model";        family: string };
 
 /**
  * Routing rules (Phase D — zero LLM cost):
@@ -238,6 +239,11 @@ function parseCommand(text: string): ParsedCommand {
     const name = (spaceIdx === -1 ? body : body.slice(0, spaceIdx)).toLowerCase();
     const args = spaceIdx === -1 ? "" : body.slice(spaceIdx + 1).trim();
     if (!name) { return { type: "help" }; }
+    // Built-in: /model <family> writes copilotHarness.modelOverride. Handled
+    // here (not via slashCommands.ts file dispatch) because the action is
+    // "update a VS Code setting", which doesn't fit the file-driven
+    // pipeline/agent/step taxonomy.
+    if (name === "model") { return { type: "model", family: args }; }
     return { type: "slash", name, args };
   }
 
@@ -301,6 +307,66 @@ async function showStatus(
   stream.markdown(md);
 }
 
+// ── Model override ────────────────────────────────────────────────────────────
+
+/**
+ * `/model` — show / set / clear the copilotHarness.modelOverride setting from
+ * chat. Writes to Global (user) settings so the override persists across
+ * workspaces; the user can manually scope to Workspace via settings.json if
+ * they prefer. Validates the requested family against Copilot's catalogue
+ * before writing — a typo or unsupported ID leaves the setting unchanged.
+ */
+async function runModel(
+  family: string,
+  stream: vscode.ChatResponseStream,
+): Promise<void> {
+  const config = vscode.workspace.getConfiguration("copilotHarness");
+  const arg = family.trim();
+
+  if (!arg) {
+    const current = config.get<string>("modelOverride", "").trim();
+    const models = await vscode.lm.selectChatModels({ vendor: "copilot" });
+    const families = [...new Set(models.map(m => m.family))].sort();
+    let md = `**Current override:** \`${current || "(none — using agent defaults)"}\`\n\n`;
+    md += `**Available families on this Copilot subscription:**\n\n`;
+    md += families.length > 0
+      ? families.map(f => `- \`${f}\``).join("\n")
+      : "_(none — is Copilot Chat installed and signed in?)_";
+    md += `\n\n**Usage:**\n\n`;
+    md += `- \`/model <family>\` — set the override (persists in user settings)\n`;
+    md += `- \`/model clear\` — remove the override\n`;
+    md += `- \`/model\` — show this help\n`;
+    stream.markdown(md);
+    return;
+  }
+
+  if (arg.toLowerCase() === "clear" || arg.toLowerCase() === "none" || arg === "-") {
+    await config.update("modelOverride", "", vscode.ConfigurationTarget.Global);
+    stream.markdown(`✅ Model override cleared. Agent frontmatter defaults will be used.`);
+    return;
+  }
+
+  const models = await vscode.lm.selectChatModels({ vendor: "copilot", family: arg });
+  if (models.length === 0) {
+    const allModels = await vscode.lm.selectChatModels({ vendor: "copilot" });
+    const available = [...new Set(allModels.map(m => m.family))].sort();
+    stream.markdown(
+      `❌ Family \`${arg}\` not available on this Copilot subscription.\n\n` +
+      (available.length > 0
+        ? `**Available:** ${available.map(f => `\`${f}\``).join(", ")}\n\n`
+        : "_(no Copilot models surfaced — is Copilot Chat installed and signed in?)_\n\n") +
+      `Setting was not changed.`,
+    );
+    return;
+  }
+
+  await config.update("modelOverride", arg, vscode.ConfigurationTarget.Global);
+  stream.markdown(
+    `✅ Model override set to \`${arg}\`. All harness LM calls (orchestrator, pipelines, sub-agents) will use this family.\n\n` +
+    `To clear: \`/model clear\`.`,
+  );
+}
+
 // ── Usage text ────────────────────────────────────────────────────────────────
 
 const USAGE_HEADER = "**CopilotHarness** — orchestrator + governed pipelines";
@@ -313,6 +379,10 @@ const USAGE_FOOTER = [
   "- `@harness <prompt>` — orchestrator. Persistent conversation, spawns sub-agents on demand.",
   "- Legacy bare keywords (`continue`, `status`, `full`, `planner`, `designer`, ",
   "  `coder`, `reviewer`) still work for muscle memory but are deprecated — use the slash form.",
+  "",
+  "**Built-in commands:**",
+  "",
+  "- `/model [family|clear]` — switch the model family for ALL harness LM calls (writes `copilotHarness.modelOverride`). Useful when you've run out of quota on the agent defaults. Run with no args to see current value + available families.",
   "",
   "**Review gate (between stages):**",
   "",
@@ -458,6 +528,10 @@ async function handler(
 
       case "slash":
         await runSlash(cmd.name, cmd.args, client, context, workspaceRoot, slashRoots, stream, token, refreshTasks, log, sessionSalt, request.toolInvocationToken);
+        break;
+
+      case "model":
+        await runModel(cmd.family, stream);
         break;
     }
   } catch (err) {
