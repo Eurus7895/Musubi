@@ -21,6 +21,7 @@ import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrat
 import { registerGateCommands } from "./pipelineGateUi";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
+import { HarnessModelsProvider } from "./modelsView";
 
 let out: vscode.OutputChannel;
 
@@ -146,6 +147,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // This is what the in-chat "Show Tasks" button routes to.
       await vscode.commands.executeCommand("workbench.view.extension.copilotHarness");
     }),
+  );
+
+  // ── Models sidebar view ────────────────────────────────────────────────────
+  // Mirrors the /model slash command as a persistent visual surface: shows
+  // every family Copilot surfaces, marks the active override, click-to-switch.
+  // Writes the same copilotHarness.modelOverride setting that the resolver in
+  // modelSelector.ts reads first.
+  const modelsProvider = new HarnessModelsProvider((msg) => out.appendLine(msg));
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("copilotHarness.models", modelsProvider),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.refreshModels", () => modelsProvider.refresh()),
+    vscode.commands.registerCommand("copilot-harness.setModelOverrideFromTree", async (family: string) => {
+      // The tree always passes a real Copilot-surfaced family, so we skip
+      // the availability re-check that /model does — the tree itself is the
+      // source of truth for what's available.
+      await vscode.workspace
+        .getConfiguration("copilotHarness")
+        .update("modelOverride", family, vscode.ConfigurationTarget.Global);
+      vscode.window.setStatusBarMessage(`CopilotHarness: model override → ${family}`, 3000);
+    }),
+    vscode.commands.registerCommand("copilot-harness.clearModelOverride", async () => {
+      await vscode.workspace
+        .getConfiguration("copilotHarness")
+        .update("modelOverride", "", vscode.ConfigurationTarget.Global);
+      vscode.window.setStatusBarMessage("CopilotHarness: model override cleared", 3000);
+    }),
+  );
+  // Auto-refresh on the two events that change the tree's content:
+  //   1. setting flipped (via Settings UI, /model, our tree commands, or sync)
+  //   2. Copilot surfaced/withdrew a family (sign-in, model update)
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("copilotHarness.modelOverride")) {
+        modelsProvider.refresh();
+      }
+    }),
+    vscode.lm.onDidChangeChatModels(() => modelsProvider.refresh()),
   );
 
   // Refreshing the tree is the only signal pipeline.ts sends out. Debounced

@@ -59,6 +59,23 @@
         "command": "copilot-harness.toggleAutoApprove",
         "title": "Toggle auto-approve for a pipeline",
         "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.refreshModels",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.setModelOverrideFromTree",
+        "title": "Set as harness model",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.clearModelOverride",
+        "title": "Clear model override",
+        "category": "CopilotHarness",
+        "icon": "$(close)"
       }
     ],
     "configuration": {
@@ -93,6 +110,12 @@
           "id": "copilotHarness.tasks",
           "name": "Tasks",
           "contextualTitle": "CopilotHarness Tasks"
+        },
+        {
+          "type": "tree",
+          "id": "copilotHarness.models",
+          "name": "Models",
+          "contextualTitle": "CopilotHarness Models"
         }
       ]
     },
@@ -102,12 +125,22 @@
           "command": "copilot-harness.refreshTasks",
           "when": "view == copilotHarness.tasks",
           "group": "navigation"
+        },
+        {
+          "command": "copilot-harness.refreshModels",
+          "when": "view == copilotHarness.models",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "copilot-harness.clearActiveSession",
           "when": "view == copilotHarness.tasks && viewItem == section-active",
+          "group": "inline"
+        },
+        {
+          "command": "copilot-harness.clearModelOverride",
+          "when": "view == copilotHarness.models && viewItem == model-header-active",
           "group": "inline"
         }
       ]
