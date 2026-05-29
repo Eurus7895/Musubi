@@ -251,6 +251,15 @@ const AGENT_NAMES = new Set(["planner", "designer", "coder", "reviewer"]);
 
 type AgentName = "planner" | "designer" | "coder" | "reviewer";
 
+/**
+ * Slash commands that are hardcoded in parseCommand + the handler switch
+ * rather than file-driven via `.github/commands/<name>.md`. Kept here so
+ * the "Unknown command" error can surface them — without this, a user
+ * who types `/contxt-cap` (typo) sees a list of file-driven commands
+ * with no hint that `/context-cap` exists.
+ */
+const BUILTIN_COMMAND_NAMES = ["model", "context-cap"] as const;
+
 type ParsedCommand =
   | { type: "slash";        name: string; args: string }
   | { type: "orchestrator"; prompt: string }
@@ -727,11 +736,17 @@ async function runSlash(
 ): Promise<void> {
   const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
-    const available = listSlashCommands(slashRoots).map(c => `/${c.name}`).join(", ");
-    stream.markdown(
-      `**Unknown command:** \`/${name}\`` +
-      (available ? `\n\nAvailable: ${available}` : ""),
-    );
+    const fileCommands = listSlashCommands(slashRoots)
+      .map(c => `\`/${c.name}\``)
+      .sort()
+      .join(", ");
+    const builtinCommands = BUILTIN_COMMAND_NAMES
+      .map(n => `\`/${n}\``)
+      .join(", ");
+    let body = `**Unknown command:** \`/${name}\``;
+    if (fileCommands) { body += `\n\n**Available:** ${fileCommands}`; }
+    if (builtinCommands) { body += `\n\n**Built-in:** ${builtinCommands}`; }
+    stream.markdown(body);
     return;
   }
 
