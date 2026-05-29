@@ -703,6 +703,51 @@ estimated to last 3-5× longer — the gap is structural:
   merged) saved another ~424 t / turn average but didn't close the
   3-5× gap.
 
+**Update — May 2026 (token billing era + PR #54):**
+
+The cost story above was measured under per-request billing. Billing
+changed to per-token in mid-2026 with the published rates
+**$3/M input · $0.30/M cached · $15/M output · $3.75/M cache write**
+on Sonnet 4.6. This reshapes the gap:
+
+- The 3-5× per-turn count comparison is no longer the billable unit;
+  what matters now is `cached_input` vs `input` token billing — a
+  10× discount on whichever portion of the prompt the provider
+  recognises as cached.
+- Extension log capture revealed Copilot's proxy uses the proprietary
+  field name `copilot_cache_control`, **not** the Anthropic-spec
+  `cache_control` that PR #39 sent. PR #54 added the proprietary
+  field name as a third key in the modelOptions probe. If the proxy
+  honours it, the orchestrator's static system prefix becomes
+  cache-eligible and the structural cost gap collapses to single-
+  digit percent.
+- PR #40's pull-on-demand subsequently landed independently via
+  commit `19c3f74`, relaxing Hard Invariant #2 per-mode: pipeline
+  agents still get skill content pushed; the orchestrator advertises
+  `harness_get_skill` and pulls on demand. The "Hard Invariant #2
+  stays at the original wording" claim below is therefore stale —
+  the actual code and `CLAUDE.md` reflect the per-mode relaxation.
+
+**The freeze decision is therefore under review.** Empirical
+verification requires a real Claude exchange where the Copilot usage
+dashboard shows `cached_input > 0` on turn 2+ of a multi-turn
+`@harness` conversation. The verification was blocked at the time
+PR #54 merged by the author's depleted monthly quota; it will
+happen passively the next time Claude work resumes.
+
+- If `cached_input > 0` → field-name fix is correct, the freeze
+  rationale collapses, this section gets rewritten as "freeze
+  lifted, pull-on-demand and `copilot_cache_control` close the
+  cost gap".
+- If `cached_input == 0` → the proxy filters more than just the
+  field name, the freeze stays, and J.4 telemetry becomes the next
+  diagnostic step.
+
+See Phase J for the broader cost-control sprint (model picker,
+configurable context cap, credit budgets, telemetry) that ships
+regardless of the freeze outcome — those knobs benefit both
+pipeline and orchestrator users.
+
 The harness was designed for **governed multi-stage workflows**
 (pipeline mode), where the audit trail + evaluator firewall + correction
 loop earn the per-turn overhead. The orchestrator was a Phase B
@@ -1258,6 +1303,112 @@ indefinitely otherwise.
 
 **Open questions:** all of them; section is a placeholder until
 Phase H demonstrates pipeline-template demand.
+
+---
+
+### Phase J — Cost control under token billing
+
+**Goal:** Make `@harness` (pipelines AND orchestrator) economically
+viable on a per-user token budget. The shift from per-request to
+per-token billing in mid-2026 invalidates several Phase F
+assumptions; Phase J adds the knobs, caps, and visibility the
+request-billed era didn't need.
+
+**Triggering context:**
+
+- Billing changed from request-count to per-token. On Sonnet 4.6
+  rates ($3/M input · $0.30/M cached · $15/M output · $3.75/M cache
+  write), a 100k-context turn without caching costs ~30 credits;
+  with caching, ~3 credits. 10× ratio.
+- Per-user budget is **3000 credits/month for the first 3 months,
+  then 1900 credits/month** after. 1 credit = $0.01 USD.
+- At pre-Phase-J defaults (Sonnet, no cache, 100k context), 1900
+  credits = ~63 turns/month. Not a working tool. Phase J aims to
+  push that into hundreds-to-thousands depending on model + cache
+  effectiveness.
+
+**Items:**
+
+| | Item | Status |
+|---|---|---|
+| J.1 | `copilot_cache_control` field-name probe — proprietary Copilot field name added to `modelOptions` alongside Anthropic's `cache_control` and the camelCase guess, so Claude prefix caching can engage if the proxy honours the right name | ✅ PR #54 |
+| J.2a | `copilotHarness.modelOverride` VS Code setting at the top of the model resolution chain (above skill / agent / fallback) | ✅ PR #53 |
+| J.2b | `/model [family\|clear]` built-in slash command with availability validation against `vscode.lm.selectChatModels` | ✅ PR #53 |
+| J.2c | Models sidebar TreeView — persistent surface with click-to-switch, auto-refresh on config + LM-availability events | ✅ PR #53 |
+| J.2d | Per-pipeline `default_model:` in `pipeline.yaml` | Deferred — refinement, not a gap |
+| J.3 | Credit budgets — `max_credits:` per pipeline + soft warn at 80% + hard stop at 100% | TODO |
+| J.4 | Cost telemetry — `stage_metrics` table, per-LM-call credit logging, MCP query tool, surfaced via `/status` + 50/80% monthly milestone warnings | TODO |
+| J.5 | Configurable context cap — `copilotHarness.contextCap` setting + `pipeline.yaml` `context_cap:` override + `/context-cap [N\|clear]` slash command | TODO |
+| J.6 | Phase F note refresh in this doc | ✅ (this commit) |
+| J.7 | Phase J section in this doc | ✅ (this commit) |
+
+**Three-layer config pattern (shared by model + context cap):**
+
+```
+1. pipeline.yaml field            ← per-pipeline tuning
+2. VS Code workspace/user setting ← set-and-forget
+3. Built-in default               ← backwards compatibility
+              ↑
+   /<slash-command>               ← chat-side tactile switch
+                                     (writes layer 2)
+```
+
+Applied to both `modelOverride` / `/model` and `contextCap` /
+`/context-cap` for consistency. Resolution: pipeline > setting >
+default. The slash command writes the setting (no separate state).
+
+**Sequence (remaining work, deterministic order):**
+
+1. **J.6 + J.7** — docs first (this commit). Pins the cost story
+   while it's fresh; no quota burn.
+2. **J.5** — configurable context cap. Smallest concrete change
+   (~80 lines); immediately halves per-turn cost at high context.
+3. **J.3** — credit budgets with teeth. Runaway prevention belt
+   before the visibility seat.
+4. **J.4** — telemetry. Once budgets prevent disaster, visibility is
+   the next priority (~300 lines, biggest item).
+5. **J.2d** — per-pipeline default model. Refinement, deferred until
+   J.4 shows whether it's actually needed.
+
+**Decisions (locked in):**
+
+- **J.3 enforcement:** soft warn at 80% of `max_credits:` + hard
+  stop at 100%. No per-turn nag below 80%.
+- **J.4 granularity:** per-LM-call (the atomic billable unit),
+  aggregated up to per-stage and per-session views.
+- **J.4 chat surfacing:** `/status` on demand + monthly milestone
+  warnings at 50% / 80% of the per-user budget. No per-turn
+  reporting unless explicitly requested.
+- **Phase F unfreeze:** deferred. Decision contingent on a real
+  Claude exchange showing `cached_input > 0` in the Copilot usage
+  dashboard. Until then, the freeze stays in effect with hedged
+  rationale (see Phase F update).
+
+**Success criteria — when Phase J is done:**
+
+- [ ] User can see "X / 1900 credits used this month" without
+  opening the Copilot dashboard.
+- [ ] Pipeline runs self-cap at a configurable credit budget.
+- [ ] Default per-turn cost at orchestrator typical context is
+  ≤5 credits on Haiku.
+- [ ] Phase F note reflects the post-cache-fix reality (lifted or
+  hedged based on `cached_input` measurement).
+- [ ] `docs/roadmap.md` has a Phase J section (this one).
+
+**What stays from Phase F (not invalidated by J):**
+
+- The "casual chat → plain Copilot, governed work → pipeline"
+  routing recommendation. Independent of caching.
+- The architectural critique (orchestrator in direct competition
+  with Copilot Agent on Copilot Agent's home turf). Caching reduces
+  cost; it doesn't change the bone structure of the comparison.
+- The frozen-subsystem stance for orchestrator-specific new
+  features. Even with caching, pipelines remain the development
+  banner.
+
+What may change with J: bare `@harness <prompt>` may become
+recommended (rather than tolerated) for casual chat / lookups if the
+cost gap genuinely closes to ~10-20%.
 
 ---
 
