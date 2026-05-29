@@ -195,6 +195,20 @@
           "type": "object",
           "properties": {}
         }
+      },
+      {
+        "name": "harness_get_skill",
+        "displayName": "Fetch skill content (CopilotHarness)",
+        "modelDescription": "Fetch the body of an installed skill (e.g. 'orchestrator-routing') when you need detailed routing rules, picker tables, or anti-patterns that aren't covered by your inline core rules. The harness used to push the full skill body into the system prompt every turn; now you pull on demand. Call this when you need detail about: tool selection, pipeline recommendation, sub-agent runners status, anti-patterns, or anything else not covered in the agent's inline 'Core rules' section. Do NOT call on every turn — most simple Q&A doesn't need it.",
+        "toolReferenceName": "harness_get_skill",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "skill_id": { "type": "string" }
+          },
+          "required": ["skill_id"]
+        }
       }
     ]
   },
