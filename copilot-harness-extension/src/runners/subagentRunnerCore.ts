@@ -57,7 +57,7 @@ export const SUBAGENT_ROLE_CONFIGS: Readonly<Record<SubagentRoleId, SubagentRole
     agentName: "explorer",
     agentMdRel: ".github/agents/explorer.agent.md",
     maxTurns: 6,
-    wallClockS: 120,
+    wallClockS: 30,
     defaultLmTools: [
       "copilot_readFile", "read_file",
       "copilot_listDirectory", "list_dir",
@@ -70,7 +70,7 @@ export const SUBAGENT_ROLE_CONFIGS: Readonly<Record<SubagentRoleId, SubagentRole
     agentName: "investigator",
     agentMdRel: ".github/agents/investigator.agent.md",
     maxTurns: 6,
-    wallClockS: 180,
+    wallClockS: 60,
     defaultLmTools: [
       "copilot_readFile", "read_file",
       "copilot_listDirectory", "list_dir",
@@ -85,7 +85,7 @@ export const SUBAGENT_ROLE_CONFIGS: Readonly<Record<SubagentRoleId, SubagentRole
     agentName: "reviewer-aux",
     agentMdRel: ".github/agents/reviewer-aux.agent.md",
     maxTurns: 4,
-    wallClockS: 90,
+    wallClockS: 30,
     defaultLmTools: [
       "copilot_readFile", "read_file",
     ],
