@@ -413,6 +413,18 @@ export function estimateTokens(text: string): number {
  */
 export const MODEL_CONTEXT_TOKENS = 200_000;
 
+/**
+ * Phase J.5 — default ceiling for the per-turn context budget when the
+ * user hasn't set `copilotHarness.contextCap` and the pipeline.yaml
+ * doesn't declare its own `context_cap:`. Tuned for cost rather than
+ * quality: at 50k input tokens on Sonnet 4.6 ($3/M input, $0.30/M
+ * cached), a single uncached turn costs ~15 credits — fits ~125 turns
+ * in the 1900-credit monthly budget. Increase if your typical
+ * conversation needs more history; the cap can go up to
+ * MODEL_CONTEXT_TOKENS.
+ */
+export const DEFAULT_CONTEXT_CAP = 50_000;
+
 /** Reactive compaction thresholds (Claude Code pattern). */
 export const COMPACT_T1_DROP_TOOLS = 0.80;
 export const COMPACT_T2_SUMMARIZE  = 0.90;

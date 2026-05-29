@@ -15,6 +15,7 @@
 import * as vscode from "vscode";
 import { McpClient } from "../mcpClient";
 import { selectModelForAgent } from "../modelSelector";
+import { resolveContextCap } from "../contextCap";
 import {
   applyCompaction,
   buildOrchestratorSystemPrompt,
@@ -24,7 +25,6 @@ import {
   loadOrchestratorPrompts,
   CONSECUTIVE_EMPTY_CYCLE_LIMIT,
   MAX_TOOL_CYCLES,
-  MODEL_CONTEXT_TOKENS,
   ORCHESTRATOR_AGENT_NAME,
   ORCHESTRATOR_SUBAGENT_TOOL_NAMES,
   ORCHESTRATOR_TOOLS,
@@ -575,7 +575,16 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
     // Step 2: fetch token-budgeted history from the harness. The 80-99%
     // compaction policy (planCompaction) decides what to drop locally.
-    const turnBudget = Math.floor(MODEL_CONTEXT_TOKENS * 0.95);
+    // Phase J.5 — context cap is now resolved per-turn from
+    // pipeline.yaml > VS Code setting > DEFAULT_CONTEXT_CAP. The
+    // orchestrator passes no pipelineName, so it falls through to
+    // setting + default. Pipeline runners that adopt the cap should
+    // pass their pipeline name here.
+    const { cap: contextCap, source: capSource } = resolveContextCap({ roots, log });
+    const turnBudget = Math.floor(contextCap * 0.95);
+    if (capSource !== "default") {
+      log(`[orchestrator] context cap=${contextCap} (${capSource}), turn budget=${turnBudget}t`);
+    }
     const fetched = await fetchConversationHistory(client, chatId, turnBudget, log);
 
     // Step 3: reactive compaction.
@@ -611,7 +620,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       } else {
         log(`[orchestrator] summarizer fell through: ${result.reason ?? "unknown"}`);
         compacted = applyCompaction(
-          { kind: "hard-truncate", budgetTokens: Math.floor(MODEL_CONTEXT_TOKENS * 0.5) },
+          { kind: "hard-truncate", budgetTokens: Math.floor(contextCap * 0.5) },
           fetched,
         );
       }
