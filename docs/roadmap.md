@@ -775,13 +775,56 @@ home turf, where Copilot wins on cost.
 - Hard Invariant #2 stays at the original wording: *"Skills are
   pushed, not pulled."*
 
+**Security model — the orchestrator's other edge:**
+
+The cost analysis above frames the Phase F decision in token-
+economics terms. Cost isn't the only dimension; the harness also
+provides a narrower-surface, audit-rich execution path that plain
+Copilot Chat doesn't. These properties don't shift cost — they
+shift *trust*. They exist regardless of model choice or caching
+outcome; they're what `@harness` actually *adds* on top of an LM
+call.
+
+| Property | Plain Copilot Chat | `@harness` orchestrator |
+|---|---|---|
+| Sub-task context isolation | Sub-tasks see the full chat + workspace | Spawned sub-agents see only a sentence-long brief (`harness_get_subagent_context`) — no parent conversation, no memory, no other sub-agents' results |
+| Tool allow-list per role | Inherits the main agent's tools | Narrowed via `MAIN_SUBAGENT_ALLOWLIST` ∩ caller's `lm_tools`, fail-closed in `scripts/policy_engine.py` |
+| Evaluator firewall | n/a | Reviewer sees `code` only — never request / plan / design / memory (`validation/context_builder.py::_STAGE_PERMISSIONS`). Stops the reviewer being primed by requirements that may have caused the bug |
+| Read-vs-write boundary | Built-in tools include file edits + terminal | Sub-agent roles are read-only by default (`explorer`, `investigator`, `reviewer-aux`); writes require an explicit pipeline path |
+| Append-only artefact store | n/a | `harness_write_stage` refuses to overwrite; retries write `<stage>.attemptN.md`. Forensic record of every attempt |
+| Validator + injection scan on stage outputs | n/a | Every stage output schema-validated AND scanned for prompt-injection patterns before storage |
+| Forensic audit trail | Implicit (chat history) | Explicit: `subagent_audit` (every spawn + completion), `conversation_messages` (every turn), PostToolUse audit DB |
+
+**When the orchestrator is the right call regardless of cost:**
+
+- The workspace has files you don't want the LM editing or reading
+  opportunistically (secrets, vendor code, partial drafts). Plain
+  Copilot's edit tools have no concept of "this directory is
+  off-limits"; harness sub-agents see only what the brief plus
+  their tool policy permits.
+- You want a forensic record of *what the LM saw / produced /
+  called* for compliance, debugging, or post-mortem. The audit DB
+  is queryable; chat-panel history is not.
+- You're orchestrating multi-agent work where contamination
+  boundaries matter (designer mustn't see reviewer findings,
+  reviewer mustn't see the original request). `_STAGE_PERMISSIONS`
+  enforces this; chat-based coordination doesn't.
+
+Plain Copilot remains the right call when the workspace is hobby
+code or scratch experiments, the chat is exploratory and won't be
+audited, and tool freedom (edit anything, run anything) is the
+feature rather than the risk.
+
 **Recommended usage going forward:**
 
 | Use case | Tool |
 |---|---|
 | Governed multi-stage engineering work | `@harness /feature-dev <task>` |
-| Casual chat, quick lookups, file Q&A | Plain Copilot Chat (no `@harness` prefix) |
-| Bare `@harness <prompt>` | Works, but pays the orchestrator overhead |
+| Casual chat, quick lookups, file Q&A on non-sensitive code | Plain Copilot Chat (no `@harness` prefix) |
+| Sensitive workspace (secrets, vendor code, partial drafts) where unconstrained edit tools are risky | `@harness <prompt>` — read-only sub-agents, firewall-isolated |
+| Auditable workflow (compliance, debugging, post-mortem) | `@harness <prompt>` — durable audit log |
+| Cross-session continuity ("resume tomorrow") | `@harness <prompt>` — conversation persists in SQLite, survives reload |
+| Bare `@harness <prompt>` purely for chat | Pays the per-turn overhead — only worth it for the security / persistence properties above |
 
 Documented in `CLAUDE.md`, `AGENTS.md`, `docs/design.md`,
 `docs/memory.md`, and `README.md`.
