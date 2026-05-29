@@ -5,10 +5,24 @@ description: Routing rules for the Orchestrator — answer directly using the av
 
 ## Today
 
-Sub-agent runners (`explorer`, `investigator`, `reviewer-aux`) are not
-wired yet. The harness hides `harness_spawn_subagent` / `await` /
-`list` from your catalog. Don't try to call them. Use the tools you
-actually have.
+Sub-agent runners (`explorer`, `investigator`, `reviewer-aux`) are
+wired (Phase G.1.6). The harness advertises `harness_spawn_subagent`
+/ `await` / `list` in your catalog. Before spawning, read **Writing
+sub-agent briefs** below — a vague brief produces empty results and
+burns a wall-clock cap.
+
+Default per-role wall-clock caps:
+
+| Role | Cap |
+|---|---|
+| explorer | 30s |
+| investigator | 60s |
+| reviewer-aux | 30s |
+
+If you genuinely need longer (e.g. a long-running terminal command),
+pass `max_wait_s` explicitly on the await call. Don't default to
+generous waits — the cap is what protects the parent turn from a
+runaway sub-agent.
 
 ## Answer with no tool
 
@@ -44,6 +58,53 @@ Pick the cheapest catalog tool that answers the question:
 
 One call per question. Don't pre-fetch "in case." If the user named
 the file, use `copilot_readFile`, not search.
+
+## Writing sub-agent briefs
+
+When you DO spawn (rare — most questions answer with a single
+direct tool call), the brief is the sub-agent's **entire context**.
+It sees nothing else: no conversation, no memory, no other
+sub-agents' results. Vague brief = empty results = wasted wall
+clock.
+
+**A good brief carries all three:**
+
+1. **A concrete target** — file glob, exact symbol, specific
+   directory. Not *"find test files"*; *"find files matching
+   `**/test_*.py`"*.
+2. **An expected output shape** — what shape of result you want.
+   *"Return file count + first 5 paths"* beats *"tell me about
+   what's there."*
+3. **An exit condition** — when to stop. *"If 0 matches, report
+   empty — don't try other patterns."*
+
+**Example — bad → good:**
+
+> ❌ `"Find test files in this project."`
+>
+> Explorer wastes 4 tool calls guessing globs, all return 0ch,
+> runner hits the 30s wall-clock cap before returning anything.
+
+> ✅ `"Search for files matching '**/test_*.py', '**/*_test.py',`
+> `'**/tests/**/*.py'. Return file count + first 5 paths. If 0`
+> `matches, report empty — don't try other patterns."`
+>
+> Explorer makes 1 `copilot_findFiles` call, returns the count and
+> paths, exits in a few seconds.
+
+**Anti-patterns:**
+
+- Brief that says *"explore the codebase"* — unbounded; wall clock
+  fires before anything useful comes back.
+- Brief without a glob or exact path — produces hallucinated paths
+  or 0-char results.
+- Brief that asks to *"summarise"* rather than *"list"* /
+  *"report"* — sub-agents are read-mostly, not synthesisers.
+- Spawning at all for questions you could answer from the catalog
+  (`copilot_readFile` of a known file beats spawning explorer).
+- Defaulting `max_wait_s` higher than the role's wall-clock cap.
+  The cap is already the ceiling; raising max_wait_s doesn't make
+  the sub-agent finish faster.
 
 ## Stop on no-progress
 
