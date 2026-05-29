@@ -91,6 +91,13 @@
           "type": "string",
           "default": "",
           "description": "Override the model family for ALL CopilotHarness LM calls (orchestrator, pipeline agents, sub-agents). Use a Copilot-surfaced family id like \"gpt-4o-mini\", \"claude-haiku-4.5\", or \"gpt-4.1\". Empty string = no override; the agent's frontmatter is used. Set this when you've run out of quota on the agent's default model and want a global cheap fallback. The override wins over skill / agent / fallback resolution; if the family is unavailable on your Copilot subscription, the runner falls through to the normal chain with a warning."
+        },
+        "copilotHarness.contextCap": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 200000,
+          "description": "Per-turn context cap in input tokens for the orchestrator (and pipeline runners that adopt the cap). 0 = use the built-in default (50000). Lower = lower per-turn cost but less history retained; higher = more history but more tokens billed per turn. A pipeline.yaml `context_cap:` field overrides this setting for that pipeline. Values above 200000 are clamped to the model context window. Set via `/context-cap <N>` in chat, or directly here."
         }
       }
     },
@@ -187,6 +194,20 @@
         "inputSchema": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "harness_get_skill",
+        "displayName": "Fetch skill content (CopilotHarness)",
+        "modelDescription": "Fetch the body of an installed skill (e.g. 'orchestrator-routing') when you need detailed routing rules, picker tables, or anti-patterns that aren't covered by your inline core rules. The harness used to push the full skill body into the system prompt every turn; now you pull on demand. Call this when you need detail about: tool selection, pipeline recommendation, sub-agent runners status, anti-patterns, or anything else not covered in the agent's inline 'Core rules' section. Do NOT call on every turn — most simple Q&A doesn't need it.",
+        "toolReferenceName": "harness_get_skill",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "skill_id": { "type": "string" }
+          },
+          "required": ["skill_id"]
         }
       }
     ]

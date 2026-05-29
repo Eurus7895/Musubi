@@ -251,6 +251,15 @@ const AGENT_NAMES = new Set(["planner", "designer", "coder", "reviewer"]);
 
 type AgentName = "planner" | "designer" | "coder" | "reviewer";
 
+/**
+ * Slash commands that are hardcoded in parseCommand + the handler switch
+ * rather than file-driven via `.github/commands/<name>.md`. Kept here so
+ * the "Unknown command" error can surface them — without this, a user
+ * who types `/contxt-cap` (typo) sees a list of file-driven commands
+ * with no hint that `/context-cap` exists.
+ */
+const BUILTIN_COMMAND_NAMES = ["model", "context-cap"] as const;
+
 type ParsedCommand =
   | { type: "slash";        name: string; args: string }
   | { type: "orchestrator"; prompt: string }
@@ -259,7 +268,8 @@ type ParsedCommand =
   | { type: "full";         request: string }
   | { type: "status" }
   | { type: "help" }
-  | { type: "model";        family: string };
+  | { type: "model";        family: string }
+  | { type: "context-cap";  value: string };
 
 /**
  * Routing rules (Phase D — zero LLM cost):
@@ -284,6 +294,10 @@ function parseCommand(text: string): ParsedCommand {
     // "update a VS Code setting", which doesn't fit the file-driven
     // pipeline/agent/step taxonomy.
     if (name === "model") { return { type: "model", family: args }; }
+    // Built-in: /context-cap [N|clear] writes copilotHarness.contextCap.
+    // Same rationale as /model — the action is a settings write, not a
+    // file-driven agent/pipeline invocation.
+    if (name === "context-cap") { return { type: "context-cap", value: args }; }
     return { type: "slash", name, args };
   }
 
@@ -407,6 +421,68 @@ async function runModel(
   );
 }
 
+// ── Context cap (Phase J.5) ───────────────────────────────────────────────────
+
+/**
+ * `/context-cap [N|clear]` — show / set / clear the
+ * copilotHarness.contextCap setting from chat. Same surface pattern as
+ * `/model`, just for the per-turn context-token budget rather than the
+ * model family. Setting layer 2; pipeline.yaml is layer 1 (per-pipeline
+ * override) and DEFAULT_CONTEXT_CAP is layer 3 (built-in).
+ */
+async function runContextCap(
+  value: string,
+  stream: vscode.ChatResponseStream,
+): Promise<void> {
+  const config = vscode.workspace.getConfiguration("copilotHarness");
+  const arg = value.trim();
+  const MODEL_MAX = 200_000;
+  const BUILTIN_DEFAULT = 50_000;
+
+  if (!arg) {
+    const current = config.get<number>("contextCap", 0);
+    const effective = current > 0 ? Math.min(current, MODEL_MAX) : BUILTIN_DEFAULT;
+    let md = `**Current setting:** \`${current === 0 ? "(unset — using built-in default)" : current}\`\n`;
+    md += `**Effective cap this turn:** ${effective} tokens\n\n`;
+    md += `Layer order (highest wins): pipeline.yaml \`context_cap:\` > VS Code setting \`copilotHarness.contextCap\` > built-in default (${BUILTIN_DEFAULT}).\n\n`;
+    md += `**Usage:**\n\n`;
+    md += `- \`/context-cap <N>\` — set the cap in tokens (e.g. \`/context-cap 30000\`)\n`;
+    md += `- \`/context-cap clear\` — remove the setting; fall through to default\n`;
+    md += `- \`/context-cap\` — show this help\n\n`;
+    md += `**Cost / capacity tradeoff (Sonnet, no cache):** lower cap = lower per-turn cost but less history retained. At 50000t per turn ≈ 15 credits ≈ ~125 turns / 1900-credit month.`;
+    stream.markdown(md);
+    return;
+  }
+
+  if (arg.toLowerCase() === "clear" || arg.toLowerCase() === "none" || arg === "-") {
+    await config.update("contextCap", 0, vscode.ConfigurationTarget.Global);
+    stream.markdown(`✅ Context cap setting cleared. Built-in default (${BUILTIN_DEFAULT} tokens) will be used.`);
+    return;
+  }
+
+  const parsed = parseInt(arg, 10);
+  if (!Number.isFinite(parsed) || String(parsed) !== arg || parsed <= 0) {
+    stream.markdown(
+      `❌ \`${arg}\` is not a positive integer. Use a token count like \`/context-cap 30000\`, or \`/context-cap clear\` to remove.`,
+    );
+    return;
+  }
+
+  let clamped = parsed;
+  let warning = "";
+  if (parsed > MODEL_MAX) {
+    clamped = MODEL_MAX;
+    warning = `\n\n⚠️ Value clamped from ${parsed} to ${MODEL_MAX} (model context window).`;
+  }
+
+  await config.update("contextCap", clamped, vscode.ConfigurationTarget.Global);
+  stream.markdown(
+    `✅ Context cap set to **${clamped}** tokens. ` +
+    `Orchestrator turn budget will be ~${Math.floor(clamped * 0.95)}t.${warning}\n\n` +
+    `To clear: \`/context-cap clear\`.`,
+  );
+}
+
 // ── Usage text ────────────────────────────────────────────────────────────────
 
 const USAGE_HEADER = "**CopilotHarness** — orchestrator + governed pipelines";
@@ -423,6 +499,7 @@ const USAGE_FOOTER = [
   "**Built-in commands:**",
   "",
   "- `/model [family|clear]` — switch the model family for ALL harness LM calls (writes `copilotHarness.modelOverride`). Useful when you've run out of quota on the agent defaults. Run with no args to see current value + available families.",
+  "- `/context-cap [N|clear]` — switch the per-turn context budget in tokens (writes `copilotHarness.contextCap`). Lower = cheaper per turn, less history retained. Pipeline.yaml `context_cap:` overrides per pipeline. Run with no args to see current + effective values.",
   "",
   "**Review gate (between stages):**",
   "",
@@ -573,6 +650,10 @@ async function handler(
       case "model":
         await runModel(cmd.family, stream);
         break;
+
+      case "context-cap":
+        await runContextCap(cmd.value, stream);
+        break;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -655,11 +736,17 @@ async function runSlash(
 ): Promise<void> {
   const cmd = loadSlashCommand(slashRoots, name);
   if (!cmd) {
-    const available = listSlashCommands(slashRoots).map(c => `/${c.name}`).join(", ");
-    stream.markdown(
-      `**Unknown command:** \`/${name}\`` +
-      (available ? `\n\nAvailable: ${available}` : ""),
-    );
+    const fileCommands = listSlashCommands(slashRoots)
+      .map(c => `\`/${c.name}\``)
+      .sort()
+      .join(", ");
+    const builtinCommands = BUILTIN_COMMAND_NAMES
+      .map(n => `\`/${n}\``)
+      .join(", ");
+    let body = `**Unknown command:** \`/${name}\``;
+    if (fileCommands) { body += `\n\n**Available:** ${fileCommands}`; }
+    if (builtinCommands) { body += `\n\n**Built-in:** ${builtinCommands}`; }
+    stream.markdown(body);
     return;
   }
 
