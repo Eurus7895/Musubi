@@ -3,6 +3,13 @@ description: Guided feature development — plan → design → code → review
 version: 1.0.0
 level: 2
 
+# Phase J.3 — credit budget. The pipeline halts if cumulative LM cost
+# would exceed max_credits; warn_at (fraction in (0,1]) triggers a
+# one-time soft warning at that share of the cap. Raise either via
+# pipeline.yaml edit; resume after halt with `/continue`.
+max_credits: 50
+warn_at: 0.8
+
 baseline_checks:
   - type: file_read
     path: src/

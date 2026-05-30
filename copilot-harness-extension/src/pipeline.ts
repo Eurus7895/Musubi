@@ -20,6 +20,17 @@ export type {
 import { McpClient } from "./mcpClient";
 import { selectModelForAgent } from "./modelSelector";
 import {
+  BudgetEnforcer,
+  BudgetExhaustedError,
+  estimateCallCredits,
+  estimateTokensFromChars,
+  getActiveBudget,
+  registerActiveBudget,
+  resolvePipelineBudget,
+  unregisterActiveBudget,
+  type BudgetEvent,
+} from "./pipelineBudgetCore";
+import {
   spawnAndRunSubagent,
   type RunSubagentResult,
 } from "./runners/subagentRunner";
@@ -576,6 +587,41 @@ async function runAgentLM(
   const promptChars = systemMsg.length + contextMsg.length;
   logLine(`→ ${agentName}: sending ${promptChars.toLocaleString()} chars to ${model.id} (family=${model.family})`);
 
+  // Phase J.3 — pre-flight budget check. Estimates this call's cost using
+  // a worst-case output guess (25% of input tokens); if the projected
+  // total would exceed the pipeline's max_credits, abort before paying
+  // for the LM call. If it crosses the warn threshold, surface a one-
+  // time chat warning via the registered onEvent callback.
+  const activeBudget =
+    obs?.sessionId ? getActiveBudget(obs.sessionId) : null;
+  const inputTokensEst = estimateTokensFromChars(promptChars);
+  if (activeBudget) {
+    const preflightEst = estimateCallCredits(
+      model.family, inputTokensEst, Math.ceil(inputTokensEst * 0.25),
+    );
+    const status = activeBudget.enforcer.preflight(preflightEst);
+    if (status === "halt" || status === "warn") {
+      activeBudget.onEvent({
+        status,
+        phase: "preflight",
+        creditsUsed: activeBudget.enforcer.creditsUsed + preflightEst,
+        maxCredits: activeBudget.enforcer.maxCredits,
+        remaining: Math.max(0, activeBudget.enforcer.remaining - preflightEst),
+        family: model.family,
+        thisCallCredits: preflightEst,
+      });
+      if (status === "halt") {
+        throw new BudgetExhaustedError(
+          "preflight",
+          activeBudget.enforcer.creditsUsed + preflightEst,
+          activeBudget.enforcer.maxCredits,
+          model.family,
+          preflightEst,
+        );
+      }
+    }
+  }
+
   const t0 = Date.now();
   const response = await model.sendRequest(messages, {}, token);
   let text = "";
@@ -595,6 +641,38 @@ async function runAgentLM(
 
   if (text.length === 0) {
     logLine(`  WARNING: empty response from ${agentName} — model may be unauthorized, rate-limited, or cancelled`);
+  }
+
+  // Phase J.3 — post-flight budget charge. Uses actual output length so
+  // the running total reflects real spend (more accurate than the
+  // pre-flight estimate, which assumed worst-case output). If this
+  // charge crosses the cap, throw — the pipeline halts before next stage.
+  if (activeBudget) {
+    const outputTokensEst = estimateTokensFromChars(text.length);
+    const actualCost = estimateCallCredits(
+      model.family, inputTokensEst, outputTokensEst,
+    );
+    const status = activeBudget.enforcer.charge(actualCost);
+    if (status === "halt" || status === "warn") {
+      activeBudget.onEvent({
+        status,
+        phase: "postflight",
+        creditsUsed: activeBudget.enforcer.creditsUsed,
+        maxCredits: activeBudget.enforcer.maxCredits,
+        remaining: activeBudget.enforcer.remaining,
+        family: model.family,
+        thisCallCredits: actualCost,
+      });
+      if (status === "halt") {
+        throw new BudgetExhaustedError(
+          "postflight",
+          activeBudget.enforcer.creditsUsed,
+          activeBudget.enforcer.maxCredits,
+          model.family,
+          actualCost,
+        );
+      }
+    }
   }
 
   if (obs) {
@@ -2155,10 +2233,42 @@ export async function runPipeline(
   // Notify the Tasks view so the new session appears under "Active session".
   onChange?.();
 
+  // Phase J.3 — credit budget setup. Reads max_credits + warn_at from
+  // pipeline.yaml; registers a BudgetEnforcer keyed by sessionId so
+  // runAgentLM can find it without a parameter change at every call
+  // site. The on-event callback renders chat-side warn/halt messages.
+  const budgetConfig = resolvePipelineBudget(promptRoots, meta.pipelineName);
+  let budgetEnforcer: BudgetEnforcer | null = null;
+  if (budgetConfig.maxCredits !== null) {
+    budgetEnforcer = new BudgetEnforcer(
+      budgetConfig.maxCredits, budgetConfig.warnAtRatio,
+    );
+    registerActiveBudget(sessionId, budgetEnforcer, (event: BudgetEvent) => {
+      const pct = Math.round(100 * event.creditsUsed / event.maxCredits);
+      if (event.status === "warn") {
+        stream.markdown(
+          `\n> ⚠️ **Budget warning** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used (${pct}%). ` +
+          `Last call: ${event.thisCallCredits.toFixed(2)} credits on ${event.family} (${event.phase}).\n`,
+        );
+      } else if (event.status === "halt") {
+        stream.markdown(
+          `\n> 🛑 **Budget exhausted** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used. ` +
+          `Pipeline halting before next stage. Raise \`max_credits:\` in pipeline.yaml and \`/continue\` to resume.\n`,
+        );
+      }
+    });
+    stream.markdown(
+      `💰 **Budget:** ${budgetConfig.maxCredits.toFixed(0)} credits ` +
+      `(warn at ${Math.round(budgetConfig.warnAtRatio * 100)}%)\n`,
+    );
+  }
+
   // G.3: wrap the body in an IIFE so every existing `return X` short-
   // circuits to the outer finalize call below. chunkCount is captured
   // by closure and set inside the chunked branch before its return.
-  const result: PipelineResult = await (async (): Promise<PipelineResult> => {
+  let result: PipelineResult;
+  try {
+    result = await (async (): Promise<PipelineResult> => {
 
   // Phase H.1 — pipeline dispatcher. The /code-review pipeline runs a
   // bespoke 3-stage flow (scope → findings → synthesis) with reviewer-aux
@@ -2369,6 +2479,24 @@ export async function runPipeline(
     stream.markdown(`\n*total: ${fmtSeconds(Date.now() - pipelineT0)}*\n`);
     return { success: true, sessionId, stages: stageOutputs, escalated: false };
   })();
+  } catch (err) {
+    if (err instanceof BudgetExhaustedError) {
+      // Pipeline halted by J.3 budget — present as a clean escalation
+      // rather than an unhandled error. Stage outputs accumulated so far
+      // stay in the session; user can /continue after raising max_credits.
+      result = {
+        success: false,
+        sessionId,
+        stages: stageOutputs,
+        escalated: true,
+        escalation: err.message,
+      };
+    } else {
+      throw err;
+    }
+  } finally {
+    if (budgetEnforcer) { unregisterActiveBudget(sessionId); }
+  }
 
   // G.3: close out the pipeline_runs row regardless of which return
   // path the body took. fire-and-forget on the harness side.
