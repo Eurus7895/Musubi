@@ -3,6 +3,13 @@ description: Review a branch or PR — scope → findings → synthesis
 version: 1.0.0
 level: 2
 
+# Phase J.3 — credit budget. Lower than feature-dev because code-review
+# is structurally smaller (3 stages, scoper input is bounded by diff size,
+# no chunk-by-chunk coder loop). Halts and asks for `/continue` if the
+# diff is large enough to exhaust the cap.
+max_credits: 20
+warn_at: 0.8
+
 # Code-review takes a diff (branch vs origin/dev, or a PR number) as input.
 # Unlike feature-dev's request → plan → … chain, no design stage exists:
 # the artifact being reviewed already exists. The stages collapse to:
