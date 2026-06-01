@@ -76,6 +76,17 @@
         "title": "Clear model override",
         "category": "CopilotHarness",
         "icon": "$(close)"
+      },
+      {
+        "command": "copilot-harness.refreshPipelines",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.togglePipelineAutoApprove",
+        "title": "Toggle auto-approve for pipeline",
+        "category": "CopilotHarness"
       }
     ],
     "configuration": {
@@ -123,6 +134,12 @@
           "id": "copilotHarness.models",
           "name": "Models",
           "contextualTitle": "CopilotHarness Models"
+        },
+        {
+          "type": "tree",
+          "id": "copilotHarness.pipelines",
+          "name": "Pipelines",
+          "contextualTitle": "CopilotHarness Pipelines"
         }
       ]
     },
@@ -136,6 +153,11 @@
         {
           "command": "copilot-harness.refreshModels",
           "when": "view == copilotHarness.models",
+          "group": "navigation"
+        },
+        {
+          "command": "copilot-harness.refreshPipelines",
+          "when": "view == copilotHarness.pipelines",
           "group": "navigation"
         }
       ],

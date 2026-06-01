@@ -93,7 +93,7 @@ export function getPerPipelineAutoApprove(pipelineName: string): boolean {
   return Boolean(all[pipelineName]);
 }
 
-async function setPerPipelineAutoApprove(
+export async function setPerPipelineAutoApprove(
   pipelineName: string, value: boolean,
 ): Promise<void> {
   const cfg = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE);
@@ -152,13 +152,16 @@ export function renderStageReviewGate(
   const buttons = buildStageReviewButtons(base);
   emitButtonsOrFallback(opts.stream, buttons);
 
-  // Auto-approve toggle as a separate button.
-  opts.stream.markdown(`\n${renderAutoApproveToggleLabel(opts.pipelineName, autoApproveOn)}\n`);
-  opts.stream.button({
-    command: TOGGLE_AUTO_APPROVE_COMMAND_ID,
-    title: autoApproveOn ? "⚡ Turn OFF auto-approve" : "⚡ Turn ON auto-approve",
-    arguments: [{ pipelineName: opts.pipelineName }],
-  });
+  // Auto-approve toggle lives in the Pipelines sidebar view, not in the
+  // gate UI. VS Code's chat-response button surface treats all buttons in
+  // one response as a single-resolution group — clicking the toggle here
+  // would consume the click and disable the four review-gate buttons,
+  // leaving the user stuck. Show a one-line hint with the current state
+  // so the user knows where to flip it.
+  opts.stream.markdown(
+    `\n${renderAutoApproveToggleLabel(opts.pipelineName, autoApproveOn)} ` +
+    `_(toggle in the **Pipelines** sidebar)_\n`,
+  );
 
   return pendingPromise;
 }

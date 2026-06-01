@@ -23,6 +23,8 @@ import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 import { HarnessModelsProvider } from "./modelsView";
 import { disposeLogger, getLogger } from "./loggerService";
+import { HarnessPipelinesProvider } from "./pipelinesView";
+import { setPerPipelineAutoApprove } from "./pipelineGateUi";
 
 let out: vscode.OutputChannel;
 
@@ -190,6 +192,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.lm.onDidChangeChatModels(() => modelsProvider.refresh()),
+  );
+
+  // ── Pipelines sidebar view ─────────────────────────────────────────────────
+  // Lists pipelines under `.github/pipelines/`. Click a row to toggle
+  // `copilotHarness.autoApprove.<name>`. Moved out of the in-chat review-
+  // gate UI because VS Code chat-button single-resolution semantics caused
+  // a click on the toggle to disable the four gate buttons; sidebar clicks
+  // don't have that lifecycle.
+  const pipelineRoots = [workspaceRoot, context.extensionPath];
+  const pipelinesProvider = new HarnessPipelinesProvider(pipelineRoots, (msg) => out.appendLine(msg));
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("copilotHarness.pipelines", pipelinesProvider),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.refreshPipelines", () => pipelinesProvider.refresh()),
+    vscode.commands.registerCommand(
+      "copilot-harness.togglePipelineAutoApprove",
+      async (pipelineName: string) => {
+        if (!pipelineName || typeof pipelineName !== "string") { return; }
+        const cfg = vscode.workspace.getConfiguration("copilotHarness");
+        const all = cfg.get<Record<string, unknown>>("autoApprove") ?? {};
+        const current = Boolean(all[pipelineName]);
+        try {
+          await setPerPipelineAutoApprove(pipelineName, !current);
+          vscode.window.setStatusBarMessage(
+            `CopilotHarness: auto-approve ${current ? "disabled" : "enabled"} for /${pipelineName}`, 3000,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`CopilotHarness: toggle failed — ${msg}`);
+        }
+      },
+    ),
+  );
+  // Refresh on setting change (sidebar click here, Settings UI, settings sync).
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("copilotHarness.autoApprove")) {
+        pipelinesProvider.refresh();
+      }
+    }),
   );
 
   // Refreshing the tree is the only signal pipeline.ts sends out. Debounced
