@@ -211,17 +211,11 @@ export interface StepResult {
 
 // ── Observability — lets the user confirm the LLM actually ran ────────────────
 
-let _pipelineLogger: vscode.OutputChannel | undefined;
-function logger(): vscode.OutputChannel {
-  if (!_pipelineLogger) {
-    _pipelineLogger = vscode.window.createOutputChannel("CopilotHarness Pipeline");
-  }
-  return _pipelineLogger;
-}
+import { getLogger } from "./loggerService";
 
 function logLine(msg: string): void {
   const ts = new Date().toISOString().substring(11, 23);
-  logger().appendLine(`[${ts}] ${msg}`);
+  getLogger().appendLine(`[${ts}] ${msg}`);
 }
 
 function dumpRawResponse(
@@ -2199,7 +2193,7 @@ export async function runPipeline(
   // Per-agent model selection happens inside runAgentLM via
   // selectModelForAgent — each stage runs against its declared `model:`
   // frontmatter (gpt-4o, gpt-4o-mini, etc). No global pre-selection.
-  logger().show(true);
+  getLogger().show(true);
 
   // ── Session setup ────────────────────────────────────────────────────────────
   // A slash-command invocation with an explicit request is always a new session.
@@ -2519,7 +2513,7 @@ export async function runStep(
   onChange?: () => void,
 ): Promise<StepResult> {
   // Per-agent model selection happens inside runAgentLM (see runPipeline).
-  logger().show(true);
+  getLogger().show(true);
 
   // ── Session setup ─────────────────────────────────────────────────────────────
 
