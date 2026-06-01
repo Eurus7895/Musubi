@@ -1745,6 +1745,16 @@ function emitStageOutputDetails(
   stage: string,
   output: unknown,
 ): void {
+  // Gated on `copilotHarness.verboseStageOutput` — default OFF so the
+  // chat stays focused on the conversation rather than reproducing
+  // every stage's full body inline. The full body is still written to
+  // `.harness/sessions/<id>/<stage>.md` by `materializeStageOutput`,
+  // and `emitStageArtifactAnchor` adds a click-to-open link, so users
+  // who want the detail are one click away.
+  const verbose = vscode.workspace
+    .getConfiguration("copilotHarness")
+    .get<boolean>("verboseStageOutput", false);
+  if (!verbose) return;
   if (typeof output !== "object" || output === null) return;
   const body = formatStageOutput(stage, output as Record<string, unknown>);
   if (!body) return;

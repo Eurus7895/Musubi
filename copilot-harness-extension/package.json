@@ -103,6 +103,11 @@
           "default": "",
           "description": "Override the model family for ALL CopilotHarness LM calls (orchestrator, pipeline agents, sub-agents). Use a Copilot-surfaced family id like \"gpt-4o-mini\", \"claude-haiku-4.5\", or \"gpt-4.1\". Empty string = no override; the agent's frontmatter is used. Set this when you've run out of quota on the agent's default model and want a global cheap fallback. The override wins over skill / agent / fallback resolution; if the family is unavailable on your Copilot subscription, the runner falls through to the normal chain with a warning."
         },
+        "copilotHarness.verboseStageOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "When ON, every pipeline stage emits its full output body inline in the chat panel (planner tasks table, designer modules, reviewer issues with fix suggestions, etc.). When OFF (default), only the per-stage status line + a click-to-open anchor to the materialised file (.harness/sessions/<id>/<stage>.md) is shown — the full content is still written to disk for the record. Turn ON for live debugging; OFF keeps the chat focused on the conversation."
+        },
         "copilotHarness.contextCap": {
           "type": "number",
           "default": 0,
