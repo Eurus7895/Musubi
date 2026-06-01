@@ -555,6 +555,17 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
   // cancel / throw — partial replies must not vanish).
   const assistantBuf: string[] = [];
 
+  // Phase J follow-up — turn telemetry accumulators. Hoisted to function
+  // scope so the finally block (which writes the orchestrator_turns row)
+  // can read them. Default values cover the case where the try body
+  // throws before assigning — we still write a row with the partial data.
+  let turnStart = Date.now();
+  let turnLmMs = 0;
+  let turnTokensIn = 0;
+  let turnTokensOut = 0;
+  let turnCycles = 0;
+  let modelFamilyUsed = "";
+
   try {
     // Step 1: append the user message FIRST so the history we fetch in
     // step 2 already contains it. Best-effort: a write failure logs and
@@ -700,7 +711,15 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     const subagentNote = includeHarnessSubagentTools ? "" : " (harness sub-agent tools hidden — no LM-facing runner)";
     log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
-    const turnStart = Date.now();
+    // Re-assign turnStart now that we're actually starting the cycle
+    // loop (the function-scope default was set at entry; this reflects
+    // when the LM work begins, after history fetch + compaction).
+    turnStart = Date.now();
+    modelFamilyUsed = model.family;
+    turnLmMs = 0;
+    turnTokensIn = 0;
+    turnTokensOut = 0;
+    turnCycles = 0;
     // Track consecutive cycles whose tools all returned empty content or
     // failed. The LM's typical thrashing pattern is to hallucinate a path,
     // get an empty result, try a different path, also empty, etc. Bail to
@@ -783,6 +802,11 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         }
       }
       const lmMs = Date.now() - streamStart;
+      // Accumulate for the orchestrator_turns row (Phase J follow-up).
+      turnLmMs += lmMs;
+      turnTokensIn += totalTokens;
+      turnTokensOut += Math.ceil(textBuf.length / 4);
+      turnCycles = cycle + 1;
       log(`[orchestrator] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
 
       if (textBuf.length > 0) { assistantBuf.push(textBuf); }
@@ -886,6 +910,25 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     }
     await cleanupOutstandingSubagents(client, tracker);
     _setActiveOrchestrator(null);
+    // Phase J follow-up — record per-turn telemetry. Fire-and-forget;
+    // an observability failure must never break a chat turn.
+    try {
+      await client.callTool("harness_record_orchestrator_turn", {
+        chat_id: chatId,
+        parent_session_id: parentSessionId,
+        started_at: turnStart / 1000,
+        ended_at: Date.now() / 1000,
+        model_family: modelFamilyUsed,
+        cycles: turnCycles,
+        tokens_in_estimate: turnTokensIn,
+        tokens_out_estimate: turnTokensOut,
+        lm_ms: turnLmMs,
+        total_ms: Date.now() - turnStart,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`[orchestrator] record_orchestrator_turn failed: ${msg}`);
+    }
     log(`[orchestrator] turn ended — chat_id=${chatId} parent_session_id=${parentSessionId}`);
   }
 }

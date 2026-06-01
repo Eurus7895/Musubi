@@ -22,14 +22,18 @@ import { registerGateCommands } from "./pipelineGateUi";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 import { HarnessModelsProvider } from "./modelsView";
+import { disposeLogger, getLogger } from "./loggerService";
 
 let out: vscode.OutputChannel;
 
 // ── Extension lifecycle ───────────────────────────────────────────────────────
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  out = vscode.window.createOutputChannel("CopilotHarness");
-  context.subscriptions.push(out);
+  // Shared single channel — pipeline.ts also uses getLogger() so all
+  // diagnostic lands in one place ("CopilotHarness") rather than the
+  // previous split across "CopilotHarness" + "CopilotHarness Pipeline".
+  out = getLogger();
+  context.subscriptions.push({ dispose: disposeLogger });
   out.show(true);
   out.appendLine("CopilotHarness v0.2.0 activating...");
   out.appendLine(`Extension path: ${context.extensionPath}`);
