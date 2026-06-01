@@ -864,6 +864,62 @@ def harness_query_stage_metrics(session_id: str) -> str:
 
 
 @mcp.tool()
+def harness_record_orchestrator_turn(
+    chat_id: str,
+    parent_session_id: str,
+    started_at: float,
+    ended_at: float,
+    model_family: str,
+    cycles: int,
+    tokens_in_estimate: int,
+    tokens_out_estimate: int,
+    lm_ms: int,
+    total_ms: int,
+) -> str:
+    """Append one row to `orchestrator_turns` after an orchestrator turn
+    completes.
+
+    Parallel to `harness_record_stage_metric` but scoped to orchestrator
+    chats (which don't fit the stage / chunk / attempt model used by
+    pipelines). The TS runner's `runOrchestrator` calls this once at
+    turn end, passing the wall-clock ms + token estimates already
+    collected.
+
+    Failures are non-fatal — observability writes must never abort a
+    user-visible chat turn. Returns `{ status: "ok" }` on success or
+    `{ status: "error", error: <msg> }` on a DB error.
+    """
+    try:
+        _db.insert_orchestrator_turn(
+            chat_id=chat_id,
+            parent_session_id=parent_session_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            model_family=model_family,
+            cycles=cycles,
+            tokens_in_estimate=tokens_in_estimate,
+            tokens_out_estimate=tokens_out_estimate,
+            lm_ms=lm_ms,
+            total_ms=total_ms,
+        )
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok"})
+
+
+@mcp.tool()
+def harness_query_orchestrator_turns(chat_id: str, limit: int = 100) -> str:
+    """Per-chat breakdown — recent orchestrator_turns rows for `chat_id`,
+    newest first. Defaults to the most recent 100 turns. Useful for the
+    Tasks sidebar surfacing orchestrator usage alongside pipeline runs."""
+    try:
+        rows = _db.query_orchestrator_turns(chat_id, limit=limit)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "chat_id": chat_id, "rows": rows})
+
+
+@mcp.tool()
 def harness_pipeline_stats(
     pipeline_name: str,
     since_ts: float | None = None,

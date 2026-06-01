@@ -145,6 +145,24 @@ CREATE TABLE IF NOT EXISTS stage_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
     ON stage_metrics (session_id);
+CREATE TABLE IF NOT EXISTS orchestrator_turns (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id              TEXT NOT NULL,
+    parent_session_id    TEXT NOT NULL,
+    started_at           REAL NOT NULL,
+    ended_at             REAL,
+    model_family         TEXT NOT NULL,
+    cycles               INTEGER NOT NULL DEFAULT 0,
+    tokens_in_estimate   INTEGER NOT NULL DEFAULT 0,
+    tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
+    lm_ms                INTEGER NOT NULL DEFAULT 0,
+    total_ms             INTEGER NOT NULL DEFAULT 0,
+    schema_version       TEXT NOT NULL DEFAULT 'v1'
+);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_chat
+    ON orchestrator_turns (chat_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_started
+    ON orchestrator_turns (started_at);
 """
 
 def _default_db_path() -> Path:
@@ -1061,6 +1079,57 @@ def query_stage_metrics(
             "SELECT * FROM stage_metrics WHERE session_id = ?"
             " ORDER BY started_at ASC, id ASC",
             (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Phase J follow-up: orchestrator_turns CRUD ─────────────────────────────
+
+def insert_orchestrator_turn(
+    chat_id: str,
+    parent_session_id: str,
+    started_at: float,
+    ended_at: float,
+    model_family: str,
+    cycles: int,
+    tokens_in_estimate: int,
+    tokens_out_estimate: int,
+    lm_ms: int,
+    total_ms: int,
+    db_path: Path | None = None,
+) -> None:
+    """One row per orchestrator turn. Parallel to insert_stage_metric.
+    Caller (TS runner via the harness_record_orchestrator_turn MCP
+    tool) passes the pre-measured wall-clock + token estimates
+    collected over all sendRequest cycles of the turn."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO orchestrator_turns"
+            " (chat_id, parent_session_id, started_at, ended_at,"
+            "  model_family, cycles,"
+            "  tokens_in_estimate, tokens_out_estimate,"
+            "  lm_ms, total_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                chat_id, parent_session_id, started_at, ended_at,
+                model_family, cycles,
+                tokens_in_estimate, tokens_out_estimate,
+                lm_ms, total_ms,
+            ),
+        )
+
+
+def query_orchestrator_turns(
+    chat_id: str, db_path: Path | None = None, limit: int = 100,
+) -> list[dict]:
+    """Return orchestrator_turns rows for a chat_id, newest first.
+    Limit defaults to 100 — sufficient for sidebar surfacing without
+    pulling the entire chat history."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM orchestrator_turns WHERE chat_id = ?"
+            " ORDER BY started_at DESC, id DESC LIMIT ?",
+            (chat_id, int(limit)),
         ).fetchall()
     return [dict(r) for r in rows]
 
