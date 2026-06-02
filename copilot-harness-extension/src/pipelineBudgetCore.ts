@@ -247,7 +247,15 @@ export class BudgetEnforcer {
  */
 
 export interface BudgetEvent {
-  status: "warn" | "halt";
+  /**
+   * `"info"` — per-call credit charge succeeded under the warn threshold.
+   * Caller decides whether to render (typically a brief one-line update).
+   * `"warn"` — projected/actual usage crossed `warn_at × max_credits`;
+   * fires exactly once (sticky flag on the enforcer).
+   * `"halt"` — projected/actual usage exceeded `max_credits`.
+   * Caller should render a stop block and throw `BudgetExhaustedError`.
+   */
+  status: "info" | "warn" | "halt";
   phase: "preflight" | "postflight";
   creditsUsed: number;
   maxCredits: number;

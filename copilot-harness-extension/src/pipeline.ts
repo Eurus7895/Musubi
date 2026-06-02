@@ -647,25 +647,27 @@ async function runAgentLM(
       model.family, inputTokensEst, outputTokensEst,
     );
     const status = activeBudget.enforcer.charge(actualCost);
-    if (status === "halt" || status === "warn") {
-      activeBudget.onEvent({
-        status,
-        phase: "postflight",
-        creditsUsed: activeBudget.enforcer.creditsUsed,
-        maxCredits: activeBudget.enforcer.maxCredits,
-        remaining: activeBudget.enforcer.remaining,
-        family: model.family,
-        thisCallCredits: actualCost,
-      });
-      if (status === "halt") {
-        throw new BudgetExhaustedError(
-          "postflight",
-          activeBudget.enforcer.creditsUsed,
-          activeBudget.enforcer.maxCredits,
-          model.family,
-          actualCost,
-        );
-      }
+    // Fire onEvent unconditionally — the callback decides what to render.
+    // Mapping: BudgetEnforcer's "allow" status → "info" in the event so
+    // the callback can render a per-call credit line in chat. warn/halt
+    // are unchanged.
+    activeBudget.onEvent({
+      status: status === "allow" ? "info" : status,
+      phase: "postflight",
+      creditsUsed: activeBudget.enforcer.creditsUsed,
+      maxCredits: activeBudget.enforcer.maxCredits,
+      remaining: activeBudget.enforcer.remaining,
+      family: model.family,
+      thisCallCredits: actualCost,
+    });
+    if (status === "halt") {
+      throw new BudgetExhaustedError(
+        "postflight",
+        activeBudget.enforcer.creditsUsed,
+        activeBudget.enforcer.maxCredits,
+        model.family,
+        actualCost,
+      );
     }
   }
 
@@ -1745,6 +1747,16 @@ function emitStageOutputDetails(
   stage: string,
   output: unknown,
 ): void {
+  // Gated on `copilotHarness.verboseStageOutput` — default OFF so the
+  // chat stays focused on the conversation rather than reproducing
+  // every stage's full body inline. The full body is still written to
+  // `.harness/sessions/<id>/<stage>.md` by `materializeStageOutput`,
+  // and `emitStageArtifactAnchor` adds a click-to-open link, so users
+  // who want the detail are one click away.
+  const verbose = vscode.workspace
+    .getConfiguration("copilotHarness")
+    .get<boolean>("verboseStageOutput", false);
+  if (!verbose) return;
   if (typeof output !== "object" || output === null) return;
   const body = formatStageOutput(stage, output as Record<string, unknown>);
   if (!body) return;
@@ -2248,6 +2260,16 @@ export async function runPipeline(
         stream.markdown(
           `\n> 🛑 **Budget exhausted** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used. ` +
           `Pipeline halting before next stage. Raise \`max_credits:\` in pipeline.yaml and \`/continue\` to resume.\n`,
+        );
+      } else if (event.status === "info" && event.phase === "postflight") {
+        // Per-call credit line. Fires once per `runAgentLM` call — so for
+        // a stage with retries you get one line per attempt, which is
+        // informative (retries are visible cost). Compact format keeps
+        // the chat readable; full per-stage aggregation is a later J.4
+        // surfacing item.
+        stream.markdown(
+          `> 💰 ${event.thisCallCredits.toFixed(2)} credits this call · ` +
+          `${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} used (${pct}%) · ${event.family}\n`,
         );
       }
     });

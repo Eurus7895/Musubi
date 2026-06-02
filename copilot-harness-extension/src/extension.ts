@@ -23,6 +23,8 @@ import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
 import { HarnessModelsProvider } from "./modelsView";
 import { disposeLogger, getLogger } from "./loggerService";
+import { HarnessPipelinesProvider } from "./pipelinesView";
+import { setPerPipelineAutoApprove } from "./pipelineGateUi";
 
 let out: vscode.OutputChannel;
 
@@ -192,6 +194,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.lm.onDidChangeChatModels(() => modelsProvider.refresh()),
   );
 
+  // ── Pipelines sidebar view ─────────────────────────────────────────────────
+  // Lists pipelines under `.github/pipelines/`. Click a row to toggle
+  // `copilotHarness.autoApprove.<name>`. Moved out of the in-chat review-
+  // gate UI because VS Code chat-button single-resolution semantics caused
+  // a click on the toggle to disable the four gate buttons; sidebar clicks
+  // don't have that lifecycle.
+  const pipelineRoots = [workspaceRoot, context.extensionPath];
+  const pipelinesProvider = new HarnessPipelinesProvider(pipelineRoots, (msg) => out.appendLine(msg));
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("copilotHarness.pipelines", pipelinesProvider),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("copilot-harness.refreshPipelines", () => pipelinesProvider.refresh()),
+    vscode.commands.registerCommand(
+      "copilot-harness.togglePipelineAutoApprove",
+      async (pipelineName: string) => {
+        if (!pipelineName || typeof pipelineName !== "string") { return; }
+        const cfg = vscode.workspace.getConfiguration("copilotHarness");
+        const all = cfg.get<Record<string, unknown>>("autoApprove") ?? {};
+        const current = Boolean(all[pipelineName]);
+        try {
+          await setPerPipelineAutoApprove(pipelineName, !current);
+          vscode.window.setStatusBarMessage(
+            `CopilotHarness: auto-approve ${current ? "disabled" : "enabled"} for /${pipelineName}`, 3000,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`CopilotHarness: toggle failed — ${msg}`);
+        }
+      },
+    ),
+  );
+  // Refresh on setting change (sidebar click here, Settings UI, settings sync).
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("copilotHarness.autoApprove")) {
+        pipelinesProvider.refresh();
+      }
+    }),
+  );
+
   // Refreshing the tree is the only signal pipeline.ts sends out. Debounced
   // so rapid stage transitions don't thrash the TreeView.
   let refreshTimer: NodeJS.Timeout | undefined;
@@ -262,7 +305,7 @@ type AgentName = "planner" | "designer" | "coder" | "reviewer";
  * who types `/contxt-cap` (typo) sees a list of file-driven commands
  * with no hint that `/context-cap` exists.
  */
-const BUILTIN_COMMAND_NAMES = ["model", "context-cap"] as const;
+const BUILTIN_COMMAND_NAMES = ["model", "context-cap", "auto-approve"] as const;
 
 type ParsedCommand =
   | { type: "slash";        name: string; args: string }
@@ -273,7 +316,8 @@ type ParsedCommand =
   | { type: "status" }
   | { type: "help" }
   | { type: "model";        family: string }
-  | { type: "context-cap";  value: string };
+  | { type: "context-cap";  value: string }
+  | { type: "auto-approve"; args: string };
 
 /**
  * Routing rules (Phase D — zero LLM cost):
@@ -302,6 +346,11 @@ function parseCommand(text: string): ParsedCommand {
     // Same rationale as /model — the action is a settings write, not a
     // file-driven agent/pipeline invocation.
     if (name === "context-cap") { return { type: "context-cap", value: args }; }
+    // Built-in: /auto-approve [pipeline] [on|off] toggles or sets the per-
+    // pipeline copilotHarness.autoApprove flag. The same setting the
+    // Pipelines sidebar reads/writes — this is the chat-side equivalent
+    // for users who prefer keyboard over click.
+    if (name === "auto-approve") { return { type: "auto-approve", args }; }
     return { type: "slash", name, args };
   }
 
@@ -487,6 +536,80 @@ async function runContextCap(
   );
 }
 
+// ── Auto-approve toggle ───────────────────────────────────────────────────────
+
+/**
+ * `/auto-approve [pipeline] [on|off|toggle|clear]` — chat-side equivalent
+ * of the Pipelines sidebar's per-row toggle. Same underlying setting
+ * (`copilotHarness.autoApprove.<pipeline>`); same setPerPipelineAutoApprove
+ * write path; sidebar refreshes automatically on the config change.
+ */
+async function runAutoApprove(
+  args: string,
+  _roots: readonly string[],
+  stream: vscode.ChatResponseStream,
+): Promise<void> {
+  const trimmed = args.trim();
+  const cfg = vscode.workspace.getConfiguration("copilotHarness");
+  const all = cfg.get<Record<string, unknown>>("autoApprove") ?? {};
+
+  if (!trimmed) {
+    const onEntries = Object.entries(all).filter(([, v]) => v === true);
+    let md = onEntries.length > 0
+      ? `**Auto-approve currently ON for:**\n\n${onEntries.map(([k]) => `- \`/${k}\``).join("\n")}\n\n`
+      : `**Auto-approve is OFF for all pipelines.**\n\n`;
+    md += `**Usage:**\n\n`;
+    md += `- \`/auto-approve <pipeline>\` — toggle (e.g. \`/auto-approve feature-dev\`)\n`;
+    md += `- \`/auto-approve <pipeline> on\` — explicitly enable\n`;
+    md += `- \`/auto-approve <pipeline> off\` — explicitly disable\n`;
+    md += `- \`/auto-approve <pipeline> clear\` — remove from setting (back to OFF default)\n\n`;
+    md += `Also configurable from the **Pipelines** sidebar (click any row to toggle).`;
+    stream.markdown(md);
+    return;
+  }
+
+  const parts = trimmed.split(/\s+/);
+  const pipelineName = parts[0];
+  const action = (parts[1] ?? "toggle").toLowerCase();
+
+  if (!/^[a-z0-9_-]+$/i.test(pipelineName)) {
+    stream.markdown(
+      `❌ Invalid pipeline name \`${pipelineName}\`. Use letters, digits, underscore, or hyphen only.`,
+    );
+    return;
+  }
+
+  const current = Boolean(all[pipelineName]);
+
+  if (action === "clear" || action === "remove" || action === "-") {
+    const updated = { ...all };
+    delete updated[pipelineName];
+    await cfg.update("autoApprove", updated, vscode.ConfigurationTarget.Global);
+    stream.markdown(`✅ Auto-approve cleared for \`/${pipelineName}\` (back to OFF default).`);
+    return;
+  }
+
+  let newValue: boolean;
+  if (action === "on" || action === "true" || action === "enable") {
+    newValue = true;
+  } else if (action === "off" || action === "false" || action === "disable") {
+    newValue = false;
+  } else if (action === "toggle") {
+    newValue = !current;
+  } else {
+    stream.markdown(
+      `❌ Unknown action \`${action}\`. Valid: \`on\`, \`off\`, \`toggle\`, \`clear\`.`,
+    );
+    return;
+  }
+
+  await setPerPipelineAutoApprove(pipelineName, newValue);
+  stream.markdown(
+    `✅ Auto-approve **${newValue ? "ON" : "OFF"}** for \`/${pipelineName}\`. ` +
+    `${newValue ? "Review gate will be skipped between stages." : "Review gate will fire between non-reviewer stages."}`,
+  );
+}
+
 // ── Usage text ────────────────────────────────────────────────────────────────
 
 const USAGE_HEADER = "**CopilotHarness** — orchestrator + governed pipelines";
@@ -504,13 +627,31 @@ const USAGE_FOOTER = [
   "",
   "- `/model [family|clear]` — switch the model family for ALL harness LM calls (writes `copilotHarness.modelOverride`). Useful when you've run out of quota on the agent defaults. Run with no args to see current value + available families.",
   "- `/context-cap [N|clear]` — switch the per-turn context budget in tokens (writes `copilotHarness.contextCap`). Lower = cheaper per turn, less history retained. Pipeline.yaml `context_cap:` overrides per pipeline. Run with no args to see current + effective values.",
+  "- `/auto-approve [pipeline] [on|off|toggle|clear]` — toggle the per-pipeline review gate (writes `copilotHarness.autoApprove.<pipeline>`). When ON, the four-button gate is skipped between stages. Run with no args to see which pipelines are currently auto-approved. Same setting the Pipelines sidebar manages.",
   "",
   "**Review gate (between stages):**",
   "",
   "Pipelines pause after every non-reviewer stage and offer four buttons:",
   "**✓ Approve · ↻ Retry · ✕ Abort · ⚡ Run remaining without review**.",
   "Retry opens an optional one-line hint box that the next attempt sees.",
-  "Per-pipeline auto-approve is persisted via the `copilotHarness.autoApprove.<pipeline>` setting (toggle from the chat button or VS Code settings).",
+  "Skip the gate per-pipeline via the **Pipelines** sidebar (click a row) or",
+  "via `/auto-approve <pipeline>` in chat — both update `copilotHarness.autoApprove.<pipeline>`.",
+  "",
+  "**Sidebar views (CopilotHarness activity-bar icon):**",
+  "",
+  "- **Tasks** — live pipeline session + history; click a stage row to open its artifact (`.harness/sessions/<id>/<stage>.md`).",
+  "- **Models** — every Copilot-surfaced model family; click a row to set as override (same as `/model`).",
+  "- **Pipelines** — every pipeline declared under `.github/pipelines/`; click a row to toggle auto-approve.",
+  "",
+  "**Cost controls (defaults shown):**",
+  "",
+  "- Context cap: 50 000 tokens / turn (`copilotHarness.contextCap`, or `context_cap:` in pipeline.yaml).",
+  "- Pipeline budgets: feature-dev 50 credits, code-review 20 credits (`max_credits:` in pipeline.yaml). Halts before exceeding; `/continue` resumes after a raise.",
+  "- Model override: none by default (uses each agent's frontmatter); set via `/model` or settings.",
+  "",
+  "**Other options:**",
+  "",
+  "- `copilotHarness.verboseStageOutput` (default OFF) — when ON, planner/designer/reviewer output bodies render inline in chat. OFF keeps chat lean (only the per-stage status line + file anchor); the full content is always written to `.harness/sessions/<id>/<stage>.md`.",
   "",
   "Slash commands are defined in `.github/commands/`. Type `@harness /help` ",
   "any time to see the current list.",
@@ -657,6 +798,10 @@ async function handler(
 
       case "context-cap":
         await runContextCap(cmd.value, stream);
+        break;
+
+      case "auto-approve":
+        await runAutoApprove(cmd.args, slashRoots, stream);
         break;
     }
   } catch (err) {
