@@ -20,6 +20,13 @@ export type {
 import { McpClient } from "./mcpClient";
 import { selectModelForAgent } from "./modelSelector";
 import {
+  readAgentLmToolNames,
+  readAgentMaxTurns,
+} from "./modelSelectorCore";
+import {
+  resolveMaxTurns,
+} from "./agentToolCycleCore";
+import {
   BudgetEnforcer,
   BudgetExhaustedError,
   estimateCallCredits,
@@ -539,6 +546,8 @@ interface AgentObs {
   // sendRequest. Fire-and-forget; failures don't abort the pipeline.
   client?: McpClient;
   chunkId?: string;
+  /** Passed to vscode.lm.invokeTool so tool calls can trigger VS Code edit confirmations. */
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 async function runAgentLM(
