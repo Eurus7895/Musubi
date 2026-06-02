@@ -338,15 +338,15 @@ End-of-A checkpoint:
 #### Phase B — Orchestrator core (2 days)
 
 ```
-Day B.1 — Agent file + harness wiring
-  [ ] .github/agents/orchestrator.agent.md (frontmatter: name, version,
+Day B.1 ✅ Agent file + harness wiring
+  [x] .github/agents/orchestrator.agent.md (frontmatter: name, version,
       role, sees [user_message, conversation_history, memory_tier1],
       inject_skills [orchestrator-routing], output_schema, spawn_allowlist,
       max_spawns_per_role_per_turn)
-  [ ] .github/skills/orchestrator-routing/SKILL.md (system-prompt content)
-  [ ] copilot-harness/validation/context_builder.py: _context_orchestrator
-  [ ] scripts/policy_engine.py: MAIN_SUBAGENT_ALLOWLIST["orchestrator"]
-  [ ] tests/test_orchestrator_context.py
+  [x] .github/skills/orchestrator-routing/SKILL.md (system-prompt content)
+  [x] copilot-harness/validation/context_builder.py: _context_orchestrator
+  [x] scripts/policy_engine.py: MAIN_SUBAGENT_ALLOWLIST["orchestrator"]
+  [x] tests/test_orchestrator_context.py
 
 Day B.2 ✅ Extension-side runner
   [x] copilot-harness-extension/src/runners/orchestratorCore.ts +
@@ -1452,6 +1452,142 @@ default. The slash command writes the setting (no separate state).
 What may change with J: bare `@harness <prompt>` may become
 recommended (rather than tolerated) for casual chat / lookups if the
 cost gap genuinely closes to ~10-20%.
+
+---
+
+### Phase J follow-up — detailed plan
+
+Phase J shipped the cost-control machinery (caching probe, model
+picker, context cap, credit budgets, telemetry table, sidebar UI,
+slash commands). What remains is a sequence of dependent + parallel
+work items captured during real-use sessions.
+
+#### Phase 1 — Immediate (queued after PR #62 merges)
+
+**1.1 — A1: wire `lm_tools:` into pipeline-mode `runAgentLM`** [TODO, ~450 lines]
+Design doc: PR #60 (merged). Failure pattern context: PR #59 (merged).
+Goal: 9 pipeline-mode agents (planner, designer, coder, reviewer,
+code-review-scoper/finder/synthesizer, pipeline-builder, skill-
+builder) get the tools their `.agent.md` already declares but the
+runner currently ignores. Locked decisions per the design doc:
+honour `maxTurns:` as cycle cap (per-agent table); schema-validate
+only the final cycle's text; keep `preSpawnAndSplice` AND add
+in-stage tools; tool-result audit via Output channel only (durable
+audit deferred to J.4); ship without a feature flag (additive
+behaviour).
+
+**1.2 — Pre-spawn firewall diagnostic** [TODO, ~30 min investigation + ≤50 lines fix]
+Real-session evidence: `Main agent 'coder' may not spawn role
+'explorer' under pipeline 'feature-dev'. Declared spawns ∩ firewall
+= []`. Policy says coder CAN spawn both; investigation needed for
+whether the `.vsix` ships a stale bundled pipeline.yaml or there's
+a real `_load_pipeline_spawns` bug.
+
+**1.3 — Cache empirical verification** [TODO, zero code]
+Quota-gated; depends on a real Claude exchange where the Copilot
+usage dashboard can be inspected for `cached_input > 0`. Result
+governs Phase F unfreeze decision (step 3.4 below).
+
+#### Phase 2 — Short-term (after A1 lands)
+
+**2.1 — J.4 cost telemetry surfacing** [TODO, ~250-400 lines]
+`/status` extended with session credit breakdown + monthly progress.
+Tasks sidebar gains a "Cost" section. Optional new MCP tool
+`harness_query_credits_summary`. Aggregates from `stage_metrics` +
+`orchestrator_turns` (no new table; J.4 spec lean: aggregate from
+existing).
+
+**2.2 — Scoper big-diff fix** [TODO, ~100 lines]
+Real-session evidence: `/code-review` aborted with `input is
+360,077 chars — above the 200,000-char ceiling`. Per CLAUDE.md's
+"Execution strategies" — implement the **pre-process** strategy
+(`git diff --stat` → file list → scoper picks priorities → finder
+reads on demand) rather than full-diff content into the scoper.
+Threshold for triggering: always-on (negligible latency cost).
+
+**2.3 — A2: edit + terminal tools for coder** [TODO, ~200 lines + own design doc]
+Depends on A1 stable + cache verification preferred first. Adds
+`copilot_replaceString` / `copilot_insertEdit` / `create_file` /
+`copilot_runInTerminal` to coder's surfaced tools. Needs path-scoped
+write enforcement (`_STAGE_PERMISSIONS` extension with globs) and
+audit trail for every edit call. Higher risk than A1; design doc
+mandatory.
+
+#### Phase 3 — Medium-term
+
+**3.1 — J.2d per-pipeline `default_model:`** [TODO, ~80 lines]
+Adds resolution layer between global override and per-agent
+frontmatter. Lets feature-dev pin Haiku-baseline while code-review
+pins Sonnet without touching individual agent files.
+
+**3.2 — Tasks sidebar integration with `orchestrator_turns`**
+[TODO, ~80 lines]
+Data captured (PR #61), no UI yet. New "Orchestrator chats" section
+in `tasksView.ts`, grouped by chat_id, click-to-open.
+
+**3.3 — Stale `.vsix` bundle detector** [TODO, ~30 lines]
+Preempts the recurring "I rebuilt but yaml is stale" issue. Compare
+bundled pipeline.yaml mtime vs git HEAD's version; warn at
+activation.
+
+**3.4 — Phase F unfreeze decision** [TODO, docs only]
+Depends on 1.3 (cache verification). If `cached_input > 0` honoured
+→ freeze lifts, rewrite Phase F section. If not → freeze stays
+with hedge.
+
+#### Phase 4 — Long-term (Phase H+)
+
+**4.1 — Third pipeline** [TODO, ~600 lines + own design discussion]
+Depends on A1 + A2. Candidates: bug-fix (diagnose → fix → verify),
+migration (schema/API change across files), test-coverage. Proves
+the catalog can grow beyond feature-dev + code-review.
+
+**4.2 — Composer-as-pipeline** [DEFERRED]
+A pipeline that generates pipelines. Speculative; depends on whether
+4.1 surfaces a clear parameterisation pattern.
+
+#### Open discussion points
+
+For 1.1 (A1):
+- Per-agent `maxTurns` defaults: planner 3, designer 5, coder 10,
+  reviewer 5, scoper 2, finder 5, synthesizer 3, pipeline-builder
+  5, skill-builder 5.
+- J.3 credit accounting should charge per `sendRequest` cycle
+  (~30 lines in `pipelineBudgetCore.ts`) since a stage now makes
+  N calls.
+
+For 2.2 (scoper):
+- Pre-process strategy is the lean. Skip files > 50 KB by default;
+  reviewer-aux pulls explicit excerpts on demand.
+
+For 2.3 (A2):
+- Path-scoping: coder limited to `plan.scope.files` (proposal).
+- Terminal sandbox: read-only mode for `run_in_terminal` (proposal).
+- Coder's final JSON shape when files are emitted via tool calls:
+  "manifest of changes" vs "the tool calls are the changes"
+  — needs design doc.
+
+For 3.4 (unfreeze):
+- If unfrozen: orchestrator-specific features eligible only when the
+  change also benefits pipeline users (no orchestrator-only growth).
+
+#### Sequencing summary
+
+```
+Now            PR #62 merges
+↓
+Phase 1        1.1 (A1) ─┬─ 1.2 (firewall diagnostic, parallel)
+                          └─ 1.3 (cache verify, quota-gated)
+↓
+Phase 2        2.1 (telemetry) → 2.2 (scoper) → 2.3 (A2)
+↓
+Phase 3        3.1 + 3.2 + 3.3 (parallel) → 3.4 (decision)
+↓
+Phase 4        4.1 (third pipeline) → maybe 4.2
+```
+
+Items in Phase 2-4 can be re-ordered based on what real usage
+surfaces; Phase 1 is the only hard sequence.
 
 ---
 
