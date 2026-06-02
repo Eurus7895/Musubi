@@ -7,7 +7,7 @@ description: >
   Invoked after the Coder writes code. Use this agent to gate code quality before
   execution.
 model: claude-sonnet-4.5
-maxTurns: 1
+maxTurns: 5
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Concrete VS Code LM tool names. Reviewer judges code-as-artifact; the

@@ -570,31 +570,69 @@ async function runAgentLM(
   const model = await selectModelForAgent({
     roots, agentName, skills: activeSkills, log: logLine,
   });
+
+  // A1 — resolve which tools this agent may call during its stage.
+  // Filter vscode.lm.tools to the names declared in the agent's `lm_tools:`
+  // frontmatter. When the list is empty (or none of the names match a
+  // registered tool), the cycle loop falls through with single-cycle
+  // behaviour — identical to pre-A1.
+  const declaredToolNames = readAgentLmToolNames(roots, agentName);
+  const declaredSet = new Set(declaredToolNames);
+  const lmChatTools: vscode.LanguageModelChatTool[] =
+    declaredToolNames.length === 0
+      ? []
+      : vscode.lm.tools
+          .filter(t => declaredSet.has(t.name))
+          .map(t => ({
+            name: t.name,
+            description: t.description ?? t.name,
+            inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+          }));
+
+  // maxTurns: frontmatter wins; otherwise per-agent default; otherwise 3.
+  // The fallback chain is `readAgentMaxTurns(roots, agentName, 0) || null`
+  // so a missing field surfaces as null to resolveMaxTurns.
+  const frontmatterTurns = readAgentMaxTurns(roots, agentName, 0);
+  const maxTurns = resolveMaxTurns(agentName, frontmatterTurns > 0 ? frontmatterTurns : null);
+
   const schemaHint = AGENT_OUTPUT_HINTS[agentName] ?? "Produce a JSON object matching your Output Contract schema.";
+  // Two flavours of system prompt: with tools available, the agent may
+  // explore before producing its final JSON. Without tools, keep the
+  // original "do NOT call any tools" instruction so the model doesn't
+  // hallucinate tool syntax against an empty catalog.
+  const toolPreamble =
+    lmChatTools.length > 0
+      ? "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
+        "harness_read_stage) have already been executed by the extension.\n" +
+        "The results are in the input context below.\n\n" +
+        "You MAY call the provided tools (read_file, grep_search, copilot_readFile, etc.) to\n" +
+        "read the workspace before producing your final output. Explore only what you need.\n\n" +
+        "When you are done exploring, output ONLY the raw JSON object — no markdown fences,\n" +
+        "no explanation, nothing else.\n\n"
+      : "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
+        "harness_read_stage) have already been executed by the extension.\n" +
+        "The results are in the input context below — do NOT call any tools.\n\n" +
+        "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
+        "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n";
   const systemMsg =
     agentPrompt +
     "\n\n---\n\n" +
     "IMPORTANT — you are being driven by the CopilotHarness VS Code extension.\n" +
-    "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
-    "harness_read_stage) have already been executed by the extension.\n" +
-    "The results are in the input context below — do NOT call any tools.\n\n" +
-    "Your ONLY task: produce VALID JSON matching your Output Contract.\n" +
-    "Output ONLY the raw JSON object — no markdown fences, no explanation, nothing else.\n\n" +
+    toolPreamble +
     schemaHint;
   const contextMsg = `Input context from the harness:\n\n${JSON.stringify(context, null, 2)}`;
-  const messages = [
+  const messages: vscode.LanguageModelChatMessage[] = [
     vscode.LanguageModelChatMessage.User(systemMsg),
     vscode.LanguageModelChatMessage.User(contextMsg),
   ];
 
   const promptChars = systemMsg.length + contextMsg.length;
-  logLine(`→ ${agentName}: sending ${promptChars.toLocaleString()} chars to ${model.id} (family=${model.family})`);
+  logLine(
+    `→ ${agentName}: sending ${promptChars.toLocaleString()} chars to ${model.id}` +
+    ` (family=${model.family}, maxTurns=${maxTurns}, tools=${lmChatTools.length})`,
+  );
 
-  // Phase J.3 — pre-flight budget check. Estimates this call's cost using
-  // a worst-case output guess (25% of input tokens); if the projected
-  // total would exceed the pipeline's max_credits, abort before paying
-  // for the LM call. If it crosses the warn threshold, surface a one-
-  // time chat warning via the registered onEvent callback.
+  // Phase J.3 — pre-flight budget check (first cycle's worst case).
   const activeBudget =
     obs?.sessionId ? getActiveBudget(obs.sessionId) : null;
   const inputTokensEst = estimateTokensFromChars(promptChars);
@@ -625,63 +663,137 @@ async function runAgentLM(
     }
   }
 
+  // A1 — bounded multi-cycle loop. Terminates when:
+  //   (a) the model emits a cycle with zero tool calls → that cycle's
+  //       text becomes the final answer, parsed by extractJson; or
+  //   (b) maxTurns is exhausted → the model never produced a clean
+  //       final answer, finalText stays "" and the correction loop in
+  //       runAgentWithValidationRetry handles the rejection.
   const t0 = Date.now();
-  const response = await model.sendRequest(messages, {}, token);
-  let text = "";
-  let chunks = 0;
-  let firstChunkMs: number | null = null;
-  for await (const chunk of response.text) {
-    if (firstChunkMs === null) { firstChunkMs = Date.now() - t0; }
-    text += chunk;
-    chunks++;
-  }
-  const elapsed = Date.now() - t0;
+  let finalText = "";
+  let totalCycles = 0;
+  let hitMaxTurns = false;
 
+  for (let cycle = 0; cycle < maxTurns; cycle++) {
+    if (token.isCancellationRequested) { break; }
+
+    const requestOptions: vscode.LanguageModelChatRequestOptions =
+      lmChatTools.length > 0 ? { tools: lmChatTools } : {};
+
+    const cycleStart = Date.now();
+    const response = await model.sendRequest(messages, requestOptions, token);
+
+    let cycleBuf = "";
+    const toolCalls: vscode.LanguageModelToolCallPart[] = [];
+    for await (const part of response.stream) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        cycleBuf += part.value;
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        toolCalls.push(part);
+      }
+    }
+    const cycleMs = Date.now() - cycleStart;
+    totalCycles = cycle + 1;
+    logLine(
+      `← ${agentName} cycle ${cycle}: ${cycleBuf.length}ch text, ` +
+      `${toolCalls.length} tool call(s), ${cycleMs}ms`,
+    );
+
+    // Phase J.3 — post-flight charge per cycle. Each sendRequest is a
+    // separate billable event, so the budget book reflects N cycles.
+    if (activeBudget) {
+      const outputTokensEst = estimateTokensFromChars(cycleBuf.length);
+      const actualCost = estimateCallCredits(model.family, inputTokensEst, outputTokensEst);
+      const status = activeBudget.enforcer.charge(actualCost);
+      activeBudget.onEvent({
+        status: status === "allow" ? "info" : status,
+        phase: "postflight",
+        creditsUsed: activeBudget.enforcer.creditsUsed,
+        maxCredits: activeBudget.enforcer.maxCredits,
+        remaining: activeBudget.enforcer.remaining,
+        family: model.family,
+        thisCallCredits: actualCost,
+      });
+      if (status === "halt") {
+        throw new BudgetExhaustedError(
+          "postflight",
+          activeBudget.enforcer.creditsUsed,
+          activeBudget.enforcer.maxCredits,
+          model.family,
+          actualCost,
+        );
+      }
+    }
+
+    if (toolCalls.length === 0) {
+      // Final cycle — model is done. Use this cycle's text for JSON parsing.
+      finalText = cycleBuf;
+      break;
+    }
+
+    // Intermediate cycle: log emitted text but don't include it in the
+    // final output buffer (design decision #2: only final-cycle text
+    // is parsed). Pollution from "let me think about that…" text
+    // between tool calls is the failure mode this guards against.
+    if (cycleBuf.length > 0) {
+      logLine(`  [${agentName}] intermediate text cycle ${cycle}: ${cycleBuf.length}ch (logged, not parsed)`);
+    }
+
+    // Reflect the assistant's tool-call turn into the history.
+    messages.push(vscode.LanguageModelChatMessage.Assistant([
+      ...(cycleBuf.length > 0 ? [new vscode.LanguageModelTextPart(cycleBuf)] : []),
+      ...toolCalls,
+    ]));
+
+    // Dispatch each tool via vscode.lm.invokeTool and append results.
+    const resultParts: vscode.LanguageModelToolResultPart[] = [];
+    for (const call of toolCalls) {
+      const toolStart = Date.now();
+      try {
+        const invokeResult = await vscode.lm.invokeTool(
+          call.name,
+          { input: call.input as Record<string, unknown>, toolInvocationToken: obs?.toolInvocationToken },
+          token,
+        );
+        resultParts.push(
+          new vscode.LanguageModelToolResultPart(call.callId, invokeResult.content),
+        );
+        const resultText = stringifyToolResultContent(invokeResult.content);
+        logLine(
+          `  [${agentName}] tool ${call.name}: ok ${Date.now() - toolStart}ms ${resultText.length}ch`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logLine(`  [${agentName}] tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
+        resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
+          new vscode.LanguageModelTextPart(JSON.stringify({ status: "error", error: msg })),
+        ]));
+      }
+    }
+    messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+    // After the last allowed cycle, mark force-finalise so logging is
+    // accurate. The loop condition exits naturally on the next iteration.
+    if (cycle + 1 >= maxTurns) { hitMaxTurns = true; }
+  }
+
+  const elapsed = Date.now() - t0;
+  if (hitMaxTurns && finalText.length === 0) {
+    logLine(
+      `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
+      `correction loop will see empty output`,
+    );
+  }
   logLine(
-    `← ${agentName}: received ${text.length.toLocaleString()} chars in ${chunks} chunk(s), ` +
-    `first-chunk=${firstChunkMs ?? "n/a"}ms, total=${elapsed}ms`,
+    `← ${agentName}: ${finalText.length.toLocaleString()} chars in ${totalCycles} cycle(s), total=${elapsed}ms`,
   );
 
-  if (text.length === 0) {
+  if (finalText.length === 0) {
     logLine(`  WARNING: empty response from ${agentName} — model may be unauthorized, rate-limited, or cancelled`);
   }
 
-  // Phase J.3 — post-flight budget charge. Uses actual output length so
-  // the running total reflects real spend (more accurate than the
-  // pre-flight estimate, which assumed worst-case output). If this
-  // charge crosses the cap, throw — the pipeline halts before next stage.
-  if (activeBudget) {
-    const outputTokensEst = estimateTokensFromChars(text.length);
-    const actualCost = estimateCallCredits(
-      model.family, inputTokensEst, outputTokensEst,
-    );
-    const status = activeBudget.enforcer.charge(actualCost);
-    // Fire onEvent unconditionally — the callback decides what to render.
-    // Mapping: BudgetEnforcer's "allow" status → "info" in the event so
-    // the callback can render a per-call credit line in chat. warn/halt
-    // are unchanged.
-    activeBudget.onEvent({
-      status: status === "allow" ? "info" : status,
-      phase: "postflight",
-      creditsUsed: activeBudget.enforcer.creditsUsed,
-      maxCredits: activeBudget.enforcer.maxCredits,
-      remaining: activeBudget.enforcer.remaining,
-      family: model.family,
-      thisCallCredits: actualCost,
-    });
-    if (status === "halt") {
-      throw new BudgetExhaustedError(
-        "postflight",
-        activeBudget.enforcer.creditsUsed,
-        activeBudget.enforcer.maxCredits,
-        model.family,
-        actualCost,
-      );
-    }
-  }
-
   if (obs) {
-    const dumped = dumpRawResponse(obs.workspaceRoot, obs.sessionId, obs.stage, obs.attempt, text);
+    const dumped = dumpRawResponse(obs.workspaceRoot, obs.sessionId, obs.stage, obs.attempt, finalText);
     if (dumped) { logLine(`  raw response dumped → ${dumped}`); }
 
     // G.3: append a stage_metrics row. Fire-and-forget — observability
@@ -691,7 +803,7 @@ async function runAgentLM(
       const startedAt = t0 / 1000;
       const endedAt = Date.now() / 1000;
       const tokensIn = Math.max(1, Math.floor(promptChars / 4));
-      const tokensOut = Math.max(0, Math.floor(text.length / 4));
+      const tokensOut = Math.max(0, Math.floor(finalText.length / 4));
       const args: Record<string, unknown> = {
         session_id: obs.sessionId,
         stage: obs.stage,
@@ -710,7 +822,18 @@ async function runAgentLM(
     }
   }
 
-  return extractJson(text);
+  return extractJson(finalText);
+}
+
+/** Best-effort flatten of an LM tool-result content array to string. */
+function stringifyToolResultContent(content: ReadonlyArray<unknown>): string {
+  const parts: string[] = [];
+  for (const p of content) {
+    if (p instanceof vscode.LanguageModelTextPart) { parts.push(p.value); continue; }
+    const v = (p as { value?: unknown }).value;
+    if (typeof v === "string") { parts.push(v); }
+  }
+  return parts.join("");
 }
 
 async function writeStage(
@@ -766,6 +889,7 @@ async function runAgentWithValidationRetry(
   token: vscode.CancellationToken,
   onChange?: () => void,
   chunkId?: string,
+  toolInvocationToken?: vscode.ChatParticipantToolToken,
 ): Promise<{ output: unknown; finalAttempt: number }> {
   let attempt = initialAttempt;
   let context = baseContext;
@@ -801,7 +925,7 @@ async function runAgentWithValidationRetry(
     }
     const output = await runAgentLM(
       roots, agentName, agentPrompt, context, token,
-      { workspaceRoot, sessionId, stage, attempt, client, chunkId },
+      { workspaceRoot, sessionId, stage, attempt, client, chunkId, toolInvocationToken },
     );
     const result = await writeStage(client, sessionId, stage, agentName, output, chunkId);
     if (result.status === "stored") {
@@ -1161,6 +1285,7 @@ async function runCorrectionLoop(
   onChange?: () => void,
   chunkId?: string,
   correctionRules?: EscalationRules,
+  toolInvocationToken?: vscode.ChatParticipantToolToken,
 ): Promise<ReviewOutput> {
   let currentReview = initialReview;
   const chunkLabel = chunkId ? ` · ${chunkId}` : "";
@@ -1212,6 +1337,7 @@ async function runCorrectionLoop(
     const { output: fixedCode, finalAttempt: coderFinalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, "coder", loadAgentPrompt(promptRoots, pipelineName, "coder"),
       coderCtx, sessionId, "code", codeAttempt, workspaceRoot, stream, token, onChange, chunkId,
+      toolInvocationToken,
     );
     codeAttempt = coderFinalAttempt;
     materializeCoderFiles(workspaceRoot, fixedCode, stream);
@@ -1233,6 +1359,7 @@ async function runCorrectionLoop(
     const { output: newReviewOutput, finalAttempt: reviewerFinalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, "reviewer", loadAgentPrompt(promptRoots, pipelineName, "reviewer"),
       reviewerCtx, sessionId, "review", codeAttempt, workspaceRoot, stream, token, onChange, chunkId,
+      toolInvocationToken,
     );
     const newReviewRaw = newReviewOutput as ReviewOutput;
     // G.2: apply escalate-on-rules BEFORE materialising / rendering so
@@ -1280,6 +1407,7 @@ interface RunChunkedOptions {
   token: vscode.CancellationToken;
   onChange?: () => void;
   pipelineT0: number;
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 /**
@@ -1306,6 +1434,7 @@ async function runChunkedCodeAndReview(
   const {
     client, workspaceRoot, promptRoots, meta,
     sessionId, chunks, stageOutputs, stream, token, onChange, pipelineT0,
+    toolInvocationToken,
   } = opts;
 
   stream.markdown(
@@ -1395,6 +1524,7 @@ async function runChunkedCodeAndReview(
           loadAgentPrompt(promptRoots, meta.pipelineName, "coder"),
           coderCtxAugmented, sessionId, "code", codeAttempt,
           workspaceRoot, stream, token, onChange, chunk.chunk_id,
+          toolInvocationToken,
         );
         coderOutput = r.output;
       } catch (err) {
@@ -1452,6 +1582,7 @@ async function runChunkedCodeAndReview(
           loadAgentPrompt(promptRoots, meta.pipelineName, "reviewer"),
           reviewerCtxAugmented, sessionId, "review", codeAttempt,
           workspaceRoot, stream, token, onChange, chunk.chunk_id,
+          toolInvocationToken,
         );
         // G.2: apply escalate-on-rules to the chunk's first review pass.
         reviewOutput = applyCorrectionRules(
@@ -1477,7 +1608,7 @@ async function runChunkedCodeAndReview(
         finalReview = await runCorrectionLoop(
           client, sessionId, workspaceRoot, promptRoots, meta.pipelineName,
           reviewOutput, codeAttempt, stream, token, onChange, chunk.chunk_id,
-          chunkRules,
+          chunkRules, toolInvocationToken,
         );
       }
 
@@ -1907,10 +2038,11 @@ interface CodeReviewBodyOpts {
   sessionId: string;
   onChange?: () => void;
   route: string;
+  toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
 
 async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResult> {
-  const { client, request, workspaceRoot, promptRoots, stream, token, sessionId, onChange } = opts;
+  const { client, request, workspaceRoot, promptRoots, stream, token, sessionId, onChange, toolInvocationToken } = opts;
   const stageOutputs: Record<string, unknown> = {};
 
   // ── Stage 0: resolve input → diff ─────────────────────────────────────────
@@ -1956,7 +2088,7 @@ async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResu
   const scopeT0 = Date.now();
   const { output: scope, finalAttempt: scopeAttempt } = await runAgentWithValidationRetry(
     client, promptRoots, "scoper", scoperPrompt, scoperCtx, sessionId, "scope",
-    1, workspaceRoot, stream, token, onChange,
+    1, workspaceRoot, stream, token, onChange, undefined, toolInvocationToken,
   );
   stageOutputs["scope"] = scope;
   emitStageComplete(stream, "scoper", Date.now() - scopeT0, summarizeStageOutput("scope", scope));
@@ -2022,7 +2154,7 @@ async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResu
   const { output: findings, finalAttempt: findingsAttempt } =
     await runAgentWithValidationRetry(
       client, promptRoots, "finder", finderPrompt, finderCtx, sessionId, "findings",
-      1, workspaceRoot, stream, token, onChange,
+      1, workspaceRoot, stream, token, onChange, undefined, toolInvocationToken,
     );
   stageOutputs["findings"] = findings;
   emitStageComplete(stream, "finder", Date.now() - findT0, summarizeStageOutput("findings", findings));
@@ -2179,7 +2311,7 @@ async function runCodeReviewBody(opts: CodeReviewBodyOpts): Promise<PipelineResu
   const { output: synthesis, finalAttempt: synthAttempt } =
     await runAgentWithValidationRetry(
       client, promptRoots, "synthesizer", synthPrompt, synthCtx, sessionId, "synthesis",
-      1, workspaceRoot, stream, token, onChange,
+      1, workspaceRoot, stream, token, onChange, undefined, toolInvocationToken,
     );
   stageOutputs["synthesis"] = synthesis;
   emitStageComplete(stream, "synthesizer", Date.now() - synthT0, summarizeStageOutput("synthesis", synthesis));
@@ -2210,6 +2342,7 @@ export async function runPipeline(
   token: vscode.CancellationToken,
   pipelineMeta?: { route: string; pipelineName: string; level: number },
   onChange?: () => void,
+  toolInvocationToken?: vscode.ChatParticipantToolToken,
 ): Promise<PipelineResult> {
   // Per-agent model selection happens inside runAgentLM via
   // selectModelForAgent — each stage runs against its declared `model:`
@@ -2304,6 +2437,7 @@ export async function runPipeline(
     return runCodeReviewBody({
       client, request, workspaceRoot, promptRoots,
       stream, token, sessionId, onChange, route: meta.route,
+      toolInvocationToken,
     });
   }
 
@@ -2347,6 +2481,7 @@ export async function runPipeline(
           client, workspaceRoot, promptRoots, meta,
           sessionId, chunks: chunkList, stageOutputs,
           stream, token, onChange, pipelineT0,
+          toolInvocationToken,
         });
       }
     }
@@ -2411,6 +2546,7 @@ export async function runPipeline(
     const { output: agentOutput, finalAttempt } = await runAgentWithValidationRetry(
       client, promptRoots, agent.name, loadAgentPrompt(promptRoots, meta.pipelineName, agent.name),
       stageContext, sessionId, agent.writeStage, attempt, workspaceRoot, stream, token, onChange,
+      undefined, toolInvocationToken,
     );
     stageOutputs[agent.writeStage] = agentOutput;
     materializeStageOutput(workspaceRoot, sessionId, agent.writeStage, finalAttempt, agentOutput);
@@ -2486,7 +2622,7 @@ export async function runPipeline(
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
         client, sessionId, workspaceRoot, promptRoots, meta.pipelineName, review, currentAttempt, stream, token, onChange,
-        undefined, correctionRules,
+        undefined, correctionRules, toolInvocationToken,
       );
       stageOutputs["review"] = finalReview;
 
@@ -2542,6 +2678,7 @@ export async function runStep(
     agentName?: string;  // run this specific agent instead of the next pending one
   },
   onChange?: () => void,
+  toolInvocationToken?: vscode.ChatParticipantToolToken,
 ): Promise<StepResult> {
   // Per-agent model selection happens inside runAgentLM (see runPipeline).
   getLogger().show(true);
@@ -2622,6 +2759,7 @@ export async function runStep(
   const { output: agentOutput, finalAttempt: stepFinalAttempt } = await runAgentWithValidationRetry(
     client, promptRoots, agentDef.name, loadAgentPrompt(promptRoots, stepPipeline, agentDef.name),
     context, sessionId, agentDef.writeStage, stepAttempt, workspaceRoot, stream, token, onChange,
+    undefined, toolInvocationToken,
   );
 
   materializeStageOutput(workspaceRoot, sessionId, agentDef.writeStage, stepFinalAttempt, agentOutput);
@@ -2648,6 +2786,7 @@ export async function runStep(
       const currentAttempt = statusData.stages["code"]?.attempt ?? 1;
       const finalReview = await runCorrectionLoop(
         client, sessionId, workspaceRoot, promptRoots, stepPipeline, review, currentAttempt, stream, token, onChange,
+        undefined, undefined, toolInvocationToken,
       );
       finalOutput = finalReview;
       if (finalReview.status !== "pass") {

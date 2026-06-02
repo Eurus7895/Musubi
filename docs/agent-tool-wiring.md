@@ -1,6 +1,6 @@
 # Agent tool wiring — design note for Phase J follow-up
 
-> Status: **draft** · last updated 2026-05-31
+> Status: **approved** · implemented on branch `feat/agent-tool-wiring-a1`
 > Owner: open · supersedes: nothing
 > Linked failure pattern: `.github/memory/failure-patterns.md` § "coder — produces incomplete artefacts when stage requires enumerating workspace files"
 

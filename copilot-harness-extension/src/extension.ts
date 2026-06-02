@@ -753,14 +753,14 @@ async function handler(
         const result = await runPipeline(
           client, cmd.request, workspaceRoot, slashRoots, stream, token,
           { route: "/feature-dev", pipelineName: "feature-dev", level: 2 },
-          refreshTasks,
+          refreshTasks, request.toolInvocationToken,
         );
         emitPipelineSummary(stream, result);
         break;
       }
 
       case "continue": {
-        const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks);
+        const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks, request.toolInvocationToken);
         emitStepMarker(stream, result);
         break;
       }
@@ -769,7 +769,7 @@ async function handler(
         const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
-        }, refreshTasks);
+        }, refreshTasks, request.toolInvocationToken);
         emitStepMarker(stream, result);
         break;
       }
@@ -914,7 +914,7 @@ async function runSlash(
       const result = await runPipeline(
         client, args, workspaceRoot, slashRoots, stream, token,
         { route: `/${cmd.name}`, pipelineName, level: 2 },
-        refreshTasks,
+        refreshTasks, toolInvocationToken,
       );
       emitPipelineSummary(stream, result);
       return;
@@ -927,12 +927,12 @@ async function runSlash(
       const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {
         agentName: cmd.agent as AgentName,
         request: args || undefined,
-      }, refreshTasks);
+      }, refreshTasks, toolInvocationToken);
       emitStepMarker(stream, result);
       return;
     }
     case "continue": {
-      const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks);
+      const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {}, refreshTasks, toolInvocationToken);
       emitStepMarker(stream, result);
       return;
     }

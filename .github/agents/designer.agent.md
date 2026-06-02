@@ -7,7 +7,7 @@ description: >
   schemas, and integration points. Use this agent when a plan exists and you need
   an architecture before writing code.
 model: claude-sonnet-4.5
-maxTurns: 1
+maxTurns: 5
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Concrete VS Code LM tool names. Designer reads existing code to anchor

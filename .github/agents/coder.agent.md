@@ -7,7 +7,7 @@ description: >
   files declared in the plan scope. Use this agent when architecture is defined
   and implementation is needed.
 model: claude-sonnet-4.5
-maxTurns: 1
+maxTurns: 10
 tools: ["view", "edit", "bash"]
 disallowedTools: []
 # Concrete VS Code LM tool names. Coder is the only pipeline agent that

@@ -8,7 +8,7 @@ description: >
   4-agent ceremony was overkill; one careful agent + the harness's hard
   constraints does the job.
 model: claude-sonnet-4.5
-maxTurns: 1
+maxTurns: 5
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Concrete VS Code LM tool names. PipelineBuilder reads the existing
