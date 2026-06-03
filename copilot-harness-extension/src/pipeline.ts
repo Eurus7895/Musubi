@@ -607,6 +607,15 @@ async function runAgentLM(
         "The results are in the input context below.\n\n" +
         "You MAY call the provided tools (read_file, grep_search, copilot_readFile, etc.) to\n" +
         "read the workspace before producing your final output. Explore only what you need.\n\n" +
+        "PATH RULES for every tool call:\n" +
+        "  • Paths are RELATIVE to the workspace root (the repo root that contains\n" +
+        "    `.github/`). They MUST use forward slashes.\n" +
+        "  • NO leading slash, NO leading backslash, NO drive letter (no `C:\\`, no `/`).\n" +
+        "  • Good:  `copilot-harness-extension/src/extension.ts`\n" +
+        "  • Bad:   `\\copilot-harness-extension\\src\\extension.ts`  (drive-root, will fail)\n" +
+        "  • Bad:   `C:/CopilotHarness/copilot-harness-extension/src/extension.ts`\n" +
+        "If a tool call returns 'file does not exist' or an empty result, the path is\n" +
+        "wrong — fix the path shape, do NOT retry the same path.\n\n" +
         "When you are done exploring, output ONLY the raw JSON object — no markdown fences,\n" +
         "no explanation, nothing else.\n\n"
       : "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
@@ -673,6 +682,13 @@ async function runAgentLM(
   let finalText = "";
   let totalCycles = 0;
   let hitMaxTurns = false;
+  // Hallucinate-and-retry guard: when every tool call in a cycle returns
+  // empty or errors, the LM typically tries a slightly-different bad path
+  // on the next cycle and stays stuck. After CONSECUTIVE_EMPTY_CYCLE_LIMIT
+  // such cycles in a row, break out and let the correction loop handle
+  // the empty output. Mirrors runOrchestrator's bail-out pattern.
+  const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 2;
+  let consecutiveEmptyCycles = 0;
 
   for (let cycle = 0; cycle < maxTurns; cycle++) {
     if (token.isCancellationRequested) { break; }
@@ -746,9 +762,13 @@ async function runAgentLM(
     ]));
 
     // Dispatch each tool via vscode.lm.invokeTool and append results.
+    // Track "useful" calls — non-empty content AND no error. Used by the
+    // consecutive-empty guard to detect hallucinate-and-retry loops.
     const resultParts: vscode.LanguageModelToolResultPart[] = [];
+    let cycleUsefulCount = 0;
     for (const call of toolCalls) {
       const toolStart = Date.now();
+      let callOk = false;
       try {
         const invokeResult = await vscode.lm.invokeTool(
           call.name,
@@ -762,6 +782,7 @@ async function runAgentLM(
         logLine(
           `  [${agentName}] tool ${call.name}: ok ${Date.now() - toolStart}ms ${resultText.length}ch`,
         );
+        callOk = resultText.trim().length > 0;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logLine(`  [${agentName}] tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
@@ -769,8 +790,22 @@ async function runAgentLM(
           new vscode.LanguageModelTextPart(JSON.stringify({ status: "error", error: msg })),
         ]));
       }
+      if (callOk) { cycleUsefulCount++; }
     }
     messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+    if (cycleUsefulCount === 0) {
+      consecutiveEmptyCycles++;
+      if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
+        logLine(
+          `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
+          `tool results — bailing out; correction loop will see empty output`,
+        );
+        break;
+      }
+    } else {
+      consecutiveEmptyCycles = 0;
+    }
 
     // After the last allowed cycle, mark force-finalise so logging is
     // accurate. The loop condition exits naturally on the next iteration.
