@@ -10,10 +10,13 @@ model: claude-sonnet-4.5
 maxTurns: 10
 tools: ["view", "edit", "bash"]
 disallowedTools: []
-# Concrete VS Code LM tool names. Coder is the only pipeline agent that
-# writes; full read + edit + terminal surface is intentional. Forward-
-# looking — pipeline.ts does not yet pass tools to sendRequest, so this
-# is consumed only when a runner is wired (orchestrator-style).
+# Concrete VS Code LM tool names that runAgentLM advertises to the
+# coder. A1 scope is READ-ONLY: coder explores the workspace with these
+# tools, then emits the file_contents JSON manifest which the harness
+# materialises to disk via materializeCoderFiles. Edit / create / terminal
+# tools are deferred to A2 — once A1 is stable, A2 will re-extend this
+# list AND update the coder's output contract so file-edits-via-tool
+# are a valid deliverable alongside the JSON manifest.
 lm_tools:
   - copilot_readFile
   - read_file
@@ -25,19 +28,24 @@ lm_tools:
   - file_search
   - copilot_getErrors
   - get_errors
-  - copilot_replaceString
-  - replace_string_in_file
-  - copilot_insertEdit
-  - insert_edit_into_file
-  - create_file
-  - copilot_runInTerminal
-  - run_in_terminal
   # Progress tracking — Copilot's built-in todo list. Lets the coder
   # write a checklist at cycle 0 and tick items off as it finishes
   # each module / sub-task; user sees the list live in chat. Both
   # name variants registered to cover the build-to-build naming drift.
   - manage_todo_list
   - update_todo_list
+  # A2 (DEFERRED) — write / edit / terminal tools below were live in
+  # A1 by accident and caused the coder to bypass the JSON manifest
+  # contract (edit via tools, never emit final JSON, harness
+  # force-finalised on empty output). Re-enable as part of A2 with the
+  # contract change.
+  # - copilot_replaceString
+  # - replace_string_in_file
+  # - copilot_insertEdit
+  # - insert_edit_into_file
+  # - create_file
+  # - copilot_runInTerminal
+  # - run_in_terminal
 ---
 
 ## Role
