@@ -7,6 +7,7 @@ description: >
   3 or more sessions with the same failure type. Writes proposals to
   .github/agents/proposed/ only — never modifies active agent files directly.
 model: claude-sonnet-4.5
+maxTurns: 5
 tools: ["view", "edit"]
 # Concrete VS Code LM tool names. Skill-Builder reads existing skills
 # and writes proposals to .github/agents/proposed/. Read + edit + create.

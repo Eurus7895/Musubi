@@ -153,3 +153,57 @@ export function pickSkillModelFamily(
   return null;
 }
 
+const FRONTMATTER_MAX_TURNS_RE = /^\s*maxTurns:\s*(\d+)\s*(?:#.*)?$/;
+
+/**
+ * Pull `maxTurns:` out of a YAML frontmatter block as a positive integer.
+ * Returns null when the field is absent, zero, or non-integer.
+ */
+export function parseFrontmatterMaxTurns(text: string): number | null {
+  if (!text.startsWith("---")) { return null; }
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) { return null; }
+  const block = text.slice(3, end);
+  for (const rawLine of block.split("\n")) {
+    const m = rawLine.match(FRONTMATTER_MAX_TURNS_RE);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Read agent file text from `<root>/.github/agents/<agentName>.agent.md`.
+ * Returns null if not found in any root.
+ */
+export function readAgentText(roots: readonly string[], agentName: string): string | null {
+  for (const root of roots) {
+    if (!root) { continue; }
+    const p = path.join(root, ".github", "agents", `${agentName}.agent.md`);
+    try { return fs.readFileSync(p, "utf-8"); } catch { continue; }
+  }
+  return null;
+}
+
+/** Read `lm_tools:` from an agent's frontmatter. Returns [] when absent. */
+export function readAgentLmToolNames(roots: readonly string[], agentName: string): string[] {
+  const text = readAgentText(roots, agentName);
+  return text ? parseFrontmatterLmTools(text) : [];
+}
+
+/**
+ * Read `maxTurns:` from an agent's frontmatter. Returns `fallback` when
+ * the field is absent or invalid.
+ */
+export function readAgentMaxTurns(
+  roots: readonly string[],
+  agentName: string,
+  fallback: number,
+): number {
+  const text = readAgentText(roots, agentName);
+  if (!text) { return fallback; }
+  return parseFrontmatterMaxTurns(text) ?? fallback;
+}
+

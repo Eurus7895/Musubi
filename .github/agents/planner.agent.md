@@ -7,7 +7,7 @@ description: >
   acceptance criteria. Use this agent when a new feature, fix, or task needs
   to be scoped before implementation begins.
 model: claude-sonnet-4.5
-maxTurns: 1
+maxTurns: 3
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Concrete VS Code LM tool names. Planner reads to scope; never writes.

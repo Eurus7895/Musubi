@@ -6,7 +6,7 @@ description: >
   outputs into a single ranked code review report. Final stage of /code-review.
   Evaluator under the standard firewall — sees only the prior stage outputs.
 model: claude-sonnet-4-6
-maxTurns: 1
+maxTurns: 3
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools:

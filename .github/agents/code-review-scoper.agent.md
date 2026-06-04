@@ -6,7 +6,7 @@ description: >
   of the /code-review pipeline. Filters out lockfiles, generated code, and
   trivial changes so the review effort concentrates on what matters.
 model: claude-haiku-4-5-20251001
-maxTurns: 1
+maxTurns: 2
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools:

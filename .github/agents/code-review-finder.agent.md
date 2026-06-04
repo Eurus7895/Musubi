@@ -6,7 +6,7 @@ description: >
   contracts, intent — that per-file reviews miss. Second stage of /code-review.
   Per-file detail comes from the reviewer-aux fan-out at the synthesis stage.
 model: claude-sonnet-4-6
-maxTurns: 1
+maxTurns: 5
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools:

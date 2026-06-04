@@ -65,6 +65,7 @@ export const RATES: Readonly<Record<string, ModelRate>> = {
   "claude-haiku-4.5":     { input: 0.80, cached_input: 0.08, output:  4.00, cache_write: 1.00 },
   "claude-opus-4.8":      { input: 15.00, cached_input: 1.50, output: 75.00, cache_write: 18.75 },
   "claude-opus-4.7":      { input: 15.00, cached_input: 1.50, output: 75.00, cache_write: 18.75 },
+  "claude-opus-4.5":      { input: 15.00, cached_input: 1.50, output: 75.00, cache_write: 18.75 },
   "gpt-4o":               { input: 2.50, cached_input: 1.25, output: 10.00, cache_write: 2.50 },
   "gpt-4o-mini":          { input: 0.15, cached_input: 0.075, output: 0.60, cache_write: 0.15 },
   "gpt-4.1":              { input: 2.00, cached_input: 1.00, output:  8.00, cache_write: 2.00 },
