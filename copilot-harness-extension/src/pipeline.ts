@@ -600,6 +600,22 @@ async function runAgentLM(
   // explore before producing its final JSON. Without tools, keep the
   // original "do NOT call any tools" instruction so the model doesn't
   // hallucinate tool syntax against an empty catalog.
+  // Workspace root injected into the prompt so the LM can construct
+  // absolute paths for tools that demand them (copilot_readFile on
+  // Windows rejects relative paths with "Be sure to use an absolute
+  // path"). We pass the path twice — native (backslashes on Windows)
+  // and forward-slash form — because both shapes appear in tool
+  // documentation and accepted error responses.
+  const rawRoot = obs?.workspaceRoot ?? "";
+  const fwdRoot = rawRoot.replace(/\\/g, "/");
+  const rootHint = rawRoot
+    ? `WORKSPACE ROOT:\n` +
+      `  Native form:       ${rawRoot}\n` +
+      `  Forward-slash form: ${fwdRoot}\n` +
+      `  For tools requiring absolute paths, PREPEND the forward-slash form to your\n` +
+      `  workspace-relative path (e.g. \`${fwdRoot}/src/foo.ts\`).\n\n`
+    : "";
+
   const toolPreamble =
     lmChatTools.length > 0
       ? "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
@@ -607,16 +623,18 @@ async function runAgentLM(
         "The results are in the input context below.\n\n" +
         "You MAY call the provided tools (read_file, grep_search, copilot_readFile, etc.) to\n" +
         "read the workspace before producing your final output. Explore only what you need.\n\n" +
+        rootHint +
         "PATH RULES for tool calls:\n" +
         "  • Different tools accept different path conventions. SOME require\n" +
-        "    absolute paths (`C:/work/repo/src/file.ts` on Windows,\n" +
-        "    `/work/repo/src/file.ts` on POSIX); others want workspace-relative\n" +
-        "    (`src/file.ts`). The tool's error message tells you which.\n" +
+        "    absolute paths (use the workspace root above); others want\n" +
+        "    workspace-relative (e.g. `src/file.ts`). The tool's error message\n" +
+        "    tells you which.\n" +
         "  • Use forward slashes regardless of OS. Never use backslashes —\n" +
-        "    `\\foo\\bar` on Windows resolves to the drive root (`C:\\foo\\bar`)\n" +
-        "    and will not find your file.\n" +
+        "    `\\foo\\bar` on Windows resolves to the drive root and will not\n" +
+        "    find your file.\n" +
         "  • Common errors and what they mean:\n" +
         "      'Invalid input path … use an absolute path' → switch to ABSOLUTE\n" +
+        "         (prepend the workspace root above)\n" +
         "      'File does not exist'                       → segments are wrong\n" +
         "      empty result                                → path resolves but matches nothing\n" +
         "If a tool fails or returns empty, READ THE ERROR MESSAGE and change\n" +
