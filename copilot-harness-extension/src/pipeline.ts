@@ -616,6 +616,11 @@ async function runAgentLM(
         "  • Bad:   `C:/CopilotHarness/copilot-harness-extension/src/extension.ts`\n" +
         "If a tool call returns 'file does not exist' or an empty result, the path is\n" +
         "wrong — fix the path shape, do NOT retry the same path.\n\n" +
+        "PROGRESS TRACKING — if `manage_todo_list` (or `update_todo_list`) is among\n" +
+        "the tools advertised to you and your work spans 3+ steps, maintain a todo\n" +
+        "list. Write the initial list in cycle 0, mark each item completed as you\n" +
+        "finish it. The user sees the list in chat; you see it on resume. Skip this\n" +
+        "tool for short, single-step work where the overhead is wasted.\n\n" +
         "When you are done exploring, output ONLY the raw JSON object — no markdown fences,\n" +
         "no explanation, nothing else.\n\n"
       : "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +

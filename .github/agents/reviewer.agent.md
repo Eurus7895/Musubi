@@ -23,6 +23,10 @@ lm_tools:
   - grep_search
   - copilot_findFiles
   - file_search
+  # Progress tracking — Copilot's built-in todo list. Reviewer uses it
+  # to track per-issue verification across multiple read-throughs.
+  - manage_todo_list
+  - update_todo_list
 ---
 
 ## Role

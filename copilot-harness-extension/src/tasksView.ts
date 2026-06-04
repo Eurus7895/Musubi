@@ -29,12 +29,23 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
+import {
+  describeChunk,
+  describeStage,
+  summarizeStages,
+  STAGE_ORDER as CORE_STAGE_ORDER,
+  type ChunkSummary,
+  type StageMetricsRow,
+  type StageStatusInfo,
+  type StageSummary,
+} from "./tasksViewCore";
 
 // ── Node types ──────────────────────────────────────────────────────────────
 
 type TaskNode =
   | { kind: "section"; section: "active" | "history" }
-  | { kind: "active-stage"; stage: string; status: string; attempt: number }
+  | { kind: "active-stage"; summary: StageSummary }
+  | { kind: "active-chunk"; stage: string; chunk: ChunkSummary }
   | {
       kind: "session";
       id: string;
@@ -45,7 +56,7 @@ type TaskNode =
     }
   | { kind: "session-stage"; sessionId: string; stage: string; file: string };
 
-const STAGE_ORDER = ["plan", "design", "code", "review"] as const;
+const STAGE_ORDER = CORE_STAGE_ORDER;
 const STAGE_TO_AGENT: Record<string, string> = {
   plan: "planner", design: "designer", code: "coder", review: "reviewer",
 };
@@ -79,12 +90,45 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
         return item;
       }
       case "active-stage": {
-        const agent = STAGE_TO_AGENT[node.stage] ?? node.stage;
-        const item = new vscode.TreeItem(agent, vscode.TreeItemCollapsibleState.None);
-        item.iconPath = stageIcon(node.status);
-        item.description = stageDescription(node.status, node.attempt);
-        item.tooltip = `stage: ${node.stage}\nstatus: ${node.status}\nattempt: ${node.attempt}`;
+        const s = node.summary;
+        const agent = STAGE_TO_AGENT[s.stage] ?? s.stage;
+        // Expandable when chunked (>1 chunk under this stage) so the
+        // user can drill into per-chunk progress without leaving the
+        // sidebar.
+        const collapsible = s.chunks.length > 1
+          ? vscode.TreeItemCollapsibleState.Collapsed
+          : vscode.TreeItemCollapsibleState.None;
+        const item = new vscode.TreeItem(agent, collapsible);
+        item.iconPath = stageIcon(s.status);
+        const desc = describeStage(s);
+        item.description = desc || s.status.replace("_", " ");
+        item.tooltip =
+          `stage: ${s.stage}\n` +
+          `status: ${s.status}\n` +
+          `attempt: ${s.attempt}\n` +
+          `lm calls: ${s.rowCount}` +
+          (s.totalLmMs > 0 ? `\nlm time: ${(s.totalLmMs / 1000).toFixed(1)}s` : "") +
+          (s.totalTokensIn > 0 ? `\ntokens in: ${s.totalTokensIn}` : "") +
+          (s.totalTokensOut > 0 ? `\ntokens out: ${s.totalTokensOut}` : "");
         item.contextValue = "active-stage";
+        return item;
+      }
+      case "active-chunk": {
+        const item = new vscode.TreeItem(node.chunk.chunk_id, vscode.TreeItemCollapsibleState.None);
+        // Reuse stageIcon's "complete" colour when the chunk has at least
+        // one LM call recorded; otherwise the same circle-outline as a
+        // pending stage. Chunk-level "complete" status isn't in the DB —
+        // a chunk row that has lm_ms > 0 is at least in-progress.
+        item.iconPath = node.chunk.totalLmMs > 0
+          ? new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor("charts.green"))
+          : new vscode.ThemeIcon("circle-outline");
+        item.description = describeChunk(node.chunk);
+        item.tooltip =
+          `chunk: ${node.chunk.chunk_id}\n` +
+          `attempt: ${node.chunk.attempt}\n` +
+          `lm calls: ${node.chunk.rowCount}` +
+          (node.chunk.totalLmMs > 0 ? `\nlm time: ${(node.chunk.totalLmMs / 1000).toFixed(1)}s` : "");
+        item.contextValue = "active-chunk";
         return item;
       }
       case "session": {
@@ -134,6 +178,13 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
       if (node.kind === "section" && node.section === "history") {
         return await this.loadHistory();
       }
+      if (node.kind === "active-stage") {
+        // Expand into per-chunk rows when the code stage chunked into >1.
+        if (node.summary.chunks.length <= 1) { return []; }
+        return node.summary.chunks.map(chunk => ({
+          kind: "active-chunk" as const, stage: node.summary.stage, chunk,
+        }));
+      }
       if (node.kind === "session") {
         return this.loadSessionStages(node.id);
       }
@@ -161,19 +212,26 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
       const activeRaw = await this.client.callTool("harness_get_active_session", {});
       const active = JSON.parse(activeRaw) as { session_id: string | null };
       if (!active.session_id) return [];
-      const statusRaw = await this.client.callTool("harness_get_status", { session_id: active.session_id });
+
+      // Two reads in parallel: stage statuses (from sessions/stage_outputs)
+      // and per-call metrics (timing + chunk breakdown). Metrics is the
+      // only source for chunk_id, so we need both to render the live view.
+      const [statusRaw, metricsRaw] = await Promise.all([
+        this.client.callTool("harness_get_status", { session_id: active.session_id }),
+        this.client.callTool("harness_query_stage_metrics", { session_id: active.session_id }),
+      ]);
       const status = JSON.parse(statusRaw) as {
-        stages: Record<string, { status: string; attempt: number }>;
+        stages?: Record<string, StageStatusInfo>;
       };
-      return STAGE_ORDER.map(stage => {
-        const info = status.stages?.[stage];
-        return {
-          kind: "active-stage" as const,
-          stage,
-          status: info?.status ?? "pending",
-          attempt: info?.attempt ?? 0,
-        };
-      });
+      const metricsResponse = JSON.parse(metricsRaw) as {
+        status?: string;
+        rows?: StageMetricsRow[];
+      };
+      const rows = metricsResponse.rows ?? [];
+      const summaries = summarizeStages(status.stages ?? {}, rows);
+      return summaries.map(summary => ({
+        kind: "active-stage" as const, summary,
+      }));
     } catch (err) {
       this.log(`tasksView loadActiveStages error: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -287,12 +345,6 @@ function stageIcon(status: string): vscode.ThemeIcon {
     case "pending":
     default:             return new vscode.ThemeIcon("circle-outline");
   }
-}
-
-function stageDescription(status: string, attempt: number): string {
-  const base = status.replace("_", " ");
-  if (attempt > 1) return `${base} · attempt ${attempt}`;
-  return base;
 }
 
 function outcomeIcon(outcome: string): vscode.ThemeIcon {

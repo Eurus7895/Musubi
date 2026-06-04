@@ -32,6 +32,12 @@ lm_tools:
   - create_file
   - copilot_runInTerminal
   - run_in_terminal
+  # Progress tracking — Copilot's built-in todo list. Lets the coder
+  # write a checklist at cycle 0 and tick items off as it finishes
+  # each module / sub-task; user sees the list live in chat. Both
+  # name variants registered to cover the build-to-build naming drift.
+  - manage_todo_list
+  - update_todo_list
 ---
 
 ## Role
