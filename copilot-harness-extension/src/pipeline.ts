@@ -607,15 +607,21 @@ async function runAgentLM(
         "The results are in the input context below.\n\n" +
         "You MAY call the provided tools (read_file, grep_search, copilot_readFile, etc.) to\n" +
         "read the workspace before producing your final output. Explore only what you need.\n\n" +
-        "PATH RULES for every tool call:\n" +
-        "  • Paths are RELATIVE to the workspace root (the repo root that contains\n" +
-        "    `.github/`). They MUST use forward slashes.\n" +
-        "  • NO leading slash, NO leading backslash, NO drive letter (no `C:\\`, no `/`).\n" +
-        "  • Good:  `copilot-harness-extension/src/extension.ts`\n" +
-        "  • Bad:   `\\copilot-harness-extension\\src\\extension.ts`  (drive-root, will fail)\n" +
-        "  • Bad:   `C:/CopilotHarness/copilot-harness-extension/src/extension.ts`\n" +
-        "If a tool call returns 'file does not exist' or an empty result, the path is\n" +
-        "wrong — fix the path shape, do NOT retry the same path.\n\n" +
+        "PATH RULES for tool calls:\n" +
+        "  • Different tools accept different path conventions. SOME require\n" +
+        "    absolute paths (`C:/work/repo/src/file.ts` on Windows,\n" +
+        "    `/work/repo/src/file.ts` on POSIX); others want workspace-relative\n" +
+        "    (`src/file.ts`). The tool's error message tells you which.\n" +
+        "  • Use forward slashes regardless of OS. Never use backslashes —\n" +
+        "    `\\foo\\bar` on Windows resolves to the drive root (`C:\\foo\\bar`)\n" +
+        "    and will not find your file.\n" +
+        "  • Common errors and what they mean:\n" +
+        "      'Invalid input path … use an absolute path' → switch to ABSOLUTE\n" +
+        "      'File does not exist'                       → segments are wrong\n" +
+        "      empty result                                → path resolves but matches nothing\n" +
+        "If a tool fails or returns empty, READ THE ERROR MESSAGE and change\n" +
+        "the path SHAPE (absolute ↔ relative, fix segments). Do NOT retry the\n" +
+        "same path that just failed.\n\n" +
         "PROGRESS TRACKING — if `manage_todo_list` (or `update_todo_list`) is among\n" +
         "the tools advertised to you and your work spans 3+ steps, maintain a todo\n" +
         "list. Write the initial list in cycle 0, mark each item completed as you\n" +
