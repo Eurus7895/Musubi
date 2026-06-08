@@ -711,6 +711,14 @@ async function runAgentLM(
   let finalText = "";
   let totalCycles = 0;
   let hitMaxTurns = false;
+  // Salvage buffer: the most recent cycle that emitted non-empty text.
+  // On bail-out (consecutive-empty guard) or maxTurns exhaust, we fall
+  // back to this instead of returning "" — the model often emits a
+  // partial JSON answer alongside tool calls, and throwing it away
+  // means a definite failure where a maybe-parseable text could have
+  // worked. Initialised empty; updated at the end of every cycle that
+  // had cycleBuf.length > 0.
+  let lastNonEmptyCycleBuf = "";
   // Hallucinate-and-retry guard: when every tool call in a cycle returns
   // empty or errors, the LM typically tries a slightly-different bad path
   // on the next cycle and stays stuck. After CONSECUTIVE_EMPTY_CYCLE_LIMIT
@@ -782,6 +790,13 @@ async function runAgentLM(
       break;
     }
 
+    // Salvage update: remember this cycle's text in case a later cycle
+    // hits the bail-out or maxTurns without producing a clean final
+    // answer. We pick THIS cycle's text (not concatenate across cycles)
+    // because the model's most recent emission is the closest thing to
+    // its final JSON; older cycles tend to be exploration prose.
+    if (cycleBuf.length > 0) { lastNonEmptyCycleBuf = cycleBuf; }
+
     // Intermediate cycle: log emitted text but don't include it in the
     // final output buffer (design decision #2: only final-cycle text
     // is parsed). Pollution from "let me think about that…" text
@@ -832,10 +847,23 @@ async function runAgentLM(
     if (cycleUsefulCount === 0) {
       consecutiveEmptyCycles++;
       if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
-        logLine(
-          `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
-          `tool results — bailing out; correction loop will see empty output`,
-        );
+        // Salvage fallback — use the most recent non-empty cycle text as
+        // finalText so extractJson has SOMETHING to try parsing. Models
+        // often emit partial JSON between tool calls; throwing it away
+        // on bail-out means a guaranteed failure where a maybe-parse
+        // could have recovered the run.
+        if (lastNonEmptyCycleBuf.length > 0) {
+          finalText = lastNonEmptyCycleBuf;
+          logLine(
+            `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
+            `tool results — bailing out; salvaging ${finalText.length}ch from prior cycle`,
+          );
+        } else {
+          logLine(
+            `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
+            `tool results — bailing out; correction loop will see empty output`,
+          );
+        }
         break;
       }
     } else {
@@ -849,10 +877,22 @@ async function runAgentLM(
 
   const elapsed = Date.now() - t0;
   if (hitMaxTurns && finalText.length === 0) {
-    logLine(
-      `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
-      `correction loop will see empty output`,
-    );
+    // Symmetric salvage with the bail-out path: if maxTurns ran out
+    // before any cycle emitted zero tool calls, fall back to the most
+    // recent non-empty intermediate cycle text. Same rationale —
+    // partial JSON is better than guaranteed-empty.
+    if (lastNonEmptyCycleBuf.length > 0) {
+      finalText = lastNonEmptyCycleBuf;
+      logLine(
+        `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
+        `salvaging ${finalText.length}ch from prior cycle`,
+      );
+    } else {
+      logLine(
+        `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
+        `correction loop will see empty output`,
+      );
+    }
   }
   logLine(
     `← ${agentName}: ${finalText.length.toLocaleString()} chars in ${totalCycles} cycle(s), total=${elapsed}ms`,
