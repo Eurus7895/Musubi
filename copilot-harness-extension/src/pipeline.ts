@@ -716,7 +716,13 @@ async function runAgentLM(
   // on the next cycle and stays stuck. After CONSECUTIVE_EMPTY_CYCLE_LIMIT
   // such cycles in a row, break out and let the correction loop handle
   // the empty output. Mirrors runOrchestrator's bail-out pattern.
-  const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 2;
+  //
+  // Why 3, not 2: pipeline agents have tight maxTurns (planner 3,
+  // designer 5, reviewer 5). A limit of 2 means the model gets exactly
+  // one "wrong path" + one "empty result" before bail — not enough room
+  // to recover when cycle 0's error message points at the right fix.
+  // 3 gives one extra cycle to apply the lesson from the prior error.
+  const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 3;
   let consecutiveEmptyCycles = 0;
 
   for (let cycle = 0; cycle < maxTurns; cycle++) {
