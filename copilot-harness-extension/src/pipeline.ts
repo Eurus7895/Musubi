@@ -640,6 +640,13 @@ async function runAgentLM(
         "If a tool fails or returns empty, READ THE ERROR MESSAGE and change\n" +
         "the path SHAPE (absolute ↔ relative, fix segments). Do NOT retry the\n" +
         "same path that just failed.\n\n" +
+        "EMPTY PROJECT FALLBACK — if your FIRST 1-2 tool calls return empty\n" +
+        "results (`ok 0ch`) on multiple paths AND no FAIL errors, the project\n" +
+        "is most likely empty or new. STOP exploring. Produce your JSON output\n" +
+        "based on the user's request and standard conventions for the language\n" +
+        "or stack the request implies — do not keep probing for files that\n" +
+        "aren't there. The harness has 3-5 cycles total; spending them all on\n" +
+        "discovery for an empty workspace produces no output at all.\n\n" +
         "PROGRESS TRACKING — if `manage_todo_list` (or `update_todo_list`) is among\n" +
         "the tools advertised to you and your work spans 3+ steps, maintain a todo\n" +
         "list. Write the initial list in cycle 0, mark each item completed as you\n" +
