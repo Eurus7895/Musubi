@@ -7,20 +7,18 @@ description: >
   schemas, and integration points. Use this agent when a plan exists and you need
   an architecture before writing code.
 model: claude-sonnet-4.5
-maxTurns: 5
+maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
-# Concrete VS Code LM tool names. Designer reads existing code to anchor
-# the design but does not write files. Read + search only.
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
+# Designer is a pure JSON writer in the sub-agent-for-exploration model.
+# It does NOT call read tools directly — exploration happens via cheap-
+# model sub-agents (explorer, investigator) spawned by the harness's
+# preSpawnAndSplice when needed. The designer consumes:
+#   - the plan (from harness_read_stage)
+#   - context.workspace_tree (file inventory, harness-injected)
+#   - any pre-spawned sub-agent summaries
+# and emits its JSON design in a single cycle.
+lm_tools: []
 ---
 
 ## Role

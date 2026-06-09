@@ -6,18 +6,14 @@ description: >
   contracts, intent — that per-file reviews miss. Second stage of /code-review.
   Per-file detail comes from the reviewer-aux fan-out at the synthesis stage.
 model: claude-sonnet-4-6
-maxTurns: 5
+maxTurns: 1
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
+# Finder is a pure JSON writer. It scans the full diff (passed via
+# context from the scoper) for cross-cutting findings. Per-file detail
+# comes from the reviewer-aux fan-out at the synthesis stage, not from
+# the finder itself reading the workspace.
+lm_tools: []
 ---
 
 ## Role

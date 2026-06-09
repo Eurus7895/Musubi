@@ -6,18 +6,13 @@ description: >
   outputs into a single ranked code review report. Final stage of /code-review.
   Evaluator under the standard firewall — sees only the prior stage outputs.
 model: claude-sonnet-4-6
-maxTurns: 3
+maxTurns: 1
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
+# Synthesizer is a pure JSON aggregator. Its inputs are the finder's
+# cross-cutting findings + reviewer-aux per-file verdicts (all in
+# context); it doesn't read the workspace directly.
+lm_tools: []
 ---
 
 ## Role

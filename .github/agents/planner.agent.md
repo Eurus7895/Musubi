@@ -7,20 +7,18 @@ description: >
   acceptance criteria. Use this agent when a new feature, fix, or task needs
   to be scoped before implementation begins.
 model: claude-sonnet-4.5
-maxTurns: 3
+maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
-# Concrete VS Code LM tool names. Planner reads to scope; never writes.
-# Read + search only.
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
+# Planner is a pure JSON writer in the sub-agent-for-exploration model.
+# It does NOT call read tools directly — exploration happens via cheap-
+# model sub-agents (explorer, investigator) spawned by the harness's
+# preSpawnAndSplice when needed. The planner consumes:
+#   - the user request (verbatim)
+#   - context.workspace_tree (file inventory, harness-injected)
+#   - any pre-spawned sub-agent summaries
+# and emits its JSON plan in a single cycle.
+lm_tools: []
 ---
 
 ## Role

@@ -6,18 +6,13 @@ description: >
   of the /code-review pipeline. Filters out lockfiles, generated code, and
   trivial changes so the review effort concentrates on what matters.
 model: claude-haiku-4-5-20251001
-maxTurns: 2
+maxTurns: 1
 tools: ["view", "glob", "grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
+# Scoper is a pure JSON writer. Its input is the git diff (passed via
+# context); it does not read workspace files directly. Exploration via
+# sub-agents isn't applicable here — the work is diff-parsing.
+lm_tools: []
 ---
 
 ## Role

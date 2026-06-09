@@ -7,26 +7,17 @@ description: >
   Invoked after the Coder writes code. Use this agent to gate code quality before
   execution.
 model: claude-sonnet-4.5
-maxTurns: 5
+maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
-# Concrete VS Code LM tool names. Reviewer judges code-as-artifact; the
-# evaluator firewall narrows what it sees to code only, but the
-# read-tool surface is the standard read + search subset for sanity
-# lookups (e.g. peeking at a referenced helper).
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
-  # Progress tracking — Copilot's built-in todo list. Reviewer uses it
-  # to track per-issue verification across multiple read-throughs.
-  - manage_todo_list
-  - update_todo_list
+# Reviewer is a pure JSON writer in the sub-agent-for-exploration model.
+# It does NOT call read tools directly — for deeper per-file inspection
+# the harness's preSpawnAndSplice fires reviewer-aux (cheap haiku model)
+# per file. The reviewer consumes:
+#   - the code artefact ONLY (HI #3 firewall — no plan / design / memory)
+#   - any pre-spawned reviewer-aux per-file verdicts
+# and emits its pass / fail JSON verdict in a single cycle.
+lm_tools: []
 ---
 
 ## Role
