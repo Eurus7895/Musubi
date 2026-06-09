@@ -600,6 +600,22 @@ async function runAgentLM(
   // explore before producing its final JSON. Without tools, keep the
   // original "do NOT call any tools" instruction so the model doesn't
   // hallucinate tool syntax against an empty catalog.
+  // Workspace root injected into the prompt so the LM can construct
+  // absolute paths for tools that demand them (copilot_readFile on
+  // Windows rejects relative paths with "Be sure to use an absolute
+  // path"). We pass the path twice — native (backslashes on Windows)
+  // and forward-slash form — because both shapes appear in tool
+  // documentation and accepted error responses.
+  const rawRoot = obs?.workspaceRoot ?? "";
+  const fwdRoot = rawRoot.replace(/\\/g, "/");
+  const rootHint = rawRoot
+    ? `WORKSPACE ROOT:\n` +
+      `  Native form:       ${rawRoot}\n` +
+      `  Forward-slash form: ${fwdRoot}\n` +
+      `  For tools requiring absolute paths, PREPEND the forward-slash form to your\n` +
+      `  workspace-relative path (e.g. \`${fwdRoot}/src/foo.ts\`).\n\n`
+    : "";
+
   const toolPreamble =
     lmChatTools.length > 0
       ? "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
@@ -607,15 +623,41 @@ async function runAgentLM(
         "The results are in the input context below.\n\n" +
         "You MAY call the provided tools (read_file, grep_search, copilot_readFile, etc.) to\n" +
         "read the workspace before producing your final output. Explore only what you need.\n\n" +
-        "PATH RULES for every tool call:\n" +
-        "  • Paths are RELATIVE to the workspace root (the repo root that contains\n" +
-        "    `.github/`). They MUST use forward slashes.\n" +
-        "  • NO leading slash, NO leading backslash, NO drive letter (no `C:\\`, no `/`).\n" +
-        "  • Good:  `copilot-harness-extension/src/extension.ts`\n" +
-        "  • Bad:   `\\copilot-harness-extension\\src\\extension.ts`  (drive-root, will fail)\n" +
-        "  • Bad:   `C:/CopilotHarness/copilot-harness-extension/src/extension.ts`\n" +
-        "If a tool call returns 'file does not exist' or an empty result, the path is\n" +
-        "wrong — fix the path shape, do NOT retry the same path.\n\n" +
+        rootHint +
+        "PATH RULES for tool calls:\n" +
+        "  • Different tools accept different path conventions. SOME require\n" +
+        "    absolute paths (use the workspace root above); others want\n" +
+        "    workspace-relative (e.g. `src/file.ts`). The tool's error message\n" +
+        "    tells you which.\n" +
+        "  • Use forward slashes regardless of OS. Never use backslashes —\n" +
+        "    `\\foo\\bar` on Windows resolves to the drive root and will not\n" +
+        "    find your file.\n" +
+        "  • Common errors and what they mean:\n" +
+        "      'Invalid input path … use an absolute path' → switch to ABSOLUTE\n" +
+        "         (prepend the workspace root above)\n" +
+        "      'File does not exist'                       → segments are wrong\n" +
+        "      empty result                                → path resolves but matches nothing\n" +
+        "If a tool fails or returns empty, READ THE ERROR MESSAGE and change\n" +
+        "the path SHAPE (absolute ↔ relative, fix segments). Do NOT retry the\n" +
+        "same path that just failed.\n\n" +
+        "EMPTY PROJECT FALLBACK — STRICT. After ONE cycle where every tool\n" +
+        "call returned `ok 0ch` (success but empty content) with no FAIL\n" +
+        "errors, do not call any more tools. The workspace is either empty,\n" +
+        "or your paths aren't resolving to real files. In your NEXT cycle,\n" +
+        "produce your JSON output based on:\n" +
+        "  • the user's request,\n" +
+        "  • `context.workspace_tree` (the harness pre-injected listing of\n" +
+        "    every file in the workspace — use it before guessing paths),\n" +
+        "  • standard conventions for the language or stack the request implies.\n" +
+        "Continuing to probe after one empty cycle wastes the agent's tight\n" +
+        "cycle budget (3-5 cycles total) and produces ZERO output — the\n" +
+        "harness will bail at the consecutive-empty guard and your stage\n" +
+        "escalates with no work product.\n\n" +
+        "PROGRESS TRACKING — if `manage_todo_list` (or `update_todo_list`) is among\n" +
+        "the tools advertised to you and your work spans 3+ steps, maintain a todo\n" +
+        "list. Write the initial list in cycle 0, mark each item completed as you\n" +
+        "finish it. The user sees the list in chat; you see it on resume. Skip this\n" +
+        "tool for short, single-step work where the overhead is wasted.\n\n" +
         "When you are done exploring, output ONLY the raw JSON object — no markdown fences,\n" +
         "no explanation, nothing else.\n\n"
       : "Your Input Contract tool calls (harness_get_active_session, harness_new_session,\n" +
@@ -682,12 +724,26 @@ async function runAgentLM(
   let finalText = "";
   let totalCycles = 0;
   let hitMaxTurns = false;
+  // Salvage buffer: the most recent cycle that emitted non-empty text.
+  // On bail-out (consecutive-empty guard) or maxTurns exhaust, we fall
+  // back to this instead of returning "" — the model often emits a
+  // partial JSON answer alongside tool calls, and throwing it away
+  // means a definite failure where a maybe-parseable text could have
+  // worked. Initialised empty; updated at the end of every cycle that
+  // had cycleBuf.length > 0.
+  let lastNonEmptyCycleBuf = "";
   // Hallucinate-and-retry guard: when every tool call in a cycle returns
   // empty or errors, the LM typically tries a slightly-different bad path
   // on the next cycle and stays stuck. After CONSECUTIVE_EMPTY_CYCLE_LIMIT
   // such cycles in a row, break out and let the correction loop handle
   // the empty output. Mirrors runOrchestrator's bail-out pattern.
-  const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 2;
+  //
+  // Why 3, not 2: pipeline agents have tight maxTurns (planner 3,
+  // designer 5, reviewer 5). A limit of 2 means the model gets exactly
+  // one "wrong path" + one "empty result" before bail — not enough room
+  // to recover when cycle 0's error message points at the right fix.
+  // 3 gives one extra cycle to apply the lesson from the prior error.
+  const CONSECUTIVE_EMPTY_CYCLE_LIMIT = 3;
   let consecutiveEmptyCycles = 0;
 
   for (let cycle = 0; cycle < maxTurns; cycle++) {
@@ -747,6 +803,13 @@ async function runAgentLM(
       break;
     }
 
+    // Salvage update: remember this cycle's text in case a later cycle
+    // hits the bail-out or maxTurns without producing a clean final
+    // answer. We pick THIS cycle's text (not concatenate across cycles)
+    // because the model's most recent emission is the closest thing to
+    // its final JSON; older cycles tend to be exploration prose.
+    if (cycleBuf.length > 0) { lastNonEmptyCycleBuf = cycleBuf; }
+
     // Intermediate cycle: log emitted text but don't include it in the
     // final output buffer (design decision #2: only final-cycle text
     // is parsed). Pollution from "let me think about that…" text
@@ -797,10 +860,23 @@ async function runAgentLM(
     if (cycleUsefulCount === 0) {
       consecutiveEmptyCycles++;
       if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
-        logLine(
-          `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
-          `tool results — bailing out; correction loop will see empty output`,
-        );
+        // Salvage fallback — use the most recent non-empty cycle text as
+        // finalText so extractJson has SOMETHING to try parsing. Models
+        // often emit partial JSON between tool calls; throwing it away
+        // on bail-out means a guaranteed failure where a maybe-parse
+        // could have recovered the run.
+        if (lastNonEmptyCycleBuf.length > 0) {
+          finalText = lastNonEmptyCycleBuf;
+          logLine(
+            `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
+            `tool results — bailing out; salvaging ${finalText.length}ch from prior cycle`,
+          );
+        } else {
+          logLine(
+            `  [${agentName}] ${consecutiveEmptyCycles} consecutive cycles with no useful ` +
+            `tool results — bailing out; correction loop will see empty output`,
+          );
+        }
         break;
       }
     } else {
@@ -814,10 +890,22 @@ async function runAgentLM(
 
   const elapsed = Date.now() - t0;
   if (hitMaxTurns && finalText.length === 0) {
-    logLine(
-      `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
-      `correction loop will see empty output`,
-    );
+    // Symmetric salvage with the bail-out path: if maxTurns ran out
+    // before any cycle emitted zero tool calls, fall back to the most
+    // recent non-empty intermediate cycle text. Same rationale —
+    // partial JSON is better than guaranteed-empty.
+    if (lastNonEmptyCycleBuf.length > 0) {
+      finalText = lastNonEmptyCycleBuf;
+      logLine(
+        `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
+        `salvaging ${finalText.length}ch from prior cycle`,
+      );
+    } else {
+      logLine(
+        `  [${agentName}] maxTurns=${maxTurns} exhausted without zero-tool-call cycle — ` +
+        `correction loop will see empty output`,
+      );
+    }
   }
   logLine(
     `← ${agentName}: ${finalText.length.toLocaleString()} chars in ${totalCycles} cycle(s), total=${elapsed}ms`,

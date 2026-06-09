@@ -391,6 +391,78 @@ def test_coder_file_contents_not_required_when_no_files_modified() -> None:
     assert result.valid is True
 
 
+# ── Empty-by-convention allowlist ─────────────────────────────────────────────
+# .gitkeep / .keep / __init__.py / py.typed are legitimately empty by
+# convention; the verifier accepts an empty string for these basenames so
+# the coder doesn't get falsely escalated when implementing common
+# scaffolding patterns (e.g. an empty static-assets directory in Sphinx).
+
+
+def test_coder_gitkeep_allowed_to_be_empty() -> None:
+    output = {
+        "summary": "Add static assets directory",
+        "files_modified": ["docs/source/_static/.gitkeep"],
+        "file_contents": {"docs/source/_static/.gitkeep": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True, result.errors
+
+
+def test_coder_keep_allowed_to_be_empty() -> None:
+    output = {
+        "summary": "Add cache directory",
+        "files_modified": [".cache/.keep"],
+        "file_contents": {".cache/.keep": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True, result.errors
+
+
+def test_coder_init_py_allowed_to_be_empty() -> None:
+    output = {
+        "summary": "Add package marker",
+        "files_modified": ["src/myproject/__init__.py"],
+        "file_contents": {"src/myproject/__init__.py": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True, result.errors
+
+
+def test_coder_py_typed_allowed_to_be_empty() -> None:
+    output = {
+        "summary": "Mark package as typed (PEP 561)",
+        "files_modified": ["src/myproject/py.typed"],
+        "file_contents": {"src/myproject/py.typed": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True, result.errors
+
+
+def test_coder_empty_python_file_NOT_in_allowlist_still_rejected() -> None:
+    # An empty regular .py file is still a stub — allowlist is by basename,
+    # not extension, so app.py being empty stays rejected.
+    output = {
+        "summary": "Stub",
+        "files_modified": ["src/app.py"],
+        "file_contents": {"src/app.py": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is False
+    assert any("app.py" in e for e in result.errors)
+
+
+def test_coder_gitkeep_with_windows_path_still_allowed() -> None:
+    # Coder sometimes emits backslash paths on Windows; the allowlist
+    # should match the basename regardless of separator.
+    output = {
+        "summary": "Add static dir",
+        "files_modified": ["docs\\source\\_static\\.gitkeep"],
+        "file_contents": {"docs\\source\\_static\\.gitkeep": ""},
+    }
+    result = verifier.validate(output, "coder")
+    assert result.valid is True, result.errors
+
+
 # ── ValidationResult helpers ──────────────────────────────────────────────────
 
 def test_validation_result_ok() -> None:

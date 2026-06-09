@@ -268,9 +268,9 @@ export function registerGateCommands(opts: RegisterCommandsOptions): CommandRegi
       let userHint: string | undefined;
       if (parsed.action === "retry" && parsed.promptForHint) {
         const typed = await vscode.window.showInputBox({
-          title: `Retry stage ${parsed.stage}`,
-          prompt: "Optional: tell the agent what was wrong with the previous attempt.",
-          placeHolder: "Leave empty to auto-retry.",
+          title: `Retry stage: ${parsed.stage}`,
+          prompt: "What was wrong with this attempt? Your hint goes to the agent as the correction note. Leave empty to retry without changes.",
+          placeHolder: "e.g. \"don't use react, use plain HTML\" or \"add error handling for empty inputs\"",
           ignoreFocusOut: true,
         });
         userHint = typed?.trim() || undefined;

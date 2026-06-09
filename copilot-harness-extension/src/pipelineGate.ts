@@ -266,7 +266,7 @@ export function buildStageReviewButtons(
   return [
     { title: "✓ Approve & continue",
       args: buildResumeCommandArgs(base, "approve") },
-    { title: "↻ Retry this stage",
+    { title: "↻ Retry with hint…",
       args: buildResumeCommandArgs(base, "retry", { promptForHint: true }) },
     { title: "✕ Abort",
       args: buildResumeCommandArgs(base, "abort") },

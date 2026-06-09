@@ -7,31 +7,22 @@ description: >
   files declared in the plan scope. Use this agent when architecture is defined
   and implementation is needed.
 model: claude-sonnet-4.5
-maxTurns: 10
+maxTurns: 1
 tools: ["view", "edit", "bash"]
 disallowedTools: []
-# Concrete VS Code LM tool names. Coder is the only pipeline agent that
-# writes; full read + edit + terminal surface is intentional. Forward-
-# looking — pipeline.ts does not yet pass tools to sendRequest, so this
-# is consumed only when a runner is wired (orchestrator-style).
-lm_tools:
-  - copilot_readFile
-  - read_file
-  - copilot_listDirectory
-  - list_dir
-  - copilot_searchWorkspace
-  - grep_search
-  - copilot_findFiles
-  - file_search
-  - copilot_getErrors
-  - get_errors
-  - copilot_replaceString
-  - replace_string_in_file
-  - copilot_insertEdit
-  - insert_edit_into_file
-  - create_file
-  - copilot_runInTerminal
-  - run_in_terminal
+# Coder is a pure JSON writer in the sub-agent-for-exploration model.
+# It does NOT call read tools directly — the harness's preSpawnAndSplice
+# fires explorer / investigator sub-agents (cheap haiku model) for each
+# chunk's file paths and splices their summaries into the coder's
+# context BEFORE the coder runs. The coder consumes:
+#   - the plan + design + (on retry) the review (firewalled per stage)
+#   - any pre-spawned sub-agent summaries
+#   - existing_file_contents (harness reads chunk files from disk)
+# and emits its file_contents JSON manifest in a single cycle.
+# A2 (DEFERRED) will re-add edit / create / terminal tools alongside
+# an Output Contract change that accepts edits-via-tool as a deliverable
+# and adds path-scoped enforcement.
+lm_tools: []
 ---
 
 ## Role
