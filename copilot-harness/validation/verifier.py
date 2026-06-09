@@ -339,6 +339,12 @@ def _check_coder_file_contents(code_output: dict[str, Any]) -> list[str]:
 
     This is the main guard against the model returning stub/empty implementations.
     A missing or empty file_contents means no code gets written to disk.
+
+    Exception: a small allowlist of filenames are legitimately empty by
+    convention (.gitkeep / .keep mark otherwise-empty directories in
+    git; bare __init__.py and py.typed are common Python markers). For
+    those we accept an empty string — the coder is following the
+    convention, not stubbing.
     """
     modified = code_output.get("files_modified", [])
     if not isinstance(modified, list) or not modified:
@@ -361,9 +367,31 @@ def _check_coder_file_contents(code_output: dict[str, Any]) -> list[str]:
             continue
         if fpath not in contents:
             errors.append(f"file_contents missing entry for '{fpath}' listed in files_modified")
-        elif not isinstance(contents[fpath], str) or not contents[fpath].strip():
+        elif not isinstance(contents[fpath], str):
+            errors.append(f"file_contents['{fpath}'] is empty — must contain complete file content")
+        elif not contents[fpath].strip() and not _is_empty_by_convention(fpath):
             errors.append(f"file_contents['{fpath}'] is empty — must contain complete file content")
     return errors
+
+
+# Filenames that are legitimately empty by convention. Matched by basename
+# only (case-sensitive on POSIX; .gitkeep et al. are conventionally lower).
+_EMPTY_OK_BASENAMES: frozenset[str] = frozenset({
+    ".gitkeep",   # most common — keep an empty dir in git
+    ".keep",      # alternate convention (e.g. npm)
+    ".npmkeep",   # npm-specific variant
+    "__init__.py",  # Python package marker; barebones empty is valid
+    "py.typed",   # PEP 561 marker — convention says empty file
+})
+
+
+def _is_empty_by_convention(fpath: str) -> bool:
+    """True if a path's basename is in the empty-allowed allowlist."""
+    # Strip trailing slashes (shouldn't happen but be defensive) and
+    # split on either separator so the rule works for POSIX paths the
+    # coder emits even on Windows.
+    name = fpath.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
+    return name in _EMPTY_OK_BASENAMES
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
