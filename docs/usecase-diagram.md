@@ -21,8 +21,8 @@ extension installed.
 | System | Direction | What |
 |---|---|---|
 | **GitHub Copilot LM** | OUT | Every LM call goes through `vscode.lm.sendRequest`. Models: Claude (Sonnet / Haiku / Opus), GPT-4o / 4.1 / 5-mini, Gemini Flash. |
-| **Workspace filesystem** | OUT (read) + OUT (write) | Read by orchestrator + sub-agents + reviewer; written by coder during `/feature-dev`. |
-| **Harness SQLite (`audit.db`)** | OUT | Sessions, stage outputs, conversation messages, sub-agent audit, stage metrics, orchestrator turns, schema migrations. |
+| **Workspace filesystem** | OUT (read) + OUT (write) | Read by butler + sub-agents + reviewer; written by coder during `/feature-dev`. |
+| **Harness SQLite (`audit.db`)** | OUT | Sessions, stage outputs, conversation messages, sub-agent audit, stage metrics, butler turns, schema migrations. |
 | **`.github/` in workspace** | OUT (read) | Agents (`.github/agents/`), skills (`.github/skills/`), pipelines (`.github/pipelines/`), memory (`.github/memory/`). |
 
 ## Use case diagram
@@ -34,7 +34,7 @@ flowchart LR
     subgraph HARNESS["🧰 CopilotHarness"]
         direction TB
 
-        subgraph chat["💬 Chat mode (orchestrator)"]
+        subgraph chat["💬 Chat mode (butler)"]
             UC_ASK(["Ask a question<br/>@harness &lt;prompt&gt;"])
             UC_SPAWN(["Spawn read-only<br/>sub-agent (explorer /<br/>investigator / reviewer-aux)"])
             UC_PULL(["Pull skill detail<br/>(harness_get_skill)"])
@@ -111,13 +111,13 @@ flowchart LR
 
 ## Use cases by group
 
-### 💬 Chat mode (orchestrator)
+### 💬 Chat mode (butler)
 
 | Use case | Trigger | Output |
 |---|---|---|
 | **Ask a question** | `@harness <prompt>` in chat panel | Direct LM reply; may spawn sub-agents inline; conversation persists across VS Code restarts via `conversation_messages` table |
-| **Spawn read-only sub-agent** | Done by LM, not user — orchestrator decides per turn | Sub-agent runs in isolated context with one-sentence brief; result spliced back into orchestrator turn; audit row written |
-| **Pull skill detail on demand** | Done by LM via `harness_get_skill` tool | Skill body returned only when the model decides it needs the detail — orchestrator's "pull" model (Hard Invariant #2 relaxation) |
+| **Spawn read-only sub-agent** | Done by LM, not user — butler decides per turn | Sub-agent runs in isolated context with one-sentence brief; result spliced back into butler turn; audit row written |
+| **Pull skill detail on demand** | Done by LM via `harness_get_skill` tool | Skill body returned only when the model decides it needs the detail — butler's "pull" model (Hard Invariant #2 relaxation) |
 
 ### ⚙️ Pipeline mode
 
@@ -158,7 +158,7 @@ flowchart LR
 |---|---|
 | Have the LM modify multiple files outside the plan scope mid-stage | Coder is pinned to `plan.scope.files`; future A2 may relax with path-scoped enforcement |
 | Run two pipelines concurrently in the same workspace | Single active-session pointer; second invocation waits |
-| Have sub-agents see the orchestrator conversation | Hard Invariant #3 (evaluator firewall) — sub-agents see only their brief |
+| Have sub-agents see the butler conversation | Hard Invariant #3 (evaluator firewall) — sub-agents see only their brief |
 | Skip the schema validator on stage output | Hard Invariant #5 (fail-closed policy) — pipelines refuse to accept malformed output |
 | Run an LM call from inside the harness Python server | Hard Invariant #1 — zero LLM calls in the harness; only `vscode.lm.sendRequest` reaches the model |
 

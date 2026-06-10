@@ -102,7 +102,7 @@ ephemeral toward substrate (debt growth) or substrate toward ephemeral
 
 ---
 
-## 3. Convergence path — orchestrator as the universal governed surface
+## 3. Convergence path — butler as the universal governed surface
 
 The substrate-vs-ephemeral split clarifies what to delete but not what
 the post-deletion shape looks like. This section is the answer.
@@ -112,7 +112,7 @@ the post-deletion shape looks like. This section is the answer.
 | Surface | Today | Governance applied |
 |---|---|---|
 | Pipeline mode (`/feature-dev`) | 4-stage scaffold; coding-only | Firewall, validator, correction loop, per-stage budget halt, audit |
-| Orchestrator mode (`@harness <prompt>`) | Free-form chat; any task | Sub-agent firewall, audit (`conversation_messages`), partial — no validator, no correction loop, no budget enforcer registered |
+| Butler mode (`@harness <prompt>`) | Free-form chat; any task | Sub-agent firewall, audit (`conversation_messages`), partial — no validator, no correction loop, no budget enforcer registered |
 
 The product gap users hit ("the pipeline can only do coding") is real
 and intentional: the pipeline's governance only earns its cost when
@@ -121,7 +121,7 @@ Coding hits both; docs / refactor / research / brainstorming don't.
 
 **The dissolution direction is convergence, not deletion-then-rebuild.**
 
-The orchestrator already has the right shape — agent + tools + skills,
+The butler already has the right shape — agent + tools + skills,
 model-driven. What it lacks are governance primitives that today only
 fire inside pipelines. Lift those into the substrate so they apply to
 both surfaces, and the two modes collapse into one.
@@ -138,7 +138,7 @@ ONE surface: agent + skills + tools + governance primitives applied
                   plain Copilot Chat       # casual chat (unchanged)
 ```
 
-The model picks the skill (already true in orchestrator via
+The model picks the skill (already true in butler mode via
 `harness_get_skill` + `harness_list_skills`). The **harness picks
 governance** based on what skill is loaded — if a skill declares
 `output_contract`, the validator fires; if `correction_loop: true`,
@@ -160,7 +160,7 @@ declared `applies-to` against the detected profile so the model never
 sees skills that don't fit — no "tried C skill on Python", no "applied
 Word skill to PDF".
 
-This makes the orchestrator's pull model **context-aware** without
+This makes the butler's pull model **context-aware** without
 forcing a push: the model's catalog is already filtered to what makes
 sense in this workspace. Push-when-warranted (Track D step 8) is the
 upgrade for explicit coding-shaped intent.
