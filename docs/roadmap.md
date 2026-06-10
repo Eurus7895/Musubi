@@ -250,6 +250,67 @@ section.
 
 ---
 
+## Track D — Convergence (orchestrator as universal governed surface)
+
+Background lens: [`docs/harness-direction.md`](./harness-direction.md)
+§ 3 — Convergence path. Goal: lift the pipeline's governance primitives
+into the substrate so both `/feature-dev` and `@harness <task>` share
+one set of guarantees, then dissolve the staged pipeline.
+
+Ordered for substrate-first execution. Steps 1-4 are independent and
+parallelisable; steps 5-9 build on them; step 10 is the deletion
+payoff gated on the eval suite (A.1).
+
+| # | What | Substrate gain | Effort | Depends on |
+|---|---|---|---|---|
+| **D.1** | **Project profile detection** — `scripts/profile_workspace.py` scans for stack signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `conf.py`, file-extension distribution) and writes `.github/memory/project-profile.md` (new tier-2 entry) at session start | Memory gains contextual awareness; substrate THICKER | 2-3 days | — |
+| **D.2** | **SKILL.md frontmatter extensions** — add `applies-to` (per-skill applicability: language, framework, file types) AND `output_contract` (JSON schema for skill-driven validator) as parsed frontmatter fields | Skill catalog gains both applicability + validation declarations | 1 day | — |
+| **D.3** | **Skill router** — `applicable_skills(profile, all_skills)` helper + filter inside `harness_list_skills`. Skills with no `applies-to` declaration are treated as universal | Model sees only project-relevant skills; eliminates "tried C skill on Python" class of failures | 1 day | D.1 + D.2 |
+| **D.4** | **BudgetEnforcer per orchestrator turn** — `runOrchestrator` registers an enforcer for the turn (config from `copilotHarness.orchestratorBudget` setting, defaults from current orchestrator cost data); same primitives used by pipelines | Cost governance applies to `@harness` work too | ~30 lines | — (quick win, independent) |
+| **D.5** | **Skill-driven correction loop on `output_contract`** — when a loaded skill declares `output_contract` and the model's response fails the schema, re-enter the turn with `validation_feedback` injected (same pattern as `runAgentWithValidationRetry` but skill-scoped) | Orchestrator gains pipeline-style retries when warranted, off when not | ~60 lines | D.2 |
+| **D.6** | **Failure-pattern → profile-update path** — extend `harness_distill_session` so that when a skill is applied + fails in a way that reveals profile is wrong, both `failure-patterns.md` (the pattern) AND `project-profile.md` (the corrected field) get updated | Memory self-corrects on observed evidence | 1 day | D.1 + D.5 |
+| **D.7** | **`/profile` command** — manual inspection (`/profile`) and override (`/profile <field>=<value>`) of project-profile.md. Rare; emergency hatch for auto-detection misses | User has clear escape hatch | half-day | D.1 |
+| **D.8** | **Heuristic skill push** — when `@harness <task>` matches "code-like" intent (regex on keywords + presence of file paths in the request), auto-push the same skills the planner would inject; otherwise stay pull-only. The push-vs-pull boundary becomes a context decision, not a mode decision | Bridges the orchestrator and pipeline behaviour gap without forcing pipeline structure | ~50 lines | D.3 |
+| **D.9** | **Skill catalog growth** — `docs-writing`, `refactoring`, `research`, `test-writing`, each with `applies-to` and `output_contract` declared from the start. Each new skill ships with at least one applicability tag | Fat-skills direction shipped; non-coding work finally has a governed surface | per skill (ongoing) | D.2 + D.3 |
+| **D.10** | **Delete the 4-stage pipeline shape** — `runPipeline`, `runChunkedCodeAndReview`, `runAgentWithValidationRetry`, `runCorrectionLoop`, the 4-stage agent fanout, materializeCoderFiles + JSON manifest contract. Keep `_STAGE_PERMISSIONS` but apply it via skill-context restriction in a single trace | NET DELETE — biggest dissolution win; substrate intact, ephemeral structure gone | ~big deletion PR | D.1-D.9 + Track A.1 eval suite showing no regression |
+
+**Why this order**
+
+- D.1-D.4 are independent foundations that can ship in any order
+- D.5 closes the validator loop in the orchestrator (depends on D.2's `output_contract` field)
+- D.6 closes the memory feedback loop (depends on D.1 + D.5)
+- D.7 is the user escape hatch (depends on D.1)
+- D.8 is the bridge that makes orchestrator behave like pipeline when warranted
+- D.9 grows the skill catalog with proper applicability + contracts from day one
+- D.10 is gated on the eval suite from Track A.1 — never dissolve speculatively
+
+**Estimated timeline**
+
+| Window | Work |
+|---|---|
+| Sprint 1 (week 1) | D.1 + D.4 in parallel (independent quick wins) |
+| Sprint 2 (week 2) | D.2 + D.3 (skill catalog work) |
+| Sprint 3 (week 3) | D.5 + D.6 + D.7 (validator, memory loop, escape hatch) |
+| Sprint 4 (week 4) | D.8 + start D.9 (push heuristic + first non-coding skills) |
+| Ongoing | D.9 catalog growth, A.1 eval suite collecting data |
+| Eventually | D.10 deletion PR when eval suite signals threshold crossed |
+
+**What this dissolves (from the table below)**
+
+After D.10 fires, several entries in the Dissolution Candidates table
+get marked DONE and removed from this doc:
+
+- "4-stage pipeline shape" → deleted
+- "Correction loop (`runAgentWithValidationRetry`)" → deleted (skill-driven loop in D.5 replaces it)
+- "`materializeCoderFiles` + JSON manifest contract" → deleted (model writes files directly under firewall)
+- "Pre-spawn fanout (`preSpawnAndSplice`)" → deleted (skill router + push heuristic replace it)
+- "`runStageReviewGate` 4-button UX" → deleted or reshaped (one-trace agent has different intervention points)
+
+CopilotHarness shrinks from ~10k+ lines toward Browser-Use-scale
+(~600 lines of harness). Substrate intact; product surface unified.
+
+---
+
 ## Dissolution Candidates
 
 Every **ephemeral** component with its expiration trigger and current
