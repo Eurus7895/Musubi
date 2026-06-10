@@ -197,6 +197,82 @@ def test_total_tokens_for_session_sums_in_and_out(fresh_db: Path) -> None:
     assert total == 500 + 200 + 800 + 300
 
 
+# ── Stage 1 (MVP A.4) — credits per stage_metrics row ────────────────
+
+
+def test_insert_stage_metric_records_credits_and_family(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    db.insert_stage_metric(
+        sid, "plan", 1, 1.0, 2.0,
+        tokens_in_estimate=500, tokens_out_estimate=200, lm_ms=100,
+        db_path=fresh_db, credits=2.5, model_family="claude-sonnet-4.5",
+    )
+    rows = db.query_stage_metrics(sid, fresh_db)
+    assert len(rows) == 1
+    assert rows[0]["credits"] == 2.5
+    assert rows[0]["model_family"] == "claude-sonnet-4.5"
+
+
+def test_stage_metric_credits_defaults_to_zero(fresh_db: Path) -> None:
+    """Backwards-compat: callers that don't pass credits get 0.0 stored,
+    not NULL — which is what total_credits_for_session relies on."""
+    sid = state.create_session("do x", fresh_db)
+    db.insert_stage_metric(
+        sid, "plan", 1, 1.0, 2.0,
+        tokens_in_estimate=500, tokens_out_estimate=200, lm_ms=100,
+        db_path=fresh_db,
+    )
+    rows = db.query_stage_metrics(sid, fresh_db)
+    assert rows[0]["credits"] == 0.0
+    assert rows[0]["model_family"] is None
+
+
+def test_total_credits_for_session_sums_rows(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    for stage, credits in (("plan", 1.5), ("design", 3.2), ("code", 7.8)):
+        db.insert_stage_metric(
+            sid, stage, 1, 1.0, 2.0,
+            tokens_in_estimate=100, tokens_out_estimate=50, lm_ms=100,
+            db_path=fresh_db, credits=credits,
+        )
+    assert db.total_credits_for_session(sid, fresh_db) == pytest.approx(12.5)
+
+
+def test_total_credits_for_session_returns_zero_on_no_rows(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    assert db.total_credits_for_session(sid, fresh_db) == 0.0
+
+
+def test_total_credits_since_aggregates_across_sessions(fresh_db: Path) -> None:
+    s1 = state.create_session("task one", fresh_db)
+    s2 = state.create_session("task two", fresh_db)
+    db.insert_stage_metric(s1, "plan", 1, 100.0, 101.0, 100, 50, 50,
+                           db_path=fresh_db, credits=1.0)
+    db.insert_stage_metric(s2, "plan", 1, 200.0, 201.0, 100, 50, 50,
+                           db_path=fresh_db, credits=2.0)
+    # cutoff = 150 → only s2 included
+    assert db.total_credits_since(150.0, fresh_db) == pytest.approx(2.0)
+    # cutoff = 50  → both included
+    assert db.total_credits_since(50.0, fresh_db) == pytest.approx(3.0)
+
+
+def test_get_status_includes_total_credits(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    db.insert_stage_metric(
+        sid, "plan", 1, 1.0, 2.0,
+        tokens_in_estimate=100, tokens_out_estimate=50, lm_ms=100,
+        db_path=fresh_db, credits=4.2,
+    )
+    status = state.get_status(sid, fresh_db)
+    assert status["total_credits"] == pytest.approx(4.2)
+
+
+def test_get_status_total_credits_zero_when_no_metrics(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    status = state.get_status(sid, fresh_db)
+    assert status["total_credits"] == 0.0
+
+
 def test_derive_correction_attempts_zero_for_first_attempt(fresh_db: Path) -> None:
     sid = state.create_session("do x", fresh_db)
     # No retries — attempt stays at 1, corrections = 0.

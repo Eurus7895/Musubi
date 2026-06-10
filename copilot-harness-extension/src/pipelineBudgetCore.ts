@@ -288,6 +288,33 @@ export function getActiveBudget(sessionId: string): ActiveBudget | null {
   return _activeEnforcers.get(sessionId) ?? null;
 }
 
+/**
+ * Stage 1 (MVP A.4) — flat-shape snapshot of the active enforcer for
+ * UI consumers (Tasks sidebar, /status command). Returns null when no
+ * pipeline is running against this session_id. Active-session-only:
+ * paused/historic sessions read from `harness_session_credits`
+ * (summed from `stage_metrics.credits`) instead.
+ */
+export interface ActiveBudgetSnapshot {
+  creditsUsed: number;
+  maxCredits: number;
+  remaining: number;
+  warnAtRatio: number;
+}
+
+export function snapshotActiveBudget(
+  sessionId: string,
+): ActiveBudgetSnapshot | null {
+  const active = _activeEnforcers.get(sessionId);
+  if (!active) { return null; }
+  return {
+    creditsUsed: active.enforcer.creditsUsed,
+    maxCredits: active.enforcer.maxCredits,
+    remaining: active.enforcer.remaining,
+    warnAtRatio: active.enforcer.warnAtRatio,
+  };
+}
+
 /** Reset the registry — test helper, not for production use. */
 export function _resetActiveBudgets_FOR_TESTS(): void {
   _activeEnforcers.clear();

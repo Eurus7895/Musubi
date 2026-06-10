@@ -3,10 +3,14 @@ import assert from "node:assert/strict";
 
 import {
   summarizeStages,
+  summarizeSession,
   formatTiming,
   formatTokens,
+  formatCredits,
   describeStage,
   describeChunk,
+  describeSession,
+  type BudgetSnapshot,
   type StageMetricsRow,
   type StageStatusInfo,
 } from "./tasksViewCore";
@@ -182,7 +186,128 @@ test("describeChunk: composes attempt + timing", () => {
     describeChunk({
       chunk_id: "T1", attempt: 2,
       totalLmMs: 5000, totalTokensIn: 0, totalTokensOut: 0, rowCount: 2,
+      totalCredits: 0,
     }),
     "attempt 2 · 5.0s",
   );
+});
+
+// ── Stage 1 (MVP A.4) — credits aggregation + display ──────────────────────
+
+test("summarizeStages: aggregates credits across rows", () => {
+  const metrics = [
+    row({ stage: "plan", lm_ms: 100, credits: 1.5 }),
+    row({ stage: "plan", attempt: 2, lm_ms: 200, credits: 2.3 }),
+  ];
+  const out = summarizeStages({ plan: { status: "complete", attempt: 2 } }, metrics);
+  assert.equal(out[0].totalCredits, 3.8);
+});
+
+test("summarizeStages: missing credits field defaults to 0", () => {
+  // Simulates pre-Stage-1 rows where the credits column was absent.
+  const metrics = [row({ stage: "plan", lm_ms: 100 })] as readonly StageMetricsRow[];
+  const out = summarizeStages({ plan: { status: "complete", attempt: 1 } }, metrics);
+  assert.equal(out[0].totalCredits, 0);
+});
+
+test("summarizeStages: chunk totals include per-chunk credits", () => {
+  const metrics = [
+    row({ stage: "code", chunk_id: "T1", lm_ms: 100, credits: 5.0 }),
+    row({ stage: "code", chunk_id: "T1", attempt: 2, lm_ms: 80, credits: 3.0 }),
+    row({ stage: "code", chunk_id: "T2", lm_ms: 60, credits: 2.5 }),
+  ];
+  const out = summarizeStages({ code: { status: "in_progress", attempt: 2 } }, metrics);
+  const code = out[2];
+  assert.equal(code.totalCredits, 10.5);
+  const t1 = code.chunks.find(c => c.chunk_id === "T1")!;
+  assert.equal(t1.totalCredits, 8.0);
+});
+
+test("formatCredits: 0 → empty string", () => {
+  assert.equal(formatCredits(0), "");
+  assert.equal(formatCredits(-1), "");
+});
+
+test("formatCredits: < 100 uses one decimal", () => {
+  assert.equal(formatCredits(3.2), "3.2c");
+  assert.equal(formatCredits(12.0), "12.0c");
+  assert.equal(formatCredits(99.9), "99.9c");
+});
+
+test("formatCredits: 100-999 rounded to int", () => {
+  assert.equal(formatCredits(150), "150c");
+  assert.equal(formatCredits(412.7), "413c");
+});
+
+test("formatCredits: 1k+ uses k suffix", () => {
+  assert.equal(formatCredits(1500), "1.5kc");
+  assert.equal(formatCredits(12_345), "12.3kc");
+});
+
+test("describeStage: includes credits when totalCredits > 0", () => {
+  assert.equal(
+    describeStage({
+      stage: "code", status: "in_progress", attempt: 2,
+      totalLmMs: 12_000, totalTokensIn: 0, totalTokensOut: 0,
+      totalCredits: 14.2, rowCount: 3, chunks: [],
+    }),
+    "attempt 2 · 12.0s · 14.2c",
+  );
+});
+
+test("describeStage: omits credits when totalCredits is 0", () => {
+  assert.equal(
+    describeStage({
+      stage: "plan", status: "complete", attempt: 1,
+      totalLmMs: 1500, totalTokensIn: 0, totalTokensOut: 0,
+      totalCredits: 0, rowCount: 1, chunks: [],
+    }),
+    "1.5s",
+  );
+});
+
+test("describeChunk: includes credits", () => {
+  assert.equal(
+    describeChunk({
+      chunk_id: "T1", attempt: 1,
+      totalLmMs: 3000, totalTokensIn: 0, totalTokensOut: 0,
+      totalCredits: 4.7, rowCount: 1,
+    }),
+    "3.0s · 4.7c",
+  );
+});
+
+// ── summarizeSession + describeSession ────────────────────────────────────
+
+test("summarizeSession: prefers live budget over historic", () => {
+  const live: BudgetSnapshot = {
+    creditsUsed: 8.2, maxCredits: 50, remaining: 41.8, warnAtRatio: 0.8,
+  };
+  const s = summarizeSession("abc123", "active", 6.0, live);
+  // historic was 6.0 but live shows 8.2 — live wins for the "now" display
+  assert.equal(s.totalCredits, 8.2);
+  assert.equal(s.liveBudget, live);
+});
+
+test("summarizeSession: falls back to historic when no live budget", () => {
+  const s = summarizeSession("abc123", "paused", 12.4, null);
+  assert.equal(s.totalCredits, 12.4);
+  assert.equal(s.liveBudget, null);
+});
+
+test("describeSession: live budget shows X/Y format with percent", () => {
+  const s = summarizeSession("abc123", "active", 0, {
+    creditsUsed: 12.4, maxCredits: 50, remaining: 37.6, warnAtRatio: 0.8,
+  });
+  assert.equal(describeSession(s), "12.4 / 50 credits (25%)");
+});
+
+test("describeSession: paused session shows just credits used", () => {
+  const s = summarizeSession("abc123", "paused", 12.4, null);
+  assert.equal(describeSession(s), "12.4 credits used");
+});
+
+test("describeSession: empty when no budget and no historic spend", () => {
+  const s = summarizeSession("abc123", "pending", 0, null);
+  assert.equal(describeSession(s), "");
 });

@@ -759,6 +759,8 @@ def harness_record_stage_metric(
     chunk_id: str | None = None,
     tool_count: int = 0,
     tool_failures: int = 0,
+    credits: float = 0.0,
+    model_family: str | None = None,
 ) -> str:
     """Append one row to `stage_metrics` after a stage's LM round-trip.
 
@@ -766,6 +768,12 @@ def harness_record_stage_metric(
     completes — the wall-clock ms + token estimates are already on hand
     there. Token counts are estimates (chars/4 heuristic from
     `runners/orchestratorCore.estimateTokens`), not billed amounts.
+
+    Stage 1 (MVP A.4): `credits` is the `estimateCallCredits` result the
+    runner already computes for the per-call chat display, and
+    `model_family` records which family produced the call. Persisted so
+    paused / historic sessions can sum their cumulative spend without a
+    live `BudgetEnforcer`. Defaults keep older callers backward-compat.
 
     Failures are non-fatal — observability writes must never abort a
     pipeline run.
@@ -775,10 +783,38 @@ def harness_record_stage_metric(
             session_id, stage, attempt, started_at, ended_at,
             tokens_in_estimate, tokens_out_estimate, lm_ms,
             chunk_id=chunk_id, tool_count=tool_count, tool_failures=tool_failures,
+            credits=credits, model_family=model_family,
         )
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({"status": "ok"})
+
+
+@mcp.tool()
+def harness_session_credits(session_id: str) -> str:
+    """Stage 1 (MVP A.4) — return cumulative credits for a session, summed
+    from `stage_metrics.credits`.
+
+    Used by `/status`, the Tasks sidebar's per-session header, and the
+    `/credits` command's per-session breakdowns. Returns 0.0 when the
+    session has no rows OR rows pre-date the credits column."""
+    try:
+        total = _db.total_credits_for_session(session_id)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "session_id": session_id, "credits": total})
+
+
+@mcp.tool()
+def harness_credits_since(cutoff_ts: float) -> str:
+    """Stage 1 (MVP A.4) — sum credits across ALL sessions whose
+    `started_at >= cutoff_ts`. Drives the `/credits` command's today /
+    week / month roll-ups."""
+    try:
+        total = _db.total_credits_since(cutoff_ts)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "cutoff_ts": cutoff_ts, "credits": total})
 
 
 @mcp.tool()
