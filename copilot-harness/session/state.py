@@ -543,9 +543,19 @@ def get_status(session_id: str, db_path: Path | None = None) -> dict:
                 "attempt": row["attempt"],
                 "has_output": row["output"] is not None,
             }
+    # Stage 1 (MVP A.4) — cumulative credits summed from stage_metrics.
+    # 0.0 when the session has no metric rows OR the rows pre-date the
+    # `credits` column (DEFAULT 0.0 so older rows contribute nothing).
+    # Best-effort: a query failure surfaces as 0.0 rather than failing
+    # get_status, which is on the hot path for the Tasks sidebar.
+    try:
+        total_credits = db.total_credits_for_session(session_id, db_path)
+    except Exception:
+        total_credits = 0.0
     return {
         "session_id": session_id,
         "status": session["status"],
         "stages": stages,
         "next_stage": resume(session_id, db_path),
+        "total_credits": total_credits,
     }

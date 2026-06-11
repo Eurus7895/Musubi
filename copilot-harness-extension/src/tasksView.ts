@@ -31,19 +31,28 @@ import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import {
   describeChunk,
+  describeSession,
   describeStage,
+  summarizeSession,
   summarizeStages,
   STAGE_ORDER as CORE_STAGE_ORDER,
   type ChunkSummary,
+  type SessionSummary,
   type StageMetricsRow,
   type StageStatusInfo,
   type StageSummary,
 } from "./tasksViewCore";
+import { snapshotActiveBudget } from "./pipelineBudgetCore";
 
 // ── Node types ──────────────────────────────────────────────────────────────
 
 type TaskNode =
   | { kind: "section"; section: "active" | "history" }
+  // Stage 1 (MVP A.4) — session-level header carrying the live budget
+  // snapshot (when an enforcer is registered) or the persisted
+  // historic credits sum. Rendered as the first child of the "active"
+  // section, above the per-stage rows.
+  | { kind: "active-session-summary"; summary: SessionSummary }
   | { kind: "active-stage"; summary: StageSummary }
   | { kind: "active-chunk"; stage: string; chunk: ChunkSummary }
   | {
@@ -87,6 +96,36 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
         // contributes.menus["view/item/context"] when=viewItem==section-active.
         item.contextValue = node.section === "active" ? "section-active" : "section-history";
         item.iconPath = new vscode.ThemeIcon(node.section === "active" ? "pulse" : "history");
+        return item;
+      }
+      case "active-session-summary": {
+        // Stage 1 (MVP A.4) — render "X / Y credits (Z%)" when live
+        // budget exists, "X credits used" for paused/historic, or
+        // empty when no spend has happened yet. Session id shown as
+        // the secondary description so the user knows which run.
+        const s = node.summary;
+        const item = new vscode.TreeItem(
+          s.sessionId, vscode.TreeItemCollapsibleState.None,
+        );
+        item.iconPath = new vscode.ThemeIcon(
+          s.liveBudget ? "credit-card" : "history",
+        );
+        item.description = describeSession(s) || s.status;
+        const tipParts = [
+          `session: ${s.sessionId}`,
+          `status: ${s.status}`,
+        ];
+        if (s.liveBudget) {
+          tipParts.push(
+            `live budget: ${s.liveBudget.creditsUsed.toFixed(2)} / ${s.liveBudget.maxCredits.toFixed(0)} credits`,
+            `remaining: ${s.liveBudget.remaining.toFixed(2)}`,
+            `warn at: ${(s.liveBudget.warnAtRatio * 100).toFixed(0)}%`,
+          );
+        } else if (s.totalCredits > 0) {
+          tipParts.push(`historic credits: ${s.totalCredits.toFixed(2)}`);
+        }
+        item.tooltip = tipParts.join("\n");
+        item.contextValue = "active-session-summary";
         return item;
       }
       case "active-stage": {
@@ -222,6 +261,8 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
       ]);
       const status = JSON.parse(statusRaw) as {
         stages?: Record<string, StageStatusInfo>;
+        status?: string;
+        total_credits?: number;
       };
       const metricsResponse = JSON.parse(metricsRaw) as {
         status?: string;
@@ -229,9 +270,26 @@ export class HarnessTasksProvider implements vscode.TreeDataProvider<TaskNode> {
       };
       const rows = metricsResponse.rows ?? [];
       const summaries = summarizeStages(status.stages ?? {}, rows);
-      return summaries.map(summary => ({
-        kind: "active-stage" as const, summary,
-      }));
+
+      // Stage 1 (MVP A.4) — session-level budget header. Live snapshot
+      // comes from snapshotActiveBudget (non-null iff a pipeline is
+      // currently running against this session). Historic credits come
+      // from harness_get_status.total_credits (summed from
+      // stage_metrics.credits server-side). summarizeSession picks
+      // whichever is authoritative.
+      const sessionSummary = summarizeSession(
+        active.session_id,
+        status.status ?? "active",
+        status.total_credits ?? 0,
+        snapshotActiveBudget(active.session_id),
+      );
+
+      return [
+        { kind: "active-session-summary" as const, summary: sessionSummary },
+        ...summaries.map(summary => ({
+          kind: "active-stage" as const, summary,
+        })),
+      ];
     } catch (err) {
       this.log(`tasksView loadActiveStages error: ${err instanceof Error ? err.message : String(err)}`);
       return [];

@@ -25,6 +25,7 @@ import { HarnessModelsProvider } from "./modelsView";
 import { disposeLogger, getLogger } from "./loggerService";
 import { HarnessPipelinesProvider } from "./pipelinesView";
 import { setPerPipelineAutoApprove } from "./pipelineGateUi";
+import { snapshotActiveBudget } from "./pipelineBudgetCore";
 
 let out: vscode.OutputChannel;
 
@@ -305,7 +306,7 @@ type AgentName = "planner" | "designer" | "coder" | "reviewer";
  * who types `/contxt-cap` (typo) sees a list of file-driven commands
  * with no hint that `/context-cap` exists.
  */
-const BUILTIN_COMMAND_NAMES = ["model", "context-cap", "auto-approve"] as const;
+const BUILTIN_COMMAND_NAMES = ["model", "context-cap", "auto-approve", "credits"] as const;
 
 type ParsedCommand =
   | { type: "slash";        name: string; args: string }
@@ -317,7 +318,8 @@ type ParsedCommand =
   | { type: "help" }
   | { type: "model";        family: string }
   | { type: "context-cap";  value: string }
-  | { type: "auto-approve"; args: string };
+  | { type: "auto-approve"; args: string }
+  | { type: "credits" };
 
 /**
  * Routing rules (Phase D — zero LLM cost):
@@ -351,6 +353,9 @@ function parseCommand(text: string): ParsedCommand {
     // Pipelines sidebar reads/writes — this is the chat-side equivalent
     // for users who prefer keyboard over click.
     if (name === "auto-approve") { return { type: "auto-approve", args }; }
+    // Stage 1 (MVP A.4) — /credits prints session, today, week, month
+    // credit totals summed from stage_metrics.credits across the audit DB.
+    if (name === "credits") { return { type: "credits" }; }
     return { type: "slash", name, args };
   }
 
@@ -386,7 +391,10 @@ async function showStatus(
   }
 
   const statusRaw = await client.callTool("harness_get_status", { session_id: active.session_id });
-  let status: { stages: Record<string, { status: string; attempt: number }> };
+  let status: {
+    stages: Record<string, { status: string; attempt: number }>;
+    total_credits?: number;
+  };
   try { status = JSON.parse(statusRaw); } catch {
     stream.markdown("Could not retrieve session status.");
     return;
@@ -399,6 +407,18 @@ async function showStatus(
 
   let md = `**Session:** \`${active.session_id}\`\n\n`;
   if (active.request) { md += `**Request:** ${active.request}\n\n`; }
+
+  // Stage 1 (MVP A.4) — credit line. Live snapshot if the enforcer is
+  // registered (active pipeline); otherwise show the persisted historic
+  // total summed from stage_metrics.credits.
+  const liveBudget = snapshotActiveBudget(active.session_id);
+  if (liveBudget) {
+    const pct = Math.round(100 * liveBudget.creditsUsed / liveBudget.maxCredits);
+    md += `**Credits:** ${liveBudget.creditsUsed.toFixed(1)} / ${liveBudget.maxCredits.toFixed(0)} (${pct}%)\n\n`;
+  } else if ((status.total_credits ?? 0) > 0) {
+    md += `**Credits used:** ${(status.total_credits ?? 0).toFixed(1)}\n\n`;
+  }
+
   md += "| Stage | Status | Attempt |\n|---|---|---|\n";
 
   for (const stage of STAGE_ORDER) {
@@ -610,6 +630,79 @@ async function runAutoApprove(
   );
 }
 
+/**
+ * Stage 1 (MVP A.4) — `/credits` prints session-level + rolling totals
+ * summed from `stage_metrics.credits`.
+ *
+ *   - **This session**: live snapshot from `snapshotActiveBudget` if a
+ *     pipeline is running, otherwise the persisted historic sum.
+ *   - **Today / This week / This month**: aggregates via
+ *     `harness_credits_since` keyed off start-of-day / start-of-week /
+ *     start-of-month timestamps.
+ *
+ * No flags. The numbers are estimates derived from the cost model in
+ * `pipelineBudgetCore::estimateCallCredits` — the running total tracked
+ * by Bosch's billing dashboard is authoritative.
+ */
+async function runCredits(
+  client: McpClient,
+  stream: vscode.ChatResponseStream,
+): Promise<void> {
+  const now = new Date();
+  // Start of TODAY (local midnight).
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  // Start of this ISO week (Monday at 00:00 local).
+  const dayOfWeek = (now.getDay() + 6) % 7;  // 0 = Mon, 6 = Sun
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek).getTime() / 1000;
+  // Start of this month (1st at 00:00 local).
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000;
+
+  // Active session credits (if any).
+  let sessionLine = "";
+  try {
+    const activeRaw = await client.callTool("harness_get_active_session", {});
+    const active = JSON.parse(activeRaw) as { session_id: string | null };
+    if (active.session_id) {
+      const liveBudget = snapshotActiveBudget(active.session_id);
+      if (liveBudget) {
+        const pct = Math.round(100 * liveBudget.creditsUsed / liveBudget.maxCredits);
+        sessionLine = `**This session** (active): ${liveBudget.creditsUsed.toFixed(1)} / ${liveBudget.maxCredits.toFixed(0)} credits (${pct}%)`;
+      } else {
+        const sessRaw = await client.callTool("harness_session_credits", { session_id: active.session_id });
+        const sess = JSON.parse(sessRaw) as { credits?: number };
+        sessionLine = `**This session** (paused): ${(sess.credits ?? 0).toFixed(1)} credits`;
+      }
+    }
+  } catch (err) {
+    out.appendLine(`[/credits] session lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Roll-ups.
+  const sumSince = async (cutoff_ts: number): Promise<number> => {
+    try {
+      const raw = await client.callTool("harness_credits_since", { cutoff_ts });
+      const r = JSON.parse(raw) as { credits?: number };
+      return r.credits ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+  const [today, thisWeek, thisMonth] = await Promise.all([
+    sumSince(startOfToday),
+    sumSince(weekStart),
+    sumSince(monthStart),
+  ]);
+
+  let md = "**💰 Credit usage** (estimates from token counts + cost model)\n\n";
+  if (sessionLine) { md += `${sessionLine}\n\n`; }
+  md += `| Window | Credits |\n|---|---|\n`;
+  md += `| Today | ${today.toFixed(1)} |\n`;
+  md += `| This week | ${thisWeek.toFixed(1)} |\n`;
+  md += `| This month | ${thisMonth.toFixed(1)} |\n\n`;
+  md += `*Numbers are estimates. Bosch Copilot billing dashboard is authoritative.*`;
+  stream.markdown(md);
+}
+
 // ── Usage text ────────────────────────────────────────────────────────────────
 
 const USAGE_HEADER = "**CopilotHarness** — orchestrator + governed pipelines";
@@ -628,6 +721,7 @@ const USAGE_FOOTER = [
   "- `/model [family|clear]` — switch the model family for ALL harness LM calls (writes `copilotHarness.modelOverride`). Useful when you've run out of quota on the agent defaults. Run with no args to see current value + available families.",
   "- `/context-cap [N|clear]` — switch the per-turn context budget in tokens (writes `copilotHarness.contextCap`). Lower = cheaper per turn, less history retained. Pipeline.yaml `context_cap:` overrides per pipeline. Run with no args to see current + effective values.",
   "- `/auto-approve [pipeline] [on|off|toggle|clear]` — toggle the per-pipeline review gate (writes `copilotHarness.autoApprove.<pipeline>`). When ON, the four-button gate is skipped between stages. Run with no args to see which pipelines are currently auto-approved. Same setting the Pipelines sidebar manages.",
+  "- `/credits` — show the current session's credit spend plus today / this-week / this-month roll-ups summed from `stage_metrics.credits`. Numbers are estimates from the cost model; Bosch billing is authoritative.",
   "",
   "**Review gate (between stages):**",
   "",
@@ -802,6 +896,10 @@ async function handler(
 
       case "auto-approve":
         await runAutoApprove(cmd.args, slashRoots, stream);
+        break;
+
+      case "credits":
+        await runCredits(client, stream);
         break;
     }
   } catch (err) {

@@ -724,6 +724,11 @@ async function runAgentLM(
   let finalText = "";
   let totalCycles = 0;
   let hitMaxTurns = false;
+  // Stage 1 (MVP A.4) — accumulator for credits across all cycles of
+  // this runAgentLM call. Each cycle's post-flight charge adds its
+  // actualCost here; the stage_metrics write at the bottom passes the
+  // total so paused/historic sessions can sum without a live enforcer.
+  let stageCreditsTotal = 0;
   // Salvage buffer: the most recent cycle that emitted non-empty text.
   // On bail-out (consecutive-empty guard) or maxTurns exhaust, we fall
   // back to this instead of returning "" — the model often emits a
@@ -773,9 +778,15 @@ async function runAgentLM(
 
     // Phase J.3 — post-flight charge per cycle. Each sendRequest is a
     // separate billable event, so the budget book reflects N cycles.
+    // Stage 1 (MVP A.4): compute the per-cycle cost unconditionally so
+    // the stage_metrics row records credits even when no BudgetEnforcer
+    // is registered for this session (e.g. pipeline.yaml has no
+    // `max_credits:` field). The cumulative paused/historic display in
+    // /status + sidebar depends on this row-level number.
+    const outputTokensEst = estimateTokensFromChars(cycleBuf.length);
+    const actualCost = estimateCallCredits(model.family, inputTokensEst, outputTokensEst);
+    stageCreditsTotal += actualCost;
     if (activeBudget) {
-      const outputTokensEst = estimateTokensFromChars(cycleBuf.length);
-      const actualCost = estimateCallCredits(model.family, inputTokensEst, outputTokensEst);
       const status = activeBudget.enforcer.charge(actualCost);
       activeBudget.onEvent({
         status: status === "allow" ? "info" : status,
@@ -936,6 +947,10 @@ async function runAgentLM(
         tokens_in_estimate: tokensIn,
         tokens_out_estimate: tokensOut,
         lm_ms: elapsed,
+        // Stage 1 (MVP A.4) — persist per-row credits + family so
+        // paused/historic sessions sum without a live BudgetEnforcer.
+        credits: stageCreditsTotal,
+        model_family: model.family,
       };
       if (obs.chunkId) { args.chunk_id = obs.chunkId; }
       obs.client.callTool("harness_record_stage_metric", args).catch(err => {

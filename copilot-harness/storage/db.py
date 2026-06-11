@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS stage_metrics (
     lm_ms               INTEGER NOT NULL DEFAULT 0,
     tool_count          INTEGER NOT NULL DEFAULT 0,
     tool_failures       INTEGER NOT NULL DEFAULT 0,
+    credits             REAL NOT NULL DEFAULT 0.0,
+    model_family        TEXT,
     schema_version      TEXT NOT NULL DEFAULT 'v1',
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
@@ -208,6 +210,14 @@ _STAGE_OUTPUT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("schema_version", "TEXT NOT NULL DEFAULT 'v1'"),
 )
 
+# Stage 1 (MVP, A.4) — per-row credits + model_family. Computed at
+# runAgentLM write time so the sidebar / /status / /credits can sum
+# without needing a live BudgetEnforcer.
+_STAGE_METRICS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("credits",       "REAL NOT NULL DEFAULT 0.0"),
+    ("model_family",  "TEXT"),
+)
+
 
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -234,6 +244,7 @@ def init_db(db_path: Path | None = None) -> None:
         # no-op because all columns are present.
         _migrate_columns(conn, "sessions", _PAUSE_RESUME_COLUMNS)
         _migrate_columns(conn, "stage_outputs", _STAGE_OUTPUT_COLUMNS)
+        _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
 
 
 @contextmanager
@@ -1049,23 +1060,33 @@ def insert_stage_metric(
     chunk_id: str | None = None,
     tool_count: int = 0,
     tool_failures: int = 0,
+    credits: float = 0.0,
+    model_family: str | None = None,
 ) -> None:
     """One row per stage attempt (chunked or not). Caller passes the
     pre-measured wall-clock + token estimates collected at the
-    `vscode.lm.sendRequest` call site."""
+    `vscode.lm.sendRequest` call site.
+
+    Stage 1 (MVP A.4): `credits` (the estimateCallCredits result) and
+    `model_family` (model.family) are stored per row so paused / historic
+    sessions can compute their cumulative spend without a live
+    BudgetEnforcer. Defaults are 0.0 / None for backwards compat with
+    callers that haven't been updated."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO stage_metrics"
             " (session_id, stage, chunk_id, attempt,"
             "  started_at, ended_at,"
             "  tokens_in_estimate, tokens_out_estimate,"
-            "  lm_ms, tool_count, tool_failures)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  lm_ms, tool_count, tool_failures,"
+            "  credits, model_family)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id, stage, chunk_id, attempt,
                 started_at, ended_at,
                 tokens_in_estimate, tokens_out_estimate,
                 lm_ms, tool_count, tool_failures,
+                float(credits), model_family,
             ),
         )
 
@@ -1146,6 +1167,40 @@ def total_tokens_for_session(
             (session_id,),
         ).fetchone()
     return int(row[0]) if row else 0
+
+
+def total_credits_for_session(
+    session_id: str, db_path: Path | None = None,
+) -> float:
+    """Sum `credits` across all stage_metrics rows for a session.
+
+    Stage 1 (MVP A.4): consumed by `get_status` and the sidebar so
+    paused / historic sessions show their cumulative spend.
+    Returns 0.0 when the session has no rows OR the rows pre-date the
+    credits column (the column's DEFAULT is 0.0)."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(credits), 0.0) FROM stage_metrics"
+            " WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    return float(row[0]) if row else 0.0
+
+
+def total_credits_since(
+    cutoff_ts: float, db_path: Path | None = None,
+) -> float:
+    """Sum `credits` across all stage_metrics rows with started_at >= cutoff_ts.
+
+    Used by the `/credits` slash command's today / this-week / this-month
+    aggregates."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(credits), 0.0) FROM stage_metrics"
+            " WHERE started_at >= ?",
+            (float(cutoff_ts),),
+        ).fetchone()
+    return float(row[0]) if row else 0.0
 
 
 def query_pipeline_runs_for_stats(
