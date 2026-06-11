@@ -147,6 +147,31 @@ CREATE TABLE IF NOT EXISTS stage_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
     ON stage_metrics (session_id);
+-- Stage 2 (MVP A.2) — one row per `sendRequest` cycle inside
+-- `runAgentLM`. A multi-cycle stage (planner cycle 0, 1, 2 …) gets
+-- one row per cycle, where stage_metrics gets one row per agent CALL.
+-- The granularity gap is what makes ephemeral-guard fire rates
+-- queryable (path-rules preamble, empty-project fallback, bail-out)
+-- so dissolution decisions can be data-driven, not guessed.
+CREATE TABLE IF NOT EXISTS agent_cycles (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    stage           TEXT NOT NULL,
+    attempt         INTEGER NOT NULL,
+    chunk_id        TEXT,
+    cycle_idx       INTEGER NOT NULL,
+    started_at      REAL NOT NULL,
+    ended_at        REAL,
+    lm_ms           INTEGER NOT NULL DEFAULT 0,
+    tool_calls_json TEXT,
+    text_chars      INTEGER NOT NULL DEFAULT 0,
+    credits         REAL NOT NULL DEFAULT 0.0,
+    cycle_status    TEXT NOT NULL DEFAULT 'ok',
+    schema_version  TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_cycles_session
+    ON agent_cycles (session_id);
 CREATE TABLE IF NOT EXISTS orchestrator_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id              TEXT NOT NULL,
@@ -1101,6 +1126,92 @@ def query_stage_metrics(
             " ORDER BY started_at ASC, id ASC",
             (session_id,),
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Stage 2 (MVP A.2): agent_cycles CRUD ───────────────────────────────────
+
+
+def insert_agent_cycle(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    cycle_idx: int,
+    started_at: float,
+    ended_at: float,
+    db_path: Path | None = None,
+    *,
+    chunk_id: str | None = None,
+    lm_ms: int = 0,
+    tool_calls_json: str | None = None,
+    text_chars: int = 0,
+    credits: float = 0.0,
+    cycle_status: str = "ok",
+) -> None:
+    """One row per `sendRequest` cycle inside `runAgentLM`.
+
+    Stage 2 (MVP A.2) — `stage_metrics` records one row per agent
+    CALL; this table records one row per CYCLE within that call.
+    The granularity gap is what makes ephemeral-guard fire rates
+    queryable (path-rules preamble, empty-project fallback, the
+    bail-out counter) so dissolution decisions can be data-driven.
+
+    `cycle_status` is one of {'ok', 'final'}:
+      - 'final' = cycle emitted zero tool calls and broke out
+        (model is done; finalText == this cycle's text)
+      - 'ok'    = cycle dispatched ≥ 1 tool call (intermediate)
+    Other states ('interrupted', 'budget_halt') don't get rows
+    because both throw before recording reaches us.
+
+    `tool_calls_json` is a JSON-encoded array of `{name, ok}` objects
+    (one per tool call dispatched in this cycle). Empty / null for
+    `cycle_status='final'` cycles.
+
+    Best-effort: caller wraps in a fire-and-forget catch so a row
+    write failure never aborts the run.
+    """
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO agent_cycles"
+            " (session_id, stage, chunk_id, attempt, cycle_idx,"
+            "  started_at, ended_at,"
+            "  lm_ms, tool_calls_json, text_chars, credits, cycle_status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id, stage, chunk_id, attempt, cycle_idx,
+                started_at, ended_at,
+                lm_ms, tool_calls_json, text_chars,
+                float(credits), cycle_status,
+            ),
+        )
+
+
+def query_agent_cycles(
+    session_id: str,
+    stage: str | None = None,
+    attempt: int | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return agent_cycles rows for a session, optionally narrowed by
+    stage / attempt. Ordered chronologically (started_at ASC, id ASC).
+
+    Used by the forthcoming dissolution-candidates SQL ("what's the
+    fire rate of guard X?") and by Stage 5's eval-suite reporter.
+    """
+    clauses = ["session_id = ?"]
+    params: list[object] = [session_id]
+    if stage is not None:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if attempt is not None:
+        clauses.append("attempt = ?")
+        params.append(attempt)
+    sql = (
+        "SELECT * FROM agent_cycles WHERE " + " AND ".join(clauses)
+        + " ORDER BY started_at ASC, id ASC"
+    )
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -900,6 +900,78 @@ def harness_query_stage_metrics(session_id: str) -> str:
 
 
 @mcp.tool()
+def harness_record_agent_cycle(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    cycle_idx: int,
+    started_at: float,
+    ended_at: float,
+    chunk_id: str | None = None,
+    lm_ms: int = 0,
+    tool_calls_json: str | None = None,
+    text_chars: int = 0,
+    credits: float = 0.0,
+    cycle_status: str = "ok",
+) -> str:
+    """Stage 2 (MVP A.2) — append one row to `agent_cycles` after each
+    `sendRequest` cycle inside `runAgentLM`.
+
+    Called by the TS runner once per cycle (fire-and-forget). The
+    per-call `stage_metrics` row stays — this is the finer granularity
+    that makes the ephemeral-guard fire rates queryable.
+
+    `cycle_status` ∈ {'ok', 'final'}. `tool_calls_json` is a JSON-
+    encoded `[{name, ok}]` array of dispatched tool calls (null/empty
+    for 'final' cycles).
+
+    Failures are non-fatal — observability writes must never abort a
+    pipeline run."""
+    try:
+        _db.insert_agent_cycle(
+            session_id=session_id,
+            stage=stage,
+            attempt=attempt,
+            cycle_idx=cycle_idx,
+            started_at=started_at,
+            ended_at=ended_at,
+            chunk_id=chunk_id,
+            lm_ms=lm_ms,
+            tool_calls_json=tool_calls_json,
+            text_chars=text_chars,
+            credits=credits,
+            cycle_status=cycle_status,
+        )
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok"})
+
+
+@mcp.tool()
+def harness_query_agent_cycles(
+    session_id: str,
+    stage: str | None = None,
+    attempt: int | None = None,
+) -> str:
+    """Stage 2 (MVP A.2) — per-cycle audit rows for a session.
+
+    Optional filters: narrow by `stage` (e.g. 'plan') and/or `attempt`
+    so consumers can drill into specific stages. Returns
+    `{rows: [{stage, attempt, chunk_id, cycle_idx, lm_ms,
+    tool_calls_json, text_chars, credits, cycle_status, ...}]}`
+    ordered chronologically.
+
+    Consumers: dissolution-candidates SQL (cost-lever measurement),
+    Stage 5's eval-suite reporter, future cycle-by-cycle audit
+    dashboard."""
+    try:
+        rows = _db.query_agent_cycles(session_id, stage=stage, attempt=attempt)
+    except Exception as exc:
+        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({"status": "ok", "session_id": session_id, "rows": rows})
+
+
+@mcp.tool()
 def harness_record_orchestrator_turn(
     chat_id: str,
     parent_session_id: str,

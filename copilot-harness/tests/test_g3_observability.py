@@ -273,6 +273,150 @@ def test_get_status_total_credits_zero_when_no_metrics(fresh_db: Path) -> None:
     assert status["total_credits"] == 0.0
 
 
+# ── Stage 2 (MVP A.2) — agent_cycles per-cycle audit ─────────────────
+
+
+def test_insert_agent_cycle_round_trips(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    db.insert_agent_cycle(
+        sid, "plan", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.5,
+        db_path=fresh_db,
+        lm_ms=1500, text_chars=4000, credits=2.4,
+        cycle_status="final",
+    )
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["stage"] == "plan"
+    assert r["cycle_idx"] == 0
+    assert r["lm_ms"] == 1500
+    assert r["text_chars"] == 4000
+    assert r["credits"] == pytest.approx(2.4)
+    assert r["cycle_status"] == "final"
+
+
+def test_agent_cycle_defaults_when_kwargs_omitted(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    db.insert_agent_cycle(
+        sid, "plan", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.0, db_path=fresh_db,
+    )
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["lm_ms"] == 0
+    assert r["text_chars"] == 0
+    assert r["credits"] == 0.0
+    assert r["cycle_status"] == "ok"
+    assert r["tool_calls_json"] is None
+    assert r["chunk_id"] is None
+
+
+def test_multi_cycle_stage_has_multiple_rows(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    for cycle_idx, status in enumerate(("ok", "ok", "final")):
+        db.insert_agent_cycle(
+            sid, "plan", attempt=1, cycle_idx=cycle_idx,
+            started_at=1.0 + cycle_idx, ended_at=2.0 + cycle_idx,
+            db_path=fresh_db,
+            lm_ms=500, text_chars=100, credits=0.5,
+            cycle_status=status,
+        )
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    assert len(rows) == 3
+    assert [r["cycle_idx"] for r in rows] == [0, 1, 2]
+    assert [r["cycle_status"] for r in rows] == ["ok", "ok", "final"]
+
+
+def test_agent_cycles_chunked_distinguish_by_chunk_id(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    for chunk_id in ("T1", "T2", "T3"):
+        db.insert_agent_cycle(
+            sid, "code", attempt=1, cycle_idx=0,
+            started_at=1.0, ended_at=2.0,
+            db_path=fresh_db, chunk_id=chunk_id,
+            lm_ms=200, text_chars=300, credits=1.0,
+            cycle_status="final",
+        )
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    assert len(rows) == 3
+    assert sorted(r["chunk_id"] for r in rows) == ["T1", "T2", "T3"]
+
+
+def test_query_agent_cycles_filters_by_stage(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    for stage in ("plan", "design", "code"):
+        db.insert_agent_cycle(
+            sid, stage, attempt=1, cycle_idx=0,
+            started_at=1.0, ended_at=2.0,
+            db_path=fresh_db, lm_ms=100,
+        )
+    plan_rows = db.query_agent_cycles(sid, stage="plan", db_path=fresh_db)
+    assert len(plan_rows) == 1
+    assert plan_rows[0]["stage"] == "plan"
+
+
+def test_query_agent_cycles_filters_by_attempt(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    for attempt in (1, 2, 3):
+        db.insert_agent_cycle(
+            sid, "code", attempt=attempt, cycle_idx=0,
+            started_at=1.0, ended_at=2.0,
+            db_path=fresh_db, lm_ms=100,
+        )
+    attempt2 = db.query_agent_cycles(sid, attempt=2, db_path=fresh_db)
+    assert len(attempt2) == 1
+    assert attempt2[0]["attempt"] == 2
+
+
+def test_agent_cycle_tool_calls_json_round_trips(fresh_db: Path) -> None:
+    """tool_calls_json stored verbatim — caller controls the shape.
+    The runtime writes `[{"name": "...", "ok": true|false}]` strings."""
+    sid = state.create_session("do x", fresh_db)
+    payload = json.dumps([
+        {"name": "copilot_readFile", "ok": True},
+        {"name": "copilot_findFiles", "ok": False},
+    ])
+    db.insert_agent_cycle(
+        sid, "plan", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.0,
+        db_path=fresh_db, tool_calls_json=payload,
+    )
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    parsed = json.loads(rows[0]["tool_calls_json"])
+    assert parsed == [
+        {"name": "copilot_readFile", "ok": True},
+        {"name": "copilot_findFiles", "ok": False},
+    ]
+
+
+def test_harness_record_agent_cycle_writes_a_row(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    raw = server.harness_record_agent_cycle(
+        session_id=sid, stage="plan", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.0,
+        lm_ms=1500, text_chars=400, credits=1.2,
+        cycle_status="final",
+    )
+    assert json.loads(raw) == {"status": "ok"}
+    rows = db.query_agent_cycles(sid, db_path=fresh_db)
+    assert len(rows) == 1
+    assert rows[0]["cycle_status"] == "final"
+
+
+def test_harness_query_agent_cycles_returns_rows(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    server.harness_record_agent_cycle(
+        session_id=sid, stage="plan", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.0, lm_ms=100,
+    )
+    raw = server.harness_query_agent_cycles(session_id=sid)
+    result = json.loads(raw)
+    assert result["status"] == "ok"
+    assert len(result["rows"]) == 1
+
+
 def test_derive_correction_attempts_zero_for_first_attempt(fresh_db: Path) -> None:
     sid = state.create_session("do x", fresh_db)
     # No retries — attempt stays at 1, corrections = 0.
