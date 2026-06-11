@@ -1,7 +1,7 @@
 # Memory in CopilotHarness
 
 > How the harness remembers things — across stages within a session, across
-> sessions, and across continuous orchestrator conversations.
+> sessions, and across continuous butler conversations.
 
 This is the contract. Implementation lives in `copilot-harness/memory/`.
 
@@ -44,7 +44,7 @@ Tier 1 is "the map." Tier 2 is the chapters. Tier 3 is the historical archive.
 |---|---|---|---|
 | Pipeline `planner` / `designer` / `coder` | ✅ auto-injected | on demand | on demand |
 | Pipeline `reviewer` | ❌ — evaluator firewall | ❌ | ❌ |
-| `orchestrator` (new) | ✅ auto-injected | on demand | on demand |
+| `butler` (new) | ✅ auto-injected | on demand | on demand |
 | Any sub-agent (`explorer`, `investigator`, `reviewer-aux`, etc.) | ❌ — sub-agent firewall | ❌ | ❌ |
 
 **Two firewalls, two reasons.**
@@ -81,7 +81,7 @@ the extension side.
 |---|---|---|---|
 | **Reviewer fail** | A `reviewer` / `reviewer-aux` sub-agent returns `final_status='failed'` | ✅ shipped (Phase C.2) | Role + failure cause |
 | **User frustration** | Deterministic regex match on negative-sentiment patterns in the user message — no LLM | ✅ shipped (Phase C.2) | `frustration:<label>` pattern keyed off the matched phrase |
-| **Per-turn (gated)** | After every orchestrator reply, only if a noteworthy event happened (sub-agent failed, retry occurred, spawn cap hit) | ⏳ deferred — overlaps with reviewer-fail | Turn summary + flagged event |
+| **Per-turn (gated)** | After every butler reply, only if a noteworthy event happened (sub-agent failed, retry occurred, spawn cap hit) | ⏳ deferred — overlaps with reviewer-fail | Turn summary + flagged event |
 | **Chat closed** | User runs `/clear` or chat panel is closed | ⏳ deferred — needs a VS Code chat lifecycle API not in 1.93 | Final sweep — anything not yet distilled |
 
 Per-turn dedup runs through `TriggerDedup` in
@@ -107,37 +107,37 @@ instead of writing a duplicate. `frequency` feeds the compaction ranking.
 
 ---
 
-## Orchestrator integration (frozen — May 2026)
+## Butler integration (frozen — May 2026)
 
-> The orchestrator is feature-frozen as of May 2026 — the integration
+> The butler is feature-frozen as of May 2026 — the integration
 > below still works, but no new development lands against it. New
 > memory work targets pipeline mode. Decision context:
 > [`docs/roadmap.md`](./roadmap.md) § Phase F.
 
-The orchestrator runs as a continuous conversation. "Session" is redefined for
+The butler runs as a continuous conversation. "Session" is redefined for
 this mode:
 
 > **Session = one user turn.** Many sessions chained make one chat.
 
 This keeps best-practice 8 ("one task per session") honest: each user turn is
-one task. The orchestrator's persistent context across turns is held by the
+one task. The butler's persistent context across turns is held by the
 `conversation_messages` SQLite table (Phase C.1), keyed by `chat_id`, not by
 extending the session abstraction. The `chat_id` is a stable
 `sha256(participant + first user prompt + workspace path)` truncated to
 16 hex — best-effort until VS Code ships a real chat-thread id.
 
-**Tier 1 is auto-injected into the orchestrator on every turn** — same path as
+**Tier 1 is auto-injected into the butler on every turn** — same path as
 pipeline agents.
 
-**Tier 2 / Tier 3 are pulled by the orchestrator on demand** via the existing
+**Tier 2 / Tier 3 are pulled by the butler on demand** via the existing
 MCP tools.
 
-**Sub-agents the orchestrator spawns get nothing.** Same firewall as pipeline
+**Sub-agents the butler spawns get nothing.** Same firewall as pipeline
 sub-agents.
 
 ---
 
-## Conversation transcript (orchestrator only)
+## Conversation transcript (butler only)
 
 Separate from memory; documented here because they are easily confused.
 
@@ -150,7 +150,7 @@ Separate from memory; documented here because they are easily confused.
 | Compacted by | `harness_compact_memory` (5 KB cap) | Reactive: 80% drops `tool` rows from per-turn render; 90% spawns the summarizer sub-agent and persists the verified summary as `system`; 99% hard-truncates to 50% of model window |
 
 The transcript is replayed verbatim (subject to compaction) to give the
-orchestrator continuity. Memory is consulted for cross-conversation knowledge.
+butler continuity. Memory is consulted for cross-conversation knowledge.
 
 ---
 

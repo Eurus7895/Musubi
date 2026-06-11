@@ -60,9 +60,9 @@ These cannot be broken without an explicit design discussion. If a
 change would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Only `vscode.lm.sendRequest` from the TS extension reaches a model. Python harness + TS shell orchestrate; they do not import an LLM SDK.
-2. **Skills are pushed to pipeline agents; pulled on demand by the orchestrator.** Pipeline-side: `harness_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Orchestrator-side: `harness_get_skill` LM tool, model decides when to load.
+2. **Skills are pushed to pipeline agents; pulled on demand by the butler.** Pipeline-side: `harness_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Butler-side: `harness_get_skill` LM tool, model decides when to load.
 3. **Evaluator firewall.** Reviewer sees `code` only — no request, plan, design, or memory. Enforced in `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (Python + mirrored in `pipeline.ts`).
-4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → orchestrator. No LLM call decides the route.
+4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → butler. No LLM call decides the route.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py::PIPELINE_POLICIES` denies unknown `(pipeline, agent)` combinations. Never relax to fail-open.
 6. **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Pipeline-specific role variants (filename-prefixed) require 3+ documented failures of the canonical agent.
 7. **Append-only stage store.** Retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.

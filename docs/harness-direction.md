@@ -102,7 +102,96 @@ ephemeral toward substrate (debt growth) or substrate toward ephemeral
 
 ---
 
-## 3. What to do next — three tracks
+## 3. Convergence path — butler as the universal governed surface
+
+The substrate-vs-ephemeral split clarifies what to delete but not what
+the post-deletion shape looks like. This section is the answer.
+
+**Today: two governed surfaces with different shapes**
+
+| Surface | Today | Governance applied |
+|---|---|---|
+| Pipeline mode (`/feature-dev`) | 4-stage scaffold; coding-only | Firewall, validator, correction loop, per-stage budget halt, audit |
+| Butler mode (`@harness <prompt>`) | Free-form chat; any task | Sub-agent firewall, audit (`conversation_messages`), partial — no validator, no correction loop, no budget enforcer registered |
+
+The product gap users hit ("the pipeline can only do coding") is real
+and intentional: the pipeline's governance only earns its cost when
+the output is structured artefacts AND wrong output has real cost.
+Coding hits both; docs / refactor / research / brainstorming don't.
+
+**The dissolution direction is convergence, not deletion-then-rebuild.**
+
+The butler already has the right shape — agent + tools + skills,
+model-driven. What it lacks are governance primitives that today only
+fire inside pipelines. Lift those into the substrate so they apply to
+both surfaces, and the two modes collapse into one.
+
+**Convergent target**
+
+```
+ONE surface: agent + skills + tools + governance primitives applied
+             uniformly via substrate
+
+  user invokes:   @harness <task>          # any task, governed
+                  /<pipeline> <task>       # special case: push-heavy
+                                             skill set for code-shaped work
+                  plain Copilot Chat       # casual chat (unchanged)
+```
+
+The model picks the skill (already true in butler mode via
+`harness_get_skill` + `harness_list_skills`). The **harness picks
+governance** based on what skill is loaded — if a skill declares
+`output_contract`, the validator fires; if `correction_loop: true`,
+retries happen; budget enforcement is always-on.
+
+**Project profile in memory — the missing applicability layer**
+
+The skill catalog is universal procedural knowledge. The MEMORY layer
+holds project-specific applicability:
+
+| Layer | What it stores | Lifecycle |
+|---|---|---|
+| Skill catalog (`.github/skills/*/SKILL.md`) | Procedure: "how to do X" + `applies-to` + `output_contract` | Static, curated, slow-changing |
+| Project profile (memory tier-2, NEW) | "This project is Python + Sphinx, not C + Word" | Per-workspace, auto-detected at session start, refined by failures |
+| Failure patterns (memory tier-2, existing) | "Tried skill X here, failed because Y" | Grows as `harness_distill_session` fires |
+
+The skill router (`applicable_skills(profile, all_skills)`) intersects
+declared `applies-to` against the detected profile so the model never
+sees skills that don't fit — no "tried C skill on Python", no "applied
+Word skill to PDF".
+
+This makes the butler's pull model **context-aware** without
+forcing a push: the model's catalog is already filtered to what makes
+sense in this workspace. Push-when-warranted (Track D step 8) is the
+upgrade for explicit coding-shaped intent.
+
+**Merged sequence**
+
+The full path lives in `docs/roadmap.md` § Track D — Convergence. Ten
+steps, ~2-3 weeks of substrate work plus ongoing skill curation, plus
+the big deletion PR (gated on eval suite from Track A.1 showing no
+regression).
+
+**What this means for the pipeline**
+
+`/feature-dev` (the 4-stage shape) keeps its cost-lever value until:
+
+1. The eval suite shows one Sonnet-5 / Opus-5-class trace produces
+   plan-through-review output at equal-or-lower cost
+2. The model self-evaluates correctly when given the reviewer skill at
+   the end of its own trace
+3. Correction-loop fire rate drops near zero on the new model
+
+When all three hit, Track D step 10 fires: delete `runPipeline`,
+`runChunkedCodeAndReview`, `runAgentWithValidationRetry`,
+`runCorrectionLoop`, the 4-stage agent fanout. Keep `_STAGE_PERMISSIONS`
+but apply it via skill-context restriction inside a single trace.
+Substrate intact; ephemeral structure gone. Roughly the deletion that
+gets CopilotHarness to Browser-Use-scale (~600 lines of harness).
+
+---
+
+## 4. What to do next — three tracks
 
 Concrete moves for the next 3 months, prioritised so each strengthens
 the substrate AND keeps the cost line visible.
@@ -197,7 +286,7 @@ something get pushed back."
 
 ---
 
-## 4. The cost-of-high-end-model constraint
+## 5. The cost-of-high-end-model constraint
 
 A real tension in the article's framing the original piece doesn't
 fully address: pushing work onto the model (the "fat skills, thin
@@ -239,7 +328,7 @@ Components with falling cost-lever values get promoted to the
 
 ---
 
-## 5. How to stay updated
+## 6. How to stay updated
 
 Five mechanisms ordered by leverage.
 
@@ -314,7 +403,7 @@ UI as if they were stable.**
 
 ---
 
-## 6. The one sentence to enforce in PR reviews
+## 7. The one sentence to enforce in PR reviews
 
 > _"Every PR moves CopilotHarness either toward thicker substrate
 > (queryable audit, more skill markdown, sharper invariants) OR toward
@@ -327,7 +416,7 @@ the discipline is self-enforcing.
 
 ---
 
-## 7. What this means in practice for the next merged branch
+## 8. What this means in practice for the next merged branch
 
 The sub-agent-for-exploration shift (PR #64) is a good case study of
 the tension this document tries to make tractable:
