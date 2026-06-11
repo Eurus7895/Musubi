@@ -729,6 +729,44 @@ async function runAgentLM(
   // actualCost here; the stage_metrics write at the bottom passes the
   // total so paused/historic sessions can sum without a live enforcer.
   let stageCreditsTotal = 0;
+
+  // Stage 2 (MVP A.2) — fire-and-forget agent_cycles writer. Called
+  // twice per cycle iteration: once when the cycle breaks out with
+  // zero tool calls ('final'), once at the end of the dispatch loop
+  // for intermediate cycles ('ok'). The MCP call failure is logged
+  // but never aborts the run; agent_cycles is observability, not
+  // load-bearing state.
+  const recordCycle = (
+    cycleIdx: number,
+    status: "ok" | "final",
+    cycleStartedAt: number,
+    cycleEndedAt: number,
+    cycleMs: number,
+    textChars: number,
+    creditsThisCycle: number,
+    toolCallsInfo: { name: string; ok: boolean }[],
+  ): void => {
+    if (!obs?.client) { return; }
+    const args: Record<string, unknown> = {
+      session_id: obs.sessionId,
+      stage: obs.stage,
+      attempt: obs.attempt,
+      cycle_idx: cycleIdx,
+      started_at: cycleStartedAt / 1000,
+      ended_at: cycleEndedAt / 1000,
+      lm_ms: cycleMs,
+      tool_calls_json: toolCallsInfo.length > 0
+        ? JSON.stringify(toolCallsInfo) : null,
+      text_chars: textChars,
+      credits: creditsThisCycle,
+      cycle_status: status,
+    };
+    if (obs.chunkId) { args.chunk_id = obs.chunkId; }
+    obs.client.callTool("harness_record_agent_cycle", args).catch(err => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logLine(`  (agent_cycle write failed: ${msg})`);
+    });
+  };
   // Salvage buffer: the most recent cycle that emitted non-empty text.
   // On bail-out (consecutive-empty guard) or maxTurns exhaust, we fall
   // back to this instead of returning "" — the model often emits a
@@ -811,6 +849,13 @@ async function runAgentLM(
     if (toolCalls.length === 0) {
       // Final cycle — model is done. Use this cycle's text for JSON parsing.
       finalText = cycleBuf;
+      // Stage 2 (MVP A.2) — record the 'final' agent_cycles row before
+      // breaking. No tool calls were dispatched, so toolCallsInfo is [].
+      recordCycle(
+        cycle, "final",
+        cycleStart, Date.now(),
+        cycleMs, cycleBuf.length, actualCost, [],
+      );
       break;
     }
 
@@ -838,8 +883,13 @@ async function runAgentLM(
     // Dispatch each tool via vscode.lm.invokeTool and append results.
     // Track "useful" calls — non-empty content AND no error. Used by the
     // consecutive-empty guard to detect hallucinate-and-retry loops.
+    // Stage 2 (MVP A.2): also collect per-call `{name, ok}` into
+    // `cycleToolCallsInfo` for the agent_cycles row's tool_calls_json
+    // column. Lets dissolution-candidates SQL query tool-failure rates
+    // per stage.
     const resultParts: vscode.LanguageModelToolResultPart[] = [];
     let cycleUsefulCount = 0;
+    const cycleToolCallsInfo: { name: string; ok: boolean }[] = [];
     for (const call of toolCalls) {
       const toolStart = Date.now();
       let callOk = false;
@@ -865,8 +915,18 @@ async function runAgentLM(
         ]));
       }
       if (callOk) { cycleUsefulCount++; }
+      cycleToolCallsInfo.push({ name: call.name, ok: callOk });
     }
     messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+    // Stage 2 (MVP A.2) — record the intermediate ('ok') agent_cycles
+    // row. Done BEFORE the bail-out / next-iteration check so the cycle
+    // that triggers a bail-out still gets a row written.
+    recordCycle(
+      cycle, "ok",
+      cycleStart, Date.now(),
+      cycleMs, cycleBuf.length, actualCost, cycleToolCallsInfo,
+    );
 
     if (cycleUsefulCount === 0) {
       consecutiveEmptyCycles++;
