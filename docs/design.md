@@ -485,6 +485,8 @@ Things this harness deliberately does NOT do:
   Candidates list, active branches.
 - [`docs/usecase-diagram.md`](./usecase-diagram.md) — user-facing
   capability map (what `/feature-dev` does from a developer's POV).
+- [`docs/class-diagram.md`](./class-diagram.md) — TS class +
+  Python dataclass shapes with `harness-tier` annotations.
 - [`docs/memory.md`](./memory.md) — memory architecture detail.
 - [`/CLAUDE.md`](../CLAUDE.md) — repo-wide rules, conventions, Hard
   Invariants.

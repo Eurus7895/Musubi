@@ -1,13 +1,16 @@
 # CopilotHarness — Use Case Diagram
 
-> Status: drafted from real surfaces present in `dev` as of PR #62.
+> Status: drafted from real surfaces present in `dev`. Last updated
+> after PR #68 (per-cycle `agent_cycles` audit).
 > Updates: bump alongside any change that adds, removes, or renames a
 > user-facing capability.
 
 This document captures **what CopilotHarness lets a developer do**.
 Architecture, schemas, and internal flow live in
-[`design.md`](./design.md); roadmap and phase status live in
-[`roadmap.md`](./roadmap.md). This is the user-facing surface only.
+[`design.md`](./design.md); class shapes live in
+[`class-diagram.md`](./class-diagram.md); roadmap and phase status
+live in [`roadmap.md`](./roadmap.md). This is the user-facing surface
+only.
 
 ---
 
@@ -22,7 +25,7 @@ extension installed.
 |---|---|---|
 | **GitHub Copilot LM** | OUT | Every LM call goes through `vscode.lm.sendRequest`. Models: Claude (Sonnet / Haiku / Opus), GPT-4o / 4.1 / 5-mini, Gemini Flash. |
 | **Workspace filesystem** | OUT (read) + OUT (write) | Read by butler + sub-agents + reviewer; written by coder during `/feature-dev`. |
-| **Harness SQLite (`audit.db`)** | OUT | Sessions, stage outputs, conversation messages, sub-agent audit, stage metrics, butler turns, schema migrations. |
+| **Harness SQLite (`audit.db`)** | OUT | Sessions, stage outputs, conversation messages, sub-agent audit, stage metrics, **agent_cycles** (per-`sendRequest` cycle audit), butler turns, schema migrations. |
 | **`.github/` in workspace** | OUT (read) | Agents (`.github/agents/`), skills (`.github/skills/`), pipelines (`.github/pipelines/`), memory (`.github/memory/`). |
 
 ## Use case diagram
@@ -58,6 +61,7 @@ flowchart LR
         subgraph observe["👁 Observe"]
             UC_HELP(["/help — list commands"])
             UC_STATUS(["/status — current session"])
+            UC_CREDITS(["/credits — session +<br/>today / week / month roll-ups"])
             UC_TASKS(["Tasks sidebar — active +<br/>history of pipeline sessions"])
             UC_MODELS(["Models sidebar — list +<br/>switch override"])
             UC_PIPES(["Pipelines sidebar — list +<br/>toggle auto-approve"])
@@ -84,6 +88,7 @@ flowchart LR
     Dev --> UC_VERBOSE
     Dev --> UC_HELP
     Dev --> UC_STATUS
+    Dev --> UC_CREDITS
     Dev --> UC_TASKS
     Dev --> UC_MODELS
     Dev --> UC_PIPES
@@ -102,6 +107,7 @@ flowchart LR
     UC_CR -. records .-> DB
     UC_ASK -. records .-> DB
     UC_STATUS -. reads .-> DB
+    UC_CREDITS -. reads .-> DB
     UC_TASKS -. reads .-> DB
     UC_ART -. reads .-> FS
     UC_LOG -. reads .-> DB
@@ -143,8 +149,9 @@ flowchart LR
 | Use case | Where | Shows |
 |---|---|---|
 | **`/help`** | Chat panel | All slash commands grouped (Pipelines / Agents / Commands), sidebar views, cost controls, built-ins |
-| **`/status`** | Chat panel | Active session id, stage-by-stage progress, attempts |
-| **Tasks sidebar** | Activity bar → CopilotHarness icon | Active pipeline session (live), history (recent sessions, stages, outcomes), click stage row to open artifact |
+| **`/status`** | Chat panel | Active session id, stage-by-stage progress, attempts, **cumulative credit usage** (live snapshot or persisted total) |
+| **`/credits`** | Chat panel | Active session credits (live or paused) + Today / This week / This month roll-ups summed from `stage_metrics.credits` across all sessions |
+| **Tasks sidebar** | Activity bar → CopilotHarness icon | Active pipeline session (live), **session-level budget header** (live snapshot or persisted credits used), history (recent sessions, stages, outcomes), click stage row to open artifact |
 | **Models sidebar** | Activity bar → CopilotHarness icon | All Copilot-surfaced families; active override marked; click to switch |
 | **Pipelines sidebar** | Activity bar → CopilotHarness icon | All declared pipelines; current auto-approve state; click to toggle |
 | **Session artifacts** | File browser on `.harness/sessions/<sid>/` | `plan.md`, `design.md`, `code.md`, `review.md` (+ `.attemptN.md` retries). The persistent record. |
@@ -194,4 +201,5 @@ flowchart LR
 | Pipelines sidebar | `pipelinesView.ts` |
 | `/help` | `extension.ts::buildHelpMarkdown` + `USAGE_FOOTER` |
 | `/status` | `extension.ts::showStatus` |
-| Audit / metrics | `copilot-harness/storage/db.py` + `server.py` MCP tools |
+| `/credits` | `extension.ts::runCredits` + `harness_credits_since` MCP tool + `harness_session_credits` MCP tool |
+| Audit / metrics | `copilot-harness/storage/db.py` (`stage_metrics`, `agent_cycles`, `subagent_audit`, `orchestrator_turns`) + `server.py` MCP tools |
