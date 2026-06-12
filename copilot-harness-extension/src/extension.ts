@@ -741,6 +741,7 @@ const USAGE_FOOTER = [
   "",
   "- Context cap: 50 000 tokens / turn (`copilotHarness.contextCap`, or `context_cap:` in pipeline.yaml).",
   "- Pipeline budgets: feature-dev 50 credits, code-review 20 credits (`max_credits:` in pipeline.yaml). Halts before exceeding; `/continue` resumes after a raise.",
+  "- Butler budget: 30 credits / turn (`copilotHarness.butlerBudget`). Same primitive as pipeline budgets but applied to `@harness <prompt>` turns. Set to 0 to disable. Warning at 80%; halts force-finalise the turn cleanly.",
   "- Model override: none by default (uses each agent's frontmatter); set via `/model` or settings.",
   "",
   "**Other options:**",

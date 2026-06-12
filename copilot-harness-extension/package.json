@@ -114,6 +114,12 @@
           "minimum": 0,
           "maximum": 200000,
           "description": "Per-turn context cap in input tokens for the orchestrator (and pipeline runners that adopt the cap). 0 = use the built-in default (50000). Lower = lower per-turn cost but less history retained; higher = more history but more tokens billed per turn. A pipeline.yaml `context_cap:` field overrides this setting for that pipeline. Values above 200000 are clamped to the model context window. Set via `/context-cap <N>` in chat, or directly here."
+        },
+        "copilotHarness.butlerBudget": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Per-turn credit cap for butler mode (`@harness <prompt>`). MVP item 3 / Track D.4. Pipelines already get cost governance via `pipeline.yaml::max_credits`; this is the equivalent for butler turns. The cap covers ALL cycles inside one user turn (each `sendRequest` is a billable event; the article's cycle-loop pattern can fire many per turn). Set to 0 to disable enforcement. Default of 30 credits matches Sonnet 4.5/4.6 at ~3-5 cycles of typical butler work; raise if you regularly hit halts on legitimate work. Halts emit a one-time chat marker and force-finalise the turn cleanly. Warning fires at 80% (matches the pipeline `warn_at` default)."
         }
       }
     },

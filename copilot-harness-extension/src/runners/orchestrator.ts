@@ -17,6 +17,15 @@ import { McpClient } from "../mcpClient";
 import { selectModelForAgent } from "../modelSelector";
 import { resolveContextCap } from "../contextCap";
 import {
+  BudgetEnforcer,
+  estimateCallCredits,
+  estimateTokensFromChars,
+  getActiveBudget,
+  registerActiveBudget,
+  unregisterActiveBudget,
+  type BudgetEvent,
+} from "../pipelineBudgetCore";
+import {
   applyCompaction,
   buildOrchestratorSystemPrompt,
   cleanupOutstandingSubagents,
@@ -550,6 +559,38 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
   _setActiveOrchestrator(active);
   log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
 
+  // MVP item 3 / Track D.4 — register a per-turn BudgetEnforcer when
+  // the user has configured a cap. Same primitive pipelines use; same
+  // `_activeEnforcers` registry keyed by session id, so the per-call
+  // charge below + the halt logic match pipeline behaviour. When the
+  // setting is 0 or unset, no enforcer is registered and the turn
+  // runs uncapped (legacy behaviour).
+  const cfg = vscode.workspace.getConfiguration("copilotHarness");
+  const butlerBudgetCap = Math.max(0, cfg.get<number>("butlerBudget", 30));
+  let budgetHalted = false;
+  if (butlerBudgetCap > 0) {
+    const enforcer = new BudgetEnforcer(butlerBudgetCap, 0.8);
+    registerActiveBudget(parentSessionId, enforcer, (event: BudgetEvent) => {
+      const pct = Math.round(100 * event.creditsUsed / event.maxCredits);
+      if (event.status === "warn") {
+        stream.markdown(
+          `\n> ⚠️ **Butler budget warning** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used (${pct}%). ` +
+          `Last call: ${event.thisCallCredits.toFixed(2)} credits on ${event.family} (${event.phase}).\n`,
+        );
+      } else if (event.status === "halt") {
+        stream.markdown(
+          `\n> 🛑 **Butler budget exhausted** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used. ` +
+          `Force-finalising this turn. Raise \`copilotHarness.butlerBudget\` in settings to increase the cap.\n`,
+        );
+      }
+      // No per-call info-line — butler chat is conversational and the
+      // pipeline-style "💰 N credits this call" would clutter the
+      // reply stream. Cumulative spend is visible in /credits and the
+      // sidebar (Stage 1, MVP A.4).
+    });
+    log(`[orchestrator] butler budget enforcer registered — cap=${butlerBudgetCap} credits, warn_at=80%`);
+  }
+
   // Buffer all assistant text emitted during the turn so the conversation
   // log gets one chronological row at end-of-turn (or in `finally` on
   // cancel / throw — partial replies must not vanish).
@@ -809,6 +850,39 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       turnCycles = cycle + 1;
       log(`[orchestrator] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
 
+      // MVP item 3 / Track D.4 — post-flight credit charge per cycle.
+      // Mirrors pipeline.ts::runAgentLM (each sendRequest is a separate
+      // billable event). On halt: enforcer's onEvent callback fires
+      // the halt markdown, we record the partial reply, and break out
+      // of the cycle loop so the existing finally block closes the
+      // turn cleanly. No throw — keeping the orchestrator's existing
+      // finally semantics simpler than the pipeline path.
+      const activeBudget = getActiveBudget(parentSessionId);
+      if (activeBudget) {
+        const cycleOutputTokens = estimateTokensFromChars(textBuf.length);
+        const cycleCost = estimateCallCredits(
+          model.family,
+          totalTokens,                  // input tokens this cycle
+          cycleOutputTokens,             // output tokens this cycle
+        );
+        const status = activeBudget.enforcer.charge(cycleCost);
+        activeBudget.onEvent({
+          status: status === "allow" ? "info" : status,
+          phase: "postflight",
+          creditsUsed: activeBudget.enforcer.creditsUsed,
+          maxCredits: activeBudget.enforcer.maxCredits,
+          remaining: activeBudget.enforcer.remaining,
+          family: model.family,
+          thisCallCredits: cycleCost,
+        });
+        if (status === "halt") {
+          budgetHalted = true;
+          log(`[orchestrator] butler budget exhausted at cycle ${cycle} — finalising`);
+          if (textBuf.length > 0) { assistantBuf.push(textBuf); }
+          return;
+        }
+      }
+
       if (textBuf.length > 0) { assistantBuf.push(textBuf); }
       if (toolCalls.length === 0) {
         log(`[orchestrator] turn done — total=${Date.now() - turnStart}ms cycles=${cycle + 1}`);
@@ -910,6 +984,13 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     }
     await cleanupOutstandingSubagents(client, tracker);
     _setActiveOrchestrator(null);
+    // MVP item 3 / Track D.4 — unregister the per-turn enforcer so the
+    // registry doesn't leak. Safe to call even when no enforcer was
+    // registered (the unregister is a Map.delete which is a no-op on
+    // missing keys).
+    if (butlerBudgetCap > 0) {
+      unregisterActiveBudget(parentSessionId);
+    }
     // Phase J follow-up — record per-turn telemetry. Fire-and-forget;
     // an observability failure must never break a chat turn.
     try {
