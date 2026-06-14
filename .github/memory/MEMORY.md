@@ -16,4 +16,9 @@ LLM, the harness is the environment. Two modes:
 - `failure-patterns.md` — recurring coder/reviewer failures, distilled
   from prior sessions and live triggers (reviewer-fail, frustration
   regex).
+- `project-profile.md` — language / framework / doc tool / conventions
+  auto-detected at SessionStart by `copilot-harness/workspace/detector.py`.
+  Consumed by the skill router (MVP item 6 / Track D.3) to filter the
+  catalog so the model only sees skills whose `applies-to:` matches
+  this workspace's stack.
 
