@@ -54,7 +54,7 @@ After the MVP ships:
 | **1** | Credit visibility — `/status` + sidebar + `/credits` summed from `stage_metrics.credits` (per-row + total) | Track A.4 | ½ day | Users can't manage spend they can't see |
 | **2** | Per-cycle audit table (`agent_cycles`) — one row per `sendRequest` cycle inside `runAgentLM` | Track A.2 | 1-2 days | Dissolution decisions need data; without this, "stay updated" is vibes |
 | **3** | `BudgetEnforcer` per butler turn — register an enforcer at butler-turn start so `@harness <task>` carries the same cost guardrail pipelines have today | Track D.4 | ~30 lines | Today butler turns are uncapped; lifts the Phase F cost concern from "freeze the surface" to "govern the surface" |
-| **4** | Project profile detection — `scripts/profile_workspace.py` writes `.github/memory/project-profile.md` at session start (language, framework, doc tool, conventions auto-detected) | Track D.1 | 2-3 days | Skill applicability requires per-workspace context; memory layer is where this belongs |
+| **4** ✓ | Project profile detection — `copilot-harness/workspace/detector.py` writes `.github/memory/project-profile.md` at session start (language, framework, doc tool, conventions auto-detected) | Track D.1 | 2-3 days | Skill applicability requires per-workspace context; memory layer is where this belongs. **DONE — PR #71 (commit `0abf648`).** Unblocks items 5, 6, 9. |
 | **5** | SKILL.md frontmatter extensions — add `applies-to` (per-skill applicability) AND `output_contract` (JSON schema for validator) | Track D.2 | 1 day | Both fields needed before the skill router and validator can fire |
 | **6** | Skill router — `applicable_skills(profile, all_skills)` filters `harness_list_skills` so the model never sees skills that don't fit the workspace | Track D.3 | 1 day | Eliminates "tried C skill on Python" class of failures; depends on 4 + 5 |
 | **7** | `harness-tier` tag walkthrough — one PR walks every TS module, Python module, agent.md, SKILL.md, pipeline.yaml; adds the tag (HI #9 takes effect) | Track C.1 | 1-2 days | Discipline becomes self-enforcing at code review |
@@ -78,7 +78,7 @@ After the MVP ships:
 | Window | Items |
 |---|---|
 | Week 1 | Items 1 ✓ (shipping now) + 3 (parallel) |
-| Week 2 | Items 2 + 4 (parallel) |
+| Week 2 | Items 2 + 4 ✓ (parallel) |
 | Week 3 | Items 5 + 6 + 7 |
 | Week 4 | Items 8 + 9 (first skill draft) |
 | Weeks 3-5 (overlapping) | Item 10 (eval suite curation) |
@@ -339,7 +339,7 @@ payoff gated on the eval suite (A.1).
 
 | # | What | Substrate gain | Effort | Depends on |
 |---|---|---|---|---|
-| **D.1** | **Project profile detection** — `scripts/profile_workspace.py` scans for stack signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `conf.py`, file-extension distribution) and writes `.github/memory/project-profile.md` (new tier-2 entry) at session start | Memory gains contextual awareness; substrate THICKER | 2-3 days | — |
+| **D.1** ✓ | **Project profile detection** — `copilot-harness/workspace/detector.py` scans for stack signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `conf.py`, file-extension distribution) and writes `.github/memory/project-profile.md` (new tier-2 entry) at session start. **DONE — PR #71 (commit `0abf648`).** Detector covers Python / TS / JS / Rust / Go / Java/Kotlin / Ruby / PHP, three doc tools (sphinx / mkdocs / mdbook), pytest + jest. 16 unit tests; integrated into `scripts/session_start.py` as best-effort. | Memory gains contextual awareness; substrate THICKER | 2-3 days | — |
 | **D.2** | **SKILL.md frontmatter extensions** — add `applies-to` (per-skill applicability: language, framework, file types) AND `output_contract` (JSON schema for skill-driven validator) as parsed frontmatter fields | Skill catalog gains both applicability + validation declarations | 1 day | — |
 | **D.3** | **Skill router** — `applicable_skills(profile, all_skills)` helper + filter inside `harness_list_skills`. Skills with no `applies-to` declaration are treated as universal | Model sees only project-relevant skills; eliminates "tried C skill on Python" class of failures | 1 day | D.1 + D.2 |
 | **D.4** | **BudgetEnforcer per butler turn** — `runOrchestrator` (code name kept until rename PR) registers an enforcer for the turn (config from `copilotHarness.butlerBudget` setting, defaults from current butler cost data); same primitives used by pipelines | Cost governance applies to `@harness` work too | ~30 lines | — (quick win, independent) |
