@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""SessionStart hook — run the baseline_checks block from pipeline.yaml.
+"""SessionStart hook — run the baseline_checks block from pipeline.yaml
+AND auto-detect the project profile at session start (MVP item 4 /
+Track D.1).
+
+harness-tier: substrate
+expires-when: never — SessionStart lifecycle is the right place for
+  profile detection regardless of pipeline shape.
 
 Invocation (stdin is JSON, optional):
     python scripts/session_start.py
@@ -13,12 +19,15 @@ Defaults:
     workspace_root  = parent of scripts/
 
 Exit codes:
-    0 — all baseline checks passed (or no pipeline.yaml)
-    1 — one or more checks failed; reasons on stderr
-    2 — malformed input on stdin
+    0 — all baseline checks passed (or no pipeline.yaml).
+        Project-profile detection failures do NOT change the exit
+        code; profile is observability for the skill router, not
+        load-bearing for the pipeline run.
+    1 — one or more baseline checks failed; reasons on stderr.
+    2 — malformed input on stdin.
 
 Never send an LLM to do a linter's job: checks are declarative reads
-from the YAML file.
+from the YAML file. Profile detection is pure manifest parsing.
 """
 
 from __future__ import annotations
@@ -62,6 +71,43 @@ def run_baseline_checks(workspace_root: Path, pipeline: str) -> list[str]:
     return failures
 
 
+def write_project_profile(workspace_root: Path) -> str | None:
+    """MVP item 4 / Track D.1 — auto-detect the project profile and
+    write it to `.github/memory/project-profile.md` (tier-2 memory).
+
+    Best-effort: any failure logs to stderr and returns None. Profile
+    is observability for the skill router; a write failure must not
+    abort SessionStart. Returns the written path on success, None on
+    failure.
+
+    Importable detector lives at `copilot-harness/workspace/detector.py`.
+    The harness path is added to sys.path because this script is
+    invoked directly by the SessionStart hook (no installed package
+    on sys.path by default in that context).
+    """
+    try:
+        harness_root = Path(__file__).resolve().parent.parent / "copilot-harness"
+        if str(harness_root) not in sys.path:
+            sys.path.insert(0, str(harness_root))
+        from workspace.detector import (  # type: ignore[import-not-found]
+            detect_profile,
+            format_profile_md,
+        )
+
+        profile = detect_profile(workspace_root)
+        profile_path = workspace_root / ".github" / "memory" / "project-profile.md"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(format_profile_md(profile), encoding="utf-8")
+        return str(profile_path)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        print(
+            f"session_start: project profile detection failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
 def main() -> int:
     raw = sys.stdin.read()
     payload: dict = {}
@@ -82,6 +128,12 @@ def main() -> int:
         for msg in failures:
             print(f"session_start: {msg}", file=sys.stderr)
         return 1
+
+    # MVP item 4 / Track D.1 — run profile detection only after
+    # baseline checks pass. Failures here are non-fatal (logged but
+    # don't change the exit code).
+    write_project_profile(workspace_root)
+
     return 0
 
 
