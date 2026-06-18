@@ -60,7 +60,7 @@ After the MVP ships:
 | **7** ✓ | `harness-tier` tag walkthrough — 76 in-scope files tagged (23 Python substrate, 3 Python ephemeral, 13 SKILL.md including docs-writing + research from item 9, 14 agent.md, 2 pipeline.yaml, 15 TS runners + 4 already-tagged TS files). New `scripts/check_harness_tier.py` is wired into CI and HARD-FAILS on any new/modified file missing the tag → HI #9 self-enforces at PR review going forward. **DONE — `chore/harness-tier-walkthrough`.** | Track C.1 | 1-2 days | Discipline becomes self-enforcing at code review |
 | **8** ✓ | README polish — opening reframes the project as a "governance substrate" with explicit substrate-vs-ephemeral split; three-surfaces table (`/feature-dev` extension pipeline, `agent-butler` CLI for any LLM, plain Copilot Chat for casual); stale "May 2026 orchestrator-freeze" callout replaced with a pointer to `docs/harness-direction.md`; project-layout updated for `butler/` + `tools/` + `workspace/` packages. **DONE — `docs/readme-direction-update`.** | Stage 4 | ½ day | External-facing MVP |
 | **9** ✓ | First non-coding skills — `docs-writing` (applies-to doc_tools sphinx/mkdocs/mdbook) and `research` (universal). Wired into orchestrator allowlist so the butler can pull them on demand; `docs-writing` also in designer allowlist. `output_contract` deferred with D.5. `test-writing` deferred — the existing `testing` skill covers it. **DONE — `feat/non-coding-skills`.** | Track D.9 (first slice) | per skill | Without at least 2-3 non-coding skills, the butler is unproven for anything but conversation; depends on 5 + 6 |
-| **10** | Eval suite — `.harness/evals/` with 5 tasks; dual-mode runner (mocked default + `--real-lm` flag); reports per-task pass/fail + cycles + lm_ms + credits | Track A.1 (Stage 5) | 1-2 weeks | The keystone — without standing evaluation, dissolution decisions are speculation. Run on every model release. |
+| **10** ⏸ | Eval suite — `.harness/evals/` with 5 tasks; dual-mode runner (mocked default + `--real-lm` flag); reports per-task pass/fail + cycles + lm_ms + credits. **DEFERRED — out of this MVP sprint.** Reason: the load-bearing artefact is the 5 mocked-LM-response files, which need authentic-looking tool-use traces. Hand-authoring them risks the eval suite silently encoding the wrong behavior. Will land when a real LM session is available to capture genuine tool-use traces from. | Track A.1 (Stage 5) | 1-2 weeks | The keystone — without standing evaluation, dissolution decisions are speculation. Run on every model release. |
 
 **Order rationale**
 
@@ -100,12 +100,19 @@ data OR represent premature optimisation:
 **Verification**
 
 The MVP is shippable when:
-- All 10 items merged
-- 838+ Python tests pass; 341+ TS tests pass
-- A real `/feature-dev` run shows `/credits` + sidebar showing credits at every level
-- A real `@harness <docs task>` run uses the new docs-writing skill and stays under butler budget
-- The eval suite runs end-to-end at least once (mocked OK)
+- Items 1-9 merged (item 10 deferred — see entry above)
+- 938+ Python tests pass; 341+ TS tests pass
+- A real `/feature-dev` run shows `/credits` + sidebar showing credits at every level (gated on item 1)
+- A real `@harness <docs task>` run uses the new docs-writing skill and stays under butler budget (gated on item 9)
 - `lines-of-harness vs lines-of-skill` ratio recorded as a baseline number
+
+**Item 10 follow-up triggers** (when to revisit):
+- A real LM session captures authentic tool-use traces that can be
+  replayed deterministically
+- A regression appears that an eval would have caught (concrete signal
+  beats speculative coverage)
+- Any new model release where dissolving an ephemeral guard is being
+  considered (the eval suite is the gate per Track B.2 / D.10)
 
 ---
 
