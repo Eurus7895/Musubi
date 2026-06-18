@@ -156,6 +156,11 @@ cd copilot-harness
 pip install -e .
 pytest tests/ -v
 
+# Butler CLI — drive the harness via a direct LLM API (no Copilot needed).
+# Optional vendor extras: pip install -e ".[anthropic]" or ".[openai]" or ".[all]"
+ANTHROPIC_API_KEY=… agent-butler "your task"
+OPENAI_API_KEY=…    agent-butler "your task" --vendor openai --model gpt-4o-mini
+
 # Per-component checks
 ruff check copilot-harness/
 mypy copilot-harness/

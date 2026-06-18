@@ -9,6 +9,28 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Butler CLI — vendor-agnostic harness driver (Python)
+
+- New `agent-butler` console script (lives in `copilot-harness/butler/`).
+  Drives the harness MCP server via a direct LLM API — Anthropic or
+  OpenAI today, extensible to other vendors by implementing one
+  `LMRouter` subclass. Restores end-to-end harness usage when Copilot
+  Chat isn't available (e.g. quota exhausted).
+- Aligns with the harness-direction discipline: the butler IS the
+  model's native mode (per CLAUDE.md "Copilot Chat reasons,
+  CopilotHarness controls the environment"). The 4-stage pipeline is
+  not ported — it remains `harness-tier: ephemeral` in the extension.
+- Vendor SDKs are optional extras: `pip install -e .[anthropic]` or
+  `.[openai]` or `.[all]`. Defaults: `claude-haiku-4-5` (Anthropic),
+  `gpt-4o-mini` (OpenAI). Override via `--model`.
+- Also fixes two latent wheel-packaging bugs surfaced by adding the
+  new package: `composer` (top-level module imported by `server.py`)
+  was missing from `py-modules`, and `workspace` (item-4 package) was
+  missing from `packages`. Both now ship in the wheel.
+- 17 new tests cover the vendor abstraction, OpenAI ↔ Anthropic wire
+  conversion, and the end-to-end loop against a real MCP server
+  (FakeRouter replays canned responses). Total: 880 passing.
+
 **Headline:** Phase A of the orchestrator pivot is complete on the
 Python side — sub-agent foundation, firewall, result verification,
 role .agent.md + SKILL.md files, and a durable audit log shipped at the
