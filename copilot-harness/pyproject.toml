@@ -23,6 +23,7 @@ packages = [
     "workspace",
     "butler",
     "butler.vendors",
+    "tools",
 ]
 
 [project.scripts]

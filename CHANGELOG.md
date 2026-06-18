@@ -31,6 +31,47 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   conversion, and the end-to-end loop against a real MCP server
   (FakeRouter replays canned responses). Total: 880 passing.
 
+### Filesystem + command MCP tools (harness as complete substrate)
+
+Adds four new `harness_*` MCP tools so any MCP client — butler, Claude
+Code, Cursor, a custom driver — can actually edit files and run
+commands through the harness without depending on a client-side tool
+set (which historically was Copilot Chat's). Closes the gap that
+became obvious the moment the butler shipped: 51 governance tools, 0
+file tools.
+
+- `tools/fs.py` — workspace-scoped implementation. Every path is
+  resolved against `_workspace_root()` (HARNESS_ROOT env var or cwd)
+  and rejected if the resolved target escapes the workspace. No
+  "dangerous command" heuristic — the user picked the model + the
+  catalog; the substrate's job is path-safety + audit, not paternalism.
+  Audit on stderr (`[harness.tools.fs]`); a SQL `fs_audit` table is a
+  follow-up if patterns show it's needed.
+- `server.py` — four new MCP tools delegate to `tools/fs.py`:
+  - `harness_read_file(path)` — up to 5 MB UTF-8.
+  - `harness_write_file(path, content, create_parents=True)` —
+    creates or replaces, mkdirs parents by default.
+  - `harness_edit_file(path, old_string, new_string, replace_all=False)`
+    — defaults to "match must be unique" semantics; explicit
+    replace_all path returns the count.
+  - `harness_run_command(command, timeout_seconds=60, cwd=None)` —
+    shell command via `sh -c`. Output capped at 1M chars
+    (head + tail preserved on overflow). Timeout returns partial
+    stdout/stderr.
+- 36 new tests in `tests/test_fs_tools.py` covering: traversal
+  rejection (dotdot + absolute outside), unicode handling, missing
+  files, directory-as-path rejection, edit uniqueness contract,
+  replace_all count, command timeout + truncation, MCP-layer JSON
+  round-trip for each tool.
+- `pyproject.toml` — `tools` added to packages.
+- Verified end-to-end: a real MCP client (smoke-tested with
+  `stdio_client`) writes → reads → edits → runs and gets escape
+  blocked on `/etc/passwd`. Audit lines fire on every call.
+
+This is what makes the butler (and any MCP client) self-sufficient:
+the harness no longer assumes the client brings file tools. Total:
+916 passing on top of the butler PR (880 + 36).
+
 **Headline:** Phase A of the orchestrator pivot is complete on the
 Python side — sub-agent foundation, firewall, result verification,
 role .agent.md + SKILL.md files, and a durable audit log shipped at the
