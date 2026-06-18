@@ -1,18 +1,42 @@
 # CopilotHarness
 
-A harness engineering layer for GitHub Copilot Chat in VS Code. The harness
-controls what each agent sees, validates what each agent produces, injects
-skills, enforces a correction loop, and runs code verification.
+A **governance substrate** for agentic software-engineering work in VS Code
+— audit DB, skill catalog, three-tier memory, fail-closed policy engine,
+deterministic verifiers, workspace-scoped file & command tools — exposed
+as an MCP server. Any tool-using LLM can drive it: GitHub Copilot Chat (the
+canonical client), or — when Copilot is offline — Anthropic / OpenAI APIs
+via the bundled `agent-butler` CLI, or any other MCP client.
 
 **Copilot Chat reasons. CopilotHarness controls the environment.**
+Zero LLM calls inside the harness.
 
 > Same model + same task + changed environment = better outcomes.
 > (Princeton SWE-agent paper: 64% improvement from harness design alone.)
 
-> **Scope (May 2026):** governed pipelines — `@harness /feature-dev <task>`
-> and successors — are the active product surface. The orchestrator chat
-> mode (bare `@harness <prompt>`) is feature-frozen; for casual chat use
-> plain Copilot Chat. Cost rationale: [`docs/roadmap.md`](./docs/roadmap.md) § Phase F.
+### Substrate vs ephemeral (the project's discipline)
+
+Every component carries a `harness-tier` tag, enforced by CI:
+
+- **Substrate** (invest, refactor) — the audit DB, the skill catalog,
+  the three-tier memory, the policy engine, the MCP tool catalog
+  (`harness_*`), and Hard Invariants #1–#9. These are designed to outlive
+  any specific model release.
+- **Ephemeral** (label, schedule for removal) — the 4-stage pipeline
+  shape (`planner → designer → coder → reviewer`), the sub-agent split,
+  the correction loop, the cycle-loop guards. Each ephemeral file
+  declares an `expires-when:` trigger; when models cross that
+  threshold, the structure gets *deleted*, not refactored.
+
+Full discipline + the PR-review sentence:
+[`docs/harness-direction.md`](./docs/harness-direction.md).
+
+### Three surfaces, choose by intent
+
+| Surface | When | What you get |
+|---|---|---|
+| `@harness /feature-dev <task>` (VS Code) | structured code change | 4-agent governed pipeline with firewall, validation, audit |
+| `agent-butler "<task>"` (CLI) | any task, Copilot quota empty | Python CLI drives any LLM with tool use (Anthropic / OpenAI / extensible) against the same harness substrate |
+| plain Copilot Chat | casual question | no harness overhead |
 
 ---
 
@@ -21,9 +45,10 @@ skills, enforces a correction loop, and runs code verification.
 | File | For |
 |---|---|
 | `README.md` *(you are here)* | Install · build · run · contribute |
+| [`docs/harness-direction.md`](./docs/harness-direction.md) | **Read first.** Direction, discipline, substrate-vs-ephemeral per component |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · invariants · conventions · commands (Claude Code memory) |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map for agents |
-| [`docs/design.md`](./docs/design.md) | Full architecture · schemas |
+| [`docs/design.md`](./docs/design.md) | Full architecture · schemas · MCP tool reference |
 | [`docs/roadmap.md`](./docs/roadmap.md) | Build roadmap · status · phase plans |
 
 Read `CLAUDE.md` before making code changes — it lists the hard invariants
@@ -100,26 +125,37 @@ from the panel — no extension rebuild required.
 
 ## How It Works (one-paragraph summary)
 
-The extension spawns the bundled server binary on VS Code start (JSON-RPC
-over stdio). When you type `@harness <input>`, `extension.ts` routes by
-pure string check — zero LLM cost:
+The harness is a Python MCP server (`copilot-harness/server.py`). It
+exposes ~55 `harness_*` tools covering session lifecycle, skills, memory,
+audit, file I/O, and command execution. **Zero LLM calls happen inside it**
+(HI #1). Any tool-using LLM client can drive it; the VS Code extension is
+the canonical one, but the bundled `agent-butler` CLI is a peer.
 
-- `/<pipeline-name> <task>` → **pipeline mode** (governed agents, validation, audit trail)
-- Anything else → **orchestrator mode** (persistent chat, spawns sub-agents
-  on demand, Tier-1 memory injected, reactive compaction)
+**From the VS Code extension**: the extension spawns the server binary on
+start (JSON-RPC over stdio). `@harness <input>` routes by pure string
+check — zero LLM cost:
 
-In pipeline mode, the harness pushes context per stage (firewall + skill
-injection + memory), the agent reasons via Copilot, the harness validates
-and stores the output, and the reviewer evaluates in a fresh session. A
-fail triggers up to 3 retries before escalation.
+- `/<pipeline-name> <task>` → **pipeline mode** (governed agents,
+  validation, audit trail) — *`harness-tier: ephemeral`; on dissolution
+  path as models improve, per the discipline*
+- Anything else → **butler mode** (persistent chat, model's native
+  multi-turn shape; CLAUDE.md: "skills come first, the butler grows")
 
-In orchestrator mode, one main agent holds the chat. It can spawn
-read-only sub-agents (`explorer`, `investigator`, `reviewer-aux`,
-`summarizer`) or governed pipeline-stage agents via `harness_spawn_subagent`,
-budgeted to 3 spawns per role per turn.
+**From any LLM API directly** (Anthropic, OpenAI, …):
 
-Full pipeline diagram, MCP tool list, schemas, hooks, and YAML format live
-in [`docs/design.md`](./docs/design.md).
+```bash
+pip install -e copilot-harness/.[anthropic]   # or .[openai] or .[all]
+ANTHROPIC_API_KEY=... agent-butler "your task"
+```
+
+The butler spawns the same MCP server, lists the catalog, drives a
+tool-use loop against your chosen LLM. No Copilot Chat required —
+useful when Copilot quota is empty or you want to point a different
+model at the substrate. New vendors are a single file under
+`copilot-harness/butler/vendors/`.
+
+Full architecture, MCP tool reference, schemas, hooks, and YAML formats
+live in [`docs/design.md`](./docs/design.md).
 
 ---
 
@@ -146,17 +182,31 @@ Add a command by dropping a new `.md` — no code change required.
 ```
 .github/
     pipelines/feature-dev/      pipeline.yaml + agents/*.agent.md
+                                (harness-tier: ephemeral)
     commands/                   slash command files (frontmatter-driven)
-    agents/                     shared catalog: main agents (skill-builder)
-                                + sub-agent roles (explorer, investigator,
-                                reviewer-aux — Phase A.3)
+    agents/                     shared catalog (harness-tier: ephemeral)
     instructions/               priority-ranked rules
-    skills/                     domain skills (SKILL.md + assets/ + references/)
-    memory/                     3-tier memory (MEMORY.md + Tier 2)
+    skills/                     domain skills — SKILL.md + assets/ +
+                                references/ (harness-tier: substrate)
+    memory/                     3-tier memory: MEMORY.md +
+                                project-profile.md + failure-patterns.md
+                                (harness-tier: substrate)
 
-copilot-harness/                Python MCP server (zero LLM)
+copilot-harness/                Python MCP server — zero LLM (HI #1)
+    storage/  memory/           audit DB + memory loaders (substrate)
+    skills/   validation/       skill catalog + verifier + firewall (substrate)
+    workspace/ tools/           profile detector + fs/command tools (substrate)
+    butler/                     vendor-agnostic CLI (Anthropic/OpenAI/…)
+                                — agent-butler entry point (substrate)
+    session/  execution/        pipeline-shape lifecycle + executors
+                                (mix; see harness-tier tags)
+
 copilot-harness-extension/      VS Code extension (TypeScript)
+                                — the Copilot Chat adapter; the runners/
+                                subdir is harness-tier: ephemeral
 hooks.json + scripts/           SessionStart / PreToolUse / PostToolUse
+                                + check_harness_tier.py (CI lint for HI #9)
+docs/harness-direction.md       direction + discipline (read first)
 docs/design.md                  full architecture + schemas
 docs/roadmap.md                 build roadmap + status
 ```
