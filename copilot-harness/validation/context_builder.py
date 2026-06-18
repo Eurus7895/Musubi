@@ -57,7 +57,7 @@ def scan_injection(text: str) -> bool:
 # Mirrors the stage firewall: agents only load skills relevant to their role.
 AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     "planner":       set(),
-    "designer":      {"api-design", "database-patterns", "documentation"},
+    "designer":      {"api-design", "database-patterns", "documentation", "docs-writing"},
     "coder":         {"python", "testing", "database-patterns", "api-design"},
     "reviewer":      {"code-review", "testing"},
     "skill-builder": set(),
@@ -68,7 +68,11 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # reach the orchestrator only through spawned sub-agents whose
     # allowlists already cover them — see MAIN_SUBAGENT_ALLOWLIST in
     # scripts/policy_engine.py.
-    "orchestrator": {"orchestrator-routing"},
+    #
+    # MVP item 9 — first non-coding skills (docs-writing, research) added
+    # to the orchestrator allowlist so the butler can pull them on demand
+    # when a user asks "write a design doc" or "how does X work?".
+    "orchestrator": {"orchestrator-routing", "docs-writing", "research"},
     # Phase H.1 — /code-review pipeline roles.
     # scoper        triages files; needs the scope-detection skill only.
     # finder        cross-cutting pass; needs per-file-review (its checklist)
