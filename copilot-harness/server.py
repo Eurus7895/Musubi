@@ -46,6 +46,7 @@ from execution import executor
 from memory import memory_loader, session_distiller
 from session import chunks as session_chunks
 from session import conversations, state, sub_sessions
+from skills import router as skill_router
 from skills import skill_loader
 from storage import db as _db
 from storage import subagent_audit
@@ -1108,6 +1109,23 @@ def harness_get_skill(skill_id: str, agent_name: str) -> str:
     return content
 
 
+def _load_project_profile() -> dict[str, Any] | None:
+    """Read + parse `.github/memory/project-profile.md` into a dict.
+
+    Returns None when the profile hasn't been generated (e.g. SessionStart
+    never ran in this workspace) OR when it can't be parsed. The skill
+    router treats None as "no filtering", so a missing profile degrades
+    gracefully to the pre-item-6 behaviour.
+    """
+    raw = memory_loader.get_tier2_entry("project-profile.md")
+    if not raw:
+        return None
+    # Reuse the SKILL.md frontmatter parser — the profile's YAML header
+    # is the same `---`-delimited shape.
+    profile = skill_loader._parse_frontmatter(raw)
+    return profile or None
+
+
 @mcp.tool()
 def harness_list_skills(agent_name: str) -> str:
     """Return the catalog of skills the calling agent may load.
@@ -1116,17 +1134,31 @@ def harness_list_skills(agent_name: str) -> str:
     the catalog into the system prompt so the LLM knows which skill_ids it
     may request via harness_get_skill / harness_get_reference mid-response.
 
-    Returns JSON { "skills": [{"skill_id", "title"}, ...], "agent_name": ... }.
-    Skills outside the caller's allowlist are filtered out — the catalog is
-    the only route by which an agent discovers skills it can pull.
+    Two filters compose, in order:
+      1. The agent allowlist (AGENT_SKILL_ALLOWLIST) — the security
+         firewall (HI #3). Never relaxed.
+      2. Workspace applicability (MVP item 6 / Track D.3) — the skill
+         router drops skills whose `applies-to` declaration doesn't match
+         the project profile, so the model never sees a Python skill in a
+         Rust repo. UX optimisation, not security; degrades to a no-op
+         when no profile is available.
+
+    Returns JSON { "skills": [{"skill_id", "title"}, ...], "agent_name": ...,
+    "filtered_by_profile": bool }.
     """
     key = agent_name.lower().strip()
     allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
-    catalog: list[dict[str, str]] = []
-    for meta in skill_loader.list_skills():
-        if meta.skill_id in allowed:
-            catalog.append({"skill_id": meta.skill_id, "title": meta.title})
-    return json.dumps({"agent_name": key, "skills": catalog})
+    # Filter 1 — allowlist.
+    metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
+    # Filter 2 — workspace applicability.
+    profile = _load_project_profile()
+    applicable = skill_router.applicable_skills(profile, metas)
+    catalog = [{"skill_id": m.skill_id, "title": m.title} for m in applicable]
+    return json.dumps({
+        "agent_name": key,
+        "skills": catalog,
+        "filtered_by_profile": profile is not None,
+    })
 
 
 @mcp.tool()
