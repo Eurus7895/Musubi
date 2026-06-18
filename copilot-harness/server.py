@@ -1996,6 +1996,87 @@ def harness_run_hook(event: str, payload: str = "") -> str:
     return json.dumps({"event": event, "results": results})
 
 
+# ── Filesystem + command tools (substrate for any MCP client) ────────────────
+#
+# These let butler / Claude Code / Cursor / any custom MCP driver actually
+# edit files and run commands through the harness, instead of relying on
+# the client to bring its own. Workspace-scoped, no LLM calls, audit on
+# stderr. Implementations live in `tools/fs.py`.
+
+
+@mcp.tool()
+def harness_read_file(path: str) -> str:
+    """Read a text file from the workspace.
+
+    `path` may be workspace-relative or absolute; absolute paths must
+    resolve inside the workspace root. Reads up to 5 MB of UTF-8 text.
+    Returns JSON {"status":"ok","content":...,"bytes":...} or
+    {"status":"error","error":...}.
+    """
+    from tools import fs
+    return json.dumps(fs.read_file(path))
+
+
+@mcp.tool()
+def harness_write_file(
+    path: str,
+    content: str,
+    create_parents: bool = True,
+) -> str:
+    """Write `content` to `path`, creating or replacing the file.
+
+    Parent directories are created by default. Pass create_parents=False
+    to require the parent to exist already. Workspace-scoped; refuses
+    to write outside the workspace root.
+    Returns JSON {"status":"ok","bytes_written":N} or {"status":"error",...}.
+    """
+    from tools import fs
+    return json.dumps(fs.write_file(path, content, create_parents=create_parents))
+
+
+@mcp.tool()
+def harness_edit_file(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """Replace the first occurrence of `old_string` in `path` with `new_string`.
+
+    Default semantics: the match must be UNIQUE in the file. If
+    `old_string` occurs more than once, the tool returns an error so
+    the caller can add surrounding context. Pass replace_all=true to
+    replace every occurrence; the response carries the count.
+    Returns JSON {"status":"ok","replacements":N} or {"status":"error",...}.
+    """
+    from tools import fs
+    return json.dumps(fs.edit_file(
+        path, old_string, new_string, replace_all=replace_all,
+    ))
+
+
+@mcp.tool()
+def harness_run_command(
+    command: str,
+    timeout_seconds: int = 60,
+    cwd: str | None = None,
+) -> str:
+    """Run a shell command from the workspace root.
+
+    cwd is optional; when set, it's resolved against the workspace root
+    and rejected if it escapes. Shell features (pipes, &&, env vars)
+    work via `sh -c`. Output is capped at ~1M chars (head + tail
+    preserved on overflow). No "dangerous command" detection — the
+    user is in control of what the model can do.
+    Returns JSON {"status":"ok","stdout":...,"stderr":...,"exit_code":N}.
+    On timeout, status="error" with any partial stdout/stderr included.
+    """
+    from tools import fs
+    return json.dumps(fs.run_command(
+        command, timeout_seconds=timeout_seconds, cwd=cwd,
+    ))
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def serve() -> None:
