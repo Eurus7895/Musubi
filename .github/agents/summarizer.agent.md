@@ -25,6 +25,9 @@ lm_tools: []
 sees:
   - brief
 spawn_allowlist: []
+harness-tier: ephemeral
+expires-when: models summarise concisely without role injection
+cost-lever: deletes the summarizer role
 ---
 
 ## Role

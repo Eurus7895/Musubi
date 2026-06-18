@@ -1,6 +1,8 @@
 ---
 name: reviewer-aux
 description: Procedure for the ReviewerAux sub-agent role — single-file checklist review on behalf of the main reviewer or orchestrator. Pushed by the harness when a reviewer-aux is spawned; never pulled on demand.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

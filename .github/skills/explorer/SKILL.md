@@ -1,6 +1,8 @@
 ---
 name: explorer
 description: Procedure for the Explorer sub-agent role — read-only codebase scans on behalf of a main agent. Pushed by the harness when an explorer is spawned; never pulled on demand.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

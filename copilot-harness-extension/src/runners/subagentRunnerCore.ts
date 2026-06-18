@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models gain reliable native multi-agent tool-use
+ * cost-lever: deletes the sub-agent core
+ * (what: Sub-agent runner pure logic.)
+ */
+/**
  * runners/subagentRunnerCore.ts — pure helpers for the pipeline-side
  * sub-agent runners (Phase G.1). No vscode imports so node:test can
  * exercise them without a runtime; the vscode-using shell lives in

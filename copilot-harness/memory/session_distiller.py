@@ -1,5 +1,11 @@
 """Session distiller — extracts Tier 2 memory entries from completed sessions.
 
+harness-tier: ephemeral
+expires-when: the 4-stage pipeline is dissolved
+cost-lever: deletes ~250 lines tied to the planner-designer-coder-reviewer shape
+(what: Pipeline-stage session distillation into failure-patterns.md.)
+
+
 Reads structured review output and fail_patterns from the DB, then appends
 distilled failure-pattern entries to .github/memory/failure-patterns.md.
 

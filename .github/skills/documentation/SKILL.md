@@ -1,6 +1,8 @@
 ---
 name: documentation
 description: Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats. Use when the user asks for a diagram, documentation, architecture/sequence diagram, flowchart, or a PDF/Word/docx document.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

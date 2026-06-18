@@ -3,6 +3,8 @@ name: docs-writing
 description: Write or update technical documentation — READMEs, design docs, ADRs, API references, user guides. Use when the user asks for documentation, prose explanation, or to update existing docs. NOT for code-level docstrings (the code agent handles those).
 applies-to:
   doc_tools: [sphinx, mkdocs, mdbook]
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

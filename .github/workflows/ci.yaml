@@ -63,6 +63,15 @@ jobs:
         continue-on-error: true
         run: ruff check .
 
+      - name: Lint — harness-tier tags (MVP item 7 / HI #9)
+        # Every in-scope file (substrate code, agent.md, SKILL.md,
+        # pipeline.yaml) must declare `harness-tier:`. Ephemeral files
+        # must also declare `expires-when:` + `cost-lever:`.
+        # Hard-fail: this is the self-enforcement mechanism for HI #9.
+        # Run from repo root, not the harness working-directory.
+        working-directory: ${{ github.workspace }}
+        run: python scripts/check_harness_tier.py
+
       - name: Show env (debug)
         # Surfaces python version + interpreter path + key envs in the
         # log so a future CI failure can be reproduced locally without

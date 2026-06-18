@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models summarise concisely without role injection
+ * cost-lever: deletes the summarizer core
+ * (what: Pure summarisation loop logic.)
+ */
+/**
  * runners/summarizerCore.ts — pure helpers for the summarizer sub-agent
  * runner (Phase C.2). No vscode imports so node:test can exercise them
  * without a runtime. The vscode-using shell lives in summarizerRunner.ts.

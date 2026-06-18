@@ -3,6 +3,8 @@ name: python
 description: Idiomatic Python 3.11+ patterns, project setup, and common implementation procedures. Use when the user is writing Python — pyproject, dataclasses, async, type hints, pytest, ruff, or mypy.
 applies-to:
   languages: [python]
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

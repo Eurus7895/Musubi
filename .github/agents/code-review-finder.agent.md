@@ -14,6 +14,9 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # comes from the reviewer-aux fan-out at the synthesis stage, not from
 # the finder itself reading the workspace.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: models do cross-cutting review natively
+cost-lever: deletes the finder + per-file-review wiring
 ---
 
 ## Role

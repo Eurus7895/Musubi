@@ -1,6 +1,8 @@
 ---
 name: database-patterns
 description: SQLite schema design, query patterns, and state management for append-only session storage. Use when the user is working with a database, schema, SQL, SQLite, queries, migrations, or state storage.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

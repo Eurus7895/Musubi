@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models reliably drive multi-turn tool-use without compensation
+ * cost-lever: deletes the orchestrator-core compensation layer
+ * (what: Pure orchestrator loop logic (cycle guards, salvage).)
+ */
+/**
  * runners/orchestratorCore.ts — Orchestrator helpers (Phase B.2 + C.2).
  *
  * Pure helpers (no vscode imports) so they can be unit-tested with

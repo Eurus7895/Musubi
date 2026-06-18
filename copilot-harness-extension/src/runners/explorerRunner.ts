@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models do reliable native exploration
+ * cost-lever: deletes the explorer runner + spawn machinery
+ * (what: Sub-agent runner for codebase-scan role.)
+ */
+/**
  * runners/explorerRunner.ts — read-only workspace-scan sub-agent
  * (Phase G.1). Thin role wrapper over the generic shell in
  * subagentRunner.ts. The role config (tools, max_turns, wall-clock,

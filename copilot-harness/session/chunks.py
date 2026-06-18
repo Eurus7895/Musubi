@@ -1,5 +1,9 @@
 """Phase G.1.7 — chunked execution by planner task.
 
+harness-tier: substrate
+expires-when: never — Frozen dataclass for per-task design slice.
+
+
 When a designer emits a fan-out design (many modules across multiple
 tasks), the coder's single LLM round-trip blows the output-token cap
 ("Response too long"). This module groups the design's modules by the

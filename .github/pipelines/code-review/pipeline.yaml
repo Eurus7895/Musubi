@@ -1,3 +1,6 @@
+# harness-tier: ephemeral
+# expires-when: the 4-stage pipeline is dissolved (gated on item-10 eval data)
+# cost-lever: deletes the whole pipeline runtime + its agent set
 name: code-review
 description: Review a branch or PR — scope → findings → synthesis
 version: 1.0.0

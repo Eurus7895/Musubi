@@ -1,3 +1,9 @@
+/**
+ * harness-tier: ephemeral
+ * expires-when: models reliably drive multi-turn tool-use without compensation
+ * cost-lever: deletes the orchestrator runner; the butler.py path becomes primary
+ * (what: Tests for orchestrator.ts.)
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";

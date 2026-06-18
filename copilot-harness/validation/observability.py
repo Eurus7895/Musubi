@@ -1,5 +1,9 @@
 """Phase G.3 — observability stats helpers.
 
+harness-tier: substrate
+expires-when: never — Substrate-side observability writes.
+
+
 Pure-Python aggregation over the `pipeline_runs` rows produced by the
 runner. The harness never streams these; they're computed lazily when
 `harness_pipeline_stats` is called. Decisions:

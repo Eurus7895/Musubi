@@ -1,5 +1,9 @@
 """Memory injection — loads Tier 1 and Tier 2 memory files into agent context.
 
+harness-tier: substrate
+expires-when: never — MEMORY.md + tier-2 read path.
+
+
 Tier 1 — MEMORY.md (~200 tokens, always injected by harness_read_stage)
     Pointers index: what decisions were made, where Tier 2 knowledge lives.
 

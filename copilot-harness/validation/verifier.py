@@ -1,5 +1,9 @@
 """Output validation — schema checks, secrets scan, cross-stage contracts.
 
+harness-tier: substrate
+expires-when: never — Deterministic output verification.
+
+
 Zero LLM calls. All checks are regex / structural Python.
 
 Public API:

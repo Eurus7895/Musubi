@@ -1,5 +1,9 @@
 """MCP stdio server — exposes all harness_* tools to Copilot agents.
 
+harness-tier: substrate
+expires-when: never — MCP stdio server — the harness's IO surface to any client.
+
+
 Zero LLM calls. Pure routing: MCP tool call → harness component → structured result.
 
 Tools:

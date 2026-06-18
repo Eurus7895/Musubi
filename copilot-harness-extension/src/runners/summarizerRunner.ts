@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models summarise concisely without role injection
+ * cost-lever: deletes the summarizer runner
+ * (what: Sub-agent runner for summarisation role.)
+ */
+/**
  * runners/summarizerRunner.ts — first extension-side sub-agent runner
  * (Phase C.2). Drives the 90% reactive-compaction branch of the
  * orchestrator: spawn → fetch firewalled context → single LM round-trip

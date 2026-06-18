@@ -19,6 +19,9 @@ disallowedTools: ["Write", "Edit", "Bash"]
 #   - any pre-spawned sub-agent summaries
 # and emits its JSON design in a single cycle.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: the 4-stage pipeline is dissolved
+cost-lever: deletes the designer role + .agent.md
 ---
 
 ## Role

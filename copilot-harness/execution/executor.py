@@ -1,5 +1,9 @@
 """Execution layer — runs ruff, mypy, and pytest as subprocesses.
 
+harness-tier: substrate
+expires-when: never — Lint / typecheck / test runners; no LLM calls.
+
+
 Zero LLM calls. Each function returns a structured result dict.
 Called by server.py harness_run_lint / harness_run_typecheck / harness_run_tests.
 """

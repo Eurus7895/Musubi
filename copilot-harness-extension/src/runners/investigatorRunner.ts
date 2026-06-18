@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models do reliable native investigation
+ * cost-lever: deletes the investigator runner + spawn machinery
+ * (what: Sub-agent runner for diagnostic role.)
+ */
+/**
  * runners/investigatorRunner.ts — read + diagnostic-shell sub-agent
  * (Phase G.1). Thin role wrapper over the generic shell in
  * subagentRunner.ts. The role config lives in
