@@ -1,5 +1,11 @@
 """Reviewer → Coder correction loop.
 
+harness-tier: ephemeral
+expires-when: models pass verifier checks on first try at 95th-percentile rate
+cost-lever: deletes the retry orchestrator + validation_feedback pipeline
+(what: Validation-retry loop.)
+
+
 Max 3 attempts before escalation. Zero LLM calls.
 
 Public API:

@@ -1,3 +1,9 @@
+/**
+ * harness-tier: ephemeral
+ * expires-when: models summarise concisely without role injection
+ * cost-lever: deletes the summarizer runner
+ * (what: Tests for summarizerRunner.ts.)
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

@@ -1,5 +1,9 @@
 """Sub-agent audit log (Phase A.3).
 
+harness-tier: substrate
+expires-when: never — No-silent-sub-agents audit (HI #8).
+
+
 Every spawn and every terminal completion writes one row to
 `storage/audit.db`'s `subagent_audit` table. This is the durable
 "no silent sub agents" evidence the orchestrator-pivot invariant

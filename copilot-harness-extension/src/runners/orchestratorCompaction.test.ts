@@ -1,3 +1,9 @@
+/**
+ * harness-tier: ephemeral
+ * expires-when: models reliably drive multi-turn tool-use without compensation
+ * cost-lever: deletes the orchestrator-core compensation layer
+ * (what: Tests for orchestratorCore.ts.)
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

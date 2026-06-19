@@ -25,6 +25,9 @@ lm_tools:
   - grep_search
   - copilot_findFiles
   - file_search
+harness-tier: ephemeral
+expires-when: models do reliable native exploration
+cost-lever: deletes the explorer role + spawn machinery
 ---
 
 ## Role

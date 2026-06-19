@@ -1,5 +1,9 @@
 """Conversation message log (Phase C.1).
 
+harness-tier: substrate
+expires-when: never — Conversation-message append-only store.
+
+
 The orchestrator runner replays prior chat turns on every user message
 (locked decision: replay-on-each-turn). This module is the storage seam:
 the runner appends `user` / `assistant` / `tool` rows as they happen and

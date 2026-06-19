@@ -1,6 +1,8 @@
 ---
 name: api-design
 description: Designs REST APIs and MCP tool interfaces with consistent conventions. Use when the user is designing an API, endpoint, REST interface, MCP tool, or tool schema.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

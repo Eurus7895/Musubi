@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: the sub-agent split is dissolved
+ * cost-lever: deletes the per-stage budget tracker
+ * (what: Per-stage sub-agent spawn budget enforcer.)
+ */
+/**
  * runners/pipelineSubagentBudget.ts — per-stage-attempt sub-agent spawn
  * budget (Phase G.1). vscode-free so node:test can exercise it directly.
  *

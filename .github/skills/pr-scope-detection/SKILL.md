@@ -1,6 +1,8 @@
 ---
 name: pr-scope-detection
 description: Classify the files in a PR/branch diff by kind (source, test, config, docs, generated, lockfile) and priority for review. Use when triaging which files in a change deserve careful review effort.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

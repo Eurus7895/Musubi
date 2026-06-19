@@ -13,6 +13,9 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # cross-cutting findings + reviewer-aux per-file verdicts (all in
 # context); it doesn't read the workspace directly.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: models aggregate review natively
+cost-lever: deletes the synthesizer + aggregate logic
 ---
 
 ## Role

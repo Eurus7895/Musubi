@@ -1,5 +1,11 @@
 """Sub-session lifecycle (Phase A.1).
 
+harness-tier: ephemeral
+expires-when: models gain reliable native multi-agent tool-use
+cost-lever: deletes ~400 lines of lifecycle + cascade-abandon machinery
+(what: Sub-agent split lifecycle.)
+
+
 A *sub-session* is the row for an agent-spawned-by-another-agent invocation —
 the orchestrator (or a pipeline stage that opts in) calls
 `harness_spawn_subagent`, the harness records the spawn here, the extension

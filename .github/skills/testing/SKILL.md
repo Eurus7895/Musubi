@@ -4,6 +4,8 @@ description: pytest-based testing procedures for harness components — unit, in
 applies-to:
   languages: [python]
   test_frameworks: [pytest]
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

@@ -29,6 +29,9 @@ lm_tools:
   - get_errors
   - copilot_runInTerminal
   - run_in_terminal
+harness-tier: ephemeral
+expires-when: models do reliable native investigation
+cost-lever: deletes the investigator role + spawn machinery
 ---
 
 ## Role

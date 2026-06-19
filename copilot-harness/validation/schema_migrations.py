@@ -1,5 +1,9 @@
 """Phase G.2 — schema migration registry.
 
+harness-tier: substrate
+expires-when: never — Audit-DB schema versioning.
+
+
 When `validation/verifier.py` evolves an agent's output schema, older
 `stage_outputs` rows in the DB still have the prior shape. This module
 holds the migration functions that up-convert v_n → v_n+1 on read.

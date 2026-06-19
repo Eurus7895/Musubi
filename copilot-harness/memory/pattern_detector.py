@@ -1,5 +1,9 @@
 """Failure pattern detection — drives self-improvement loop.
 
+harness-tier: substrate
+expires-when: never — Live trigger detection over memory.
+
+
 Detects when the same type of failure recurs across sessions and
 triggers the Skill-Builder to propose a patch to the relevant agent.
 

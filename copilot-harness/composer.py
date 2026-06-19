@@ -1,5 +1,9 @@
 """Composer — pipeline.yaml as the source of declarative composition truth.
 
+harness-tier: substrate
+expires-when: never — Prompt assembly from .agent.md + skills; pure catalog reader.
+
+
 Loads `.github/pipelines/<name>/pipeline.yaml` and resolves per-(stage, agent)
 injection lists from it. Replaces the old `_STAGE_SKILL_MAP` static dict that
 duplicated what each pipeline.yaml's `agents[].skill` and `evaluator.skill`

@@ -1,5 +1,9 @@
 """Sub-agent context firewall (Phase A.2).
 
+harness-tier: substrate
+expires-when: never — Frozen sub-agent context (HI #3 firewall).
+
+
 Sub-agents exist to do focused lookup work and report a tight summary back
 to their parent. They must NOT see parent session state, memory, sibling
 sub-agents, or anything beyond:

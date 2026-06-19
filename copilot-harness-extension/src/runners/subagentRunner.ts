@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models gain reliable native multi-agent tool-use
+ * cost-lever: deletes the sub-agent runner layer
+ * (what: Sub-agent runner dispatcher.)
+ */
+/**
  * runners/subagentRunner.ts — vscode shell that drives a pipeline-side
  * sub-agent's LM session (Phase G.1).
  *

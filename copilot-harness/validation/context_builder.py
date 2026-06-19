@@ -1,5 +1,9 @@
 """Context firewall — each agent receives only what its role requires.
 
+harness-tier: substrate
+expires-when: never — Skill firewall + stage permissions (HI #3).
+
+
 Two public APIs:
     build_context(session_id, agent_name) → dict
         Used by server.py to build the full allowed context for an agent

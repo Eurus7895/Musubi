@@ -13,6 +13,9 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # context); it does not read workspace files directly. Exploration via
 # sub-agents isn't applicable here — the work is diff-parsing.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: models triage PR scope natively
+cost-lever: deletes the scoper + its allowlist
 ---
 
 ## Role

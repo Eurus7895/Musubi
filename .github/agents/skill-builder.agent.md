@@ -25,6 +25,9 @@ lm_tools:
   - copilot_insertEdit
   - insert_edit_into_file
   - create_file
+harness-tier: ephemeral
+expires-when: skill authoring is fully automatic from failure-patterns
+cost-lever: deletes the skill-builder role + its tooling
 ---
 
 ## Role

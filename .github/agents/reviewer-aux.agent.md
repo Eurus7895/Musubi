@@ -18,6 +18,9 @@ disallowedTools: ["Write", "Edit", "Bash", "Grep", "Glob"]
 lm_tools:
   - copilot_readFile
   - read_file
+harness-tier: ephemeral
+expires-when: models do reliable per-file review natively
+cost-lever: deletes the reviewer-aux role
 ---
 
 ## Role

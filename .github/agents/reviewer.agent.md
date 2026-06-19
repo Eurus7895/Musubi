@@ -18,6 +18,9 @@ disallowedTools: ["Write", "Edit", "Bash"]
 #   - any pre-spawned reviewer-aux per-file verdicts
 # and emits its pass / fail JSON verdict in a single cycle.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: the 4-stage pipeline is dissolved
+cost-lever: deletes the reviewer role + .agent.md
 ---
 
 ## Role

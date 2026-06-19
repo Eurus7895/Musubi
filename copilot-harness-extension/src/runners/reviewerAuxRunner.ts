@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models do reliable per-file review natively
+ * cost-lever: deletes the reviewer-aux runner + dispatch
+ * (what: Sub-agent runner for per-file review role.)
+ */
+/**
  * runners/reviewerAuxRunner.ts — per-file checklist review sub-agent
  * (Phase G.1). Thin role wrapper over the generic shell in
  * subagentRunner.ts. The role config lives in

@@ -1,5 +1,9 @@
 """Entry point for the copilot-harness CLI.
 
+harness-tier: substrate
+expires-when: never — MCP-server CLI entrypoint; stable surface.
+
+
 Usage:
     copilot-harness serve     ← start MCP stdio server (used by .vscode/mcp.json)
 """

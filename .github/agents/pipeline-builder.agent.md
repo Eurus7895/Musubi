@@ -28,6 +28,9 @@ lm_tools:
   - copilot_insertEdit
   - insert_edit_into_file
   - create_file
+harness-tier: ephemeral
+expires-when: pipeline.yaml authoring goes away with pipelines
+cost-lever: deletes the pipeline-builder role
 ---
 
 ## Role

@@ -1,3 +1,9 @@
+/**
+ * harness-tier: ephemeral
+ * expires-when: the sub-agent split is dissolved
+ * cost-lever: deletes the per-stage budget tracker
+ * (what: Tests for pipelineSubagentBudget.ts.)
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

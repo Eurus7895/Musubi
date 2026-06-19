@@ -1,5 +1,9 @@
 """Proposed patch applier — validates and applies Skill-Builder patches.
 
+harness-tier: substrate
+expires-when: never — Pure file-system apply of proposed patches.
+
+
 Only Behavior-Rules additions are allowed. Patches that modify tools,
 input/output contracts, metadata, or non-rules sections are rejected.
 

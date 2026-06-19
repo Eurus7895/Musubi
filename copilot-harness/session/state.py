@@ -1,4 +1,9 @@
-"""Append-only session state. All persistence goes through storage/db.py."""
+"""Append-only session state. All persistence goes through storage/db.py.
+
+harness-tier: substrate
+expires-when: never — Session DB ops + status queries.
+
+"""
 
 import json
 import os

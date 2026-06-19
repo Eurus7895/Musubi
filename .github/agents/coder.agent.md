@@ -23,6 +23,9 @@ disallowedTools: []
 # an Output Contract change that accepts edits-via-tool as a deliverable
 # and adds path-scoped enforcement.
 lm_tools: []
+harness-tier: ephemeral
+expires-when: the 4-stage pipeline is dissolved
+cost-lever: deletes the coder role + .agent.md
 ---
 
 ## Role

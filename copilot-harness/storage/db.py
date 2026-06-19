@@ -1,4 +1,9 @@
-"""SQLite CRUD layer. No business logic — just data access."""
+"""SQLite CRUD layer. No business logic — just data access.
+
+harness-tier: substrate
+expires-when: never — Append-only audit substrate; SQLite + WAL.
+
+"""
 
 import json
 import os

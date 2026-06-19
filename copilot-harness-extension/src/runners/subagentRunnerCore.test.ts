@@ -1,3 +1,9 @@
+/**
+ * harness-tier: ephemeral
+ * expires-when: models gain reliable native multi-agent tool-use
+ * cost-lever: deletes the sub-agent core
+ * (what: Tests for subagentRunnerCore.ts.)
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";

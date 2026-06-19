@@ -1,4 +1,10 @@
 /**
+ * harness-tier: ephemeral
+ * expires-when: models reliably drive multi-turn tool-use without compensation
+ * cost-lever: deletes the orchestrator runner; the butler.py path becomes primary
+ * (what: Butler runner wrapping vscode.lm for orchestrator mode.)
+ */
+/**
  * runners/orchestrator.ts — Phase B.2 vscode shell for the orchestrator.
  *
  * The orchestrator holds the persistent chat with the user across turns,

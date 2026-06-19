@@ -1,6 +1,8 @@
 ---
 name: per-file-review
 description: Per-file review checklist for the /code-review pipeline. Use this when reviewing a single file's diff (reviewer-aux fan-out) or doing the cross-cutting pass at the finder stage.
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Purpose

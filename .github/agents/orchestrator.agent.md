@@ -37,6 +37,9 @@ sees:
   - user_message
   - conversation_history
   - memory_tier1
+harness-tier: ephemeral
+expires-when: the model's native multi-turn shape stabilises
+cost-lever: deletes orchestrator.ts compensation
 ---
 
 ## Role

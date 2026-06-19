@@ -3,6 +3,8 @@ name: summarizer
 description: >
   Procedure for the Summarizer sub-agent. Pushed by the harness through
   validation/subagent_context.SUBAGENT_ROLE_SKILLS["summarizer"].
+harness-tier: substrate
+expires-when: never (skills are the catalog the model pulls from)
 ---
 
 # summarizer — procedure
