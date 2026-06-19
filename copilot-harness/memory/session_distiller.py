@@ -146,12 +146,12 @@ def append_pattern(
     agent: str,
     issue: str,
     *,
-    source: str = "orchestrator",
+    source: str = "agent",
     repo_root: Path | None = None,
 ) -> str | None:
     """Append a single (agent, issue) row to failure-patterns.md.
 
-    Phase C.2 — orchestrator-driven entry point for distillation triggers
+    Phase C.2 — agent-driven entry point for distillation triggers
     (reviewer fail, frustration regex match). Mirrors the dedup +
     formatting rules of `distill_session` but operates on one issue at a
     time, without needing a session_id or a review-stage row.

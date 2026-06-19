@@ -1,16 +1,16 @@
-"""Butler CLI — drive the harness MCP server via a direct LLM API.
+"""Agent CLI — drive the harness MCP server via a direct LLM API.
 
 harness-tier: substrate
-expires-when: never — the butler is the model's native mode (per
+expires-when: never — the agent is the model's native mode (per
   CLAUDE.md), and this is its vendor-agnostic Python entry point.
   Replaces the Copilot-Chat-only access path with one that works
   against any LLM whose Python SDK exposes a tool-use API.
 
 Usage:
-    agent-butler "your task"                      # vendor auto-detected from env
-    agent-butler "your task" --vendor anthropic
-    agent-butler "your task" --vendor openai --model gpt-5-mini
-    python -m butler.run "your task"              # equivalent
+    agent-agent "your task"                      # vendor auto-detected from env
+    agent-agent "your task" --vendor anthropic
+    agent-agent "your task" --vendor openai --model gpt-5-mini
+    python -m agent.run "your task"              # equivalent
 
 Env vars:
     ANTHROPIC_API_KEY   used by the anthropic vendor
@@ -33,7 +33,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from butler.vendors import LMRouter, build_vendor
+from agent.vendors import LMRouter, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
 
@@ -41,7 +41,7 @@ DEFAULT_MAX_CYCLES = 16
 # ── Public entry ────────────────────────────────────────────────────────────
 
 
-async def run_butler(
+async def run_agent(
     task: str,
     vendor: LMRouter,
     harness_dir: Path,
@@ -49,7 +49,7 @@ async def run_butler(
     max_cycles: int = DEFAULT_MAX_CYCLES,
     log: Any = sys.stderr,
 ) -> str:
-    """Drive one butler turn end-to-end. Returns the final assistant text.
+    """Drive one agent turn end-to-end. Returns the final assistant text.
 
     Spawns the harness MCP server, lists its tools, hands them to the
     LLM via `vendor.call`, dispatches whatever tools the model asks
@@ -76,7 +76,7 @@ async def run_butler(
             mcp_tools = (await session.list_tools()).tools
             tools = [_mcp_to_anthropic_tool(t) for t in mcp_tools]
             print(
-                f"[butler] vendor={vendor.name} model={vendor.model} "
+                f"[agent] vendor={vendor.name} model={vendor.model} "
                 f"tools={len(tools)}",
                 file=log,
             )
@@ -101,7 +101,7 @@ async def run_butler(
 
     if final_answer is None:
         raise RuntimeError(
-            f"butler exceeded {max_cycles} cycles without a final answer"
+            f"agent exceeded {max_cycles} cycles without a final answer"
         )
     return final_answer
 
@@ -111,7 +111,7 @@ async def run_butler(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="agent-butler",
+        prog="agent-agent",
         description=(
             "Drive the harness MCP server via a direct LLM API "
             "(no Copilot Chat required)."
@@ -149,13 +149,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         vendor = build_vendor(args.vendor, model=args.model)
     except (RuntimeError, ValueError) as exc:
-        print(f"agent-butler: {exc}", file=sys.stderr)
+        print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
 
     harness_dir = args.harness or _default_harness_dir()
     if not (harness_dir / "server.py").is_file():
         print(
-            f"agent-butler: server.py not found under {harness_dir} "
+            f"agent-agent: server.py not found under {harness_dir} "
             f"(set --harness or HARNESS_ROOT)",
             file=sys.stderr,
         )
@@ -163,13 +163,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         answer = asyncio.run(
-            run_butler(args.task, vendor, harness_dir, max_cycles=args.max_cycles)
+            run_agent(args.task, vendor, harness_dir, max_cycles=args.max_cycles)
         )
     except KeyboardInterrupt:
-        print("\n[butler] cancelled.", file=sys.stderr)
+        print("\n[agent] cancelled.", file=sys.stderr)
         return 130
     except RuntimeError as exc:
-        print(f"agent-butler: {exc}", file=sys.stderr)
+        print(f"agent-agent: {exc}", file=sys.stderr)
         return 1
 
     print(answer)
@@ -185,7 +185,7 @@ def _default_harness_dir() -> Path:
     Preference order:
       1. $HARNESS_ROOT (matches the extension's convention).
       2. The directory containing this very module — works for the
-         installed-wheel case (server.py ships alongside butler/).
+         installed-wheel case (server.py ships alongside agent/).
     """
     env = os.environ.get("HARNESS_ROOT")
     if env:
@@ -217,7 +217,7 @@ async def _dispatch(
         name = tu.get("name", "")
         args = tu.get("input") or {}
         print(
-            f"[butler]   → {name}({_truncate(json.dumps(args), 60)})",
+            f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
             file=log,
         )
         try:
@@ -253,7 +253,7 @@ def _log_cycle(
     tool_uses: list[dict[str, Any]],
     usage: dict[str, Any] | None,
 ) -> None:
-    parts = [f"[butler] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
+    parts = [f"[agent] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
     if usage:
         toks = usage.get("output_tokens") or usage.get("completion_tokens")
         if toks is not None:

@@ -11,12 +11,12 @@ import {
   buildSummarizerSystemPrompt,
   serializeSummarizerBrief,
 } from "./summarizerCore";
-import type { OrchestratorMessage } from "./orchestratorCore";
+import type { AgentMessage } from "./agentCore";
 
 // ── serializeSummarizerBrief ─────────────────────────────────────────────────
 
 test("serializeSummarizerBrief: emits one block per turn with [role] prefix", () => {
-  const turns: OrchestratorMessage[] = [
+  const turns: AgentMessage[] = [
     { role: "user", content: "what is parseCommand?" },
     { role: "assistant", content: "It dispatches based on the first token." },
     { role: "tool", content: '{"tool":"harness_spawn_subagent","result":"{}"}' },
@@ -28,7 +28,7 @@ test("serializeSummarizerBrief: emits one block per turn with [role] prefix", ()
 });
 
 test("serializeSummarizerBrief: drops empty / whitespace-only turns", () => {
-  const turns: OrchestratorMessage[] = [
+  const turns: AgentMessage[] = [
     { role: "user", content: "real question" },
     { role: "assistant", content: "   " },
     { role: "user", content: "" },

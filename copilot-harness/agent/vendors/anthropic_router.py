@@ -1,4 +1,4 @@
-"""Anthropic Messages API router for the butler.
+"""Anthropic Messages API router for the agent.
 
 harness-tier: substrate
 expires-when: never — the LM-call boundary. Vendor-specific glue only.
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from butler.vendors.base import LMResponse, LMRouter
+from agent.vendors.base import LMResponse, LMRouter
 
 _DEFAULT_MODEL = "claude-haiku-4-5"
 

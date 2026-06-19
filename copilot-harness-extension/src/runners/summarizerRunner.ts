@@ -7,7 +7,7 @@
 /**
  * runners/summarizerRunner.ts — first extension-side sub-agent runner
  * (Phase C.2). Drives the 90% reactive-compaction branch of the
- * orchestrator: spawn → fetch firewalled context → single LM round-trip
+ * agent: spawn → fetch firewalled context → single LM round-trip
  * → complete. The harness verifies the summary (token cap, secrets,
  * injection) on completion; failures fall through to hard truncation
  * upstream.
@@ -29,7 +29,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "../mcpClient";
 import { selectModelForAgent } from "../modelSelector";
-import { type OrchestratorMessage } from "./orchestratorCore";
+import { type AgentMessage } from "./agentCore";
 import {
   buildSummarizerSystemPrompt,
   serializeSummarizerBrief,
@@ -41,7 +41,7 @@ export { buildSummarizerSystemPrompt, serializeSummarizerBrief };
 /** Wall-clock seconds the summarizer is allowed before the harness escalates. */
 const SUMMARIZER_WALL_CLOCK_S = 60;
 const SUMMARIZER_AGENT_NAME = "summarizer";
-const PARENT_AGENT_NAME = "orchestrator";
+const PARENT_AGENT_NAME = "agent";
 
 function loadSummarizerAgentMd(roots: ReadonlyArray<string>): string {
   for (const root of roots) {
@@ -54,7 +54,7 @@ function loadSummarizerAgentMd(roots: ReadonlyArray<string>): string {
 export interface RunSummarizerOptions {
   client: McpClient;
   parentSessionId: string;
-  oldHalf: ReadonlyArray<OrchestratorMessage>;
+  oldHalf: ReadonlyArray<AgentMessage>;
   roots: string[];
   log: (msg: string) => void;
   token: vscode.CancellationToken;

@@ -6,7 +6,7 @@
 CopilotHarness — a Python MCP stdio server. Harness layer for GitHub
 Copilot Chat. Zero LLM calls inside the harness; Copilot Chat is the
 LLM, the harness is the environment. Two modes:
-`/<pipeline-name>` → pipeline; everything else → orchestrator.
+`/<pipeline-name>` → pipeline; everything else → agent.
 
 ## Active Tier 2 Files
 

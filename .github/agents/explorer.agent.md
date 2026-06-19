@@ -4,7 +4,7 @@ version: 1.0.0
 description: >
   Read-only sub-agent that scans the workspace for code references, file
   layouts, or patterns on behalf of a main agent. Spawned via
-  `harness_spawn_subagent` when the orchestrator (or an opted-in pipeline
+  `harness_spawn_subagent` when the agent (or an opted-in pipeline
   stage) needs facts from the codebase without growing its own context
   with raw file dumps. Returns a tight summary + optional structured
   payload; the harness caps the summary at 2000 tokens.

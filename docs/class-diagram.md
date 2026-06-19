@@ -33,7 +33,7 @@ In the Mermaid diagrams, the tag appears as a `note for X "substrate"`
 
 The TS layer is split between substrate primitives (budget enforcement,
 MCP client, telemetry shapes) and ephemeral runtime fixtures
-(TreeDataProvider sidebar surfaces, per-stage spawn budget, butler-side
+(TreeDataProvider sidebar surfaces, per-stage spawn budget, agent-side
 spawn tracker / dedup).
 
 ```mermaid
@@ -232,13 +232,13 @@ classDiagram
         +recordAwait(handleId) void
         +outstanding() string[]
     }
-    note for SpawnTracker "harness-tier: ephemeral · runners/orchestratorCore.ts<br/>expires-when: butler-side spawn dissolves"
+    note for SpawnTracker "harness-tier: ephemeral · runners/agentCore.ts<br/>expires-when: agent-side spawn dissolves"
 
     class TriggerDedup {
         +shouldFire(label) boolean
         +reset() void
     }
-    note for TriggerDedup "harness-tier: ephemeral · runners/orchestratorCore.ts<br/>expires-when: distillation triggers re-shape"
+    note for TriggerDedup "harness-tier: ephemeral · runners/agentCore.ts<br/>expires-when: distillation triggers re-shape"
 
     %% ── relationships ────────────────────────────────────────────
     BudgetEnforcer --> BudgetExhaustedError : throws
@@ -410,8 +410,8 @@ row's file path resolves to a real file.
 | `HarnessPipelinesProvider` | `pipelinesView.ts` | ephemeral | TreeDataProvider for the Pipelines sidebar |
 | `StageSpawnBudget` | `runners/pipelineSubagentBudget.ts` | ephemeral | Per-stage-attempt sub-agent spawn counter |
 | `SubagentBudgetExhausted` | `runners/pipelineSubagentBudget.ts` | ephemeral | Error: spawn cap hit |
-| `SpawnTracker` | `runners/orchestratorCore.ts` | ephemeral | Butler-turn sub-agent spawn registry |
-| `TriggerDedup` | `runners/orchestratorCore.ts` | ephemeral | Per-turn duplicate-trigger guard |
+| `SpawnTracker` | `runners/agentCore.ts` | ephemeral | Agent-turn sub-agent spawn registry |
+| `TriggerDedup` | `runners/agentCore.ts` | ephemeral | Per-turn duplicate-trigger guard |
 
 ### Python
 

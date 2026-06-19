@@ -6,7 +6,7 @@ expires-when: never — No-silent-sub-agents audit (HI #8).
 
 Every spawn and every terminal completion writes one row to
 `storage/audit.db`'s `subagent_audit` table. This is the durable
-"no silent sub agents" evidence the orchestrator-pivot invariant
+"no silent sub agents" evidence the agent-pivot invariant
 requires — a sub-agent run is provable after the fact even if the
 extension's chat marker scrolls off-screen or the user reloads the
 window.

@@ -1,7 +1,7 @@
 ---
 name: pipeline-builder
 description: Scaffold a NEW CopilotHarness pipeline from a brief — single composite agent
-action: agent
+action: one-shot
 agent: pipeline-builder
 ---
 

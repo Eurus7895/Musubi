@@ -40,7 +40,7 @@ def test_feature_dev_designer_no_spawns() -> None:
 
 def test_back_compat_no_pipeline_returns_firewall() -> None:
     """The pre-Phase-H call signature: pipeline_name omitted → firewall
-    verbatim. Orchestrator paths + legacy callers still work."""
+    verbatim. Agent paths + legacy callers still work."""
     assert p.list_subagent_roles("coder") == ["explorer", "investigator"]
     assert p.list_subagent_roles("reviewer") == ["reviewer-aux"]
 
@@ -58,11 +58,11 @@ def test_check_subagent_allowed_unknown_pipeline_is_empty() -> None:
     assert p.list_subagent_roles("coder", "ghost-pipeline") == []
 
 
-def test_orchestrator_ignores_pipeline_arg() -> None:
-    """Orchestrator has no pipeline.yaml. Passing a pipeline_name doesn't
+def test_agent_ignores_pipeline_arg() -> None:
+    """Agent has no pipeline.yaml. Passing a pipeline_name doesn't
     narrow its firewall entry."""
-    orch = sorted(p.list_subagent_roles("orchestrator"))
-    orch_with_pipe = sorted(p.list_subagent_roles("orchestrator", "feature-dev"))
+    orch = sorted(p.list_subagent_roles("agent"))
+    orch_with_pipe = sorted(p.list_subagent_roles("agent", "feature-dev"))
     assert orch == orch_with_pipe
     assert "explorer" in orch
     assert "planner" in orch  # ad-hoc pipeline roles still spawnable

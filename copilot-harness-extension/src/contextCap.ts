@@ -26,12 +26,12 @@
 
 import * as vscode from "vscode";
 import { resolvePipelineContextCap } from "./contextCapCore";
-import { DEFAULT_CONTEXT_CAP, MODEL_CONTEXT_TOKENS } from "./runners/orchestratorCore";
+import { DEFAULT_CONTEXT_CAP, MODEL_CONTEXT_TOKENS } from "./runners/agentCore";
 
 export interface ResolveContextCapOptions {
   /**
-   * Pipeline name when running pipeline mode. Omit for orchestrator
-   * turns — the orchestrator isn't a pipeline and only consults the
+   * Pipeline name when running pipeline mode. Omit for agent
+   * turns — the agent isn't a pipeline and only consults the
    * setting + default.
    */
   pipelineName?: string;

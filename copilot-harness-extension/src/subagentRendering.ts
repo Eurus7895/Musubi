@@ -4,7 +4,7 @@
  * Two responsibilities:
  *
  *   1. Pure formatters that turn an audit row into a one-line chat marker.
- *      Kept side-effect-free so the orchestrator runner (Phase B) and the
+ *      Kept side-effect-free so the agent runner (Phase B) and the
  *      pipeline runner can render markers however they want.
  *
  *   2. SubagentEventTracker — polls `harness_query_subagent_events` and

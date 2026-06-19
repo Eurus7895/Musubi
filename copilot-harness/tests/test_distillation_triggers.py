@@ -180,18 +180,18 @@ def test_delete_subsessions_prunes_terminal_only(state_db: Path) -> None:
     parent = state.create_session("parent")
     # One running, one done, one abandoned.
     h_running = sub_sessions.spawn(
-        parent_session_id=parent, parent_agent_name="orchestrator",
+        parent_session_id=parent, parent_agent_name="agent",
         role="explorer", brief="b1", allowed_tools=["Read"],
         max_turns=4, per_turn_timeout_s=10, wall_clock_timeout_s=60,
     )
     h_done = sub_sessions.spawn(
-        parent_session_id=parent, parent_agent_name="orchestrator",
+        parent_session_id=parent, parent_agent_name="agent",
         role="explorer", brief="b2", allowed_tools=["Read"],
         max_turns=4, per_turn_timeout_s=10, wall_clock_timeout_s=60,
     )
     sub_sessions.complete(h_done, summary="done summary", status="done", turns=1)
     h_abandoned = sub_sessions.spawn(
-        parent_session_id=parent, parent_agent_name="orchestrator",
+        parent_session_id=parent, parent_agent_name="agent",
         role="explorer", brief="b3", allowed_tools=["Read"],
         max_turns=4, per_turn_timeout_s=10, wall_clock_timeout_s=60,
     )
@@ -210,7 +210,7 @@ def test_delete_subsessions_prunes_terminal_only(state_db: Path) -> None:
 def test_delete_subsessions_age_gates(state_db: Path) -> None:
     parent = state.create_session("parent")
     h = sub_sessions.spawn(
-        parent_session_id=parent, parent_agent_name="orchestrator",
+        parent_session_id=parent, parent_agent_name="agent",
         role="explorer", brief="b", allowed_tools=["Read"],
         max_turns=4, per_turn_timeout_s=10, wall_clock_timeout_s=60,
     )

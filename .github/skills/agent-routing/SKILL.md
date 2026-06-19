@@ -1,6 +1,6 @@
 ---
-name: orchestrator-routing
-description: Routing rules for the Orchestrator — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the orchestrator's inject_skills frontmatter.
+name: agent-routing
+description: Routing rules for the Agent — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the agent's inject_skills frontmatter.
 harness-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---

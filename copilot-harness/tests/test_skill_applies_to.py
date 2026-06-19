@@ -176,7 +176,7 @@ def test_real_universal_skills_have_no_applies_to() -> None:
         "investigator",
         "reviewer-aux",
         "summarizer",
-        "orchestrator-routing",
+        "agent-routing",
         "code-review",
         "per-file-review",
     ]

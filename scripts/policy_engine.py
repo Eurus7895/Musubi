@@ -14,7 +14,7 @@ Rules:
     `pipeline.yaml::generator.agents[].spawns` (and `evaluator.spawns`)
     field. When `pipeline_name` is passed, the effective set is
     `pipeline.yaml's spawns ∩ MAIN_SUBAGENT_ALLOWLIST[main]`. When
-    `pipeline_name` is None (orchestrator path, or callers without a
+    `pipeline_name` is None (agent path, or callers without a
     pipeline context), the firewall is returned directly.
   - The sub-agent's effective tools are
     `SUBAGENT_POLICIES[role] ∩ main's tool allow-list`. Unknown role
@@ -60,7 +60,7 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     "investigator": ["Read", "View", "Grep", "Glob", "Bash"],
     "reviewer-aux": ["Read", "View"],
     # Phase B.1 — pipeline roles spawnable as ad-hoc sub-agents by the
-    # orchestrator. Tool sets mirror PIPELINE_POLICIES["feature-dev"] so
+    # agent. Tool sets mirror PIPELINE_POLICIES["feature-dev"] so
     # an ad-hoc spawn cannot exceed what the same role gets inside a
     # pipeline. Kept in sync manually; if PIPELINE_POLICIES changes,
     # update here too.
@@ -77,10 +77,10 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 # each main agent may EVER spawn, across all pipelines. Pipelines narrow
 # further via their `pipeline.yaml::generator.agents[].spawns` field; a
 # pipeline.yaml cannot widen this dict.
-# - "orchestrator" (Phase B.1) may spawn the read-only Phase A roles plus
+# - "agent" (Phase B.1) may spawn the read-only Phase A roles plus
 #   the pipeline roles ad-hoc. It must NOT spawn an entire pipeline —
 #   that is reserved for user-invoked slash commands. Locked decision #4
-#   in docs/roadmap.md. Orchestrator has no pipeline.yaml, so this entry
+#   in docs/roadmap.md. Agent has no pipeline.yaml, so this entry
 #   IS the effective list.
 # - Phase G.1.6: feature-dev's `coder` and `reviewer` stages opt into
 #   read-only sub-agents:
@@ -92,7 +92,7 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 # - planner / designer stay empty in the firewall: even a future pipeline
 #   that declares spawns for them gets dropped to [].
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
-    "orchestrator": [
+    "agent": [
         "explorer", "investigator", "reviewer-aux",
         "planner", "coder", "reviewer",
         "summarizer",
@@ -188,14 +188,14 @@ def _reset_pipeline_spawns_cache() -> None:
 def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[str]:
     """Resolve `main_agent`'s spawn list under `pipeline_name`.
 
-    - main_agent == 'orchestrator' OR pipeline_name is None →
-      firewall entry verbatim (back-compat / orchestrator path).
+    - main_agent == 'agent' OR pipeline_name is None →
+      firewall entry verbatim (back-compat / agent path).
     - else → pipeline.yaml's `spawns:` for that agent ∩ firewall.
       If the pipeline declares no `spawns:` for the agent → [].
     """
     agent = main_agent.lower()
     firewall = MAIN_SUBAGENT_ALLOWLIST.get(agent, [])
-    if agent == "orchestrator" or pipeline_name is None:
+    if agent == "agent" or pipeline_name is None:
         return list(firewall)
     declared = _load_pipeline_spawns(pipeline_name).get(agent)
     if declared is None:
@@ -239,7 +239,7 @@ def list_subagent_roles(
     """Roles that `main_agent` is allowed to spawn under `pipeline_name`.
 
     `pipeline_name=None` returns the firewall verbatim — the back-compat
-    path for the orchestrator and for callers without a pipeline context.
+    path for the agent and for callers without a pipeline context.
     When `pipeline_name` is supplied, the result is the intersection of
     the pipeline.yaml-declared `spawns:` and the firewall (fail-closed:
     pipelines that omit the field get []).
@@ -303,7 +303,7 @@ def subagent_deny_reason(
             f"(fail-closed)."
         )
     effective = _effective_spawn_roles(main_agent, pipeline_name)
-    if pipeline_name and main_agent.lower() != "orchestrator":
+    if pipeline_name and main_agent.lower() != "agent":
         return (
             f"Main agent {main_agent!r} may not spawn role {role!r} under "
             f"pipeline {pipeline_name!r}. "
@@ -323,7 +323,7 @@ def subagent_deny_reason(
 
 _KNOWN_AGENT_NAMES: frozenset[str] = frozenset({
     "planner", "designer", "coder", "reviewer", "skill-builder",
-    "orchestrator", "summarizer",
+    "agent", "summarizer",
     "explorer", "investigator", "reviewer-aux",
     "pipeline-builder",
     # Phase H.1 — /code-review pipeline roles.

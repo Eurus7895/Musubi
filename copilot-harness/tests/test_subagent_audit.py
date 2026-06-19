@@ -46,7 +46,7 @@ def test_record_spawn_persists_all_fields(audit_db: Path) -> None:
     subagent_audit.record_spawn(
         handle_id="h1",
         parent_session_id="p1",
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
         allowed_tools=["Read", "Grep"],
@@ -70,7 +70,7 @@ def test_record_complete_persists_all_fields(audit_db: Path) -> None:
     subagent_audit.record_complete(
         handle_id="h1",
         parent_session_id="p1",
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="investigator",
         brief="run pytest",
         final_status="done",
@@ -98,7 +98,7 @@ def test_record_complete_persists_verification_errors(
     subagent_audit.record_complete(
         handle_id="h2",
         parent_session_id="p1",
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
         final_status="failed",
@@ -119,12 +119,12 @@ def test_record_complete_persists_verification_errors(
 
 def test_query_filters_by_parent_session_id(audit_db: Path) -> None:
     subagent_audit.record_spawn(
-        handle_id="h1", parent_session_id="A", parent_agent_name="orchestrator",
+        handle_id="h1", parent_session_id="A", parent_agent_name="agent",
         role="explorer", brief="x",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
     subagent_audit.record_spawn(
-        handle_id="h2", parent_session_id="B", parent_agent_name="orchestrator",
+        handle_id="h2", parent_session_id="B", parent_agent_name="agent",
         role="explorer", brief="x",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
@@ -137,7 +137,7 @@ def test_query_filters_by_parent_session_id(audit_db: Path) -> None:
 def test_query_filters_by_handle_id(audit_db: Path) -> None:
     for h in ("h1", "h2", "h3"):
         subagent_audit.record_spawn(
-            handle_id=h, parent_session_id="p", parent_agent_name="orchestrator",
+            handle_id=h, parent_session_id="p", parent_agent_name="agent",
             role="explorer", brief="x",
             allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
         )
@@ -147,12 +147,12 @@ def test_query_filters_by_handle_id(audit_db: Path) -> None:
 
 def test_query_orders_by_ts_ascending(audit_db: Path) -> None:
     subagent_audit.record_spawn(
-        handle_id="h1", parent_session_id="p", parent_agent_name="orchestrator",
+        handle_id="h1", parent_session_id="p", parent_agent_name="agent",
         role="explorer", brief="first",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
     subagent_audit.record_complete(
-        handle_id="h1", parent_session_id="p", parent_agent_name="orchestrator",
+        handle_id="h1", parent_session_id="p", parent_agent_name="agent",
         role="explorer", brief="first", final_status="done", escalated=False,
         turns=1, tools_used=None, summary_truncated=False,
         verification_errors=None,
@@ -165,7 +165,7 @@ def test_query_respects_limit(audit_db: Path) -> None:
     for i in range(5):
         subagent_audit.record_spawn(
             handle_id=f"h{i}", parent_session_id="p",
-            parent_agent_name="orchestrator", role="explorer", brief="x",
+            parent_agent_name="agent", role="explorer", brief="x",
             allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
         )
     rows = subagent_audit.query_events(limit=3)
@@ -174,7 +174,7 @@ def test_query_respects_limit(audit_db: Path) -> None:
 
 def test_query_limit_zero_returns_empty(audit_db: Path) -> None:
     subagent_audit.record_spawn(
-        handle_id="h1", parent_session_id="p", parent_agent_name="orchestrator",
+        handle_id="h1", parent_session_id="p", parent_agent_name="agent",
         role="explorer", brief="x",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
@@ -183,14 +183,14 @@ def test_query_limit_zero_returns_empty(audit_db: Path) -> None:
 
 def test_query_filters_by_since_ts(audit_db: Path) -> None:
     subagent_audit.record_spawn(
-        handle_id="h1", parent_session_id="p", parent_agent_name="orchestrator",
+        handle_id="h1", parent_session_id="p", parent_agent_name="agent",
         role="explorer", brief="early",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
     early_rows = subagent_audit.query_events()
     cutoff = early_rows[0]["ts"]
     subagent_audit.record_spawn(
-        handle_id="h2", parent_session_id="p", parent_agent_name="orchestrator",
+        handle_id="h2", parent_session_id="p", parent_agent_name="agent",
         role="explorer", brief="late",
         allowed_tools=None, max_turns=4, wall_clock_timeout_s=60,
     )
@@ -206,7 +206,7 @@ def test_server_spawn_writes_audit_row(
     parent = state.create_session("p")
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
     )
@@ -229,7 +229,7 @@ def test_server_complete_writes_audit_row(
     parent = state.create_session("p")
     spawn_raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
     )
@@ -254,7 +254,7 @@ def test_server_records_escalation_in_audit(
     parent = state.create_session("p")
     spawn_raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
         max_turns=3,  # the cap
@@ -276,7 +276,7 @@ def test_server_records_verification_failure(
     parent = state.create_session("p")
     spawn_raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
     )
@@ -297,7 +297,7 @@ def test_server_records_truncation(audit_db: Path, state_db: Path) -> None:
     parent = state.create_session("p")
     spawn_raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
     )
@@ -330,7 +330,7 @@ def test_no_silent_sub_agents_full_lifecycle(
     ]:
         spawn = json.loads(server.harness_spawn_subagent(
             parent_session_id=parent,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role=role, brief=brief,
         ))
         handles.append(spawn["handle_id"])
@@ -359,7 +359,7 @@ def test_query_tool_returns_events_for_parent(
     parent = state.create_session("p")
     json.loads(server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer", brief="x",
     ))
     raw = server.harness_query_subagent_events(parent_session_id=parent)
@@ -374,12 +374,12 @@ def test_query_tool_filters_by_handle(
     parent = state.create_session("p")
     h1 = json.loads(server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer", brief="a",
     ))["handle_id"]
     json.loads(server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="investigator", brief="b",
     ))
     raw = server.harness_query_subagent_events(handle_id=h1)

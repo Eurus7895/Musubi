@@ -3,7 +3,7 @@
 harness-tier: substrate
 expires-when: never — the harness becomes a complete substrate any
   MCP client can drive: governance + the actual file ops needed to
-  do work. Closes the gap where a non-Copilot client (butler, Claude
+  do work. Closes the gap where a non-Copilot client (agent, Claude
   Code, Cursor, a custom driver) had no way to edit files through
   the harness.
 

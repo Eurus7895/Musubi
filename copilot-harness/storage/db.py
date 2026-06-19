@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS agent_cycles (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_cycles_session
     ON agent_cycles (session_id);
-CREATE TABLE IF NOT EXISTS orchestrator_turns (
+CREATE TABLE IF NOT EXISTS agent_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id              TEXT NOT NULL,
     parent_session_id    TEXT NOT NULL,
@@ -191,10 +191,10 @@ CREATE TABLE IF NOT EXISTS orchestrator_turns (
     total_ms             INTEGER NOT NULL DEFAULT 0,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
-CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_chat
-    ON orchestrator_turns (chat_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_started
-    ON orchestrator_turns (started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_chat
+    ON agent_turns (chat_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_started
+    ON agent_turns (started_at);
 """
 
 def _default_db_path() -> Path:
@@ -918,7 +918,7 @@ def mark_orphan_running_sub_sessions_abandoned(
 
 # ── conversation_messages (Phase C.1) ─────────────────────────────────────
 #
-# Per-chat append-only message log driving orchestrator replay-on-each-turn.
+# Per-chat append-only message log driving agent replay-on-each-turn.
 # Role validation lives in session/conversations.py; this layer is pure SQL.
 
 def insert_conversation_message(
@@ -1220,9 +1220,9 @@ def query_agent_cycles(
     return [dict(r) for r in rows]
 
 
-# ── Phase J follow-up: orchestrator_turns CRUD ─────────────────────────────
+# ── Phase J follow-up: agent_turns CRUD ─────────────────────────────
 
-def insert_orchestrator_turn(
+def insert_agent_turn(
     chat_id: str,
     parent_session_id: str,
     started_at: float,
@@ -1235,13 +1235,13 @@ def insert_orchestrator_turn(
     total_ms: int,
     db_path: Path | None = None,
 ) -> None:
-    """One row per orchestrator turn. Parallel to insert_stage_metric.
-    Caller (TS runner via the harness_record_orchestrator_turn MCP
+    """One row per agent turn. Parallel to insert_stage_metric.
+    Caller (TS runner via the harness_record_agent_turn MCP
     tool) passes the pre-measured wall-clock + token estimates
     collected over all sendRequest cycles of the turn."""
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO orchestrator_turns"
+            "INSERT INTO agent_turns"
             " (chat_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate,"
@@ -1256,15 +1256,15 @@ def insert_orchestrator_turn(
         )
 
 
-def query_orchestrator_turns(
+def query_agent_turns(
     chat_id: str, db_path: Path | None = None, limit: int = 100,
 ) -> list[dict]:
-    """Return orchestrator_turns rows for a chat_id, newest first.
+    """Return agent_turns rows for a chat_id, newest first.
     Limit defaults to 100 — sufficient for sidebar surfacing without
     pulling the entire chat history."""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM orchestrator_turns WHERE chat_id = ?"
+            "SELECT * FROM agent_turns WHERE chat_id = ?"
             " ORDER BY started_at DESC, id DESC LIMIT ?",
             (chat_id, int(limit)),
         ).fetchall()

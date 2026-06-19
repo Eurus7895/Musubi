@@ -33,7 +33,7 @@ def _spawn(
     max_turns: int = 8,
     wall_clock_timeout_s: int = 60,
     per_turn_timeout_s: int = 30,
-    parent_agent_name: str = "orchestrator",
+    parent_agent_name: str = "agent",
     allowed_tools: list[str] | None = None,
 ) -> str:
     return sub_sessions.spawn(
@@ -78,13 +78,13 @@ def test_spawn_persists_all_fields(db: Path, parent_session: str) -> None:
         max_turns=5,
         wall_clock_timeout_s=120,
         per_turn_timeout_s=45,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
     )
     row = sub_sessions.get(h, db_path=db)
     assert row is not None
     assert row["handle_id"] == h
     assert row["parent_session_id"] == parent_session
-    assert row["parent_agent_name"] == "orchestrator"
+    assert row["parent_agent_name"] == "agent"
     assert row["role"] == "investigator"
     assert row["brief"] == "run pytest in tests/api"
     assert row["allowed_tools"] == ["Read", "Bash"]
@@ -101,7 +101,7 @@ def test_spawn_rejects_empty_role(db: Path, parent_session: str) -> None:
     with pytest.raises(ValueError, match="role"):
         sub_sessions.spawn(
             parent_session_id=parent_session,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="   ",
             brief="x",
             db_path=db,
@@ -112,7 +112,7 @@ def test_spawn_rejects_empty_brief(db: Path, parent_session: str) -> None:
     with pytest.raises(ValueError, match="brief"):
         sub_sessions.spawn(
             parent_session_id=parent_session,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="",
             db_path=db,
@@ -123,7 +123,7 @@ def test_spawn_rejects_zero_max_turns(db: Path, parent_session: str) -> None:
     with pytest.raises(ValueError, match="max_turns"):
         sub_sessions.spawn(
             parent_session_id=parent_session,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="x",
             max_turns=0,
@@ -135,7 +135,7 @@ def test_spawn_rejects_zero_timeouts(db: Path, parent_session: str) -> None:
     with pytest.raises(ValueError, match="timeouts"):
         sub_sessions.spawn(
             parent_session_id=parent_session,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="x",
             wall_clock_timeout_s=0,
@@ -395,7 +395,7 @@ def test_mcp_spawn_unknown_role_rejected(mcp_db: Path) -> None:
     parent = state.create_session("p")
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="ghost",
         brief="x",
     )
@@ -437,7 +437,7 @@ def test_mcp_spawn_coder_explorer_allowed(mcp_db: Path) -> None:
 def test_mcp_spawn_unknown_parent_rejected(mcp_db: Path) -> None:
     raw = server.harness_spawn_subagent(
         parent_session_id="no-such-sess",
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
     )
@@ -450,7 +450,7 @@ def test_mcp_spawn_intersection_with_caller_tools(mcp_db: Path) -> None:
     parent = state.create_session("p")
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="investigator",
         brief="run pytest",
         allowed_tools=["Read", "Bash"],  # narrower than role default
@@ -464,7 +464,7 @@ def test_mcp_spawn_disjoint_caller_tools_rejected(mcp_db: Path) -> None:
     parent = state.create_session("p")
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="x",
         allowed_tools=["Write", "Edit"],  # disjoint from explorer's read-only set
@@ -480,7 +480,7 @@ def test_mcp_spawn_then_complete_then_await_returns_summary(
     parent = state.create_session("p")
     spawn_raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
     )
@@ -520,7 +520,7 @@ def test_mcp_await_pending_returns_snapshot_after_max_wait(
     spawn = json.loads(
         server.harness_spawn_subagent(
             parent_session_id=parent,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="x",
             wall_clock_timeout_s=300,
@@ -541,7 +541,7 @@ def test_mcp_await_wall_clock_kill_escalates(
     spawn = json.loads(
         server.harness_spawn_subagent(
             parent_session_id=parent,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="x",
             wall_clock_timeout_s=1,
@@ -568,7 +568,7 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
     spawn = json.loads(
         server.harness_spawn_subagent(
             parent_session_id=parent,
-            parent_agent_name="orchestrator",
+            parent_agent_name="agent",
             role="explorer",
             brief="x",
             max_turns=3,
@@ -587,10 +587,10 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
 
 # ── harness_list_subagents (MCP tool) ───────────────────────────────────────
 
-def test_mcp_list_subagents_for_orchestrator(mcp_db: Path) -> None:
-    raw = server.harness_list_subagents(main_agent_name="orchestrator")
+def test_mcp_list_subagents_for_agent(mcp_db: Path) -> None:
+    raw = server.harness_list_subagents(main_agent_name="agent")
     payload = json.loads(raw)
-    assert payload["main_agent"] == "orchestrator"
+    assert payload["main_agent"] == "agent"
     role_names = {r["role"] for r in payload["roles"]}
     # Phase A.1 roles plus Phase B.1 ad-hoc-spawnable pipeline roles.
     assert role_names >= {

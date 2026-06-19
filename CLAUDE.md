@@ -38,7 +38,7 @@ This operationalises the
 
 | Substrate (invest) | Ephemeral (label + schedule for removal) |
 |---|---|
-| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `orchestrator_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) |
+| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) |
 | `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) |
 | 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
@@ -156,12 +156,10 @@ cd copilot-harness
 pip install -e .
 pytest tests/ -v
 
-# Agent CLI (script still bundled as `agent-butler`; will be renamed in
-# the Phase 2/3 rename — see refactor PRs) — drive the harness via a
-# direct LLM API (no Copilot needed).
+# Agent CLI — drive the harness via a direct LLM API (no Copilot needed).
 # Optional vendor extras: pip install -e ".[anthropic]" or ".[openai]" or ".[all]"
-ANTHROPIC_API_KEY=… agent-butler "your task"
-OPENAI_API_KEY=…    agent-butler "your task" --vendor openai --model gpt-4o-mini
+ANTHROPIC_API_KEY=… agent "your task"
+OPENAI_API_KEY=…    agent "your task" --vendor openai --model gpt-4o-mini
 
 # Per-component checks
 ruff check copilot-harness/

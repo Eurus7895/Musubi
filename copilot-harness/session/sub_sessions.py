@@ -7,7 +7,7 @@ cost-lever: deletes ~400 lines of lifecycle + cascade-abandon machinery
 
 
 A *sub-session* is the row for an agent-spawned-by-another-agent invocation —
-the orchestrator (or a pipeline stage that opts in) calls
+the agent (or a pipeline stage that opts in) calls
 `harness_spawn_subagent`, the harness records the spawn here, the extension
 runs the sub-agent, then the harness records the terminal result.
 

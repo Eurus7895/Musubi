@@ -20,7 +20,7 @@ Per-agent firewall rules:
     coder         → plan + design; reading "review" → fix_instructions only
     reviewer      → code only  (evaluator firewall — no request, plan, design)
     skill-builder → fail patterns only  (no session state, no user code)
-    orchestrator  → memory_tier1 only  (no pipeline state of any kind;
+    agent  → memory_tier1 only  (no pipeline state of any kind;
                     user_message + conversation_history are runner-supplied
                     in Phase B.2 + Phase C, not built here)
 """
@@ -65,18 +65,18 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     "coder":         {"python", "testing", "database-patterns", "api-design"},
     "reviewer":      {"code-review", "testing"},
     "skill-builder": set(),
-    # Phase B.1 — orchestrator. Routing skill is pushed via inject_skills
+    # Phase B.1 — agent. Routing skill is pushed via inject_skills
     # frontmatter; the allowlist entry exists so harness_get_skill /
     # harness_list_skills resolve without policy denial when the runner
     # asks for it by id. Generator-side skills (python, api-design, etc.)
-    # reach the orchestrator only through spawned sub-agents whose
+    # reach the agent only through spawned sub-agents whose
     # allowlists already cover them — see MAIN_SUBAGENT_ALLOWLIST in
     # scripts/policy_engine.py.
     #
     # MVP item 9 — first non-coding skills (docs-writing, research) added
-    # to the orchestrator allowlist so the butler can pull them on demand
+    # to the agent allowlist so the agent can pull them on demand
     # when a user asks "write a design doc" or "how does X work?".
-    "orchestrator": {"orchestrator-routing", "docs-writing", "research"},
+    "agent": {"agent-routing", "docs-writing", "research"},
     # Phase H.1 — /code-review pipeline roles.
     # scoper        triages files; needs the scope-detection skill only.
     # finder        cross-cutting pass; needs per-file-review (its checklist)
@@ -134,13 +134,13 @@ def build_context(
         return _context_reviewer(session_id, db_path)
     if agent == "skill-builder":
         return _context_skill_builder(db_path)
-    if agent == "orchestrator":
-        return _context_orchestrator()
+    if agent == "agent":
+        return _context_agent()
 
     raise ValueError(
         f"Unknown agent {agent_name!r}. "
         "Valid agents: planner, designer, coder, reviewer, skill-builder, "
-        "orchestrator"
+        "agent"
     )
 
 
@@ -189,13 +189,13 @@ def _context_skill_builder(db_path: Path | None) -> dict[str, Any]:
     return {"fail_patterns": patterns}
 
 
-def _context_orchestrator() -> dict[str, Any]:
-    # The orchestrator holds the user-facing chat across turns. The harness
+def _context_agent() -> dict[str, Any]:
+    # The agent holds the user-facing chat across turns. The harness
     # owns Tier-1 memory; user_message + conversation_history are passed by
     # the extension runner at request-build time (Phase B.2 + Phase C) and
     # are deliberately not synthesised here. Pipeline session state
     # (request, plan, design, code, review, fail_patterns) is firewalled —
-    # the orchestrator never spawns a pipeline and must not peek at one.
+    # the agent never spawns a pipeline and must not peek at one.
     return {"memory_tier1": memory_loader.get_memory_context()}
 
 
@@ -208,10 +208,10 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     "coder":         {"plan", "design", "review"},
     "reviewer":      {"code"},
     "skill-builder": set(),
-    # Orchestrator never reads pipeline stages. Pipelines are user-invoked
-    # and run in their own session; the orchestrator must not peek at
+    # Agent never reads pipeline stages. Pipelines are user-invoked
+    # and run in their own session; the agent must not peek at
     # in-flight or completed pipeline state via harness_read_stage.
-    "orchestrator":  set(),
+    "agent":  set(),
     # Phase H.1 — /code-review pipeline roles.
     # scoper        reads the raw request (diff). No prior stage exists.
     # finder        reads scope (and request) for cross-cutting analysis.

@@ -1,7 +1,7 @@
 """Tests for session/conversations.py and the harness_append_message /
 harness_get_conversation MCP tools (Phase C.1).
 
-Storage seam for orchestrator replay-on-each-turn — covers role validation,
+Storage seam for agent replay-on-each-turn — covers role validation,
 token-budgeted newest-first truncation, multi-chat isolation, deterministic
 ordering under timestamp collisions, the UTF-8 invariant from CLAUDE.md, and
 schema migration on a fresh DB.
@@ -251,7 +251,7 @@ def test_mcp_append_rejects_bad_role(
 def test_mcp_append_coerces_dict_content_to_json_string(
     db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When FastMCP/Pydantic delivers content as a dict (the orchestrator
+    """When FastMCP/Pydantic delivers content as a dict (the agent
     tool-result path used to hit this), the entrypoint json.dumps it
     rather than rejecting. The stored row reads back as the JSON string."""
     monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)

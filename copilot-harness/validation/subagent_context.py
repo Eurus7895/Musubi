@@ -54,7 +54,7 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     "explorer":     "explorer",       # .github/skills/explorer/SKILL.md (Phase A.3)
     "investigator": "investigator",   # .github/skills/investigator/SKILL.md (Phase A.3)
     "reviewer-aux": "reviewer-aux",   # .github/skills/reviewer-aux/SKILL.md (Phase A.3)
-    # Phase B.1 — pipeline roles spawnable ad-hoc by the orchestrator. They
+    # Phase B.1 — pipeline roles spawnable ad-hoc by the agent. They
     # carry their procedure in `.github/agents/<role>.agent.md`, not a
     # role-procedure SKILL.md. The Phase B.2 runner injects the agent body
     # at request-build time; the harness pushes None here so no stray

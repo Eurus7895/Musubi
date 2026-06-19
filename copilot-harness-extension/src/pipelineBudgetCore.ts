@@ -32,7 +32,7 @@
  * Token estimation: TS doesn't have a tokenizer; we approximate
  * tokens ≈ chars / 4. Good enough for budget accounting (the error is
  * dwarfed by per-call variance), and matches the estimator the
- * orchestrator already uses for replay budgeting.
+ * agent already uses for replay budgeting.
  */
 
 import * as fs from "fs";
@@ -84,7 +84,7 @@ export function rateFor(family: string): ModelRate {
 
 // ── Token + credit estimation ───────────────────────────────────────────────
 
-/** Char-to-token approximation. Matches estimateTokens in orchestratorCore. */
+/** Char-to-token approximation. Matches estimateTokens in agentCore. */
 export function estimateTokensFromChars(chars: number): number {
   return Math.ceil(chars / 4);
 }

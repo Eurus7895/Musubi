@@ -21,14 +21,14 @@ packages = [
     "execution",
     "storage",
     "workspace",
-    "butler",
-    "butler.vendors",
+    "agent",
+    "agent.vendors",
     "tools",
 ]
 
 [project.scripts]
 copilot-harness = "cli:main"
-agent-butler = "butler.run:main"
+agent = "agent.run:main"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40.0"]

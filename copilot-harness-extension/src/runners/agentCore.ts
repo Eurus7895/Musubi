@@ -1,14 +1,14 @@
 /**
  * harness-tier: ephemeral
  * expires-when: models reliably drive multi-turn tool-use without compensation
- * cost-lever: deletes the orchestrator-core compensation layer
- * (what: Pure orchestrator loop logic (cycle guards, salvage).)
+ * cost-lever: deletes the agent-core compensation layer
+ * (what: Pure agent loop logic (cycle guards, salvage).)
  */
 /**
- * runners/orchestratorCore.ts — Orchestrator helpers (Phase B.2 + C.2).
+ * runners/agentCore.ts — Agent helpers (Phase B.2 + C.2).
  *
  * Pure helpers (no vscode imports) so they can be unit-tested with
- * node:test. The vscode-using shell lives in runners/orchestrator.ts.
+ * node:test. The vscode-using shell lives in runners/agent.ts.
  *
  * What's here:
  *   • Tool definitions (data-only, LanguageModelChatTool-shaped)
@@ -16,7 +16,7 @@
  *   • MCP dispatch from LLM-facing args → MCP-tool args
  *   • SpawnTracker — bookkeeping for outstanding handles per turn
  *   • cleanupOutstandingSubagents — best-effort sweep at turn end
- *   • loadOrchestratorPrompts — disk loader for agent.md + routing skill
+ *   • loadAgentPrompts — disk loader for agent.md + routing skill
  *   • C.2: chat_id resolver, conversation-row parsing, token estimator,
  *     reactive compaction planner.
  */
@@ -27,32 +27,32 @@ import * as path from "path";
 
 import { parseFrontmatterLmTools } from "../modelSelectorCore";
 
-export const ORCHESTRATOR_AGENT_NAME = "orchestrator";
+export const AGENT_NAME = "agent";
 
-export const ORCHESTRATOR_TOOL_NAMES = [
+export const AGENT_TOOL_NAMES = [
   "harness_spawn_subagent",
   "harness_await_subagent",
   "harness_list_subagents",
   "harness_get_skill",
 ] as const;
 
-export type OrchestratorToolName = typeof ORCHESTRATOR_TOOL_NAMES[number];
+export type AgentToolName = typeof AGENT_TOOL_NAMES[number];
 
 /**
- * Subset of ORCHESTRATOR_TOOLS gated on LM_FACING_SUBAGENT_ROLES (see
- * orchestrator.ts). When no extension-side runner exists for a sub-agent
+ * Subset of AGENT_TOOLS gated on LM_FACING_SUBAGENT_ROLES (see
+ * agent.ts). When no extension-side runner exists for a sub-agent
  * role, advertising spawn / await / list to the LM just produces a
  * 30 s-wall-clock-then-retry loop, so we hide them. harness_get_skill
  * is always advertised; it works even when no sub-agent runner is wired.
  */
-export const ORCHESTRATOR_SUBAGENT_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const AGENT_SUBAGENT_TOOL_NAMES: ReadonlySet<string> = new Set([
   "harness_spawn_subagent",
   "harness_await_subagent",
   "harness_list_subagents",
 ]);
 
-export interface OrchestratorTool {
-  name: OrchestratorToolName;
+export interface AgentTool {
+  name: AgentToolName;
   description: string;
   inputSchema: Record<string, unknown>;
 }
@@ -62,7 +62,7 @@ export interface OrchestratorTool {
  * be serialised, snapshot-tested, and passed to either `request.tools` or
  * `vscode.lm.registerTool` without dragging vscode into pure tests.
  */
-export const ORCHESTRATOR_TOOLS: readonly OrchestratorTool[] = [
+export const AGENT_TOOLS: readonly AgentTool[] = [
   {
     name: "harness_spawn_subagent",
     description:
@@ -134,7 +134,7 @@ export const ORCHESTRATOR_TOOLS: readonly OrchestratorTool[] = [
   {
     name: "harness_get_skill",
     description:
-      "Fetch the body of an installed skill (e.g. 'orchestrator-routing') when " +
+      "Fetch the body of an installed skill (e.g. 'agent-routing') when " +
       "you need detailed routing rules, picker tables, or anti-patterns that " +
       "aren't covered by your inline core rules. The harness used to push the " +
       "full skill body into your system prompt every turn (~841 t); now you " +
@@ -148,7 +148,7 @@ export const ORCHESTRATOR_TOOLS: readonly OrchestratorTool[] = [
         skill_id: {
           type: "string",
           description:
-            "Skill identifier — directory name under .github/skills/ (e.g. 'orchestrator-routing').",
+            "Skill identifier — directory name under .github/skills/ (e.g. 'agent-routing').",
         },
       },
       required: ["skill_id"],
@@ -197,19 +197,19 @@ export function stripFrontmatter(text: string): string {
 
 // ── System prompt builder ────────────────────────────────────────────────────
 
-export interface OrchestratorPromptInputs {
+export interface AgentPromptInputs {
   agentMd: string;
   routingSkill: string;
   memoryTier1?: string | null;
   tier2Available?: readonly string[];
 }
 
-export function buildOrchestratorSystemPrompt(input: OrchestratorPromptInputs): string {
+export function buildAgentSystemPrompt(input: AgentPromptInputs): string {
   const parts: string[] = [stripFrontmatter(input.agentMd).trim()];
 
   if (input.routingSkill && input.routingSkill.trim().length > 0) {
     parts.push(
-      "\n\n## Skill: orchestrator-routing (pushed by harness)\n\n" +
+      "\n\n## Skill: agent-routing (pushed by harness)\n\n" +
       stripFrontmatter(input.routingSkill).trim()
     );
   }
@@ -240,12 +240,12 @@ export interface ToolDispatchClient {
 }
 
 /**
- * Dispatch a single orchestrator tool call to the harness. Translates the
+ * Dispatch a single agent tool call to the harness. Translates the
  * LLM-facing argument shape into the MCP-tool argument shape and returns
  * the raw JSON string the MCP tool produced. The caller is responsible
  * for feeding it back to the model.
  */
-export async function dispatchOrchestratorTool(
+export async function dispatchAgentTool(
   client: ToolDispatchClient,
   ctx: ToolDispatchContext,
   toolName: string,
@@ -287,7 +287,7 @@ export async function dispatchOrchestratorTool(
     case "harness_get_skill": {
       // Fill in agent_name from the dispatch context so the LM doesn't
       // have to hand-author it (and can't accidentally request a skill
-      // not on the orchestrator's allowlist by passing a different name).
+      // not on the agent's allowlist by passing a different name).
       const skillId = typeof args.skill_id === "string" ? args.skill_id : "";
       return client.callTool("harness_get_skill", {
         skill_id: skillId,
@@ -295,7 +295,7 @@ export async function dispatchOrchestratorTool(
       });
     }
     default:
-      throw new Error(`unknown orchestrator tool: ${toolName}`);
+      throw new Error(`unknown agent tool: ${toolName}`);
   }
 }
 
@@ -344,7 +344,7 @@ export class SpawnTracker {
 }
 
 /**
- * Best-effort sweep at user-turn-end. Marks any sub-agent the orchestrator
+ * Best-effort sweep at user-turn-end. Marks any sub-agent the agent
  * spawned-but-never-awaited as 'abandoned'. Errors are swallowed — this
  * is housekeeping, not correctness.
  */
@@ -357,7 +357,7 @@ export async function cleanupOutstandingSubagents(
       await client.callTool("harness_complete_subagent", {
         handle_id: handle,
         status: "abandoned",
-        summary: "[harness] orchestrator turn ended before await",
+        summary: "[harness] agent turn ended before await",
         turns: 0,
       });
     } catch {
@@ -386,12 +386,12 @@ export interface LoadedPrompts {
   lmTools: string[];
 }
 
-/** Load orchestrator agent.md + routing skill from .github/. */
-export function loadOrchestratorPrompts(roots: string[]): LoadedPrompts {
-  const agentMd = readFirstExisting(roots, path.join(".github", "agents", "orchestrator.agent.md"))
+/** Load agent agent.md + routing skill from .github/. */
+export function loadAgentPrompts(roots: string[]): LoadedPrompts {
+  const agentMd = readFirstExisting(roots, path.join(".github", "agents", "agent.agent.md"))
     ?? "";
   const routingSkill = readFirstExisting(
-    roots, path.join(".github", "skills", "orchestrator-routing", "SKILL.md"),
+    roots, path.join(".github", "skills", "agent-routing", "SKILL.md"),
   ) ?? "";
   const lmTools = parseFrontmatterLmTools(agentMd);
   return { agentMd, routingSkill, lmTools };
@@ -441,7 +441,7 @@ export const COMPACT_T3_TRUNCATE   = 0.99;
  * harness's `harness_get_conversation` returns; deliberately vscode-free
  * so this module stays unit-testable.
  */
-export interface OrchestratorMessage {
+export interface AgentMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
   id?: number;
@@ -453,14 +453,14 @@ export interface OrchestratorMessage {
  * empty array on any malformed input — callers may proceed with no
  * replayed history rather than crash a turn over a parser blip.
  */
-export function parseConversationResponse(raw: string): OrchestratorMessage[] {
+export function parseConversationResponse(raw: string): AgentMessage[] {
   if (!raw) { return []; }
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { return []; }
   if (!parsed || typeof parsed !== "object") { return []; }
   const obj = parsed as { status?: string; messages?: unknown };
   if (obj.status !== "ok" || !Array.isArray(obj.messages)) { return []; }
-  const out: OrchestratorMessage[] = [];
+  const out: AgentMessage[] = [];
   for (const m of obj.messages) {
     if (!m || typeof m !== "object") { continue; }
     const row = m as { role?: unknown; content?: unknown; id?: unknown; ts?: unknown };
@@ -527,7 +527,7 @@ export function resolveChatId(input: {
 export type CompactionStrategy =
   | { kind: "none" }
   | { kind: "drop-tools" }
-  | { kind: "summarize-old"; oldestHalf: OrchestratorMessage[] }
+  | { kind: "summarize-old"; oldestHalf: AgentMessage[] }
   | { kind: "hard-truncate"; budgetTokens: number };
 
 /**
@@ -542,7 +542,7 @@ export type CompactionStrategy =
  *   ≥99   → hard-truncate to 50% of the model window
  */
 export function planCompaction(
-  history: OrchestratorMessage[],
+  history: AgentMessage[],
   totalTokens: number,
   modelContextTokens: number = MODEL_CONTEXT_TOKENS,
 ): CompactionStrategy {
@@ -570,8 +570,8 @@ export function planCompaction(
  */
 export function applyCompaction(
   directive: CompactionStrategy,
-  history: OrchestratorMessage[],
-): OrchestratorMessage[] {
+  history: AgentMessage[],
+): AgentMessage[] {
   switch (directive.kind) {
     case "none":
       return history;
@@ -583,7 +583,7 @@ export function applyCompaction(
     }
     case "hard-truncate": {
       // Keep newest messages whose cumulative tokens fit the budget.
-      const kept: OrchestratorMessage[] = [];
+      const kept: AgentMessage[] = [];
       let total = 0;
       for (let i = history.length - 1; i >= 0; i--) {
         const cost = estimateTokens(history[i].content);
@@ -599,7 +599,7 @@ export function applyCompaction(
 
 /** Sum tokens across messages plus the explicit prompt + system prompt. */
 export function totalHistoryTokens(
-  messages: ReadonlyArray<OrchestratorMessage>,
+  messages: ReadonlyArray<AgentMessage>,
   systemPrompt: string,
   currentPrompt: string,
 ): number {
@@ -638,7 +638,7 @@ export function detectFrustration(text: string): string | null {
 }
 
 /**
- * Per-turn dedup tracker for distillation triggers. The orchestrator
+ * Per-turn dedup tracker for distillation triggers. The agent
  * keeps one of these alive for the duration of a single user turn; once
  * the turn ends the tracker is discarded so the next turn starts fresh.
  * Persistent dedup (across turns) is enforced server-side by
