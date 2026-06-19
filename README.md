@@ -138,8 +138,8 @@ check — zero LLM cost:
 - `/<pipeline-name> <task>` → **pipeline mode** (governed agents,
   validation, audit trail) — *`harness-tier: ephemeral`; on dissolution
   path as models improve, per the discipline*
-- Anything else → **butler mode** (persistent chat, model's native
-  multi-turn shape; CLAUDE.md: "skills come first, the butler grows")
+- Anything else → **Agent mode** (persistent chat, model's native
+  multi-turn shape; CLAUDE.md: "skills come first, the Agent grows")
 
 **From any LLM API directly** (Anthropic, OpenAI, …):
 
@@ -148,7 +148,7 @@ pip install -e copilot-harness/.[anthropic]   # or .[openai] or .[all]
 ANTHROPIC_API_KEY=... agent-butler "your task"
 ```
 
-The butler spawns the same MCP server, lists the catalog, drives a
+The Agent CLI spawns the same MCP server, lists the catalog, drives a
 tool-use loop against your chosen LLM. No Copilot Chat required —
 useful when Copilot quota is empty or you want to point a different
 model at the substrate. New vendors are a single file under
@@ -167,7 +167,7 @@ Add a command by dropping a new `.md` — no code change required.
 
 | Command | Mode | What it does |
 |---|---|---|
-| `@harness <prompt>` | orchestrator | Persistent chat, spawns sub-agents on demand |
+| `@harness <prompt>` | Agent | Persistent chat, spawns sub-agents on demand |
 | `@harness /feature-dev <task>` | pipeline | 4-agent governed pipeline |
 | `@harness /planner <task>` | pipeline | Planner only (new session) |
 | `@harness /designer` `/coder` `/reviewer` | pipeline | Run a single stage on the active session |

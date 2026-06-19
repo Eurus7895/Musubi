@@ -19,7 +19,7 @@ The listing also reminds users of the two routing modes:
   guardrails, evaluator firewall, and a **review gate after every stage**
   (Phase G.1.5) so the user can approve, retry-with-hint, or abort before
   the next stage runs.
-- `@harness <prompt>` — **orchestrator**. Persistent conversation, spawns
+- `@harness <prompt>` — **Agent**. Persistent conversation, spawns
   sub-agents on demand. The default for anything that isn't a slash command.
 - Legacy bare keywords (`continue`, `status`, `full`, `planner`, `designer`,
   `coder`, `reviewer`) still work for muscle memory but are deprecated in
