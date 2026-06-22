@@ -70,7 +70,8 @@ def test_existing_allowlist_entries_unchanged() -> None:
 def test_agent_catalog_surfaces_new_skills() -> None:
     """End-to-end: harness_list_skills('agent') exposes both new
     skills to the agent. Router-level profile filtering is exercised
-    separately in tests/test_skill_router.py (when that lands)."""
+    in tests/test_skill_router.py; the next three tests cover its
+    interaction with the new skills."""
     payload = json.loads(server.harness_list_skills("agent"))
     ids = {s["skill_id"] for s in payload["skills"]}
     assert "research" in ids
@@ -78,3 +79,53 @@ def test_agent_catalog_surfaces_new_skills() -> None:
     # The original entry stays — adding two skills must not displace the
     # routing skill the agent is pushed at startup.
     assert "agent-routing" in ids
+
+
+def test_agent_catalog_no_profile_keeps_both_skills(monkeypatch) -> None:
+    """Router degrades to no-op when no profile is loaded; both new
+    skills must surface regardless. Guards the router from ever
+    over-filtering when the workspace detector hasn't run."""
+    monkeypatch.setattr(server, "_load_project_profile", lambda: None)
+    payload = json.loads(server.harness_list_skills("agent"))
+    ids = {s["skill_id"] for s in payload["skills"]}
+    assert payload["filtered_by_profile"] is False
+    assert "research" in ids
+    assert "docs-writing" in ids
+
+
+def test_agent_catalog_rust_profile_drops_docs_writing(monkeypatch) -> None:
+    """Headline router behaviour for non-coding skills:
+    docs-writing is doc_tools-scoped (sphinx/mkdocs/mdbook), so a Rust
+    workspace with no doc tool drops it. research stays — it has no
+    applies-to and is universally applicable."""
+    monkeypatch.setattr(server, "_load_project_profile", lambda: {
+        "language": "rust",
+        "secondary_languages": [],
+        "test_framework": None,
+        "doc_tool": None,
+        "package_managers": ["cargo"],
+        "file_types_present": [".rs"],
+    })
+    payload = json.loads(server.harness_list_skills("agent"))
+    ids = {s["skill_id"] for s in payload["skills"]}
+    assert payload["filtered_by_profile"] is True
+    assert "docs-writing" not in ids
+    assert "research" in ids
+
+
+def test_agent_catalog_sphinx_profile_keeps_docs_writing(monkeypatch) -> None:
+    """Symmetric guard: a workspace WITH a matching doc tool keeps
+    docs-writing. Pins that the router's positive case still passes
+    through, not just the negative case above."""
+    monkeypatch.setattr(server, "_load_project_profile", lambda: {
+        "language": "python",
+        "secondary_languages": [],
+        "test_framework": "pytest",
+        "doc_tool": "sphinx",
+        "package_managers": ["pip"],
+        "file_types_present": [".py"],
+    })
+    payload = json.loads(server.harness_list_skills("agent"))
+    ids = {s["skill_id"] for s in payload["skills"]}
+    assert "docs-writing" in ids
+    assert "research" in ids
