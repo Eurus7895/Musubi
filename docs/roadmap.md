@@ -25,10 +25,7 @@ from `harness-direction.md` is visible per item.
 
 ## Active branches
 
-| Branch | Purpose | Status |
-|---|---|---|
-| `feat/credit-totals-surfacing` | MVP item 1 — credit visibility in `/status` + sidebar + `/credits` | Open PR |
-| `docs/convergence-path` | Track D + this MVP plan | Open PR |
+_(none — the 10-item MVP sprint is complete; items 1-9 shipped, item 10 deferred with explicit triggers — see entry below)_
 
 ---
 
@@ -51,9 +48,9 @@ After the MVP ships:
 
 | # | Item | Source track | Effort | Why MVP-blocking |
 |---|---|---|---|---|
-| **1** | Credit visibility — `/status` + sidebar + `/credits` summed from `stage_metrics.credits` (per-row + total) | Track A.4 | ½ day | Users can't manage spend they can't see |
-| **2** | Per-cycle audit table (`agent_cycles`) — one row per `sendRequest` cycle inside `runAgentLM` | Track A.2 | 1-2 days | Dissolution decisions need data; without this, "stay updated" is vibes |
-| **3** | `BudgetEnforcer` per agent turn — register an enforcer at agent-turn start so `@harness <task>` carries the same cost guardrail pipelines have today | Track D.4 | ~30 lines | Today agent turns are uncapped; lifts the Phase F cost concern from "freeze the surface" to "govern the surface" |
+| **1** ✓ | Credit visibility — `/status` + sidebar + `/credits` summed from `stage_metrics.credits` (per-row + total); also a per-call credit line in pipeline chat output. **DONE — PR #67 (`feat/credit-totals-surfacing`).** | Track A.4 | ½ day | Users can't manage spend they can't see |
+| **2** ✓ | Per-cycle audit table (`agent_cycles`) — one row per `sendRequest` cycle inside `runAgentLM`; schema in `storage/db.py`, writes from `pipeline.ts`, query surface via `server.py`. **DONE — PR #68 (`feat/agent-cycles-audit`).** | Track A.2 | 1-2 days | Dissolution decisions need data; without this, "stay updated" is vibes |
+| **3** ✓ | `BudgetEnforcer` per agent turn — registered at agent-turn start in `runners/agent.ts` so `@harness <task>` carries the same cost guardrail pipelines have today. **DONE — PR #70 (`feat/butler-turn-budget`).** | Track D.4 | ~30 lines | Today agent turns are uncapped; lifts the Phase F cost concern from "freeze the surface" to "govern the surface" |
 | **4** ✓ | Project profile detection — `copilot-harness/workspace/detector.py` writes `.github/memory/project-profile.md` at session start (language, framework, doc tool, conventions auto-detected) | Track D.1 | 2-3 days | Skill applicability requires per-workspace context; memory layer is where this belongs. **DONE — PR #71 (commit `0abf648`).** Unblocks items 5, 6, 9. |
 | **5** ✓ | SKILL.md `applies-to` frontmatter — parsed into `SkillMeta.applies_to` by `skill_loader.py`; shipped on the `python` and `testing` skills. `output_contract` deferred with D.5 (its only consumer). **DONE — `feat/skill-applies-to`.** | Track D.2 | 1 day | Needed before the skill router (item 6) can filter the catalog |
 | **6** ✓ | Skill router — `skills/router.py::applicable_skills(profile, skills)` filters `harness_list_skills` against the project profile so the model never sees skills that don't fit the workspace. Graceful no-op when no profile. **DONE — `feat/skill-router`.** | Track D.3 | 1 day | Eliminates "tried C skill on Python" class of failures; depends on 4 + 5 |
