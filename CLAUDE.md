@@ -38,7 +38,7 @@ This operationalises the
 
 | Substrate (invest) | Ephemeral (label + schedule for removal) |
 |---|---|
-| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `orchestrator_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) |
+| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) |
 | `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) |
 | 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
@@ -60,9 +60,9 @@ These cannot be broken without an explicit design discussion. If a
 change would violate one, stop and ask.
 
 1. **Zero LLM calls inside the harness.** Only `vscode.lm.sendRequest` from the TS extension reaches a model. Python harness + TS shell orchestrate; they do not import an LLM SDK.
-2. **Skills are pushed to pipeline agents; pulled on demand by the butler.** Pipeline-side: `harness_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Butler-side: `harness_get_skill` LM tool, model decides when to load.
+2. **Skills are pushed to pipeline agents; pulled on demand by the Agent.** Pipeline-side: `harness_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Agent-side: `harness_get_skill` LM tool, model decides when to load.
 3. **Evaluator firewall.** Reviewer sees `code` only — no request, plan, design, or memory. Enforced in `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (Python + mirrored in `pipeline.ts`).
-4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → butler. No LLM call decides the route.
+4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → Agent. No LLM call decides the route.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py::PIPELINE_POLICIES` denies unknown `(pipeline, agent)` combinations. Never relax to fail-open.
 6. **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Pipeline-specific role variants (filename-prefixed) require 3+ documented failures of the canonical agent.
 7. **Append-only stage store.** Retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
@@ -156,10 +156,10 @@ cd copilot-harness
 pip install -e .
 pytest tests/ -v
 
-# Butler CLI — drive the harness via a direct LLM API (no Copilot needed).
+# Agent CLI — drive the harness via a direct LLM API (no Copilot needed).
 # Optional vendor extras: pip install -e ".[anthropic]" or ".[openai]" or ".[all]"
-ANTHROPIC_API_KEY=… agent-butler "your task"
-OPENAI_API_KEY=…    agent-butler "your task" --vendor openai --model gpt-4o-mini
+ANTHROPIC_API_KEY=… agent "your task"
+OPENAI_API_KEY=…    agent "your task" --vendor openai --model gpt-4o-mini
 
 # Per-component checks
 ruff check copilot-harness/

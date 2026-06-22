@@ -3,8 +3,8 @@
  *
  * Routing (zero LLM cost):
  *   /<pipeline-name> <task>   → pipeline (full guardrails + evaluator firewall)
- *   /<other-slash> [args]     → step / agent / status / help / orchestrator
- *   anything else             → orchestrator (persistent chat, sub-agents on demand)
+ *   /<other-slash> [args]     → step / agent / status / help / agent
+ *   anything else             → agent (persistent chat, sub-agents on demand)
  *
  * Legacy bare keywords (`continue`, `status`, `full`, `planner`, `designer`,
  * `coder`, `reviewer`) still route directly to their pipeline-step shortcuts
@@ -17,7 +17,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { McpClient } from "./mcpClient";
 import { runOneShotAgent, runPipeline, runStep, StepResult } from "./pipeline";
-import { registerOrchestratorTools, runOrchestrator } from "./runners/orchestrator";
+import { registerAgentTools, runAgent } from "./runners/agent";
 import { registerGateCommands } from "./pipelineGateUi";
 import { loadSlashCommand, listSlashCommands } from "./slashCommands";
 import { HarnessTasksProvider } from "./tasksView";
@@ -65,7 +65,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         //
         // Filter out the MCP SDK's per-tool-call heartbeat ("Processing
         // request of type CallToolRequest") — every harness_* call emits
-        // one, which drowns out actual errors. The orchestrator runner
+        // one, which drowns out actual errors. The agent runner
         // already logs each tool call with name + duration, so the
         // heartbeat adds nothing diagnostic.
         onStderr: (line) => {
@@ -87,10 +87,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => client.dispose() });
 
-  // Phase B.2 — register the orchestrator's vscode.lm tools (spawn / await /
-  // list). Must run before any chat turn invokes runOrchestrator. Failures
+  // Phase B.2 — register the agent's vscode.lm tools (spawn / await /
+  // list). Must run before any chat turn invokes runAgent. Failures
   // are logged but non-fatal; the runner gracefully degrades to no-tool turns.
-  context.subscriptions.push(registerOrchestratorTools((m) => out.appendLine(m)));
+  context.subscriptions.push(registerAgentTools((m) => out.appendLine(m)));
 
   // Phase G.1.5 — register the review-gate commands (resume + auto-approve
   // toggle). Buttons rendered in chat by pipelineGateUi point at these.
@@ -310,9 +310,9 @@ const BUILTIN_COMMAND_NAMES = ["model", "context-cap", "auto-approve", "credits"
 
 type ParsedCommand =
   | { type: "slash";        name: string; args: string }
-  | { type: "orchestrator"; prompt: string }
+  | { type: "agent"; prompt: string }
   | { type: "continue" }
-  | { type: "agent";        agentName: AgentName; request?: string }
+  | { type: "agentStep";    agentName: AgentName; request?: string }
   | { type: "full";         request: string }
   | { type: "status" }
   | { type: "help" }
@@ -326,7 +326,7 @@ type ParsedCommand =
  *   1. Starts with `/` → slash command (parse; unknown commands error).
  *   2. Legacy bare keywords (`continue`, `status`, `full`, agent names)
  *      keep working for muscle memory; slash commands preferred.
- *   3. Everything else → orchestrator (persistent chat, sub-agents on demand).
+ *   3. Everything else → agent (persistent chat, sub-agents on demand).
  */
 function parseCommand(text: string): ParsedCommand {
   const trimmed = text.trim();
@@ -368,11 +368,11 @@ function parseCommand(text: string): ParsedCommand {
   if (first === "status")   { return { type: "status" }; }
   if (first === "full")     { return { type: "full", request: rest || trimmed }; }
   if (AGENT_NAMES.has(first)) {
-    return { type: "agent", agentName: first as AgentName, request: rest || undefined };
+    return { type: "agentStep", agentName: first as AgentName, request: rest || undefined };
   }
 
-  // 3. Default: orchestrator — persistent chat, spawns sub-agents on demand.
-  return { type: "orchestrator", prompt: trimmed };
+  // 3. Default: agent — persistent chat, spawns sub-agents on demand.
+  return { type: "agent", prompt: trimmed };
 }
 
 // ── Status display ────────────────────────────────────────────────────────────
@@ -489,7 +489,7 @@ async function runModel(
 
   await config.update("modelOverride", arg, vscode.ConfigurationTarget.Global);
   stream.markdown(
-    `✅ Model override set to \`${arg}\`. All harness LM calls (orchestrator, pipelines, sub-agents) will use this family.\n\n` +
+    `✅ Model override set to \`${arg}\`. All harness LM calls (agent, pipelines, sub-agents) will use this family.\n\n` +
     `To clear: \`/model clear\`.`,
   );
 }
@@ -551,7 +551,7 @@ async function runContextCap(
   await config.update("contextCap", clamped, vscode.ConfigurationTarget.Global);
   stream.markdown(
     `✅ Context cap set to **${clamped}** tokens. ` +
-    `Orchestrator turn budget will be ~${Math.floor(clamped * 0.95)}t.${warning}\n\n` +
+    `Agent turn budget will be ~${Math.floor(clamped * 0.95)}t.${warning}\n\n` +
     `To clear: \`/context-cap clear\`.`,
   );
 }
@@ -705,14 +705,14 @@ async function runCredits(
 
 // ── Usage text ────────────────────────────────────────────────────────────────
 
-const USAGE_HEADER = "**CopilotHarness** — orchestrator + governed pipelines";
+const USAGE_HEADER = "**CopilotHarness** — agent + governed pipelines";
 
 const USAGE_FOOTER = [
   "",
   "**Routing:**",
   "",
   "- `/<pipeline-name> <task>` — run a pipeline (e.g. `/feature-dev`). Full guardrails, evaluator firewall, and a review gate between stages.",
-  "- `@harness <prompt>` — orchestrator. Persistent conversation, spawns sub-agents on demand.",
+  "- `@harness <prompt>` — agent. Persistent conversation, spawns sub-agents on demand.",
   "- Legacy bare keywords (`continue`, `status`, `full`, `planner`, `designer`, ",
   "  `coder`, `reviewer`) still work for muscle memory but are deprecated — use the slash form.",
   "",
@@ -741,7 +741,7 @@ const USAGE_FOOTER = [
   "",
   "- Context cap: 50 000 tokens / turn (`copilotHarness.contextCap`, or `context_cap:` in pipeline.yaml).",
   "- Pipeline budgets: feature-dev 50 credits, code-review 20 credits (`max_credits:` in pipeline.yaml). Halts before exceeding; `/continue` resumes after a raise.",
-  "- Butler budget: 30 credits / turn (`copilotHarness.butlerBudget`). Same primitive as pipeline budgets but applied to `@harness <prompt>` turns. Set to 0 to disable. Warning at 80%; halts force-finalise the turn cleanly.",
+  "- Agent budget: 30 credits / turn (`copilotHarness.agentBudget`). Same primitive as pipeline budgets but applied to `@harness <prompt>` turns. Set to 0 to disable. Warning at 80%; halts force-finalise the turn cleanly.",
   "- Model override: none by default (uses each agent's frontmatter); set via `/model` or settings.",
   "",
   "**Other options:**",
@@ -755,7 +755,7 @@ const USAGE_FOOTER = [
 /** Build the /help body by listing every on-disk slash command, grouped
  *  into Pipelines (full multi-stage runs), Agents (one-shot or
  *  single-stage agent invocations), and Commands (everything else —
- *  status / continue / orchestrator / help). The grouping makes the
+ *  status / continue / agent / help). The grouping makes the
  *  routing-mode distinction visible at a glance instead of buried in
  *  one alphabetical table.
  */
@@ -860,7 +860,7 @@ async function handler(
         break;
       }
 
-      case "agent": {
+      case "agentStep": {
         const result = await runStep(client, workspaceRoot, slashRoots, stream, token, {
           agentName: cmd.agentName,
           request: cmd.request,
@@ -869,8 +869,8 @@ async function handler(
         break;
       }
 
-      case "orchestrator":
-        await runOrchestrator({
+      case "agent":
+        await runAgent({
           prompt: cmd.prompt,
           client,
           chatContext: context,
@@ -1035,7 +1035,7 @@ async function runSlash(
       emitStepMarker(stream, result);
       return;
     }
-    case "agent": {
+    case "one-shot": {
       if (!cmd.agent) {
         stream.markdown(`**Error:** \`/${cmd.name}\` is missing \`agent\` in its frontmatter.`);
         return;
@@ -1054,12 +1054,12 @@ async function runSlash(
     case "help":
       stream.markdown(buildHelpMarkdown(slashRoots));
       return;
-    case "orchestrator": {
+    case "agent": {
       if (!args) {
         stream.markdown(`**Error:** \`/${cmd.name}\` needs a request. Try \`@harness /${cmd.name} <your task>\`.`);
         return;
       }
-      await runOrchestrator({
+      await runAgent({
         prompt: args,
         client,
         chatContext,

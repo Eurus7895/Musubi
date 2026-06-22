@@ -1,7 +1,7 @@
 """Vendor-agnostic LMRouter interface + LMResponse shape.
 
 harness-tier: substrate
-expires-when: never — the butler's only requirement on a vendor is
+expires-when: never — the agent's only requirement on a vendor is
   this interface. New vendors slot in by implementing it.
 
 The content-block shape mirrors Anthropic's Messages API because it's
@@ -24,7 +24,7 @@ class LMResponse:
 
     Fields:
         stop_reason   "tool_use" | "end_turn" | "max_tokens" | ...
-                      The butler loop terminates when this is NOT
+                      The agent loop terminates when this is NOT
                       "tool_use". Anything else is treated as the
                       model's signal that it's done.
         content       Anthropic-shaped list of content blocks. The loop
@@ -42,10 +42,10 @@ class LMResponse:
 
 
 class LMRouter(ABC):
-    """Vendor-agnostic LM call boundary for the butler loop.
+    """Vendor-agnostic LM call boundary for the agent loop.
 
-    Subclasses live in butler/vendors/<name>_router.py and are
-    registered in butler/vendors/factory.py::build_vendor().
+    Subclasses live in agent/vendors/<name>_router.py and are
+    registered in agent/vendors/factory.py::build_vendor().
     """
 
     #: Human-readable identifier for logs ("anthropic", "openai", ...).

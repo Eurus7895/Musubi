@@ -455,7 +455,7 @@ def validate(
 #      parent agent can detect the truncation.
 #   2. Optional JSON-shape check on `structured` — the parent specifies
 #      an `output_schema` at spawn time when it expects a particular
-#      shape (e.g. orchestrator asking explorer for `{matches: list}`).
+#      shape (e.g. agent asking explorer for `{matches: list}`).
 #      Malformed output is rejected, not silently accepted.
 
 # Char-per-token approximation. Tiktoken would be more precise but pulls

@@ -55,7 +55,7 @@ do not paste each call site unless the brief asked for them.
 
 ### 5. Populate `structured` when the parent asked for shape
 
-Common shapes the orchestrator may pass via `output_schema`:
+Common shapes the agent may pass via `output_schema`:
 
 ```json
 {

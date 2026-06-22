@@ -772,7 +772,7 @@ def harness_record_stage_metric(
     Called by the TS runner immediately after `vscode.lm.sendRequest`
     completes — the wall-clock ms + token estimates are already on hand
     there. Token counts are estimates (chars/4 heuristic from
-    `runners/orchestratorCore.estimateTokens`), not billed amounts.
+    `runners/agentCore.estimateTokens`), not billed amounts.
 
     Stage 1 (MVP A.4): `credits` is the `estimateCallCredits` result the
     runner already computes for the per-call chat display, and
@@ -977,7 +977,7 @@ def harness_query_agent_cycles(
 
 
 @mcp.tool()
-def harness_record_orchestrator_turn(
+def harness_record_agent_turn(
     chat_id: str,
     parent_session_id: str,
     started_at: float,
@@ -989,12 +989,12 @@ def harness_record_orchestrator_turn(
     lm_ms: int,
     total_ms: int,
 ) -> str:
-    """Append one row to `orchestrator_turns` after an orchestrator turn
+    """Append one row to `agent_turns` after an agent turn
     completes.
 
-    Parallel to `harness_record_stage_metric` but scoped to orchestrator
+    Parallel to `harness_record_stage_metric` but scoped to agent
     chats (which don't fit the stage / chunk / attempt model used by
-    pipelines). The TS runner's `runOrchestrator` calls this once at
+    pipelines). The TS runner's `runAgent` calls this once at
     turn end, passing the wall-clock ms + token estimates already
     collected.
 
@@ -1003,7 +1003,7 @@ def harness_record_orchestrator_turn(
     `{ status: "error", error: <msg> }` on a DB error.
     """
     try:
-        _db.insert_orchestrator_turn(
+        _db.insert_agent_turn(
             chat_id=chat_id,
             parent_session_id=parent_session_id,
             started_at=started_at,
@@ -1021,12 +1021,12 @@ def harness_record_orchestrator_turn(
 
 
 @mcp.tool()
-def harness_query_orchestrator_turns(chat_id: str, limit: int = 100) -> str:
-    """Per-chat breakdown — recent orchestrator_turns rows for `chat_id`,
+def harness_query_agent_turns(chat_id: str, limit: int = 100) -> str:
+    """Per-chat breakdown — recent agent_turns rows for `chat_id`,
     newest first. Defaults to the most recent 100 turns. Useful for the
-    Tasks sidebar surfacing orchestrator usage alongside pipeline runs."""
+    Tasks sidebar surfacing agent usage alongside pipeline runs."""
     try:
-        rows = _db.query_orchestrator_turns(chat_id, limit=limit)
+        rows = _db.query_agent_turns(chat_id, limit=limit)
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({"status": "ok", "chat_id": chat_id, "rows": rows})
@@ -1392,7 +1392,7 @@ def harness_spawn_subagent(
     # Resolve the parent's pipeline so the spawn check uses pipeline.yaml's
     # declared `spawns:`. Missing pipeline_run row → fall back to firewall
     # (back-compat with sessions opened before Phase H or with non-pipeline
-    # callers like the orchestrator path).
+    # callers like the agent path).
     pipeline_name: str | None = None
     try:
         run = _db.get_pipeline_run(parent_session_id)
@@ -1778,7 +1778,7 @@ def harness_list_subagents(
     When `pipeline_name` is supplied, the result is the intersection of
     that pipeline.yaml's `spawns:` declarations and the firewall in
     `MAIN_SUBAGENT_ALLOWLIST`. When omitted, the firewall is returned
-    directly (orchestrator path / back-compat).
+    directly (agent path / back-compat).
 
     Result: { main_agent, pipeline_name, roles: [ {role, allowed_tools}, ... ] }.
     Unknown / un-allow-listed mains return an empty roles array (fail-closed).
@@ -1823,13 +1823,13 @@ def harness_list_subagent_spawns(
 
 
 # ── Conversation continuity (Phase C.1) ───────────────────────────────────────
-# Storage seam for orchestrator replay-on-each-turn. Roles are validated
+# Storage seam for agent replay-on-each-turn. Roles are validated
 # fail-closed against `conversations.VALID_ROLES`. `chat_id` is opaque to the
 # harness — the runner mints it.
 
 @mcp.tool()
 def harness_append_message(chat_id: str, role: str, content: Any) -> str:
-    """Append a message to an orchestrator conversation.
+    """Append a message to an agent conversation.
 
     Roles: 'user' | 'assistant' | 'tool' | 'system'. Anything else
     rejects fail-closed. `chat_id` is opaque — the runner is responsible
@@ -1838,7 +1838,7 @@ def harness_append_message(chat_id: str, role: str, content: Any) -> str:
     `content` is annotated `Any` rather than `str` because FastMCP's
     Pydantic layer was rejecting JSON-object-shaped string content
     ("Input should be a valid string ... input_type=dict") for the
-    orchestrator's tool-result rows. Whatever path turns the wire
+    agent's tool-result rows. Whatever path turns the wire
     string back into a dict, this entrypoint accepts both shapes and
     coerces dict → JSON-string before storage.
 
@@ -1865,11 +1865,11 @@ def harness_append_message(chat_id: str, role: str, content: Any) -> str:
 def harness_append_failure_pattern(
     agent: str,
     issue: str,
-    source: str = "orchestrator",
+    source: str = "agent",
 ) -> str:
-    """Record a failure pattern from an orchestrator distillation trigger.
+    """Record a failure pattern from an agent distillation trigger.
 
-    Phase C.2 — orchestrator-driven entry point. Mirrors
+    Phase C.2 — agent-driven entry point. Mirrors
     `session_distiller.append_pattern`: dedupes by (agent, issue prefix)
     against the existing `.github/memory/failure-patterns.md` and appends
     a new row when the pair is new. `source` is recorded in place of a
@@ -2034,7 +2034,7 @@ def harness_run_hook(event: str, payload: str = "") -> str:
 
 # ── Filesystem + command tools (substrate for any MCP client) ────────────────
 #
-# These let butler / Claude Code / Cursor / any custom MCP driver actually
+# These let agent / Claude Code / Cursor / any custom MCP driver actually
 # edit files and run commands through the harness, instead of relying on
 # the client to bring its own. Workspace-scoped, no LLM calls, audit on
 # stderr. Implementations live in `tools/fs.py`.

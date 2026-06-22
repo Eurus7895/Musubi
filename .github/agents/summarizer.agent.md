@@ -3,7 +3,7 @@ name: Summarizer
 version: 1.0.0
 description: >
   Compress a window of older conversation turns into a bounded markdown
-  summary. Spawned by the orchestrator at the 90% reactive-compaction
+  summary. Spawned by the agent at the 90% reactive-compaction
   threshold; the result is spliced back into the conversation as a
   single role:"system" message so the next LM call has the older
   context in compressed form. Text-only worker — no tools, no spawns.
@@ -53,7 +53,7 @@ turns to summarize already serialized as `[role] content` lines.
    Quote a file path or commit hash where it sharpens recall; do not
    quote whole code blocks.
 4. Preserve concrete identifiers verbatim: file paths, function names,
-   commit SHAs, sub-agent handle ids. They are how the orchestrator
+   commit SHAs, sub-agent handle ids. They are how the agent
    re-references prior work.
 5. Do not summarize what is in the brief's `assistant` turns by
    restating their conclusions — restate only the *decisions* the
@@ -101,7 +101,7 @@ sections are omitted entirely:
 - question the user has not answered
 ```
 
-No prose preamble, no closing remarks. The orchestrator splices the
+No prose preamble, no closing remarks. The agent splices the
 output as-is into a synthetic `role:"system"` message under the
 heading "Earlier in this chat (summarized by harness)".
 

@@ -1,4 +1,4 @@
-"""OpenAI Chat Completions router for the butler.
+"""OpenAI Chat Completions router for the agent.
 
 harness-tier: substrate
 expires-when: never — the LM-call boundary. Vendor-specific glue only.
@@ -6,7 +6,7 @@ expires-when: never — the LM-call boundary. Vendor-specific glue only.
 OpenAI's tool-call shape differs from Anthropic's: tools are wrapped in
 `function: {name, description, parameters}`, and assistant responses
 carry `tool_calls: [...]` alongside `content`. This router converts in
-both directions so the butler's loop only ever speaks the
+both directions so the agent's loop only ever speaks the
 Anthropic-shaped content_blocks language defined in base.LMResponse.
 
 Optional dependency: `openai` (install via `pip install -e .[openai]`
@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from butler.vendors.base import LMResponse, LMRouter
+from agent.vendors.base import LMResponse, LMRouter
 
 _DEFAULT_MODEL = "gpt-4o-mini"
 

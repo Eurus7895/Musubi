@@ -58,7 +58,7 @@ The extension routes at string-match cost (no LLM):
 - Input starts with `/<pipeline-name>` → pipeline mode (full guardrails
   + evaluator firewall). Other slash commands dispatch via
   `.github/commands/*.md` frontmatter.
-- Otherwise → orchestrator: persistent chat per chat_id, spawns
+- Otherwise → agent: persistent chat per chat_id, spawns
   sub-agents on demand, Tier-1 memory injected, reactive compaction.
 
 `hooks.json` + `scripts/` wire deterministic Python scripts to

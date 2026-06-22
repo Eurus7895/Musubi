@@ -18,7 +18,7 @@
  * role-agnostic.
  */
 
-import { stripFrontmatter } from "./orchestratorCore";
+import { stripFrontmatter } from "./agentCore";
 
 /** Sub-agent roles this PR ships runners for. */
 export type SubagentRoleId = "explorer" | "investigator" | "reviewer-aux";

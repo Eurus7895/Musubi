@@ -10,7 +10,7 @@
  * without a runtime. The vscode-using shell lives in summarizerRunner.ts.
  */
 
-import { stripFrontmatter, type OrchestratorMessage } from "./orchestratorCore";
+import { stripFrontmatter, type AgentMessage } from "./agentCore";
 
 /**
  * Serialize older-half turns into the `[role] content` block format the
@@ -18,7 +18,7 @@ import { stripFrontmatter, type OrchestratorMessage } from "./orchestratorCore";
  * dropped so the summarizer does not waste tokens on noise.
  */
 export function serializeSummarizerBrief(
-  oldHalf: ReadonlyArray<OrchestratorMessage>,
+  oldHalf: ReadonlyArray<AgentMessage>,
 ): string {
   const lines: string[] = [];
   for (const m of oldHalf) {
@@ -30,7 +30,7 @@ export function serializeSummarizerBrief(
 
 /**
  * Build the summary system prompt = stripped agent.md body + appended
- * skill body. Mirrors buildOrchestratorSystemPrompt's shape so future
+ * skill body. Mirrors buildAgentSystemPrompt's shape so future
  * Phase-D generalization can collapse them.
  */
 export function buildSummarizerSystemPrompt(

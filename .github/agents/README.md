@@ -33,7 +33,7 @@ point at the same file.
   spawned via `harness_spawn_subagent`. They run under the firewall in
   `validation/subagent_context.py` and never read parent session state.
   Their tool allow-lists live in `scripts/policy_engine.SUBAGENT_POLICIES`
-  and the orchestrator's per-main allow-list is `MAIN_SUBAGENT_ALLOWLIST`.
+  and the agent's per-main allow-list is `MAIN_SUBAGENT_ALLOWLIST`.
 - **Other top-level files** are pipeline-agnostic main agents
   (skill-builder).
 

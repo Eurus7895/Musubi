@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 
-from butler.vendors.base import LMRouter
+from agent.vendors.base import LMRouter
 
 
 def build_vendor(name: str | None = None, *, model: str | None = None) -> LMRouter:
@@ -28,17 +28,17 @@ def build_vendor(name: str | None = None, *, model: str | None = None) -> LMRout
     if resolved == "anthropic":
         # Import lazily so users without `pip install anthropic` can
         # still use the openai vendor (and vice versa).
-        from butler.vendors.anthropic_router import AnthropicRouter
+        from agent.vendors.anthropic_router import AnthropicRouter
 
         return AnthropicRouter(model=model)
 
     if resolved == "openai":
-        from butler.vendors.openai_router import OpenAIRouter
+        from agent.vendors.openai_router import OpenAIRouter
 
         return OpenAIRouter(model=model)
 
     raise ValueError(
-        f"Unknown butler vendor {resolved!r}. "
+        f"Unknown agent vendor {resolved!r}. "
         f"Supported: 'anthropic', 'openai'."
     )
 

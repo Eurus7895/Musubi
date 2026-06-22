@@ -26,7 +26,7 @@ Symptom: Coder produced `docs/test-plan.md` with structurally-correct sections b
 
 Root cause — structural, not LM-side:
 
-- `runners/orchestrator.ts` registers `lm_tools:` from agent frontmatter and passes them to `vscode.lm.sendRequest`. The orchestrator turn surface is the only path that does so.
+- `runners/agent.ts` registers `lm_tools:` from agent frontmatter and passes them to `vscode.lm.sendRequest`. The agent turn surface is the only path that does so.
 - `pipeline.ts::runAgentLM` calls `model.sendRequest(messages, {}, token)` with an **empty options** object — no tools surface. Pipeline-mode agents (planner / designer / coder / reviewer in feature-dev, scoper / finder / synthesizer in code-review) run blind.
 - `.github/agents/coder.agent.md` lines 13-16 admit this explicitly: *"Forward-looking — pipeline.ts does not yet pass tools to sendRequest, so this is consumed only when a runner is wired."*
 - The pre-spawn dispatcher (`preSpawnAndSplice` in `subagentDispatcherRun.ts`) does fire explorer/investigator before coder, but the decision is keyed on `chunkFilePaths` (what coder WRITES), not on what coder needs to READ.
@@ -38,7 +38,7 @@ Why this is a recurring class, not a one-off:
 
 Fix candidates (in priority order):
 
-- **(A) Wire `lm_tools:` into `runAgentLM`'s `sendRequest`.** Largest change (~150 lines + tool-cycle accumulation in pipeline.ts), but the cleanest architectural fix. Turns pipeline stages from single-shot → bounded multi-cycle (similar to orchestrator turn structure). Requires schema validation to apply to the post-cycle final output rather than the first text chunk.
+- **(A) Wire `lm_tools:` into `runAgentLM`'s `sendRequest`.** Largest change (~150 lines + tool-cycle accumulation in pipeline.ts), but the cleanest architectural fix. Turns pipeline stages from single-shot → bounded multi-cycle (similar to agent turn structure). Requires schema validation to apply to the post-cycle final output rather than the first text chunk.
 - **(B) Designer-driven `read_scope:`.** Designer declares a glob list of files coder will need to READ (separate from `chunkFilePaths` for writes). `preSpawnAndSplice` decision logic uses both. Splices enumeration into coder context. ~80 lines. Smaller blast radius.
 - **(C) Document the constraint + escalate-on-blocked.** Update `coder.agent.md` + `skills/python/SKILL.md` to instruct: *"You have no tools to enumerate the workspace; if your task requires enumeration that wasn't provided, set confidence: low and escalate via implementation_notes."* Cheap (~30 min), treats the symptom, prevents wasted credits on guaranteed-incomplete attempts.
 

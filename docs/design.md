@@ -31,7 +31,7 @@ Zero LLM calls inside the harness.
 
 | Layer | Component | harness-tier |
 |---|---|---|
-| Storage | `storage/audit.db` (SQLite) — sessions, stage_outputs, stage_metrics, pipeline_runs, subagent_audit, conversation_messages, orchestrator_turns | **substrate** |
+| Storage | `storage/audit.db` (SQLite) — sessions, stage_outputs, stage_metrics, pipeline_runs, subagent_audit, conversation_messages, agent_turns | **substrate** |
 | Storage | `.harness/sessions/<sid>/*.md` — append-only stage artefacts | **substrate** |
 | Storage | `.github/skills/<name>/SKILL.md` — fat-skills catalog | **substrate** |
 | Storage | `.github/memory/{MEMORY,architecture,failure-patterns}.md` — 3-tier markdown memory | **substrate** |
@@ -42,7 +42,7 @@ Zero LLM calls inside the harness.
 | Cost control | `pipeline.yaml::max_credits` + `warn_at` | **substrate** |
 | Interface | MCP tool catalog (`harness_*`) | **substrate** |
 | Interface | Hooks (SessionStart / PreToolUse / PostToolUse) | **substrate** |
-| Routing | Zero-cost routing (`/<pipeline>` → pipeline; anything else → butler) | **substrate** |
+| Routing | Zero-cost routing (`/<pipeline>` → pipeline; anything else → agent) | **substrate** |
 | Orchestration | 4-stage pipeline (planner / designer / coder / reviewer) | **ephemeral** |
 | Orchestration | Sub-agent-for-exploration split (explorer / investigator / reviewer-aux on haiku) | **ephemeral** |
 | Orchestration | Correction loop + `validation_feedback` retry | **ephemeral** |
@@ -176,9 +176,9 @@ CREATE TABLE subagent_audit (
   ts              REAL NOT NULL
 );
 
--- One row per butler turn (table name kept as `orchestrator_turns`
+-- One row per agent turn (table name kept as `agent_turns`
 -- for backwards compatibility; rename is a future PR with migration)
-CREATE TABLE orchestrator_turns (
+CREATE TABLE agent_turns (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id              TEXT NOT NULL,
   parent_session_id    TEXT NOT NULL,
@@ -192,7 +192,7 @@ CREATE TABLE orchestrator_turns (
   total_ms             INTEGER NOT NULL DEFAULT 0
 );
 
--- One row per chat message (butler turn + sub-agent results)
+-- One row per chat message (agent turn + sub-agent results)
 CREATE TABLE conversation_messages (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id     TEXT NOT NULL,
@@ -236,7 +236,7 @@ Names + one-line purpose. The full Python signatures live in
 
 | Tool | Purpose |
 |---|---|
-| `harness_get_skill` | Load `SKILL.md` on demand (butler path) |
+| `harness_get_skill` | Load `SKILL.md` on demand (agent path) |
 | `harness_list_skills` | Per-caller filtered skill catalog |
 | `harness_get_reference` | Load reference document under a skill |
 | `harness_get_memory_context` | Return tier-1 index + tier-2 available list |
@@ -264,10 +264,10 @@ Names + one-line purpose. The full Python signatures live in
 |---|---|
 | `harness_record_stage_metric` | Per LM-call row (lm_ms, tokens, tool counts) |
 | `harness_query_stage_metrics` | All stage_metrics rows for a session |
-| `harness_record_orchestrator_turn` | Per butler turn row (tool name kept as `orchestrator_turn` for back-compat) |
-| `harness_query_orchestrator_turns` | All butler turns for a chat_id (tool name kept as `orchestrator_turns` for back-compat) |
+| `harness_record_agent_turn` | Per agent turn row |
+| `harness_query_agent_turns` | All agent turns for a chat_id (tool name kept as `agent_turns` for back-compat) |
 
-### Conversation (butler)
+### Conversation (agent)
 
 | Tool | Purpose |
 |---|---|
@@ -446,10 +446,10 @@ What this means in practice:
 - No `anthropic`, `openai`, `google-generativeai` etc. imports in
   `copilot-harness/` (Python)
 - The TS extension calls `vscode.lm.sendRequest` only from
-  `runAgentLM`, `runOrchestrator`, and sub-agent runners — NEVER from
+  `runAgentLM`, `runAgent`, and sub-agent runners — NEVER from
   harness MCP tool handlers
 - Routing is regex-based (`/<pipeline-name>` matches a slash command,
-  anything else goes to butler) — no LLM call to decide
+  anything else goes to agent) — no LLM call to decide
 - Pattern detection is regex / frequency-based, not LLM-judged
 
 **The harness is the substrate. The model is the workload. They don't

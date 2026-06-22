@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Frustration regexes consumed by memory/pattern_detector.detect_frustration. Each pattern is matched against the user message at append time; a single match fires one distillation trigger per turn (see runners/orchestrator.ts). Hot-reloadable per turn.",
+  "description": "Frustration regexes consumed by memory/pattern_detector.detect_frustration. Each pattern is matched against the user message at append time; a single match fires one distillation trigger per turn (see runners/agent.ts). Hot-reloadable per turn.",
   "patterns": [
     {
       "label": "wrong/broken assertion",

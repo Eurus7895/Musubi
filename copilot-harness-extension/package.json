@@ -101,7 +101,7 @@
         "copilotHarness.modelOverride": {
           "type": "string",
           "default": "",
-          "description": "Override the model family for ALL CopilotHarness LM calls (orchestrator, pipeline agents, sub-agents). Use a Copilot-surfaced family id like \"gpt-4o-mini\", \"claude-haiku-4.5\", or \"gpt-4.1\". Empty string = no override; the agent's frontmatter is used. Set this when you've run out of quota on the agent's default model and want a global cheap fallback. The override wins over skill / agent / fallback resolution; if the family is unavailable on your Copilot subscription, the runner falls through to the normal chain with a warning."
+          "description": "Override the model family for ALL CopilotHarness LM calls (agent, pipeline agents, sub-agents). Use a Copilot-surfaced family id like \"gpt-4o-mini\", \"claude-haiku-4.5\", or \"gpt-4.1\". Empty string = no override; the agent's frontmatter is used. Set this when you've run out of quota on the agent's default model and want a global cheap fallback. The override wins over skill / agent / fallback resolution; if the family is unavailable on your Copilot subscription, the runner falls through to the normal chain with a warning."
         },
         "copilotHarness.verboseStageOutput": {
           "type": "boolean",
@@ -113,13 +113,13 @@
           "default": 0,
           "minimum": 0,
           "maximum": 200000,
-          "description": "Per-turn context cap in input tokens for the orchestrator (and pipeline runners that adopt the cap). 0 = use the built-in default (50000). Lower = lower per-turn cost but less history retained; higher = more history but more tokens billed per turn. A pipeline.yaml `context_cap:` field overrides this setting for that pipeline. Values above 200000 are clamped to the model context window. Set via `/context-cap <N>` in chat, or directly here."
+          "description": "Per-turn context cap in input tokens for the agent (and pipeline runners that adopt the cap). 0 = use the built-in default (50000). Lower = lower per-turn cost but less history retained; higher = more history but more tokens billed per turn. A pipeline.yaml `context_cap:` field overrides this setting for that pipeline. Values above 200000 are clamped to the model context window. Set via `/context-cap <N>` in chat, or directly here."
         },
-        "copilotHarness.butlerBudget": {
+        "copilotHarness.agentBudget": {
           "type": "number",
           "default": 30,
           "minimum": 0,
-          "description": "Per-turn credit cap for butler mode (`@harness <prompt>`). MVP item 3 / Track D.4. Pipelines already get cost governance via `pipeline.yaml::max_credits`; this is the equivalent for butler turns. The cap covers ALL cycles inside one user turn (each `sendRequest` is a billable event; the article's cycle-loop pattern can fire many per turn). Set to 0 to disable enforcement. Default of 30 credits matches Sonnet 4.5/4.6 at ~3-5 cycles of typical butler work; raise if you regularly hit halts on legitimate work. Halts emit a one-time chat marker and force-finalise the turn cleanly. Warning fires at 80% (matches the pipeline `warn_at` default)."
+          "description": "Per-turn credit cap for agent mode (`@harness <prompt>`). MVP item 3 / Track D.4. Pipelines already get cost governance via `pipeline.yaml::max_credits`; this is the equivalent for agent turns. The cap covers ALL cycles inside one user turn (each `sendRequest` is a billable event; the article's cycle-loop pattern can fire many per turn). Set to 0 to disable enforcement. Default of 30 credits matches Sonnet 4.5/4.6 at ~3-5 cycles of typical agent work; raise if you regularly hit halts on legitimate work. Halts emit a one-time chat marker and force-finalise the turn cleanly. Warning fires at 80% (matches the pipeline `warn_at` default)."
         }
       }
     },
@@ -221,7 +221,7 @@
       {
         "name": "harness_list_subagents",
         "displayName": "List spawnable sub-agents (CopilotHarness)",
-        "modelDescription": "List the sub-agent roles the orchestrator is permitted to spawn, with each role's tool allow-list. Call before spawning when unsure which role fits.",
+        "modelDescription": "List the sub-agent roles the agent is permitted to spawn, with each role's tool allow-list. Call before spawning when unsure which role fits.",
         "toolReferenceName": "harness_list_subagents",
         "canBeReferencedInPrompt": false,
         "inputSchema": {
@@ -232,7 +232,7 @@
       {
         "name": "harness_get_skill",
         "displayName": "Fetch skill content (CopilotHarness)",
-        "modelDescription": "Fetch the body of an installed skill (e.g. 'orchestrator-routing') when you need detailed routing rules, picker tables, or anti-patterns that aren't covered by your inline core rules. The harness used to push the full skill body into the system prompt every turn; now you pull on demand. Call this when you need detail about: tool selection, pipeline recommendation, sub-agent runners status, anti-patterns, or anything else not covered in the agent's inline 'Core rules' section. Do NOT call on every turn — most simple Q&A doesn't need it.",
+        "modelDescription": "Fetch the body of an installed skill (e.g. 'agent-routing') when you need detailed routing rules, picker tables, or anti-patterns that aren't covered by your inline core rules. The harness used to push the full skill body into the system prompt every turn; now you pull on demand. Call this when you need detail about: tool selection, pipeline recommendation, sub-agent runners status, anti-patterns, or anything else not covered in the agent's inline 'Core rules' section. Do NOT call on every turn — most simple Q&A doesn't need it.",
         "toolReferenceName": "harness_get_skill",
         "canBeReferencedInPrompt": false,
         "inputSchema": {

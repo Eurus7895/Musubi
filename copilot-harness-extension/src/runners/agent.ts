@@ -1,16 +1,16 @@
 /**
  * harness-tier: ephemeral
  * expires-when: models reliably drive multi-turn tool-use without compensation
- * cost-lever: deletes the orchestrator runner; the butler.py path becomes primary
- * (what: Butler runner wrapping vscode.lm for orchestrator mode.)
+ * cost-lever: deletes the agent runner; the agent.py path becomes primary
+ * (what: Agent runner wrapping vscode.lm for agent mode.)
  */
 /**
- * runners/orchestrator.ts — Phase B.2 vscode shell for the orchestrator.
+ * runners/agent.ts — Phase B.2 vscode shell for the agent.
  *
- * The orchestrator holds the persistent chat with the user across turns,
+ * The agent holds the persistent chat with the user across turns,
  * replays prior turns from the chat context, and spawns read-only
  * sub-agents through real `vscode.lm` tool calls. Pure helpers (system-
- * prompt assembly, MCP dispatch, spawn tracking) live in orchestratorCore.ts
+ * prompt assembly, MCP dispatch, spawn tracking) live in agentCore.ts
  * so they can be unit-tested without a vscode runtime.
  *
  * Phase C will replace the per-turn parent session with a chat-keyed
@@ -33,16 +33,16 @@ import {
 } from "../pipelineBudgetCore";
 import {
   applyCompaction,
-  buildOrchestratorSystemPrompt,
+  buildAgentSystemPrompt,
   cleanupOutstandingSubagents,
   detectFrustration,
-  dispatchOrchestratorTool,
-  loadOrchestratorPrompts,
+  dispatchAgentTool,
+  loadAgentPrompts,
   CONSECUTIVE_EMPTY_CYCLE_LIMIT,
   MAX_TOOL_CYCLES,
-  ORCHESTRATOR_AGENT_NAME,
-  ORCHESTRATOR_SUBAGENT_TOOL_NAMES,
-  ORCHESTRATOR_TOOLS,
+  AGENT_NAME,
+  AGENT_SUBAGENT_TOOL_NAMES,
+  AGENT_TOOLS,
   estimateTokens,
   parseConversationResponse,
   planCompaction,
@@ -51,9 +51,9 @@ import {
   totalHistoryTokens,
   TriggerDedup,
   type CompactionStrategy,
-  type OrchestratorMessage,
+  type AgentMessage,
   type ToolDispatchContext,
-} from "./orchestratorCore";
+} from "./agentCore";
 import { runSummarizerSubagent } from "./summarizerRunner";
 import { runSubagentForHandle } from "./subagentRunner";
 import type { SubagentRoleId } from "./subagentRunnerCore";
@@ -91,14 +91,14 @@ function launchSubagentRunnerInBackground(
     toolInvocationToken,
   }).catch(err => {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[orchestrator] background runner ${role} threw: ${msg}`);
+    log(`[agent] background runner ${role} threw: ${msg}`);
   });
 }
 
 export {
-  ORCHESTRATOR_AGENT_NAME,
-  ORCHESTRATOR_TOOLS,
-} from "./orchestratorCore";
+  AGENT_NAME,
+  AGENT_TOOLS,
+} from "./agentCore";
 
 // ── Memory fetcher (vscode-free wrapper around McpClient) ────────────────────
 
@@ -117,7 +117,7 @@ async function fetchMemoryContext(client: McpClient): Promise<MemoryContext> {
   }
 }
 
-async function createOrchestratorSession(
+async function createAgentSession(
   client: McpClient,
   request: string,
 ): Promise<string> {
@@ -143,14 +143,14 @@ const PARTICIPANT_ID = "copilot-harness.harness";
 const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
 
 /**
- * Sub-agent roles that have an extension-side LM runner. The orchestrator
+ * Sub-agent roles that have an extension-side LM runner. The agent
  * advertises harness_spawn_subagent / await / list ONLY when this set is
  * non-empty — otherwise the LM ends up looping spawn → 30 s wall-clock kill
  * → retry on roles that have no runner to drive them, burning tokens for
  * no result.
  *
  * Phase G.1.6: now that explorerRunner / investigatorRunner /
- * reviewerAuxRunner all ship from G.1, the orchestrator can spawn
+ * reviewerAuxRunner all ship from G.1, the agent can spawn
  * them. When the LM calls harness_spawn_subagent below, we ALSO
  * launch the matching runner in the background so the await side
  * sees a terminal row.
@@ -159,9 +159,9 @@ const TOOL_RESULT_STORE_CHAR_CAP = 4_000;
  * (NOT by the LM), so it stays out of this set.
  *
  * planner / coder / reviewer don't have generic runners — they're
- * pipeline-mode-only. Spawning them from the orchestrator would
- * require the orchestrator to act like a pipeline driver, which is
- * out of scope for the orchestrator-freeze direction.
+ * pipeline-mode-only. Spawning them from the agent would
+ * require the agent to act like a pipeline driver, which is
+ * out of scope for the agent-freeze direction.
  */
 const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set([
   "explorer",
@@ -172,16 +172,16 @@ const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set([
 /**
  * The external tool allowlist used to live here as a hardcoded constant.
  * It is now declarative — sourced from `lm_tools:` in the agent's
- * frontmatter (see `.github/agents/orchestrator.agent.md`). The runner
- * reads the list at startup via loadOrchestratorPrompts and uses it as
+ * frontmatter (see `.github/agents/agent.agent.md`). The runner
+ * reads the list at startup via loadAgentPrompts and uses it as
  * the per-turn allowlist below. Edit the agent file to add or remove a
  * tool; no TypeScript change required.
  *
- * If the field is missing or empty, the orchestrator advertises NO
+ * If the field is missing or empty, the agent advertises NO
  * external tools — only its own harness sub-agent tools (which are
  * themselves gated on LM_FACING_SUBAGENT_ROLES). That fail-safe
- * behaviour means a bad edit produces a useless orchestrator, not an
- * orchestrator with full Copilot Agent surface.
+ * behaviour means a bad edit produces a useless agent, not an
+ * agent with full Copilot Agent surface.
  */
 
 /**
@@ -191,7 +191,7 @@ const LM_FACING_SUBAGENT_ROLES: ReadonlySet<string> = new Set([
 async function appendMessage(
   client: McpClient,
   chatId: string,
-  role: OrchestratorMessage["role"],
+  role: AgentMessage["role"],
   content: string,
   log: (msg: string) => void,
 ): Promise<void> {
@@ -203,7 +203,7 @@ async function appendMessage(
     });
     const parsed = JSON.parse(raw) as { status?: string; error?: string };
     if (parsed.status !== "ok") {
-      log(`[orchestrator] append_message non-ok: ${parsed.error ?? raw}`);
+      log(`[agent] append_message non-ok: ${parsed.error ?? raw}`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -211,7 +211,7 @@ async function appendMessage(
     // FastMCP "Error executing tool ..." string, JSON.parse swallows the
     // useful part of the message; logging `raw` recovers it.
     const rawHint = raw ? ` raw=${JSON.stringify(raw.slice(0, 500))}` : "";
-    log(`[orchestrator] append_message threw: ${msg}${rawHint}`);
+    log(`[agent] append_message threw: ${msg}${rawHint}`);
   }
 }
 
@@ -220,7 +220,7 @@ async function fetchConversationHistory(
   chatId: string,
   maxTokens: number,
   log: (msg: string) => void,
-): Promise<OrchestratorMessage[]> {
+): Promise<AgentMessage[]> {
   try {
     const raw = await client.callTool("harness_get_conversation", {
       chat_id: chatId, max_tokens: maxTokens,
@@ -228,7 +228,7 @@ async function fetchConversationHistory(
     return parseConversationResponse(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`[orchestrator] get_conversation threw: ${msg}`);
+    log(`[agent] get_conversation threw: ${msg}`);
     return [];
   }
 }
@@ -251,9 +251,9 @@ function firstUserPromptInThread(
   return fallback;
 }
 
-/** Convert harness-side OrchestratorMessage rows into vscode chat messages. */
+/** Convert harness-side AgentMessage rows into vscode chat messages. */
 function toLmMessages(
-  messages: ReadonlyArray<OrchestratorMessage>,
+  messages: ReadonlyArray<AgentMessage>,
 ): vscode.LanguageModelChatMessage[] {
   const out: vscode.LanguageModelChatMessage[] = [];
   for (const m of messages) {
@@ -318,7 +318,7 @@ export function extractChatHistory(
 
 // ── Vscode runtime: tool registration + runner ───────────────────────────────
 
-interface ActiveOrchestrator {
+interface ActiveAgent {
   client: McpClient;
   parentSessionId: string;
   chatId: string;
@@ -333,7 +333,7 @@ interface ActiveOrchestrator {
   roots: string[];
   /**
    * Forwarded into vscode.lm.invokeTool calls inside spawned
-   * sub-agent runners. Same field as the orchestrator turn's request.
+   * sub-agent runners. Same field as the agent turn's request.
    */
   toolInvocationToken?: vscode.ChatParticipantToolToken;
 }
@@ -345,7 +345,7 @@ interface ActiveOrchestrator {
  * the same condition recurs (e.g. the user repeats their complaint).
  */
 async function fireDistillationTrigger(
-  active: ActiveOrchestrator,
+  active: ActiveAgent,
   agent: string,
   issue: string,
   source: string,
@@ -358,7 +358,7 @@ async function fireDistillationTrigger(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    active.log(`[orchestrator] append_failure_pattern threw: ${msg}`);
+    active.log(`[agent] append_failure_pattern threw: ${msg}`);
   }
 }
 
@@ -370,7 +370,7 @@ const REVIEWER_ROLES = new Set(["reviewer", "reviewer-aux"]);
  * `final_status` was 'failed', record a failure pattern.
  */
 async function maybeFireReviewerFailTrigger(
-  active: ActiveOrchestrator,
+  active: ActiveAgent,
   args: Record<string, unknown>,
   awaitResultJson: string,
 ): Promise<void> {
@@ -385,33 +385,33 @@ async function maybeFireReviewerFailTrigger(
   await fireDistillationTrigger(active, role, issue, "reviewer-fail");
 }
 
-let _active: ActiveOrchestrator | null = null;
+let _active: ActiveAgent | null = null;
 
 /**
- * Set the module-level "current orchestrator turn" pointer. The registered
- * vscode.lm tools dispatch through this. Only one orchestrator turn runs
+ * Set the module-level "current agent turn" pointer. The registered
+ * vscode.lm tools dispatch through this. Only one agent turn runs
  * at a time per workspace.
  */
-export function _setActiveOrchestrator(active: ActiveOrchestrator | null): void {
+export function _setActiveAgent(active: ActiveAgent | null): void {
   _active = active;
 }
 
 /**
- * Register the three orchestrator tools with vscode.lm so the LLM can call
+ * Register the three agent tools with vscode.lm so the LLM can call
  * them as real tool calls. Must be called once at extension activation;
  * the returned disposable should be added to the extension subscriptions.
  *
  * NOTE: vscode.lm.registerTool also requires the tool name to appear in
  * package.json `contributes.languageModelTools`. If registration fails
  * (older vscode, missing manifest entry) we log and continue — the
- * orchestrator runner still works for inert / no-tool-call turns.
+ * agent runner still works for inert / no-tool-call turns.
  */
-export function registerOrchestratorTools(
+export function registerAgentTools(
   log: (msg: string) => void,
 ): vscode.Disposable {
   const subs: vscode.Disposable[] = [];
 
-  for (const def of ORCHESTRATOR_TOOLS) {
+  for (const def of AGENT_TOOLS) {
     try {
       subs.push(vscode.lm.registerTool(def.name, {
         async invoke(options, token) {
@@ -419,7 +419,7 @@ export function registerOrchestratorTools(
           if (!active) {
             return new vscode.LanguageModelToolResult([
               new vscode.LanguageModelTextPart(
-                `[harness] ${def.name} called outside an orchestrator turn`,
+                `[harness] ${def.name} called outside an agent turn`,
               ),
             ]);
           }
@@ -431,14 +431,14 @@ export function registerOrchestratorTools(
           const args = (options.input as Record<string, unknown>) ?? {};
           const ctx: ToolDispatchContext = {
             parentSessionId: active.parentSessionId,
-            parentAgentName: ORCHESTRATOR_AGENT_NAME,
+            parentAgentName: AGENT_NAME,
           };
           let raw: string;
           try {
-            raw = await dispatchOrchestratorTool(active.client, ctx, def.name, args);
+            raw = await dispatchAgentTool(active.client, ctx, def.name, args);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            log(`[orchestrator] tool ${def.name} dispatch error: ${msg}`);
+            log(`[agent] tool ${def.name} dispatch error: ${msg}`);
             return new vscode.LanguageModelToolResult([
               new vscode.LanguageModelTextPart(
                 JSON.stringify({ status: "error", error: msg }),
@@ -469,14 +469,14 @@ export function registerOrchestratorTools(
       }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log(`[orchestrator] could not register tool ${def.name}: ${msg}`);
+      log(`[agent] could not register tool ${def.name}: ${msg}`);
     }
   }
 
   return vscode.Disposable.from(...subs);
 }
 
-export interface RunOrchestratorOptions {
+export interface RunAgentOptions {
   prompt: string;
   client: McpClient;
   chatContext: vscode.ChatContext;
@@ -502,7 +502,7 @@ export interface RunOrchestratorOptions {
 }
 
 /**
- * Run a single orchestrator turn. Creates a parent session for the turn,
+ * Run a single agent turn. Creates a parent session for the turn,
  * builds the system prompt + replayed history, then loops sendRequest →
  * tool calls → results until the model produces a turn with no tool calls
  * (or MAX_TOOL_CYCLES is exhausted).
@@ -510,18 +510,18 @@ export interface RunOrchestratorOptions {
  * Sub-session cleanup runs in `finally` so abandoned spawns are recorded
  * even if the LLM call throws or the user cancels.
  */
-export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<void> {
+export async function runAgent(opts: RunAgentOptions): Promise<void> {
   const { prompt, client, chatContext, stream, token, roots, log, sessionSalt, toolInvocationToken } = opts;
 
-  // Honors the orchestrator agent's `model:` frontmatter, and lets the
-  // pushed `orchestrator-routing` skill (or any future complicated skill)
+  // Honors the agent agent's `model:` frontmatter, and lets the
+  // pushed `agent-routing` skill (or any future complicated skill)
   // override via `model:` in its own SKILL.md — see modelSelector.ts.
   let model: vscode.LanguageModelChat;
   try {
     model = await selectModelForAgent({
       roots,
-      agentName: ORCHESTRATOR_AGENT_NAME,
-      skills: ["orchestrator-routing"],
+      agentName: AGENT_NAME,
+      skills: ["agent-routing"],
       log,
     });
   } catch {
@@ -530,20 +530,20 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
   }
 
   // routingSkill is intentionally discarded — Hard Invariant #2 was
-  // relaxed for the orchestrator: SKILL.md is now pulled on demand via
+  // relaxed for the agent: SKILL.md is now pulled on demand via
   // the harness_get_skill LM tool, not pushed into the system prompt.
-  // loadOrchestratorPrompts still reads it from disk so existing tests
+  // loadAgentPrompts still reads it from disk so existing tests
   // exercising the field stay valid; the runner just doesn't use it.
-  const { agentMd, lmTools: agentLmTools } = loadOrchestratorPrompts(roots);
+  const { agentMd, lmTools: agentLmTools } = loadAgentPrompts(roots);
   const memory = await fetchMemoryContext(client);
-  const systemPrompt = buildOrchestratorSystemPrompt({
+  const systemPrompt = buildAgentSystemPrompt({
     agentMd,
     routingSkill: "",
     memoryTier1: memory.tier1_index,
     tier2Available: memory.tier2_available,
   });
 
-  const parentSessionId = await createOrchestratorSession(client, prompt);
+  const parentSessionId = await createAgentSession(client, prompt);
   const tracker = new SpawnTracker();
   const triggers = new TriggerDedup();
 
@@ -557,13 +557,13 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     sessionSalt,
   });
 
-  const active: ActiveOrchestrator = {
+  const active: ActiveAgent = {
     client, parentSessionId, chatId, tracker, triggers, log,
     roots: [...roots],
     toolInvocationToken,
   };
-  _setActiveOrchestrator(active);
-  log(`[orchestrator] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
+  _setActiveAgent(active);
+  log(`[agent] turn started — chat_id=${chatId} parent_session_id=${parentSessionId}`);
 
   // MVP item 3 / Track D.4 — register a per-turn BudgetEnforcer when
   // the user has configured a cap. Same primitive pipelines use; same
@@ -572,29 +572,29 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
   // setting is 0 or unset, no enforcer is registered and the turn
   // runs uncapped (legacy behaviour).
   const cfg = vscode.workspace.getConfiguration("copilotHarness");
-  const butlerBudgetCap = Math.max(0, cfg.get<number>("butlerBudget", 30));
+  const agentBudgetCap = Math.max(0, cfg.get<number>("agentBudget", 30));
   let budgetHalted = false;
-  if (butlerBudgetCap > 0) {
-    const enforcer = new BudgetEnforcer(butlerBudgetCap, 0.8);
+  if (agentBudgetCap > 0) {
+    const enforcer = new BudgetEnforcer(agentBudgetCap, 0.8);
     registerActiveBudget(parentSessionId, enforcer, (event: BudgetEvent) => {
       const pct = Math.round(100 * event.creditsUsed / event.maxCredits);
       if (event.status === "warn") {
         stream.markdown(
-          `\n> ⚠️ **Butler budget warning** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used (${pct}%). ` +
+          `\n> ⚠️ **Agent budget warning** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used (${pct}%). ` +
           `Last call: ${event.thisCallCredits.toFixed(2)} credits on ${event.family} (${event.phase}).\n`,
         );
       } else if (event.status === "halt") {
         stream.markdown(
-          `\n> 🛑 **Butler budget exhausted** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used. ` +
-          `Force-finalising this turn. Raise \`copilotHarness.butlerBudget\` in settings to increase the cap.\n`,
+          `\n> 🛑 **Agent budget exhausted** — ${event.creditsUsed.toFixed(1)} / ${event.maxCredits.toFixed(0)} credits used. ` +
+          `Force-finalising this turn. Raise \`copilotHarness.agentBudget\` in settings to increase the cap.\n`,
         );
       }
-      // No per-call info-line — butler chat is conversational and the
+      // No per-call info-line — agent chat is conversational and the
       // pipeline-style "💰 N credits this call" would clutter the
       // reply stream. Cumulative spend is visible in /credits and the
       // sidebar (Stage 1, MVP A.4).
     });
-    log(`[orchestrator] butler budget enforcer registered — cap=${butlerBudgetCap} credits, warn_at=80%`);
+    log(`[agent] agent budget enforcer registered — cap=${agentBudgetCap} credits, warn_at=80%`);
   }
 
   // Buffer all assistant text emitted during the turn so the conversation
@@ -603,7 +603,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
   const assistantBuf: string[] = [];
 
   // Phase J follow-up — turn telemetry accumulators. Hoisted to function
-  // scope so the finally block (which writes the orchestrator_turns row)
+  // scope so the finally block (which writes the agent_turns row)
   // can read them. Default values cover the case where the try body
   // throws before assigning — we still write a row with the partial data.
   let turnStart = Date.now();
@@ -635,13 +635,13 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     // compaction policy (planCompaction) decides what to drop locally.
     // Phase J.5 — context cap is now resolved per-turn from
     // pipeline.yaml > VS Code setting > DEFAULT_CONTEXT_CAP. The
-    // orchestrator passes no pipelineName, so it falls through to
+    // agent passes no pipelineName, so it falls through to
     // setting + default. Pipeline runners that adopt the cap should
     // pass their pipeline name here.
     const { cap: contextCap, source: capSource } = resolveContextCap({ roots, log });
     const turnBudget = Math.floor(contextCap * 0.95);
     if (capSource !== "default") {
-      log(`[orchestrator] context cap=${contextCap} (${capSource}), turn budget=${turnBudget}t`);
+      log(`[agent] context cap=${contextCap} (${capSource}), turn budget=${turnBudget}t`);
     }
     const fetched = await fetchConversationHistory(client, chatId, turnBudget, log);
 
@@ -649,7 +649,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     const tokenTotal = totalHistoryTokens(fetched, systemPrompt, "");
     const directive: CompactionStrategy = planCompaction(fetched, tokenTotal);
     if (directive.kind !== "none") {
-      log(`[orchestrator] compaction strategy: ${directive.kind} (≈${tokenTotal} tokens)`);
+      log(`[agent] compaction strategy: ${directive.kind} (≈${tokenTotal} tokens)`);
     }
     let compacted = applyCompaction(directive, fetched);
 
@@ -674,9 +674,9 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             { kind: "summarize-old", oldestHalf: directive.oldestHalf }, fetched,
           ),
         ];
-        log(`[orchestrator] summarized ${directive.oldestHalf.length} older turns`);
+        log(`[agent] summarized ${directive.oldestHalf.length} older turns`);
       } else {
-        log(`[orchestrator] summarizer fell through: ${result.reason ?? "unknown"}`);
+        log(`[agent] summarizer fell through: ${result.reason ?? "unknown"}`);
         compacted = applyCompaction(
           { kind: "hard-truncate", budgetTokens: Math.floor(contextCap * 0.5) },
           fetched,
@@ -710,21 +710,21 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
     // Tools the LM can call. Three layers:
     //   1. Harness sub-agent tools (spawn / await / list) — preserve the
-    //      orchestrator's context window when a useful runner exists.
+    //      agent's context window when a useful runner exists.
     //   2. Every other LM tool the workbench has registered — Copilot's
-    //      read_file / grep / list_dir / etc. The orchestrator falls back
+    //      read_file / grep / list_dir / etc. The agent falls back
     //      to these directly while sub-agent runners (explorer, etc.) are
     //      still in progress, so questions like "describe this project"
     //      can be answered without a hung sub-agent spawn.
-    // Dedup against ORCHESTRATOR_TOOL_NAMES so our own registered tools
+    // Dedup against AGENT_TOOL_NAMES so our own registered tools
     // aren't advertised twice. Skip `canBeReferencedInPrompt: false` tools
     // — they are intentionally hidden from prompt surfaces by their owners.
-    const orchestratorToolNames = new Set<string>(
-      ORCHESTRATOR_TOOLS.map(t => t.name),
+    const agentToolNames = new Set<string>(
+      AGENT_TOOLS.map(t => t.name),
     );
     const agentLmToolSet = new Set(agentLmTools);
     const externalCandidates = vscode.lm.tools.filter(
-      t => !orchestratorToolNames.has(t.name) && agentLmToolSet.has(t.name),
+      t => !agentToolNames.has(t.name) && agentLmToolSet.has(t.name),
     );
     const externalTools: vscode.LanguageModelChatTool[] = externalCandidates.map(t => ({
       name: t.name,
@@ -738,12 +738,12 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     // name to LM_FACING_SUBAGENT_ROLES.
     //
     // harness_get_skill is NOT gated — it works regardless of sub-agent
-    // runner availability, and the orchestrator needs it to pull
+    // runner availability, and the agent needs it to pull
     // routing detail on demand (Hard Invariant #2 relaxation).
     const includeHarnessSubagentTools = LM_FACING_SUBAGENT_ROLES.size > 0;
-    const harnessTools: vscode.LanguageModelChatTool[] = ORCHESTRATOR_TOOLS
+    const harnessTools: vscode.LanguageModelChatTool[] = AGENT_TOOLS
       .filter(t =>
-        includeHarnessSubagentTools || !ORCHESTRATOR_SUBAGENT_TOOL_NAMES.has(t.name),
+        includeHarnessSubagentTools || !AGENT_SUBAGENT_TOOL_NAMES.has(t.name),
       )
       .map(t => ({
         name: t.name,
@@ -756,7 +756,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
     // serialized JSON gives a stable proxy for what the API charges.
     const catalogTokenEstimate = estimateTokens(JSON.stringify(lmTools));
     const subagentNote = includeHarnessSubagentTools ? "" : " (harness sub-agent tools hidden — no LM-facing runner)";
-    log(`[orchestrator] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
+    log(`[agent] tool catalog: ${lmTools.length} tools (${harnessTools.length} harness + ${externalTools.length} external) ~${catalogTokenEstimate}t${subagentNote}`);
 
     // Re-assign turnStart now that we're actually starting the cycle
     // loop (the function-scope default was set at entry; this reflects
@@ -802,7 +802,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       const replayTokens  = Math.max(0, Math.floor(initialReplayChars  / 4));
       const turnTokens    = Math.max(0, Math.floor(turnGrowthChars     / 4));
       const totalTokens   = systemTokens + replayTokens + turnTokens + catalogTokenEstimate;
-      log(`[orchestrator] cycle ${cycle} sendRequest:`
+      log(`[agent] cycle ${cycle} sendRequest:`
         + ` system~${systemTokens}t + replay~${replayTokens}t + this-turn~${turnTokens}t`
         + ` + catalog~${catalogTokenEstimate}t = ~${totalTokens}t out`);
 
@@ -849,19 +849,19 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         }
       }
       const lmMs = Date.now() - streamStart;
-      // Accumulate for the orchestrator_turns row (Phase J follow-up).
+      // Accumulate for the agent_turns row (Phase J follow-up).
       turnLmMs += lmMs;
       turnTokensIn += totalTokens;
       turnTokensOut += Math.ceil(textBuf.length / 4);
       turnCycles = cycle + 1;
-      log(`[orchestrator] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
+      log(`[agent] cycle ${cycle}: lm=${lmMs}ms text=${textBuf.length}ch tool_calls=${toolCalls.length}${toolCalls.length > 0 ? " [" + toolCalls.map(c => c.name).join(", ") + "]" : ""}`);
 
       // MVP item 3 / Track D.4 — post-flight credit charge per cycle.
       // Mirrors pipeline.ts::runAgentLM (each sendRequest is a separate
       // billable event). On halt: enforcer's onEvent callback fires
       // the halt markdown, we record the partial reply, and break out
       // of the cycle loop so the existing finally block closes the
-      // turn cleanly. No throw — keeping the orchestrator's existing
+      // turn cleanly. No throw — keeping the agent's existing
       // finally semantics simpler than the pipeline path.
       const activeBudget = getActiveBudget(parentSessionId);
       if (activeBudget) {
@@ -883,7 +883,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
         });
         if (status === "halt") {
           budgetHalted = true;
-          log(`[orchestrator] butler budget exhausted at cycle ${cycle} — finalising`);
+          log(`[agent] agent budget exhausted at cycle ${cycle} — finalising`);
           if (textBuf.length > 0) { assistantBuf.push(textBuf); }
           return;
         }
@@ -891,7 +891,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
 
       if (textBuf.length > 0) { assistantBuf.push(textBuf); }
       if (toolCalls.length === 0) {
-        log(`[orchestrator] turn done — total=${Date.now() - turnStart}ms cycles=${cycle + 1}`);
+        log(`[agent] turn done — total=${Date.now() - turnStart}ms cycles=${cycle + 1}`);
         return;
       }
 
@@ -921,11 +921,11 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
             call.callId, invokeResult.content,
           ));
           resultText = stringifyToolResult(invokeResult.content);
-          log(`[orchestrator]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
+          log(`[agent]   tool ${call.name}: ok ${Date.now() - toolStart}ms result=${resultText.length}ch`);
           callOk = resultText.trim().length > 0;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          log(`[orchestrator]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
+          log(`[agent]   tool ${call.name}: FAIL ${Date.now() - toolStart}ms — ${msg}`);
           resultText = JSON.stringify({ status: "error", error: msg });
           resultParts.push(new vscode.LanguageModelToolResultPart(call.callId, [
             new vscode.LanguageModelTextPart(resultText),
@@ -966,7 +966,7 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       if (cycleUsefulCount === 0) {
         consecutiveEmptyCycles++;
         if (consecutiveEmptyCycles >= CONSECUTIVE_EMPTY_CYCLE_LIMIT) {
-          log(`[orchestrator] ${consecutiveEmptyCycles} consecutive cycles with no useful tool results — bailing to final answer`);
+          log(`[agent] ${consecutiveEmptyCycles} consecutive cycles with no useful tool results — bailing to final answer`);
           stream.markdown(
             "\n\n_[harness] Tool calls returned no useful results — stopping. " +
             "Try a more specific request (e.g. name a file or function)._",
@@ -980,27 +980,27 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       }
     }
 
-    log(`[orchestrator] hit MAX_TOOL_CYCLES (${MAX_TOOL_CYCLES}) — forcing final answer`);
+    log(`[agent] hit MAX_TOOL_CYCLES (${MAX_TOOL_CYCLES}) — forcing final answer`);
     stream.markdown(
-      "\n\n_[harness] Tool-call budget exhausted — orchestrator forced to wrap up._",
+      "\n\n_[harness] Tool-call budget exhausted — agent forced to wrap up._",
     );
   } finally {
     if (assistantBuf.length > 0) {
       await appendMessage(client, chatId, "assistant", assistantBuf.join(""), log);
     }
     await cleanupOutstandingSubagents(client, tracker);
-    _setActiveOrchestrator(null);
+    _setActiveAgent(null);
     // MVP item 3 / Track D.4 — unregister the per-turn enforcer so the
     // registry doesn't leak. Safe to call even when no enforcer was
     // registered (the unregister is a Map.delete which is a no-op on
     // missing keys).
-    if (butlerBudgetCap > 0) {
+    if (agentBudgetCap > 0) {
       unregisterActiveBudget(parentSessionId);
     }
     // Phase J follow-up — record per-turn telemetry. Fire-and-forget;
     // an observability failure must never break a chat turn.
     try {
-      await client.callTool("harness_record_orchestrator_turn", {
+      await client.callTool("harness_record_agent_turn", {
         chat_id: chatId,
         parent_session_id: parentSessionId,
         started_at: turnStart / 1000,
@@ -1014,9 +1014,9 @@ export async function runOrchestrator(opts: RunOrchestratorOptions): Promise<voi
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log(`[orchestrator] record_orchestrator_turn failed: ${msg}`);
+      log(`[agent] record_agent_turn failed: ${msg}`);
     }
-    log(`[orchestrator] turn ended — chat_id=${chatId} parent_session_id=${parentSessionId}`);
+    log(`[agent] turn ended — chat_id=${chatId} parent_session_id=${parentSessionId}`);
   }
 }
 

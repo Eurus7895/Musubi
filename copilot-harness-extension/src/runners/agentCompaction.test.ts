@@ -1,8 +1,8 @@
 /**
  * harness-tier: ephemeral
  * expires-when: models reliably drive multi-turn tool-use without compensation
- * cost-lever: deletes the orchestrator-core compensation layer
- * (what: Tests for orchestratorCore.ts.)
+ * cost-lever: deletes the agent-core compensation layer
+ * (what: Tests for agentCore.ts.)
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,8 +22,8 @@ import {
   SpawnTracker,
   totalHistoryTokens,
   TriggerDedup,
-  type OrchestratorMessage,
-} from "./orchestratorCore";
+  type AgentMessage,
+} from "./agentCore";
 
 // ── estimateTokens ───────────────────────────────────────────────────────────
 
@@ -183,7 +183,7 @@ test("resolveChatId: omitting salt is equivalent to empty salt", () => {
 // ── totalHistoryTokens ───────────────────────────────────────────────────────
 
 test("totalHistoryTokens: sums system prompt + history + current prompt", () => {
-  const messages: OrchestratorMessage[] = [
+  const messages: AgentMessage[] = [
     { role: "user", content: "x".repeat(40) },        // 10 tokens
     { role: "assistant", content: "y".repeat(80) },   // 20 tokens
   ];
@@ -209,7 +209,7 @@ test("planCompaction: returns 'drop-tools' between 80 and 90%", () => {
 });
 
 test("planCompaction: returns 'summarize-old' between 90 and 99%", () => {
-  const history: OrchestratorMessage[] = Array.from({ length: 6 }, (_, i) => ({
+  const history: AgentMessage[] = Array.from({ length: 6 }, (_, i) => ({
     role: i % 2 === 0 ? "user" : "assistant",
     content: `msg ${i}`,
   }));
@@ -247,7 +247,7 @@ test("planCompaction: thresholds are 80/90/99 of model context", () => {
 // ── applyCompaction ──────────────────────────────────────────────────────────
 
 test("applyCompaction: 'none' returns history unchanged", () => {
-  const history: OrchestratorMessage[] = [
+  const history: AgentMessage[] = [
     { role: "user", content: "a" },
     { role: "tool", content: "b" },
   ];
@@ -255,7 +255,7 @@ test("applyCompaction: 'none' returns history unchanged", () => {
 });
 
 test("applyCompaction: 'drop-tools' removes only role:'tool' rows and preserves order", () => {
-  const history: OrchestratorMessage[] = [
+  const history: AgentMessage[] = [
     { role: "user", content: "first" },
     { role: "tool", content: "tool-result" },
     { role: "assistant", content: "second" },
@@ -267,7 +267,7 @@ test("applyCompaction: 'drop-tools' removes only role:'tool' rows and preserves 
 });
 
 test("applyCompaction: 'summarize-old' keeps recent half", () => {
-  const history: OrchestratorMessage[] = Array.from({ length: 6 }, (_, i) => ({
+  const history: AgentMessage[] = Array.from({ length: 6 }, (_, i) => ({
     role: i % 2 === 0 ? "user" : "assistant",
     content: `m${i}`,
   }));
@@ -279,7 +279,7 @@ test("applyCompaction: 'summarize-old' keeps recent half", () => {
 
 test("applyCompaction: 'hard-truncate' keeps newest under budget", () => {
   // 5 messages, each ~20 tokens. Budget for 3 of them.
-  const history: OrchestratorMessage[] = Array.from({ length: 5 }, (_, i) => ({
+  const history: AgentMessage[] = Array.from({ length: 5 }, (_, i) => ({
     role: "user" as const,
     content: `m${i}` + "x".repeat(78), // 80 chars / 4 = 20 tokens
   }));
@@ -298,7 +298,7 @@ test("applyCompaction: 'hard-truncate' keeps newest under budget", () => {
 });
 
 test("applyCompaction: 'hard-truncate' returns at least one message even if oversized", () => {
-  const history: OrchestratorMessage[] = [
+  const history: AgentMessage[] = [
     { role: "user", content: "x".repeat(10000) }, // ~2500 tokens
   ];
   const out = applyCompaction(

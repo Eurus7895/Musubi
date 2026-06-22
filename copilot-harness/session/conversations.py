@@ -4,7 +4,7 @@ harness-tier: substrate
 expires-when: never — Conversation-message append-only store.
 
 
-The orchestrator runner replays prior chat turns on every user message
+The agent runner replays prior chat turns on every user message
 (locked decision: replay-on-each-turn). This module is the storage seam:
 the runner appends `user` / `assistant` / `tool` rows as they happen and
 fetches a token-budgeted, chronological history before the next
@@ -34,17 +34,17 @@ from pathlib import Path
 from storage import db
 from validation.verifier import _CHARS_PER_TOKEN
 
-# Closed enum — the orchestrator runner never writes anything else, and an
+# Closed enum — the agent runner never writes anything else, and an
 # unknown role indicates a runner bug worth surfacing immediately.
 VALID_ROLES: frozenset[str] = frozenset(
     {"user", "assistant", "tool", "system"}
 )
 
 # Per-turn replay budget. Was 100 k and dominated token spend on long chats —
-# the orchestrator replays the budgeted history on every user message, so a
+# the agent replays the budgeted history on every user message, so a
 # default that fills the entire window every turn is wasted spend. 50 k keeps
 # enough recent context for typical multi-turn debugging while letting the
-# 80%/90% reactive compaction in orchestratorCore drop the rest.
+# 80%/90% reactive compaction in agentCore drop the rest.
 DEFAULT_MAX_TOKENS: int = 50_000
 
 

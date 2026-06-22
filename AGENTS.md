@@ -10,7 +10,7 @@
 
 Harness layer for GitHub Copilot Chat in VS Code. The product is
 **governed pipelines** — multi-stage workflows with evaluator firewall,
-correction loop, and append-only audit. The orchestrator chat mode
+correction loop, and append-only audit. The agent chat mode
 exists in the codebase but is **feature-frozen**; new development
 goes into pipelines.
 
@@ -18,7 +18,7 @@ goes into pipelines.
   predetermined chain in `pipeline.yaml` → full guardrails (evaluator
   firewall, validation, correction loop, append-only stage store, audit).
   Invoked via `/<pipeline-name> <task>`.
-- **Orchestrator (frozen, May 2026):** bare `@harness <prompt>` still
+- **Agent (frozen, May 2026):** bare `@harness <prompt>` still
   routes here, but no new features land. Real-world cost data showed
   3-5× plain Copilot Agent per chat turn because provider-side prompt
   caching isn't reachable through `vscode.lm.sendRequest`. Use plain
@@ -26,7 +26,7 @@ goes into pipelines.
 
 The `@harness` chat participant routes automatically: input that starts with
 `/<pipeline-name>` goes to that pipeline; everything else goes to the
-(frozen) orchestrator. Zero LLM call decides which mode — pure prefix match.
+(frozen) agent. Zero LLM call decides which mode — pure prefix match.
 
 ---
 
@@ -36,7 +36,7 @@ The `@harness` chat participant routes automatically: input that starts with
 AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
-.github/agents/                       orchestrator, skill-builder, sub-agent roles
+.github/agents/                       agent, skill-builder, sub-agent roles
 .github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
 copilot-harness/                      Python MCP server (zero LLM)
 copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
@@ -48,7 +48,7 @@ hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
 ## Agent Complexity Levels
 
 ```
-Orchestrator  One main agent + on-demand sub-agents (read-only by default).
+Agent  One main agent + on-demand sub-agents (read-only by default).
               Persistent chat per chat_id, replay, reactive compaction.
               Default for non-pipeline turns.
 Level 0       Single-agent pipeline + skill injection + plan JSON. No evaluator.
@@ -63,7 +63,7 @@ Level 2       Multi-agent + evaluator. Promotion checklist required.
 ```
 PIPELINE:     orient → baseline → generator → evaluator (fresh session)
               → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
-ORCHESTRATOR: (frozen) replay → vscode.lm → tool loop → persist; see runners/orchestrator.ts
+AGENT: (frozen) replay → vscode.lm → tool loop → persist; see runners/agent.ts
 ```
 
 Renders inline in Copilot Chat (per-stage sections, tag lines, retry
@@ -99,7 +99,7 @@ No new pipelines until feature-dev is validated.
 # Pipeline mode (governed pipeline + evaluator firewall)
 @harness /feature-dev add a login endpoint
 
-# Orchestrator mode (default — persistent chat, spawns sub-agents on demand)
+# Agent mode (default — persistent chat, spawns sub-agents on demand)
 @harness explain this error
 @harness add a login endpoint
 
@@ -116,4 +116,4 @@ in `CLAUDE.md` § Hard Invariants. Do not duplicate them here.
 
 ---
 
-*CopilotHarness | 591 Py + 125 TS | Phase F (orchestrator frozen) | May 2026 | docs/design.md · docs/roadmap.md*
+*CopilotHarness | 591 Py + 125 TS | Phase F (agent frozen) | May 2026 | docs/design.md · docs/roadmap.md*

@@ -30,7 +30,7 @@ markdown summary. One LM round-trip, no tools, no follow-up spawns.
    specified in the agent's Output Contract. Use bullets, not
    paragraphs. Skip empty sections entirely.
 4. Stop. Do not add a "summary of the summary" section, prose
-   preamble, or closing remarks. The orchestrator splices your
+   preamble, or closing remarks. The agent splices your
    output verbatim.
 
 ## Bullet style

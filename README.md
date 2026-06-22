@@ -5,7 +5,7 @@ A **governance substrate** for agentic software-engineering work in VS Code
 deterministic verifiers, workspace-scoped file & command tools — exposed
 as an MCP server. Any tool-using LLM can drive it: GitHub Copilot Chat (the
 canonical client), or — when Copilot is offline — Anthropic / OpenAI APIs
-via the bundled `agent-butler` CLI, or any other MCP client.
+via the bundled `agent` CLI, or any other MCP client.
 
 **Copilot Chat reasons. CopilotHarness controls the environment.**
 Zero LLM calls inside the harness.
@@ -35,7 +35,7 @@ Full discipline + the PR-review sentence:
 | Surface | When | What you get |
 |---|---|---|
 | `@harness /feature-dev <task>` (VS Code) | structured code change | 4-agent governed pipeline with firewall, validation, audit |
-| `agent-butler "<task>"` (CLI) | any task, Copilot quota empty | Python CLI drives any LLM with tool use (Anthropic / OpenAI / extensible) against the same harness substrate |
+| `agent "<task>"` (CLI) | any task, Copilot quota empty | Python CLI drives any LLM with tool use (Anthropic / OpenAI / extensible) against the same harness substrate |
 | plain Copilot Chat | casual question | no harness overhead |
 
 ---
@@ -129,7 +129,7 @@ The harness is a Python MCP server (`copilot-harness/server.py`). It
 exposes ~55 `harness_*` tools covering session lifecycle, skills, memory,
 audit, file I/O, and command execution. **Zero LLM calls happen inside it**
 (HI #1). Any tool-using LLM client can drive it; the VS Code extension is
-the canonical one, but the bundled `agent-butler` CLI is a peer.
+the canonical one, but the bundled `agent` CLI is a peer.
 
 **From the VS Code extension**: the extension spawns the server binary on
 start (JSON-RPC over stdio). `@harness <input>` routes by pure string
@@ -138,21 +138,21 @@ check — zero LLM cost:
 - `/<pipeline-name> <task>` → **pipeline mode** (governed agents,
   validation, audit trail) — *`harness-tier: ephemeral`; on dissolution
   path as models improve, per the discipline*
-- Anything else → **butler mode** (persistent chat, model's native
-  multi-turn shape; CLAUDE.md: "skills come first, the butler grows")
+- Anything else → **Agent mode** (persistent chat, model's native
+  multi-turn shape; CLAUDE.md: "skills come first, the Agent grows")
 
 **From any LLM API directly** (Anthropic, OpenAI, …):
 
 ```bash
 pip install -e copilot-harness/.[anthropic]   # or .[openai] or .[all]
-ANTHROPIC_API_KEY=... agent-butler "your task"
+ANTHROPIC_API_KEY=... agent "your task"
 ```
 
-The butler spawns the same MCP server, lists the catalog, drives a
+The Agent CLI spawns the same MCP server, lists the catalog, drives a
 tool-use loop against your chosen LLM. No Copilot Chat required —
 useful when Copilot quota is empty or you want to point a different
 model at the substrate. New vendors are a single file under
-`copilot-harness/butler/vendors/`.
+`copilot-harness/agent/vendors/`.
 
 Full architecture, MCP tool reference, schemas, hooks, and YAML formats
 live in [`docs/design.md`](./docs/design.md).
@@ -167,7 +167,7 @@ Add a command by dropping a new `.md` — no code change required.
 
 | Command | Mode | What it does |
 |---|---|---|
-| `@harness <prompt>` | orchestrator | Persistent chat, spawns sub-agents on demand |
+| `@harness <prompt>` | Agent | Persistent chat, spawns sub-agents on demand |
 | `@harness /feature-dev <task>` | pipeline | 4-agent governed pipeline |
 | `@harness /planner <task>` | pipeline | Planner only (new session) |
 | `@harness /designer` `/coder` `/reviewer` | pipeline | Run a single stage on the active session |
@@ -196,8 +196,8 @@ copilot-harness/                Python MCP server — zero LLM (HI #1)
     storage/  memory/           audit DB + memory loaders (substrate)
     skills/   validation/       skill catalog + verifier + firewall (substrate)
     workspace/ tools/           profile detector + fs/command tools (substrate)
-    butler/                     vendor-agnostic CLI (Anthropic/OpenAI/…)
-                                — agent-butler entry point (substrate)
+    agent/                     vendor-agnostic CLI (Anthropic/OpenAI/…)
+                                — agent entry point (substrate)
     session/  execution/        pipeline-shape lifecycle + executors
                                 (mix; see harness-tier tags)
 

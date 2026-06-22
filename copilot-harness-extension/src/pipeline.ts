@@ -779,7 +779,7 @@ async function runAgentLM(
   // empty or errors, the LM typically tries a slightly-different bad path
   // on the next cycle and stays stuck. After CONSECUTIVE_EMPTY_CYCLE_LIMIT
   // such cycles in a row, break out and let the correction loop handle
-  // the empty output. Mirrors runOrchestrator's bail-out pattern.
+  // the empty output. Mirrors runAgent's bail-out pattern.
   //
   // Why 3, not 2: pipeline agents have tight maxTurns (planner 3,
   // designer 5, reviewer 5). A limit of 2 means the model gets exactly
@@ -992,7 +992,7 @@ async function runAgentLM(
 
     // G.3: append a stage_metrics row. Fire-and-forget — observability
     // writes must never block / abort a pipeline run. Token counts are
-    // estimates (chars/4 heuristic mirrored from orchestratorCore).
+    // estimates (chars/4 heuristic mirrored from agentCore).
     if (obs.client) {
       const startedAt = t0 / 1000;
       const endedAt = Date.now() / 1000;

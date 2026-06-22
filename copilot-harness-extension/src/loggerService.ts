@@ -4,7 +4,7 @@
  * Previously the extension created two channels ("CopilotHarness" in
  * extension.ts, "CopilotHarness Pipeline" in pipeline.ts). They emitted
  * the same kind of diagnostic, so users had to switch between them to
- * follow a session that crossed orchestrator + pipeline boundaries.
+ * follow a session that crossed agent + pipeline boundaries.
  *
  * This module exposes a lazy singleton — first call creates the channel,
  * subsequent calls return the same instance. Both extension.ts and

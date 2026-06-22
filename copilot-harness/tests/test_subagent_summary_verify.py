@@ -171,7 +171,7 @@ def mcp_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def _spawn_explorer(parent: str, output_schema: str | None = None) -> str:
     raw = server.harness_spawn_subagent(
         parent_session_id=parent,
-        parent_agent_name="orchestrator",
+        parent_agent_name="agent",
         role="explorer",
         brief="scan",
         output_schema=output_schema,

@@ -1,4 +1,4 @@
-"""Tests for the butler vendor abstraction — factory + wire converters.
+"""Tests for the agent vendor abstraction — factory + wire converters.
 
 harness-tier: substrate test — every vendor router must round-trip
 through the same content_blocks shape so the loop is vendor-agnostic.
@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from butler.vendors import LMResponse, LMRouter
-from butler.vendors.factory import build_vendor
-from butler.vendors.openai_router import (
+from agent.vendors import LMResponse, LMRouter
+from agent.vendors.factory import build_vendor
+from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
 )
@@ -35,7 +35,7 @@ def test_factory_explicit_anthropic_requires_sdk(monkeypatch: pytest.MonkeyPatch
 
 
 def test_factory_rejects_unknown_vendor() -> None:
-    with pytest.raises(ValueError, match="Unknown butler vendor"):
+    with pytest.raises(ValueError, match="Unknown agent vendor"):
         build_vendor("cohere")
 
 

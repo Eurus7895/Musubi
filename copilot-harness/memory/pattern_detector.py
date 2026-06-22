@@ -69,7 +69,7 @@ def detect_frustration(
 ) -> str | None:
     """Return the label of the first matching frustration pattern, or None.
 
-    The orchestrator runner calls this on each user message. A non-None
+    The agent runner calls this on each user message. A non-None
     return triggers the per-turn distillation trigger (Phase C.2 §6 (d));
     de-dup is the runner's responsibility.
     """

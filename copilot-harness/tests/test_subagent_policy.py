@@ -34,22 +34,22 @@ def test_three_phase_a_roles_present() -> None:
 
 
 def test_phase_b1_pipeline_roles_present_as_subagents() -> None:
-    """Phase B.1 — orchestrator can spawn pipeline roles ad-hoc. The role
+    """Phase B.1 — agent can spawn pipeline roles ad-hoc. The role
     must therefore appear in SUBAGENT_POLICIES with its pipeline tool set."""
     assert {"planner", "coder", "reviewer"}.issubset(SUBAGENT_POLICIES.keys())
 
 
-def test_orchestrator_can_spawn_phase_a_roles() -> None:
+def test_agent_can_spawn_phase_a_roles() -> None:
     assert {"explorer", "investigator", "reviewer-aux"}.issubset(
-        set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"])
+        set(MAIN_SUBAGENT_ALLOWLIST["agent"])
     )
 
 
-def test_orchestrator_can_spawn_pipeline_roles() -> None:
-    """Locked decision #4 — orchestrator may spawn individual pipeline roles
+def test_agent_can_spawn_pipeline_roles() -> None:
+    """Locked decision #4 — agent may spawn individual pipeline roles
     ad-hoc but never a whole pipeline."""
     assert {"planner", "coder", "reviewer"}.issubset(
-        set(MAIN_SUBAGENT_ALLOWLIST["orchestrator"])
+        set(MAIN_SUBAGENT_ALLOWLIST["agent"])
     )
 
 
@@ -85,12 +85,12 @@ def test_reviewer_aux_only_reads() -> None:
 
 # ── check_subagent_allowed ──────────────────────────────────────────────────
 
-def test_orchestrator_can_spawn_explorer() -> None:
-    assert check_subagent_allowed("orchestrator", "explorer") is True
+def test_agent_can_spawn_explorer() -> None:
+    assert check_subagent_allowed("agent", "explorer") is True
 
 
 def test_check_subagent_allowed_is_case_insensitive_main() -> None:
-    assert check_subagent_allowed("ORCHESTRATOR", "explorer") is True
+    assert check_subagent_allowed("AGENT", "explorer") is True
 
 
 def test_coder_can_spawn_explorer_in_phase_g16() -> None:
@@ -113,14 +113,14 @@ def test_unknown_main_denies_all() -> None:
     assert check_subagent_allowed("villain", "explorer") is False
 
 
-def test_unknown_role_denies_for_orchestrator() -> None:
-    assert check_subagent_allowed("orchestrator", "saboteur") is False
+def test_unknown_role_denies_for_agent() -> None:
+    assert check_subagent_allowed("agent", "saboteur") is False
 
 
 # ── list_subagent_roles ─────────────────────────────────────────────────────
 
-def test_list_subagent_roles_for_orchestrator() -> None:
-    roles = list_subagent_roles("orchestrator")
+def test_list_subagent_roles_for_agent() -> None:
+    roles = list_subagent_roles("agent")
     assert set(roles) >= {
         "explorer", "investigator", "reviewer-aux",
         "planner", "coder", "reviewer",
@@ -142,9 +142,9 @@ def test_list_subagent_roles_for_unknown_main_is_empty() -> None:
 
 def test_list_subagent_roles_returns_a_copy() -> None:
     """Mutating the returned list must not affect the global table."""
-    roles = list_subagent_roles("orchestrator")
+    roles = list_subagent_roles("agent")
     roles.append("hacker")
-    assert "hacker" not in MAIN_SUBAGENT_ALLOWLIST["orchestrator"]
+    assert "hacker" not in MAIN_SUBAGENT_ALLOWLIST["agent"]
 
 
 # ── get_subagent_tools ──────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ def test_effective_tools_role_capped_by_main() -> None:
     """Even if main has Write, explorer is read-only."""
     main_tools = ["Read", "Grep", "Glob", "Write", "Edit", "Bash"]
     eff = effective_subagent_tools(
-        "orchestrator", main_tools, "explorer"
+        "agent", main_tools, "explorer"
     )
     assert "Write" not in eff
     assert "Bash" not in eff
@@ -181,14 +181,14 @@ def test_effective_tools_main_capped_by_role() -> None:
     """If main has fewer tools than the role allows, intersect down."""
     main_tools = ["Read"]
     eff = effective_subagent_tools(
-        "orchestrator", main_tools, "investigator"
+        "agent", main_tools, "investigator"
     )
     assert eff == ["Read"]
 
 
 def test_effective_tools_unknown_role_is_empty() -> None:
     assert effective_subagent_tools(
-        "orchestrator", ["Read", "Bash"], "ghost"
+        "agent", ["Read", "Bash"], "ghost"
     ) == []
 
 
@@ -196,7 +196,7 @@ def test_effective_tools_with_caller_narrowing() -> None:
     """`requested_tools` further intersects below role∩main."""
     main_tools = ["Read", "Grep", "Glob", "Bash"]
     eff = effective_subagent_tools(
-        "orchestrator",
+        "agent",
         main_tools,
         "investigator",
         requested_tools=["Read", "Glob"],
@@ -206,21 +206,21 @@ def test_effective_tools_with_caller_narrowing() -> None:
 
 def test_effective_tools_disjoint_intersection_is_empty() -> None:
     eff = effective_subagent_tools(
-        "orchestrator", ["Write", "Edit"], "explorer"
+        "agent", ["Write", "Edit"], "explorer"
     )
     assert eff == []
 
 
 def test_effective_tools_empty_main_tools_is_empty() -> None:
     assert effective_subagent_tools(
-        "orchestrator", [], "explorer"
+        "agent", [], "explorer"
     ) == []
 
 
 # ── subagent_deny_reason ────────────────────────────────────────────────────
 
 def test_deny_reason_unknown_role_lists_valid_roles() -> None:
-    msg = subagent_deny_reason("orchestrator", "ghost")
+    msg = subagent_deny_reason("agent", "ghost")
     assert "ghost" in msg
     assert "explorer" in msg
 

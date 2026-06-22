@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
 
 -- Conversation messages (Phase C.1). One row per user / assistant / tool /
--- system turn in an orchestrator chat. The orchestrator runner replays the
+-- system turn in an agent chat. The agent runner replays the
 -- chronological history on every user turn (locked decision: replay-on-each-
 -- turn). Truncation is token-budgeted and newest-first; see
 -- session/conversations.py::get_history.
@@ -204,15 +204,15 @@ CREATE TABLE IF NOT EXISTS stage_metrics (
 CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
     ON stage_metrics (session_id);
 
--- Phase J follow-up — orchestrator-turn observability. Parallel to
+-- Phase J follow-up — agent-turn observability. Parallel to
 -- `stage_metrics` (which is pipeline-only) so the Tasks view and any
--- future cross-session credit dashboard can show orchestrator usage
+-- future cross-session credit dashboard can show agent usage
 -- alongside pipeline usage instead of having to load
 -- `conversation_messages` (raw chat log without metrics).
--- One row per orchestrator turn. parent_session_id is the
--- per-turn synthetic session the runner mints in createOrchestratorSession.
+-- One row per agent turn. parent_session_id is the
+-- per-turn synthetic session the runner mints in createAgentSession.
 -- chat_id stays stable across all turns of the same chat panel.
-CREATE TABLE IF NOT EXISTS orchestrator_turns (
+CREATE TABLE IF NOT EXISTS agent_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id              TEXT NOT NULL,
     parent_session_id    TEXT NOT NULL,
@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_turns (
     total_ms             INTEGER NOT NULL DEFAULT 0,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
-CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_chat
-    ON orchestrator_turns (chat_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_orchestrator_turns_started
-    ON orchestrator_turns (started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_chat
+    ON agent_turns (chat_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_started
+    ON agent_turns (started_at);
