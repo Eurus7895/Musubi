@@ -1,0 +1,268 @@
+{
+  "name": "copilot-harness-extension",
+  "displayName": "CopilotHarness",
+  "description": "Automated 4-agent pipeline for GitHub Copilot Chat via CopilotHarness — inline chat rendering + sidebar Tasks view.",
+  "version": "0.4.0",
+  "publisher": "copilot-harness",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Eurus7895/CopilotHarness"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "AI"
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "copilot-harness.harness",
+        "name": "harness",
+        "fullName": "CopilotHarness",
+        "description": "Runs the automated 4-agent pipeline. Usage: @harness <your request>",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      {
+        "command": "copilot-harness.refreshTasks",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.openSessionArtifact",
+        "title": "Open Session Artifact",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.showTasks",
+        "title": "Show Tasks",
+        "category": "CopilotHarness",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "copilot-harness.clearActiveSession",
+        "title": "Clear Active Session",
+        "category": "CopilotHarness",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "copilot-harness.resumeSession",
+        "title": "Resume paused pipeline",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.toggleAutoApprove",
+        "title": "Toggle auto-approve for a pipeline",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.refreshModels",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.setModelOverrideFromTree",
+        "title": "Set as harness model",
+        "category": "CopilotHarness"
+      },
+      {
+        "command": "copilot-harness.clearModelOverride",
+        "title": "Clear model override",
+        "category": "CopilotHarness",
+        "icon": "$(close)"
+      },
+      {
+        "command": "copilot-harness.refreshPipelines",
+        "title": "Refresh",
+        "category": "CopilotHarness",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-harness.togglePipelineAutoApprove",
+        "title": "Toggle auto-approve for pipeline",
+        "category": "CopilotHarness"
+      }
+    ],
+    "configuration": {
+      "title": "CopilotHarness",
+      "properties": {
+        "copilotHarness.autoApprove": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "boolean" },
+          "description": "Per-pipeline review-gate auto-approve flag (Phase G.1.5). Maps pipeline name → boolean. When true, the gate UI is skipped between stages of that pipeline. Toggle from the chat-side button or directly in settings (e.g. \"copilotHarness.autoApprove\": { \"feature-dev\": true })."
+        },
+        "copilotHarness.modelOverride": {
+          "type": "string",
+          "default": "",
+          "description": "Override the model family for ALL CopilotHarness LM calls (agent, pipeline agents, sub-agents). Use a Copilot-surfaced family id like \"gpt-4o-mini\", \"claude-haiku-4.5\", or \"gpt-4.1\". Empty string = no override; the agent's frontmatter is used. Set this when you've run out of quota on the agent's default model and want a global cheap fallback. The override wins over skill / agent / fallback resolution; if the family is unavailable on your Copilot subscription, the runner falls through to the normal chain with a warning."
+        },
+        "copilotHarness.verboseStageOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "When ON, every pipeline stage emits its full output body inline in the chat panel (planner tasks table, designer modules, reviewer issues with fix suggestions, etc.). When OFF (default), only the per-stage status line + a click-to-open anchor to the materialised file (.harness/sessions/<id>/<stage>.md) is shown — the full content is still written to disk for the record. Turn ON for live debugging; OFF keeps the chat focused on the conversation."
+        },
+        "copilotHarness.contextCap": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 200000,
+          "description": "Per-turn context cap in input tokens for the agent (and pipeline runners that adopt the cap). 0 = use the built-in default (50000). Lower = lower per-turn cost but less history retained; higher = more history but more tokens billed per turn. A pipeline.yaml `context_cap:` field overrides this setting for that pipeline. Values above 200000 are clamped to the model context window. Set via `/context-cap <N>` in chat, or directly here."
+        },
+        "copilotHarness.agentBudget": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Per-turn credit cap for agent mode (`@harness <prompt>`). MVP item 3 / Track D.4. Pipelines already get cost governance via `pipeline.yaml::max_credits`; this is the equivalent for agent turns. The cap covers ALL cycles inside one user turn (each `sendRequest` is a billable event; the article's cycle-loop pattern can fire many per turn). Set to 0 to disable enforcement. Default of 30 credits matches Sonnet 4.5/4.6 at ~3-5 cycles of typical agent work; raise if you regularly hit halts on legitimate work. Halts emit a one-time chat marker and force-finalise the turn cleanly. Warning fires at 80% (matches the pipeline `warn_at` default)."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilotHarness",
+          "title": "CopilotHarness",
+          "icon": "media/icons/harness.svg"
+        }
+      ]
+    },
+    "views": {
+      "copilotHarness": [
+        {
+          "type": "tree",
+          "id": "copilotHarness.tasks",
+          "name": "Tasks",
+          "contextualTitle": "CopilotHarness Tasks"
+        },
+        {
+          "type": "tree",
+          "id": "copilotHarness.models",
+          "name": "Models",
+          "contextualTitle": "CopilotHarness Models"
+        },
+        {
+          "type": "tree",
+          "id": "copilotHarness.pipelines",
+          "name": "Pipelines",
+          "contextualTitle": "CopilotHarness Pipelines"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilot-harness.refreshTasks",
+          "when": "view == copilotHarness.tasks",
+          "group": "navigation"
+        },
+        {
+          "command": "copilot-harness.refreshModels",
+          "when": "view == copilotHarness.models",
+          "group": "navigation"
+        },
+        {
+          "command": "copilot-harness.refreshPipelines",
+          "when": "view == copilotHarness.pipelines",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "copilot-harness.clearActiveSession",
+          "when": "view == copilotHarness.tasks && viewItem == section-active",
+          "group": "inline"
+        },
+        {
+          "command": "copilot-harness.clearModelOverride",
+          "when": "view == copilotHarness.models && viewItem == model-header-active",
+          "group": "inline"
+        }
+      ]
+    },
+    "languageModelTools": [
+      {
+        "name": "harness_spawn_subagent",
+        "displayName": "Spawn sub-agent (CopilotHarness)",
+        "modelDescription": "Spawn a read-only sub-agent (explorer, investigator, reviewer-aux, planner, coder, reviewer) with a one-sentence brief. Returns a handle_id you must pass to harness_await_subagent. Sub-agents see only the brief — no conversation history, memory, or other sub-agent results.",
+        "toolReferenceName": "harness_spawn_subagent",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "role": { "type": "string" },
+            "brief": { "type": "string" },
+            "allowed_tools": { "type": "array", "items": { "type": "string" } },
+            "output_schema": { "type": "object" }
+          },
+          "required": ["role", "brief"]
+        }
+      },
+      {
+        "name": "harness_await_subagent",
+        "displayName": "Await sub-agent (CopilotHarness)",
+        "modelDescription": "Block until a spawned sub-agent reaches a terminal state (done, failed, escalated, abandoned) or its wall-clock cap fires. Returns the sub-agent's summary + structured payload.",
+        "toolReferenceName": "harness_await_subagent",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "handle_id": { "type": "string" },
+            "max_wait_s": { "type": "number" }
+          },
+          "required": ["handle_id"]
+        }
+      },
+      {
+        "name": "harness_list_subagents",
+        "displayName": "List spawnable sub-agents (CopilotHarness)",
+        "modelDescription": "List the sub-agent roles the agent is permitted to spawn, with each role's tool allow-list. Call before spawning when unsure which role fits.",
+        "toolReferenceName": "harness_list_subagents",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "harness_get_skill",
+        "displayName": "Fetch skill content (CopilotHarness)",
+        "modelDescription": "Fetch the body of an installed skill (e.g. 'agent-routing') when you need detailed routing rules, picker tables, or anti-patterns that aren't covered by your inline core rules. The harness used to push the full skill body into the system prompt every turn; now you pull on demand. Call this when you need detail about: tool selection, pipeline recommendation, sub-agent runners status, anti-patterns, or anything else not covered in the agent's inline 'Core rules' section. Do NOT call on every turn — most simple Q&A doesn't need it.",
+        "toolReferenceName": "harness_get_skill",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "skill_id": { "type": "string" }
+          },
+          "required": ["skill_id"]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "setup": "node scripts/run-bash.js scripts/setup.sh",
+    "compile": "npx tsc -p ./",
+    "watch": "npx tsc --watch -p ./",
+    "build:server": "node scripts/run-bash.js scripts/build-server.sh",
+    "build:assets": "node scripts/run-bash.js scripts/copy-assets.sh",
+    "build": "node scripts/run-bash.js scripts/build-parallel.sh",
+    "build:serial": "npm run build:server && npm run build:assets && npm run compile",
+    "package": "npm run build && vsce package",
+    "install:vsix": "node scripts/run-bash.js scripts/install-vsix.sh",
+    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "test:watch": "node --test --watch --import tsx 'src/**/*.test.ts'",
+    "all": "npm run setup && npm run package && npm run install:vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.93.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}

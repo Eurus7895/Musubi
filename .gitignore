@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Parallel-build step logs
+.build-logs/
+
 # C extensions
 *.so
 
@@ -60,6 +63,18 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+
+# CopilotHarness runtime database
+copilot-harness/storage/copilot_harness.db
+copilot-harness/storage/audit.db
+copilot-harness/memory/cross_session.db
+
+# CopilotHarness build output — copy-assets.sh stages .github/ assets and
+# LICENSE into the extension dir for .vsix packaging. Source of truth lives
+# at the repo root; these copies must never be committed (would drift
+# silently).
+copilot-harness-extension/.github/
+copilot-harness-extension/LICENSE
 
 # Flask stuff:
 instance/
@@ -205,3 +220,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Node.js
+node_modules/
+dist/

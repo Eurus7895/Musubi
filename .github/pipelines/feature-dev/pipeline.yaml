@@ -1,0 +1,55 @@
+# harness-tier: ephemeral
+# expires-when: the 4-stage pipeline is dissolved (gated on item-10 eval data)
+# cost-lever: deletes the whole pipeline runtime + its agent set
+name: feature-dev
+description: Guided feature development — plan → design → code → review
+version: 1.0.0
+level: 2
+
+# Phase J.3 — credit budget. The pipeline halts if cumulative LM cost
+# would exceed max_credits; warn_at (fraction in (0,1]) triggers a
+# one-time soft warning at that share of the cap. Raise either via
+# pipeline.yaml edit; resume after halt with `/continue`.
+max_credits: 50
+warn_at: 0.8
+
+baseline_checks:
+  - type: file_read
+    path: src/
+    error: "Cannot read src/ — ensure workspace root contains source."
+
+generator:
+  agents:
+    - name: planner
+      agent: agents/planner.agent.md
+      skill: null
+      # no spawns: planner has no sub-agents
+    - name: designer
+      agent: agents/designer.agent.md
+      skill: skills/api-design/SKILL.md
+      # no spawns: designer has no sub-agents
+    - name: coder
+      agent: agents/coder.agent.md
+      skill: skills/python/SKILL.md
+      # Phase G.1.6 — coder may pre-spawn an explorer (existing-callers
+      # scan) and an investigator (diagnostics). The runtime allow-list is
+      # `spawns ∩ MAIN_SUBAGENT_ALLOWLIST['coder']` in scripts/policy_engine.py.
+      spawns: [explorer, investigator]
+
+evaluator:
+  agent: agents/reviewer.agent.md
+  skill: skills/code-review/SKILL.md
+  # Phase G.1.6 — reviewer may pre-spawn reviewer-aux for per-file checklists.
+  spawns: [reviewer-aux]
+
+correction:
+  max_retries: 3
+  escalate_message: "Feature requires human review — max correction attempts exhausted"
+  # Phase G.2 — fail-loud on critical findings instead of burning retries
+  # on potentially-broken state. The TS runner consults
+  # `harness_get_correction_rules` to read these and coerce reviewer
+  # status='escalate' on the first matching pass.
+  escalate_on_critical: true
+  # Optional: escalate any high+severity issue in these categories. Empty
+  # list ⇒ disabled (only escalate_on_critical applies).
+  escalate_on_categories: []

@@ -1,0 +1,60 @@
+<!--
+  CopilotHarness marketplace hero icon (256×256 design).
+
+  Same abstraction as harness.svg but with the dark rounded-square
+  background from the design mockup (hero-dark variant), and the
+  amber output branch (reviewer / shipped change).
+
+  To produce the PNG that VS Code's marketplace listing requires:
+
+    # Using librsvg (recommended — cleanest rasterisation):
+    rsvg-convert -w 256 -h 256 media/icons/harness-hero.svg \
+        -o media/icons/harness-hero.png
+
+    # Or using ImageMagick:
+    convert -background none -density 384 media/icons/harness-hero.svg \
+        -resize 256x256 media/icons/harness-hero.png
+
+  Then point `"icon": "media/icons/harness-hero.png"` in package.json.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 256 256"
+     width="256" height="256">
+  <defs>
+    <!-- Subtle radial to give the tile depth, matching the hero mockup. -->
+    <radialGradient id="bg" cx="50%" cy="30%" r="75%">
+      <stop offset="0%"  stop-color="#2a2a2a"/>
+      <stop offset="70%" stop-color="#141414"/>
+      <stop offset="100%" stop-color="#0b0b0b"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded dark square background -->
+  <rect x="0" y="0" width="256" height="256" rx="56" ry="56" fill="url(#bg)"/>
+  <!-- Hairline highlight at the top edge for the bevelled look -->
+  <rect x="0" y="0" width="256" height="2" rx="1" fill="#ffffff" opacity="0.06"/>
+
+  <!-- Three input branches converging on the anchor -->
+  <g stroke="#eeeeee" stroke-width="10" stroke-linecap="round" fill="none">
+    <line x1="72"  y1="82"  x2="128" y2="134"/>
+    <line x1="128" y1="58"  x2="128" y2="134"/>
+    <line x1="184" y1="82"  x2="128" y2="134"/>
+  </g>
+
+  <!-- Output branch (amber) -->
+  <line x1="128" y1="134" x2="128" y2="198"
+        stroke="#ff9b3d" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Input nodes -->
+  <g fill="#eeeeee">
+    <circle cx="72"  cy="82" r="9"/>
+    <circle cx="128" cy="58" r="9"/>
+    <circle cx="184" cy="82" r="9"/>
+  </g>
+
+  <!-- Anchor node (slightly larger, still white to read as "hub") -->
+  <circle cx="128" cy="134" r="14" fill="#ffffff"/>
+
+  <!-- Output node (amber to match the branch) -->
+  <circle cx="128" cy="198" r="10" fill="#ff9b3d"/>
+</svg>
