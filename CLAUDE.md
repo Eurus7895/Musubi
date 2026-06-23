@@ -1,7 +1,7 @@
-# CLAUDE.md — CopilotHarness
+# CLAUDE.md — Musubi
 
 > Rules and commands for working in this repo.
-> Direction and discipline → [`docs/harness-direction.md`](./docs/harness-direction.md).
+> Direction and discipline → [`docs/musubi-direction.md`](./docs/musubi-direction.md).
 > Architecture, schemas, MCP tool reference → [`docs/design.md`](./docs/design.md).
 > Forward-looking plan → [`docs/roadmap.md`](./docs/roadmap.md).
 > Agent session-start map → [`AGENTS.md`](./AGENTS.md).
@@ -10,12 +10,12 @@
 
 ## One Sentence
 
-CopilotHarness is a **governance layer** for agentic software-engineering
+Musubi is a **governance layer** for agentic software-engineering
 work in VS Code — firewall, audit, validator, budget, skill injection.
 It is the environment the model acts within; it is not a wrapper around
 the model's intelligence.
 
-**Copilot Chat reasons. CopilotHarness controls the environment.**
+**Copilot Chat reasons. Musubi controls the environment.**
 Zero LLM calls inside the harness.
 
 ---
@@ -32,11 +32,11 @@ Zero LLM calls inside the harness.
 | Policy engine (`scripts/policy_engine.py`) | `materializeCoderFiles` + JSON manifest contract |
 | `BudgetEnforcer` + per-call credit accounting | Pre-spawn fanout (`preSpawnAndSplice`) |
 | Firewall via `_STAGE_PERMISSIONS` (HI #3) | `runStageReviewGate` 4-button UX |
-| MCP tool catalog (`harness_*`) | Per-stage `harness-tier`-tagged scaffolds |
+| MCP tool catalog (`musubi_*`) | Per-stage `musubi-tier`-tagged scaffolds |
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration
 trigger fires.** Full per-component analysis with removability cost and
-cost-lever values lives in [`docs/harness-direction.md`](./docs/harness-direction.md).
+cost-lever values lives in [`docs/musubi-direction.md`](./docs/musubi-direction.md).
 
 ---
 
@@ -45,15 +45,15 @@ cost-lever values lives in [`docs/harness-direction.md`](./docs/harness-directio
 These cannot be broken without an explicit design discussion. If a
 change would violate one, stop and ask.
 
-1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `harness_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: Copilot via `vscode.lm.sendRequest` (embedded host), or the vendor-agnostic `LMRouter` in `agent/vendors/base.py` (standalone host). The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
-2. **Skills are pushed to pipeline agents; pulled on demand by the Agent.** Pipeline-side: `harness_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Agent-side: `harness_get_skill` LM tool, model decides when to load.
+1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `musubi_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: Copilot via `vscode.lm.sendRequest` (embedded host), or the vendor-agnostic `LMRouter` in `agent/vendors/base.py` (standalone host). The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
+2. **Skills are pushed to pipeline agents; pulled on demand by the Agent.** Pipeline-side: `musubi_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Agent-side: `musubi_get_skill` LM tool, model decides when to load.
 3. **Evaluator firewall.** Reviewer sees `code` only — no request, plan, design, or memory. Enforced in `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (Python + mirrored in `pipeline.ts`).
 4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → Agent. No LLM call decides the route.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py::PIPELINE_POLICIES` denies unknown `(pipeline, agent)` combinations. Never relax to fail-open.
 6. **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Pipeline-specific role variants (filename-prefixed) require 3+ documented failures of the canonical agent.
 7. **Append-only stage store.** Retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
-8. **No silent sub-agents.** Every spawn + completion writes a row to `subagent_audit`, visible via `harness_query_subagent_events`.
-9. **Tag and expire.** Every component carries a `harness-tier` tag (`substrate` or `ephemeral`). Ephemeral components declare `expires-when:` AND `cost-lever:`. PRs that add ephemeral structure without retiring an equivalent — or strengthening the substrate — get pushed back.
+8. **No silent sub-agents.** Every spawn + completion writes a row to `subagent_audit`, visible via `musubi_query_subagent_events`.
+9. **Tag and expire.** Every component carries a `musubi-tier` tag (`substrate` or `ephemeral`). Ephemeral components declare `expires-when:` AND `cost-lever:`. PRs that add ephemeral structure without retiring an equivalent — or strengthening the substrate — get pushed back.
 
 ---
 

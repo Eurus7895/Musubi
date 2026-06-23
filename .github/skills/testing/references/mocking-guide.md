@@ -28,9 +28,9 @@ from unittest.mock import patch
 def test_run_lint_passes_correct_args(mock_run: MagicMock) -> None:
     mock_run.return_value = MagicMock(returncode=0, stdout="[]", stderr="")
     from executor import run_lint
-    run_lint(["copilot-harness/state.py"])
+    run_lint(["musubi/state.py"])
     mock_run.assert_called_once_with(
-        ["ruff", "check", "--output-format=json", "copilot-harness/state.py"],
+        ["ruff", "check", "--output-format=json", "musubi/state.py"],
         capture_output=True,
         text=True,
         timeout=30,

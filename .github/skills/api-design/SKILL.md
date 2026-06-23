@@ -1,7 +1,7 @@
 ---
 name: api-design
 description: Designs REST APIs and MCP tool interfaces with consistent conventions. Use when the user is designing an API, endpoint, REST interface, MCP tool, or tool schema.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -28,7 +28,7 @@ secure, and implementable without ambiguity.
    Every endpoint has a 400 and 500 response schema.
    Use consistent `{"error": "code", "message": "..."}` envelope.
 
-5. **For MCP tools:** name as `harness_{verb}_{noun}`. Document all parameters
+5. **For MCP tools:** name as `musubi_{verb}_{noun}`. Document all parameters
    with type and description. Return `{"ok": bool, "result": ...}` on success,
    `{"ok": false, "error": "code", "message": "..."}` on failure.
 
@@ -38,7 +38,7 @@ secure, and implementable without ambiguity.
 ## Assets
 
 `openapi-template.yaml` — use as starting point for new API definitions.
-Run via: `harness_run_asset("api-design", "openapi-template.yaml", {"title": "...", "version": "..."})`
+Run via: `musubi_run_asset("api-design", "openapi-template.yaml", {"title": "...", "version": "..."})`
 Returns a populated OpenAPI 3.0 skeleton.
 
 ## When to Load References

@@ -1,7 +1,7 @@
 ---
 name: database-patterns
 description: SQLite schema design, query patterns, and state management for append-only session storage. Use when the user is working with a database, schema, SQL, SQLite, queries, migrations, or state storage.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -37,13 +37,13 @@ append-only logs, and cross-session pattern storage.
 
 7. **Use parameterized queries.** No string formatting in SQL. Ever.
 
-8. **Analyze query performance** with `harness_run_asset` when queries run against
+8. **Analyze query performance** with `musubi_run_asset` when queries run against
    large tables or use multiple JOINs.
 
 ## Assets
 
 `query-analyzer.py` — analyzes SQL queries for correctness and performance.
-Run via: `harness_run_asset("database-patterns", "query-analyzer.py", {"query": "SELECT ..."})`
+Run via: `musubi_run_asset("database-patterns", "query-analyzer.py", {"query": "SELECT ..."})`
 Returns: index recommendations, potential N+1 issues, parameterization check.
 Use when: writing a new query that JOINs more than 2 tables, or queries
 `fail_patterns` with a GROUP BY.

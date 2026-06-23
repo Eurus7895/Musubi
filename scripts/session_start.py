@@ -3,7 +3,7 @@
 AND auto-detect the project profile at session start (MVP item 4 /
 Track D.1).
 
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never — SessionStart lifecycle is the right place for
   profile detection regardless of pipeline shape.
 
@@ -80,15 +80,15 @@ def write_project_profile(workspace_root: Path) -> str | None:
     abort SessionStart. Returns the written path on success, None on
     failure.
 
-    Importable detector lives at `copilot-harness/workspace/detector.py`.
+    Importable detector lives at `musubi/workspace/detector.py`.
     The harness path is added to sys.path because this script is
     invoked directly by the SessionStart hook (no installed package
     on sys.path by default in that context).
     """
     try:
-        harness_root = Path(__file__).resolve().parent.parent / "copilot-harness"
-        if str(harness_root) not in sys.path:
-            sys.path.insert(0, str(harness_root))
+        musubi_root = Path(__file__).resolve().parent.parent / "musubi"
+        if str(musubi_root) not in sys.path:
+            sys.path.insert(0, str(musubi_root))
         from workspace.detector import (  # type: ignore[import-not-found]
             detect_profile,
             format_profile_md,

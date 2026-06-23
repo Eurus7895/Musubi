@@ -1,4 +1,4 @@
-# AGENTS.md — CopilotHarness
+# AGENTS.md — Musubi
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
@@ -6,7 +6,7 @@
 
 ---
 
-## What CopilotHarness Is
+## What Musubi Is
 
 Harness layer for GitHub Copilot Chat in VS Code. The product is
 **governed pipelines** — multi-stage workflows with evaluator firewall,
@@ -38,7 +38,7 @@ AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / 
 .github/commands/                     slash commands (*.md frontmatter)
 .github/agents/                       agent, skill-builder, sub-agent roles
 .github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
-copilot-harness/                      Python MCP server (zero LLM)
+musubi/                      Python MCP server (zero LLM)
 copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
 hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
 ```

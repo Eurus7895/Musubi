@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: Procedure for the Investigator sub-agent role — read-only diagnostic command runs on behalf of a main agent. Pushed by the harness when an investigator is spawned; never pulled on demand.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 

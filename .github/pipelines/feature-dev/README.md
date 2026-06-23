@@ -1,6 +1,6 @@
 # feature-dev pipeline
 
-Guided 4-agent pipeline for feature development in CopilotHarness.
+Guided 4-agent pipeline for feature development in Musubi.
 
 ## Stages
 

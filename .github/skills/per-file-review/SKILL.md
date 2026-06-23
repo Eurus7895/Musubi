@@ -1,7 +1,7 @@
 ---
 name: per-file-review
 description: Per-file review checklist for the /code-review pipeline. Use this when reviewing a single file's diff (reviewer-aux fan-out) or doing the cross-cutting pass at the finder stage.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -67,7 +67,7 @@ finding if any check fires — multiple findings per check are fine.
 
 ### 6. Project-specific patterns
 
-When reviewing a CopilotHarness file specifically:
+When reviewing a Musubi file specifically:
 - `encoding="utf-8"` on every `open()` / `Path.read_text()` / etc.
 - No new LLM-SDK imports inside the harness layer.
 - New MCP tools have docstrings ending with the soft-fail posture

@@ -1,20 +1,20 @@
 # Build Roadmap
 
 > Forward-looking plan and active work. Read through the lens of
-> [`docs/harness-direction.md`](./harness-direction.md).
+> [`docs/musubi-direction.md`](./musubi-direction.md).
 > Architecture and schemas → [`docs/design.md`](./design.md).
 > Repo rules → [`/CLAUDE.md`](../CLAUDE.md).
 
 This is **not** a history of what's been built. The history lives in
 git log + closed PRs + the audit DB. This file is **what's next** and
 **what's labelled for dissolution**, organised so that the discipline
-from `harness-direction.md` is visible per item.
+from `musubi-direction.md` is visible per item.
 
 ---
 
 ## The PR-review sentence (the discipline)
 
-> Every PR moves CopilotHarness either toward **thicker substrate**
+> Every PR moves Musubi either toward **thicker substrate**
 > (queryable audit, more skill markdown, sharper invariants) OR toward
 > **thinner ephemeral structure** (less pipeline scaffolding, fewer
 > compensating preambles). PRs that add ephemeral structure without
@@ -28,11 +28,13 @@ from `harness-direction.md` is visible per item.
 > Supersedes the embedded-Copilot framing. The direction below is the
 > committed target; the MVP tracks (A–D) feed into it.
 
-**Rename: CopilotHarness → `Musubi` (結び).** The old name is wrong on
-two counts — "Copilot" names a host we are leaving, and "harness" names
+**Renamed CopilotHarness → `Musubi` (結び).** The old name was wrong on
+two counts — "Copilot" named a host we are leaving, and "harness" named
 the old job (gating *Copilot*). The real value is **governed
 orchestration**: enforced validation at the boundary between agents.
-`Musubi` ("knot / binding / the connective force") names that.
+`Musubi` ("knot / binding / the connective force") names that. The code
+rename (identifiers, package, `musubi_*` MCP tools) has landed; the VS
+Code extension was deliberately left for P3 deletion.
 
 **The sharpened thesis.** The staged pipeline was never the product.
 The product is **deterministic, zero-LLM validation enforced at every
@@ -44,7 +46,7 @@ The boundary primitives are **substrate**:
 |---|---|---|
 | Evaluator firewall (HI #3) | reviewer *stage* | reviewer *sub-agent* (restricted context) |
 | Validator (lint/typecheck/tests) | between stages | every sub-agent handoff + every tool call (hook) |
-| Schema / contract check | `harness_write_stage` | sub-agent return + tool-call gate |
+| Schema / contract check | `musubi_write_stage` | sub-agent return + tool-call gate |
 | Policy engine (HI #5) | `(pipeline, agent)` | `(agent, sub-agent role)` + tool allow-list |
 | Append-only audit (HI #7/#8) | stage store | turn / conversation / sub-agent store |
 
@@ -71,11 +73,15 @@ zero-LLM; the driver may connect to an LLM).
 > gate** — it is what licenses P3. The standalone pivot is precisely the
 > "real LM session" trigger that unblocked it.
 
-**Rename sequencing (NOT big-bang).** Surface today: `harness_*` ×746,
-`copilotHarness`/`copilot-harness` ×401, `harness-tier` ×166. Rule:
-rename **durable substrate** surfaces; **do not** rename what P3 deletes
-(the VS Code extension). Open decision: whether to rename the `harness_*`
-MCP tool prefix → `musubi_*` (a breaking MCP-contract change) or keep it.
+**Rename status (done — substrate only).** The substrate, driver, docs,
+scripts, CI, and `.github/` were renamed to `Musubi` / `musubi` /
+`musubi_*` / `musubi-tier`, including the breaking `harness_* → musubi_*`
+MCP-prefix change (the standalone CLI takes tools dynamically, so it is
+prefix-agnostic). The VS Code extension (`copilot-harness-extension/`,
+`copilotHarness.*` settings) was **deliberately not renamed** — P3
+deletes it, and renaming the server-side MCP prefix already breaks its
+hardcoded `harness_*` calls (acceptable; it is abandoned). The GitHub
+repo was renamed in place (option A — history/issues preserved).
 
 ---
 
@@ -88,7 +94,7 @@ _(none — the 10-item MVP sprint is complete; items 1-9 shipped, item 10 deferr
 ## MVP Sprint
 
 Synthesised cross-track plan: the minimum set of items that gets
-CopilotHarness from "working pipeline" to **defensibly MVP**. Each
+Musubi from "working pipeline" to **defensibly MVP**. Each
 item is drawn from Track A (substrate investment), Track C (anti-debt
 discipline), or Track D (convergence). Order respects dependencies;
 items 1-4 are parallelisable.
@@ -107,11 +113,11 @@ After the MVP ships:
 | **1** ✓ | Credit visibility — `/status` + sidebar + `/credits` summed from `stage_metrics.credits` (per-row + total); also a per-call credit line in pipeline chat output. **DONE — PR #67 (`feat/credit-totals-surfacing`).** | Track A.4 | ½ day | Users can't manage spend they can't see |
 | **2** ✓ | Per-cycle audit table (`agent_cycles`) — one row per `sendRequest` cycle inside `runAgentLM`; schema in `storage/db.py`, writes from `pipeline.ts`, query surface via `server.py`. **DONE — PR #68 (`feat/agent-cycles-audit`).** | Track A.2 | 1-2 days | Dissolution decisions need data; without this, "stay updated" is vibes |
 | **3** ✓ | `BudgetEnforcer` per agent turn — registered at agent-turn start in `runners/agent.ts` so `@harness <task>` carries the same cost guardrail pipelines have today. **DONE — PR #70 (`feat/butler-turn-budget`).** | Track D.4 | ~30 lines | Today agent turns are uncapped; lifts the Phase F cost concern from "freeze the surface" to "govern the surface" |
-| **4** ✓ | Project profile detection — `copilot-harness/workspace/detector.py` writes `.github/memory/project-profile.md` at session start (language, framework, doc tool, conventions auto-detected) | Track D.1 | 2-3 days | Skill applicability requires per-workspace context; memory layer is where this belongs. **DONE — PR #71 (commit `0abf648`).** Unblocks items 5, 6, 9. |
+| **4** ✓ | Project profile detection — `musubi/workspace/detector.py` writes `.github/memory/project-profile.md` at session start (language, framework, doc tool, conventions auto-detected) | Track D.1 | 2-3 days | Skill applicability requires per-workspace context; memory layer is where this belongs. **DONE — PR #71 (commit `0abf648`).** Unblocks items 5, 6, 9. |
 | **5** ✓ | SKILL.md `applies-to` frontmatter — parsed into `SkillMeta.applies_to` by `skill_loader.py`; shipped on the `python` and `testing` skills. `output_contract` deferred with D.5 (its only consumer). **DONE — `feat/skill-applies-to`.** | Track D.2 | 1 day | Needed before the skill router (item 6) can filter the catalog |
-| **6** ✓ | Skill router — `skills/router.py::applicable_skills(profile, skills)` filters `harness_list_skills` against the project profile so the model never sees skills that don't fit the workspace. Graceful no-op when no profile. **DONE — `feat/skill-router`.** | Track D.3 | 1 day | Eliminates "tried C skill on Python" class of failures; depends on 4 + 5 |
-| **7** ✓ | `harness-tier` tag walkthrough — 76 in-scope files tagged (23 Python substrate, 3 Python ephemeral, 13 SKILL.md including docs-writing + research from item 9, 14 agent.md, 2 pipeline.yaml, 15 TS runners + 4 already-tagged TS files). New `scripts/check_harness_tier.py` is wired into CI and HARD-FAILS on any new/modified file missing the tag → HI #9 self-enforces at PR review going forward. **DONE — `chore/harness-tier-walkthrough`.** | Track C.1 | 1-2 days | Discipline becomes self-enforcing at code review |
-| **8** ✓ | README polish — opening reframes the project as a "governance substrate" with explicit substrate-vs-ephemeral split; three-surfaces table (`/feature-dev` extension pipeline, `agent` CLI for any LLM, plain Copilot Chat for casual); stale "May 2026 agent-freeze" callout replaced with a pointer to `docs/harness-direction.md`; project-layout updated for `agent/` + `tools/` + `workspace/` packages. **DONE — `docs/readme-direction-update`.** | Stage 4 | ½ day | External-facing MVP |
+| **6** ✓ | Skill router — `skills/router.py::applicable_skills(profile, skills)` filters `musubi_list_skills` against the project profile so the model never sees skills that don't fit the workspace. Graceful no-op when no profile. **DONE — `feat/skill-router`.** | Track D.3 | 1 day | Eliminates "tried C skill on Python" class of failures; depends on 4 + 5 |
+| **7** ✓ | `musubi-tier` tag walkthrough — 76 in-scope files tagged (23 Python substrate, 3 Python ephemeral, 13 SKILL.md including docs-writing + research from item 9, 14 agent.md, 2 pipeline.yaml, 15 TS runners + 4 already-tagged TS files). New `scripts/check_musubi_tier.py` is wired into CI and HARD-FAILS on any new/modified file missing the tag → HI #9 self-enforces at PR review going forward. **DONE — `chore/musubi-tier-walkthrough`.** | Track C.1 | 1-2 days | Discipline becomes self-enforcing at code review |
+| **8** ✓ | README polish — opening reframes the project as a "governance substrate" with explicit substrate-vs-ephemeral split; three-surfaces table (`/feature-dev` extension pipeline, `agent` CLI for any LLM, plain Copilot Chat for casual); stale "May 2026 agent-freeze" callout replaced with a pointer to `docs/musubi-direction.md`; project-layout updated for `agent/` + `tools/` + `workspace/` packages. **DONE — `docs/readme-direction-update`.** | Stage 4 | ½ day | External-facing MVP |
 | **9** ✓ | First non-coding skills — `docs-writing` (applies-to doc_tools sphinx/mkdocs/mdbook) and `research` (universal). Wired into agent allowlist so the agent can pull them on demand; `docs-writing` also in designer allowlist. `output_contract` deferred with D.5. `test-writing` deferred — the existing `testing` skill covers it. **DONE — `feat/non-coding-skills`.** | Track D.9 (first slice) | per skill | Without at least 2-3 non-coding skills, the agent is unproven for anything but conversation; depends on 5 + 6 |
 | **10** ⏸ | Eval suite — `.harness/evals/` with 5 tasks; dual-mode runner (mocked default + `--real-lm` flag); reports per-task pass/fail + cycles + lm_ms + credits. **DEFERRED — out of this MVP sprint.** Reason: the load-bearing artefact is the 5 mocked-LM-response files, which need authentic-looking tool-use traces. Hand-authoring them risks the eval suite silently encoding the wrong behavior. Will land when a real LM session is available to capture genuine tool-use traces from. | Track A.1 (Stage 5) | 1-2 weeks | The keystone — without standing evaluation, dissolution decisions are speculation. Run on every model release. |
 
@@ -200,7 +206,7 @@ Schedule:
 - On-demand run on any model release
 
 Effort: ~1-2 weeks for the first usable version.
-harness-tier: **substrate** (eval infrastructure is durable).
+musubi-tier: **substrate** (eval infrastructure is durable).
 
 ### A.2 — L2 per-cycle audit table
 
@@ -208,7 +214,7 @@ What:
 - New SQLite table `agent_cycles(session_id, stage, attempt, chunk_id,
   cycle_idx, started_at, ended_at, lm_ms, tool_calls_json, text_chars,
   credits, cycle_status)`
-- New MCP tools: `harness_record_agent_cycle`, `harness_query_agent_cycles`
+- New MCP tools: `musubi_record_agent_cycle`, `musubi_query_agent_cycles`
 - Wire into `pipeline.ts::runAgentLM` after each cycle's post-flight
   budget charge
 
@@ -236,23 +242,23 @@ CREATE TABLE agent_cycles (
 ```
 
 Effort: ~120 lines + ~10 tests = 1-2 days.
-harness-tier: **substrate** (audit data is durable).
+musubi-tier: **substrate** (audit data is durable).
 
 ### A.3 — Skill distillation from sessions
 
 What:
-- Hook `harness_finalize_pipeline_run` to fire `harness_distill_session`
+- Hook `musubi_finalize_pipeline_run` to fire `musubi_distill_session`
   when `final_status != "success"`
 - Append one-liner to `failure-patterns.md` (light path)
 - Propose `.github/agents/proposed/<name>.skill.md` for the heavy path
   when same pattern fires 3+ times
 
-Why: skills are the cheapest optimisation surface (`harness-direction.md`
+Why: skills are the cheapest optimisation surface (`musubi-direction.md`
 § 3-surface table). Growing the catalog is the article-aligned
 investment.
 
 Effort: ~50 lines glue + reviewer flow = ~1 day.
-harness-tier: **substrate** (the skill catalog itself is durable).
+musubi-tier: **substrate** (the skill catalog itself is durable).
 
 ### A.4 — Budget telemetry in `/status` + sidebar
 
@@ -264,7 +270,7 @@ What:
   totals across all sessions
 
 Effort: ~80 lines = half a day.
-harness-tier: **substrate** (cost visibility is universal).
+musubi-tier: **substrate** (cost visibility is universal).
 
 ---
 
@@ -330,19 +336,19 @@ them to hand-written `SKILL.md` files. Don't ship the optimiser.
 These items make the substrate / ephemeral split visible and enforce
 the dissolution cycle.
 
-### C.1 — `harness-tier` tag on every component
+### C.1 — `musubi-tier` tag on every component
 
 One PR that walks every `pipeline.ts` function, `runners/*.ts`,
 `validation/*.py`, agent `.md` file, and adds a one-line tag:
 
 ```
-harness-tier: substrate
+musubi-tier: substrate
 ```
 
 or
 
 ```
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: <model capability that would dissolve this>
 cost-lever: <credits saved per session>
 ```
@@ -369,9 +375,9 @@ sense post first model release).
 
 ### C.4 — Lines-of-harness vs lines-of-skill ratio
 
-Tracked over time. Tooling: `scripts/harness_skill_ratio.py` (to be
+Tracked over time. Tooling: `scripts/musubi_skill_ratio.py` (to be
 written). Browser Use ships ~600 lines of harness as the limit case.
-CopilotHarness sits at roughly 10:1 today. **Goal: ratio improves over
+Musubi sits at roughly 10:1 today. **Goal: ratio improves over
 time even as features grow.**
 
 Every PR description should declare net delta:
@@ -388,7 +394,7 @@ section.
 
 ## Track D — Convergence (agent as universal governed surface)
 
-Background lens: [`docs/harness-direction.md`](./harness-direction.md)
+Background lens: [`docs/musubi-direction.md`](./musubi-direction.md)
 § 3 — Convergence path. Goal: lift the pipeline's governance primitives
 into the substrate so both `/feature-dev` and `@harness <task>` share
 one set of guarantees, then dissolve the staged pipeline.
@@ -399,12 +405,12 @@ payoff gated on the eval suite (A.1).
 
 | # | What | Substrate gain | Effort | Depends on |
 |---|---|---|---|---|
-| **D.1** ✓ | **Project profile detection** — `copilot-harness/workspace/detector.py` scans for stack signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `conf.py`, file-extension distribution) and writes `.github/memory/project-profile.md` (new tier-2 entry) at session start. **DONE — PR #71 (commit `0abf648`).** Detector covers Python / TS / JS / Rust / Go / Java/Kotlin / Ruby / PHP, three doc tools (sphinx / mkdocs / mdbook), pytest + jest. 16 unit tests; integrated into `scripts/session_start.py` as best-effort. | Memory gains contextual awareness; substrate THICKER | 2-3 days | — |
+| **D.1** ✓ | **Project profile detection** — `musubi/workspace/detector.py` scans for stack signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `conf.py`, file-extension distribution) and writes `.github/memory/project-profile.md` (new tier-2 entry) at session start. **DONE — PR #71 (commit `0abf648`).** Detector covers Python / TS / JS / Rust / Go / Java/Kotlin / Ruby / PHP, three doc tools (sphinx / mkdocs / mdbook), pytest + jest. 16 unit tests; integrated into `scripts/session_start.py` as best-effort. | Memory gains contextual awareness; substrate THICKER | 2-3 days | — |
 | **D.2** | **SKILL.md frontmatter extensions** — add `applies-to` (per-skill applicability: language, framework, file types) AND `output_contract` (JSON schema for skill-driven validator) as parsed frontmatter fields | Skill catalog gains both applicability + validation declarations | 1 day | — |
-| **D.3** | **Skill router** — `applicable_skills(profile, all_skills)` helper + filter inside `harness_list_skills`. Skills with no `applies-to` declaration are treated as universal | Model sees only project-relevant skills; eliminates "tried C skill on Python" class of failures | 1 day | D.1 + D.2 |
+| **D.3** | **Skill router** — `applicable_skills(profile, all_skills)` helper + filter inside `musubi_list_skills`. Skills with no `applies-to` declaration are treated as universal | Model sees only project-relevant skills; eliminates "tried C skill on Python" class of failures | 1 day | D.1 + D.2 |
 | **D.4** | **BudgetEnforcer per agent turn** — `runAgent` (code name kept until rename PR) registers an enforcer for the turn (config from `copilotHarness.agentBudget` setting, defaults from current agent cost data); same primitives used by pipelines | Cost governance applies to `@harness` work too | ~30 lines | — (quick win, independent) |
 | **D.5** | **Skill-driven correction loop on `output_contract`** — when a loaded skill declares `output_contract` and the model's response fails the schema, re-enter the turn with `validation_feedback` injected (same pattern as `runAgentWithValidationRetry` but skill-scoped) | Agent gains pipeline-style retries when warranted, off when not | ~60 lines | D.2 |
-| **D.6** | **Failure-pattern → profile-update path** — extend `harness_distill_session` so that when a skill is applied + fails in a way that reveals profile is wrong, both `failure-patterns.md` (the pattern) AND `project-profile.md` (the corrected field) get updated | Memory self-corrects on observed evidence | 1 day | D.1 + D.5 |
+| **D.6** | **Failure-pattern → profile-update path** — extend `musubi_distill_session` so that when a skill is applied + fails in a way that reveals profile is wrong, both `failure-patterns.md` (the pattern) AND `project-profile.md` (the corrected field) get updated | Memory self-corrects on observed evidence | 1 day | D.1 + D.5 |
 | **D.7** | **`/profile` command** — manual inspection (`/profile`) and override (`/profile <field>=<value>`) of project-profile.md. Rare; emergency hatch for auto-detection misses | User has clear escape hatch | half-day | D.1 |
 | **D.8** | **Heuristic skill push** — when `@harness <task>` matches "code-like" intent (regex on keywords + presence of file paths in the request), auto-push the same skills the planner would inject; otherwise stay pull-only. The push-vs-pull boundary becomes a context decision, not a mode decision | Bridges the agent and pipeline behaviour gap without forcing pipeline structure | ~50 lines | D.3 |
 | **D.9** | **Skill catalog growth** — `docs-writing`, `refactoring`, `research`, `test-writing`, each with `applies-to` and `output_contract` declared from the start. Each new skill ships with at least one applicability tag | Fat-skills direction shipped; non-coding work finally has a governed surface | per skill (ongoing) | D.2 + D.3 |
@@ -442,7 +448,7 @@ get marked DONE and removed from this doc:
 - "Pre-spawn fanout (`preSpawnAndSplice`)" → deleted (skill router + push heuristic replace it)
 - "`runStageReviewGate` 4-button UX" → deleted or reshaped (one-trace agent has different intervention points)
 
-CopilotHarness shrinks from ~10k+ lines toward Browser-Use-scale
+Musubi shrinks from ~10k+ lines toward Browser-Use-scale
 (~600 lines of harness). Substrate intact; product surface unified.
 
 ---
@@ -474,7 +480,7 @@ fired.** The quarterly review (C.3) makes this call.
 
 ## Cost discipline
 
-CopilotHarness already has the substrate primitives (`BudgetEnforcer`,
+Musubi already has the substrate primitives (`BudgetEnforcer`,
 `stage_metrics`, per-call display, `pipeline.yaml::max_credits`). What
 needs explicit thought:
 
@@ -515,7 +521,7 @@ active." Most of Phase J is shipped:
 
 ## See also
 
-- [`docs/harness-direction.md`](./harness-direction.md) — the lens. Read
+- [`docs/musubi-direction.md`](./musubi-direction.md) — the lens. Read
   this first.
 - [`docs/design.md`](./design.md) — substrate architecture and schemas.
 - [`docs/usecase-diagram.md`](./usecase-diagram.md) — what `/feature-dev`

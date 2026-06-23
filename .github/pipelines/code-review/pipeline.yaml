@@ -1,4 +1,4 @@
-# harness-tier: ephemeral
+# musubi-tier: ephemeral
 # expires-when: the 4-stage pipeline is dissolved (gated on item-10 eval data)
 # cost-lever: deletes the whole pipeline runtime + its agent set
 name: code-review

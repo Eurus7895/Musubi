@@ -14,7 +14,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"       # if using pytest-asyncio
 
 [tool.coverage.run]
-source = ["copilot-harness"]
+source = ["musubi"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
@@ -203,7 +203,7 @@ pytest tests/                          # all tests
 pytest tests/test_state.py             # one file
 pytest tests/ -k "injection"           # tests matching name
 pytest tests/ -m "not slow"            # exclude slow tests
-pytest tests/ --cov=copilot-harness    # with coverage
+pytest tests/ --cov=musubi    # with coverage
 pytest tests/ -x                       # stop on first failure
 pytest tests/ -v                       # verbose output
 ```

@@ -1,4 +1,4 @@
-# CopilotHarness
+# Musubi
 
 A **governance substrate** for agentic software-engineering work in VS Code
 — audit DB, skill catalog, three-tier memory, fail-closed policy engine,
@@ -7,7 +7,7 @@ as an MCP server. Any tool-using LLM can drive it: GitHub Copilot Chat (the
 canonical client), or — when Copilot is offline — Anthropic / OpenAI APIs
 via the bundled `agent` CLI, or any other MCP client.
 
-**Copilot Chat reasons. CopilotHarness controls the environment.**
+**Copilot Chat reasons. Musubi controls the environment.**
 Zero LLM calls inside the harness.
 
 > Same model + same task + changed environment = better outcomes.
@@ -15,11 +15,11 @@ Zero LLM calls inside the harness.
 
 ### Substrate vs ephemeral (the project's discipline)
 
-Every component carries a `harness-tier` tag, enforced by CI:
+Every component carries a `musubi-tier` tag, enforced by CI:
 
 - **Substrate** (invest, refactor) — the audit DB, the skill catalog,
   the three-tier memory, the policy engine, the MCP tool catalog
-  (`harness_*`), and Hard Invariants #1–#9. These are designed to outlive
+  (`musubi_*`), and Hard Invariants #1–#9. These are designed to outlive
   any specific model release.
 - **Ephemeral** (label, schedule for removal) — the 4-stage pipeline
   shape (`planner → designer → coder → reviewer`), the sub-agent split,
@@ -28,7 +28,7 @@ Every component carries a `harness-tier` tag, enforced by CI:
   threshold, the structure gets *deleted*, not refactored.
 
 Full discipline + the PR-review sentence:
-[`docs/harness-direction.md`](./docs/harness-direction.md).
+[`docs/musubi-direction.md`](./docs/musubi-direction.md).
 
 ### Three surfaces, choose by intent
 
@@ -45,7 +45,7 @@ Full discipline + the PR-review sentence:
 | File | For |
 |---|---|
 | `README.md` *(you are here)* | Install · build · run · contribute |
-| [`docs/harness-direction.md`](./docs/harness-direction.md) | **Read first.** Direction, discipline, substrate-vs-ephemeral per component |
+| [`docs/musubi-direction.md`](./docs/musubi-direction.md) | **Read first.** Direction, discipline, substrate-vs-ephemeral per component |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · invariants · conventions · commands (Claude Code memory) |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map for agents |
 | [`docs/design.md`](./docs/design.md) | Full architecture · schemas · MCP tool reference |
@@ -91,7 +91,7 @@ is also exposed individually if you want to skip one:
 | `npm run install:vsix` | `code --install-extension --force` on the newest local `.vsix`. Requires `code` on PATH. |
 | `npm run all` | `setup` + `package` + `install:vsix` — full bringup from a fresh checkout. |
 
-Reload VS Code after install. The **CopilotHarness** output channel confirms
+Reload VS Code after install. The **Musubi** output channel confirms
 the server started. Then in Copilot Chat (in **Ask** mode — chat
 participants don't work in Agent or Edit mode):
 
@@ -125,8 +125,8 @@ from the panel — no extension rebuild required.
 
 ## How It Works (one-paragraph summary)
 
-The harness is a Python MCP server (`copilot-harness/server.py`). It
-exposes ~55 `harness_*` tools covering session lifecycle, skills, memory,
+The harness is a Python MCP server (`musubi/server.py`). It
+exposes ~55 `musubi_*` tools covering session lifecycle, skills, memory,
 audit, file I/O, and command execution. **Zero LLM calls happen inside it**
 (HI #1). Any tool-using LLM client can drive it; the VS Code extension is
 the canonical one, but the bundled `agent` CLI is a peer.
@@ -136,7 +136,7 @@ start (JSON-RPC over stdio). `@harness <input>` routes by pure string
 check — zero LLM cost:
 
 - `/<pipeline-name> <task>` → **pipeline mode** (governed agents,
-  validation, audit trail) — *`harness-tier: ephemeral`; on dissolution
+  validation, audit trail) — *`musubi-tier: ephemeral`; on dissolution
   path as models improve, per the discipline*
 - Anything else → **Agent mode** (persistent chat, model's native
   multi-turn shape; CLAUDE.md: "skills come first, the Agent grows")
@@ -144,7 +144,7 @@ check — zero LLM cost:
 **From any LLM API directly** (Anthropic, OpenAI, …):
 
 ```bash
-pip install -e copilot-harness/.[anthropic]   # or .[openai] or .[all]
+pip install -e musubi/.[anthropic]   # or .[openai] or .[all]
 ANTHROPIC_API_KEY=... agent "your task"
 ```
 
@@ -152,7 +152,7 @@ The Agent CLI spawns the same MCP server, lists the catalog, drives a
 tool-use loop against your chosen LLM. No Copilot Chat required —
 useful when Copilot quota is empty or you want to point a different
 model at the substrate. New vendors are a single file under
-`copilot-harness/agent/vendors/`.
+`musubi/agent/vendors/`.
 
 Full architecture, MCP tool reference, schemas, hooks, and YAML formats
 live in [`docs/design.md`](./docs/design.md).
@@ -182,31 +182,31 @@ Add a command by dropping a new `.md` — no code change required.
 ```
 .github/
     pipelines/feature-dev/      pipeline.yaml + agents/*.agent.md
-                                (harness-tier: ephemeral)
+                                (musubi-tier: ephemeral)
     commands/                   slash command files (frontmatter-driven)
-    agents/                     shared catalog (harness-tier: ephemeral)
+    agents/                     shared catalog (musubi-tier: ephemeral)
     instructions/               priority-ranked rules
     skills/                     domain skills — SKILL.md + assets/ +
-                                references/ (harness-tier: substrate)
+                                references/ (musubi-tier: substrate)
     memory/                     3-tier memory: MEMORY.md +
                                 project-profile.md + failure-patterns.md
-                                (harness-tier: substrate)
+                                (musubi-tier: substrate)
 
-copilot-harness/                Python MCP server — zero LLM (HI #1)
+musubi/                Python MCP server — zero LLM (HI #1)
     storage/  memory/           audit DB + memory loaders (substrate)
     skills/   validation/       skill catalog + verifier + firewall (substrate)
     workspace/ tools/           profile detector + fs/command tools (substrate)
     agent/                     vendor-agnostic CLI (Anthropic/OpenAI/…)
                                 — agent entry point (substrate)
     session/  execution/        pipeline-shape lifecycle + executors
-                                (mix; see harness-tier tags)
+                                (mix; see musubi-tier tags)
 
 copilot-harness-extension/      VS Code extension (TypeScript)
                                 — the Copilot Chat adapter; the runners/
-                                subdir is harness-tier: ephemeral
+                                subdir is musubi-tier: ephemeral
 hooks.json + scripts/           SessionStart / PreToolUse / PostToolUse
-                                + check_harness_tier.py (CI lint for HI #9)
-docs/harness-direction.md       direction + discipline (read first)
+                                + check_musubi_tier.py (CI lint for HI #9)
+docs/musubi-direction.md       direction + discipline (read first)
 docs/design.md                  full architecture + schemas
 docs/roadmap.md                 build roadmap + status
 ```
@@ -218,16 +218,16 @@ Detailed file-by-file breakdown lives in
 
 ## Diagnostics
 
-`Ctrl+Shift+U` → **CopilotHarness** output channel. A healthy startup looks
+`Ctrl+Shift+U` → **Musubi** output channel. A healthy startup looks
 like:
 
 ```
-CopilotHarness v<version> activating...
-Checking: ...\bin\copilot-harness.exe — found
+Musubi v<version> activating...
+Checking: ...\bin\musubi.exe — found
 Starting MCP server...
 MCP server started. Listing tools...
-Tools available (24): harness_get_active_session, harness_new_session, ...
-CopilotHarness ready. Use @harness in Copilot Chat.
+Tools available (24): musubi_get_active_session, musubi_new_session, ...
+Musubi ready. Use @harness in Copilot Chat.
 ```
 
 Any line beginning `[server]` is the harness server's stderr piped through
@@ -237,7 +237,7 @@ the extension — Python tracebacks land there during activation.
 
 ## Troubleshooting
 
-Symptom-first guide. Open the **CopilotHarness** output channel before
+Symptom-first guide. Open the **Musubi** output channel before
 anything else; nine times out of ten it tells you exactly what failed.
 
 ### `@harness` doesn't respond / chat input frozen
@@ -253,7 +253,7 @@ anything else; nine times out of ten it tells you exactly what failed.
 |---|---|---|
 | `Server binary not found...` | The `.vsix` was installed without its PyInstaller binary. | From `copilot-harness-extension/`: `npm run all`. Reload window. |
 | `Starting MCP server...` then nothing | Server launched but never replied to the JSON-RPC `initialize` handshake. After 15 s the extension surfaces `MCP call initialize timed out after 15000 ms`. | Look for `[server] ...` lines just below — they carry the Python traceback. If there are none, the binary is writing JSON to stderr instead of stdout, or to neither (built with the wrong entrypoint). |
-| `[server] Traceback (most recent call last):` | The Python server crashed on startup. | Read the traceback. Common cause: an editable install picked up stale `.pyc` files or a missing dep — `pip install -e copilot-harness/` from a fresh venv usually fixes it. |
+| `[server] Traceback (most recent call last):` | The Python server crashed on startup. | Read the traceback. Common cause: an editable install picked up stale `.pyc` files or a missing dep — `pip install -e musubi/` from a fresh venv usually fixes it. |
 | `ERROR starting server: ...` | The extension caught the failure cleanly. | The error message is the actual reason — file not executable, antivirus quarantine, wrong arch, bad shebang. |
 | `MCP server started. Listing tools...` | Server is fine; the freeze is elsewhere. | Disable other Copilot Chat extensions one at a time and reload. |
 
@@ -269,7 +269,7 @@ relies on the manifest. Tracked separately — see open issues.
 ```
 [node.js fs] rename failed after 1091 retries with error:
   Error: EPERM: operation not permitted, rename '...\copilot-harness-extension-0.4.0' -> '...vsctmp'
-Error: Please restart VS Code before reinstalling CopilotHarness.
+Error: Please restart VS Code before reinstalling Musubi.
 ```
 
 Windows holds a file lock on the extension folder while VS Code is
@@ -303,7 +303,7 @@ npm run all
 ### `npm run setup` fails on Windows with `not a Python project`
 
 ```
-ERROR: file:///C:/mnt/c/Workspace/.../copilot-harness does not appear to be a Python project
+ERROR: file:///C:/mnt/c/Workspace/.../musubi does not appear to be a Python project
 ```
 
 The `/mnt/c/...` prefix in that error means you're running under WSL —

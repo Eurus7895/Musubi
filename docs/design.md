@@ -1,35 +1,35 @@
-# Design — CopilotHarness
+# Design — Musubi
 
 > Architecture and schemas of the **substrate** layer.
-> Direction and discipline → [`docs/harness-direction.md`](./harness-direction.md).
+> Direction and discipline → [`docs/musubi-direction.md`](./musubi-direction.md).
 > Forward-looking plan and active work → [`docs/roadmap.md`](./roadmap.md).
 > Repo-wide rules → [`/CLAUDE.md`](../CLAUDE.md).
 
 This document is the canonical reference for the **durable substrate** —
-the parts of CopilotHarness expected to outlive any specific model
+the parts of Musubi expected to outlive any specific model
 release. Ephemeral structures (the 4-stage pipeline shape, cycle-loop
 guards, sub-agent-for-exploration split, preamble blocks) are NOT
 authoritatively described here; they live in code and are
-[harness-tier-tagged](./harness-direction.md) so their expiration is
+[musubi-tier-tagged](./musubi-direction.md) so their expiration is
 visible.
 
 ---
 
 ## One Sentence
 
-CopilotHarness is a **governance layer** for agentic
+Musubi is a **governance layer** for agentic
 software-engineering work in VS Code. It provides firewall, audit,
 validator, budget, and skill-injection primitives that survive model
 releases. It is not a wrapper around the model's intelligence.
 
-**Copilot Chat reasons. CopilotHarness controls the environment.**
+**Copilot Chat reasons. Musubi controls the environment.**
 Zero LLM calls inside the harness.
 
 ---
 
 ## Substrate vs ephemeral, in one table
 
-| Layer | Component | harness-tier |
+| Layer | Component | musubi-tier |
 |---|---|---|
 | Storage | `storage/audit.db` (SQLite) — sessions, stage_outputs, stage_metrics, pipeline_runs, subagent_audit, conversation_messages, agent_turns | **substrate** |
 | Storage | `.harness/sessions/<sid>/*.md` — append-only stage artefacts | **substrate** |
@@ -40,7 +40,7 @@ Zero LLM calls inside the harness.
 | Verification | Validator: `validation/verifier.py` schema + injection scan | **substrate** |
 | Cost control | `BudgetEnforcer` + per-call charges (`pipelineBudgetCore.ts`) | **substrate** |
 | Cost control | `pipeline.yaml::max_credits` + `warn_at` | **substrate** |
-| Interface | MCP tool catalog (`harness_*`) | **substrate** |
+| Interface | MCP tool catalog (`musubi_*`) | **substrate** |
 | Interface | Hooks (SessionStart / PreToolUse / PostToolUse) | **substrate** |
 | Routing | Zero-cost routing (`/<pipeline>` → pipeline; anything else → agent) | **substrate** |
 | Orchestration | 4-stage pipeline (planner / designer / coder / reviewer) | **ephemeral** |
@@ -52,7 +52,7 @@ Zero LLM calls inside the harness.
 | Orchestration | `preSpawnAndSplice` fanout | **ephemeral** |
 | Orchestration | `runStageReviewGate` 4-button UX | **ephemeral** |
 
-See [`docs/harness-direction.md`](./harness-direction.md) for each
+See [`docs/musubi-direction.md`](./musubi-direction.md) for each
 ephemeral component's `expires-when:` and `cost-lever:` annotations.
 
 ---
@@ -62,8 +62,8 @@ ephemeral component's `expires-when:` and `cost-lever:` annotations.
 The harness must be the environment Copilot **operates within** — not
 a helper tool the developer bridges manually. With MCP stdio:
 
-- Copilot agents call `harness_read_stage` → harness enforces firewall, injects skills
-- Copilot agents call `harness_write_stage` → harness validates before storing
+- Copilot agents call `musubi_read_stage` → harness enforces firewall, injects skills
+- Copilot agents call `musubi_write_stage` → harness validates before storing
 - Agents cannot skip the harness — it is the only path to read inputs and write outputs
 
 The MCP stdio server runs **entirely locally** as a subprocess. No
@@ -71,7 +71,7 @@ network calls. No `api.githubcopilot.com`. The corporate firewall is
 irrelevant.
 
 VS Code reads `.vscode/mcp.json` → spawns the Python MCP server →
-Copilot Chat agents call `harness_*` tools.
+Copilot Chat agents call `musubi_*` tools.
 
 ---
 
@@ -80,16 +80,16 @@ Copilot Chat agents call `harness_*` tools.
 The substrate provides a single contract for any agent-shaped consumer:
 
 ```
-1. agent calls harness_get_active_session  → resume or create
-2. agent calls harness_new_session         → new pipeline_runs row, locks agent versions
-3. agent calls harness_read_stage          → harness applies firewall, injects skill + memory
+1. agent calls musubi_get_active_session  → resume or create
+2. agent calls musubi_new_session         → new pipeline_runs row, locks agent versions
+3. agent calls musubi_read_stage          → harness applies firewall, injects skill + memory
 4. <agent reasons> (Copilot Chat side — NOT in harness)
-5. agent calls harness_write_stage         → harness validates, runs injection scan, writes append-only
-6. agent calls harness_get_status          → next pending stage
+5. agent calls musubi_write_stage         → harness validates, runs injection scan, writes append-only
+6. agent calls musubi_get_status          → next pending stage
 7. <repeat from step 3 for next stage>
 ```
 
-Each `harness_*` call writes audit rows; each LM call writes a
+Each `musubi_*` call writes audit rows; each LM call writes a
 `stage_metrics` row. The substrate is the contract + audit + firewall;
 the orchestration shape (whether there are 4 stages or 1) is ephemeral
 on top.
@@ -211,77 +211,77 @@ can be data-driven. See [`docs/roadmap.md`](./roadmap.md) § Track A.2.
 ## MCP tools
 
 Names + one-line purpose. The full Python signatures live in
-`copilot-harness/server.py`.
+`musubi/server.py`.
 
 ### Session lifecycle
 
 | Tool | Purpose |
 |---|---|
-| `harness_get_active_session` | Crash recovery — returns interrupted session or null |
-| `harness_clear_active_session` | Clear the active-session pointer (preserves stage outputs + audit) |
-| `harness_new_session` | Start pipeline, lock agent versions |
-| `harness_get_status` | Pipeline stage summary |
-| `harness_increment_attempt` | Bump attempt counter for retry |
-| `harness_pause_session` / `harness_resume_session` | Review-gate pause / resume |
-| `harness_finalize_pipeline_run` | Record final_status into `pipeline_runs` |
+| `musubi_get_active_session` | Crash recovery — returns interrupted session or null |
+| `musubi_clear_active_session` | Clear the active-session pointer (preserves stage outputs + audit) |
+| `musubi_new_session` | Start pipeline, lock agent versions |
+| `musubi_get_status` | Pipeline stage summary |
+| `musubi_increment_attempt` | Bump attempt counter for retry |
+| `musubi_pause_session` / `musubi_resume_session` | Review-gate pause / resume |
+| `musubi_finalize_pipeline_run` | Record final_status into `pipeline_runs` |
 
 ### Stage I/O (firewall is enforced here)
 
 | Tool | Purpose |
 |---|---|
-| `harness_read_stage` | Read prior stages with firewall + skill + memory injection. The firewall is the verification primitive — never bypass. |
-| `harness_write_stage` | Validate output schema + run injection scan + append to `stage_outputs` |
+| `musubi_read_stage` | Read prior stages with firewall + skill + memory injection. The firewall is the verification primitive — never bypass. |
+| `musubi_write_stage` | Validate output schema + run injection scan + append to `stage_outputs` |
 
 ### Skills + memory
 
 | Tool | Purpose |
 |---|---|
-| `harness_get_skill` | Load `SKILL.md` on demand (agent path) |
-| `harness_list_skills` | Per-caller filtered skill catalog |
-| `harness_get_reference` | Load reference document under a skill |
-| `harness_get_memory_context` | Return tier-1 index + tier-2 available list |
-| `harness_get_memory_entry` | Load a specific tier-2 entry |
-| `harness_append_failure_pattern` | Record a pattern (used by distillation triggers) |
-| `harness_compact_memory` | Prune `failure-patterns.md` when > 5 KB |
-| `harness_distill_session` | Mine a failed session into memory tier-2 |
-| `harness_query_sessions` | Cross-session substring search |
+| `musubi_get_skill` | Load `SKILL.md` on demand (agent path) |
+| `musubi_list_skills` | Per-caller filtered skill catalog |
+| `musubi_get_reference` | Load reference document under a skill |
+| `musubi_get_memory_context` | Return tier-1 index + tier-2 available list |
+| `musubi_get_memory_entry` | Load a specific tier-2 entry |
+| `musubi_append_failure_pattern` | Record a pattern (used by distillation triggers) |
+| `musubi_compact_memory` | Prune `failure-patterns.md` when > 5 KB |
+| `musubi_distill_session` | Mine a failed session into memory tier-2 |
+| `musubi_query_sessions` | Cross-session substring search |
 
 ### Sub-agents
 
 | Tool | Purpose |
 |---|---|
-| `harness_list_subagents` | Return spawn allow-list for the calling main agent |
-| `harness_spawn_subagent` | Validate spawn (policy ∩ caller tools) + insert sub-session row, return handle |
-| `harness_get_subagent_context` | Return firewalled `{brief, role, role_skill, allowed_tools}` for a handle |
-| `harness_complete_subagent` | Record terminal result; verify summary cap + secrets / injection / schema check |
-| `harness_await_subagent` | Poll until terminal or wall-clock kill; return summary + structured + tools_used + turns + escalated |
-| `harness_query_subagent_events` | Read durable audit log of sub-agent spawns + completions |
-| `harness_delete_subsessions_for_parent` | Housekeeping pruner — delete terminal sub_sessions rows (audit table preserved) |
+| `musubi_list_subagents` | Return spawn allow-list for the calling main agent |
+| `musubi_spawn_subagent` | Validate spawn (policy ∩ caller tools) + insert sub-session row, return handle |
+| `musubi_get_subagent_context` | Return firewalled `{brief, role, role_skill, allowed_tools}` for a handle |
+| `musubi_complete_subagent` | Record terminal result; verify summary cap + secrets / injection / schema check |
+| `musubi_await_subagent` | Poll until terminal or wall-clock kill; return summary + structured + tools_used + turns + escalated |
+| `musubi_query_subagent_events` | Read durable audit log of sub-agent spawns + completions |
+| `musubi_delete_subsessions_for_parent` | Housekeeping pruner — delete terminal sub_sessions rows (audit table preserved) |
 
 ### Telemetry
 
 | Tool | Purpose |
 |---|---|
-| `harness_record_stage_metric` | Per LM-call row (lm_ms, tokens, tool counts) |
-| `harness_query_stage_metrics` | All stage_metrics rows for a session |
-| `harness_record_agent_turn` | Per agent turn row |
-| `harness_query_agent_turns` | All agent turns for a chat_id (tool name kept as `agent_turns` for back-compat) |
+| `musubi_record_stage_metric` | Per LM-call row (lm_ms, tokens, tool counts) |
+| `musubi_query_stage_metrics` | All stage_metrics rows for a session |
+| `musubi_record_agent_turn` | Per agent turn row |
+| `musubi_query_agent_turns` | All agent turns for a chat_id (tool name kept as `agent_turns` for back-compat) |
 
 ### Conversation (agent)
 
 | Tool | Purpose |
 |---|---|
-| `harness_append_message` | Append a row to `conversation_messages` |
-| `harness_get_conversation` | Token-budgeted, chronological history (newest-first truncation) |
+| `musubi_append_message` | Append a row to `conversation_messages` |
+| `musubi_get_conversation` | Token-budgeted, chronological history (newest-first truncation) |
 
 ### Verification (deterministic, NOT LLM)
 
 | Tool | Purpose |
 |---|---|
-| `harness_run_lint` | Run `ruff` |
-| `harness_run_typecheck` | Run `mypy` |
-| `harness_run_tests` | Run `pytest` |
-| `harness_run_hook` | Execute `hooks.json` lifecycle hook |
+| `musubi_run_lint` | Run `ruff` |
+| `musubi_run_typecheck` | Run `mypy` |
+| `musubi_run_tests` | Run `pytest` |
+| `musubi_run_hook` | Execute `hooks.json` lifecycle hook |
 
 ---
 
@@ -302,7 +302,7 @@ belong in hooks.
 
 ## Context firewall
 
-Defined in `copilot-harness/validation/context_builder.py`:
+Defined in `musubi/validation/context_builder.py`:
 
 ```python
 _STAGE_PERMISSIONS = {
@@ -317,7 +317,7 @@ _STAGE_PERMISSIONS = {
 }
 ```
 
-When an agent calls `harness_read_stage`, the harness returns only the
+When an agent calls `musubi_read_stage`, the harness returns only the
 intersection of the agent's allowed set and the requested set. Anything
 outside is silently filtered. **This is the substrate's primary
 verification primitive** — it survives any pipeline shape change.
@@ -341,11 +341,11 @@ Plain text in the working directory, the way the article praises.
 ```
 
 The harness injects MEMORY.md content into pipeline-mode agents at
-`harness_read_stage` time. Tier-2 entries are listed in the index and
-loaded by `harness_get_memory_entry` on demand.
+`musubi_read_stage` time. Tier-2 entries are listed in the index and
+loaded by `musubi_get_memory_entry` on demand.
 
-Compaction (`harness_compact_memory`) trims `failure-patterns.md` when
-it exceeds 5 KB. Distillation (`harness_distill_session`) appends new
+Compaction (`musubi_compact_memory`) trims `failure-patterns.md` when
+it exceeds 5 KB. Distillation (`musubi_distill_session`) appends new
 patterns from failed sessions.
 
 No vector DB. No embeddings. No reranker. The model reads markdown
@@ -444,7 +444,7 @@ controls cost. It does NOT think.
 What this means in practice:
 
 - No `anthropic`, `openai`, `google-generativeai` etc. imports in
-  `copilot-harness/` (Python)
+  `musubi/` (Python)
 - The TS extension calls `vscode.lm.sendRequest` only from
   `runAgentLM`, `runAgent`, and sub-agent runners — NEVER from
   harness MCP tool handlers
@@ -469,7 +469,7 @@ Things this harness deliberately does NOT do:
   JSON manifest contract (ephemeral); future A2 would let the model
   write directly, with the firewall and audit as the substrate guard.
 - **Provides a sandbox for executed code.** That's a runtime concern
-  (Lee Hanchung's "Agent Runtime" article); CopilotHarness is the
+  (Lee Hanchung's "Agent Runtime" article); Musubi is the
   harness layer, not the runtime layer. If terminal access lands, the
   runtime substrate (Firecracker-class isolation) becomes a design
   question.
@@ -478,7 +478,7 @@ Things this harness deliberately does NOT do:
 
 ## See also
 
-- [`docs/harness-direction.md`](./harness-direction.md) — the lens this
+- [`docs/musubi-direction.md`](./musubi-direction.md) — the lens this
   document is written through. Substrate vs ephemeral discipline,
   three tracks, quarterly review process.
 - [`docs/roadmap.md`](./roadmap.md) — what's next, the Dissolution
@@ -486,7 +486,7 @@ Things this harness deliberately does NOT do:
 - [`docs/usecase-diagram.md`](./usecase-diagram.md) — user-facing
   capability map (what `/feature-dev` does from a developer's POV).
 - [`docs/class-diagram.md`](./class-diagram.md) — TS class +
-  Python dataclass shapes with `harness-tier` annotations.
+  Python dataclass shapes with `musubi-tier` annotations.
 - [`docs/memory.md`](./memory.md) — memory architecture detail.
 - [`/CLAUDE.md`](../CLAUDE.md) — repo-wide rules, conventions, Hard
   Invariants.

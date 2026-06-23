@@ -30,7 +30,7 @@ point at the same file.
   role, different prompt. pipeline-builder's coder writes pipeline
   scaffolds, not feature code, so it needs its own file.
 - **`explorer` / `investigator` / `reviewer-aux`** are sub-agent roles
-  spawned via `harness_spawn_subagent`. They run under the firewall in
+  spawned via `musubi_spawn_subagent`. They run under the firewall in
   `validation/subagent_context.py` and never read parent session state.
   Their tool allow-lists live in `scripts/policy_engine.SUBAGENT_POLICIES`
   and the agent's per-main allow-list is `MAIN_SUBAGENT_ALLOWLIST`.
@@ -60,7 +60,7 @@ duplication needed.
 
 ## Loader behavior
 
-- `copilot-harness/session/state.py::lock_agent_versions` reads every
+- `musubi/session/state.py::lock_agent_versions` reads every
   `*.agent.md` in `.github/agents/` and locks one version per file. The
   agent name is the filename stem (with `.agent` stripped).
 - `copilot-harness-extension/src/pipeline.ts::loadAgentPrompt` resolves

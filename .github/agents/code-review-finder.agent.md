@@ -14,7 +14,7 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # comes from the reviewer-aux fan-out at the synthesis stage, not from
 # the finder itself reading the workspace.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models do cross-cutting review natively
 cost-lever: deletes the finder + per-file-review wiring
 ---
@@ -46,11 +46,11 @@ the synthesis stage; don't duplicate their job.
 ## Input Contract
 
 ```
-harness_read_stage(session_id, "scope", agent_name="finder")
+musubi_read_stage(session_id, "scope", agent_name="finder")
 → { "data": { files, scope_notes, summary }, "injected_skills": { "per-file-review": "..." } }
 ```
 
-You can also `harness_read_stage(... "request" ...)` to re-read the diff
+You can also `musubi_read_stage(... "request" ...)` to re-read the diff
 if you need it.
 
 ## Output Contract
@@ -84,7 +84,7 @@ Rules:
 Then call:
 
 ```
-harness_write_stage(session_id, "findings", <your JSON as a string>, agent_name="finder")
+musubi_write_stage(session_id, "findings", <your JSON as a string>, agent_name="finder")
 ```
 
 ## Behavior Rules

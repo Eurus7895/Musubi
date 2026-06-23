@@ -181,10 +181,10 @@ if attempt > MAX_RETRY_ATTEMPTS:
 
 ```python
 # anti-pattern — error result discarded
-harness_write_stage(session_id, "plan", output)
+musubi_write_stage(session_id, "plan", output)
 
 # correct — check result
-result = harness_write_stage(session_id, "plan", output)
+result = musubi_write_stage(session_id, "plan", output)
 if not result.get("ok"):
     raise StageWriteError(result.get("message"))
 ```

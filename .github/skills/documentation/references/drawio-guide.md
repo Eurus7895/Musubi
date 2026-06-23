@@ -118,7 +118,7 @@ Common shape types: `mxgraph.aws4.*`, `mxgraph.azure.*`, `cylinder`,
 
 ```xml
 <mxfile>
-  <diagram name="CopilotHarness Architecture">
+  <diagram name="Musubi Architecture">
     <mxGraphModel>
       <root>
         <mxCell id="0" /><mxCell id="1" parent="0" />

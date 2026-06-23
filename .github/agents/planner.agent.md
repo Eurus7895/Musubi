@@ -19,7 +19,7 @@ disallowedTools: ["Write", "Edit", "Bash"]
 #   - any pre-spawned sub-agent summaries
 # and emits its JSON plan in a single cycle.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: the 4-stage pipeline is dissolved
 cost-lever: deletes the planner role + .agent.md
 ---
@@ -53,7 +53,7 @@ Do not reference previous conversation turns — there are none.
 **Step 1 — Check for a session to resume (crash recovery):**
 
 ```
-harness_get_active_session()
+musubi_get_active_session()
 → { "session_id": null }                    → proceed to Step 2 (start fresh)
 → { "session_id": "abc123",
     "resume_stage": "plan", "attempt": 1 }  → resume: skip to Step 3 with this session_id
@@ -65,7 +65,7 @@ complete — do not call this agent at all.
 **Step 2 — Start a new session (only if no active session):**
 
 ```
-harness_new_session(request) → { "session_id": "...", "locked_agent_versions": {...} }
+musubi_new_session(request) → { "session_id": "...", "locked_agent_versions": {...} }
 ```
 
 Store the `session_id`. Pass it to every subsequent harness tool call.
@@ -73,7 +73,7 @@ Store the `session_id`. Pass it to every subsequent harness tool call.
 **Step 3 — Read the current plan:**
 
 ```
-harness_read_stage(session_id, "plan", agent_name="planner")
+musubi_read_stage(session_id, "plan", agent_name="planner")
 ```
 
 Returns `{ "data": null }` on first call (no previous plan).
@@ -110,10 +110,10 @@ skills outside an agent's allowed set are silently dropped. Available skills:
 Then call:
 
 ```
-harness_write_stage(session_id, "plan", <your JSON as a string>, agent_name="planner")
+musubi_write_stage(session_id, "plan", <your JSON as a string>, agent_name="planner")
 ```
 
-If `harness_write_stage` returns `"status": "error"`, fix the output and retry.
+If `musubi_write_stage` returns `"status": "error"`, fix the output and retry.
 Do not proceed until the write returns `"status": "stored"`.
 
 ## Behavior Rules

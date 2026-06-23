@@ -1,9 +1,9 @@
 # MEMORY.md — Tier 1 Index
 
 > Always loaded by the harness (~200 tokens). Pointers only — load
-> Tier 2 entries on demand via `harness_get_memory_entry(<name>)`.
+> Tier 2 entries on demand via `musubi_get_memory_entry(<name>)`.
 
-CopilotHarness — a Python MCP stdio server. Harness layer for GitHub
+Musubi — a Python MCP stdio server. Harness layer for GitHub
 Copilot Chat. Zero LLM calls inside the harness; Copilot Chat is the
 LLM, the harness is the environment. Two modes:
 `/<pipeline-name>` → pipeline; everything else → agent.
@@ -17,7 +17,7 @@ LLM, the harness is the environment. Two modes:
   from prior sessions and live triggers (reviewer-fail, frustration
   regex).
 - `project-profile.md` — language / framework / doc tool / conventions
-  auto-detected at SessionStart by `copilot-harness/workspace/detector.py`.
+  auto-detected at SessionStart by `musubi/workspace/detector.py`.
   Consumed by the skill router (MVP item 6 / Track D.3) to filter the
   catalog so the model only sees skills whose `applies-to:` matches
   this workspace's stack.

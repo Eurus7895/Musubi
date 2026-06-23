@@ -1,7 +1,7 @@
 """Policy engine — maps (pipeline, agent) → allowed tools, plus the
 sub-agent spawn allow-lists used by Phase A.
 
-Used by scripts/pre_tool_use.py and copilot-harness/server.py. Kept as
+Used by scripts/pre_tool_use.py and musubi/server.py. Kept as
 plain dicts so hooks executed from the command line (not just from
 Python) can import it cheaply without pulling in the harness core.
 
@@ -120,8 +120,8 @@ _PIPELINE_SPAWNS_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
 
 
 def _pipelines_root() -> Path:
-    """Resolve `.github/pipelines/`. HARNESS_ROOT wins when set."""
-    env = os.environ.get("HARNESS_ROOT")
+    """Resolve `.github/pipelines/`. MUSUBI_ROOT wins when set."""
+    env = os.environ.get("MUSUBI_ROOT")
     if env:
         candidate = Path(env) / ".github" / "pipelines"
         if candidate.is_dir():

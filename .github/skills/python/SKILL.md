@@ -3,7 +3,7 @@ name: python
 description: Idiomatic Python 3.11+ patterns, project setup, and common implementation procedures. Use when the user is writing Python — pyproject, dataclasses, async, type hints, pytest, ruff, or mypy.
 applies-to:
   languages: [python]
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -107,7 +107,7 @@ Name pattern: `test_{function}_{condition}_{expected_result}`.
 ## Assets
 
 `scaffold.py` — generates boilerplate for a new harness module.
-Run via: `harness_run_asset("python", "scaffold.py", {"module": "executor", "classes": ["LintResult"]})`
+Run via: `musubi_run_asset("python", "scaffold.py", {"module": "executor", "classes": ["LintResult"]})`
 Returns: file content ready to write, with imports, dataclasses, and stub functions.
 Use when: creating a new harness component from scratch.
 

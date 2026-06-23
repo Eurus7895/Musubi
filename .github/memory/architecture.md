@@ -5,7 +5,7 @@
 Chosen over PostgreSQL/Redis because:
 - Works inside a PyInstaller one-file binary (no external process)
 - WAL mode allows concurrent reads without blocking writes
-- DB path controlled by `HARNESS_ROOT` env var so extension binary has a stable,
+- DB path controlled by `MUSUBI_ROOT` env var so extension binary has a stable,
   writable location across runs (PyInstaller extracts to a temp dir on each start)
 - Schema embedded as a Python string in `storage/db.py` — no `.sql` file needed at runtime
 
@@ -19,11 +19,11 @@ Copilot agents call harness tools over JSON-RPC stdio. This means:
 
 ## PyInstaller one-file binary
 
-Extension bundles `bin/copilot-harness[.exe]` so users need no Python installation.
+Extension bundles `bin/musubi[.exe]` so users need no Python installation.
 Constraints imposed by one-file mode:
-- All file reads must use `Path(__file__).parent` or `HARNESS_ROOT` — NOT `os.getcwd()`
+- All file reads must use `Path(__file__).parent` or `MUSUBI_ROOT` — NOT `os.getcwd()`
 - Schema SQL must be an embedded string in `db.py` (temp dir changes on each run)
-- Skill files (`.github/skills/`) are read from `HARNESS_ROOT`, not the PyInstaller temp dir
+- Skill files (`.github/skills/`) are read from `MUSUBI_ROOT`, not the PyInstaller temp dir
 
 ## Context Firewall
 
@@ -64,4 +64,4 @@ The extension routes at string-match cost (no LLM):
 `hooks.json` + `scripts/` wire deterministic Python scripts to
 `SessionStart` (baseline checks), `PreToolUse` (policy gate,
 fail-closed), and `PostToolUse` (SQLite audit log). The harness
-exposes `harness_run_hook(event, payload)` as the entry point.
+exposes `musubi_run_hook(event, payload)` as the entry point.

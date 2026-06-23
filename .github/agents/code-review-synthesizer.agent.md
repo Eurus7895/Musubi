@@ -13,7 +13,7 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # cross-cutting findings + reviewer-aux per-file verdicts (all in
 # context); it doesn't read the workspace directly.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models aggregate review natively
 cost-lever: deletes the synthesizer + aggregate logic
 ---
@@ -50,7 +50,7 @@ rank, and produce the final report.
 ## Input Contract
 
 ```
-harness_read_stage(session_id, "findings", agent_name="synthesizer")
+musubi_read_stage(session_id, "findings", agent_name="synthesizer")
 → {
     "data": { raw_findings, per_file_priorities, summary },
     "sub_agent_outputs": [
@@ -109,7 +109,7 @@ Rules:
 Then call:
 
 ```
-harness_write_stage(session_id, "synthesis", <your JSON as a string>, agent_name="synthesizer")
+musubi_write_stage(session_id, "synthesis", <your JSON as a string>, agent_name="synthesizer")
 ```
 
 ## Behavior Rules

@@ -25,7 +25,7 @@ lm_tools: []
 sees:
   - brief
 spawn_allowlist: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models summarise concisely without role injection
 cost-lever: deletes the summarizer role
 ---
@@ -69,7 +69,7 @@ serialized as one block per turn:
 
 [assistant] It dispatches based on the first token …
 
-[tool] {"tool":"harness_spawn_subagent","result":"{\"handle_id\":...}"}
+[tool] {"tool":"musubi_spawn_subagent","result":"{\"handle_id\":...}"}
 ```
 
 Lines beginning with `[user]`, `[assistant]`, or `[tool]` start a new

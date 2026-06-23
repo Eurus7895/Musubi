@@ -1,4 +1,4 @@
-# harness-tier: ephemeral
+# musubi-tier: ephemeral
 # expires-when: the 4-stage pipeline is dissolved (gated on item-10 eval data)
 # cost-lever: deletes the whole pipeline runtime + its agent set
 name: feature-dev
@@ -47,7 +47,7 @@ correction:
   escalate_message: "Feature requires human review — max correction attempts exhausted"
   # Phase G.2 — fail-loud on critical findings instead of burning retries
   # on potentially-broken state. The TS runner consults
-  # `harness_get_correction_rules` to read these and coerce reviewer
+  # `musubi_get_correction_rules` to read these and coerce reviewer
   # status='escalate' on the first matching pass.
   escalate_on_critical: true
   # Optional: escalate any high+severity issue in these categories. Empty

@@ -19,12 +19,12 @@ or `weasyprint`. DOCX requires `pandoc` or `python-docx`.
 
 ## Producing PDF via render-pdf.py
 
-Input to `harness_run_asset`:
+Input to `musubi_run_asset`:
 
 ```json
 {
     "source": "# Title\n\nBody text...",
-    "title": "CopilotHarness — Architecture Report",
+    "title": "Musubi — Architecture Report",
     "format": "pdf"
 }
 ```
@@ -92,7 +92,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 doc = Document()
 
 # Title
-doc.add_heading("CopilotHarness — Architecture Report", level=0)
+doc.add_heading("Musubi — Architecture Report", level=0)
 
 # Paragraph
 p = doc.add_paragraph("This document describes the harness architecture.")
@@ -106,8 +106,8 @@ doc.add_paragraph("server.py — MCP entry point", style="List Bullet")
 doc.add_paragraph("state.py — session state", style="List Bullet")
 
 # Numbered list
-doc.add_paragraph("Run harness_new_session", style="List Number")
-doc.add_paragraph("Run harness_write_stage", style="List Number")
+doc.add_paragraph("Run musubi_new_session", style="List Number")
+doc.add_paragraph("Run musubi_write_stage", style="List Number")
 
 doc.save("report.docx")
 ```
@@ -176,7 +176,7 @@ Use standard Markdown. pandoc handles:
 
 ```markdown
 ---
-title: "CopilotHarness Report"
+title: "Musubi Report"
 author: "Engineering Team"
 date: "2026-04-17"
 geometry: margin=2cm

@@ -26,7 +26,7 @@ Retries create new attempt rows alongside previous ones. This enables:
 
 The context firewall in `context_builder.py` is not a suggestion to agents.
 It is enforced by the harness before returning data. Agents cannot request
-data they are not authorized to see — `harness_read_stage` simply will not
+data they are not authorized to see — `musubi_read_stage` simply will not
 return it regardless of what the agent asks for.
 
 ## Subprocess for Execution

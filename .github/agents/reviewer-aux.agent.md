@@ -4,7 +4,7 @@ version: 1.0.0
 description: >
   Read-only sub-agent that runs a per-file checklist review on behalf of
   the main reviewer or the agent. Spawned via
-  `harness_spawn_subagent` when a single file warrants a focused pass —
+  `musubi_spawn_subagent` when a single file warrants a focused pass —
   e.g. the main reviewer is over-budget on context and wants a second
   opinion on one module. Returns a tight per-file verdict; the harness
   caps the summary at 2000 tokens.
@@ -18,7 +18,7 @@ disallowedTools: ["Write", "Edit", "Bash", "Grep", "Glob"]
 lm_tools:
   - copilot_readFile
   - read_file
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models do reliable per-file review natively
 cost-lever: deletes the reviewer-aux role
 ---
@@ -58,11 +58,11 @@ sub-agents. The harness firewall is enforced at the type level.
 
 ## Input Contract
 
-Spawned via `harness_spawn_subagent` with `role="reviewer-aux"`. Fetch
+Spawned via `musubi_spawn_subagent` with `role="reviewer-aux"`. Fetch
 your firewalled context once:
 
 ```
-harness_get_subagent_context(handle_id)
+musubi_get_subagent_context(handle_id)
 → { "status": "ok",
     "brief": "review src/auth.py for security issues",
     "role": "reviewer-aux",
@@ -77,7 +77,7 @@ your job is the single file the brief named.
 ## Output Contract
 
 ```
-harness_complete_subagent(
+musubi_complete_subagent(
     handle_id,
     summary="<verdict + per-issue list, ≤ 2000 tokens>",
     structured={

@@ -29,14 +29,14 @@ Highest ROI: these fix bugs we have actually seen in production runs.
 - **T1.3 — Single source of truth for harness-rejected strings.**
   Do NOT duplicate the secrets-scanner regex prefixes into
   `reviewer.agent.md` — they will rot the moment the scanner changes.
-  Instead expose them once via a new `harness_get_constraints` MCP tool
-  (or inject them into the reviewer skill at `harness_read_stage` time).
+  Instead expose them once via a new `musubi_get_constraints` MCP tool
+  (or inject them into the reviewer skill at `musubi_read_stage` time).
   Reviewer reads the live list; coder gets the same list pushed by the
   harness. Prevents reviewer asks like "use a realistic secret" that the
   coder literally cannot satisfy.
 
 - **T1.4 — Distill today's run into failure-patterns.md.**
-  Call `harness_distill_session` on the offending session rather than
+  Call `musubi_distill_session` on the offending session rather than
   hand-editing `.github/memory/failure-patterns.md`. The Week 4 Day 4
   compactor's heuristics only understand the distiller's output format;
   hand-edits risk format drift. Same outcome, no risk.
@@ -71,7 +71,7 @@ Prevents the whole class of "forgot half the plan" failures.
 - **T3.1 — Move stage events from extension to harness.**
   Per-stage `### ⏳ / ✓` rendering already ships (v0.3.1 — see
   `emitStageStart` / `emitStageComplete` in `pipeline.ts`), but the
-  events are *synthesized by the extension* around each `harness_*`
+  events are *synthesized by the extension* around each `musubi_*`
   call. Push them from the harness instead: `mcpClient.ts` surfaces
   `stage_started` / `stage_complete` / `coercion_applied` notifications
   emitted by `server.py`, extension just forwards them. Removes the

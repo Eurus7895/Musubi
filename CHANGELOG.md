@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to CopilotHarness. The Python harness version tracks
+All notable changes to Musubi. The Python harness version tracks
 the repo as a whole; the VS Code extension version is tracked separately
 in `copilot-harness-extension/package.json` and ships out of this repo
 as a `.vsix`.
@@ -11,15 +11,15 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Butler CLI — vendor-agnostic harness driver (Python)
 
-- New `agent-butler` console script (lives in `copilot-harness/butler/`).
+- New `agent-butler` console script (lives in `musubi/butler/`).
   Drives the harness MCP server via a direct LLM API — Anthropic or
   OpenAI today, extensible to other vendors by implementing one
   `LMRouter` subclass. Restores end-to-end harness usage when Copilot
   Chat isn't available (e.g. quota exhausted).
-- Aligns with the harness-direction discipline: the butler IS the
+- Aligns with the musubi-direction discipline: the butler IS the
   model's native mode (per CLAUDE.md "Copilot Chat reasons,
-  CopilotHarness controls the environment"). The 4-stage pipeline is
-  not ported — it remains `harness-tier: ephemeral` in the extension.
+  Musubi controls the environment"). The 4-stage pipeline is
+  not ported — it remains `musubi-tier: ephemeral` in the extension.
 - Vendor SDKs are optional extras: `pip install -e .[anthropic]` or
   `.[openai]` or `.[all]`. Defaults: `claude-haiku-4-5` (Anthropic),
   `gpt-4o-mini` (OpenAI). Override via `--model`.
@@ -33,7 +33,7 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Filesystem + command MCP tools (harness as complete substrate)
 
-Adds four new `harness_*` MCP tools so any MCP client — butler, Claude
+Adds four new `musubi_*` MCP tools so any MCP client — butler, Claude
 Code, Cursor, a custom driver — can actually edit files and run
 commands through the harness without depending on a client-side tool
 set (which historically was Copilot Chat's). Closes the gap that
@@ -41,20 +41,20 @@ became obvious the moment the butler shipped: 51 governance tools, 0
 file tools.
 
 - `tools/fs.py` — workspace-scoped implementation. Every path is
-  resolved against `_workspace_root()` (HARNESS_ROOT env var or cwd)
+  resolved against `_workspace_root()` (MUSUBI_ROOT env var or cwd)
   and rejected if the resolved target escapes the workspace. No
   "dangerous command" heuristic — the user picked the model + the
   catalog; the substrate's job is path-safety + audit, not paternalism.
   Audit on stderr (`[harness.tools.fs]`); a SQL `fs_audit` table is a
   follow-up if patterns show it's needed.
 - `server.py` — four new MCP tools delegate to `tools/fs.py`:
-  - `harness_read_file(path)` — up to 5 MB UTF-8.
-  - `harness_write_file(path, content, create_parents=True)` —
+  - `musubi_read_file(path)` — up to 5 MB UTF-8.
+  - `musubi_write_file(path, content, create_parents=True)` —
     creates or replaces, mkdirs parents by default.
-  - `harness_edit_file(path, old_string, new_string, replace_all=False)`
+  - `musubi_edit_file(path, old_string, new_string, replace_all=False)`
     — defaults to "match must be unique" semantics; explicit
     replace_all path returns the count.
-  - `harness_run_command(command, timeout_seconds=60, cwd=None)` —
+  - `musubi_run_command(command, timeout_seconds=60, cwd=None)` —
     shell command via `sh -c`. Output capped at 1M chars
     (head + tail preserved on overflow). Timeout returns partial
     stdout/stderr.
@@ -77,7 +77,7 @@ Python side — sub-agent foundation, firewall, result verification,
 role .agent.md + SKILL.md files, and a durable audit log shipped at the
 harness layer. The remaining Phase A.3 work (mcpClient EventEmitter +
 subagentRendering.ts chat markers) is TypeScript and lands separately;
-until it does, the extension polls `harness_query_subagent_events` for
+until it does, the extension polls `musubi_query_subagent_events` for
 spawn / completion events.
 
 ### Phase A.3 — Role files + spawn-event audit (Python side)
@@ -96,20 +96,20 @@ spawn / completion events.
   `validation/subagent_context.SUBAGENT_ROLE_SKILLS`. Each documents
   reduce-the-brief, tool-selection, summary format, structured-payload
   shape, and anti-patterns specific to the role.
-- **`copilot-harness/storage/subagent_audit.py`** — new
+- **`musubi/storage/subagent_audit.py`** — new
   `subagent_audit` table on `audit.db` with `record_spawn`,
   `record_complete`, `query_events`. JSON-encoded fields
   (`allowed_tools`, `tools_used`, `verification_errors`) decoded on
   read. Indexed on `ts`, `parent_session_id`, and `handle_id`.
-- **`copilot-harness/server.py`**:
-  - `harness_spawn_subagent` — writes a `'spawned'` audit row after a
+- **`musubi/server.py`**:
+  - `musubi_spawn_subagent` — writes a `'spawned'` audit row after a
     successful spawn (audit failures swallow rather than block the
     spawn — durable evidence is best-effort, not blocking).
-  - `harness_complete_subagent` — writes a `'completed'` audit row
+  - `musubi_complete_subagent` — writes a `'completed'` audit row
     capturing `final_status`, `escalated`, `turns`, `tools_used`,
     `summary_truncated`, and `verification_errors`. Mirror of the
     spawn row keyed on the same `handle_id`.
-  - New **`harness_query_subagent_events(parent_session_id?,
+  - New **`musubi_query_subagent_events(parent_session_id?,
     handle_id?, since_ts?, limit=200)`** MCP tool exposes the audit
     log so the extension can poll for spawn / completion events and
     render chat markers without losing visibility on a window reload.
@@ -123,14 +123,14 @@ spawn / completion events.
 
 ### Phase A.2 — Firewall + result verification
 
-- **`copilot-harness/validation/subagent_context.py`** — frozen
+- **`musubi/validation/subagent_context.py`** — frozen
   `SubagentContext(brief, role, role_skill, allowed_tools)` produced by
   `build_subagent_context(brief, role)`. Function signature deliberately
   excludes `session_id` / `db_path` so the firewall is enforced at the
   type level. `SUBAGENT_ROLE_SKILLS` table maps each role to a SKILL.md
   id (Phase A.3 ships the actual files). `assert_no_session_leakage`
   helper rejects payloads that look like main session state.
-- **`copilot-harness/validation/verifier.py`** — new
+- **`musubi/validation/verifier.py`** — new
   `verify_subagent_summary(summary, structured, max_tokens=2000,
   schema=None)` returning `SubagentVerifyResult(valid, summary,
   truncated, errors)`. Truncates over-cap text with the marker
@@ -139,13 +139,13 @@ spawn / completion events.
   Optional schema check (required / types / enum) accepts string type
   names (`"int"`, `"list"`, …) so JSON-encoded schemas from the
   extension validate without a `jsonschema` dependency.
-- **`copilot-harness/server.py`**:
-  - `harness_complete_subagent` now passes `summary` + `structured`
+- **`musubi/server.py`**:
+  - `musubi_complete_subagent` now passes `summary` + `structured`
     through `verify_subagent_summary` against the row's
     `output_schema`. Rejected summaries coerce status → `failed` with
     a structured error; the offending text is replaced before
     persisting so the parent never sees secrets / injection.
-  - New `harness_get_subagent_context(handle_id)` MCP tool — returns
+  - New `musubi_get_subagent_context(handle_id)` MCP tool — returns
     the firewalled `{brief, role, role_skill, allowed_tools}` payload
     consumed by the Phase A.3 runner.
 - **+46 tests:**
@@ -154,20 +154,20 @@ spawn / completion events.
     leakage detection, static no-session-import assertion.
   - `tests/test_subagent_summary_verify.py` (31) — token cap +
     truncation marker, secrets / injection rejection, schema type-name
-    coercion, MCP-layer integration through harness_complete_subagent
-    and harness_get_subagent_context.
+    coercion, MCP-layer integration through musubi_complete_subagent
+    and musubi_get_subagent_context.
 - Total: **487 passing** (was 441 after A.1; +46 from A.2).
 
 ### Phase A.1 — Sub-agent foundation
 
-- **`copilot-harness/storage/db.py`** — `sub_sessions` table + 6 CRUD
+- **`musubi/storage/db.py`** — `sub_sessions` table + 6 CRUD
   helpers: `insert_sub_session`, `get_sub_session`,
   `update_sub_session_result`, `get_sub_sessions_by_parent`,
   `mark_sub_sessions_abandoned_for_parent`,
   `mark_orphan_running_sub_sessions_abandoned`. JSON-encoded fields
   (`allowed_tools`, `tools_used`, `result_structured`) decoded on read.
   Indexed on `parent_session_id` and `status` (commit `0606ed0`).
-- **`copilot-harness/session/sub_sessions.py`** — lifecycle module:
+- **`musubi/session/sub_sessions.py`** — lifecycle module:
   `spawn` (uuid hex[:12] handle, validates row-level invariants),
   `complete` (terminal recording + auto-escalation when
   `turns >= max_turns` or `elapsed > wall_clock_timeout_s`, with reason
@@ -186,17 +186,17 @@ spawn / completion events.
   - Helpers: `check_subagent_allowed`, `list_subagent_roles`,
     `get_subagent_tools`, `effective_subagent_tools`
     (`role ∩ main ∩ requested`), `subagent_deny_reason`.
-- **`copilot-harness/server.py`** — four MCP tools:
-  - `harness_spawn_subagent` — validates role / main / parent FK,
+- **`musubi/server.py`** — four MCP tools:
+  - `musubi_spawn_subagent` — validates role / main / parent FK,
     intersects requested tools with role policy, returns handle +
     `effective_tools` + recorded timeout caps.
-  - `harness_complete_subagent` — extension-side runner records
+  - `musubi_complete_subagent` — extension-side runner records
     summary / structured / tools_used / turns / status; harness
     auto-escalates on cap breach.
-  - `harness_await_subagent` — polls in-process until terminal or
+  - `musubi_await_subagent` — polls in-process until terminal or
     `wall_clock_timeout_s` exceeded (wall-clock kill); returns
     `still_running` snapshot if `max_wait_s` exhausted first.
-  - `harness_list_subagents` — spawn allow-list catalogue for a
+  - `musubi_list_subagents` — spawn allow-list catalogue for a
     main agent; pipeline stages return `[]` until `pipeline.yaml`
     opts in.
   - Server import-time `sub_sessions.sweep_orphans()` — startup
@@ -204,17 +204,17 @@ spawn / completion events.
     `abandoned`, recovering from a crashed harness without leaving
     dangling state.
   - `policy_engine.py` import path: `_add_scripts_to_path` resolves
-    against `HARNESS_ROOT` first (extension binary) then the dev tree.
+    against `MUSUBI_ROOT` first (extension binary) then the dev tree.
 
 ### Changed
 
 - **MCP tool count** in `CLAUDE.md` § MCP Tools: 18 → 24
-  (`harness_spawn_subagent`, `harness_complete_subagent`,
-  `harness_await_subagent`, `harness_list_subagents`,
-  `harness_get_subagent_context`, `harness_query_subagent_events`).
+  (`musubi_spawn_subagent`, `musubi_complete_subagent`,
+  `musubi_await_subagent`, `musubi_list_subagents`,
+  `musubi_get_subagent_context`, `musubi_query_subagent_events`).
 - **Hard Invariant #8** in `CLAUDE.md` rewritten — every spawn writes a
   durable `subagent_audit` row and surfaces via
-  `harness_query_subagent_events`; the chat-marker UX layer
+  `musubi_query_subagent_events`; the chat-marker UX layer
   (`subagentRendering.ts`) consumes the same audit log.
 
 ### Tests (combined A.1 + A.2)
@@ -233,8 +233,8 @@ spawn / completion events.
     leakage detection, static no-session-import assertion.
   - A.2: `tests/test_subagent_summary_verify.py` (31) — token cap +
     truncation marker, secrets / injection rejection, schema type-name
-    coercion, MCP-layer integration through `harness_complete_subagent`
-    and `harness_get_subagent_context`.
+    coercion, MCP-layer integration through `musubi_complete_subagent`
+    and `musubi_get_subagent_context`.
 - Total: **487 passing** (was 370).
 
 ### Roadmap impact
@@ -251,7 +251,7 @@ spawn / completion events.
 ## [v0.4.0] — 2026-04-24
 
 **Headline:** Sidebar Tasks view + in-chat ergonomics (Show Tasks button,
-per-stage output) + dedicated CopilotHarness mark. All previous dashboard
+per-stage output) + dedicated Musubi mark. All previous dashboard
 attempts reverted — the chat participant and a native tree view are now
 the only two surfaces.
 
@@ -268,14 +268,14 @@ the only two surfaces.
     row lists the stage artifacts; clicking any opens its `.md`
     in an editor tab.
 - **Show Tasks chat button** — `stream.button` emitted after every
-  pipeline / step header, routing to a new `copilot-harness.showTasks`
+  pipeline / step header, routing to a new `musubi.showTasks`
   command that focuses the sidebar Tasks view in one click.
 - **Per-stage output in chat** — after every `✓ <agent> — Xs — …` line
   a collapsible `<details><summary>output</summary>…</details>` block
   renders the agent's structured output as markdown (tasks for planner,
   modules for designer, files_modified + implementation_notes for coder,
   status + issues + fix_instructions for reviewer).
-- **CopilotHarness mark** — `media/icons/harness.svg` (single-color,
+- **Musubi mark** — `media/icons/harness.svg` (single-color,
   `currentColor`) replaces the `$(checklist)` / `$(robot)` codicons on
   the activity-bar container and the chat participant avatar. The
   design is a pure network-node abstraction: three inputs (planner,
@@ -284,8 +284,8 @@ the only two surfaces.
   is the 256×256 marketplace source — rasterise to PNG via
   `rsvg-convert` to populate the `icon` field in `package.json` when
   publishing.
-- **MCP commands exposed to the extension:** `copilot-harness.refreshTasks`,
-  `copilot-harness.openSessionArtifact`, `copilot-harness.showTasks`.
+- **MCP commands exposed to the extension:** `musubi.refreshTasks`,
+  `musubi.openSessionArtifact`, `musubi.showTasks`.
 
 ### Changed
 
@@ -352,7 +352,7 @@ history at commit 170c350 for future reference.
 
 ## [v0.2.0] — earlier
 
-Extension bootstrap: `McpClient` spawns the bundled `copilot-harness`
+Extension bootstrap: `McpClient` spawns the bundled `musubi`
 PyInstaller binary directly; `@harness` chat participant registered;
 direct mode + slash commands + hooks.json + policy engine; `/help`
 dynamic table; plugin manifest; direct-mode skill catalog; Tier 2
