@@ -115,5 +115,3 @@ zero-LLM-cost routing, append-only stage store, no silent sub-agents) live
 in `CLAUDE.md` § Hard Invariants. Do not duplicate them here.
 
 ---
-
-*CopilotHarness | 591 Py + 125 TS | Phase F (agent frozen) | May 2026 | docs/design.md · docs/roadmap.md*
