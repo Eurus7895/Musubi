@@ -23,6 +23,62 @@ from `harness-direction.md` is visible per item.
 
 ---
 
+## North star — the Musubi standalone pivot
+
+> Supersedes the embedded-Copilot framing. The direction below is the
+> committed target; the MVP tracks (A–D) feed into it.
+
+**Rename: CopilotHarness → `Musubi` (結び).** The old name is wrong on
+two counts — "Copilot" names a host we are leaving, and "harness" names
+the old job (gating *Copilot*). The real value is **governed
+orchestration**: enforced validation at the boundary between agents.
+`Musubi` ("knot / binding / the connective force") names that.
+
+**The sharpened thesis.** The staged pipeline was never the product.
+The product is **deterministic, zero-LLM validation enforced at every
+agent↔agent and agent↔tool boundary** — wherever the boundaries sit.
+The 4-stage *shape* is one arrangement of boundaries; it is **ephemeral**.
+The boundary primitives are **substrate**:
+
+| Boundary primitive (substrate — keep) | Was bound to | Re-homes to |
+|---|---|---|
+| Evaluator firewall (HI #3) | reviewer *stage* | reviewer *sub-agent* (restricted context) |
+| Validator (lint/typecheck/tests) | between stages | every sub-agent handoff + every tool call (hook) |
+| Schema / contract check | `harness_write_stage` | sub-agent return + tool-call gate |
+| Policy engine (HI #5) | `(pipeline, agent)` | `(agent, sub-agent role)` + tool allow-list |
+| Append-only audit (HI #7/#8) | stage store | turn / conversation / sub-agent store |
+
+What actually dies with the pipeline: the **rigid sequential shape** and
+the **between-stage human gate** — both ephemeral.
+
+**Target architecture.** A **standalone, single-agent host** (Claude-Code
+shaped) that reaches a model through one inject point — the
+vendor-agnostic `LMRouter` (`agent/vendors/base.py`) — so the product is
+**model-agnostic** and free of `vscode.lm` quota. The VS Code extension
+host is **abandoned**. Enabled by the HI #1 redraw (substrate stays
+zero-LLM; the driver may connect to an LLM).
+
+**Phases (parity-gated — never dissolve speculatively):**
+
+| Phase | Work | Gate |
+|---|---|---|
+| **P1 — single-agent host reaches parity** | wire `tools/fs.py` → MCP tools (retires `materializeCoderFiles`); port `BudgetEnforcer` + compaction into `agent/run.py`; multi-turn CLI + conversation persistence | — |
+| **P2 — control at the boundary** | `PreToolUse` (policy/firewall) + `PostToolUse` (audit) fire on every tool call; firewalled reviewer sub-agent; surface cost/credits in CLI | — |
+| **P2.5 — validate parity** | eval suite (item 10 / A.1): run the 5 tasks through *both* staged pipeline and single-agent; compare quality + credits | **the gate** |
+| **P3 — dissolve (D.10) + cut VS Code** | delete the 4-stage pipeline, `pipeline.ts` runners, manifest contract, the extension; rewrite HI #2/#3/#6/#7 for the boundary-based world | gated on P2.5 |
+
+> Item 10 (eval suite) moves from "deferred keystone" to **load-bearing
+> gate** — it is what licenses P3. The standalone pivot is precisely the
+> "real LM session" trigger that unblocked it.
+
+**Rename sequencing (NOT big-bang).** Surface today: `harness_*` ×746,
+`copilotHarness`/`copilot-harness` ×401, `harness-tier` ×166. Rule:
+rename **durable substrate** surfaces; **do not** rename what P3 deletes
+(the VS Code extension). Open decision: whether to rename the `harness_*`
+MCP tool prefix → `musubi_*` (a breaking MCP-contract change) or keep it.
+
+---
+
 ## Active branches
 
 _(none — the 10-item MVP sprint is complete; items 1-9 shipped, item 10 deferred with explicit triggers — see entry below)_
