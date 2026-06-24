@@ -107,3 +107,35 @@ def test_compress_no_win_returns_original_unstored(tmp_path):
     res = compress(text, db_path=db)
     assert res.ref_id is None
     assert res.compressed == text
+
+
+# ── server-side gated wiring (Step 3) ────────────────────────────────────────
+
+def test_maybe_compress_field_off_is_noop(monkeypatch):
+    import server
+    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
+    d = {"status": "ok", "content": "x" * 5000}
+    assert server._maybe_compress_field(d, "content", "f.txt") == d
+
+
+def test_maybe_compress_field_on_compresses_without_mutating(monkeypatch):
+    import server
+    from compression.router import CompressResult
+    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
+    monkeypatch.setattr(
+        "compression.compress",
+        lambda text, **kw: CompressResult("SHORT", "ref123", "json", len(text), 5),
+    )
+    src = {"status": "ok", "content": "x" * 5000}
+    out = server._maybe_compress_field(src, "content", "f.json")
+    assert out["content"] == "SHORT"
+    assert out["compressed_ref"] == "ref123"
+    assert out["compression_ratio"] < 1.0
+    assert src["content"] == "x" * 5000  # input not mutated
+
+
+def test_maybe_compress_field_skips_error_results(monkeypatch):
+    import server
+    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
+    d = {"status": "error", "error": "nope"}
+    assert server._maybe_compress_field(d, "content", None) == d

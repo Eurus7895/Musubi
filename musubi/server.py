@@ -2040,6 +2040,38 @@ def musubi_run_hook(event: str, payload: str = "") -> str:
 # stderr. Implementations live in `tools/fs.py`.
 
 
+def _compression_enabled() -> bool:
+    """Step 3 gate — compression is OFF until the eval suite (Step 6) clears it."""
+    return os.environ.get("MUSUBI_COMPRESS", "").strip().lower() in (
+        "1", "true", "on", "yes",
+    )
+
+
+def _maybe_compress_field(
+    result: dict, field: str, hint: str | None,
+) -> dict:
+    """Compress `result[field]` when the flag is on and it's worth it.
+
+    Reversible: the verbatim original is stored and reachable via
+    `musubi_retrieve(compressed_ref)`. No-op when disabled, on errors, or
+    when compression wouldn't shrink the text. Never mutates the input.
+    """
+    if not _compression_enabled() or result.get("status") != "ok":
+        return result
+    text = result.get(field)
+    if not isinstance(text, str):
+        return result
+    from compression import compress
+    res = compress(text, hint=hint)
+    if res.ref_id is None:
+        return result
+    out = dict(result)
+    out[field] = res.compressed
+    out["compressed_ref"] = res.ref_id
+    out["compression_ratio"] = round(res.ratio, 3)
+    return out
+
+
 @mcp.tool()
 def musubi_read_file(path: str) -> str:
     """Read a text file from the workspace.
@@ -2047,10 +2079,11 @@ def musubi_read_file(path: str) -> str:
     `path` may be workspace-relative or absolute; absolute paths must
     resolve inside the workspace root. Reads up to 5 MB of UTF-8 text.
     Returns JSON {"status":"ok","content":...,"bytes":...} or
-    {"status":"error","error":...}.
+    {"status":"error","error":...}. When compression is enabled the
+    `content` may be compressed with a `compressed_ref` for retrieval.
     """
     from tools import fs
-    return json.dumps(fs.read_file(path))
+    return json.dumps(_maybe_compress_field(fs.read_file(path), "content", path))
 
 
 @mcp.tool()
@@ -2108,9 +2141,10 @@ def musubi_run_command(
     On timeout, status="error" with any partial stdout/stderr included.
     """
     from tools import fs
-    return json.dumps(fs.run_command(
+    result = fs.run_command(
         command, timeout_seconds=timeout_seconds, cwd=cwd,
-    ))
+    )
+    return json.dumps(_maybe_compress_field(result, "stdout", "log"))
 
 
 # ── Compression retrieval ────────────────────────────────────────────────────
