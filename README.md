@@ -28,7 +28,7 @@ Every component carries a `musubi-tier` tag, enforced by CI:
   threshold, the structure gets *deleted*, not refactored.
 
 Full discipline + the PR-review sentence:
-[`docs/musubi-direction.md`](./docs/musubi-direction.md).
+[`docs/roadmap.md`](./docs/roadmap.md).
 
 ### Three surfaces, choose by intent
 
@@ -45,11 +45,10 @@ Full discipline + the PR-review sentence:
 | File | For |
 |---|---|
 | `README.md` *(you are here)* | Install · build · run · contribute |
-| [`docs/musubi-direction.md`](./docs/musubi-direction.md) | **Read first.** Direction, discipline, substrate-vs-ephemeral per component |
+| [`docs/roadmap.md`](./docs/roadmap.md) | **Read first.** Direction, discipline, north-star pivot, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · invariants · conventions · commands (Claude Code memory) |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map for agents |
-| [`docs/design.md`](./docs/design.md) | Full architecture · schemas · MCP tool reference |
-| [`docs/roadmap.md`](./docs/roadmap.md) | Build roadmap · status · phase plans |
+| [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 
 Read `CLAUDE.md` before making code changes — it lists the hard invariants
 (zero LLM in harness, evaluator firewall, fail-closed policy, etc.).
@@ -154,8 +153,9 @@ useful when Copilot quota is empty or you want to point a different
 model at the substrate. New vendors are a single file under
 `musubi/agent/vendors/`.
 
-Full architecture, MCP tool reference, schemas, hooks, and YAML formats
-live in [`docs/design.md`](./docs/design.md).
+The MCP tool reference, schemas, hooks, and YAML formats are documented
+at their source of truth: [`musubi/server.py`](./musubi/server.py) and
+[`musubi/storage/schema.sql`](./musubi/storage/schema.sql).
 
 ---
 
@@ -206,13 +206,13 @@ copilot-harness-extension/      VS Code extension (TypeScript)
                                 subdir is musubi-tier: ephemeral
 hooks.json + scripts/           SessionStart / PreToolUse / PostToolUse
                                 + check_musubi_tier.py (CI lint for HI #9)
-docs/musubi-direction.md       direction + discipline (read first)
-docs/design.md                  full architecture + schemas
-docs/roadmap.md                 build roadmap + status
+docs/roadmap.md                 direction + discipline + numbered steps (read first)
+docs/memory.md                  memory architecture detail
+musubi/server.py                MCP tool reference (source of truth)
 ```
 
-Detailed file-by-file breakdown lives in
-[`docs/design.md`](./docs/design.md) § File Structure.
+The MCP tool reference is `musubi/server.py`; the DB schema is
+[`musubi/storage/schema.sql`](./musubi/storage/schema.sql).
 
 ---
 
@@ -337,8 +337,8 @@ server is running:
 1. Read [`CLAUDE.md`](./CLAUDE.md) first — it lists the hard invariants
    that cannot be broken without an explicit design discussion.
 2. Skim [`AGENTS.md`](./AGENTS.md) for the file-layout map.
-3. Look at [`docs/roadmap.md`](./docs/roadmap.md) and
-   [`docs/design.md`](./docs/design.md) § Known TODOs for the current backlog.
+3. Look at [`docs/roadmap.md`](./docs/roadmap.md) § Steps for the current
+   backlog.
 4. Run the checks listed in [`CLAUDE.md`](./CLAUDE.md) § Commands before
    opening a PR.
 5. Don't add new pipelines until `feature-dev` is validated (see roadmap).

@@ -2,7 +2,7 @@
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
-> Rules and conventions → `CLAUDE.md`. Architecture → `docs/design.md`. Build roadmap and status → `docs/roadmap.md`.
+> Rules and conventions → `CLAUDE.md`. MCP tools + schema → `musubi/server.py` + `musubi/storage/schema.sql`. Direction, roadmap and status → `docs/roadmap.md`.
 
 ---
 
@@ -33,7 +33,7 @@ The `@harness` chat participant routes automatically: input that starts with
 ## Where Everything Lives
 
 ```
-AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
+AGENTS.md / CLAUDE.md / README.md / docs/roadmap.md   map / rules / quickstart / direction+plan
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
 .github/agents/                       agent, skill-builder, sub-agent roles

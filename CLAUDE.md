@@ -1,9 +1,8 @@
 # CLAUDE.md — Musubi
 
 > Rules and commands for working in this repo.
-> Direction and discipline → [`docs/musubi-direction.md`](./docs/musubi-direction.md).
-> Architecture, schemas, MCP tool reference → [`docs/design.md`](./docs/design.md).
-> Forward-looking plan → [`docs/roadmap.md`](./docs/roadmap.md).
+> Direction, discipline & forward plan → [`docs/roadmap.md`](./docs/roadmap.md).
+> MCP tool reference + DB schema (source of truth) → [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql).
 > Agent session-start map → [`AGENTS.md`](./AGENTS.md).
 
 ---
@@ -36,7 +35,7 @@ Zero LLM calls inside the harness.
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration
 trigger fires.** Full per-component analysis with removability cost and
-cost-lever values lives in [`docs/musubi-direction.md`](./docs/musubi-direction.md).
+cost-lever values lives in [`docs/roadmap.md`](./docs/roadmap.md) § Dissolution candidates.
 
 ---
 

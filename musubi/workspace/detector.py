@@ -402,6 +402,6 @@ each `.github/skills/<name>/SKILL.md` `applies-to:` frontmatter
 against the profile above. A C-language skill in a Python workspace,
 or a Sphinx-doc skill in an mkdocs project, is hidden from the model's
 catalog — preventing the failure pattern of "tried C skill on Python"
-that the article (`docs/musubi-direction.md` § 3) calls out.
+that the skill-router discipline (`docs/roadmap.md`) calls out.
 """
     return body
