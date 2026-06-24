@@ -9,17 +9,49 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
-### Butler CLI — vendor-agnostic harness driver (Python)
+### Renamed to Musubi + standalone single-agent pivot
 
-- New `agent-butler` console script (lives in `musubi/butler/`).
-  Drives the harness MCP server via a direct LLM API — Anthropic or
+- **Breaking: `CopilotHarness` → `Musubi`.** The MCP tool prefix is now
+  `musubi_*` (was `harness_*`); the package dir is `musubi/`; the
+  `musubi-tier` tag and `MUSUBI_ROOT` env replace the old equivalents.
+  The standalone CLI takes tools dynamically, so it is prefix-agnostic;
+  the VS Code extension was deliberately left on the old prefix and is
+  now broken-by-design, pending deletion (roadmap Step 7).
+- **Hard Invariant #1 redrawn** as a substrate/driver boundary: the
+  substrate makes zero LLM calls; the driver (agent loop) reaches a model
+  through one inject point (`vscode.lm` or the vendor-agnostic
+  `LMRouter`). This unblocks the standalone host.
+- **Docs consolidated.** `docs/design.md` and `docs/musubi-direction.md`
+  removed; their durable framing folds into `docs/roadmap.md`, whose plan
+  is now a numbered Step 1..7 sequence toward a standalone, model-agnostic
+  single-agent host with the staged pipeline scheduled for dissolution.
+
+### Reversible input compression (substrate)
+
+- New `musubi/compression/` — deterministic, zero-LLM compressors
+  (JSON-minify, code comment/blank-strip, whitespace collapse) routed by
+  content type, with a content-hash blob store for reversibility.
+- New `musubi_retrieve(ref_id)` MCP tool returns the verbatim original of
+  any compressed payload (CCR-style: the model reads compressed; audit and
+  on-demand retrieval read the original).
+- Wired into `musubi_read_file` / `musubi_run_command` behind the
+  `MUSUBI_COMPRESS` flag (default OFF until the eval suite clears it).
+  Measured ~67% reduction on indented JSON with an exact round-trip.
+- Idea credit: headroom. The learned text compressor is deliberately not
+  adopted — it would be a model call in the substrate (violates HI #1).
+
+### Agent CLI — vendor-agnostic substrate driver (Python)
+
+- New `agent` console script (lives in `musubi/agent/`).
+  Drives the Musubi MCP substrate via a direct LLM API — Anthropic or
   OpenAI today, extensible to other vendors by implementing one
-  `LMRouter` subclass. Restores end-to-end harness usage when Copilot
-  Chat isn't available (e.g. quota exhausted).
-- Aligns with the musubi-direction discipline: the butler IS the
-  model's native mode (per CLAUDE.md "Copilot Chat reasons,
-  Musubi controls the environment"). The 4-stage pipeline is
-  not ported — it remains `musubi-tier: ephemeral` in the extension.
+  `LMRouter` subclass. Restores end-to-end usage when Copilot
+  Chat isn't available (e.g. quota exhausted), and is the basis for the
+  standalone single-agent host (roadmap Steps 4–5).
+- Aligns with the substrate discipline: the agent IS the model's native
+  mode (the driver reasons; the substrate controls the environment). The
+  4-stage pipeline is not ported — it remains `musubi-tier: ephemeral`,
+  scheduled for dissolution in roadmap Step 7.
 - Vendor SDKs are optional extras: `pip install -e .[anthropic]` or
   `.[openai]` or `.[all]`. Defaults: `claude-haiku-4-5` (Anthropic),
   `gpt-4o-mini` (OpenAI). Override via `--model`.

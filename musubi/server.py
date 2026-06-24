@@ -1356,8 +1356,8 @@ def musubi_distill_session(session_id: str) -> str:
 # block until that happens (or until the wall-clock cap fires).
 
 # Polling cadence for musubi_await_subagent. Tests can override via the
-# HARNESS_SUBAGENT_POLL_S env var to keep the suite fast.
-_AWAIT_POLL_S: float = float(os.environ.get("HARNESS_SUBAGENT_POLL_S", "0.25"))
+# MUSUBI_SUBAGENT_POLL_S env var to keep the suite fast.
+_AWAIT_POLL_S: float = float(os.environ.get("MUSUBI_SUBAGENT_POLL_S", "0.25"))
 
 
 @mcp.tool()

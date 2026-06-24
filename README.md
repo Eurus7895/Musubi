@@ -1,14 +1,22 @@
 # Musubi
 
-A **governance substrate** for agentic software-engineering work in VS Code
-— audit DB, skill catalog, three-tier memory, fail-closed policy engine,
-deterministic verifiers, workspace-scoped file & command tools — exposed
-as an MCP server. Any tool-using LLM can drive it: GitHub Copilot Chat (the
-canonical client), or — when Copilot is offline — Anthropic / OpenAI APIs
-via the bundled `agent` CLI, or any other MCP client.
+**Musubi** (結び — "knot / binding / the connective force") is a
+**governed-orchestration substrate** for agentic software-engineering
+work. Its value is **deterministic, zero-LLM validation enforced at every
+agent↔agent and agent↔tool boundary** — audit DB, skill catalog,
+three-tier memory, fail-closed policy engine, deterministic verifiers,
+reversible input compression, and workspace-scoped file & command tools —
+exposed as an MCP server.
 
-**Copilot Chat reasons. Musubi controls the environment.**
-Zero LLM calls inside the harness.
+Any tool-using LLM drives it through one inject point. The **target**
+host is the standalone `agent` CLI (`musubi/agent/run.py`) over the
+vendor-agnostic `LMRouter` — model-agnostic, free of `vscode.lm` quota.
+The legacy embedded GitHub Copilot host is being abandoned (roadmap
+Step 7).
+
+**The driver reasons. The substrate controls the environment.**
+The substrate makes zero LLM calls (Hard Invariant #1); only the driver —
+the agent loop — reaches a model, through the inject point.
 
 > Same model + same task + changed environment = better outcomes.
 > (Princeton SWE-agent paper: 64% improvement from harness design alone.)
@@ -30,13 +38,13 @@ Every component carries a `musubi-tier` tag, enforced by CI:
 Full discipline + the PR-review sentence:
 [`docs/roadmap.md`](./docs/roadmap.md).
 
-### Three surfaces, choose by intent
+### Surfaces
 
 | Surface | When | What you get |
 |---|---|---|
-| `@harness /feature-dev <task>` (VS Code) | structured code change | 4-agent governed pipeline with firewall, validation, audit |
-| `agent "<task>"` (CLI) | any task, Copilot quota empty | Python CLI drives any LLM with tool use (Anthropic / OpenAI / extensible) against the same harness substrate |
-| plain Copilot Chat | casual question | no harness overhead |
+| `agent "<task>"` (standalone CLI) | **the target** — any task, any LLM | single-agent loop over `LMRouter` (Anthropic / OpenAI / extensible) against the Musubi substrate; model-agnostic, no Copilot quota |
+| `@harness /feature-dev <task>` (VS Code) | legacy, **being removed** | the 4-stage governed pipeline; ephemeral and dissolving in roadmap Step 7 (the `musubi_*` MCP rename already breaks its hardcoded calls) |
+| plain Copilot Chat | casual question | no Musubi overhead |
 
 ---
 
@@ -51,7 +59,14 @@ Full discipline + the PR-review sentence:
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 
 Read `CLAUDE.md` before making code changes — it lists the hard invariants
-(zero LLM in harness, evaluator firewall, fail-closed policy, etc.).
+(zero LLM in the substrate, evaluator firewall, fail-closed policy, etc.).
+
+> **⚠️ The VS Code extension below is legacy.** The supported target is
+> the standalone `agent` CLI (`musubi/agent/run.py`). The `harness_* →
+> musubi_*` MCP rename intentionally breaks the extension's hardcoded
+> calls; it is being removed in roadmap Step 7. The install/usage section
+> documents it for now but a standalone-CLI-first rewrite lands with
+> Step 4.
 
 ---
 
@@ -124,9 +139,10 @@ from the panel — no extension rebuild required.
 
 ## How It Works (one-paragraph summary)
 
-The harness is a Python MCP server (`musubi/server.py`). It
-exposes ~55 `musubi_*` tools covering session lifecycle, skills, memory,
-audit, file I/O, and command execution. **Zero LLM calls happen inside it**
+The Musubi substrate is a Python MCP server (`musubi/server.py`). It
+exposes ~56 `musubi_*` tools covering session lifecycle, skills, memory,
+audit, file I/O, command execution, and reversible input compression.
+**Zero LLM calls happen inside it**
 (HI #1). Any tool-using LLM client can drive it; the VS Code extension is
 the canonical one, but the bundled `agent` CLI is a peer.
 

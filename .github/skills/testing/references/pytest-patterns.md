@@ -118,7 +118,7 @@ of a test.
 
 ```python
 def test_executor_uses_env_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HARNESS_TIMEOUT", "5")
+    monkeypatch.setenv("MUSUBI_TIMEOUT", "5")
     from executor import get_timeout
     assert get_timeout() == 5
 
