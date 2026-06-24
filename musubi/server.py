@@ -2113,6 +2113,29 @@ def musubi_run_command(
     ))
 
 
+# ── Compression retrieval ────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def musubi_retrieve(ref_id: str) -> str:
+    """Return the verbatim original of a previously compressed payload.
+
+    Tool results and injected context may be compressed to save tokens,
+    ending with a marker like `[musubi:compressed ... ref=<id> ...]`. When
+    you need the exact, un-compressed original (full comments, whitespace,
+    JSON formatting), call this with that `ref_id`.
+    Returns JSON {"status":"ok","original":...} or {"status":"error",...}.
+    """
+    from compression import retrieve
+    original = retrieve(ref_id)
+    if original is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"no compressed blob for ref_id {ref_id}",
+        })
+    return json.dumps({"status": "ok", "original": original})
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def serve() -> None:

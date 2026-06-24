@@ -24,6 +24,7 @@ packages = [
     "agent",
     "agent.vendors",
     "tools",
+    "compression",
 ]
 
 [project.scripts]

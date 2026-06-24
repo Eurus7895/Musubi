@@ -39,7 +39,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SCOPE_PATTERNS = [
     "musubi/**/*.py",
-    "copilot-harness-extension/src/**/*.ts",
+    # The VS Code extension is frozen and scheduled for deletion (roadmap
+    # Step 7). It was deliberately left on the legacy `harness-tier:` tag
+    # during the Musubi rename, so it is out of scope for this check.
     ".github/agents/*.agent.md",
     ".github/skills/**/SKILL.md",
     ".github/pipelines/*/pipeline.yaml",
