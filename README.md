@@ -32,7 +32,7 @@ it. Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | single-agent loop over `LMRouter` against the substrate; model-agnostic, no Copilot quota |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop + on-demand sub-agents over `LMRouter`; any vendor (anthropic / openai / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
 | `@harness /feature-dev <task>` (VS Code) | inside Copilot Chat | the 4-stage governed pipeline + substrate features, driven by Copilot's model |
 
 Both surfaces drive the **same** substrate (audit, firewall, policy,

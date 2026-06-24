@@ -8,26 +8,29 @@
 
 ## What Musubi Is
 
-Harness layer for GitHub Copilot Chat in VS Code. The product is
-**governed pipelines** — multi-stage workflows with evaluator firewall,
-correction loop, and append-only audit. The agent chat mode
-exists in the codebase but is **feature-frozen**; new development
-goes into pipelines.
+A **governed-orchestration substrate** for agentic SE work — evaluator
+firewall, fail-closed policy engine, append-only audit, skill catalog,
+3-tier memory, reversible input compression — exposed as an MCP server that
+makes **zero LLM calls** (HI #1). Two supported surfaces drive it:
 
-- **Pipeline (active development):** repeatable high-stakes workflows →
-  predetermined chain in `pipeline.yaml` → full guardrails (evaluator
-  firewall, validation, correction loop, append-only stage store, audit).
-  Invoked via `/<pipeline-name> <task>`.
-- **Standalone agent (active):** the `agent` CLI (`musubi/agent/`) reaches
-  the model through the vendor-agnostic `LMRouter`, *not* `vscode.lm` — so the
-  caching-cost reason above doesn't apply. This is the roadmap's north star
-  (Steps 4–5): model-agnostic vendors (anthropic / openai / azure-on-prem via
-  curl / ollama, selected by `.musubi/llm.toml` profiles) plus a sub-agent
-  orchestrator (`agent/subagent.py`) that runs spawned roles to completion.
+- **Standalone `agent` CLI (active — the north star):** `musubi/agent/`
+  reaches the model through the vendor-agnostic `LMRouter` — anthropic /
+  openai / azure-on-prem (via curl) / ollama, selected by `.musubi/llm.toml`
+  profiles. A multi-step tool loop plus a sub-agent orchestrator
+  (`agent/subagent.py`) that runs spawned roles to completion. Model-
+  agnostic, no `vscode.lm` quota (roadmap north star, Steps 4–5). First run:
+  `musubi setup`.
+- **VS Code pipeline (active):** `@harness /feature-dev <task>` runs the
+  4-stage governed pipeline (planner → designer → coder → reviewer +
+  evaluator firewall, correction loop, append-only stage store) on Copilot's
+  model. The bare `@harness` chat agent (embedded, via `vscode.lm`) is
+  **feature-frozen** — 3-5× cost because provider prompt caching isn't
+  reachable through `vscode.lm.sendRequest`; use plain Copilot Chat for
+  casual chat. The freeze is scoped to this embedded host only (the
+  standalone CLI is a different inject point).
 
-The `@harness` chat participant routes automatically: input that starts with
-`/<pipeline-name>` goes to that pipeline; everything else goes to the
-(frozen) agent. Zero LLM call decides which mode — pure prefix match.
+The `@harness` participant routes by pure prefix match (zero LLM call):
+`/<pipeline-name>` → that pipeline; everything else → the (frozen) agent.
 
 ---
 
@@ -55,24 +58,27 @@ No new pipelines until feature-dev is validated.
 ## Key Interactions
 
 ```
-# Pipeline mode (governed pipeline + evaluator firewall)
+# First-time setup (env doctor, .musubi/llm.toml, .vscode/mcp.json)
+musubi setup
+
+# Standalone CLI (active — any vendor; spawns sub-agents on demand)
+agent "add a login endpoint and a test"
+agent "<task>" --profile azure.work          # on-prem endpoint
+agent "<task>" --vendor ollama --model llama3.1
+
+# VS Code pipeline (governed pipeline + evaluator firewall)
 @harness /feature-dev add a login endpoint
 
-# Agent mode (default — persistent chat, spawns sub-agents on demand)
+# Embedded @harness chat agent (frozen — casual chat only)
 @harness explain this error
-@harness add a login endpoint
-
 ```
 
-First-time setup: `musubi setup` (a guided wizard — env doctor, `.musubi/llm.toml`
-endpoint profile, optional connection test, `.vscode/mcp.json`). Code in
-`musubi/setup_wizard.py`, dispatched from `cli.py` alongside `serve`.
-
-Commands are `.github/commands/*.md` frontmatter (loaded by
-`slashCommands.ts`). Add a command by dropping a new `.md` — no code change.
+Setup wizard lives in `musubi/setup_wizard.py`, dispatched from `cli.py`
+alongside `serve`. Pipeline commands are `.github/commands/*.md` frontmatter
+(loaded by `slashCommands.ts`) — add one by dropping a new `.md`, no code change.
 
 Hard rules (evaluator firewall, sub-agent firewall, fail-closed policy,
-zero-LLM-cost routing, append-only stage store, no silent sub-agents) live
-in `CLAUDE.md` § Hard Invariants. Do not duplicate them here.
+append-only stage store, no silent sub-agents) live in `CLAUDE.md`
+§ Hard Invariants. Do not duplicate them here.
 
 ---
