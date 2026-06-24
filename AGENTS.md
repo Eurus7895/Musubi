@@ -18,11 +18,18 @@ goes into pipelines.
   predetermined chain in `pipeline.yaml` → full guardrails (evaluator
   firewall, validation, correction loop, append-only stage store, audit).
   Invoked via `/<pipeline-name> <task>`.
-- **Agent (frozen, May 2026):** bare `@harness <prompt>` still
-  routes here, but no new features land. Real-world cost data showed
-  3-5× plain Copilot Agent per chat turn because provider-side prompt
-  caching isn't reachable through `vscode.lm.sendRequest`. Use plain
+- **Embedded agent (frozen, May 2026):** bare `@harness <prompt>` in
+  Copilot Chat still routes here, but no new features land. Real-world cost
+  data showed 3-5× plain Copilot Agent per chat turn because provider-side
+  prompt caching isn't reachable through `vscode.lm.sendRequest`. Use plain
   Copilot Chat for casual chat. Decision: `docs/roadmap.md` § Phase F.
+  **The freeze is scoped to this `vscode.lm` host only.**
+- **Standalone agent (active):** the `agent` CLI (`musubi/agent/`) reaches
+  the model through the vendor-agnostic `LMRouter`, *not* `vscode.lm` — so the
+  caching-cost reason above doesn't apply. This is the roadmap's north star
+  (Steps 4–5): model-agnostic vendors (anthropic / openai / azure-on-prem via
+  curl / ollama, selected by `.musubi/llm.toml` profiles) plus a sub-agent
+  orchestrator (`agent/subagent.py`) that runs spawned roles to completion.
 
 The `@harness` chat participant routes automatically: input that starts with
 `/<pipeline-name>` goes to that pipeline; everything else goes to the

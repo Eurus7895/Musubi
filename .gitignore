@@ -69,6 +69,10 @@ musubi/storage/musubi.db
 musubi/storage/audit.db
 musubi/memory/cross_session.db
 
+# Musubi standalone-agent LLM endpoint config — holds (or points at) secrets.
+# The committed template is .musubi/llm.toml.example.
+.musubi/llm.toml
+
 # Musubi build output — copy-assets.sh stages .github/ assets and
 # LICENSE into the extension dir for .vsix packaging. Source of truth lives
 # at the repo root; these copies must never be committed (would drift

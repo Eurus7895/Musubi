@@ -71,12 +71,17 @@ substrate; pipeline dissolution is postponed (see below).
    `musubi_run_command` done (behind `MUSUBI_COMPRESS`, default OFF);
    `musubi_read_stage` (after firewall) + `musubi_get_conversation` +
    `stage_metrics` ratio recording remain.
-4. **Finish single-agent host parity.** Port `BudgetEnforcer` +
-   compaction into `agent/run.py`; multi-turn CLI + conversation
-   persistence.
-5. **Control at the boundary.** `PreToolUse` (policy/firewall) +
-   `PostToolUse` (audit) on every tool call; firewalled reviewer
-   sub-agent; surface cost/credits in the CLI.
+4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
+   `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) selected by
+   `.musubi/llm.toml` family profiles (`agent/config.py` + `agent/vendors/`).
+   Remaining: port `BudgetEnforcer` + compaction into `agent/run.py`;
+   multi-turn CLI + conversation persistence.
+5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
+   (`agent/subagent.py`): the standalone agent runs spawned roles to
+   completion on a firewalled brief + restricted tool surface, summary
+   verified on `musubi_complete_subagent`, spawn audited. Remaining:
+   `PreToolUse` (policy/firewall) + `PostToolUse` (audit) on every standalone
+   tool call; surface cost/credits in the CLI.
 6. **Fix the VS Code extension for the rename.** The extension is a
    **supported** Copilot surface (it brings the substrate — governance +
    compression — to Copilot Chat). Update its hardcoded `harness_*` tool
@@ -147,47 +152,3 @@ is what would license it. Postponed while the pipeline stays.
   drive-by. Not blocking; tracked so it isn't forgotten.
 
 ---
-
-## Dissolution candidates (retire when the pipeline is dissolved — postponed)
-
-Each is `musubi-tier: ephemeral` with an `expires-when:` source tag. The
-single-agent host + eval suite is the trigger for the whole set.
-
-| Component | Cost-lever today |
-|---|---|
-| 4-stage pipeline shape | ~30 credits/run avoided vs unconstrained one-shot |
-| Sub-agent-for-exploration split | ~75% exploration cost cut (~15 credits/session) |
-| Correction loop (`runAgentWithValidationRetry`) | 1× stage cost per retry avoided |
-| Cycle-loop guards (bail-out / salvage) | ~0.3 credits/session |
-| Preamble blocks (path-rules / empty-project / workspace-root) | ~8 credits/avoided-stuck-stage |
-| `materializeCoderFiles` + JSON manifest | deterministic disk writes (retired in Step 1) |
-| `preSpawnAndSplice` fanout | ~3-10 credits/stage |
-| `runStageReviewGate` 4-button UX | human-in-the-loop value (not a cost lever) |
-
-**Reading rule:** when cost-lever falls below maintenance cost, delete —
-even if the expiration trigger hasn't fully fired.
-
----
-
-## Rename status (done — substrate only)
-
-CopilotHarness → **Musubi**. Substrate, driver, docs, scripts, CI, and
-`.github/` were renamed to `Musubi` / `musubi` / `musubi_*` /
-`musubi-tier`, including the breaking `harness_* → musubi_*` MCP-prefix
-change (the standalone CLI takes tools dynamically, so it is
-prefix-agnostic). The VS Code extension was **not renamed in this pass**,
-so the server-side prefix change currently breaks its hardcoded
-`harness_*` calls — Step 6 fixes that (the extension is kept, not
-abandoned). GitHub repo renamed in place (history / issues preserved).
-
----
-
-## How we stay aligned as models evolve
-
-- **Eval suite on every model release** (postponed) — the keystone signal once pipeline dissolution is back on the table.
-- **Watch the audit data** — falling cycle counts / spawn counts /
-  preamble fire-rates flag a guard that stopped earning its keep.
-- **Quarterly delete-pass** — walk the ephemeral set, apply the
-  1-hour-vs-1-week question, write a short net-delta memo.
-- **Thin user contract** — keep the entry command stable so internal
-  dissolution never surfaces to the user.

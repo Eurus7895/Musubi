@@ -21,7 +21,13 @@ _DEFAULT_MODEL = "claude-haiku-4-5"
 class AnthropicRouter(LMRouter):
     name = "anthropic"
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
         try:
             import anthropic
         except ImportError as exc:
@@ -30,7 +36,10 @@ class AnthropicRouter(LMRouter):
                 "`pip install anthropic` or `pip install -e .[anthropic]`."
             ) from exc
         self.model = model or _DEFAULT_MODEL
-        self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
+        # base_url/api_key default to None → SDK reads ANTHROPIC_API_KEY and the
+        # public endpoint, matching prior behaviour. Set them for an on-prem
+        # Anthropic-compatible gateway.
+        self._client = anthropic.Anthropic(base_url=base_url, api_key=api_key)
 
     def call(
         self,

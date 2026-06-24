@@ -1,0 +1,52 @@
+# Musubi standalone-agent LLM endpoints — copy to `.musubi/llm.toml` and edit.
+#
+#   cp .musubi/llm.toml.example .musubi/llm.toml
+#   agent "your task" --profile azure.work
+#
+# Config is grouped into LLM-family sections. The section name (openai | azure |
+# anthropic | ollama) selects the wire/client; family-level scalar keys are
+# shared defaults that every profile under the family inherits (profile keys
+# win). Reference a profile as <family>.<profile> (e.g. azure.work), or a bare
+# name when it is unique. With no --profile, `default` below is used.
+#
+# Secrets: prefer `api_key_env` (the NAME of an env var holding the key) over an
+# inline `api_key`, so the key never lives in this file. `.musubi/llm.toml` is
+# gitignored.
+
+default = "azure.work"
+
+# ── Azure OpenAI (on-prem, reached via curl) ────────────────────────────────
+# The deployment name lives in the URL path:
+#   {azure_endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...
+# transport = "curl" routes the HTTP call through the system `curl` binary so
+# corporate proxy / custom CA / mTLS already configured for curl are honoured.
+[azure]
+transport = "curl"
+azure_endpoint = "https://my-resource.openai.azure.com"
+api_version = "2024-06-01"
+api_key_env = "AZURE_OPENAI_API_KEY"
+auth_header = "api-key"
+# curl_extra_args = ["--cacert", "/etc/ssl/corp-ca.pem", "--proxy", "http://proxy:8080"]
+
+[azure.work]
+deployment = "gpt-4o"
+
+[azure.work-mini]
+deployment = "gpt-4o-mini"
+
+# ── OpenAI cloud (SDK) ──────────────────────────────────────────────────────
+[openai.cloud]
+model = "gpt-5-mini"
+api_key_env = "OPENAI_API_KEY"
+# For a self-hosted OpenAI-compatible gateway, add transport = "curl" and a
+# base_url; auth_header defaults to "Authorization: Bearer" for this family.
+
+# ── Anthropic cloud (SDK) ───────────────────────────────────────────────────
+[anthropic.cloud]
+model = "claude-haiku-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+
+# ── Ollama (local; no key) ──────────────────────────────────────────────────
+[ollama.local]
+model = "llama3.1"
+# base_url = "http://localhost:11434"   # default; or set $OLLAMA_HOST

@@ -65,11 +65,39 @@ pip install -e ".[anthropic]"      # or ".[openai]" / ".[all]"
 export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --vendor openai --model gpt-5-mini
+# agent "<task>" --vendor ollama --model llama3.1    # local, no key
 ```
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
 in the substrate itself. Requirements: Python 3.11+.
+
+### Vendors & on-prem endpoints
+
+A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
+out of the box: `anthropic`, `openai`, `ollama` (local), and `azure` /
+on-prem OpenAI-compatible gateways. For named endpoints — including **Azure
+OpenAI**, reached through `curl` so corporate proxy / custom CA / mTLS are
+honoured — describe them once in `.musubi/llm.toml` (copy
+`.musubi/llm.toml.example`) and select with `--profile`:
+
+```bash
+cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_env
+agent "<task>" --profile azure.work
+```
+
+Profiles are grouped by **LLM family** (`[azure]`, `[openai]`, …); the section
+selects the wire/client and its keys are shared defaults inherited by each
+`[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
+the file's `default` → env-key detection.
+
+### Sub-agents (multi-step delegation)
+
+The standalone agent can spawn governed sub-agents for delegated multi-step
+work: when the model calls `musubi_spawn_subagent(role, brief)`, Musubi runs a
+turn-capped child loop on a firewalled brief and restricted tool surface, then
+feeds the verified summary back — every spawn is policy-checked and audited
+(`musubi_query_subagent_events`).
 
 ## VS Code extension (Copilot surface)
 
