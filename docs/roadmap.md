@@ -132,6 +132,19 @@ is what would license it. Postponed while the pipeline stays.
   data that makes dissolution decisions empirical rather than guessed.
 - **Lines-of-substrate vs lines-of-skill ratio** — track over time; the
   goal is the ratio improves even as features grow.
+- **Relocate substrate out of `.github/` (coordinated, later).** The
+  skill catalog, 3-tier memory, agent catalog, and pipeline defs live
+  under `.github/` only as a Copilot-extension artifact — substrate is
+  meant to be platform-neutral, yet it sits in a GitHub/Copilot-specific
+  dir whose paths are hardcoded across `server.py`, `composer.py`,
+  `session_distiller.py`, `pattern_detector.py`, and tests. Only
+  `.github/workflows/` (CI, incl. the HI #9 tier gate) and the Copilot
+  surface (`commands/`, `instructions/`) genuinely belong there. When the
+  standalone host is split from the extension, move
+  `skills/memory/agents/pipelines` to a neutral root (e.g. `.musubi/`) and
+  leave `.github/` for GitHub + Copilot. A ~20-path cross-cutting rename —
+  the extension still reads `.github/`, so it must be coordinated, not a
+  drive-by. Not blocking; tracked so it isn't forgotten.
 
 ---
 
