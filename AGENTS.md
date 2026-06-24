@@ -18,12 +18,6 @@ goes into pipelines.
   predetermined chain in `pipeline.yaml` → full guardrails (evaluator
   firewall, validation, correction loop, append-only stage store, audit).
   Invoked via `/<pipeline-name> <task>`.
-- **Embedded agent (frozen, May 2026):** bare `@harness <prompt>` in
-  Copilot Chat still routes here, but no new features land. Real-world cost
-  data showed 3-5× plain Copilot Agent per chat turn because provider-side
-  prompt caching isn't reachable through `vscode.lm.sendRequest`. Use plain
-  Copilot Chat for casual chat. Decision: `docs/roadmap.md` § Phase F.
-  **The freeze is scoped to this `vscode.lm` host only.**
 - **Standalone agent (active):** the `agent` CLI (`musubi/agent/`) reaches
   the model through the vendor-agnostic `LMRouter`, *not* `vscode.lm` — so the
   caching-cost reason above doesn't apply. This is the roadmap's north star
@@ -34,48 +28,6 @@ goes into pipelines.
 The `@harness` chat participant routes automatically: input that starts with
 `/<pipeline-name>` goes to that pipeline; everything else goes to the
 (frozen) agent. Zero LLM call decides which mode — pure prefix match.
-
----
-
-## Where Everything Lives
-
-```
-AGENTS.md / CLAUDE.md / README.md / docs/roadmap.md   map / rules / quickstart / direction+plan
-.github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
-.github/commands/                     slash commands (*.md frontmatter)
-.github/agents/                       agent, skill-builder, sub-agent roles
-.github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
-musubi/                      Python MCP server (zero LLM)
-copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
-hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
-```
-
----
-
-## Agent Complexity Levels
-
-```
-Agent  One main agent + on-demand sub-agents (read-only by default).
-              Persistent chat per chat_id, replay, reactive compaction.
-              Default for non-pipeline turns.
-Level 0       Single-agent pipeline + skill injection + plan JSON. No evaluator.
-Level 1       Single agent + separate evaluator + correction loop.
-Level 2       Multi-agent + evaluator. Promotion checklist required.
-```
-
----
-
-## Session Protocol
-
-```
-PIPELINE:     orient → baseline → generator → evaluator (fresh session)
-              → fail ≤ 3 retries → persist (SQLite + plan.md) → never exit silent
-AGENT: (frozen) replay → vscode.lm → tool loop → persist; see runners/agent.ts
-```
-
-Renders inline in Copilot Chat (per-stage sections, tag lines, retry
-blockquote, plan.md anchor) and in the activity-bar Tasks TreeView
-(Active session + clickable History). Details in README.md.
 
 ---
 
@@ -110,9 +62,11 @@ No new pipelines until feature-dev is validated.
 @harness explain this error
 @harness add a login endpoint
 
-# Single step / status
-@harness /planner <task>  /coder  /continue  /status
 ```
+
+First-time setup: `musubi setup` (a guided wizard — env doctor, `.musubi/llm.toml`
+endpoint profile, optional connection test, `.vscode/mcp.json`). Code in
+`musubi/setup_wizard.py`, dispatched from `cli.py` alongside `serve`.
 
 Commands are `.github/commands/*.md` frontmatter (loaded by
 `slashCommands.ts`). Add a command by dropping a new `.md` — no code change.

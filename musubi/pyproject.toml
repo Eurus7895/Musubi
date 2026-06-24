@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["cli", "composer", "server"]
+py-modules = ["cli", "composer", "server", "setup_wizard"]
 packages = [
     "session",
     "validation",

@@ -61,12 +61,18 @@ MUSUBI_COMPRESS=1 agent "summarise the config files"
 
 ```bash
 cd musubi
-pip install -e ".[anthropic]"      # or ".[openai]" / ".[all]"
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
+musubi setup                       # guided: deps check, LLM endpoint, mcp.json
+export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --vendor openai --model gpt-5-mini
 # agent "<task>" --vendor ollama --model llama3.1    # local, no key
 ```
+
+`musubi setup` is the fastest path: it runs an environment doctor, builds a
+`.musubi/llm.toml` endpoint profile (cloud, local Ollama, or on-prem Azure),
+optionally tests the connection, and generates `.vscode/mcp.json` for the
+extension. The manual steps below still work if you prefer.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls

@@ -4,6 +4,7 @@
 > Direction, discipline & forward plan → [`docs/roadmap.md`](./docs/roadmap.md).
 > MCP tool reference + DB schema (source of truth) → [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql).
 > Agent session-start map → [`AGENTS.md`](./AGENTS.md).
+> First-time setup → `musubi setup` (wizard: [`musubi/setup_wizard.py`](./musubi/setup_wizard.py)).
 
 ---
 
