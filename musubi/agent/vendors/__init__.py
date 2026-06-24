@@ -12,6 +12,6 @@ expects, then register it in build_vendor().
 """
 
 from agent.vendors.base import LMResponse, LMRouter
-from agent.vendors.factory import build_vendor
+from agent.vendors.factory import build_from_profile, build_vendor
 
-__all__ = ["LMResponse", "LMRouter", "build_vendor"]
+__all__ = ["LMResponse", "LMRouter", "build_from_profile", "build_vendor"]

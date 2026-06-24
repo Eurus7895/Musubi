@@ -10,11 +10,19 @@ Usage:
     agent-agent "your task"                      # vendor auto-detected from env
     agent-agent "your task" --vendor anthropic
     agent-agent "your task" --vendor openai --model gpt-5-mini
+    agent-agent "your task" --vendor ollama --model llama3.1   # local, no key
+    agent-agent "your task" --profile azure.work               # .musubi/llm.toml
     python -m agent.run "your task"              # equivalent
+
+Vendor selection precedence: --vendor → --profile → the .musubi/llm.toml
+`default` profile → env-key detection. On-prem endpoints (base URL, family,
+api-key, curl transport for Azure) are configured in `.musubi/llm.toml`; see
+`agent/config.py`.
 
 Env vars:
     ANTHROPIC_API_KEY   used by the anthropic vendor
     OPENAI_API_KEY      used by the openai vendor
+    OLLAMA_HOST         optional; ollama base URL (default http://localhost:11434)
 
 The Musubi MCP server is auto-located: same repo as this module by
 default, overridable with --musubi or MUSUBI_ROOT.
@@ -27,15 +35,33 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from agent.vendors import LMRouter, build_vendor
+from agent.vendors import LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
+
+
+@dataclass
+class Orchestration:
+    """Context that lets the loop run sub-agents the model spawns.
+
+    `parent_session_id` owns the spawn parentage; `parent_agent_name` is the
+    firewall identity ("agent" → MAIN_SUBAGENT_ALLOWLIST["agent"]). Disabled
+    (no spawning) when `parent_session_id` is None.
+    """
+
+    parent_session_id: str | None
+    parent_agent_name: str = "agent"
+
+    @property
+    def enabled(self) -> bool:
+        return self.parent_session_id is not None
 
 
 # ── Public entry ────────────────────────────────────────────────────────────
@@ -81,29 +107,85 @@ async def run_agent(
                 file=log,
             )
 
+            # Open a parent session up front so the model's sub-agent spawns
+            # have a valid parent. The "agent" identity short-circuits the
+            # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
+            # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
+            orchestration = Orchestration(
+                parent_session_id=await _open_parent_session(session, task, log),
+            )
+
             messages: list[dict[str, Any]] = [
                 {"role": "user", "content": task},
             ]
+            final_answer, _ = await _run_loop(
+                session, vendor, tools, messages,
+                max_cycles=max_cycles, log=log, orchestration=orchestration,
+            )
 
-            for cycle in range(max_cycles):
-                resp = vendor.call(messages, tools)
-                messages.append({"role": "assistant", "content": resp.content})
-
-                tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
-                _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
-
-                if resp.stop_reason != "tool_use" or not tool_uses:
-                    final_answer = _extract_text(resp.content)
-                    break
-
-                tool_results = await _dispatch(session, tool_uses, log)
-                messages.append({"role": "user", "content": tool_results})
-
+    # Raise OUTSIDE the MCP contexts: anyio's TaskGroup wraps anything raised
+    # inside `stdio_client`/`ClientSession` in a BaseExceptionGroup, which would
+    # defeat `except RuntimeError` at every call site. `_run_loop` therefore
+    # signals exhaustion by returning None rather than raising.
     if final_answer is None:
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
     return final_answer
+
+
+async def _run_loop(
+    session: ClientSession,
+    vendor: LMRouter,
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    *,
+    max_cycles: int,
+    log: Any,
+    orchestration: Orchestration | None = None,
+) -> tuple[str | None, int]:
+    """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
+
+    Shared by the top-level agent and every sub-agent. Returns None for the
+    text when `max_cycles` is hit without a final answer — the caller decides
+    how to surface that (the parent raises outside the MCP context; a sub-agent
+    records an escalation). When set, `orchestration` makes a
+    `musubi_spawn_subagent` tool call run to completion in-process, its summary
+    fed back as the tool result.
+    """
+    final_answer: str | None = None
+    cycles_used = 0
+    for cycle in range(max_cycles):
+        cycles_used = cycle + 1
+        resp = vendor.call(messages, tools)
+        messages.append({"role": "assistant", "content": resp.content})
+
+        tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
+        _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
+
+        if resp.stop_reason != "tool_use" or not tool_uses:
+            final_answer = _extract_text(resp.content)
+            break
+
+        tool_results = await _dispatch(
+            session, tool_uses, log,
+            vendor=vendor, tools=tools, orchestration=orchestration,
+        )
+        messages.append({"role": "user", "content": tool_results})
+
+    return final_answer, cycles_used
+
+
+async def _open_parent_session(session: ClientSession, task: str, log: Any) -> str | None:
+    """Create the agent's owning session; None if it can't (spawns disabled)."""
+    try:
+        raw = await _call_tool_text(session, "musubi_new_session", {"request": task[:500]})
+        sid = json.loads(raw).get("session_id")
+        print(f"[agent] parent session={sid}", file=log)
+        return sid if isinstance(sid, str) else None
+    except Exception as exc:  # noqa: BLE001 — degrade to no-spawn, don't crash
+        print(f"[agent] could not open parent session ({exc}); sub-agents disabled", file=log)
+        return None
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -120,9 +202,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("task", help="The user task to run.")
     ap.add_argument(
         "--vendor",
-        choices=["anthropic", "openai"],
+        choices=["anthropic", "openai", "ollama", "azure"],
         default=None,
-        help="LLM vendor. Defaults to whichever API key is present in env.",
+        help=(
+            "LLM vendor. Defaults to --profile, then to whichever API key is "
+            "present in env."
+        ),
+    )
+    ap.add_argument(
+        "--profile",
+        default=None,
+        help=(
+            "Named endpoint from .musubi/llm.toml as <family>.<name> "
+            "(e.g. azure.work). Used when --vendor is not given."
+        ),
     )
     ap.add_argument(
         "--model",
@@ -147,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        vendor = build_vendor(args.vendor, model=args.model)
-    except (RuntimeError, ValueError) as exc:
+        vendor = _resolve_vendor(args.vendor, args.profile, args.model)
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
         print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
 
@@ -177,6 +270,34 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _resolve_vendor(
+    vendor: str | None, profile: str | None, model: str | None
+) -> LMRouter:
+    """Pick the LMRouter. Precedence: --vendor → --profile → file default → env.
+
+    `--model` overrides the profile's model id (the deployment for Azure is set
+    in the profile; use a dedicated profile to switch deployments).
+    """
+    if vendor:
+        return build_vendor(vendor, model=model)
+
+    from agent.config import find_config_path, load_profile
+
+    if profile:
+        prof = load_profile(profile)
+        return build_from_profile(_apply_model(prof, model))
+
+    if find_config_path() is not None:
+        prof = load_profile(None)  # the file's `default`
+        return build_from_profile(_apply_model(prof, model))
+
+    return build_vendor(None, model=model)
+
+
+def _apply_model(profile: dict[str, Any], model: str | None) -> dict[str, Any]:
+    return {**profile, "model": model} if model else profile
 
 
 def _default_musubi_dir() -> Path:
@@ -210,27 +331,69 @@ async def _dispatch(
     session: ClientSession,
     tool_uses: list[dict[str, Any]],
     log: Any,
+    *,
+    vendor: LMRouter | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    orchestration: Orchestration | None = None,
 ) -> list[dict[str, Any]]:
-    """Call each tool and collect Anthropic-shaped tool_result blocks."""
+    """Call each tool and collect Anthropic-shaped tool_result blocks.
+
+    When `orchestration` is enabled and the model calls
+    `musubi_spawn_subagent`, the spawn is run to completion in-process (port of
+    the extension's dispatcher) and the sub-agent's summary becomes the tool
+    result — so the model just spawns and gets the answer back.
+    """
     results: list[dict[str, Any]] = []
     for tu in tool_uses:
         name = tu.get("name", "")
         args = tu.get("input") or {}
-        print(
-            f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
-            file=log,
-        )
-        try:
-            result = await session.call_tool(name, arguments=args)
-            content = _first_text(result)
-        except Exception as exc:  # noqa: BLE001 — surface errors to the model
-            content = f"[tool error] {type(exc).__name__}: {exc}"
+
+        if (
+            name == "musubi_spawn_subagent"
+            and orchestration is not None
+            and orchestration.enabled
+            and vendor is not None
+            and tools is not None
+        ):
+            injected = {
+                **args,
+                "parent_session_id": orchestration.parent_session_id,
+                "parent_agent_name": orchestration.parent_agent_name,
+            }
+            print(f"[agent]   → spawn_subagent(role={args.get('role')!r})", file=log)
+            try:
+                from agent import subagent
+
+                content = await subagent.run_subagent(
+                    session, injected, vendor, tools, log
+                )
+            except Exception as exc:  # noqa: BLE001 — surface to the model
+                content = f"[subagent error] {type(exc).__name__}: {exc}"
+        else:
+            print(
+                f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
+                file=log,
+            )
+            try:
+                result = await session.call_tool(name, arguments=args)
+                content = _first_text(result)
+            except Exception as exc:  # noqa: BLE001 — surface errors to the model
+                content = f"[tool error] {type(exc).__name__}: {exc}"
+
         results.append({
             "type": "tool_result",
             "tool_use_id": tu.get("id", ""),
             "content": content,
         })
     return results
+
+
+async def _call_tool_text(
+    session: ClientSession, name: str, args: dict[str, Any]
+) -> str:
+    """Call an MCP tool and return its first text chunk (raises on transport error)."""
+    result = await session.call_tool(name, arguments=args)
+    return _first_text(result)
 
 
 def _first_text(call_result: Any) -> str:

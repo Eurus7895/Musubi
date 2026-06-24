@@ -6,17 +6,19 @@ through the same content_blocks shape so the loop is vendor-agnostic.
 
 from __future__ import annotations
 
+import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from agent.vendors import LMResponse, LMRouter
-from agent.vendors.factory import build_vendor
+from agent.vendors.curl_router import CurlChatRouter, _auth_header_line, _resolve_url
+from agent.vendors.factory import build_from_profile, build_vendor
 from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
 )
-
 
 # ── Factory env detection ──────────────────────────────────────────────────
 
@@ -172,3 +174,186 @@ def test_openai_blocks_mixed_text_and_tool_use() -> None:
     msg = SimpleNamespace(content="here goes", tool_calls=[call])
     blocks = openai_message_to_blocks(msg)
     assert [b["type"] for b in blocks] == ["text", "tool_use"]
+
+
+def test_openai_blocks_from_wire_dict() -> None:
+    """The curl transport hands a parsed JSON dict, not an SDK object — the
+    same converter must handle both."""
+    message = {
+        "content": "hi",
+        "tool_calls": [{"id": "t1", "function": {"name": "fn", "arguments": '{"a":1}'}}],
+    }
+    blocks = openai_message_to_blocks(message)
+    assert blocks == [
+        {"type": "text", "text": "hi"},
+        {"type": "tool_use", "id": "t1", "name": "fn", "input": {"a": 1}},
+    ]
+
+
+# ── URL + auth-header construction ──────────────────────────────────────────
+
+
+def test_resolve_url_azure_deployment_in_path() -> None:
+    url = _resolve_url(
+        url=None,
+        azure_endpoint="https://my.openai.azure.com/",
+        api_version="2024-06-01",
+        deployment="gpt-4o",
+        base_url=None,
+    )
+    assert url == (
+        "https://my.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
+        "?api-version=2024-06-01"
+    )
+
+
+def test_resolve_url_generic_base_url() -> None:
+    assert _resolve_url(
+        url=None, azure_endpoint=None, api_version=None,
+        deployment=None, base_url="https://gw.local/v1/",
+    ) == "https://gw.local/v1/chat/completions"
+
+
+def test_resolve_url_requires_an_endpoint() -> None:
+    with pytest.raises(ValueError, match="curl transport needs"):
+        _resolve_url(url=None, azure_endpoint=None, api_version=None,
+                     deployment=None, base_url=None)
+
+
+def test_auth_header_azure_default() -> None:
+    assert _auth_header_line("api-key", "SECRET") == "api-key: SECRET"
+
+
+def test_auth_header_bearer() -> None:
+    assert _auth_header_line("Authorization: Bearer", "SECRET") == "Authorization: Bearer SECRET"
+
+
+# ── CurlChatRouter: subprocess invocation ───────────────────────────────────
+
+
+def _fake_curl(monkeypatch: pytest.MonkeyPatch, *, body: dict, returncode: int = 0,
+               stderr: str = "") -> dict:
+    """Patch curl_router.subprocess.run; return a dict that captures the call."""
+    captured: dict = {}
+
+    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):  # noqa: ANN001
+        captured["cmd"] = cmd
+        captured["input"] = input
+        return SimpleNamespace(returncode=returncode, stdout=json.dumps(body), stderr=stderr)
+
+    monkeypatch.setattr("agent.vendors.curl_router.subprocess.run", fake_run)
+    return captured
+
+
+def test_curl_router_azure_hides_key_in_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "hi", "tool_calls": None}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    })
+    router = CurlChatRouter(
+        azure_endpoint="https://x.openai.azure.com",
+        api_version="2024-06-01",
+        deployment="gpt-4o",
+        api_key="SECRET",
+        auth_header="api-key",
+        curl_extra_args=["--cacert", "/etc/ssl/ca.pem"],
+    )
+    resp = router.call([{"role": "user", "content": "hello"}], [])
+
+    assert resp.stop_reason == "end_turn"
+    assert resp.content == [{"type": "text", "text": "hi"}]
+    assert resp.usage["total_tokens"] == 3
+
+    cmd = captured["cmd"]
+    assert "SECRET" not in " ".join(cmd), "api-key must never appear in argv"
+    assert "--config" in cmd and "-" in cmd
+    assert "--cacert" in cmd and "/etc/ssl/ca.pem" in cmd
+
+    cfg = captured["input"]
+    assert (
+        'url = "https://x.openai.azure.com/openai/deployments/gpt-4o/chat/completions'
+        '?api-version=2024-06-01"'
+    ) in cfg
+    assert "header = \"api-key: SECRET\"" in cfg
+    assert "data-binary" in cfg
+
+
+def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_curl(monkeypatch, body={
+        "choices": [{
+            "message": {
+                "content": None,
+                "tool_calls": [{"id": "c1", "function": {"name": "look", "arguments": "{}"}}],
+            },
+            "finish_reason": "tool_calls",
+        }],
+    })
+    router = CurlChatRouter(base_url="https://gw.local/v1", model="m", api_key="K")
+    resp = router.call([{"role": "user", "content": "go"}], [
+        {"name": "look", "description": "", "input_schema": {"type": "object"}},
+    ])
+    assert resp.stop_reason == "tool_use"
+    assert resp.content[0]["type"] == "tool_use"
+    assert resp.content[0]["name"] == "look"
+
+
+def test_curl_router_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_curl(monkeypatch, body={}, returncode=7, stderr="TLS handshake failed")
+    router = CurlChatRouter(base_url="https://gw.local/v1", model="m", api_key="K")
+    with pytest.raises(RuntimeError, match="curl exited 7"):
+        router.call([{"role": "user", "content": "x"}], [])
+
+
+# ── Ollama preset (fake openai SDK) ─────────────────────────────────────────
+
+
+def test_ollama_router_points_at_local_v1(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    from agent.vendors.ollama_router import OllamaRouter
+
+    router = OllamaRouter()
+    assert router.name == "ollama"
+    assert router.model == "llama3.1"
+    assert captured["base_url"] == "http://localhost:11434/v1"
+    assert captured["api_key"] == "ollama"
+
+
+# ── factory.build_from_profile ──────────────────────────────────────────────
+
+
+def test_build_from_profile_azure_is_curl() -> None:
+    router = build_from_profile({
+        "family": "azure",
+        "azure_endpoint": "https://x.openai.azure.com",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-4o",
+        "api_key": "K",
+        # transport omitted → azure defaults to curl
+    })
+    assert isinstance(router, CurlChatRouter)
+    assert router.name == "azure"
+    assert router.model == "gpt-4o"
+
+
+def test_build_from_profile_azure_sdk_rejected() -> None:
+    with pytest.raises(ValueError, match="only transport='curl'"):
+        build_from_profile({"family": "azure", "transport": "sdk", "deployment": "d"})
+
+
+def test_build_from_profile_unknown_family() -> None:
+    with pytest.raises(ValueError, match="unknown LLM family"):
+        build_from_profile({"family": "cohere", "model": "x"})
+
+
+def test_factory_rejects_unknown_vendor_lists_onprem() -> None:
+    with pytest.raises(ValueError, match="on-prem"):
+        build_vendor("cohere")

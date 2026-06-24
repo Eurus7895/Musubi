@@ -32,7 +32,7 @@ it. Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | single-agent loop over `LMRouter` against the substrate; model-agnostic, no Copilot quota |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop + on-demand sub-agents over `LMRouter`; any vendor (anthropic / openai / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
 | `@harness /feature-dev <task>` (VS Code) | inside Copilot Chat | the 4-stage governed pipeline + substrate features, driven by Copilot's model |
 
 Both surfaces drive the **same** substrate (audit, firewall, policy,
@@ -61,15 +61,49 @@ MUSUBI_COMPRESS=1 agent "summarise the config files"
 
 ```bash
 cd musubi
-pip install -e ".[anthropic]"      # or ".[openai]" / ".[all]"
-export ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
+pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
+musubi setup                       # guided: deps check, LLM endpoint, mcp.json
+export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --vendor openai --model gpt-5-mini
+# agent "<task>" --vendor ollama --model llama3.1    # local, no key
 ```
+
+`musubi setup` is the fastest path: it runs an environment doctor, builds a
+`.musubi/llm.toml` endpoint profile (cloud, local Ollama, or on-prem Azure),
+optionally tests the connection, and generates `.vscode/mcp.json` for the
+extension. The manual steps below still work if you prefer.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
 in the substrate itself. Requirements: Python 3.11+.
+
+### Vendors & on-prem endpoints
+
+A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
+out of the box: `anthropic`, `openai`, `ollama` (local), and `azure` /
+on-prem OpenAI-compatible gateways. For named endpoints — including **Azure
+OpenAI**, reached through `curl` so corporate proxy / custom CA / mTLS are
+honoured — describe them once in `.musubi/llm.toml` (copy
+`.musubi/llm.toml.example`) and select with `--profile`:
+
+```bash
+cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_env
+agent "<task>" --profile azure.work
+```
+
+Profiles are grouped by **LLM family** (`[azure]`, `[openai]`, …); the section
+selects the wire/client and its keys are shared defaults inherited by each
+`[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
+the file's `default` → env-key detection.
+
+### Sub-agents (multi-step delegation)
+
+The standalone agent can spawn governed sub-agents for delegated multi-step
+work: when the model calls `musubi_spawn_subagent(role, brief)`, Musubi runs a
+turn-capped child loop on a firewalled brief and restricted tool surface, then
+feeds the verified summary back — every spawn is policy-checked and audited
+(`musubi_query_subagent_events`).
 
 ## VS Code extension (Copilot surface)
 
