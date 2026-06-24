@@ -95,7 +95,7 @@ until we choose to revisit dissolution:
   enable it per workspace when you want the savings.
 - **Dissolve the 4-stage pipeline shape.** Collapse `pipeline.ts`
   runners, manifest contract, the staged fanout; re-home the boundary
-  primitives onto sub-agent + tool-call boundaries; rewrite HI #2/#3/#6/#7.
+  primitives onto sub-agent + tool-call boundaries; rewrite HI #2/#3/#7.
   Deferred — gated on the eval suite above. **The extension itself is
   kept** (it stays a supported Copilot surface); only the staged-pipeline
   *shape* inside it would dissolve.

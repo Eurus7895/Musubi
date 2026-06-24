@@ -16,7 +16,14 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   `musubi-tier` tag and `MUSUBI_ROOT` env replace the old equivalents.
   The standalone CLI takes tools dynamically, so it is prefix-agnostic;
   the VS Code extension was deliberately left on the old prefix and is
-  now broken-by-design, pending deletion (roadmap Step 7).
+  now broken-by-design pending the prefix fix (roadmap Step 6); the
+  extension is **kept** as a supported Copilot surface, not deleted.
+- **Hard Invariants trimmed 9 → 7.** Retired **#4** (zero-cost routing — a
+  trivial property of a single-agent host) and **#6** (flat agent catalog
+  — moved to Decision Rules as a code-org convention, not a safety
+  property). Survivors keep their numbers (#1, #2, #3, #5, #7, #8, #9) so
+  the many `HI #N` citations across code, CI, tests, and the extension
+  stay valid; the #4/#6 gaps are intentional.
 - **Hard Invariant #1 redrawn** as a substrate/driver boundary: the
   substrate makes zero LLM calls; the driver (agent loop) reaches a model
   through one inject point (`vscode.lm` or the vendor-agnostic

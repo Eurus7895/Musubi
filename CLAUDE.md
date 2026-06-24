@@ -27,7 +27,7 @@ Zero LLM calls inside the harness.
 | `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) |
 | 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
-| Hard Invariants #1–#9 | Path-rules / empty-project / workspace-root preamble blocks |
+| Hard Invariants (#1, #2, #3, #5, #7, #8, #9) | Path-rules / empty-project / workspace-root preamble blocks |
 | Policy engine (`scripts/policy_engine.py`) | `materializeCoderFiles` + JSON manifest contract |
 | `BudgetEnforcer` + per-call credit accounting | Pre-spawn fanout (`preSpawnAndSplice`) |
 | Firewall via `_STAGE_PERMISSIONS` (HI #3) | `runStageReviewGate` 4-button UX |
@@ -44,12 +44,18 @@ cost-lever values lives in [`docs/roadmap.md`](./docs/roadmap.md) § Dissolution
 These cannot be broken without an explicit design discussion. If a
 change would violate one, stop and ask.
 
+**Numbers are stable identifiers, not positions** — they are cited across
+code, tests, CI, and the extension, so survivors keep their number even
+when one is retired. **#4** (zero-cost routing) and **#6** (flat agent
+catalog) were retired: routing is a trivial property of a single-agent
+host, and the flat-catalog rule moved to **Decision Rules** (a code-org
+convention, not a load-bearing safety property). Gaps at #4/#6 are
+intentional.
+
 1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `musubi_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: Copilot via `vscode.lm.sendRequest` (embedded host), or the vendor-agnostic `LMRouter` in `agent/vendors/base.py` (standalone host). The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
 2. **Skills are pushed to pipeline agents; pulled on demand by the Agent.** Pipeline-side: `musubi_read_stage` injects per `inject_skills` frontmatter, agents cannot opt out. Agent-side: `musubi_get_skill` LM tool, model decides when to load.
 3. **Evaluator firewall.** Reviewer sees `code` only — no request, plan, design, or memory. Enforced in `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (Python + mirrored in `pipeline.ts`).
-4. **Zero-cost routing.** `/<pipeline-name> <task>` → pipeline. Anything else → Agent. No LLM call decides the route.
 5. **Fail-closed policy engine.** `scripts/policy_engine.py::PIPELINE_POLICIES` denies unknown `(pipeline, agent)` combinations. Never relax to fail-open.
-6. **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Pipeline-specific role variants (filename-prefixed) require 3+ documented failures of the canonical agent.
 7. **Append-only stage store.** Retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
 8. **No silent sub-agents.** Every spawn + completion writes a row to `subagent_audit`, visible via `musubi_query_subagent_events`.
 9. **Tag and expire.** Every component carries a `musubi-tier` tag (`substrate` or `ephemeral`). Ephemeral components declare `expires-when:` AND `cost-lever:`. PRs that add ephemeral structure without retiring an equivalent — or strengthening the substrate — get pushed back.
@@ -68,6 +74,12 @@ dissolving pattern.
 structure feels like it should be smarter, ask: can the model do this
 in the next release? If yes, label `expires-when:` and stop iterating.
 Don't refactor ephemera for elegance.
+
+**Flat agent catalog at `.github/agents/`.** Keep the catalog flat;
+pipelines compose by path reference. Pipeline-specific role variants
+(filename-prefixed) require 3+ documented failures of the canonical
+agent. (Retired as Hard Invariant #6 — it is a code-org convention, not
+a safety property.)
 
 **Sizing rule per LM call (not per stage).** Keep each `sendRequest`
 under ~30k chars of input. Above 50k → warn. Above ~200k → abort
