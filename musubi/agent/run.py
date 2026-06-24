@@ -1,4 +1,4 @@
-"""Agent CLI — drive the harness MCP server via a direct LLM API.
+"""Agent CLI — drive the Musubi MCP server via a direct LLM API.
 
 musubi-tier: substrate
 expires-when: never — the agent is the model's native mode (per
@@ -16,8 +16,8 @@ Env vars:
     ANTHROPIC_API_KEY   used by the anthropic vendor
     OPENAI_API_KEY      used by the openai vendor
 
-The harness MCP server is auto-located: same repo as this module by
-default, overridable with --harness or MUSUBI_ROOT.
+The Musubi MCP server is auto-located: same repo as this module by
+default, overridable with --musubi or MUSUBI_ROOT.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ async def run_agent(
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
-    Spawns the harness MCP server, lists its tools, hands them to the
+    Spawns the Musubi MCP server, lists its tools, hands them to the
     LLM via `vendor.call`, dispatches whatever tools the model asks
     for, feeds results back, repeats until the model stops asking for
     tools (`stop_reason != "tool_use"`) OR `max_cycles` is hit.
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="agent-agent",
         description=(
-            "Drive the harness MCP server via a direct LLM API "
+            "Drive the Musubi MCP server via a direct LLM API "
             "(no Copilot Chat required)."
         ),
     )
@@ -130,11 +130,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Model id. Vendor-specific default if omitted.",
     )
     ap.add_argument(
-        "--harness",
+        "--musubi",
         type=Path,
         default=None,
         help=(
-            "Path to the harness package directory (the one with server.py). "
+            "Path to the Musubi package directory (the one with server.py). "
             "Defaults to this module's parent — i.e. the installed package."
         ),
     )
@@ -152,11 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
 
-    musubi_dir = args.harness or _default_musubi_dir()
+    musubi_dir = args.musubi or _default_musubi_dir()
     if not (musubi_dir / "server.py").is_file():
         print(
             f"agent-agent: server.py not found under {musubi_dir} "
-            f"(set --harness or MUSUBI_ROOT)",
+            f"(set --musubi or MUSUBI_ROOT)",
             file=sys.stderr,
         )
         return 2
@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _default_musubi_dir() -> Path:
-    """Resolve the harness server dir.
+    """Resolve the Musubi server dir.
 
     Preference order:
       1. $MUSUBI_ROOT (matches the extension's convention).

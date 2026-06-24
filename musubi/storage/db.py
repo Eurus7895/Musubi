@@ -203,8 +203,8 @@ def _default_db_path() -> Path:
     # Fall back to alongside db.py for dev / test usage.
     root = os.environ.get("MUSUBI_ROOT")
     if root:
-        return Path(root) / "data" / "copilot_harness.db"
-    return Path(__file__).parent / "copilot_harness.db"
+        return Path(root) / "data" / "musubi.db"
+    return Path(__file__).parent / "musubi.db"
 
 DEFAULT_DB_PATH = _default_db_path()
 
@@ -899,7 +899,7 @@ def mark_orphan_running_sub_sessions_abandoned(
 ) -> int:
     """Startup sweep: mark `running` sub-sessions whose parent is not active.
 
-    Called at harness startup to recover from crashes. Any sub-session in
+    Called at Musubi startup to recover from crashes. Any sub-session in
     `running` whose parent session is no longer `active` becomes `abandoned`.
     Returns the number of rows updated.
     """

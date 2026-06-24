@@ -65,7 +65,7 @@ db.sqlite3
 db.sqlite3-journal
 
 # Musubi runtime database
-musubi/storage/copilot_harness.db
+musubi/storage/musubi.db
 musubi/storage/audit.db
 musubi/memory/cross_session.db
 

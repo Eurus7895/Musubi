@@ -246,7 +246,7 @@ def test_run_command_output_truncated_at_cap(workspace: Path) -> None:
     # Emit ~1.5M chars of 'A's via head/yes — cheap and bounded.
     result = fs.run_command("yes A | head -c 1500000")
     assert result["status"] == "ok"
-    assert "truncated by harness" in result["stdout"]
+    assert "truncated by Musubi" in result["stdout"]
 
 
 # ── MCP-tool layer: server.py wraps the impl correctly ────────────────────

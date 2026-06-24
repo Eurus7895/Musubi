@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 # Cap reads + command output at ~5 MB so a single tool call can't OOM
-# the model's context or the harness process. Tunable later if real
+# the model's context or the Musubi process. Tunable later if real
 # use cases hit it.
 _MAX_READ_BYTES = 5 * 1024 * 1024
 _MAX_OUTPUT_CHARS = 1_000_000
@@ -44,7 +44,7 @@ _MAX_OUTPUT_CHARS = 1_000_000
 def _workspace_root() -> Path:
     """Workspace root the tools resolve against.
 
-    Resolution order matches the rest of the harness:
+    Resolution order matches the rest of the Musubi:
       1. `MUSUBI_ROOT` env var (the extension's convention).
       2. Current working directory of the server process (set when the
          user starts the MCP server — typically the repo root).
@@ -266,7 +266,7 @@ def _truncate(text: str) -> str:
     tail = _MAX_OUTPUT_CHARS - head
     return (
         text[:head]
-        + f"\n\n[truncated by harness — {len(text)} chars total; "
+        + f"\n\n[truncated by Musubi — {len(text)} chars total; "
         f"showing first {head} + last {tail}]\n\n"
         + text[-tail:]
     )
@@ -281,4 +281,4 @@ def _audit(action: str, target: Path, detail: str = "") -> None:
     `fs_audit` table is a small follow-up.
     """
     suffix = f" {detail}" if detail else ""
-    print(f"[harness.tools.fs] {action} {target}{suffix}", file=sys.stderr)
+    print(f"[musubi.tools.fs] {action} {target}{suffix}", file=sys.stderr)

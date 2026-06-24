@@ -117,6 +117,10 @@ shrink-and-pray.
   imperative mood, ≤ 72 chars, no trailing period. Body wraps at 72
   cols and explains the *why*. Breaking changes use `!` after
   type/scope AND a `BREAKING CHANGE:` footer.
+- **Always update [`docs/roadmap.md`](./docs/roadmap.md) before opening
+  any PR.** If the change shifts direction, scope, step status, or the
+  dissolution set, reflect it in the roadmap in the same PR. A PR that
+  moves the work but leaves the roadmap stale gets pushed back.
 
 ## Hooks
 

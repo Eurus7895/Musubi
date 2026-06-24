@@ -28,8 +28,9 @@ the debt and the credits it saves, so you spot when the calculus flips.
 The product is **deterministic, zero-LLM validation enforced at every
 agent↔agent and agent↔tool boundary** — wherever the boundaries sit. The
 staged pipeline was never the product; its 4-stage *shape* is one
-arrangement of boundaries and is **ephemeral**. The boundary primitives
-are **substrate**, and re-home onto sub-agent + tool-call boundaries:
+arrangement of boundaries and is **ephemeral** (kept for now — see
+Postponed). The boundary primitives are **substrate**, and would re-home
+onto sub-agent + tool-call boundaries if/when the pipeline dissolves:
 
 | Boundary primitive (substrate — keep) | Was bound to | Re-homes to |
 |---|---|---|
@@ -42,56 +43,73 @@ are **substrate**, and re-home onto sub-agent + tool-call boundaries:
 **Target architecture.** A standalone, single-agent host (Claude-Code
 shaped) reaching the model through one inject point — the vendor-agnostic
 `LMRouter` (`agent/vendors/base.py`) — so the product is model-agnostic
-and free of `vscode.lm` quota. The VS Code extension host is abandoned.
-Enabled by the HI #1 redraw (substrate stays zero-LLM; the driver may
-connect to an LLM).
+and free of `vscode.lm` quota. Enabled by the HI #1 redraw (substrate
+stays zero-LLM; the driver may connect to an LLM). The standalone host
+and the VS Code extension **both stay supported** — the extension brings
+the substrate (governance + compression) to Copilot Chat, the way tools
+like headroom wrap Copilot. Two surfaces, one substrate.
 
-What dies with the pipeline: the **rigid sequential shape** and the
-**between-stage human gate** — both ephemeral. Everything else re-homes.
+What *would* die with the pipeline (postponed): the **rigid sequential
+shape** and the **between-stage human gate** — both ephemeral. Everything
+else re-homes.
 
 ---
 
-## Steps (parity-gated — never dissolve speculatively)
+## Steps
 
-Execution order. Token-compression (substrate, deterministic, reversible)
-is folded in as Steps 1–3 + 6.
+The pipeline and the single-agent host **coexist** — we are not removing
+the pipeline now. Near-term work grows the standalone host and the
+substrate; pipeline dissolution is postponed (see below).
 
-1. **Wire `tools/fs.py` as MCP tools + `cache_align`.** Retires
-   `materializeCoderFiles`; the file/command tool results now flow
-   through the substrate (the biggest token sink). Ship the zero-loss
-   KV-cache prefix-alignment win.
-2. **Deterministic reversible compression core.** Build
-   `musubi/compression/` (router + json-dedup + code/AST-trim + store)
-   and the `musubi_retrieve` tool (compress aggressively, model pulls the
-   original on demand — CCR). Zero-LLM, pure Python.
-3. **Wire compression into input returns.** `fs.py` tool results, then
-   `musubi_read_stage` (after the firewall) and `musubi_get_conversation`.
-   Behind a config flag, default OFF. Record compression-ratio into
-   `stage_metrics`.
+1. ✓ **`tools/fs.py` MCP tools** (`musubi_read_file/write_file/edit_file/
+   run_command`) — already wired; the file/command tool results flow
+   through the substrate (the biggest token sink).
+2. ✓ **Reversible compression core.** `musubi/compression/` (router +
+   json-minify + code/blank-strip + content-hash store) and the
+   `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
+3. ◐ **Wire compression into input returns.** `musubi_read_file` /
+   `musubi_run_command` done (behind `MUSUBI_COMPRESS`, default OFF);
+   `musubi_read_stage` (after firewall) + `musubi_get_conversation` +
+   `stage_metrics` ratio recording remain.
 4. **Finish single-agent host parity.** Port `BudgetEnforcer` +
    compaction into `agent/run.py`; multi-turn CLI + conversation
    persistence.
 5. **Control at the boundary.** `PreToolUse` (policy/firewall) +
-   `PostToolUse` (audit) fire on every tool call; firewalled reviewer
+   `PostToolUse` (audit) on every tool call; firewalled reviewer
    sub-agent; surface cost/credits in the CLI.
-6. **Eval suite + default-on gate.** Build `.harness/evals/`; run the 5
-   tasks through *both* the staged pipeline and the single-agent host;
-   compare quality + credits. Only after no regression, flip compression
-   (and other ephemeral guards) defaults on. **This is the gate.**
-7. **Dissolve + cut VS Code.** Delete the 4-stage pipeline, `pipeline.ts`
-   runners, manifest contract, the extension; rewrite HI #2/#3/#6/#7 for
-   the boundary world. **Gated on Step 6.**
+6. **Fix the VS Code extension for the rename.** The extension is a
+   **supported** Copilot surface (it brings the substrate — governance +
+   compression — to Copilot Chat). Update its hardcoded `harness_*` tool
+   calls to `musubi_*` so it works against the renamed server. The 4-stage
+   pipeline lives here and stays.
 
-**Parity** = the single-agent host does everything the staged pipeline
-does at equal-or-better quality/cost, proven by Step 6. Only then does
-Step 7 run. Parity is the line "safe to delete the old path".
+### Postponed (the pipeline stays for now)
+
+The staged pipeline is **not** being removed yet. Two items are deferred
+until we choose to revisit dissolution:
+
+- **Eval suite (the parity gate).** `.harness/evals/` running tasks
+  through *both* the pipeline and the single-agent host. Deferred — it
+  only earns its keep when we're ready to dissolve the pipeline. Until
+  then compression stays **opt-in** (`MUSUBI_COMPRESS`, default OFF);
+  enable it per workspace when you want the savings.
+- **Dissolve the 4-stage pipeline shape.** Collapse `pipeline.ts`
+  runners, manifest contract, the staged fanout; re-home the boundary
+  primitives onto sub-agent + tool-call boundaries; rewrite HI #2/#3/#6/#7.
+  Deferred — gated on the eval suite above. **The extension itself is
+  kept** (it stays a supported Copilot surface); only the staged-pipeline
+  *shape* inside it would dissolve.
+
+**Parity** (the single-agent host doing everything the pipeline does at
+equal-or-better cost) remains the line that *would* license dissolution —
+when we choose to revisit it.
 
 ---
 
-## Step 6 detail — the eval suite (the keystone)
+## Eval suite (postponed) — detail
 
-Standing evaluation is what licenses every dissolution. Without it,
-"the single agent is as good as the pipeline" is vibes.
+The keystone *when* we revisit pipeline dissolution. Standing evaluation
+is what would license it. Postponed while the pipeline stays.
 
 - `.harness/evals/` — 5 representative tasks (bootstrap-mcp-tool,
   cross-cutting-rename, test-existing-helper, new-skill,
@@ -117,7 +135,7 @@ Standing evaluation is what licenses every dissolution. Without it,
 
 ---
 
-## Dissolution candidates (all retire in Step 7)
+## Dissolution candidates (retire when the pipeline is dissolved — postponed)
 
 Each is `musubi-tier: ephemeral` with an `expires-when:` source tag. The
 single-agent host + eval suite is the trigger for the whole set.
@@ -144,16 +162,16 @@ CopilotHarness → **Musubi**. Substrate, driver, docs, scripts, CI, and
 `.github/` were renamed to `Musubi` / `musubi` / `musubi_*` /
 `musubi-tier`, including the breaking `harness_* → musubi_*` MCP-prefix
 change (the standalone CLI takes tools dynamically, so it is
-prefix-agnostic). The VS Code extension was **deliberately not renamed** —
-Step 7 deletes it, and the server-side prefix change already breaks its
-hardcoded `harness_*` calls (acceptable; it is abandoned). GitHub repo
-renamed in place (history / issues preserved).
+prefix-agnostic). The VS Code extension was **not renamed in this pass**,
+so the server-side prefix change currently breaks its hardcoded
+`harness_*` calls — Step 6 fixes that (the extension is kept, not
+abandoned). GitHub repo renamed in place (history / issues preserved).
 
 ---
 
 ## How we stay aligned as models evolve
 
-- **Eval suite on every model release** (Step 6) — the keystone signal.
+- **Eval suite on every model release** (postponed) — the keystone signal once pipeline dissolution is back on the table.
 - **Watch the audit data** — falling cycle counts / spawn counts /
   preamble fire-rates flag a guard that stopped earning its keep.
 - **Quarterly delete-pass** — walk the ephemeral set, apply the
