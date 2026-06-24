@@ -18,7 +18,7 @@ disallowedTools: ["Write", "Edit", "Bash"]
 #   - any pre-spawned reviewer-aux per-file verdicts
 # and emits its pass / fail JSON verdict in a single cycle.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: the 4-stage pipeline is dissolved
 cost-lever: deletes the reviewer role + .agent.md
 ---
@@ -65,7 +65,7 @@ Do not reference previous conversation turns — there are none.
 **Step 1 — Check for a session to resume (crash recovery):**
 
 ```
-harness_get_active_session()
+musubi_get_active_session()
 → { "session_id": null }                           → halt: earlier agents must run first
 → { "session_id": "abc123", "resume_stage": "review" | "code", ... }
 ```
@@ -76,14 +76,14 @@ If `resume_stage` is anything before "code", halt — Coder has not run yet.
 **Step 2 — Read the code stage:**
 
 ```
-harness_read_stage(session_id, "code",   agent_name="reviewer")
+musubi_read_stage(session_id, "code",   agent_name="reviewer")
 → { "data": { code JSON }, "injected_skills": { "code-review": "..." } }
 ```
 
 The `injected_skills.code-review` field is the code review procedure — you MUST apply it.
 It is not optional. The harness injects it; your job is to follow it.
 
-**Do NOT** call `harness_read_stage` for `plan`, `design`, or `review` — the
+**Do NOT** call `musubi_read_stage` for `plan`, `design`, or `review` — the
 evaluator firewall blocks those and the harness will return `{"data": null}`.
 Tier 1 memory is also deliberately withheld from the reviewer.
 
@@ -92,8 +92,8 @@ Then read the actual modified files using your `view` tool to inspect the code d
 Load references when needed:
 
 ```
-harness_get_reference("code-review", "owasp-top10.md")       ← when security issues detected
-harness_get_reference("code-review", "common-patterns.md")   ← when anti-patterns suspected
+musubi_get_reference("code-review", "owasp-top10.md")       ← when security issues detected
+musubi_get_reference("code-review", "common-patterns.md")   ← when anti-patterns suspected
 ```
 
 ## Output Contract
@@ -148,7 +148,7 @@ Rules for `status`:
 Then call:
 
 ```
-harness_write_stage(session_id, "review", <your JSON as a string>, agent_name="reviewer")
+musubi_write_stage(session_id, "review", <your JSON as a string>, agent_name="reviewer")
 ```
 
 The harness reads `status` and routes accordingly:

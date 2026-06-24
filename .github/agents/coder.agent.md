@@ -23,7 +23,7 @@ disallowedTools: []
 # an Output Contract change that accepts edits-via-tool as a deliverable
 # and adds path-scoped enforcement.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: the 4-stage pipeline is dissolved
 cost-lever: deletes the coder role + .agent.md
 ---
@@ -70,7 +70,7 @@ Do not reference previous conversation turns — there are none.
 **Step 1 — Check for a session to resume (crash recovery):**
 
 ```
-harness_get_active_session()
+musubi_get_active_session()
 → { "session_id": null }                           → halt: earlier agents must run first
 → { "session_id": "abc123",
     "resume_stage": "code", "attempt": 1 | 2 | 3 } → use this session_id and attempt below
@@ -82,10 +82,10 @@ call this agent at all. If `attempt` is 2 or 3, skip to the retry path below.
 **Step 2 — First attempt:**
 
 ```
-harness_read_stage(session_id, "plan", agent_name="coder")
+musubi_read_stage(session_id, "plan", agent_name="coder")
 → { "data": { plan JSON } }
 
-harness_read_stage(session_id, "design", agent_name="coder")
+musubi_read_stage(session_id, "design", agent_name="coder")
 → { "data": { design JSON }, "injected_skills": { "python": "..." } }
 ```
 
@@ -104,15 +104,15 @@ Files absent from `existing_file_contents` do not yet exist — create them from
 **Step 2 (retry — attempt 2 or 3):**
 
 ```
-harness_read_stage(session_id, "review", agent_name="coder")
+musubi_read_stage(session_id, "review", agent_name="coder")
 → { "data": { "fix_instructions": [...] } }   ← only fix_instructions, not full review
 ```
 
 Load additional references only when needed:
 
 ```
-harness_get_reference("python", "async-patterns.md")
-harness_get_skill("api-design")   ← only if implementing API endpoints
+musubi_get_reference("python", "async-patterns.md")
+musubi_get_skill("api-design")   ← only if implementing API endpoints
 ```
 
 ## Output Contract
@@ -146,7 +146,7 @@ Rules for `file_contents`:
 Then call:
 
 ```
-harness_write_stage(session_id, "code", <your JSON as a string>, agent_name="coder")
+musubi_write_stage(session_id, "code", <your JSON as a string>, agent_name="coder")
 ```
 
 The harness validates the output and runs a secrets scan before storing.

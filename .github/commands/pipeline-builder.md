@@ -1,13 +1,13 @@
 ---
 name: pipeline-builder
-description: Scaffold a NEW CopilotHarness pipeline from a brief — single composite agent
+description: Scaffold a NEW Musubi pipeline from a brief — single composite agent
 action: one-shot
 agent: pipeline-builder
 ---
 
 # /pipeline-builder
 
-One-shot composite agent that scaffolds a new CopilotHarness pipeline from
+One-shot composite agent that scaffolds a new Musubi pipeline from
 a brief. **No 4-stage pipeline ceremony** — a single LLM call produces
 `pipeline.yaml`, the README, and the slash command file. Aligns with
 the project rule "do not invent agents speculatively"; pipeline authoring

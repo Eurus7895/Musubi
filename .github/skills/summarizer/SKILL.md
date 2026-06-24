@@ -3,7 +3,7 @@ name: summarizer
 description: >
   Procedure for the Summarizer sub-agent. Pushed by the harness through
   validation/subagent_context.SUBAGENT_ROLE_SKILLS["summarizer"].
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -46,7 +46,7 @@ markdown summary. One LM round-trip, no tools, no follow-up spawns.
 ## Identifier preservation
 
 Always quote file paths in backticks and verbatim, never abbreviate
-("`copilot-harness/server.py`", not "the server file"). Do the same
+("`musubi/server.py`", not "the server file"). Do the same
 for handle ids, commit SHAs, function names, and skill ids. Future
 turns find prior work by exact-string search.
 

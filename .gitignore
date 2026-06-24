@@ -64,12 +64,12 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# CopilotHarness runtime database
-copilot-harness/storage/copilot_harness.db
-copilot-harness/storage/audit.db
-copilot-harness/memory/cross_session.db
+# Musubi runtime database
+musubi/storage/musubi.db
+musubi/storage/audit.db
+musubi/memory/cross_session.db
 
-# CopilotHarness build output — copy-assets.sh stages .github/ assets and
+# Musubi build output — copy-assets.sh stages .github/ assets and
 # LICENSE into the extension dir for .vsix packaging. Source of truth lives
 # at the repo root; these copies must never be committed (would drift
 # silently).

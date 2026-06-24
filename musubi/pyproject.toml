@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musubi"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0,<1.10.0",
+    "starlette>=0.27.0,<0.28.0",
+]
+
+[tool.setuptools]
+py-modules = ["cli", "composer", "server"]
+packages = [
+    "session",
+    "validation",
+    "skills",
+    "memory",
+    "execution",
+    "storage",
+    "workspace",
+    "agent",
+    "agent.vendors",
+    "tools",
+    "compression",
+]
+
+[project.scripts]
+musubi = "cli:main"
+agent = "agent.run:main"
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+all = ["anthropic>=0.40.0", "openai>=1.50.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

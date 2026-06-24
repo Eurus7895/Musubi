@@ -25,7 +25,7 @@ lm_tools:
   - copilot_insertEdit
   - insert_edit_into_file
   - create_file
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: skill authoring is fully automatic from failure-patterns
 cost-lever: deletes the skill-builder role + its tooling
 ---
@@ -58,12 +58,12 @@ Do not reference previous conversation turns — there are none.
 **Step 1 — The session_id is provided by the trigger:**
 
 Skill-Builder is invoked with a specific `session_id` by `pattern_detector.py`.
-Do not call `harness_get_active_session()` — the triggering session_id is your input.
+Do not call `musubi_get_active_session()` — the triggering session_id is your input.
 
 **Step 2 — Retrieve fail patterns:**
 
 ```
-harness_get_status(session_id)
+musubi_get_status(session_id)
 → includes fail_patterns from cross-session analysis
 ```
 

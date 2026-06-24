@@ -58,7 +58,7 @@ Never return 200 for errors. Never use 500 for client errors.
 
 MCP tools exposed by `server.py` follow these conventions:
 
-- Tool names: `harness_{verb}_{noun}` — e.g., `harness_write_stage`, `harness_get_skill`.
+- Tool names: `musubi_{verb}_{noun}` — e.g., `musubi_write_stage`, `musubi_get_skill`.
 - All parameters documented with type and description.
 - Return a dict with `{"ok": true, "result": ...}` on success.
 - Return `{"ok": false, "error": "error_code", "message": "..."}` on failure.

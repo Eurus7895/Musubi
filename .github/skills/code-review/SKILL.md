@@ -1,7 +1,7 @@
 ---
 name: code-review
 description: Reviews code for correctness, security, type safety, and convention compliance. Use when the user asks to review, check, audit, or inspect code quality.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -62,7 +62,7 @@ issues, and convention violations before code is merged or executed.
 
 ## Assets
 
-`review-script.py` — run via `harness_run_asset("code-review", "review-script.py", input)`
+`review-script.py` — run via `musubi_run_asset("code-review", "review-script.py", input)`
 - Input: `{"files": ["path/to/file.py"]}` 
 - Output: structured list of static analysis findings to supplement manual review
 - Use when: reviewing a large file (>200 lines) or when you want a second pass

@@ -1,12 +1,12 @@
-# AGENTS.md — CopilotHarness
+# AGENTS.md — Musubi
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
-> Rules and conventions → `CLAUDE.md`. Architecture → `docs/design.md`. Build roadmap and status → `docs/roadmap.md`.
+> Rules and conventions → `CLAUDE.md`. MCP tools + schema → `musubi/server.py` + `musubi/storage/schema.sql`. Direction, roadmap and status → `docs/roadmap.md`.
 
 ---
 
-## What CopilotHarness Is
+## What Musubi Is
 
 Harness layer for GitHub Copilot Chat in VS Code. The product is
 **governed pipelines** — multi-stage workflows with evaluator firewall,
@@ -33,12 +33,12 @@ The `@harness` chat participant routes automatically: input that starts with
 ## Where Everything Lives
 
 ```
-AGENTS.md / CLAUDE.md / README.md / docs/design.md   map / rules / quickstart / design
+AGENTS.md / CLAUDE.md / README.md / docs/roadmap.md   map / rules / quickstart / direction+plan
 .github/pipelines/feature-dev/        pipeline.yaml + agents/*.agent.md
 .github/commands/                     slash commands (*.md frontmatter)
 .github/agents/                       agent, skill-builder, sub-agent roles
 .github/{instructions,skills,memory}/ rules · global skills · 3-tier memory
-copilot-harness/                      Python MCP server (zero LLM)
+musubi/                      Python MCP server (zero LLM)
 copilot-harness-extension/            VS Code extension (@harness + Tasks TreeView)
 hooks.json + scripts/                 SessionStart / PreToolUse / PostToolUse
 ```

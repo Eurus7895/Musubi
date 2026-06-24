@@ -22,7 +22,7 @@ lm_tools:
   - replace_string_in_file
 # inject_skills used to push the full SKILL.md into the system prompt
 # every turn (~841t). After the Hard Invariant #2 relaxation, the
-# agent pulls on demand via harness_get_skill instead. The
+# agent pulls on demand via musubi_get_skill instead. The
 # core rules below are the only routing content kept inline.
 inject_skills: []
 spawn_allowlist:
@@ -37,7 +37,7 @@ sees:
   - user_message
   - conversation_history
   - memory_tier1
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: the model's native multi-turn shape stabilises
 cost-lever: deletes agent.ts compensation
 ---
@@ -54,7 +54,7 @@ for a small edit; for multi-stage work, recommend `/feature-dev`.
 These three rules must NOT be missed. They cover the failure modes
 that hurt the user the most. Detailed routing guidance for everything
 else lives in the on-demand `agent-routing` skill — call
-`harness_get_skill('agent-routing')` to fetch it.
+`musubi_get_skill('agent-routing')` to fetch it.
 
 ### 1. Vague request → ASK FIRST
 
@@ -93,7 +93,7 @@ pipeline recommendation rules, anti-patterns, sub-agent runners
 status — call:
 
 ```
-harness_get_skill(skill_id="agent-routing")
+musubi_get_skill(skill_id="agent-routing")
 ```
 
 Pull when you encounter: a tool decision you're unsure about, a
@@ -122,5 +122,5 @@ Do not pull on every turn. Most simple Q&A doesn't need it.
 The runner gives you `user_message`, a token-budgeted
 `conversation_history` (newest-first truncation), and `memory_tier1`
 (MEMORY.md + the names of Tier-2 entries you can pull on demand via
-`harness_get_memory_entry`). You do NOT receive any pipeline session
+`musubi_get_memory_entry`). You do NOT receive any pipeline session
 state or any other chat's history — the harness firewall denies those.

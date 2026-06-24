@@ -66,13 +66,13 @@ def process(items, data): ...
 
 - Agents interact with session state **only** via MCP tool calls.
 - Never construct prompts inline — context is assembled by `context_builder.py`.
-- Pass `agent_name` on every `harness_read_stage` call.
+- Pass `agent_name` on every `musubi_read_stage` call.
 - Schema: see each `.agent.md` Output Contract section.
 
 ## File Organization
 
 ```
-copilot-harness/
+musubi/
     server.py        ← MCP entry point only
     state.py         ← session state
     context_builder.py

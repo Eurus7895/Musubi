@@ -4,7 +4,7 @@ version: 1.0.0
 description: >
   Sub-agent that runs read-only diagnostics — pytest, ruff, mypy, small
   shell commands — to gather evidence about a failing test, build, or
-  type error. Spawned via `harness_spawn_subagent` when a main agent
+  type error. Spawned via `musubi_spawn_subagent` when a main agent
   needs ground truth from the toolchain rather than reasoning about it.
   Returns a tight summary of what passed / failed and the smallest
   reproducible signal; the harness caps the summary at 2000 tokens.
@@ -29,7 +29,7 @@ lm_tools:
   - get_errors
   - copilot_runInTerminal
   - run_in_terminal
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models do reliable native investigation
 cost-lever: deletes the investigator role + spawn machinery
 ---
@@ -68,11 +68,11 @@ firewall is enforced at the type level.
 
 ## Input Contract
 
-Spawned via `harness_spawn_subagent` with `role="investigator"`. Fetch
+Spawned via `musubi_spawn_subagent` with `role="investigator"`. Fetch
 your firewalled context once, at the start:
 
 ```
-harness_get_subagent_context(handle_id)
+musubi_get_subagent_context(handle_id)
 → { "status": "ok",
     "brief": "run pytest tests/test_state.py and report failures",
     "role": "investigator",
@@ -80,14 +80,14 @@ harness_get_subagent_context(handle_id)
     "allowed_tools": ["Read", "View", "Grep", "Glob", "Bash"] }
 ```
 
-Never call `harness_get_active_session`, `harness_read_stage`, or any
+Never call `musubi_get_active_session`, `musubi_read_stage`, or any
 tool that reads parent state. The policy engine denies those for
 sub-agent roles.
 
 ## Output Contract
 
 ```
-harness_complete_subagent(
+musubi_complete_subagent(
     handle_id,
     summary="<plain-text evidence summary, ≤ 2000 tokens>",
     structured=<JSON dict matching the parent's output_schema, or null>,

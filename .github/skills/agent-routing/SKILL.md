@@ -1,14 +1,14 @@
 ---
 name: agent-routing
 description: Routing rules for the Agent — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the agent's inject_skills frontmatter.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Today
 
 Sub-agent runners (`explorer`, `investigator`, `reviewer-aux`) are
-wired (Phase G.1.6). The harness advertises `harness_spawn_subagent`
+wired (Phase G.1.6). The harness advertises `musubi_spawn_subagent`
 / `await` / `list` in your catalog. Before spawning, read **Writing
 sub-agent briefs** below — a vague brief produces empty results and
 burns a wall-clock cap.

@@ -31,21 +31,21 @@ participant "Copilot\n(Coder)" as Coder
 participant "Copilot\n(Reviewer)" as Reviewer
 
 User -> Planner : request
-Planner -> MCP : harness_new_session(request)
+Planner -> MCP : musubi_new_session(request)
 MCP -> DB : INSERT session
 MCP --> Planner : session_id
 
-Planner -> MCP : harness_write_stage("plan", output)
+Planner -> MCP : musubi_write_stage("plan", output)
 MCP -> DB : INSERT stage_output
 
-Coder -> MCP : harness_read_stage("plan")
+Coder -> MCP : musubi_read_stage("plan")
 MCP -> DB : SELECT stage_output
 MCP --> Coder : plan JSON
-Coder -> MCP : harness_write_stage("code", output)
+Coder -> MCP : musubi_write_stage("code", output)
 
-Reviewer -> MCP : harness_read_stage("code")
+Reviewer -> MCP : musubi_read_stage("code")
 MCP --> Reviewer : code JSON
-Reviewer -> MCP : harness_write_stage("review", {status: "pass"})
+Reviewer -> MCP : musubi_write_stage("review", {status: "pass"})
 MCP --> User : final output
 @enduml
 ```
@@ -74,7 +74,7 @@ end
 
 ```plantuml
 @startuml
-title CopilotHarness — Component Overview
+title Musubi — Component Overview
 
 package "GitHub Copilot (LLM)" {
     [Planner Agent]
@@ -82,7 +82,7 @@ package "GitHub Copilot (LLM)" {
     [Reviewer Agent]
 }
 
-package "CopilotHarness (MCP Server)" {
+package "Musubi (MCP Server)" {
     [server.py] as server
     [context_builder.py] as ctx
     [verifier.py] as ver
@@ -93,9 +93,9 @@ package "CopilotHarness (MCP Server)" {
 
 database "SQLite" as db
 
-[Planner Agent] --> server : harness_new_session
-[Coder Agent] --> server : harness_write_stage
-[Reviewer Agent] --> server : harness_write_stage
+[Planner Agent] --> server : musubi_new_session
+[Coder Agent] --> server : musubi_write_stage
+[Reviewer Agent] --> server : musubi_write_stage
 
 server --> ctx
 server --> ver
@@ -191,7 +191,7 @@ title Stage Status Transitions
 
 [*] --> pending : stage created
 pending --> in_progress : agent starts work
-in_progress --> complete : harness_write_stage succeeds
+in_progress --> complete : musubi_write_stage succeeds
 in_progress --> in_progress : retry (new attempt row)
 in_progress --> escalated : max attempts reached
 complete --> [*]

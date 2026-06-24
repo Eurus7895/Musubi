@@ -56,7 +56,7 @@ future sessions.
 **Risk:** An agent accesses another session's data by manipulating a session ID.
 
 **Check for:**
-- `harness_read_stage` that accepts session_id without verifying the caller
+- `musubi_read_stage` that accepts session_id without verifying the caller
   owns or is authorized for that session
 - Session IDs in URL/path parameters without ownership check
 
@@ -112,7 +112,7 @@ implementation details to downstream agents.
 **Risk:** Skill asset scripts execute arbitrary code or accept unvalidated inputs.
 
 **Check for:**
-- `harness_run_asset` that does not validate `skill_id` and `asset_name`
+- `musubi_run_asset` that does not validate `skill_id` and `asset_name`
   against an allowlist before constructing the path
 - Path traversal: `assets/../../etc/passwd`
 - Asset scripts that accept `shell=True` subprocess calls

@@ -4,7 +4,7 @@ version: 1.0.0
 description: >
   Read-only sub-agent that scans the workspace for code references, file
   layouts, or patterns on behalf of a main agent. Spawned via
-  `harness_spawn_subagent` when the agent (or an opted-in pipeline
+  `musubi_spawn_subagent` when the agent (or an opted-in pipeline
   stage) needs facts from the codebase without growing its own context
   with raw file dumps. Returns a tight summary + optional structured
   payload; the harness caps the summary at 2000 tokens.
@@ -25,7 +25,7 @@ lm_tools:
   - grep_search
   - copilot_findFiles
   - file_search
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models do reliable native exploration
 cost-lever: deletes the explorer role + spawn machinery
 ---
@@ -61,16 +61,16 @@ material outside the brief.
    consume it without re-parsing prose. The harness validates `structured`
    against the parent's `output_schema` when one was set at spawn time.
 6. If the question cannot be answered from the codebase, say so plainly
-   and call `harness_complete_subagent(status="failed")` with a one-line
+   and call `musubi_complete_subagent(status="failed")` with a one-line
    reason. Do not invent results.
 
 ## Input Contract
 
-Spawned via `harness_spawn_subagent` with `role="explorer"`. Fetch your
+Spawned via `musubi_spawn_subagent` with `role="explorer"`. Fetch your
 firewalled context once, at the start:
 
 ```
-harness_get_subagent_context(handle_id)
+musubi_get_subagent_context(handle_id)
 → { "status": "ok",
     "brief": "scan src/ for references to FooClass",
     "role": "explorer",
@@ -78,8 +78,8 @@ harness_get_subagent_context(handle_id)
     "allowed_tools": ["Read", "View", "Grep", "Glob"] }
 ```
 
-Never call `harness_get_active_session`, `harness_read_stage`,
-`harness_get_memory_context`, or anything that reads the parent's
+Never call `musubi_get_active_session`, `musubi_read_stage`,
+`musubi_get_memory_context`, or anything that reads the parent's
 session — the policy engine denies those calls for sub-agent roles, and
 attempting them is a runtime hint that the brief is wrong.
 
@@ -88,7 +88,7 @@ attempting them is a runtime hint that the brief is wrong.
 When done, hand the result back via:
 
 ```
-harness_complete_subagent(
+musubi_complete_subagent(
     handle_id,
     summary="<plain-text answer to the brief, ≤ 2000 tokens>",
     structured=<JSON dict matching the parent's output_schema, or null>,

@@ -2,7 +2,7 @@
 name: PipelineBuilder
 version: 1.0.0
 description: >
-  Single composite agent that scaffolds a NEW CopilotHarness pipeline from a
+  Single composite agent that scaffolds a NEW Musubi pipeline from a
   brief. Produces the full set of files in one LLM call — no plan/design/code/
   review staging, no evaluator. Pipeline-authoring is bounded enough that the
   4-agent ceremony was overkill; one careful agent + the harness's hard
@@ -28,14 +28,14 @@ lm_tools:
   - copilot_insertEdit
   - insert_edit_into_file
   - create_file
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: pipeline.yaml authoring goes away with pipelines
 cost-lever: deletes the pipeline-builder role
 ---
 
 ## Role
 
-You scaffold a new CopilotHarness pipeline from a single brief. Output is a
+You scaffold a new Musubi pipeline from a single brief. Output is a
 JSON object whose keys are file paths and whose values are the complete file
 contents. The extension materialises every file to disk in one shot.
 

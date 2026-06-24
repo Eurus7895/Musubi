@@ -4,7 +4,7 @@ description: pytest-based testing procedures for harness components — unit, in
 applies-to:
   languages: [python]
   test_frameworks: [pytest]
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -32,7 +32,7 @@ For harness components specifically, also cover:
 
 ```
 tests/
-    test_state.py          ← mirrors copilot-harness/state.py
+    test_state.py          ← mirrors musubi/state.py
     test_context_builder.py
     test_verifier.py
     test_correction_loop.py
@@ -79,7 +79,7 @@ Never share mutable state between tests via module-level variables.
 After writing tests, run:
 
 ```
-harness_run_asset("testing", "coverage-check.py", {"test_dir": "tests/", "source_dir": "copilot-harness/"})
+musubi_run_asset("testing", "coverage-check.py", {"test_dir": "tests/", "source_dir": "musubi/"})
 ```
 
 Returns per-module coverage. Target: 80% minimum per module.
@@ -88,7 +88,7 @@ If a module is below 80%, add tests for the uncovered branches before finishing.
 ## Assets
 
 `coverage-check.py` — runs pytest with coverage and returns structured per-module report.
-Input: `{"test_dir": "tests/", "source_dir": "copilot-harness/", "min_coverage": 80}`
+Input: `{"test_dir": "tests/", "source_dir": "musubi/", "min_coverage": 80}`
 Output: `{"ok": true, "modules": [{"name": "state", "coverage": 94, "missing_lines": []}]}`
 Use when: verifying coverage before submitting code output.
 

@@ -15,7 +15,7 @@ def parse_coverage_output(output: str, min_coverage: int) -> list[dict]:
     """Parse pytest-cov text output into per-module dicts."""
     modules = []
     for line in output.splitlines():
-        # match lines like: copilot-harness/state.py   120   8   93%   45-52
+        # match lines like: musubi/state.py   120   8   93%   45-52
         match = re.match(
             r"^\s*([\w/\\.]+\.py)\s+(\d+)\s+(\d+)\s+(\d+)%\s*([\d,\s\-]*)?$",
             line,
@@ -40,7 +40,7 @@ def main() -> None:
     try:
         payload = json.loads(sys.stdin.read())
         test_dir = payload.get("test_dir", "tests/")
-        source_dir = payload.get("source_dir", "copilot-harness/")
+        source_dir = payload.get("source_dir", "musubi/")
         min_coverage = int(payload.get("min_coverage", 80))
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))

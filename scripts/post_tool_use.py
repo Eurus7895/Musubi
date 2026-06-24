@@ -13,7 +13,7 @@ Invocation (stdin is JSON):
       "status": "ok" | "error"
     }
 
-Writes to copilot-harness/storage/audit.db. Schema is created on first
+Writes to musubi/storage/audit.db. Schema is created on first
 run if absent. Exit code 0 on success, 1 on database error.
 
 Never send an LLM to do a linter's job: this is pure I/O.
@@ -29,7 +29,7 @@ from pathlib import Path
 
 _DEFAULT_DB = (
     Path(__file__).resolve().parent.parent
-    / "copilot-harness" / "storage" / "audit.db"
+    / "musubi" / "storage" / "audit.db"
 )
 
 _SCHEMA = """

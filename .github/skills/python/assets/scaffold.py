@@ -57,7 +57,7 @@ def main() -> None:
     content = render_module(module, classes, functions)
     print(json.dumps({
         "ok": True,
-        "filename": f"copilot-harness/{module}.py",
+        "filename": f"musubi/{module}.py",
         "content": content,
     }))
 

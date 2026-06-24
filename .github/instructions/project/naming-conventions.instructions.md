@@ -26,20 +26,20 @@ description: Project-specific naming rules — Python identifiers, session/state
 
 ## MCP Tool Names
 
-Pattern: `harness_{verb}_{noun}`
+Pattern: `musubi_{verb}_{noun}`
 
 | Tool | Verb | Noun |
 |------|------|------|
-| `harness_write_stage` | write | stage |
-| `harness_read_stage` | read | stage |
-| `harness_new_session` | new | session |
-| `harness_get_status` | get | status |
-| `harness_get_skill` | get | skill |
-| `harness_get_reference` | get | reference |
-| `harness_run_asset` | run | asset |
-| `harness_run_lint` | run | lint |
-| `harness_run_typecheck` | run | typecheck |
-| `harness_run_tests` | run | tests |
+| `musubi_write_stage` | write | stage |
+| `musubi_read_stage` | read | stage |
+| `musubi_new_session` | new | session |
+| `musubi_get_status` | get | status |
+| `musubi_get_skill` | get | skill |
+| `musubi_get_reference` | get | reference |
+| `musubi_run_asset` | run | asset |
+| `musubi_run_lint` | run | lint |
+| `musubi_run_typecheck` | run | typecheck |
+| `musubi_run_tests` | run | tests |
 
 ## File Names
 

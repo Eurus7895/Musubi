@@ -1,9 +1,9 @@
-# Memory in CopilotHarness
+# Memory in Musubi
 
 > How the harness remembers things — across stages within a session, across
 > sessions, and across continuous agent conversations.
 
-This is the contract. Implementation lives in `copilot-harness/memory/`.
+This is the contract. Implementation lives in `musubi/memory/`.
 
 ## References
 
@@ -25,11 +25,11 @@ Tier 1 — MEMORY.md             ~200 tokens, ALWAYS injected
                                 where Tier 2 knowledge lives.
 
 Tier 2 — architecture.md       Loaded on demand via
-       — failure-patterns.md   harness_get_memory_entry(name).
+       — failure-patterns.md   musubi_get_memory_entry(name).
                                 Distilled decisions and recurring failures.
 
 Tier 3 — sessions DB           Cross-session substring search via
-                                harness_query_sessions(query).
+                                musubi_query_sessions(query).
                                 Returns IDs + 160-char excerpts. Never
                                 raw transcripts.
 ```
@@ -63,18 +63,18 @@ Tier 1 is "the map." Tier 2 is the chapters. Tier 3 is the historical archive.
 
 ### Read
 
-1. Agent calls `harness_read_stage(stage)`.
+1. Agent calls `musubi_read_stage(stage)`.
 2. Harness builds the per-agent context (firewall).
 3. Harness appends `tier1_index` + `tier2_available` (skipped for reviewer).
-4. Agent may then call `harness_get_memory_entry(name)` to pull a Tier-2 file,
-   or `harness_query_sessions(query)` to search Tier 3.
+4. Agent may then call `musubi_get_memory_entry(name)` to pull a Tier-2 file,
+   or `musubi_query_sessions(query)` to search Tier 3.
 
 ### Write — distillation triggers
 
 `failure-patterns.md` (Tier 2) gets new entries from up to four triggers. All
 shipped triggers funnel through
 `session_distiller.append_pattern(pattern, source)` which deduplicates at
-append time, and through the `harness_append_failure_pattern` MCP tool from
+append time, and through the `musubi_append_failure_pattern` MCP tool from
 the extension side.
 
 | Trigger | When it fires | Status | Captures |
@@ -95,7 +95,7 @@ mirrored in `agentCore.detectFrustration`.
 
 ### Compact
 
-`harness_compact_memory` runs when `failure-patterns.md` exceeds 5 KB. Keeps the
+`musubi_compact_memory` runs when `failure-patterns.md` exceeds 5 KB. Keeps the
 union of (top-10 most-frequent, top-10 most-recent) and drops the rest. Same
 function is invoked manually via the MCP tool.
 
@@ -146,8 +146,8 @@ Separate from memory; documented here because they are easily confused.
 | Lives in | `.github/memory/` (Tier 1, 2) + DB sessions table (Tier 3) | `storage/audit.db::conversation_messages` (Phase C.1), keyed by `chat_id` |
 | Persists across | All sessions, all chats | One chat (one `chat_id`) |
 | Granularity | Distilled patterns, decisions | Full message history (`user` / `assistant` / `tool` / `system`) |
-| Loaded into | Agent context as injected fields | LLM call as message array via `harness_get_conversation` (token-budgeted, newest-first truncation) |
-| Compacted by | `harness_compact_memory` (5 KB cap) | Reactive: 80% drops `tool` rows from per-turn render; 90% spawns the summarizer sub-agent and persists the verified summary as `system`; 99% hard-truncates to 50% of model window |
+| Loaded into | Agent context as injected fields | LLM call as message array via `musubi_get_conversation` (token-budgeted, newest-first truncation) |
+| Compacted by | `musubi_compact_memory` (5 KB cap) | Reactive: 80% drops `tool` rows from per-turn render; 90% spawns the summarizer sub-agent and persists the verified summary as `system`; 99% hard-truncates to 50% of model window |
 
 The transcript is replayed verbatim (subject to compaction) to give the
 agent continuity. Memory is consulted for cross-conversation knowledge.
@@ -182,17 +182,17 @@ No code change needed.
   failure-patterns.md          Tier 2 — distilled failures (auto-compacted)
   sentiment-patterns.json      Frustration-detection regex list
 
-copilot-harness/memory/
+musubi/memory/
   memory_loader.py             Read API: get_tier1_index, get_tier2_entry,
                                 query_sessions
   session_distiller.py         Write API: append_pattern, compact, four
                                 trigger entry points
   pattern_detector.py          Frustration regex matcher
 
-copilot-harness/server.py      MCP tools: harness_get_memory_context,
-                                harness_get_memory_entry,
-                                harness_query_sessions, harness_compact_memory,
-                                harness_append_failure_pattern (Phase C.2),
-                                harness_append_message,
-                                harness_get_conversation (Phase C.1)
+musubi/server.py      MCP tools: musubi_get_memory_context,
+                                musubi_get_memory_entry,
+                                musubi_query_sessions, musubi_compact_memory,
+                                musubi_append_failure_pattern (Phase C.2),
+                                musubi_append_message,
+                                musubi_get_conversation (Phase C.1)
 ```

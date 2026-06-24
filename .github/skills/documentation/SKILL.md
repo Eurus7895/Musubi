@@ -1,7 +1,7 @@
 ---
 name: documentation
 description: Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats. Use when the user asks for a diagram, documentation, architecture/sequence diagram, flowchart, or a PDF/Word/docx document.
-harness-tier: substrate
+musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
@@ -33,7 +33,7 @@ Use PDF/Word only for final output to non-technical stakeholders.
 
 1. Identify diagram type: sequence, component, class, activity, or state.
 2. Write the `.puml` source following the patterns in `plantuml-guide.md`.
-3. Run `harness_run_asset("documentation", "render-plantuml.py", {"source": "...", "format": "svg"})`.
+3. Run `musubi_run_asset("documentation", "render-plantuml.py", {"source": "...", "format": "svg"})`.
 4. Asset returns the rendered file path or base64 content.
 
 ### Producing a Draw.io diagram
@@ -45,14 +45,14 @@ Use PDF/Word only for final output to non-technical stakeholders.
 ### Producing a PDF
 
 1. Write the document source in Markdown.
-2. Run `harness_run_asset("documentation", "render-pdf.py", {"source": "...", "title": "..."})`.
+2. Run `musubi_run_asset("documentation", "render-pdf.py", {"source": "...", "title": "..."})`.
 3. Asset uses `weasyprint` or `pandoc` to produce the PDF.
 
 ### Producing a Word document
 
 1. Load `pdf-word-guide.md` for `python-docx` patterns.
 2. Write document structure as a JSON spec.
-3. Run `harness_run_asset("documentation", "render-pdf.py", {"format": "docx", ...})`.
+3. Run `musubi_run_asset("documentation", "render-pdf.py", {"format": "docx", ...})`.
 
 ## Assets
 

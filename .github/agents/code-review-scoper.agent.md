@@ -13,7 +13,7 @@ disallowedTools: ["Write", "Edit", "Bash"]
 # context); it does not read workspace files directly. Exploration via
 # sub-agents isn't applicable here — the work is diff-parsing.
 lm_tools: []
-harness-tier: ephemeral
+musubi-tier: ephemeral
 expires-when: models triage PR scope natively
 cost-lever: deletes the scoper + its allowlist
 ---
@@ -41,8 +41,8 @@ prioritized file list that downstream stages use to allocate review effort.
 ## Input Contract
 
 ```
-harness_get_active_session()
-harness_read_stage(session_id, "request", agent_name="scoper")
+musubi_get_active_session()
+musubi_read_stage(session_id, "request", agent_name="scoper")
 → { "data": { diff: "...", base, head, file_count, line_count } }
 ```
 
@@ -78,7 +78,7 @@ Rules:
 Then call:
 
 ```
-harness_write_stage(session_id, "scope", <your JSON as a string>, agent_name="scoper")
+musubi_write_stage(session_id, "scope", <your JSON as a string>, agent_name="scoper")
 ```
 
 ## Behavior Rules

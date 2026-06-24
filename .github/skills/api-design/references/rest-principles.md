@@ -75,7 +75,7 @@ GET /v1/sessions?limit=50&offset=0
 
 MCP tools are function calls, not HTTP — but follow the same principles:
 
-- Tool name: `harness_{verb}_{noun}` (see naming-conventions P4 instructions)
+- Tool name: `musubi_{verb}_{noun}` (see naming-conventions P4 instructions)
 - All parameters: typed, described, required vs optional documented
 - Success: `{"ok": true, "result": {...}}`
 - Failure: `{"ok": false, "error": "snake_case_code", "message": "human readable"}`
@@ -85,7 +85,7 @@ MCP tools are function calls, not HTTP — but follow the same principles:
 
 ## Idempotency
 
-For `harness_write_stage`: if the same stage is written twice with the same
+For `musubi_write_stage`: if the same stage is written twice with the same
 attempt number, the second write must be rejected with `409 Conflict` equivalent:
 `{"ok": false, "error": "stage_already_written", "message": "..."}`.
 

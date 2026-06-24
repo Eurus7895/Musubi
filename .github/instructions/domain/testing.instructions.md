@@ -1,7 +1,7 @@
 ---
 applyTo: "**/test_*.py,**/*_test.py"
 priority: P3
-description: pytest conventions, fixture design, isolation requirements, and test structure for the CopilotHarness project.
+description: pytest conventions, fixture design, isolation requirements, and test structure for the Musubi project.
 ---
 
 # Testing Instructions — Domain Standard (P3)

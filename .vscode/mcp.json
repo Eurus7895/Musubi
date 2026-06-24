@@ -1,9 +1,9 @@
 {
     "servers": {
-        "copilot-harness": {
+        "musubi": {
             "type": "stdio",
             "command": "python",
-            "args": ["${workspaceFolder}/copilot-harness/server.py"]
+            "args": ["${workspaceFolder}/musubi/server.py"]
         }
     }
 }
