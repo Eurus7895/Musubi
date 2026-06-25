@@ -7,19 +7,18 @@ expires-when: never — onboarding a fresh install (deps, LLM endpoint config,
 Full-onboarding flow, invoked as `musubi setup`:
 
     1. doctor      — Python / core deps / curl checklist
-    2. LLM endpoint — interactively build a `.musubi/llm.toml` profile
+    2. LLM endpoint — interactively build a `.musubi/llm.json` profile
     3. connection  — optional live ping of the chosen endpoint
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
 
-Design: the pure helpers (doctor, profile/toml/mcp renderers, connection test)
+Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
 thin shell with injectable `prompt`/`out`/`root` so tests can script answers.
 
 No secret is ever written — only `api_key_env` (the env-var *name*), matching
-`agent/config.py::resolve_api_key`. Writing TOML uses `json.dumps` for value
-encoding: TOML basic strings, string arrays, and bools are JSON-compatible for
-this constrained schema, so no TOML-writer dependency is needed.
+`agent/config.py::resolve_api_key`. Both `.musubi/llm.json` and the VS Code
+`.vscode/mcp.json` are plain `json.dumps`, so no extra writer dependency.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ import os
 import re
 import shutil
 import sys
-import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,15 +178,18 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
     raise ValueError(f"unknown family {family!r}")
 
 
-# ── TOML render / upsert ────────────────────────────────────────────────────
+# ── JSON render / upsert ────────────────────────────────────────────────────
 
 
 def parse_existing(path: Path) -> dict[str, Any]:
-    """Read an existing llm.toml as a raw nested dict; {} if absent/empty."""
+    """Read an existing llm.json as a raw nested dict; {} if absent/empty/bad."""
     if not path.is_file():
         return {}
-    with path.open("rb") as fh:
-        return dict(tomllib.load(fh))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return dict(data) if isinstance(data, dict) else {}
 
 
 def upsert(
@@ -208,34 +209,26 @@ def upsert(
     return raw
 
 
-def render_llm_toml(raw: dict[str, Any]) -> str:
-    """Render the raw nested config back to TOML text.
+def render_llm_json(raw: dict[str, Any]) -> str:
+    """Render the raw nested config to llm.json text.
 
-    Values are encoded with `json.dumps` — valid TOML for the strings, string
-    arrays and bools this schema uses. Handles both family-level defaults
-    (scalar keys under `[family]`) and `[family.profile]` sub-tables.
+    The in-memory shape is already the on-disk schema (family keys → scalar
+    defaults + nested profile objects), so this just orders it for a stable
+    diff — `default` first, then families in `KNOWN_FAMILIES` order — and
+    dumps it. The config loader (`agent/config.py`) reads it straight back.
     """
-    lines: list[str] = []
+    ordered: dict[str, Any] = {}
     if raw.get("default"):
-        lines.append(f"default = {json.dumps(raw['default'])}")
-        lines.append("")
-
+        ordered["default"] = raw["default"]
     for family in KNOWN_FAMILIES:
         fam = raw.get(family)
-        if not isinstance(fam, dict):
-            continue
-        scalars = {k: v for k, v in fam.items() if not isinstance(v, dict)}
-        profiles = {k: v for k, v in fam.items() if isinstance(v, dict)}
-        if scalars:
-            lines.append(f"[{family}]")
-            lines.extend(f"{k} = {json.dumps(v)}" for k, v in scalars.items())
-            lines.append("")
-        for pname, psec in profiles.items():
-            lines.append(f"[{family}.{pname}]")
-            lines.extend(f"{k} = {json.dumps(v)}" for k, v in psec.items())
-            lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
+        if isinstance(fam, dict):
+            ordered[family] = fam
+    # Preserve any family the catalog doesn't know about rather than dropping it.
+    for key, val in raw.items():
+        if key not in ordered and key != "default":
+            ordered[key] = val
+    return json.dumps(ordered, indent=2) + "\n"
 
 
 # ── VS Code mcp.json ────────────────────────────────────────────────────────
@@ -320,9 +313,9 @@ def run_interactive(
         ok, msg = test_connection({**section, "family": family})
         out(f"  connection: {'OK' if ok else 'FAILED'} — {msg}")
 
-    cfg_path = root / ".musubi" / "llm.toml"
+    cfg_path = root / ".musubi" / "llm.json"
     raw = upsert(parse_existing(cfg_path), family, profile, section, set_default=True)
-    _write(cfg_path, render_llm_toml(raw))
+    _write(cfg_path, render_llm_json(raw))
     out(f"  wrote {cfg_path}")
 
     if _ask_yes_no(prompt, "Generate .vscode/mcp.json for the VS Code extension?", default=True):
@@ -387,7 +380,7 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         a[kind] = val
         if kind == "api_key":
             out("  note: that looks like the key itself, not an env-var name — "
-                "storing it inline in .musubi/llm.toml (gitignored). To keep it "
+                "storing it inline in .musubi/llm.json (gitignored). To keep it "
                 "out of the file, export it as an env var and enter the NAME.")
     a["profile"] = _ask(prompt, "Profile name", _DEFAULT_PROFILE[family])
     return a

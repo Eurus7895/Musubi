@@ -10,7 +10,7 @@ Two entry points:
     OPENAI_API_KEY → "openai"). Accepts optional `base_url`/`api_key` overrides.
 
 `build_from_profile(profile)` — builds an LMRouter from a resolved
-    `.musubi/llm.toml` profile dict (see `agent.config.load_profile`). The
+    `.musubi/llm.json` profile dict (see `agent.config.load_profile`). The
     profile's `family` selects the wire/client; `transport` (sdk|curl) selects
     how the HTTP call is made.
 
@@ -89,12 +89,12 @@ def build_vendor(
     raise ValueError(
         f"Unknown agent vendor {resolved!r}. "
         f"Supported: 'anthropic', 'openai', 'ollama', 'azure', 'genai_farm'. "
-        f"For on-prem endpoints use a .musubi/llm.toml profile (--profile)."
+        f"For on-prem endpoints use a .musubi/llm.json profile (--profile)."
     )
 
 
 def build_from_profile(profile: dict[str, Any]) -> LMRouter:
-    """Build an LMRouter from a resolved `.musubi/llm.toml` profile dict."""
+    """Build an LMRouter from a resolved `.musubi/llm.json` profile dict."""
     family = profile.get("family")
     model = profile.get("model") or profile.get("deployment")
     api_key = resolve_api_key(profile)
@@ -237,5 +237,5 @@ def _detect_vendor() -> str:
     raise RuntimeError(
         "No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, pass "
         "--vendor explicitly (anthropic|openai|ollama|azure), or configure a "
-        ".musubi/llm.toml profile and pass --profile <family>.<name>."
+        ".musubi/llm.json profile and pass --profile <family>.<name>."
     )

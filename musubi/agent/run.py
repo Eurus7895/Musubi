@@ -11,12 +11,12 @@ Usage:
     agent-agent "your task" --vendor anthropic
     agent-agent "your task" --vendor openai --model gpt-5-mini
     agent-agent "your task" --vendor ollama --model llama3.1   # local, no key
-    agent-agent "your task" --profile azure.work               # .musubi/llm.toml
+    agent-agent "your task" --profile azure.work               # .musubi/llm.json
     python -m agent.run "your task"              # equivalent
 
-Vendor selection precedence: --vendor → --profile → the .musubi/llm.toml
+Vendor selection precedence: --vendor → --profile → the .musubi/llm.json
 `default` profile → env-key detection. On-prem endpoints (base URL, family,
-api-key, curl transport for Azure) are configured in `.musubi/llm.toml`; see
+api-key, curl transport for Azure) are configured in `.musubi/llm.json`; see
 `agent/config.py`.
 
 Env vars:
@@ -81,7 +81,7 @@ async def run_agent(
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
     Spawns the Musubi MCP server, optionally connects every external MCP
-    server declared in `.musubi/mcp.toml` (federating their tools into the
+    server declared in an `mcp.json` (federating their tools into the
     catalog), hands the merged tools to the LLM via `vendor.call`,
     dispatches whatever tools the model asks for, feeds results back, and
     repeats until the model stops asking for tools (`stop_reason !=
@@ -242,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         "--profile",
         default=None,
         help=(
-            "Named endpoint from .musubi/llm.toml as <family>.<name> "
+            "Named endpoint from .musubi/llm.json as <family>.<name> "
             "(e.g. azure.work). Used when --vendor is not given."
         ),
     )

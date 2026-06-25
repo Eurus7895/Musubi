@@ -70,7 +70,7 @@ agent "add a /health endpoint and a test for it"
 ```
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
-`.musubi/llm.toml` endpoint profile (cloud, local Ollama, or on-prem Azure),
+`.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, and generates `.vscode/mcp.json` for the
 extension. The manual steps below still work if you prefer.
 
@@ -85,11 +85,11 @@ out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and the
 **Gen AI Farm** on-prem gateway (Azure-style deployment-in-path URL with Bearer
 auth). For named endpoints — including **Azure OpenAI** and the **Gen AI
 Farm**, which can fall back to `curl` so corporate proxy (with proxy auth) /
-custom CA / mTLS are honoured — describe them once in `.musubi/llm.toml` (copy
-`.musubi/llm.toml.example`) and select with `--profile`:
+custom CA / mTLS are honoured — describe them once in `.musubi/llm.json` (copy
+`.musubi/llm.json.example`) and select with `--profile`:
 
 ```bash
-cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_env
+cp .musubi/llm.json.example .musubi/llm.json   # then edit; secrets via api_key_env
 agent "<task>" --profile azure.work
 ```
 

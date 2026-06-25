@@ -74,7 +74,7 @@ substrate; pipeline dissolution is postponed (see below).
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
-   authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.toml`
+   authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.json`
    family profiles (`agent/config.py` + `agent/vendors/`). External-MCP
    federation landed (`agent/mcp_gateway.py`): the standalone host reads an
    `mcp.json` (the standard `mcpServers` schema — Claude Desktop / Cursor /

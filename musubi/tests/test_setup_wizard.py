@@ -7,7 +7,6 @@ end-to-end run. No TTY: prompts are injected; files land in tmp_path.
 from __future__ import annotations
 
 import json
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -115,12 +114,12 @@ def test_render_round_trips_through_config_loader(tmp_path: Path) -> None:
         "auth_header": "api-key",
         "api_key_env": "AZURE_OPENAI_API_KEY",
     }, set_default=True)
-    text = sw.render_llm_toml(raw)
+    text = sw.render_llm_json(raw)
 
-    # Valid TOML…
-    assert tomllib.loads(text)["default"] == "azure.work"
+    # Valid JSON…
+    assert json.loads(text)["default"] == "azure.work"
     # …and the rest of the system resolves it.
-    cfg = tmp_path / "llm.toml"
+    cfg = tmp_path / "llm.json"
     cfg.write_text(text, encoding="utf-8")
     prof = load_profile("azure.work", path=cfg)
     assert prof["deployment"] == "gpt-4o"
@@ -128,7 +127,7 @@ def test_render_round_trips_through_config_loader(tmp_path: Path) -> None:
     assert prof["api_key_env"] == "AZURE_OPENAI_API_KEY"
     # No secret leaked into the file.
     assert "api_key_env" in text
-    assert "\napi_key = " not in text
+    assert '"api_key"' not in text
 
 
 def test_upsert_preserves_existing_profile() -> None:
@@ -143,7 +142,7 @@ def test_render_handles_family_level_defaults() -> None:
     raw = {"default": "azure.work", "azure": {
         "api_version": "2024-06-01", "work": {"deployment": "gpt-4o"},
     }}
-    parsed = tomllib.loads(sw.render_llm_toml(raw))
+    parsed = json.loads(sw.render_llm_json(raw))
     assert parsed["azure"]["api_version"] == "2024-06-01"
     assert parsed["azure"]["work"]["deployment"] == "gpt-4o"
 
@@ -207,12 +206,12 @@ def test_interactive_azure_writes_config_and_mcp(tmp_path: Path) -> None:
     rc = sw.run_interactive(prompt=script, out=_silent, root=tmp_path)
     assert rc == 0
 
-    cfg = tmp_path / ".musubi" / "llm.toml"
+    cfg = tmp_path / ".musubi" / "llm.json"
     prof = load_profile(None, path=cfg)  # uses the written `default`
     assert (prof["family"], prof["profile"]) == ("azure", "work")
     assert prof["deployment"] == "gpt-4o"
     assert prof["api_key_env"] == "AZURE_OPENAI_API_KEY"
-    assert "\napi_key = " not in cfg.read_text(encoding="utf-8")  # no secret
+    assert '"api_key"' not in cfg.read_text(encoding="utf-8")  # no secret
 
     mcp = json.loads((tmp_path / ".vscode" / "mcp.json").read_text(encoding="utf-8"))
     assert mcp["servers"]["musubi"]["command"] == "python"
@@ -229,6 +228,6 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
     ])
     rc = sw.run_interactive(prompt=script, out=_silent, root=tmp_path)
     assert rc == 0
-    prof = load_profile("ollama.local", path=tmp_path / ".musubi" / "llm.toml")
+    prof = load_profile("ollama.local", path=tmp_path / ".musubi" / "llm.json")
     assert prof["model"] == "llama3.1"
     assert not (tmp_path / ".vscode" / "mcp.json").exists()
