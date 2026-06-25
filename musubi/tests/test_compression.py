@@ -152,3 +152,116 @@ def test_maybe_compress_field_skips_error_results(monkeypatch):
     monkeypatch.setenv("MUSUBI_COMPRESS", "1")
     d = {"status": "error", "error": "nope"}
     assert server._maybe_compress_field(d, "content", None) == d
+
+
+# ── store size recording + stats (measurement) ───────────────────────────────
+
+def test_put_records_sizes(tmp_path):
+    import sqlite3
+
+    from compression import store
+    db = tmp_path / "audit.db"
+    ref = store.put("x" * 1000, "text", compressed_chars=120, db_path=db)
+    conn = sqlite3.connect(db)
+    row = conn.execute(
+        "SELECT original_chars, compressed_chars FROM compression_blobs"
+        " WHERE ref_id = ?", (ref,),
+    ).fetchone()
+    conn.close()
+    assert row == (1000, 120)
+
+
+def test_stats_aggregates_totals_and_by_kind(tmp_path):
+    from compression import store
+    db = tmp_path / "audit.db"
+    store.put("a" * 1000, "json", compressed_chars=400, db_path=db)
+    store.put("b" * 500, "text", compressed_chars=200, db_path=db)
+    s = store.stats(db_path=db)
+    assert s["total_blobs"] == 2
+    assert s["rows_without_metric"] == 0
+    assert s["total_original_chars"] == 1500
+    assert s["total_compressed_chars"] == 600
+    kinds = {k["kind"]: k for k in s["by_kind"]}
+    assert kinds["json"]["original_chars"] == 1000
+    assert kinds["json"]["compressed_chars"] == 400
+
+
+def test_stats_empty_db_is_zeroed(tmp_path):
+    from compression import store
+    s = store.stats(db_path=tmp_path / "audit.db")
+    assert s["total_blobs"] == 0
+    assert s["total_original_chars"] == 0
+    assert s["by_kind"] == []
+
+
+def test_stats_migrates_old_schema_and_counts_unmetered(tmp_path):
+    """A DB whose table predates the size columns must migrate in place and
+    report its legacy rows as rows_without_metric rather than crashing."""
+    import sqlite3
+
+    from compression import store
+    db = tmp_path / "audit.db"
+    # Old 4-column table + a legacy row with no recorded sizes.
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE compression_blobs ("
+        " ref_id TEXT PRIMARY KEY, kind TEXT NOT NULL,"
+        " original TEXT NOT NULL, created_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO compression_blobs VALUES (?, ?, ?, ?)",
+        ("legacy0000000000", "text", "old", 0.0),
+    )
+    conn.commit()
+    conn.close()
+    # New write migrates the table and records sizes.
+    store.put("z" * 1000, "json", compressed_chars=300, db_path=db)
+    s = store.stats(db_path=db)
+    assert s["total_blobs"] == 2
+    assert s["rows_without_metric"] == 1  # the legacy row
+    assert s["total_original_chars"] == 1000  # only the metered row counts
+    assert s["total_compressed_chars"] == 300
+
+
+# ── musubi_compress / musubi_compression_stats tools ─────────────────────────
+
+def test_musubi_compress_tool_shrinks_and_returns_ref(monkeypatch, tmp_path):
+    import server
+    monkeypatch.setattr("storage.db.DEFAULT_DB_PATH", tmp_path / "audit.db")
+    payload = json.dumps({"items": [{"id": i} for i in range(300)]}, indent=2)
+    out = json.loads(server.musubi_compress(payload, "f.json"))
+    assert out["status"] == "ok"
+    assert out["kind"] == "json"
+    assert out["ref_id"]
+    assert out["ratio"] < 1.0
+    assert out["compressed_chars"] < out["original_chars"]
+
+
+def test_musubi_compress_tool_skips_short_input():
+    import server
+    out = json.loads(server.musubi_compress("tiny"))
+    assert out["ref_id"] is None
+    assert out["ratio"] == 1.0
+    assert "note" in out
+
+
+def test_musubi_compression_stats_tool_reflects_blobs(monkeypatch, tmp_path):
+    import server
+    monkeypatch.setattr("storage.db.DEFAULT_DB_PATH", tmp_path / "audit.db")
+    payload = json.dumps({"items": [{"id": i} for i in range(300)]}, indent=2)
+    server.musubi_compress(payload, "f.json")
+    stats = json.loads(server.musubi_compression_stats())
+    assert stats["status"] == "ok"
+    assert stats["total_blobs"] == 1
+    assert stats["bytes_saved"] > 0
+    assert stats["overall_ratio"] < 1.0
+    assert stats["savings_pct"] > 0
+
+
+def test_musubi_compression_stats_tool_empty(monkeypatch, tmp_path):
+    import server
+    monkeypatch.setattr("storage.db.DEFAULT_DB_PATH", tmp_path / "audit.db")
+    stats = json.loads(server.musubi_compression_stats())
+    assert stats["total_blobs"] == 0
+    assert stats["overall_ratio"] == 1.0
+    assert stats["bytes_saved"] == 0

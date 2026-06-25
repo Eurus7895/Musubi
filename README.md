@@ -52,6 +52,9 @@ deterministic, zero-LLM, and **reversible**:
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
   default** — reversible, so it's safe. ~67% reduction on indented JSON
   with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
+- The model can also compress a payload on demand with **`musubi_compress`**
+  and measure the feature's efficiency with **`musubi_compression_stats`**
+  (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
 
 ```bash
 agent "summarise the config files"     # compression on by default
