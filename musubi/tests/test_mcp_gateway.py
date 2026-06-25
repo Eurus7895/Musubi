@@ -21,6 +21,7 @@ from agent.mcp_gateway import (
     McpServerSpec,
     find_mcp_config_path,
     load_mcp_servers,
+    mcp_config_candidates,
     mcp_tool_to_schema,
     namespaced,
 )
@@ -174,6 +175,22 @@ def test_find_config_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     cfg = _write(tmp_path, {"mcpServers": {}})
     monkeypatch.setenv("MUSUBI_MCP_CONFIG", str(cfg))
     assert find_mcp_config_path() == cfg
+
+
+def test_candidate_order_is_repo_root_before_musubi_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MUSUBI_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: Path("/proj")))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path("/home/u")))
+    # Explicit first, then env (absent), then ./.mcp.json before ./.musubi/.
+    cands = mcp_config_candidates("/explicit.json")
+    assert cands == [
+        Path("/explicit.json"),
+        Path("/proj/.mcp.json"),
+        Path("/proj/.musubi/mcp.json"),
+        Path("/home/u/.musubi/mcp.json"),
+    ]
 
 
 # ── Namespacing + routing ────────────────────────────────────────────────────

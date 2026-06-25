@@ -43,7 +43,12 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from agent.mcp_gateway import McpGateway, load_mcp_servers
+from agent.mcp_gateway import (
+    McpGateway,
+    find_mcp_config_path,
+    load_mcp_servers,
+    mcp_config_candidates,
+)
 from agent.vendors import LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
@@ -115,12 +120,32 @@ async def run_agent(
             session, [_mcp_to_anthropic_tool(t) for t in mcp_tools]
         )
         # External MCP servers are additive and fail-open (a bad entry is
-        # logged and skipped). Even discovering them must not be fatal.
-        try:
-            specs = load_mcp_servers(mcp_config)
-        except Exception as exc:  # noqa: BLE001 — bad config ≠ dead agent
-            print(f"[agent] mcp.json ignored: {type(exc).__name__}: {exc}", file=log)
+        # logged and skipped). Surface *which* config was used (or that none
+        # was found, and exactly where we looked) — that resolution is
+        # otherwise invisible from the output.
+        cfg_path = find_mcp_config_path(mcp_config)
+        if cfg_path is None:
+            looked = ", ".join(str(c) for c in mcp_config_candidates(mcp_config))
+            print(
+                f"[agent] no mcp.json found (looked at: {looked}); "
+                f"external tools off",
+                file=log,
+            )
             specs = []
+        else:
+            try:
+                specs = load_mcp_servers(cfg_path)
+                print(
+                    f"[agent] mcp config: {cfg_path} ({len(specs)} server(s))",
+                    file=log,
+                )
+            except Exception as exc:  # noqa: BLE001 — bad config ≠ dead agent
+                print(
+                    f"[agent] mcp.json ignored ({cfg_path}): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=log,
+                )
+                specs = []
         await gateway.connect_external(stack, specs, log)
 
         tools = gateway.tools()

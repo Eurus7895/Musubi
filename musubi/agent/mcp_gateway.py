@@ -99,14 +99,13 @@ class McpServerSpec:
         return dict(self.env) or None
 
 
-def find_mcp_config_path(
+def mcp_config_candidates(
     explicit: str | os.PathLike[str] | None = None,
-) -> Path | None:
-    """Resolve the mcp.json location.
+) -> list[Path]:
+    """The ordered list of paths `find_mcp_config_path` checks (first wins).
 
-    Order: explicit arg → $MUSUBI_MCP_CONFIG → ./.mcp.json (Claude Code's
-    own project convention) → ./.musubi/mcp.json → ~/.musubi/mcp.json.
-    Returns None if none exists (the common case — the feature is opt-in).
+    Exposed so the agent log can show *exactly* where it looked when no
+    config is found — the ambiguity is otherwise invisible from the output.
     """
     candidates: list[Path] = []
     if explicit:
@@ -117,7 +116,19 @@ def find_mcp_config_path(
     candidates.append(Path.cwd() / ".mcp.json")
     candidates.append(Path.cwd() / ".musubi" / "mcp.json")
     candidates.append(Path.home() / ".musubi" / "mcp.json")
-    for c in candidates:
+    return candidates
+
+
+def find_mcp_config_path(
+    explicit: str | os.PathLike[str] | None = None,
+) -> Path | None:
+    """Resolve the mcp.json location — the first existing candidate.
+
+    Order: explicit arg → $MUSUBI_MCP_CONFIG → ./.mcp.json (Claude Code's
+    own project convention) → ./.musubi/mcp.json → ~/.musubi/mcp.json.
+    Returns None if none exists (the common case — the feature is opt-in).
+    """
+    for c in mcp_config_candidates(explicit):
         if c.is_file():
             return c
     return None
