@@ -17,7 +17,6 @@ import pytest
 from agent.run import run_agent
 from agent.vendors.base import LMResponse, LMRouter
 
-
 # ── Test infrastructure: FakeRouter replays a canned response list ─────────
 
 
@@ -46,6 +45,25 @@ class FakeRouter(LMRouter):
 def _musubi_dir() -> Path:
     """The agent-harness package directory (this file's grandparent)."""
     return Path(__file__).resolve().parent.parent
+
+
+# ── Server subprocess env: MUSUBI_* flags must reach the server ────────────
+
+
+def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The spawned server must see MUSUBI_* config (e.g. MUSUBI_COMPRESS),
+    which the MCP stdio default-env allowlist would otherwise drop, while
+    unrelated parent-env secrets are NOT forwarded."""
+    from agent.run import _server_env
+
+    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
+    monkeypatch.setenv("MUSUBI_ROOT", "/some/dir")
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-leak")
+    env = _server_env()
+    assert env["MUSUBI_COMPRESS"] == "1"
+    assert env["MUSUBI_ROOT"] == "/some/dir"
+    assert "UNRELATED_SECRET" not in env
+    assert "PATH" in env  # safe defaults still present
 
 
 # ── Loop terminates immediately on end_turn ────────────────────────────────

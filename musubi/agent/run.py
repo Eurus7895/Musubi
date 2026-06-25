@@ -96,7 +96,7 @@ async def run_agent(
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
-        env=None,
+        env=_server_env(),
     )
 
     # Track the result inside the MCP contexts but raise the
@@ -366,6 +366,26 @@ def _resolve_vendor(
 
 def _apply_model(profile: dict[str, Any], model: str | None) -> dict[str, Any]:
     return {**profile, "model": model} if model else profile
+
+
+def _server_env() -> dict[str, str]:
+    """Env for the spawned Musubi server: safe defaults + forwarded MUSUBI_* vars.
+
+    The MCP stdio client passes only a safe allowlist to the child when
+    `env=None` (PATH/HOME/… — no arbitrary vars), which silently dropped
+    every `MUSUBI_*` flag the user set in their shell. The most visible
+    casualty was `MUSUBI_COMPRESS`: it is read *inside* the server subprocess
+    (`server.py::_compression_enabled`), so with it filtered out the flag had
+    no effect on the standalone path no matter how it was set.
+
+    Forward `MUSUBI_*` vars explicitly, on top of the safe defaults, so the
+    server sees Musubi's own config without inheriting unrelated parent-env
+    secrets.
+    """
+    from mcp.client.stdio import get_default_environment
+
+    passthrough = {k: v for k, v in os.environ.items() if k.startswith("MUSUBI_")}
+    return {**get_default_environment(), **passthrough}
 
 
 def _default_musubi_dir() -> Path:
