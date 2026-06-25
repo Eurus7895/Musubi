@@ -4,7 +4,7 @@
 #   agent "your task" --profile azure.work
 #
 # Config is grouped into LLM-family sections. The section name (openai | azure |
-# anthropic | ollama) selects the wire/client; family-level scalar keys are
+# genai_farm | anthropic | ollama) selects the wire/client; family-level scalar keys are
 # shared defaults that every profile under the family inherits (profile keys
 # win). Reference a profile as <family>.<profile> (e.g. azure.work), or a bare
 # name when it is unique. With no --profile, `default` below is used.
@@ -33,6 +33,30 @@ deployment = "gpt-4o"
 
 [azure.work-mini]
 deployment = "gpt-4o-mini"
+
+# ── Gen AI Farm (on-prem OpenAI-compatible gateway) ─────────────────────────
+# Standard OpenAI wire (Authorization: Bearer, {base_url}/chat/completions).
+# Default transport is the openai SDK; curl is the FALLBACK for when the gateway
+# is only reachable through an authenticated corporate proxy / custom CA / mTLS.
+#
+# Direct (SDK) — no proxy needed:
+[genai_farm.default]
+base_url = "https://genai-farm.internal/v1"
+model = "gpt-5-nano-2025-08-07"
+api_key_env = "GENAI_FARM_API_KEY"
+#
+# Behind an authenticated proxy — the curl fallback. `proxy_user_env` names the
+# env var holding "user:password"; it (and the api-key) are passed to curl on
+# stdin so neither secret ever appears in the process argument list. This mirrors
+#   curl -x http://proxy:8080 -U user:pass -H "Authorization: Bearer $KEY" ...
+[genai_farm.proxied]
+transport = "curl"
+base_url = "https://genai-farm.internal/v1"
+model = "gpt-5-nano-2025-08-07"
+api_key_env = "GENAI_FARM_API_KEY"
+proxy = "http://proxy-server:8080"
+proxy_user_env = "GENAI_FARM_PROXY_USER"
+# curl_extra_args = ["--cacert", "/etc/ssl/corp-ca.pem"]
 
 # ── OpenAI cloud (SDK) ──────────────────────────────────────────────────────
 [openai.cloud]

@@ -2,8 +2,9 @@
 
 musubi-tier: substrate
 expires-when: never — the resolution rule for how a standalone-agent user
-  selects an LLM endpoint (cloud, local Ollama, or an on-prem Azure/OpenAI
-  gateway). Read-only TOML via stdlib `tomllib` (3.11+); no dependency.
+  selects an LLM endpoint (cloud, local Ollama, or an on-prem Azure / Gen AI
+  Farm OpenAI-compatible gateway). Read-only TOML via stdlib `tomllib`
+  (3.11+); no dependency.
 
 Config is **separated into LLM-family sections**. The section name is the
 family (and thus the wire/client); family-level scalar keys are shared
@@ -33,7 +34,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-KNOWN_FAMILIES = frozenset({"openai", "azure", "anthropic", "ollama"})
+KNOWN_FAMILIES = frozenset({"openai", "azure", "genai_farm", "anthropic", "ollama"})
 
 
 def find_config_path(explicit: str | os.PathLike[str] | None = None) -> Path | None:
@@ -141,3 +142,16 @@ def resolve_api_key(profile: dict[str, Any]) -> str | None:
     if env_name:
         return os.environ.get(env_name)
     return profile.get("api_key")
+
+
+def resolve_proxy_user(profile: dict[str, Any]) -> str | None:
+    """Resolve the `user:password` for an authenticated curl proxy.
+
+    Preference order mirrors `resolve_api_key`: `proxy_user_env` (the NAME of
+    an env var holding `user:password`) over an inline `proxy_user`. Returns
+    None when neither is set (no proxy auth, or an unauthenticated proxy).
+    """
+    env_name = profile.get("proxy_user_env")
+    if env_name:
+        return os.environ.get(env_name)
+    return profile.get("proxy_user")

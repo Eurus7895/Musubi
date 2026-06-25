@@ -35,19 +35,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-KNOWN_FAMILIES: tuple[str, ...] = ("azure", "openai", "anthropic", "ollama")
+KNOWN_FAMILIES: tuple[str, ...] = ("azure", "genai_farm", "openai", "anthropic", "ollama")
 
 _DEFAULT_KEY_ENV: dict[str, str] = {
     "azure": "AZURE_OPENAI_API_KEY",
+    "genai_farm": "GENAI_FARM_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "",  # local, no key
 }
 _DEFAULT_PROFILE: dict[str, str] = {
-    "azure": "work", "openai": "cloud", "anthropic": "cloud", "ollama": "local",
+    "azure": "work", "genai_farm": "default", "openai": "cloud",
+    "anthropic": "cloud", "ollama": "local",
 }
 _DEFAULT_MODEL: dict[str, str] = {
-    "openai": "gpt-5-mini", "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
+    "genai_farm": "gpt-5-nano", "openai": "gpt-5-mini",
+    "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
 }
 
 Prompt = Callable[[str], str]
@@ -97,7 +100,8 @@ def family_requirement(family: str) -> Check:
     if family == "anthropic":
         ok = importlib.util.find_spec("anthropic") is not None
         return Check("anthropic SDK", ok, "" if ok else "pip install -e .[anthropic]")
-    # openai + ollama both ride the openai SDK
+    # openai + ollama + genai_farm all ride the openai SDK on the default
+    # (sdk) transport; genai_farm's curl fallback additionally needs curl.
     ok = importlib.util.find_spec("openai") is not None
     return Check("openai SDK", ok, "" if ok else "pip install -e .[openai]")
 
@@ -120,6 +124,22 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
             section["api_key_env"] = a["api_key_env"]
         if a.get("curl_extra_args"):
             section["curl_extra_args"] = a["curl_extra_args"]
+        return section
+
+    if family == "genai_farm":
+        # On-prem OpenAI-compatible gateway. SDK transport by default; a
+        # configured proxy implies the curl fallback (the only transport that
+        # can ride an authenticated corporate proxy / custom CA / mTLS).
+        section = {"model": a["model"], "base_url": a["base_url"]}
+        if a.get("api_key_env"):
+            section["api_key_env"] = a["api_key_env"]
+        if a.get("proxy"):
+            section["transport"] = "curl"
+            section["proxy"] = a["proxy"]
+            if a.get("proxy_user_env"):
+                section["proxy_user_env"] = a["proxy_user_env"]
+            if a.get("curl_extra_args"):
+                section["curl_extra_args"] = a["curl_extra_args"]
         return section
 
     if family in ("openai", "anthropic"):
@@ -314,6 +334,16 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
         if extra.strip():
             a["curl_extra_args"] = extra.split()
+    elif family == "genai_farm":
+        a["base_url"] = _ask(prompt, "Gateway base URL (OpenAI-compatible)", "https://genai-farm.internal/v1")
+        a["model"] = _ask(prompt, "Model id", _DEFAULT_MODEL[family])
+        proxy = _ask(prompt, "Proxy URL for the curl fallback (optional, blank = SDK)", "")
+        if proxy.strip():
+            a["proxy"] = proxy.strip()
+            a["proxy_user_env"] = _ask(prompt, "Env var holding proxy 'user:password' (optional)", "")
+            extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
+            if extra.strip():
+                a["curl_extra_args"] = extra.split()
     elif family in ("openai", "anthropic"):
         a["model"] = _ask(prompt, "Model id", _DEFAULT_MODEL[family])
         base = _ask(prompt, "Base URL (optional, for a gateway)", "")

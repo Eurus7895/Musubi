@@ -349,6 +349,65 @@ def test_build_from_profile_azure_sdk_rejected() -> None:
         build_from_profile({"family": "azure", "transport": "sdk", "deployment": "d"})
 
 
+def test_build_from_profile_genai_farm_defaults_to_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gen AI Farm rides the openai SDK by default (curl is the fallback)."""
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    router = build_from_profile({
+        "family": "genai_farm",
+        "base_url": "https://genai-farm.internal/v1",
+        "model": "gpt-5-nano",
+        "api_key": "K",
+        # transport omitted → defaults to sdk
+    })
+    assert router.name == "openai"  # OpenAIRouter wire
+    assert router.model == "gpt-5-nano"
+    assert captured["base_url"] == "https://genai-farm.internal/v1"
+    assert captured["api_key"] == "K"
+
+
+def test_build_from_profile_genai_farm_curl_fallback_with_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """transport='curl' selects the curl router; proxy + proxy-user ride the
+    stdin config (never argv) so the proxy password stays hidden."""
+    monkeypatch.setenv("FARM_PROXY_USER", "user:pass")
+    router = build_from_profile({
+        "family": "genai_farm",
+        "transport": "curl",
+        "base_url": "https://genai-farm.internal/v1",
+        "model": "gpt-5-nano",
+        "api_key": "SECRET",
+        "proxy": "http://proxy:8080",
+        "proxy_user_env": "FARM_PROXY_USER",
+    })
+    assert isinstance(router, CurlChatRouter)
+    assert router.name == "genai_farm"
+
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router.call([{"role": "user", "content": "hi"}], [])
+
+    cfg = captured["input"]
+    assert 'header = "Authorization: Bearer SECRET"' in cfg  # Bearer, not api-key
+    assert 'proxy = "http://proxy:8080"' in cfg
+    assert 'proxy-user = "user:pass"' in cfg
+    # Neither secret is allowed on the command line.
+    argv = " ".join(captured["cmd"])
+    assert "SECRET" not in argv and "user:pass" not in argv
+
+
 def test_build_from_profile_unknown_family() -> None:
     with pytest.raises(ValueError, match="unknown LLM family"):
         build_from_profile({"family": "cohere", "model": "x"})

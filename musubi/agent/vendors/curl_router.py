@@ -49,6 +49,8 @@ class CurlChatRouter(LMRouter):
         base_url: str | None = None,
         api_key: str | None = None,
         auth_header: str = "api-key",
+        proxy: str | None = None,
+        proxy_user: str | None = None,
         curl_extra_args: list[str] | None = None,
         timeout_s: int = _DEFAULT_TIMEOUT_S,
         name: str = "azure",
@@ -59,6 +61,8 @@ class CurlChatRouter(LMRouter):
         self.name = name
         self._api_key = api_key
         self._auth_header = auth_header
+        self._proxy = proxy
+        self._proxy_user = proxy_user
         self._extra = list(curl_extra_args or [])
         self._timeout_s = timeout_s
         self._url = _resolve_url(
@@ -158,6 +162,13 @@ class CurlChatRouter(LMRouter):
         ]
         if self._api_key:
             lines.append(f'header = "{_auth_header_line(self._auth_header, self._api_key)}"')
+        # Proxy + proxy auth ride the stdin config (not argv) so the proxy
+        # password is never visible in the process argument list — same reason
+        # the api-key is here rather than on the command line.
+        if self._proxy:
+            lines.append(f'proxy = "{self._proxy}"')
+        if self._proxy_user:
+            lines.append(f'proxy-user = "{self._proxy_user}"')
         lines.append(f'data-binary = "@{posix_body_path}"')
         return lines
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from agent.config import resolve_api_key
+from agent.config import resolve_api_key, resolve_proxy_user
 from agent.vendors.base import LMRouter
 
 
@@ -54,6 +54,19 @@ def build_vendor(
 
         return OllamaRouter(model=model, base_url=base_url, api_key=api_key)
 
+    if resolved == "genai_farm":
+        # On-prem OpenAI-compatible gateway, SDK transport (the default). The
+        # endpoint defaults to env so the flag surface stays small; the curl
+        # fallback (authenticated proxy / custom CA) is profile-only — use a
+        # .musubi/llm.toml `[genai_farm]` profile with transport = "curl".
+        from agent.vendors.openai_router import OpenAIRouter
+
+        return OpenAIRouter(
+            model=model,
+            base_url=base_url or os.environ.get("GENAI_FARM_BASE_URL"),
+            api_key=api_key or os.environ.get("GENAI_FARM_API_KEY"),
+        )
+
     if resolved == "azure":
         # Ad-hoc Azure goes through the curl transport (the on-prem path),
         # reading the endpoint bits from env to keep the flag surface small.
@@ -71,7 +84,7 @@ def build_vendor(
 
     raise ValueError(
         f"Unknown agent vendor {resolved!r}. "
-        f"Supported: 'anthropic', 'openai', 'ollama', 'azure'. "
+        f"Supported: 'anthropic', 'openai', 'ollama', 'azure', 'genai_farm'. "
         f"For on-prem endpoints use a .musubi/llm.toml profile (--profile)."
     )
 
@@ -101,6 +114,17 @@ def build_from_profile(profile: dict[str, Any]) -> LMRouter:
     if family == "openai":
         if transport == "curl":
             return _build_curl(profile, model, api_key, base_url, name="openai",
+                               default_auth="Authorization: Bearer")
+        from agent.vendors.openai_router import OpenAIRouter
+
+        return OpenAIRouter(model=model, base_url=base_url, api_key=api_key)
+
+    if family == "genai_farm":
+        # On-prem OpenAI-compatible gateway (Bearer auth). SDK transport is the
+        # default; curl is the fallback for networks that force the call through
+        # an authenticated proxy / custom CA / mTLS (set transport = "curl").
+        if transport == "curl":
+            return _build_curl(profile, model, api_key, base_url, name="genai_farm",
                                default_auth="Authorization: Bearer")
         from agent.vendors.openai_router import OpenAIRouter
 
@@ -137,6 +161,8 @@ def _build_curl(
         "base_url": base_url,
         "api_key": api_key,
         "auth_header": profile.get("auth_header", default_auth),
+        "proxy": profile.get("proxy"),
+        "proxy_user": resolve_proxy_user(profile),
         "curl_extra_args": profile.get("curl_extra_args"),
         "name": name,
     }
