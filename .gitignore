@@ -74,8 +74,9 @@ musubi/memory/cross_session.db
 .musubi/llm.toml
 
 # Musubi standalone-agent external-MCP-server config — may hold (or point at)
-# secrets in `env`. The committed template is .musubi/mcp.toml.example.
-.musubi/mcp.toml
+# secrets in `env`. The committed template is .musubi/mcp.json.example.
+.musubi/mcp.json
+.mcp.json
 
 # Musubi build output — copy-assets.sh stages .github/ assets and
 # LICENSE into the extension dir for .vsix packaging. Source of truth lives

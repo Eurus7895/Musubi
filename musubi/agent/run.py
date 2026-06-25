@@ -119,7 +119,7 @@ async def run_agent(
         try:
             specs = load_mcp_servers(mcp_config)
         except Exception as exc:  # noqa: BLE001 — bad config ≠ dead agent
-            print(f"[agent] mcp.toml ignored: {type(exc).__name__}: {exc}", file=log)
+            print(f"[agent] mcp.json ignored: {type(exc).__name__}: {exc}", file=log)
             specs = []
         await gateway.connect_external(stack, specs, log)
 
@@ -271,9 +271,10 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "Path to an mcp.toml declaring external MCP servers to federate. "
-            "Defaults to $MUSUBI_MCP_CONFIG, then ./.musubi/mcp.toml, then "
-            "~/.musubi/mcp.toml (the feature is off when none exists)."
+            "Path to an mcp.json (standard `mcpServers` schema) declaring "
+            "external MCP servers to federate. Defaults to $MUSUBI_MCP_CONFIG, "
+            "then ./.mcp.json, ./.musubi/mcp.json, ~/.musubi/mcp.json "
+            "(the feature is off when none exists)."
         ),
     )
     args = ap.parse_args(argv)

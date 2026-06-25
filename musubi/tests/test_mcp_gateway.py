@@ -8,6 +8,7 @@ fail-open connection policy.
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import AsyncExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,26 +52,29 @@ class FakeSession:
         return SimpleNamespace(content=[SimpleNamespace(text=f"ran {name}")])
 
 
-# ── Config parsing ───────────────────────────────────────────────────────────
+# ── Config parsing (standard `mcpServers` JSON schema) ───────────────────────
 
 
-def _write(tmp_path: Path, text: str) -> Path:
-    cfg = tmp_path / "mcp.toml"
-    cfg.write_text(text, encoding="utf-8")
+def _write(tmp_path: Path, obj: dict[str, Any]) -> Path:
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps(obj), encoding="utf-8")
     return cfg
 
 
 def test_load_servers_parses_stdio_and_http(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, """
-[servers.fs]
-command = "npx"
-args = ["-y", "server-filesystem", "/work"]
-cwd = "/work"
-
-[servers.remote]
-url = "https://example.com/mcp"
-headers = { Authorization = "Bearer x" }
-""")
+    cfg = _write(tmp_path, {
+        "mcpServers": {
+            "fs": {
+                "command": "npx",
+                "args": ["-y", "server-filesystem", "/work"],
+                "cwd": "/work",
+            },
+            "remote": {
+                "url": "https://example.com/mcp",
+                "headers": {"Authorization": "Bearer x"},
+            },
+        }
+    })
     specs = {s.name: s for s in load_mcp_servers(cfg)}
     assert set(specs) == {"fs", "remote"}
     assert specs["fs"].command == "npx"
@@ -80,69 +84,81 @@ headers = { Authorization = "Bearer x" }
     assert specs["remote"].headers == {"Authorization": "Bearer x"}
 
 
-def test_master_switch_disables_all(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, """
-enabled = false
-[servers.fs]
-command = "npx"
-""")
-    assert load_mcp_servers(cfg) == []
+def test_no_mcp_servers_key_returns_empty(tmp_path: Path) -> None:
+    assert load_mcp_servers(_write(tmp_path, {"other": 1})) == []
 
 
 def test_disabled_server_is_dropped(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, """
-[servers.fs]
-command = "npx"
-disabled = true
-
-[servers.keep]
-command = "uvx"
-""")
+    cfg = _write(tmp_path, {
+        "mcpServers": {
+            "fs": {"command": "npx", "disabled": True},
+            "keep": {"command": "uvx"},
+        }
+    })
     assert [s.name for s in load_mcp_servers(cfg)] == ["keep"]
 
 
 def test_command_and_url_are_mutually_exclusive(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, """
-[servers.bad]
-command = "npx"
-url = "https://example.com/mcp"
-""")
+    cfg = _write(tmp_path, {
+        "mcpServers": {"bad": {"command": "npx", "url": "https://example.com/mcp"}}
+    })
     with pytest.raises(ValueError, match="exactly one"):
         load_mcp_servers(cfg)
 
 
 def test_neither_command_nor_url_errors(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, """
-[servers.bad]
-args = ["x"]
-""")
+    cfg = _write(tmp_path, {"mcpServers": {"bad": {"args": ["x"]}}})
     with pytest.raises(ValueError, match="exactly one"):
         load_mcp_servers(cfg)
 
 
+def test_malformed_json_raises(tmp_path: Path) -> None:
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot parse"):
+        load_mcp_servers(cfg)
+
+
 def test_no_config_file_returns_empty() -> None:
-    assert load_mcp_servers("/nonexistent/mcp.toml") == []
+    assert load_mcp_servers("/nonexistent/mcp.json") == []
 
 
-def test_resolved_env_merges_passthrough_under_literal(
-    monkeypatch: pytest.MonkeyPatch,
+def test_env_var_interpolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SECRET_TOKEN", "from-env")
-    monkeypatch.setenv("UNSET_LATER", "x")
-    monkeypatch.delenv("MISSING_VAR", raising=False)
-    spec = McpServerSpec(
-        name="s",
-        command="x",
-        env={"LITERAL": "v", "UNSET_LATER": "override"},
-        env_passthrough=["SECRET_TOKEN", "MISSING_VAR", "UNSET_LATER"],
-    )
-    env = spec.resolved_env()
-    assert env == {
-        "SECRET_TOKEN": "from-env",  # forwarded from parent
-        "LITERAL": "v",              # literal
-        "UNSET_LATER": "override",   # literal wins over passthrough
-    }
-    assert "MISSING_VAR" not in env  # absent parent var is skipped
+    monkeypatch.setenv("GH_TOKEN", "sekret")
+    monkeypatch.setenv("MCP_TOKEN", "bearer-123")
+    cfg = _write(tmp_path, {
+        "mcpServers": {
+            "github": {
+                "command": "docker",
+                "args": ["run", "--name=${GH_TOKEN}-box"],
+                "env": {"GITHUB_TOKEN": "${GH_TOKEN}", "PLAIN": "v"},
+            },
+            "remote": {
+                "url": "https://example.com/mcp",
+                "headers": {"Authorization": "Bearer ${env:MCP_TOKEN}"},
+            },
+        }
+    })
+    specs = {s.name: s for s in load_mcp_servers(cfg)}
+    assert specs["github"].env == {"GITHUB_TOKEN": "sekret", "PLAIN": "v"}
+    assert specs["github"].args == ["run", "--name=sekret-box"]  # interpolated
+    assert specs["remote"].headers == {"Authorization": "Bearer bearer-123"}
+
+
+def test_unset_env_var_is_a_hard_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MISSING_SECRET", raising=False)
+    cfg = _write(tmp_path, {
+        "mcpServers": {
+            "x": {"command": "y", "env": {"K": "${MISSING_SECRET}"}}
+        }
+    })
+    # Fail-closed: never silently send an empty credential.
+    with pytest.raises(ValueError, match="MISSING_SECRET"):
+        load_mcp_servers(cfg)
 
 
 def test_resolved_env_none_when_empty() -> None:
@@ -150,12 +166,12 @@ def test_resolved_env_none_when_empty() -> None:
 
 
 def test_find_config_prefers_explicit(tmp_path: Path) -> None:
-    cfg = _write(tmp_path, "[servers.fs]\ncommand = 'x'\n")
+    cfg = _write(tmp_path, {"mcpServers": {}})
     assert find_mcp_config_path(cfg) == cfg
 
 
 def test_find_config_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = _write(tmp_path, "[servers.fs]\ncommand = 'x'\n")
+    cfg = _write(tmp_path, {"mcpServers": {}})
     monkeypatch.setenv("MUSUBI_MCP_CONFIG", str(cfg))
     assert find_mcp_config_path() == cfg
 

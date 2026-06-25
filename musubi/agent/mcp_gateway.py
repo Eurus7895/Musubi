@@ -12,10 +12,14 @@ What this does
 --------------
 The agent loop (`agent/run.py`) drives one MCP session — Musubi's own
 server. This module lets the same loop *also* connect to any number of
-**other** MCP servers declared in `.musubi/mcp.toml` (a filesystem server,
-a GitHub server, an internal tool server, …), list their tools, and splice
+**other** MCP servers declared in an `mcp.json` (a filesystem server, a
+GitHub server, an internal tool server, …), list their tools, and splice
 them into the tool catalog handed to the model. Tool calls are then routed
 back to whichever server owns the tool.
+
+The config uses the de-facto ecosystem schema — a top-level `mcpServers`
+object keyed by name — so a config from Claude Desktop / Cursor / VS Code /
+`.mcp.json` pastes in verbatim.
 
 Namespacing
 -----------
@@ -48,8 +52,9 @@ discovery of optional third-party tools.
 
 from __future__ import annotations
 
+import json
 import os
-import tomllib
+import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,24 +66,28 @@ from mcp.client.stdio import stdio_client
 NAMESPACE_SEP = "__"
 _DEFAULT_INIT_TIMEOUT_S = 30
 
+# ${VAR} or ${env:VAR} — the convention every MCP client uses to keep a
+# secret out of the JSON file (the value is read from the process env).
+_ENV_REF = re.compile(r"\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]*)\}")
+
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class McpServerSpec:
-    """One external MCP server declared in `.musubi/mcp.toml`.
+    """One external MCP server declared in the `mcpServers` map.
 
     Exactly one transport is used: `command` (stdio, the common local case)
-    or `url` (streamable HTTP). `env` is literal; `env_passthrough` names
-    parent-process env vars to forward so secrets stay out of the file.
+    or `url` (streamable HTTP). `env`/`headers`/`url`/`args` values are
+    already `${VAR}`-interpolated from the environment at load time, so a
+    secret never lives literally in the file.
     """
 
     name: str
     command: str | None = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    env_passthrough: list[str] = field(default_factory=list)
     cwd: str | None = None
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
@@ -86,28 +95,18 @@ class McpServerSpec:
     timeout_s: int = _DEFAULT_INIT_TIMEOUT_S
 
     def resolved_env(self) -> dict[str, str] | None:
-        """Merge forwarded parent vars under the literal `env` overrides.
-
-        Returns None when nothing is configured so the caller can fall back
-        to the MCP client's default (safe) environment.
-        """
-        merged: dict[str, str] = {}
-        for key in self.env_passthrough:
-            val = os.environ.get(key)
-            if val is not None:
-                merged[key] = val
-        merged.update(self.env)
-        return merged or None
+        """The child's env overrides, or None to inherit the safe default."""
+        return dict(self.env) or None
 
 
 def find_mcp_config_path(
     explicit: str | os.PathLike[str] | None = None,
 ) -> Path | None:
-    """Resolve the mcp.toml location.
+    """Resolve the mcp.json location.
 
-    Order: explicit arg → $MUSUBI_MCP_CONFIG → ./.musubi/mcp.toml →
-    ~/.musubi/mcp.toml. Returns None if none exists (the common case — the
-    feature is opt-in).
+    Order: explicit arg → $MUSUBI_MCP_CONFIG → ./.mcp.json (Claude Code's
+    own project convention) → ./.musubi/mcp.json → ~/.musubi/mcp.json.
+    Returns None if none exists (the common case — the feature is opt-in).
     """
     candidates: list[Path] = []
     if explicit:
@@ -115,8 +114,9 @@ def find_mcp_config_path(
     env = os.environ.get("MUSUBI_MCP_CONFIG")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path.cwd() / ".musubi" / "mcp.toml")
-    candidates.append(Path.home() / ".musubi" / "mcp.toml")
+    candidates.append(Path.cwd() / ".mcp.json")
+    candidates.append(Path.cwd() / ".musubi" / "mcp.json")
+    candidates.append(Path.home() / ".musubi" / "mcp.json")
     for c in candidates:
         if c.is_file():
             return c
@@ -126,47 +126,54 @@ def find_mcp_config_path(
 def load_mcp_servers(
     path: str | os.PathLike[str] | None = None,
 ) -> list[McpServerSpec]:
-    """Parse `.musubi/mcp.toml` into a list of enabled `McpServerSpec`.
+    """Parse an `mcp.json` into a list of enabled `McpServerSpec`.
 
-    Returns ``[]`` when no config file exists (feature off) or the
-    top-level ``enabled = false`` switch is set. Disabled individual
-    servers are dropped. Raises ValueError for a malformed entry.
+    Uses the de-facto ecosystem schema — a top-level ``mcpServers`` object
+    keyed by server name — so a Claude Desktop / Cursor / VS Code config
+    pastes in unchanged. Returns ``[]`` when no config file exists (feature
+    off). Per-server ``"disabled": true`` is honoured. Raises ValueError for
+    a malformed file or an unresolved ``${VAR}`` reference.
 
     Format::
 
-        # enabled = true            # optional master switch
-
-        [servers.filesystem]
-        command = "npx"
-        args = ["-y", "@modelcontextprotocol/server-filesystem", "/work"]
-        # env = { FOO = "bar" }
-        # env_passthrough = ["HOME"]
-        # cwd = "/work"
-        # disabled = false
-
-        [servers.remote]
-        url = "https://example.com/mcp"
-        # headers = { Authorization = "Bearer ..." }
+        {
+          "mcpServers": {
+            "filesystem": {
+              "command": "npx",
+              "args": ["-y", "@modelcontextprotocol/server-filesystem", "/work"]
+            },
+            "github": {
+              "command": "docker",
+              "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+              "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+            },
+            "remote": {
+              "url": "https://example.com/mcp",
+              "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+            }
+          }
+        }
     """
     cfg_path = find_mcp_config_path(path)
     if cfg_path is None:
         return []
-    with cfg_path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"{cfg_path}: cannot parse mcp.json: {exc}") from exc
 
-    if raw.get("enabled") is False:
-        return []
-
-    servers = raw.get("servers")
+    if not isinstance(raw, dict):
+        raise ValueError(f"{cfg_path}: top level must be a JSON object")
+    servers = raw.get("mcpServers")
     if servers is None:
         return []
     if not isinstance(servers, dict):
-        raise ValueError(f"{cfg_path}: [servers] must be a table of named servers")
+        raise ValueError(f"{cfg_path}: `mcpServers` must be an object of named servers")
 
     specs: list[McpServerSpec] = []
     for name, entry in servers.items():
         if not isinstance(entry, dict):
-            raise ValueError(f"{cfg_path}: server '{name}' must be a table")
+            raise ValueError(f"{cfg_path}: server '{name}' must be an object")
         spec = _spec_from_entry(name, entry, cfg_path)
         if not spec.disabled:
             specs.append(spec)
@@ -183,18 +190,40 @@ def _spec_from_entry(
             f"{cfg_path}: server '{name}' needs exactly one of `command` "
             f"(stdio) or `url` (http), not both/neither"
         )
+    where = f"{cfg_path} server '{name}'"
     return McpServerSpec(
         name=name,
         command=command,
-        args=list(entry.get("args", [])),
-        env=dict(entry.get("env", {})),
-        env_passthrough=list(entry.get("env_passthrough", [])),
+        args=[_interp(str(a), where) for a in entry.get("args", [])],
+        env={k: _interp(str(v), where) for k, v in entry.get("env", {}).items()},
         cwd=entry.get("cwd"),
-        url=url,
-        headers=dict(entry.get("headers", {})),
+        url=_interp(url, where) if url else None,
+        headers={
+            k: _interp(str(v), where) for k, v in entry.get("headers", {}).items()
+        },
         disabled=bool(entry.get("disabled", False)),
         timeout_s=int(entry.get("timeout_s", _DEFAULT_INIT_TIMEOUT_S)),
     )
+
+
+def _interp(value: str, where: str) -> str:
+    """Expand `${VAR}` / `${env:VAR}` from the environment.
+
+    Fail-closed on a missing variable: an unresolved reference raises rather
+    than silently sending empty credentials. `$$` is a literal `$`.
+    """
+
+    def repl(m: re.Match[str]) -> str:
+        var = m.group(1)
+        val = os.environ.get(var)
+        if val is None:
+            raise ValueError(
+                f"{where}: environment variable ${{{var}}} is referenced "
+                f"but not set"
+            )
+        return val
+
+    return _ENV_REF.sub(repl, value.replace("$$", "\x00")).replace("\x00", "$")
 
 
 # ── Gateway ─────────────────────────────────────────────────────────────────
