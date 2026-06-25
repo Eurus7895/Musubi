@@ -81,10 +81,11 @@ in the substrate itself. Requirements: Python 3.11+.
 ### Vendors & on-prem endpoints
 
 A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
-out of the box: `anthropic`, `openai`, `ollama` (local), and `azure` /
-on-prem OpenAI-compatible gateways. For named endpoints — including **Azure
-OpenAI**, reached through `curl` so corporate proxy / custom CA / mTLS are
-honoured — describe them once in `.musubi/llm.toml` (copy
+out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and the
+**Gen AI Farm** on-prem gateway (Azure-style deployment-in-path URL with Bearer
+auth). For named endpoints — including **Azure OpenAI** and the **Gen AI
+Farm**, which can fall back to `curl` so corporate proxy (with proxy auth) /
+custom CA / mTLS are honoured — describe them once in `.musubi/llm.toml` (copy
 `.musubi/llm.toml.example`) and select with `--profile`:
 
 ```bash
@@ -92,7 +93,7 @@ cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_
 agent "<task>" --profile azure.work
 ```
 
-Profiles are grouped by **LLM family** (`[azure]`, `[openai]`, …); the section
+Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`, …); the section
 selects the wire/client and its keys are shared defaults inherited by each
 `[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
 the file's `default` → env-key detection.

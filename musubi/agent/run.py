@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("task", help="The user task to run.")
     ap.add_argument(
         "--vendor",
-        choices=["anthropic", "openai", "ollama", "azure"],
+        choices=["anthropic", "openai", "ollama", "azure", "genai_farm"],
         default=None,
         help=(
             "LLM vendor. Defaults to --profile, then to whichever API key is "

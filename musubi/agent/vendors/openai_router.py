@@ -26,6 +26,7 @@ from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
     tool_to_openai,
     usage_to_dict,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "OpenAIRouter",
     "openai_message_to_blocks",
     "to_openai_messages",
+    "token_budget_field",
     "tool_to_openai",
     "usage_to_dict",
 ]
@@ -51,6 +53,7 @@ class OpenAIRouter(LMRouter):
         *,
         base_url: str | None = None,
         api_key: str | None = None,
+        default_query: dict[str, Any] | None = None,
     ) -> None:
         try:
             import openai
@@ -62,7 +65,11 @@ class OpenAIRouter(LMRouter):
         self.model = model or _DEFAULT_MODEL
         # `base_url`/`api_key` are None for the default OpenAI cloud path; the
         # SDK then reads OPENAI_API_KEY from env, matching prior behaviour.
-        self._client = openai.OpenAI(base_url=base_url, api_key=api_key)
+        # `default_query` rides every request — used by the Gen AI Farm family
+        # to append `?api-version=...` to its deployment-in-path URL. Only
+        # forwarded when set, so the cloud/Ollama paths are unchanged.
+        extra = {"default_query": default_query} if default_query else {}
+        self._client = openai.OpenAI(base_url=base_url, api_key=api_key, **extra)
 
     def call(
         self,
@@ -75,9 +82,9 @@ class OpenAIRouter(LMRouter):
         oa_tools = [tool_to_openai(t) for t in tools]
         resp = self._client.chat.completions.create(
             model=self.model,
-            max_tokens=max_tokens,
             tools=oa_tools or None,
             messages=oa_messages,
+            **{token_budget_field(self.model): max_tokens},
         )
         choice = resp.choices[0]
         content_blocks = openai_message_to_blocks(choice.message)

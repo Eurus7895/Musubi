@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -35,19 +36,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-KNOWN_FAMILIES: tuple[str, ...] = ("azure", "openai", "anthropic", "ollama")
+KNOWN_FAMILIES: tuple[str, ...] = ("azure", "genai_farm", "openai", "anthropic", "ollama")
 
 _DEFAULT_KEY_ENV: dict[str, str] = {
     "azure": "AZURE_OPENAI_API_KEY",
+    "genai_farm": "GENAI_FARM_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "",  # local, no key
 }
 _DEFAULT_PROFILE: dict[str, str] = {
-    "azure": "work", "openai": "cloud", "anthropic": "cloud", "ollama": "local",
+    "azure": "work", "genai_farm": "default", "openai": "cloud",
+    "anthropic": "cloud", "ollama": "local",
 }
 _DEFAULT_MODEL: dict[str, str] = {
-    "openai": "gpt-5-mini", "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
+    "genai_farm": "gpt-5-nano", "openai": "gpt-5-mini",
+    "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
 }
 
 Prompt = Callable[[str], str]
@@ -97,12 +101,32 @@ def family_requirement(family: str) -> Check:
     if family == "anthropic":
         ok = importlib.util.find_spec("anthropic") is not None
         return Check("anthropic SDK", ok, "" if ok else "pip install -e .[anthropic]")
-    # openai + ollama both ride the openai SDK
+    # openai + ollama + genai_farm all ride the openai SDK on the default
+    # (sdk) transport; genai_farm's curl fallback additionally needs curl.
     ok = importlib.util.find_spec("openai") is not None
     return Check("openai SDK", ok, "" if ok else "pip install -e .[openai]")
 
 
 # ── Profile section builder ─────────────────────────────────────────────────
+
+
+# Env-var NAMES are UPPER_SNAKE by convention; anything else the user types
+# into the key prompt (e.g. a pasted hex token) is the secret itself.
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def classify_key_input(value: str) -> str:
+    """Decide whether `value` is an env-var NAME (`api_key_env`) or the key
+    itself (inline `api_key`). Empty stays `api_key_env` (no key configured)."""
+    return "api_key_env" if (not value or _ENV_NAME_RE.match(value)) else "api_key"
+
+
+def _apply_api_key(section: dict[str, Any], a: dict[str, Any]) -> None:
+    """Copy whichever key field the answers carry into the profile section."""
+    if a.get("api_key_env"):
+        section["api_key_env"] = a["api_key_env"]
+    elif a.get("api_key"):
+        section["api_key"] = a["api_key"]
 
 
 def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any]:
@@ -116,18 +140,35 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
             "deployment": a["deployment"],
             "auth_header": "api-key",
         }
-        if a.get("api_key_env"):
-            section["api_key_env"] = a["api_key_env"]
+        _apply_api_key(section, a)
         if a.get("curl_extra_args"):
             section["curl_extra_args"] = a["curl_extra_args"]
+        return section
+
+    if family == "genai_farm":
+        # On-prem gateway with the Azure deployment-in-path URL + Bearer auth.
+        # SDK transport by default; a configured proxy implies the curl fallback
+        # (the only transport that rides an authenticated proxy / custom CA / mTLS).
+        section = {
+            "endpoint": a["endpoint"],
+            "api_version": a["api_version"],
+            "deployment": a["deployment"],
+        }
+        _apply_api_key(section, a)
+        if a.get("proxy"):
+            section["transport"] = "curl"
+            section["proxy"] = a["proxy"]
+            if a.get("proxy_user_env"):
+                section["proxy_user_env"] = a["proxy_user_env"]
+            if a.get("curl_extra_args"):
+                section["curl_extra_args"] = a["curl_extra_args"]
         return section
 
     if family in ("openai", "anthropic"):
         section = {"model": a["model"]}
         if a.get("base_url"):
             section["base_url"] = a["base_url"]
-        if a.get("api_key_env"):
-            section["api_key_env"] = a["api_key_env"]
+        _apply_api_key(section, a)
         return section
 
     if family == "ollama":
@@ -314,6 +355,17 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
         if extra.strip():
             a["curl_extra_args"] = extra.split()
+    elif family == "genai_farm":
+        a["endpoint"] = _ask(prompt, "Gateway endpoint host", "https://genai-farm.internal")
+        a["api_version"] = _ask(prompt, "API version", "2024-06-01")
+        a["deployment"] = _ask(prompt, "Deployment / model name", _DEFAULT_MODEL[family])
+        proxy = _ask(prompt, "Proxy URL for the curl fallback (optional, blank = SDK)", "")
+        if proxy.strip():
+            a["proxy"] = proxy.strip()
+            a["proxy_user_env"] = _ask(prompt, "Env var holding proxy 'user:password' (optional)", "")
+            extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
+            if extra.strip():
+                a["curl_extra_args"] = extra.split()
     elif family in ("openai", "anthropic"):
         a["model"] = _ask(prompt, "Model id", _DEFAULT_MODEL[family])
         base = _ask(prompt, "Base URL (optional, for a gateway)", "")
@@ -326,7 +378,17 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
             a["base_url"] = base.strip()
 
     if family != "ollama":
-        a["api_key_env"] = _ask(prompt, "Env var holding the API key", _DEFAULT_KEY_ENV[family])
+        val = _ask(
+            prompt,
+            "API key, or the NAME of an env var holding it",
+            _DEFAULT_KEY_ENV[family],
+        ).strip()
+        kind = classify_key_input(val)
+        a[kind] = val
+        if kind == "api_key":
+            out("  note: that looks like the key itself, not an env-var name — "
+                "storing it inline in .musubi/llm.toml (gitignored). To keep it "
+                "out of the file, export it as an env var and enter the NAME.")
     a["profile"] = _ask(prompt, "Profile name", _DEFAULT_PROFILE[family])
     return a
 

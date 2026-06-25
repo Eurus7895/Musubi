@@ -72,8 +72,10 @@ substrate; pipeline dissolution is postponed (see below).
    `musubi_read_stage` (after firewall) + `musubi_get_conversation` +
    `stage_metrics` ratio recording remain.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
-   `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) selected by
-   `.musubi/llm.toml` family profiles (`agent/config.py` + `agent/vendors/`).
+   `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
+   `genai_farm` on-prem gateway (SDK by default, curl fallback for an
+   authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.toml`
+   family profiles (`agent/config.py` + `agent/vendors/`).
    Remaining: port `BudgetEnforcer` + compaction into `agent/run.py`;
    multi-turn CLI + conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed

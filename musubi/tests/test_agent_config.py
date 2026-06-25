@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from agent.config import find_config_path, load_profile, resolve_api_key
+from agent.config import (
+    find_config_path,
+    load_profile,
+    resolve_api_key,
+    resolve_proxy_user,
+)
 
 _SAMPLE = """
 default = "azure.work"
@@ -114,3 +119,28 @@ def test_resolve_api_key_inline() -> None:
 
 def test_resolve_api_key_none_when_absent() -> None:
     assert resolve_api_key({"model": "x"}) is None
+
+
+def test_resolve_proxy_user_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FARM_PROXY", "user:pass")
+    assert resolve_proxy_user({"proxy_user_env": "FARM_PROXY"}) == "user:pass"
+
+
+def test_resolve_proxy_user_inline() -> None:
+    assert resolve_proxy_user({"proxy_user": "u:p"}) == "u:p"
+
+
+def test_resolve_proxy_user_none_when_absent() -> None:
+    assert resolve_proxy_user({"model": "x"}) is None
+
+
+def test_genai_farm_family_ref_resolves(tmp_path: Path) -> None:
+    text = _SAMPLE + (
+        "\n[genai_farm.default]\n"
+        'base_url = "https://farm.internal/v1"\n'
+        'model = "gpt-5-nano"\n'
+    )
+    cfg = _write(tmp_path, text)
+    prof = load_profile("genai_farm.default", path=cfg)
+    assert prof["family"] == "genai_farm"
+    assert prof["base_url"] == "https://farm.internal/v1"

@@ -24,6 +24,32 @@ from typing import Any
 
 # ── Request side: Anthropic-shaped → OpenAI wire ────────────────────────────
 
+# Model families that reject the legacy `max_tokens` field and require
+# `max_completion_tokens` instead (the o-series reasoning models and gpt-5+).
+# Matched against the leading segment of the model/deployment id so suffixed
+# variants (`o1-mini`, `gpt-5-nano`, …) are covered without an exhaustive list.
+_MAX_COMPLETION_TOKENS_PREFIXES: tuple[str, ...] = (
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+)
+
+
+def token_budget_field(model: str) -> str:
+    """Return the request field name for the output-token cap.
+
+    OpenAI's newer model families (o-series, gpt-5) reject the legacy
+    `max_tokens` parameter with an `unsupported_parameter` error and require
+    `max_completion_tokens`. Older models (gpt-4o, gpt-4, gpt-3.5) keep
+    `max_tokens`. Azure/on-prem deployment ids embed the family name, so a
+    prefix match on the normalised id selects the right field for both.
+    """
+    normalised = (model or "").strip().lower()
+    if normalised.startswith(_MAX_COMPLETION_TOKENS_PREFIXES):
+        return "max_completion_tokens"
+    return "max_tokens"
+
 
 def tool_to_openai(tool: dict[str, Any]) -> dict[str, Any]:
     """Anthropic tool spec → OpenAI function spec."""

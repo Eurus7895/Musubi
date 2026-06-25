@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from agent.config import resolve_api_key
+from agent.config import resolve_api_key, resolve_proxy_user
 from agent.vendors.base import LMRouter
 
 
@@ -54,6 +54,23 @@ def build_vendor(
 
         return OllamaRouter(model=model, base_url=base_url, api_key=api_key)
 
+    if resolved == "genai_farm":
+        # Ad-hoc Gen AI Farm via env: deployment-in-path URL + Bearer, SDK
+        # transport (the default). Endpoint bits come from env to keep the flag
+        # surface small; the curl fallback (authenticated proxy / custom CA) is
+        # profile-only — use a `[genai_farm]` profile with transport = "curl".
+        from agent.vendors.openai_router import OpenAIRouter
+
+        endpoint = base_url or os.environ.get("GENAI_FARM_ENDPOINT")
+        deployment = model or os.environ.get("GENAI_FARM_DEPLOYMENT")
+        api_version = os.environ.get("GENAI_FARM_API_VERSION")
+        return OpenAIRouter(
+            model=deployment,
+            base_url=_deployment_sdk_base(endpoint, deployment),
+            api_key=api_key or os.environ.get("GENAI_FARM_API_KEY"),
+            default_query={"api-version": api_version} if api_version else None,
+        )
+
     if resolved == "azure":
         # Ad-hoc Azure goes through the curl transport (the on-prem path),
         # reading the endpoint bits from env to keep the flag surface small.
@@ -71,7 +88,7 @@ def build_vendor(
 
     raise ValueError(
         f"Unknown agent vendor {resolved!r}. "
-        f"Supported: 'anthropic', 'openai', 'ollama', 'azure'. "
+        f"Supported: 'anthropic', 'openai', 'ollama', 'azure', 'genai_farm'. "
         f"For on-prem endpoints use a .musubi/llm.toml profile (--profile)."
     )
 
@@ -81,6 +98,7 @@ def build_from_profile(profile: dict[str, Any]) -> LMRouter:
     family = profile.get("family")
     model = profile.get("model") or profile.get("deployment")
     api_key = resolve_api_key(profile)
+    _require_declared_key(family, profile, api_key)
     base_url = profile.get("base_url")
     # Azure defaults to the curl transport (its endpoints typically require it);
     # everything else defaults to the SDK.
@@ -105,6 +123,27 @@ def build_from_profile(profile: dict[str, Any]) -> LMRouter:
         from agent.vendors.openai_router import OpenAIRouter
 
         return OpenAIRouter(model=model, base_url=base_url, api_key=api_key)
+
+    if family == "genai_farm":
+        # On-prem gateway using the Azure deployment-in-path URL —
+        #   {endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...
+        # but with Bearer auth. SDK transport is the default; curl is the
+        # fallback for an authenticated proxy / custom CA / mTLS (transport =
+        # "curl"). Both transports must hit the identical URL.
+        endpoint = profile.get("endpoint") or profile.get("azure_endpoint") or base_url
+        deployment = profile.get("deployment") or model
+        api_version = profile.get("api_version")
+        if transport == "curl":
+            return _build_curl(profile, deployment, api_key, base_url,
+                               name="genai_farm", default_auth="Authorization: Bearer")
+        from agent.vendors.openai_router import OpenAIRouter
+
+        return OpenAIRouter(
+            model=deployment,
+            base_url=_deployment_sdk_base(endpoint, deployment),
+            api_key=api_key,
+            default_query={"api-version": api_version} if api_version else None,
+        )
 
     if family == "azure":
         if transport == "sdk":
@@ -131,18 +170,63 @@ def _build_curl(
     kwargs: dict[str, Any] = {
         "model": model,
         "deployment": profile.get("deployment"),
-        "azure_endpoint": profile.get("azure_endpoint"),
+        # `endpoint` is the Gen AI Farm alias for `azure_endpoint`; both feed
+        # the same deployment-in-path URL builder in curl_router._resolve_url.
+        "azure_endpoint": profile.get("azure_endpoint") or profile.get("endpoint"),
         "api_version": profile.get("api_version"),
         "url": profile.get("url"),
         "base_url": base_url,
         "api_key": api_key,
         "auth_header": profile.get("auth_header", default_auth),
+        "proxy": profile.get("proxy"),
+        "proxy_user": resolve_proxy_user(profile),
         "curl_extra_args": profile.get("curl_extra_args"),
         "name": name,
     }
     if profile.get("timeout_s") is not None:
         kwargs["timeout_s"] = int(profile["timeout_s"])
     return CurlChatRouter(**kwargs)
+
+
+def _require_declared_key(
+    family: str | None, profile: dict[str, Any], api_key: str | None
+) -> None:
+    """Fail closed when a profile declares an api-key source that resolves empty.
+
+    Ollama needs no key. For every other family, a profile that sets
+    `api_key_env` (or inline `api_key`) but resolves to None — the env var is
+    unset — would otherwise produce an unauthenticated request whose only
+    symptom is a 401. Raise here with the offending env-var name instead.
+    """
+    if family == "ollama" or api_key:
+        return
+    env_name = profile.get("api_key_env")
+    if env_name:
+        raise ValueError(
+            f"api key for family '{family}' is unset: environment variable "
+            f"${env_name} (from api_key_env) is empty or not exported."
+        )
+    if "api_key" in profile:
+        raise ValueError(
+            f"api key for family '{family}' is declared inline but empty."
+        )
+
+
+def _deployment_sdk_base(endpoint: str | None, deployment: str | None) -> str:
+    """Build the SDK `base_url` for an Azure-style deployment-in-path endpoint.
+
+    The OpenAI SDK appends `/chat/completions` to `base_url`, so pointing it at
+    `{endpoint}/openai/deployments/{deployment}` yields the Gen AI Farm URL
+    `{endpoint}/openai/deployments/{deployment}/chat/completions` (the
+    `?api-version=` is added via the client's `default_query`).
+    """
+    if not endpoint or not deployment:
+        raise ValueError(
+            "genai_farm needs both an endpoint (endpoint/azure_endpoint or "
+            "$GENAI_FARM_ENDPOINT) and a deployment (deployment/model or "
+            "$GENAI_FARM_DEPLOYMENT)."
+        )
+    return f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
 
 
 def _detect_vendor() -> str:

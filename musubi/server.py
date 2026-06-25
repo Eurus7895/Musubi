@@ -2010,7 +2010,11 @@ def musubi_run_hook(event: str, payload: str = "") -> str:
                 argv,
                 input=payload,
                 capture_output=True,
-                text=True,
+                # Pin UTF-8 rather than the OS locale (cp1252 on Windows), which
+                # crashes the reader thread on the first non-cp1252 byte in a
+                # hook's output.
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(_REPO_ROOT),
                 timeout=30,
                 check=False,

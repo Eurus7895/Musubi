@@ -28,6 +28,7 @@ from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
     tool_to_openai,
     usage_to_dict,
 )
@@ -49,6 +50,8 @@ class CurlChatRouter(LMRouter):
         base_url: str | None = None,
         api_key: str | None = None,
         auth_header: str = "api-key",
+        proxy: str | None = None,
+        proxy_user: str | None = None,
         curl_extra_args: list[str] | None = None,
         timeout_s: int = _DEFAULT_TIMEOUT_S,
         name: str = "azure",
@@ -59,6 +62,8 @@ class CurlChatRouter(LMRouter):
         self.name = name
         self._api_key = api_key
         self._auth_header = auth_header
+        self._proxy = proxy
+        self._proxy_user = proxy_user
         self._extra = list(curl_extra_args or [])
         self._timeout_s = timeout_s
         self._url = _resolve_url(
@@ -78,7 +83,7 @@ class CurlChatRouter(LMRouter):
     ) -> LMResponse:
         body: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            token_budget_field(self.model): max_tokens,
             "messages": to_openai_messages(messages),
         }
         oa_tools = [tool_to_openai(t) for t in tools]
@@ -126,7 +131,14 @@ class CurlChatRouter(LMRouter):
                     cmd,
                     input=config,
                     capture_output=True,
-                    text=True,
+                    # Pin UTF-8 explicitly: the response body is UTF-8 JSON, but
+                    # `text=True` alone decodes with the OS locale — cp1252 on
+                    # Windows — which crashes the reader thread on the first byte
+                    # outside that codepage (e.g. a smart quote in a model
+                    # reply). errors="replace" keeps a stray byte from aborting
+                    # the whole call.
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self._timeout_s,
                 )
             except FileNotFoundError as exc:
@@ -151,18 +163,44 @@ class CurlChatRouter(LMRouter):
                 pass
 
     def _config_lines(self, posix_body_path: str) -> list[str]:
+        q = _cfg_quote
         lines = [
-            f'url = "{self._url}"',
+            f"url = {q(self._url)}",
             'request = "POST"',
             'header = "Content-Type: application/json"',
         ]
         if self._api_key:
-            lines.append(f'header = "{_auth_header_line(self._auth_header, self._api_key)}"')
-        lines.append(f'data-binary = "@{posix_body_path}"')
+            lines.append(f"header = {q(_auth_header_line(self._auth_header, self._api_key))}")
+        # Proxy + proxy auth ride the stdin config (not argv) so the proxy
+        # password is never visible in the process argument list — same reason
+        # the api-key is here rather than on the command line.
+        if self._proxy:
+            lines.append(f"proxy = {q(self._proxy)}")
+        if self._proxy_user:
+            lines.append(f"proxy-user = {q(self._proxy_user)}")
+        # The leading "@" is curl's "read body from file" directive, so it sits
+        # outside the quoted-and-escaped path.
+        lines.append(f'data-binary = "@{_cfg_escape(posix_body_path)}"')
         return lines
 
 
 # ── helpers (module-level for unit testing) ─────────────────────────────────
+
+
+def _cfg_escape(value: str) -> str:
+    r"""Escape a value for a double-quoted curl `--config` entry.
+
+    Inside double quotes curl honours backslash escapes (`\\`, `\"`, `\t`, …),
+    so a literal backslash or double-quote in a secret must be doubled/escaped
+    or it truncates the line. Other "special" characters users worry about —
+    `@`, `#`, `:`, spaces — are literal inside the quotes and need no handling.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _cfg_quote(value: str) -> str:
+    """Render `value` as a safe double-quoted curl-config token."""
+    return f'"{_cfg_escape(value)}"'
 
 
 def _resolve_url(

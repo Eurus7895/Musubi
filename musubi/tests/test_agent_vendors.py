@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from agent.vendors.factory import build_from_profile, build_vendor
 from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
 )
 
 # ── Factory env detection ──────────────────────────────────────────────────
@@ -190,6 +192,85 @@ def test_openai_blocks_from_wire_dict() -> None:
     ]
 
 
+# ── Token-budget field selection (max_tokens vs max_completion_tokens) ──────
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["o1", "o1-mini", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-nano", "GPT-5-Nano"],
+)
+def test_token_budget_field_new_families_use_max_completion_tokens(model: str) -> None:
+    """o-series and gpt-5+ reject `max_tokens`; they need
+    `max_completion_tokens` (the error this fix addresses)."""
+    assert token_budget_field(model) == "max_completion_tokens"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo", "llama3.1", ""],
+)
+def test_token_budget_field_legacy_families_keep_max_tokens(model: str) -> None:
+    assert token_budget_field(model) == "max_tokens"
+
+
+def test_curl_router_gpt5_emits_max_completion_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gpt-5 deployment must send `max_completion_tokens` in the body, not
+    the legacy `max_tokens` the API now rejects."""
+    body = _capture_curl_body(monkeypatch, model="gpt-5-nano")
+    assert "max_completion_tokens" in body
+    assert "max_tokens" not in body
+
+
+def test_curl_router_gpt4o_keeps_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = _capture_curl_body(monkeypatch, model="gpt-4o")
+    assert "max_tokens" in body
+    assert "max_completion_tokens" not in body
+
+
+def _capture_curl_body(monkeypatch: pytest.MonkeyPatch, *, model: str) -> dict:
+    """Run a CurlChatRouter call and return the JSON request body it built.
+
+    The body lives in a temp file that `_post` deletes in its `finally`, so we
+    read it from the `data-binary` path *during* the faked curl invocation,
+    before the cleanup runs.
+    """
+    captured: dict = {}
+
+    def fake_run(cmd, input=None, capture_output=None, timeout=None, **kwargs):  # noqa: ANN001
+        for line in (input or "").splitlines():
+            if line.startswith("data-binary"):
+                path = line.split("@", 1)[1].rstrip('"')
+                captured["body"] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "choices": [{"message": {"content": "ok", "tool_calls": None},
+                             "finish_reason": "stop"}],
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent.vendors.curl_router.subprocess.run", fake_run)
+    router = CurlChatRouter(base_url="https://gw.local/v1", model=model, api_key="K")
+    router.call([{"role": "user", "content": "hi"}], [])
+    return captured["body"]
+
+
+def test_curl_router_decodes_response_as_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
+    """curl's stdout MUST be decoded as UTF-8, not the OS locale (cp1252 on
+    Windows), or a non-ASCII byte in a model reply crashes the reader thread."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(base_url="https://gw.local/v1", model="m", api_key="K")
+    router.call([{"role": "user", "content": "hi"}], [])
+    assert captured["kwargs"].get("encoding") == "utf-8"
+    assert captured["kwargs"].get("errors") == "replace"
+
+
 # ── URL + auth-header construction ──────────────────────────────────────────
 
 
@@ -236,9 +317,10 @@ def _fake_curl(monkeypatch: pytest.MonkeyPatch, *, body: dict, returncode: int =
     """Patch curl_router.subprocess.run; return a dict that captures the call."""
     captured: dict = {}
 
-    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):  # noqa: ANN001
+    def fake_run(cmd, input=None, capture_output=None, timeout=None, **kwargs):  # noqa: ANN001
         captured["cmd"] = cmd
         captured["input"] = input
+        captured["kwargs"] = kwargs
         return SimpleNamespace(returncode=returncode, stdout=json.dumps(body), stderr=stderr)
 
     monkeypatch.setattr("agent.vendors.curl_router.subprocess.run", fake_run)
@@ -276,6 +358,30 @@ def test_curl_router_azure_hides_key_in_stdin(monkeypatch: pytest.MonkeyPatch) -
     ) in cfg
     assert "header = \"api-key: SECRET\"" in cfg
     assert "data-binary" in cfg
+
+
+def test_curl_router_special_char_secrets_are_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """api-key and proxy password with special characters (@ # : and the
+    config-breaking " and \\) must survive into the curl config intact."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1",
+        model="m",
+        api_key='p@ss#1:2"x\\y',
+        auth_header="Authorization: Bearer",
+        proxy="http://proxy:8080",
+        proxy_user='user:p@ss#word"\\z',
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    # @ # : pass through literally inside the quotes; " and \ are escaped.
+    assert 'header = "Authorization: Bearer p@ss#1:2\\"x\\\\y"' in cfg
+    assert 'proxy-user = "user:p@ss#word\\"\\\\z"' in cfg
 
 
 def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,9 +455,97 @@ def test_build_from_profile_azure_sdk_rejected() -> None:
         build_from_profile({"family": "azure", "transport": "sdk", "deployment": "d"})
 
 
+def test_build_from_profile_genai_farm_defaults_to_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gen AI Farm rides the openai SDK by default (curl is the fallback),
+    pointed at the deployment-in-path base_url with api-version on every call."""
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None, default_query=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+            captured["default_query"] = default_query
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    router = build_from_profile({
+        "family": "genai_farm",
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
+        "api_key": "K",
+        # transport omitted → defaults to sdk
+    })
+    assert router.name == "openai"  # OpenAIRouter wire
+    assert router.model == "gpt-5-nano"
+    assert captured["base_url"] == (
+        "https://genai-farm.internal/openai/deployments/gpt-5-nano"
+    )
+    assert captured["api_key"] == "K"
+    assert captured["default_query"] == {"api-version": "2024-06-01"}
+
+
+def test_build_from_profile_genai_farm_curl_fallback_with_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """transport='curl' selects the curl router on the deployment-in-path URL;
+    proxy + proxy-user ride the stdin config (never argv) so the proxy password
+    stays hidden."""
+    monkeypatch.setenv("FARM_PROXY_USER", "user:pass")
+    router = build_from_profile({
+        "family": "genai_farm",
+        "transport": "curl",
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
+        "api_key": "SECRET",
+        "proxy": "http://proxy:8080",
+        "proxy_user_env": "FARM_PROXY_USER",
+    })
+    assert isinstance(router, CurlChatRouter)
+    assert router.name == "genai_farm"
+
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router.call([{"role": "user", "content": "hi"}], [])
+
+    cfg = captured["input"]
+    assert (
+        'url = "https://genai-farm.internal/openai/deployments/gpt-5-nano'
+        '/chat/completions?api-version=2024-06-01"'
+    ) in cfg
+    assert 'header = "Authorization: Bearer SECRET"' in cfg  # Bearer, not api-key
+    assert 'proxy = "http://proxy:8080"' in cfg
+    assert 'proxy-user = "user:pass"' in cfg
+    # Neither secret is allowed on the command line.
+    argv = " ".join(captured["cmd"])
+    assert "SECRET" not in argv and "user:pass" not in argv
+
+
 def test_build_from_profile_unknown_family() -> None:
     with pytest.raises(ValueError, match="unknown LLM family"):
         build_from_profile({"family": "cohere", "model": "x"})
+
+
+def test_build_from_profile_missing_env_key_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared api_key_env that isn't exported must raise — never silently
+    emit a request with no Authorization header (Hard Invariant #5)."""
+    monkeypatch.delenv("GENAI_FARM_API_KEY", raising=False)
+    with pytest.raises(ValueError, match=r"\$GENAI_FARM_API_KEY"):
+        build_from_profile({
+            "family": "genai_farm",
+            "transport": "curl",
+            "endpoint": "https://genai-farm.internal",
+            "api_version": "2024-06-01",
+            "deployment": "gpt-5-nano",
+            "api_key_env": "GENAI_FARM_API_KEY",
+        })
 
 
 def test_factory_rejects_unknown_vendor_lists_onprem() -> None:

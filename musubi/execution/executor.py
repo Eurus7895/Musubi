@@ -78,7 +78,11 @@ def _run(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            # Pin UTF-8: ruff/mypy/pytest emit non-ASCII (arrows, box chars,
+            # source snippets). `text=True` alone decodes with the OS locale —
+            # cp1252 on Windows — and crashes on the first byte outside it.
+            encoding="utf-8",
+            errors="replace",
             timeout=_TIMEOUT,
             cwd=cwd,
         )
