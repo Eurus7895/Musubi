@@ -86,6 +86,43 @@ The original is never lost (it's stored and reachable via
 `musubi_retrieve`), so leaving it on is safe; turn it off only when you
 want the model to read raw, uncompressed tool output.
 
+### Compression tools
+
+Three MCP tools expose the feature directly — the model (or you, via the
+agent) can compress, recover, and measure without touching the file/command
+tools:
+
+| Tool | Purpose |
+|---|---|
+| **`musubi_compress(text, hint=None)`** | Compress a payload on demand and store the original. `hint` (a filename, extension, or `"json"`/`"code"`/`"log"`/`"text"`) steers the compressor; without it the kind is detected from content. Returns `kind`, `ref_id`, `original_chars`, `compressed_chars`, `ratio`, and the `compressed` text. Inputs under ~800 chars, or any case where compression wouldn't shrink the text, come back unchanged with `ref_id: null` and `ratio: 1.0`. |
+| **`musubi_retrieve(ref_id)`** | Return the verbatim original for a `ref_id` — the reverse of any compression (implicit or via `musubi_compress`). |
+| **`musubi_compression_stats()`** | Aggregate efficiency over every stored blob: `total_blobs`, `total_original_chars`, `total_compressed_chars`, `bytes_saved`, `overall_ratio`, `savings_pct`, `rows_without_metric`, and a per-`kind` breakdown. |
+
+`ref_id` is a content hash, so compressing identical text twice dedups to a
+single stored row. The recorded sizes are the compressor output (excluding
+the ~80-char retrieval marker), so `musubi_compression_stats` reports the
+true compression win rather than marker overhead.
+
+```jsonc
+// musubi_compression_stats() after compressing a 21 KB indented JSON file
+{
+  "status": "ok",
+  "total_blobs": 1,
+  "total_original_chars": 21399,
+  "total_compressed_chars": 10991,
+  "bytes_saved": 10408,
+  "overall_ratio": 0.514,
+  "savings_pct": 48.6,
+  "rows_without_metric": 0,
+  "by_kind": [{ "kind": "json", "count": 1,
+               "original_chars": 21399, "compressed_chars": 10991 }]
+}
+```
+
+> Want a number for "how well is compression working?" — call
+> `musubi_compression_stats` at the end of a session; `savings_pct` is the
+> headline figure and `by_kind` shows where the wins come from.
+
 ## Context controls (driver-side, deterministic)
 
 Alongside input compression, the standalone agent applies four
