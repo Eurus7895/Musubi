@@ -20,6 +20,7 @@ from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
     token_budget_field,
+    usage_to_dict,
 )
 
 # ── Factory env detection ──────────────────────────────────────────────────
@@ -86,6 +87,13 @@ def test_lmrouter_is_abstract() -> None:
 def test_openai_messages_str_user_passthrough() -> None:
     messages = [{"role": "user", "content": "hello"}]
     assert to_openai_messages(messages) == [{"role": "user", "content": "hello"}]
+
+
+def test_openai_messages_system_passthrough() -> None:
+    messages = [{"role": "system", "content": "stay concise"}]
+    assert to_openai_messages(messages) == [
+        {"role": "system", "content": "stay concise"},
+    ]
 
 
 def test_openai_messages_assistant_text_plus_tool_use() -> None:
@@ -190,6 +198,36 @@ def test_openai_blocks_from_wire_dict() -> None:
         {"type": "text", "text": "hi"},
         {"type": "tool_use", "id": "t1", "name": "fn", "input": {"a": 1}},
     ]
+
+
+def test_openai_usage_dict_normalizes_cached_prompt_tokens_from_sdk() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=77),
+    )
+    assert usage_to_dict(usage) == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cache_read_input_tokens": 77,
+    }
+
+
+def test_openai_usage_dict_normalizes_cached_prompt_tokens_from_wire_dict() -> None:
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_tokens_details": {"cached_tokens": 77},
+    }
+    assert usage_to_dict(usage) == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cache_read_input_tokens": 77,
+    }
 
 
 # ── Token-budget field selection (max_tokens vs max_completion_tokens) ──────

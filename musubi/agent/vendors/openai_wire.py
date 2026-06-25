@@ -6,6 +6,10 @@ expires-when: never — the OpenAI wire shape is the lingua franca shared by
   on-prem gateways). Keeping the converters SDK-free lets both the SDK
   routers and the curl transport build/parse requests from one place.
 
+Prompt caching for OpenAI-compatible providers is automatic when the provider
+supports it. There is no shared request-side `cache_control` knob like
+Anthropic's, so this module normalizes reported cached-token usage instead.
+
 The agent loop speaks the Anthropic-shaped content_blocks language defined in
 `base.LMResponse`. These helpers convert in both directions:
 
@@ -165,11 +169,15 @@ def openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
 def usage_to_dict(usage: Any) -> dict[str, Any] | None:
     if usage is None:
         return None
-    return {
+    out = {
         "prompt_tokens": _get(usage, "prompt_tokens"),
         "completion_tokens": _get(usage, "completion_tokens"),
         "total_tokens": _get(usage, "total_tokens"),
     }
+    cached = _get(_get(usage, "prompt_tokens_details"), "cached_tokens")
+    if cached:
+        out["cache_read_input_tokens"] = cached
+    return out
 
 
 def _get(obj: Any, key: str) -> Any:

@@ -95,9 +95,10 @@ substrate; pipeline dissolution is postponed (see below).
    `agent/vendors/anthropic_router.py`): deterministic, zero-LLM
    counterparts of Headroom's verbosity steering (terse system prompt),
    CacheAligner (Anthropic `cache_control` on the static system+tools
-   prefix, `MUSUBI_PROMPT_CACHE=0` opts out), effort routing (low
-   per-cycle `max_tokens` floor that escalates only on truncation,
-   `MUSUBI_EFFORT_TOKENS`), and IntelligentContext (`fit_context` elides
+   prefix, `MUSUBI_PROMPT_CACHE=0` opts out; OpenAI-compatible vendors
+   surface provider-native cached-token telemetry through the same cycle-log
+   keys), effort routing (low per-cycle `max_tokens` floor that escalates
+   only on truncation, `MUSUBI_EFFORT_TOKENS`), and IntelligentContext (`fit_context` elides
    the oldest/largest tool results when the convo exceeds
    `MUSUBI_CONTEXT_BUDGET`, preserving tool pairing + `musubi_retrieve`
    markers — the learned compaction stays out to honour HI #1).

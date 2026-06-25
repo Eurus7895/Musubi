@@ -134,7 +134,7 @@ model, to keep the substrate LLM-free):
 | Control | What it does | Knob |
 |---|---|---|
 | **Verbosity steering** | The system prompt tells the model to be concise and not restate context — cuts output tokens. | always on |
-| **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control` so prompt-caching hits across cycles; cache reads/writes show in the cycle log. | `MUSUBI_PROMPT_CACHE=0` to disable (Anthropic only) |
+| **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native automatic prompt caching when available. Cache reads/writes show in the cycle log through shared keys. | `MUSUBI_PROMPT_CACHE=0` to disable Anthropic `cache_control` |
 | **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
 | **IntelligentContext** | When the conversation exceeds a budget, deterministically elides the oldest/largest tool results (pairing preserved, `musubi_retrieve` markers kept) instead of dropping turns. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 

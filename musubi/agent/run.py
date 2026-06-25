@@ -50,7 +50,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
-from agent.vendors import LMRouter, build_from_profile, build_vendor
+from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
 
@@ -428,7 +428,7 @@ def _call_with_effort(
     vendor: LMRouter,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-) -> Any:
+) -> LMResponse:
     """Effort routing: start at a low output-token cap, escalate only on need.
 
     Most cycles emit a small tool_use block, so the floor cap costs nothing
