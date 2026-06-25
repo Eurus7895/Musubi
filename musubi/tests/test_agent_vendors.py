@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from agent.vendors.factory import build_from_profile, build_vendor
 from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
 )
 
 # ── Factory env detection ──────────────────────────────────────────────────
@@ -188,6 +190,72 @@ def test_openai_blocks_from_wire_dict() -> None:
         {"type": "text", "text": "hi"},
         {"type": "tool_use", "id": "t1", "name": "fn", "input": {"a": 1}},
     ]
+
+
+# ── Token-budget field selection (max_tokens vs max_completion_tokens) ──────
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["o1", "o1-mini", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-nano", "GPT-5-Nano"],
+)
+def test_token_budget_field_new_families_use_max_completion_tokens(model: str) -> None:
+    """o-series and gpt-5+ reject `max_tokens`; they need
+    `max_completion_tokens` (the error this fix addresses)."""
+    assert token_budget_field(model) == "max_completion_tokens"
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo", "llama3.1", ""],
+)
+def test_token_budget_field_legacy_families_keep_max_tokens(model: str) -> None:
+    assert token_budget_field(model) == "max_tokens"
+
+
+def test_curl_router_gpt5_emits_max_completion_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gpt-5 deployment must send `max_completion_tokens` in the body, not
+    the legacy `max_tokens` the API now rejects."""
+    body = _capture_curl_body(monkeypatch, model="gpt-5-nano")
+    assert "max_completion_tokens" in body
+    assert "max_tokens" not in body
+
+
+def test_curl_router_gpt4o_keeps_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = _capture_curl_body(monkeypatch, model="gpt-4o")
+    assert "max_tokens" in body
+    assert "max_completion_tokens" not in body
+
+
+def _capture_curl_body(monkeypatch: pytest.MonkeyPatch, *, model: str) -> dict:
+    """Run a CurlChatRouter call and return the JSON request body it built.
+
+    The body lives in a temp file that `_post` deletes in its `finally`, so we
+    read it from the `data-binary` path *during* the faked curl invocation,
+    before the cleanup runs.
+    """
+    captured: dict = {}
+
+    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):  # noqa: ANN001
+        for line in (input or "").splitlines():
+            if line.startswith("data-binary"):
+                path = line.split("@", 1)[1].rstrip('"')
+                captured["body"] = json.loads(Path(path).read_text(encoding="utf-8"))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "choices": [{"message": {"content": "ok", "tool_calls": None},
+                             "finish_reason": "stop"}],
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent.vendors.curl_router.subprocess.run", fake_run)
+    router = CurlChatRouter(base_url="https://gw.local/v1", model=model, api_key="K")
+    router.call([{"role": "user", "content": "hi"}], [])
+    return captured["body"]
 
 
 # ── URL + auth-header construction ──────────────────────────────────────────

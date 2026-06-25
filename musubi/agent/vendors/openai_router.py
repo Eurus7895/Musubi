@@ -26,6 +26,7 @@ from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
     tool_to_openai,
     usage_to_dict,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "OpenAIRouter",
     "openai_message_to_blocks",
     "to_openai_messages",
+    "token_budget_field",
     "tool_to_openai",
     "usage_to_dict",
 ]
@@ -80,9 +82,9 @@ class OpenAIRouter(LMRouter):
         oa_tools = [tool_to_openai(t) for t in tools]
         resp = self._client.chat.completions.create(
             model=self.model,
-            max_tokens=max_tokens,
             tools=oa_tools or None,
             messages=oa_messages,
+            **{token_budget_field(self.model): max_tokens},
         )
         choice = resp.choices[0]
         content_blocks = openai_message_to_blocks(choice.message)

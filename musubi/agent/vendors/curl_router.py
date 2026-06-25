@@ -28,6 +28,7 @@ from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
     openai_message_to_blocks,
     to_openai_messages,
+    token_budget_field,
     tool_to_openai,
     usage_to_dict,
 )
@@ -82,7 +83,7 @@ class CurlChatRouter(LMRouter):
     ) -> LMResponse:
         body: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            token_budget_field(self.model): max_tokens,
             "messages": to_openai_messages(messages),
         }
         oa_tools = [tool_to_openai(t) for t in tools]
