@@ -425,6 +425,23 @@ def test_build_from_profile_unknown_family() -> None:
         build_from_profile({"family": "cohere", "model": "x"})
 
 
+def test_build_from_profile_missing_env_key_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared api_key_env that isn't exported must raise — never silently
+    emit a request with no Authorization header (Hard Invariant #5)."""
+    monkeypatch.delenv("GENAI_FARM_API_KEY", raising=False)
+    with pytest.raises(ValueError, match=r"\$GENAI_FARM_API_KEY"):
+        build_from_profile({
+            "family": "genai_farm",
+            "transport": "curl",
+            "endpoint": "https://genai-farm.internal",
+            "api_version": "2024-06-01",
+            "deployment": "gpt-5-nano",
+            "api_key_env": "GENAI_FARM_API_KEY",
+        })
+
+
 def test_factory_rejects_unknown_vendor_lists_onprem() -> None:
     with pytest.raises(ValueError, match="on-prem"):
         build_vendor("cohere")

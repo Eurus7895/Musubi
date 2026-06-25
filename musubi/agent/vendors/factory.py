@@ -98,6 +98,7 @@ def build_from_profile(profile: dict[str, Any]) -> LMRouter:
     family = profile.get("family")
     model = profile.get("model") or profile.get("deployment")
     api_key = resolve_api_key(profile)
+    _require_declared_key(family, profile, api_key)
     base_url = profile.get("base_url")
     # Azure defaults to the curl transport (its endpoints typically require it);
     # everything else defaults to the SDK.
@@ -185,6 +186,30 @@ def _build_curl(
     if profile.get("timeout_s") is not None:
         kwargs["timeout_s"] = int(profile["timeout_s"])
     return CurlChatRouter(**kwargs)
+
+
+def _require_declared_key(
+    family: str | None, profile: dict[str, Any], api_key: str | None
+) -> None:
+    """Fail closed when a profile declares an api-key source that resolves empty.
+
+    Ollama needs no key. For every other family, a profile that sets
+    `api_key_env` (or inline `api_key`) but resolves to None — the env var is
+    unset — would otherwise produce an unauthenticated request whose only
+    symptom is a 401. Raise here with the offending env-var name instead.
+    """
+    if family == "ollama" or api_key:
+        return
+    env_name = profile.get("api_key_env")
+    if env_name:
+        raise ValueError(
+            f"api key for family '{family}' is unset: environment variable "
+            f"${env_name} (from api_key_env) is empty or not exported."
+        )
+    if "api_key" in profile:
+        raise ValueError(
+            f"api key for family '{family}' is declared inline but empty."
+        )
 
 
 def _deployment_sdk_base(endpoint: str | None, deployment: str | None) -> str:
