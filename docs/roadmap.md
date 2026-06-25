@@ -91,8 +91,18 @@ substrate; pipeline dissolution is postponed (see below).
    agent only (sub-agents stay Musubi-tool-scoped); the tools are **not**
    firewalled/audited by Musubi — a driver-side convenience, not a
    substrate control.
-   Remaining: port `BudgetEnforcer` + compaction into `agent/run.py`;
-   multi-turn CLI + conversation persistence.
+   Driver-side context controls landed (`agent/context.py` +
+   `agent/vendors/anthropic_router.py`): deterministic, zero-LLM
+   counterparts of Headroom's verbosity steering (terse system prompt),
+   CacheAligner (Anthropic `cache_control` on the static system+tools
+   prefix, `MUSUBI_PROMPT_CACHE=0` opts out), effort routing (low
+   per-cycle `max_tokens` floor that escalates only on truncation,
+   `MUSUBI_EFFORT_TOKENS`), and IntelligentContext (`fit_context` elides
+   the oldest/largest tool results when the convo exceeds
+   `MUSUBI_CONTEXT_BUDGET`, preserving tool pairing + `musubi_retrieve`
+   markers — the learned compaction stays out to honour HI #1).
+   Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
+   conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
    (`agent/subagent.py`): the standalone agent runs spawned roles to
    completion on a firewalled brief + restricted tool surface, summary

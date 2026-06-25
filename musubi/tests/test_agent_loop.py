@@ -66,6 +66,36 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "PATH" in env  # safe defaults still present
 
 
+# ── Effort routing: low floor, escalate only on truncation ─────────────────
+
+
+def test_call_with_effort_escalates_on_max_tokens() -> None:
+    """A truncated call (stop_reason=='max_tokens') is re-issued once at the
+    ceiling so a real answer is never cut off; the floor is tried first."""
+    from agent.context import DEFAULT_EFFORT_FLOOR
+    from agent.run import EFFORT_CEILING, _call_with_effort
+
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[{"type": "text", "text": ""}]),
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    resp = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert resp.stop_reason == "end_turn"
+    assert [c["max_tokens"] for c in router.calls] == [DEFAULT_EFFORT_FLOOR, EFFORT_CEILING]
+
+
+def test_call_with_effort_no_escalation_when_complete() -> None:
+    from agent.context import DEFAULT_EFFORT_FLOOR
+    from agent.run import _call_with_effort
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert len(router.calls) == 1
+    assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
 # ── Loop terminates immediately on end_turn ────────────────────────────────
 
 

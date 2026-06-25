@@ -43,6 +43,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from agent.context import build_system_prompt, effort_floor, fit_context
 from agent.mcp_gateway import (
     McpGateway,
     find_mcp_config_path,
@@ -52,6 +53,10 @@ from agent.mcp_gateway import (
 from agent.vendors import LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
+
+#: Ceiling for output tokens; effort routing starts below this and escalates
+#: to it only when a cycle actually stops on `max_tokens`.
+EFFORT_CEILING = 4096
 
 
 @dataclass
@@ -165,6 +170,7 @@ async def run_agent(
         )
 
         messages: list[dict[str, Any]] = [
+            {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": task},
         ]
         final_answer, _ = await _run_loop(
@@ -210,7 +216,10 @@ async def _run_loop(
     cycles_used = 0
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
-        resp = vendor.call(messages, tools)
+        # IntelligentContext: trim an over-budget conversation deterministically
+        # before the call (oldest/largest tool results elided, pairing intact).
+        messages = fit_context(messages)
+        resp = _call_with_effort(vendor, messages, tools)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -415,6 +424,24 @@ def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
     return "".join(parts).strip()
 
 
+def _call_with_effort(
+    vendor: LMRouter,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> Any:
+    """Effort routing: start at a low output-token cap, escalate only on need.
+
+    Most cycles emit a small tool_use block, so the floor cap costs nothing
+    they needed. If a call truncates (`stop_reason == "max_tokens"`), re-issue
+    the same request once at the ceiling so a real answer is never cut off.
+    """
+    floor = min(effort_floor(), EFFORT_CEILING)
+    resp = vendor.call(messages, tools, max_tokens=floor)
+    if resp.stop_reason == "max_tokens" and floor < EFFORT_CEILING:
+        resp = vendor.call(messages, tools, max_tokens=EFFORT_CEILING)
+    return resp
+
+
 async def _dispatch(
     session: ClientSession,
     tool_uses: list[dict[str, Any]],
@@ -521,6 +548,14 @@ def _log_cycle(
         toks = usage.get("output_tokens") or usage.get("completion_tokens")
         if toks is not None:
             parts.append(f"out_tokens={toks}")
+        # CacheAligner measurement: how much of the prefix was served from the
+        # prompt cache vs. (re)written this cycle.
+        cache_read = usage.get("cache_read_input_tokens")
+        cache_write = usage.get("cache_creation_input_tokens")
+        if cache_read:
+            parts.append(f"cache_read={cache_read}")
+        if cache_write:
+            parts.append(f"cache_write={cache_write}")
     print(" ".join(parts), file=log)
 
 

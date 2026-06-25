@@ -86,6 +86,21 @@ The original is never lost (it's stored and reachable via
 `musubi_retrieve`), so leaving it on is safe; turn it off only when you
 want the model to read raw, uncompressed tool output.
 
+## Context controls (driver-side, deterministic)
+
+Alongside input compression, the standalone agent applies four
+deterministic, zero-LLM token controls at the LM-call boundary (the
+Musubi counterparts of Headroom's verbosity steering, prefix caching,
+effort routing, and IntelligentContext — implemented without any learned
+model, to keep the substrate LLM-free):
+
+| Control | What it does | Knob |
+|---|---|---|
+| **Verbosity steering** | The system prompt tells the model to be concise and not restate context — cuts output tokens. | always on |
+| **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control` so prompt-caching hits across cycles; cache reads/writes show in the cycle log. | `MUSUBI_PROMPT_CACHE=0` to disable (Anthropic only) |
+| **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
+| **IntelligentContext** | When the conversation exceeds a budget, deterministically elides the oldest/largest tool results (pairing preserved, `musubi_retrieve` markers kept) instead of dropping turns. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
+
 ## Quick start (standalone CLI)
 
 ```bash
