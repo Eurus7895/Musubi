@@ -2045,9 +2045,14 @@ def musubi_run_hook(event: str, payload: str = "") -> str:
 
 
 def _compression_enabled() -> bool:
-    """Step 3 gate — compression is OFF until the eval suite (Step 6) clears it."""
-    return os.environ.get("MUSUBI_COMPRESS", "").strip().lower() in (
-        "1", "true", "on", "yes",
+    """Input compression is ON by default; opt out with MUSUBI_COMPRESS=0.
+
+    Reversible (the verbatim original is stored and reachable via
+    `musubi_retrieve`), so default-on is safe. Set MUSUBI_COMPRESS to a
+    falsey value (0/false/off/no) to disable it for a session/workspace.
+    """
+    return os.environ.get("MUSUBI_COMPRESS", "").strip().lower() not in (
+        "0", "false", "off", "no",
     )
 
 

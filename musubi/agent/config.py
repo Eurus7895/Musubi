@@ -1,36 +1,40 @@
-"""`.musubi/llm.toml` — family-sectioned LLM endpoint profiles.
+"""`.musubi/llm.json` — family-keyed LLM endpoint profiles.
 
 musubi-tier: substrate
 expires-when: never — the resolution rule for how a standalone-agent user
   selects an LLM endpoint (cloud, local Ollama, or an on-prem Azure / Gen AI
-  Farm OpenAI-compatible gateway). Read-only TOML via stdlib `tomllib`
-  (3.11+); no dependency.
+  Farm OpenAI-compatible gateway). Read-only JSON via stdlib `json`; no
+  dependency.
 
-Config is **separated into LLM-family sections**. The section name is the
-family (and thus the wire/client); family-level scalar keys are shared
-defaults that each profile under the family inherits (profile keys win):
+Config is a JSON object **keyed by LLM family**. The key is the family (and
+thus the wire/client); within a family, scalar values are shared defaults
+that each profile (a nested object) inherits (profile keys win):
 
-    default = "azure.work"
-
-    [azure]                         # family defaults
-    transport = "curl"
-    api_version = "2024-06-01"
-    azure_endpoint = "https://my.openai.azure.com"
-    api_key_env = "AZURE_OPENAI_API_KEY"
-
-    [azure.work]                    # profile — inherits the keys above
-    deployment = "gpt-4o"
+    {
+      "default": "azure.work",
+      "azure": {
+        "transport": "curl",
+        "api_version": "2024-06-01",
+        "azure_endpoint": "https://my.openai.azure.com",
+        "api_key_env": "AZURE_OPENAI_API_KEY",
+        "work": { "deployment": "gpt-4o" }
+      }
+    }
 
 A profile is referenced as `<family>.<profile>` (e.g. `azure.work`), or by a
 bare profile name when it is unique across families. With no ref, the file's
 `default` is used. `build_from_profile` (in `vendors/factory.py`) turns the
 resolved dict into an `LMRouter`.
+
+(MCP-server config uses the standard `mcpServers` schema — see
+`agent/mcp_gateway.py`. LLM-endpoint config has no community standard, so it
+keeps this Musubi-specific family/profile shape; both files are JSON.)
 """
 
 from __future__ import annotations
 
+import json
 import os
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -38,10 +42,10 @@ KNOWN_FAMILIES = frozenset({"openai", "azure", "genai_farm", "anthropic", "ollam
 
 
 def find_config_path(explicit: str | os.PathLike[str] | None = None) -> Path | None:
-    """Resolve the llm.toml location.
+    """Resolve the llm.json location.
 
-    Order: explicit arg → $MUSUBI_LLM_CONFIG → ./.musubi/llm.toml →
-    ~/.musubi/llm.toml. Returns None if none exists.
+    Order: explicit arg → $MUSUBI_LLM_CONFIG → ./.musubi/llm.json →
+    ~/.musubi/llm.json. Returns None if none exists.
     """
     candidates: list[Path] = []
     if explicit:
@@ -49,8 +53,8 @@ def find_config_path(explicit: str | os.PathLike[str] | None = None) -> Path | N
     env = os.environ.get("MUSUBI_LLM_CONFIG")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path.cwd() / ".musubi" / "llm.toml")
-    candidates.append(Path.home() / ".musubi" / "llm.toml")
+    candidates.append(Path.cwd() / ".musubi" / "llm.json")
+    candidates.append(Path.home() / ".musubi" / "llm.json")
     for c in candidates:
         if c.is_file():
             return c
@@ -73,11 +77,15 @@ def load_profile(
     cfg_path = find_config_path(path)
     if cfg_path is None:
         raise FileNotFoundError(
-            "no .musubi/llm.toml found (looked at $MUSUBI_LLM_CONFIG, "
-            "./.musubi/llm.toml, ~/.musubi/llm.toml)"
+            "no .musubi/llm.json found (looked at $MUSUBI_LLM_CONFIG, "
+            "./.musubi/llm.json, ~/.musubi/llm.json)"
         )
-    with cfg_path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"{cfg_path}: cannot parse llm.json: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{cfg_path}: top level must be a JSON object")
 
     resolved_ref = ref or raw.get("default")
     if not resolved_ref:

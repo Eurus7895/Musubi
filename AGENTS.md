@@ -16,7 +16,7 @@ makes **zero LLM calls** (HI #1). Two supported surfaces drive it:
 - **Standalone `agent` CLI (active — the north star):** `musubi/agent/`
   reaches the model through the vendor-agnostic `LMRouter` — anthropic /
   openai / azure-on-prem (via curl) / genai_farm (on-prem; SDK by default,
-  curl fallback) / ollama, selected by `.musubi/llm.toml`
+  curl fallback) / ollama, selected by `.musubi/llm.json`
   profiles. A multi-step tool loop plus a sub-agent orchestrator
   (`agent/subagent.py`) that runs spawned roles to completion. Model-
   agnostic, no `vscode.lm` quota (roadmap north star, Steps 4–5). First run:
@@ -59,7 +59,7 @@ No new pipelines until feature-dev is validated.
 ## Key Interactions
 
 ```
-# First-time setup (env doctor, .musubi/llm.toml, .vscode/mcp.json)
+# First-time setup (env doctor, .musubi/llm.json, .vscode/mcp.json)
 musubi setup
 
 # Standalone CLI (active — any vendor; spawns sub-agents on demand)

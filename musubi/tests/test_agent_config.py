@@ -1,11 +1,13 @@
-"""Tests for the `.musubi/llm.toml` family-sectioned profile loader.
+"""Tests for the `.musubi/llm.json` family-keyed profile loader.
 
 musubi-tier: substrate test — pins the endpoint-selection contract.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,33 +18,28 @@ from agent.config import (
     resolve_proxy_user,
 )
 
-_SAMPLE = """
-default = "azure.work"
-
-[azure]
-transport = "curl"
-api_version = "2024-06-01"
-azure_endpoint = "https://my.openai.azure.com"
-api_key_env = "AZ_KEY"
-
-[azure.work]
-deployment = "gpt-4o"
-
-[azure.work-mini]
-deployment = "gpt-4o-mini"
-
-[openai.cloud]
-model = "gpt-5-mini"
-api_key_env = "OPENAI_API_KEY"
-
-[ollama.local]
-model = "llama3.1"
-"""
+_SAMPLE: dict[str, Any] = {
+    "default": "azure.work",
+    "azure": {
+        "transport": "curl",
+        "api_version": "2024-06-01",
+        "azure_endpoint": "https://my.openai.azure.com",
+        "api_key_env": "AZ_KEY",
+        "work": {"deployment": "gpt-4o"},
+        "work-mini": {"deployment": "gpt-4o-mini"},
+    },
+    "openai": {
+        "cloud": {"model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"},
+    },
+    "ollama": {
+        "local": {"model": "llama3.1"},
+    },
+}
 
 
-def _write(tmp_path: Path, text: str = _SAMPLE) -> Path:
-    cfg = tmp_path / "llm.toml"
-    cfg.write_text(text, encoding="utf-8")
+def _write(tmp_path: Path, obj: dict[str, Any] | None = None) -> Path:
+    cfg = tmp_path / "llm.json"
+    cfg.write_text(json.dumps(obj if obj is not None else _SAMPLE), encoding="utf-8")
     return cfg
 
 
@@ -76,8 +73,9 @@ def test_bare_unique_name_resolves(tmp_path: Path) -> None:
 
 
 def test_bare_ambiguous_name_errors(tmp_path: Path) -> None:
-    text = _SAMPLE + "\n[openai.work]\nmodel = \"gpt-4o\"\n"
-    cfg = _write(tmp_path, text)
+    obj = json.loads(json.dumps(_SAMPLE))  # deep copy
+    obj["openai"]["work"] = {"model": "gpt-4o"}
+    cfg = _write(tmp_path, obj)
     with pytest.raises(ValueError, match="ambiguous"):
         load_profile("work", path=cfg)
 
@@ -96,7 +94,7 @@ def test_unknown_family_in_ref_errors(tmp_path: Path) -> None:
 
 def test_no_config_file_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("agent.config.find_config_path", lambda *a, **k: None)
-    with pytest.raises(FileNotFoundError, match="no .musubi/llm.toml"):
+    with pytest.raises(FileNotFoundError, match="no .musubi/llm.json"):
         load_profile("azure.work")
 
 
@@ -135,12 +133,11 @@ def test_resolve_proxy_user_none_when_absent() -> None:
 
 
 def test_genai_farm_family_ref_resolves(tmp_path: Path) -> None:
-    text = _SAMPLE + (
-        "\n[genai_farm.default]\n"
-        'base_url = "https://farm.internal/v1"\n'
-        'model = "gpt-5-nano"\n'
-    )
-    cfg = _write(tmp_path, text)
+    obj = json.loads(json.dumps(_SAMPLE))  # deep copy
+    obj["genai_farm"] = {
+        "default": {"base_url": "https://farm.internal/v1", "model": "gpt-5-nano"},
+    }
+    cfg = _write(tmp_path, obj)
     prof = load_profile("genai_farm.default", path=cfg)
     assert prof["family"] == "genai_farm"
     assert prof["base_url"] == "https://farm.internal/v1"

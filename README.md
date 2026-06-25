@@ -49,13 +49,39 @@ deterministic, zero-LLM, and **reversible**:
 - The verbatim original is stored (content-hash keyed); the model pulls it
   back any time with the **`musubi_retrieve`** tool, and the audit trail
   always reads the original.
-- Wired into `musubi_read_file` / `musubi_run_command` behind the
-  **`MUSUBI_COMPRESS`** flag (default off). ~67% reduction on indented
-  JSON with an exact round-trip.
+- Wired into `musubi_read_file` / `musubi_run_command` and **on by
+  default** — reversible, so it's safe. ~67% reduction on indented JSON
+  with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
 
 ```bash
-MUSUBI_COMPRESS=1 agent "summarise the config files"
+agent "summarise the config files"     # compression on by default
+MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
 ```
+
+### The `MUSUBI_COMPRESS` switch
+
+Compression is controlled by one environment variable, read inside the
+Musubi server. The standalone `agent` forwards every `MUSUBI_*` var to the
+server it spawns, so setting it in your shell takes effect.
+
+| `MUSUBI_COMPRESS` | Effect |
+|---|---|
+| *unset* (default) | **on** |
+| `1` / `true` / `on` / `yes` | on |
+| `0` / `false` / `off` / `no` | off |
+
+Scope is per process — set it for one run, or make it stick:
+
+```bash
+# Windows (persists for future shells; open a new one after):
+setx MUSUBI_COMPRESS 0
+# macOS/Linux — add to your shell profile:
+export MUSUBI_COMPRESS=0
+```
+
+The original is never lost (it's stored and reachable via
+`musubi_retrieve`), so leaving it on is safe; turn it off only when you
+want the model to read raw, uncompressed tool output.
 
 ## Quick start (standalone CLI)
 
@@ -70,7 +96,7 @@ agent "add a /health endpoint and a test for it"
 ```
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
-`.musubi/llm.toml` endpoint profile (cloud, local Ollama, or on-prem Azure),
+`.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, and generates `.vscode/mcp.json` for the
 extension. The manual steps below still work if you prefer.
 
@@ -85,11 +111,11 @@ out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and the
 **Gen AI Farm** on-prem gateway (Azure-style deployment-in-path URL with Bearer
 auth). For named endpoints — including **Azure OpenAI** and the **Gen AI
 Farm**, which can fall back to `curl` so corporate proxy (with proxy auth) /
-custom CA / mTLS are honoured — describe them once in `.musubi/llm.toml` (copy
-`.musubi/llm.toml.example`) and select with `--profile`:
+custom CA / mTLS are honoured — describe them once in `.musubi/llm.json` (copy
+`.musubi/llm.json.example`) and select with `--profile`:
 
 ```bash
-cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_env
+cp .musubi/llm.json.example .musubi/llm.json   # then edit; secrets via api_key_env
 agent "<task>" --profile azure.work
 ```
 

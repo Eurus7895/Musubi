@@ -1,0 +1,31 @@
+{
+  "//": "Musubi standalone-agent external MCP servers — copy to .musubi/mcp.json.",
+  "//cp": "cp .musubi/mcp.json.example .musubi/mcp.json",
+  "//run": "agent \"your task\"   (auto-discovers .mcp.json / .musubi/mcp.json)",
+  "//schema": "Standard `mcpServers` schema — paste a Claude Desktop / Cursor / VS Code config in unchanged. Each server is connected alongside Musubi's own MCP server and its tools are spliced into the catalog under a <server>__<tool> namespace.",
+  "//discovery": "Resolution order: --mcp-config -> $MUSUBI_MCP_CONFIG -> ./.mcp.json -> ./.musubi/mcp.json -> ~/.musubi/mcp.json. With none present, the feature is off.",
+  "//failopen": "Fail-open: a server that won't launch or initialise is logged ('!mcp <name> skipped') and skipped, never fatal.",
+  "//secrets": "Use ${VAR} (or ${env:VAR}) to pull a secret from the environment instead of inlining it. An unset referenced var is a hard error (no silent empty credentials). .musubi/mcp.json is gitignored.",
+  "//governance": "Federated tools are NOT firewalled or audited by Musubi, and sub-agents never receive them (top-level agent only). Only add servers you trust.",
+
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
+    },
+    "github": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}" }
+    },
+    "disabled_example": {
+      "command": "uvx",
+      "args": ["some-mcp-server"],
+      "disabled": true
+    },
+    "remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }
+    }
+  }
+}

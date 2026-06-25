@@ -111,11 +111,24 @@ def test_compress_no_win_returns_original_unstored(tmp_path):
 
 # ── server-side gated wiring (Step 3) ────────────────────────────────────────
 
-def test_maybe_compress_field_off_is_noop(monkeypatch):
+def test_maybe_compress_field_opt_out_is_noop(monkeypatch):
+    """Compression is on by default; MUSUBI_COMPRESS=0 opts out."""
     import server
-    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
+    monkeypatch.setenv("MUSUBI_COMPRESS", "0")
     d = {"status": "ok", "content": "x" * 5000}
     assert server._maybe_compress_field(d, "content", "f.txt") == d
+
+
+def test_maybe_compress_field_on_by_default(monkeypatch):
+    """With MUSUBI_COMPRESS unset, a large field IS compressed."""
+    import json as _json
+
+    import server
+    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
+    # Indented JSON well over the 800-char floor → minify is a real win.
+    payload = _json.dumps({"items": [{"id": i} for i in range(200)]}, indent=2)
+    out = server._maybe_compress_field({"status": "ok", "content": payload}, "content", "f.json")
+    assert out.get("compressed_ref")  # compression engaged with no env set
 
 
 def test_maybe_compress_field_on_compresses_without_mutating(monkeypatch):
