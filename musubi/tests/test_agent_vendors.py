@@ -238,7 +238,7 @@ def _capture_curl_body(monkeypatch: pytest.MonkeyPatch, *, model: str) -> dict:
     """
     captured: dict = {}
 
-    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):  # noqa: ANN001
+    def fake_run(cmd, input=None, capture_output=None, timeout=None, **kwargs):  # noqa: ANN001
         for line in (input or "").splitlines():
             if line.startswith("data-binary"):
                 path = line.split("@", 1)[1].rstrip('"')
@@ -256,6 +256,19 @@ def _capture_curl_body(monkeypatch: pytest.MonkeyPatch, *, model: str) -> dict:
     router = CurlChatRouter(base_url="https://gw.local/v1", model=model, api_key="K")
     router.call([{"role": "user", "content": "hi"}], [])
     return captured["body"]
+
+
+def test_curl_router_decodes_response_as_utf8(monkeypatch: pytest.MonkeyPatch) -> None:
+    """curl's stdout MUST be decoded as UTF-8, not the OS locale (cp1252 on
+    Windows), or a non-ASCII byte in a model reply crashes the reader thread."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(base_url="https://gw.local/v1", model="m", api_key="K")
+    router.call([{"role": "user", "content": "hi"}], [])
+    assert captured["kwargs"].get("encoding") == "utf-8"
+    assert captured["kwargs"].get("errors") == "replace"
 
 
 # ── URL + auth-header construction ──────────────────────────────────────────
@@ -304,9 +317,10 @@ def _fake_curl(monkeypatch: pytest.MonkeyPatch, *, body: dict, returncode: int =
     """Patch curl_router.subprocess.run; return a dict that captures the call."""
     captured: dict = {}
 
-    def fake_run(cmd, input=None, capture_output=None, text=None, timeout=None):  # noqa: ANN001
+    def fake_run(cmd, input=None, capture_output=None, timeout=None, **kwargs):  # noqa: ANN001
         captured["cmd"] = cmd
         captured["input"] = input
+        captured["kwargs"] = kwargs
         return SimpleNamespace(returncode=returncode, stdout=json.dumps(body), stderr=stderr)
 
     monkeypatch.setattr("agent.vendors.curl_router.subprocess.run", fake_run)
@@ -344,6 +358,30 @@ def test_curl_router_azure_hides_key_in_stdin(monkeypatch: pytest.MonkeyPatch) -
     ) in cfg
     assert "header = \"api-key: SECRET\"" in cfg
     assert "data-binary" in cfg
+
+
+def test_curl_router_special_char_secrets_are_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """api-key and proxy password with special characters (@ # : and the
+    config-breaking " and \\) must survive into the curl config intact."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok", "tool_calls": None},
+                     "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1",
+        model="m",
+        api_key='p@ss#1:2"x\\y',
+        auth_header="Authorization: Bearer",
+        proxy="http://proxy:8080",
+        proxy_user='user:p@ss#word"\\z',
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    # @ # : pass through literally inside the quotes; " and \ are escaped.
+    assert 'header = "Authorization: Bearer p@ss#1:2\\"x\\\\y"' in cfg
+    assert 'proxy-user = "user:p@ss#word\\"\\\\z"' in cfg
 
 
 def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
