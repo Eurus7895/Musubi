@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tomllib
@@ -109,6 +110,25 @@ def family_requirement(family: str) -> Check:
 # ── Profile section builder ─────────────────────────────────────────────────
 
 
+# Env-var NAMES are UPPER_SNAKE by convention; anything else the user types
+# into the key prompt (e.g. a pasted hex token) is the secret itself.
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def classify_key_input(value: str) -> str:
+    """Decide whether `value` is an env-var NAME (`api_key_env`) or the key
+    itself (inline `api_key`). Empty stays `api_key_env` (no key configured)."""
+    return "api_key_env" if (not value or _ENV_NAME_RE.match(value)) else "api_key"
+
+
+def _apply_api_key(section: dict[str, Any], a: dict[str, Any]) -> None:
+    """Copy whichever key field the answers carry into the profile section."""
+    if a.get("api_key_env"):
+        section["api_key_env"] = a["api_key_env"]
+    elif a.get("api_key"):
+        section["api_key"] = a["api_key"]
+
+
 def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any]:
     """Family answers → a flat profile-settings dict (no profile name/family)."""
     a = answers
@@ -120,8 +140,7 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
             "deployment": a["deployment"],
             "auth_header": "api-key",
         }
-        if a.get("api_key_env"):
-            section["api_key_env"] = a["api_key_env"]
+        _apply_api_key(section, a)
         if a.get("curl_extra_args"):
             section["curl_extra_args"] = a["curl_extra_args"]
         return section
@@ -135,8 +154,7 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
             "api_version": a["api_version"],
             "deployment": a["deployment"],
         }
-        if a.get("api_key_env"):
-            section["api_key_env"] = a["api_key_env"]
+        _apply_api_key(section, a)
         if a.get("proxy"):
             section["transport"] = "curl"
             section["proxy"] = a["proxy"]
@@ -150,8 +168,7 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
         section = {"model": a["model"]}
         if a.get("base_url"):
             section["base_url"] = a["base_url"]
-        if a.get("api_key_env"):
-            section["api_key_env"] = a["api_key_env"]
+        _apply_api_key(section, a)
         return section
 
     if family == "ollama":
@@ -361,7 +378,17 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
             a["base_url"] = base.strip()
 
     if family != "ollama":
-        a["api_key_env"] = _ask(prompt, "Env var holding the API key", _DEFAULT_KEY_ENV[family])
+        val = _ask(
+            prompt,
+            "API key, or the NAME of an env var holding it",
+            _DEFAULT_KEY_ENV[family],
+        ).strip()
+        kind = classify_key_input(val)
+        a[kind] = val
+        if kind == "api_key":
+            out("  note: that looks like the key itself, not an env-var name — "
+                "storing it inline in .musubi/llm.toml (gitignored). To keep it "
+                "out of the file, export it as an env var and enter the NAME.")
     a["profile"] = _ask(prompt, "Profile name", _DEFAULT_PROFILE[family])
     return a
 

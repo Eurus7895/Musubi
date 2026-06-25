@@ -73,6 +73,28 @@ def test_build_azure_section() -> None:
     assert "api_key" not in sec  # only api_key_env, never a secret
 
 
+def test_classify_key_input_env_name_vs_secret() -> None:
+    # UPPER_SNAKE → treated as an env-var name.
+    assert sw.classify_key_input("GENAI_FARM_API_KEY") == "api_key_env"
+    assert sw.classify_key_input("") == "api_key_env"  # nothing configured
+    # A pasted hex token (lowercase) is the key itself, not a var name.
+    assert sw.classify_key_input("79b85de87e194a6f831c0a41f691baa2") == "api_key"
+    assert sw.classify_key_input("sk-abc123") == "api_key"
+
+
+def test_build_genai_farm_section_inline_key() -> None:
+    """A pasted key lands in `api_key` (inline), not `api_key_env`, so the
+    profile still authenticates instead of looking up a bogus env var."""
+    sec = sw.build_profile_section("genai_farm", {
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
+        "api_key": "79b85de87e194a6f831c0a41f691baa2",
+    })
+    assert sec["api_key"] == "79b85de87e194a6f831c0a41f691baa2"
+    assert "api_key_env" not in sec
+
+
 def test_build_openai_and_ollama_sections() -> None:
     oai = sw.build_profile_section(
         "openai", {"model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"})
