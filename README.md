@@ -58,6 +58,31 @@ agent "summarise the config files"     # compression on by default
 MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
 ```
 
+### The `MUSUBI_COMPRESS` switch
+
+Compression is controlled by one environment variable, read inside the
+Musubi server. The standalone `agent` forwards every `MUSUBI_*` var to the
+server it spawns, so setting it in your shell takes effect.
+
+| `MUSUBI_COMPRESS` | Effect |
+|---|---|
+| *unset* (default) | **on** |
+| `1` / `true` / `on` / `yes` | on |
+| `0` / `false` / `off` / `no` | off |
+
+Scope is per process — set it for one run, or make it stick:
+
+```bash
+# Windows (persists for future shells; open a new one after):
+setx MUSUBI_COMPRESS 0
+# macOS/Linux — add to your shell profile:
+export MUSUBI_COMPRESS=0
+```
+
+The original is never lost (it's stored and reachable via
+`musubi_retrieve`), so leaving it on is safe; turn it off only when you
+want the model to read raw, uncompressed tool output.
+
 ## Quick start (standalone CLI)
 
 ```bash
