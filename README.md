@@ -49,12 +49,13 @@ deterministic, zero-LLM, and **reversible**:
 - The verbatim original is stored (content-hash keyed); the model pulls it
   back any time with the **`musubi_retrieve`** tool, and the audit trail
   always reads the original.
-- Wired into `musubi_read_file` / `musubi_run_command` behind the
-  **`MUSUBI_COMPRESS`** flag (default off). ~67% reduction on indented
-  JSON with an exact round-trip.
+- Wired into `musubi_read_file` / `musubi_run_command` and **on by
+  default** — reversible, so it's safe. ~67% reduction on indented JSON
+  with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
 
 ```bash
-MUSUBI_COMPRESS=1 agent "summarise the config files"
+agent "summarise the config files"     # compression on by default
+MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
 ```
 
 ## Quick start (standalone CLI)

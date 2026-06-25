@@ -68,9 +68,10 @@ substrate; pipeline dissolution is postponed (see below).
    json-minify + code/blank-strip + content-hash store) and the
    `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
 3. ◐ **Wire compression into input returns.** `musubi_read_file` /
-   `musubi_run_command` done (behind `MUSUBI_COMPRESS`, default OFF);
-   `musubi_read_stage` (after firewall) + `musubi_get_conversation` +
-   `stage_metrics` ratio recording remain.
+   `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
+   opts out per session/workspace); reversible via `musubi_retrieve`, so
+   default-on is safe. `musubi_read_stage` (after firewall) +
+   `musubi_get_conversation` + `stage_metrics` ratio recording remain.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
@@ -107,9 +108,10 @@ until we choose to revisit dissolution:
 
 - **Eval suite (the parity gate).** `.harness/evals/` running tasks
   through *both* the pipeline and the single-agent host. Deferred — it
-  only earns its keep when we're ready to dissolve the pipeline. Until
-  then compression stays **opt-in** (`MUSUBI_COMPRESS`, default OFF);
-  enable it per workspace when you want the savings.
+  only earns its keep when we're ready to dissolve the pipeline.
+  Compression is now **on by default** (reversible via `musubi_retrieve`);
+  set `MUSUBI_COMPRESS=0` to opt out per workspace. The eval suite would
+  still quantify its token savings and confirm no quality regression.
 - **Dissolve the 4-stage pipeline shape.** Collapse `pipeline.ts`
   runners, manifest contract, the staged fanout; re-home the boundary
   primitives onto sub-agent + tool-call boundaries; rewrite HI #2/#3/#7.
