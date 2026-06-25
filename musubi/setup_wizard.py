@@ -127,10 +127,14 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
         return section
 
     if family == "genai_farm":
-        # On-prem OpenAI-compatible gateway. SDK transport by default; a
-        # configured proxy implies the curl fallback (the only transport that
-        # can ride an authenticated corporate proxy / custom CA / mTLS).
-        section = {"model": a["model"], "base_url": a["base_url"]}
+        # On-prem gateway with the Azure deployment-in-path URL + Bearer auth.
+        # SDK transport by default; a configured proxy implies the curl fallback
+        # (the only transport that rides an authenticated proxy / custom CA / mTLS).
+        section = {
+            "endpoint": a["endpoint"],
+            "api_version": a["api_version"],
+            "deployment": a["deployment"],
+        }
         if a.get("api_key_env"):
             section["api_key_env"] = a["api_key_env"]
         if a.get("proxy"):
@@ -335,8 +339,9 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         if extra.strip():
             a["curl_extra_args"] = extra.split()
     elif family == "genai_farm":
-        a["base_url"] = _ask(prompt, "Gateway base URL (OpenAI-compatible)", "https://genai-farm.internal/v1")
-        a["model"] = _ask(prompt, "Model id", _DEFAULT_MODEL[family])
+        a["endpoint"] = _ask(prompt, "Gateway endpoint host", "https://genai-farm.internal")
+        a["api_version"] = _ask(prompt, "API version", "2024-06-01")
+        a["deployment"] = _ask(prompt, "Deployment / model name", _DEFAULT_MODEL[family])
         proxy = _ask(prompt, "Proxy URL for the curl fallback (optional, blank = SDK)", "")
         if proxy.strip():
             a["proxy"] = proxy.strip()

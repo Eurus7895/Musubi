@@ -352,40 +352,48 @@ def test_build_from_profile_azure_sdk_rejected() -> None:
 def test_build_from_profile_genai_farm_defaults_to_sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Gen AI Farm rides the openai SDK by default (curl is the fallback)."""
+    """Gen AI Farm rides the openai SDK by default (curl is the fallback),
+    pointed at the deployment-in-path base_url with api-version on every call."""
     captured: dict = {}
 
     class FakeOpenAI:
-        def __init__(self, base_url=None, api_key=None):  # noqa: ANN001
+        def __init__(self, base_url=None, api_key=None, default_query=None):  # noqa: ANN001
             captured["base_url"] = base_url
             captured["api_key"] = api_key
+            captured["default_query"] = default_query
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
 
     router = build_from_profile({
         "family": "genai_farm",
-        "base_url": "https://genai-farm.internal/v1",
-        "model": "gpt-5-nano",
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
         "api_key": "K",
         # transport omitted → defaults to sdk
     })
     assert router.name == "openai"  # OpenAIRouter wire
     assert router.model == "gpt-5-nano"
-    assert captured["base_url"] == "https://genai-farm.internal/v1"
+    assert captured["base_url"] == (
+        "https://genai-farm.internal/openai/deployments/gpt-5-nano"
+    )
     assert captured["api_key"] == "K"
+    assert captured["default_query"] == {"api-version": "2024-06-01"}
 
 
 def test_build_from_profile_genai_farm_curl_fallback_with_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """transport='curl' selects the curl router; proxy + proxy-user ride the
-    stdin config (never argv) so the proxy password stays hidden."""
+    """transport='curl' selects the curl router on the deployment-in-path URL;
+    proxy + proxy-user ride the stdin config (never argv) so the proxy password
+    stays hidden."""
     monkeypatch.setenv("FARM_PROXY_USER", "user:pass")
     router = build_from_profile({
         "family": "genai_farm",
         "transport": "curl",
-        "base_url": "https://genai-farm.internal/v1",
-        "model": "gpt-5-nano",
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
         "api_key": "SECRET",
         "proxy": "http://proxy:8080",
         "proxy_user_env": "FARM_PROXY_USER",
@@ -400,6 +408,10 @@ def test_build_from_profile_genai_farm_curl_fallback_with_proxy(
     router.call([{"role": "user", "content": "hi"}], [])
 
     cfg = captured["input"]
+    assert (
+        'url = "https://genai-farm.internal/openai/deployments/gpt-5-nano'
+        '/chat/completions?api-version=2024-06-01"'
+    ) in cfg
     assert 'header = "Authorization: Bearer SECRET"' in cfg  # Bearer, not api-key
     assert 'proxy = "http://proxy:8080"' in cfg
     assert 'proxy-user = "user:pass"' in cfg

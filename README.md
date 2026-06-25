@@ -82,11 +82,11 @@ in the substrate itself. Requirements: Python 3.11+.
 
 A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
 out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and the
-**Gen AI Farm** on-prem OpenAI-compatible gateway. For named endpoints —
-including **Azure OpenAI** and the **Gen AI Farm**, which can fall back to
-`curl` so corporate proxy (with proxy auth) / custom CA / mTLS are honoured —
-describe them once in `.musubi/llm.toml` (copy `.musubi/llm.toml.example`) and
-select with `--profile`:
+**Gen AI Farm** on-prem gateway (Azure-style deployment-in-path URL with Bearer
+auth). For named endpoints — including **Azure OpenAI** and the **Gen AI
+Farm**, which can fall back to `curl` so corporate proxy (with proxy auth) /
+custom CA / mTLS are honoured — describe them once in `.musubi/llm.toml` (copy
+`.musubi/llm.toml.example`) and select with `--profile`:
 
 ```bash
 cp .musubi/llm.toml.example .musubi/llm.toml   # then edit; secrets via api_key_env
