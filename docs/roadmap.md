@@ -75,7 +75,15 @@ substrate; pipeline dissolution is postponed (see below).
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
    authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.toml`
-   family profiles (`agent/config.py` + `agent/vendors/`).
+   family profiles (`agent/config.py` + `agent/vendors/`). External-MCP
+   federation landed (`agent/mcp_gateway.py`): the standalone host reads
+   `.musubi/mcp.toml`, connects any number of other MCP servers (stdio or
+   streamable-HTTP), and splices their tools into the catalog under a
+   `<server>__<tool>` namespace, routing each call back to its owner.
+   Fail-open per server (a bad entry is logged and skipped); top-level
+   agent only (sub-agents stay Musubi-tool-scoped); the tools are **not**
+   firewalled/audited by Musubi — a driver-side convenience, not a
+   substrate control.
    Remaining: port `BudgetEnforcer` + compaction into `agent/run.py`;
    multi-turn CLI + conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed

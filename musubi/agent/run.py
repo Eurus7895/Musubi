@@ -35,6 +35,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from agent.mcp_gateway import McpGateway, load_mcp_servers
 from agent.vendors import LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
@@ -74,13 +76,16 @@ async def run_agent(
     *,
     max_cycles: int = DEFAULT_MAX_CYCLES,
     log: Any = sys.stderr,
+    mcp_config: str | os.PathLike[str] | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
-    Spawns the Musubi MCP server, lists its tools, hands them to the
-    LLM via `vendor.call`, dispatches whatever tools the model asks
-    for, feeds results back, repeats until the model stops asking for
-    tools (`stop_reason != "tool_use"`) OR `max_cycles` is hit.
+    Spawns the Musubi MCP server, optionally connects every external MCP
+    server declared in `.musubi/mcp.toml` (federating their tools into the
+    catalog), hands the merged tools to the LLM via `vendor.call`,
+    dispatches whatever tools the model asks for, feeds results back, and
+    repeats until the model stops asking for tools (`stop_reason !=
+    "tool_use"`) OR `max_cycles` is hit.
     """
     server_path = musubi_dir / "server.py"
     params = StdioServerParameters(
@@ -96,32 +101,52 @@ async def run_agent(
     # at every call site (including main()).
     final_answer: str | None = None
 
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            mcp_tools = (await session.list_tools()).tools
-            tools = [_mcp_to_anthropic_tool(t) for t in mcp_tools]
-            print(
-                f"[agent] vendor={vendor.name} model={vendor.model} "
-                f"tools={len(tools)}",
-                file=log,
-            )
+    # One AsyncExitStack owns Musubi's session AND every federated external
+    # session, so they all open in order and tear down (LIFO) together. This
+    # is equivalent to the old nested `async with` for Musubi alone.
+    async with AsyncExitStack() as stack:
+        read, write = await stack.enter_async_context(stdio_client(params))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
 
-            # Open a parent session up front so the model's sub-agent spawns
-            # have a valid parent. The "agent" identity short-circuits the
-            # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
-            # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-            orchestration = Orchestration(
-                parent_session_id=await _open_parent_session(session, task, log),
-            )
+        gateway = McpGateway()
+        mcp_tools = (await session.list_tools()).tools
+        gateway.register_local(
+            session, [_mcp_to_anthropic_tool(t) for t in mcp_tools]
+        )
+        # External MCP servers are additive and fail-open (a bad entry is
+        # logged and skipped). Even discovering them must not be fatal.
+        try:
+            specs = load_mcp_servers(mcp_config)
+        except Exception as exc:  # noqa: BLE001 — bad config ≠ dead agent
+            print(f"[agent] mcp.toml ignored: {type(exc).__name__}: {exc}", file=log)
+            specs = []
+        await gateway.connect_external(stack, specs, log)
 
-            messages: list[dict[str, Any]] = [
-                {"role": "user", "content": task},
-            ]
-            final_answer, _ = await _run_loop(
-                session, vendor, tools, messages,
-                max_cycles=max_cycles, log=log, orchestration=orchestration,
-            )
+        tools = gateway.tools()
+        n_external = len(tools) - len(mcp_tools)
+        print(
+            f"[agent] vendor={vendor.name} model={vendor.model} "
+            f"tools={len(tools)} (musubi={len(mcp_tools)}, external={n_external})",
+            file=log,
+        )
+
+        # Open a parent session up front so the model's sub-agent spawns
+        # have a valid parent. The "agent" identity short-circuits the
+        # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
+        # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
+        orchestration = Orchestration(
+            parent_session_id=await _open_parent_session(session, task, log),
+        )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": task},
+        ]
+        final_answer, _ = await _run_loop(
+            session, vendor, tools, messages,
+            max_cycles=max_cycles, log=log, orchestration=orchestration,
+            gateway=gateway,
+        )
 
     # Raise OUTSIDE the MCP contexts: anyio's TaskGroup wraps anything raised
     # inside `stdio_client`/`ClientSession` in a BaseExceptionGroup, which would
@@ -143,6 +168,7 @@ async def _run_loop(
     max_cycles: int,
     log: Any,
     orchestration: Orchestration | None = None,
+    gateway: McpGateway | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -151,7 +177,9 @@ async def _run_loop(
     how to surface that (the parent raises outside the MCP context; a sub-agent
     records an escalation). When set, `orchestration` makes a
     `musubi_spawn_subagent` tool call run to completion in-process, its summary
-    fed back as the tool result.
+    fed back as the tool result. `gateway`, when set, routes each tool call to
+    its owning session (Musubi or a federated external server); when None,
+    every call goes to `session` by its exact name (the sub-agent path).
     """
     final_answer: str | None = None
     cycles_used = 0
@@ -170,6 +198,7 @@ async def _run_loop(
         tool_results = await _dispatch(
             session, tool_uses, log,
             vendor=vendor, tools=tools, orchestration=orchestration,
+            gateway=gateway,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -237,6 +266,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_MAX_CYCLES,
         help=f"Cycle-loop cap. Default {DEFAULT_MAX_CYCLES}.",
     )
+    ap.add_argument(
+        "--mcp-config",
+        type=Path,
+        default=None,
+        help=(
+            "Path to an mcp.toml declaring external MCP servers to federate. "
+            "Defaults to $MUSUBI_MCP_CONFIG, then ./.musubi/mcp.toml, then "
+            "~/.musubi/mcp.toml (the feature is off when none exists)."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -256,7 +295,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         answer = asyncio.run(
-            run_agent(args.task, vendor, musubi_dir, max_cycles=args.max_cycles)
+            run_agent(
+                args.task, vendor, musubi_dir,
+                max_cycles=args.max_cycles, mcp_config=args.mcp_config,
+            )
         )
     except KeyboardInterrupt:
         print("\n[agent] cancelled.", file=sys.stderr)
@@ -335,6 +377,7 @@ async def _dispatch(
     vendor: LMRouter | None = None,
     tools: list[dict[str, Any]] | None = None,
     orchestration: Orchestration | None = None,
+    gateway: McpGateway | None = None,
 ) -> list[dict[str, Any]]:
     """Call each tool and collect Anthropic-shaped tool_result blocks.
 
@@ -342,6 +385,10 @@ async def _dispatch(
     `musubi_spawn_subagent`, the spawn is run to completion in-process (port of
     the extension's dispatcher) and the sub-agent's summary becomes the tool
     result — so the model just spawns and gets the answer back.
+
+    Every other tool is routed via `gateway` (when set) to its owning session
+    and original name — so a federated `<server>__<tool>` call lands on that
+    external server. With no gateway, the call goes to `session` verbatim.
     """
     results: list[dict[str, Any]] = []
     for tu in tool_uses:
@@ -374,11 +421,18 @@ async def _dispatch(
                 f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
                 file=log,
             )
-            try:
-                result = await session.call_tool(name, arguments=args)
-                content = _first_text(result)
-            except Exception as exc:  # noqa: BLE001 — surface errors to the model
-                content = f"[tool error] {type(exc).__name__}: {exc}"
+            target = gateway.route(name) if gateway is not None else (session, name)
+            if target is None:
+                content = f"[tool error] no MCP server owns tool {name!r}"
+            else:
+                target_session, original_name = target
+                try:
+                    result = await target_session.call_tool(
+                        original_name, arguments=args
+                    )
+                    content = _first_text(result)
+                except Exception as exc:  # noqa: BLE001 — surface errors to the model
+                    content = f"[tool error] {type(exc).__name__}: {exc}"
 
         results.append({
             "type": "tool_result",
