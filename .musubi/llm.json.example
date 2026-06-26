@@ -20,6 +20,7 @@
   },
 
   "//genai_farm": "Gen AI Farm (on-prem gateway). Azure-style deployment-in-path URL, Bearer auth. Default transport is the openai SDK; transport='curl' is the FALLBACK for an authenticated proxy / custom CA / mTLS. proxy_user_env names the env var holding 'user:password'; it and the api-key are passed to curl on stdin so neither secret appears in argv.",
+  "//proxy_auth": "Corporate proxy returning 407? Set proxy_auth to the scheme it wants: 'negotiate' (Kerberos/SSPI) or 'ntlm' use your Windows login with NO stored password (curl gets an empty ':' automatically); 'basic'/'digest' need proxy_user[_env]='user:password'. curl picks the proxy URL up from $HTTPS_PROXY if you omit `proxy`.",
   "genai_farm": {
     "endpoint": "https://genai-farm.internal",
     "api_version": "2024-06-01",
@@ -30,6 +31,12 @@
       "deployment": "gpt-5-nano-2025-08-07",
       "proxy": "http://proxy-server:8080",
       "proxy_user_env": "GENAI_FARM_PROXY_USER"
+    },
+    "integrated-proxy": {
+      "//": "Windows corporate proxy with Kerberos/NTLM — no password stored.",
+      "transport": "curl",
+      "deployment": "gpt-5-nano-2025-08-07",
+      "proxy_auth": "negotiate"
     }
   },
 

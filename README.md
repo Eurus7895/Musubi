@@ -179,6 +179,29 @@ selects the wire/client and its keys are shared defaults inherited by each
 `[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
 the file's `default` → env-key detection.
 
+#### Behind a corporate proxy (`407 Proxy Authentication Required`)
+
+If a `curl`-transport endpoint fails with `curl: (56) CONNECT tunnel failed,
+response 407`, the proxy needs authentication. Set **`proxy_auth`** on the
+profile to the scheme your proxy advertises:
+
+| `proxy_auth` | Use when | Credentials |
+|---|---|---|
+| `negotiate` | Windows/Kerberos proxy (most corporate setups) | none — your OS login via SSPI |
+| `ntlm` | older Windows proxy | none — your OS login |
+| `basic` / `digest` | proxy with a username/password | `proxy_user_env` (or inline `proxy_user`) = `user:password` |
+
+```jsonc
+// .musubi/llm.json — integrated Windows auth, no password stored
+"integrated-proxy": { "transport": "curl", "deployment": "…", "proxy_auth": "negotiate" }
+```
+
+For `negotiate`/`ntlm` Musubi hands curl an empty `:` user automatically, so
+it authenticates as your logged-in account with nothing stored. curl reuses
+the proxy URL from `$HTTPS_PROXY` if you omit `proxy`. Not sure which scheme?
+`curl.exe -I --proxy-negotiate -U : "<your endpoint url>"` — whichever flag
+gets you past the `407` is your `proxy_auth`.
+
 ### Sub-agents (multi-step delegation)
 
 The standalone agent can spawn governed sub-agents for delegated multi-step

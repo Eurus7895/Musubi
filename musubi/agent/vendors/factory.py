@@ -180,6 +180,7 @@ def _build_curl(
         "auth_header": profile.get("auth_header", default_auth),
         "proxy": profile.get("proxy"),
         "proxy_user": resolve_proxy_user(profile),
+        "proxy_auth": profile.get("proxy_auth"),
         "curl_extra_args": profile.get("curl_extra_args"),
         "name": name,
     }

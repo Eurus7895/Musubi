@@ -422,6 +422,64 @@ def test_curl_router_special_char_secrets_are_escaped(
     assert 'proxy-user = "user:p@ss#word\\"\\\\z"' in cfg
 
 
+def test_curl_router_proxy_auth_negotiate_defaults_empty_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`proxy_auth: negotiate` selects the scheme and, with no explicit
+    credentials, uses the empty `:` so curl authenticates as the OS login."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="negotiate",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-negotiate" in cfg
+    assert 'proxy-user = ":"' in cfg
+
+
+def test_curl_router_proxy_auth_keeps_explicit_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit proxy_user overrides the integrated-scheme `:` default."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="ntlm", proxy_user="DOM\\u:p",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-ntlm" in cfg
+    assert 'proxy-user = "DOM\\\\u:p"' in cfg
+    assert 'proxy-user = ":"' not in cfg
+
+
+def test_curl_router_basic_proxy_auth_has_no_default_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Basic isn't an integrated scheme, so no empty `:` is invented."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="basic",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-basic" in cfg
+    assert "proxy-user" not in cfg
+
+
+def test_curl_router_unknown_proxy_auth_raises() -> None:
+    with pytest.raises(ValueError, match="unknown proxy_auth"):
+        CurlChatRouter(base_url="https://gw.local/v1", model="m", proxy_auth="kerb")
+
+
 def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_curl(monkeypatch, body={
         "choices": [{
