@@ -178,3 +178,24 @@ def test_loop_passes_tool_error_to_model_rather_than_raising(
     ))
     assert answer == "ack."
     assert len(router.calls) == 2, "loop should have completed both cycles"
+
+
+class _ExplodingRouter(LMRouter):
+    """A vendor whose call fails like a real network/proxy error would."""
+
+    name = "boom"
+    model = "boom-1"
+
+    def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+        raise RuntimeError("curl exited 56 ... 407 proxy auth required")
+
+
+def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
+    """A vendor.call failure inside the loop must reach the caller as a plain
+    RuntimeError with the underlying message — NOT anyio's BaseExceptionGroup
+    wall raised at AsyncExitStack teardown (the Windows curl-407 traceback)."""
+    log = io.StringIO()
+    with pytest.raises(RuntimeError, match="407 proxy auth") as ei:
+        asyncio.run(run_agent("hi", _ExplodingRouter(), _musubi_dir(), log=log))
+    # The message is a clean one-liner, not a nested group dump.
+    assert not isinstance(ei.value, BaseExceptionGroup)
