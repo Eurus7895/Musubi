@@ -363,7 +363,11 @@ def run_interactive(
     out("\nNext steps:")
     if env_name:
         out(f"  export {env_name}=<your key>")
-    out(f'  agent "add a /health endpoint and a test" --profile {family}.{profile}')
+    # This profile was just written as the file's `default`, so a bare run uses
+    # it. `--profile` is the only endpoint switch — vendor and model live in the
+    # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
+    out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
+    out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
     return 0
 
 
