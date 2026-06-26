@@ -87,6 +87,7 @@ async def run_agent(
     max_cycles: int = DEFAULT_MAX_CYCLES,
     log: Any = sys.stderr,
     mcp_config: str | os.PathLike[str] | None = None,
+    vendor_source: str | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -156,8 +157,9 @@ async def run_agent(
 
         tools = gateway.tools()
         n_external = len(tools) - len(mcp_tools)
+        profile_part = f"profile={vendor_source} " if vendor_source else ""
         print(
-            f"[agent] vendor={vendor.name} model={vendor.model} "
+            f"[agent] vendor={vendor.name} model={vendor.model} {profile_part}"
             f"tools={len(tools)} (musubi={len(mcp_tools)}, external={n_external})",
             file=log,
         )
@@ -326,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        vendor = _resolve_vendor(args.vendor, args.profile, args.model)
+        vendor, vendor_source = _resolve_vendor(args.vendor, args.profile, args.model)
     except (RuntimeError, ValueError, FileNotFoundError) as exc:
         print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
@@ -345,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             run_agent(
                 args.task, vendor, musubi_dir,
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
+                vendor_source=vendor_source,
             )
         )
     except KeyboardInterrupt:
@@ -363,26 +366,31 @@ def main(argv: list[str] | None = None) -> int:
 
 def _resolve_vendor(
     vendor: str | None, profile: str | None, model: str | None
-) -> LMRouter:
-    """Pick the LMRouter. Precedence: --vendor → --profile → file default → env.
+) -> tuple[LMRouter, str]:
+    """Pick the LMRouter and a human label of *how* it was selected.
 
-    `--model` overrides the profile's model id (the deployment for Azure is set
-    in the profile; use a dedicated profile to switch deployments).
+    Precedence: --vendor → --profile → file default → env. The label (e.g.
+    `genai_farm.default (llm.json default)`) is logged at startup so the user
+    can see which profile is in effect without guessing. `--model` overrides
+    the profile's model id (the deployment for Azure is set in the profile; use
+    a dedicated profile to switch deployments).
     """
     if vendor:
-        return build_vendor(vendor, model=model)
+        return build_vendor(vendor, model=model), f"--vendor {vendor}"
 
     from agent.config import find_config_path, load_profile
 
     if profile:
         prof = load_profile(profile)
-        return build_from_profile(_apply_model(prof, model))
+        label = f"{prof['family']}.{prof['profile']} (--profile)"
+        return build_from_profile(_apply_model(prof, model)), label
 
     if find_config_path() is not None:
         prof = load_profile(None)  # the file's `default`
-        return build_from_profile(_apply_model(prof, model))
+        label = f"{prof['family']}.{prof['profile']} (llm.json default)"
+        return build_from_profile(_apply_model(prof, model)), label
 
-    return build_vendor(None, model=model)
+    return build_vendor(None, model=model), "env-key auto-detect"
 
 
 def _apply_model(profile: dict[str, Any], model: str | None) -> dict[str, Any]:

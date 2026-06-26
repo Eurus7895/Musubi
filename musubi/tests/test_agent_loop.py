@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,34 @@ class _ExplodingRouter(LMRouter):
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
         raise RuntimeError("curl exited 56 ... 407 proxy auth required")
+
+
+def test_resolve_vendor_labels_which_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_resolve_vendor` returns a human label of how the endpoint was picked,
+    so the startup log can show which profile is in effect."""
+    from agent import run as run_mod
+
+    cfg = tmp_path / ".musubi" / "llm.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps({
+        "default": "ollama.local",
+        "ollama": {"local": {"model": "llama3.1"}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("MUSUBI_LLM_CONFIG", str(cfg))
+    # Avoid importing a real vendor SDK — only the label logic is under test.
+    monkeypatch.setattr(run_mod, "build_from_profile", lambda prof: "ROUTER")
+    monkeypatch.setattr(run_mod, "build_vendor", lambda v, model=None: "VENDOR")
+
+    _, default_src = run_mod._resolve_vendor(None, None, None)
+    assert default_src == "ollama.local (llm.json default)"
+
+    _, profile_src = run_mod._resolve_vendor(None, "ollama.local", None)
+    assert profile_src == "ollama.local (--profile)"
+
+    _, vendor_src = run_mod._resolve_vendor("anthropic", None, None)
+    assert vendor_src == "--vendor anthropic"
 
 
 def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
