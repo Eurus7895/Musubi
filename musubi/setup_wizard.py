@@ -294,6 +294,21 @@ def test_connection(profile: dict[str, Any]) -> tuple[bool, str]:
     return True, (text[:80].strip() or f"(stop_reason={resp.stop_reason})")
 
 
+def proxy_error_hint(message: str) -> str | None:
+    """A targeted next step when a failed connection looks like a proxy 407.
+
+    Returns None for any other error so the generic FAILED line stands alone.
+    """
+    low = message.lower()
+    if "407" in low or "proxy authentication" in low or "connect tunnel failed" in low:
+        return (
+            "that's a proxy 407 (authentication required). Re-run setup and set a "
+            "proxy auth scheme — 'negotiate' for a Windows/Kerberos proxy needs no "
+            'password. Probe it first with: curl -I --proxy-negotiate -U : "<url>"'
+        )
+    return None
+
+
 # ── Interactive shell ───────────────────────────────────────────────────────
 
 
@@ -328,6 +343,10 @@ def run_interactive(
     if _ask_yes_no(prompt, "Test the connection now?", default=False):
         ok, msg = test_connection({**section, "family": family})
         out(f"  connection: {'OK' if ok else 'FAILED'} — {msg}")
+        if not ok:
+            hint = proxy_error_hint(msg)
+            if hint:
+                out(f"  hint: {hint}")
 
     cfg_path = root / ".musubi" / "llm.json"
     raw = upsert(parse_existing(cfg_path), family, profile, section, set_default=True)

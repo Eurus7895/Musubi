@@ -239,6 +239,42 @@ def test_connection_failure_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not ok and "openai SDK not installed" in msg
 
 
+def test_proxy_error_hint_detects_407() -> None:
+    msg = "RuntimeError: curl exited 56 ...: curl: (56) CONNECT tunnel failed, response 407"
+    hint = sw.proxy_error_hint(msg)
+    assert hint is not None
+    assert "proxy auth" in hint.lower()
+    assert "negotiate" in hint
+
+
+def test_proxy_error_hint_none_for_unrelated_error() -> None:
+    assert sw.proxy_error_hint("openai SDK not installed") is None
+
+
+def test_interactive_surfaces_proxy_hint_on_407(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the optional connection test fails with a 407, the wizard prints a
+    proxy-specific hint, not just FAILED."""
+    monkeypatch.setattr(
+        sw, "test_connection",
+        lambda _p: (False, "curl: (56) CONNECT tunnel failed, response 407"),
+    )
+    lines: list[str] = []
+    script = Script([
+        "genai_farm", "https://farm.internal", "2024-06-01", "gpt-5-nano",
+        "",             # proxy URL
+        "",             # proxy auth scheme (none — the misconfig we're catching)
+        "GENAI_FARM_API_KEY",  # api key env
+        "work",         # profile
+        "y",            # test connection? → yes (fails with 407)
+        "n",            # generate mcp.json?
+    ])
+    rc = sw.run_interactive(prompt=script, out=lines.append, root=tmp_path)
+    assert rc == 0
+    assert any("hint:" in ln and "negotiate" in ln for ln in lines)
+
+
 # ── end-to-end interactive run (scripted) ───────────────────────────────────
 
 
