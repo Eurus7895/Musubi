@@ -103,7 +103,7 @@ def compress(
         return CompressResult(text, None, "skip", n, n)
     if len(body) >= n:
         return CompressResult(text, None, kind, n, n)
-    ref_id = store.put(text, kind, db_path=db_path)
+    ref_id = store.put(text, kind, compressed_chars=len(body), db_path=db_path)
     marker = (
         f"\n\n[musubi:compressed kind={kind} ref={ref_id} "
         f"chars {n}->{len(body)}; "

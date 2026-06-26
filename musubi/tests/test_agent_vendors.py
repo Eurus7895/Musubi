@@ -20,6 +20,7 @@ from agent.vendors.openai_router import (
     openai_message_to_blocks,
     to_openai_messages,
     token_budget_field,
+    usage_to_dict,
 )
 
 # ── Factory env detection ──────────────────────────────────────────────────
@@ -86,6 +87,13 @@ def test_lmrouter_is_abstract() -> None:
 def test_openai_messages_str_user_passthrough() -> None:
     messages = [{"role": "user", "content": "hello"}]
     assert to_openai_messages(messages) == [{"role": "user", "content": "hello"}]
+
+
+def test_openai_messages_system_passthrough() -> None:
+    messages = [{"role": "system", "content": "stay concise"}]
+    assert to_openai_messages(messages) == [
+        {"role": "system", "content": "stay concise"},
+    ]
 
 
 def test_openai_messages_assistant_text_plus_tool_use() -> None:
@@ -190,6 +198,36 @@ def test_openai_blocks_from_wire_dict() -> None:
         {"type": "text", "text": "hi"},
         {"type": "tool_use", "id": "t1", "name": "fn", "input": {"a": 1}},
     ]
+
+
+def test_openai_usage_dict_normalizes_cached_prompt_tokens_from_sdk() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=77),
+    )
+    assert usage_to_dict(usage) == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cache_read_input_tokens": 77,
+    }
+
+
+def test_openai_usage_dict_normalizes_cached_prompt_tokens_from_wire_dict() -> None:
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_tokens_details": {"cached_tokens": 77},
+    }
+    assert usage_to_dict(usage) == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cache_read_input_tokens": 77,
+    }
 
 
 # ── Token-budget field selection (max_tokens vs max_completion_tokens) ──────
@@ -382,6 +420,64 @@ def test_curl_router_special_char_secrets_are_escaped(
     # @ # : pass through literally inside the quotes; " and \ are escaped.
     assert 'header = "Authorization: Bearer p@ss#1:2\\"x\\\\y"' in cfg
     assert 'proxy-user = "user:p@ss#word\\"\\\\z"' in cfg
+
+
+def test_curl_router_proxy_auth_negotiate_defaults_empty_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`proxy_auth: negotiate` selects the scheme and, with no explicit
+    credentials, uses the empty `:` so curl authenticates as the OS login."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="negotiate",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-negotiate" in cfg
+    assert 'proxy-user = ":"' in cfg
+
+
+def test_curl_router_proxy_auth_keeps_explicit_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit proxy_user overrides the integrated-scheme `:` default."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="ntlm", proxy_user="DOM\\u:p",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-ntlm" in cfg
+    assert 'proxy-user = "DOM\\\\u:p"' in cfg
+    assert 'proxy-user = ":"' not in cfg
+
+
+def test_curl_router_basic_proxy_auth_has_no_default_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Basic isn't an integrated scheme, so no empty `:` is invented."""
+    captured = _fake_curl(monkeypatch, body={
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+    })
+    router = CurlChatRouter(
+        base_url="https://gw.local/v1", model="m", api_key="K",
+        proxy_auth="basic",
+    )
+    router.call([{"role": "user", "content": "hi"}], [])
+    cfg = captured["input"]
+    assert "proxy-basic" in cfg
+    assert "proxy-user" not in cfg
+
+
+def test_curl_router_unknown_proxy_auth_raises() -> None:
+    with pytest.raises(ValueError, match="unknown proxy_auth"):
+        CurlChatRouter(base_url="https://gw.local/v1", model="m", proxy_auth="kerb")
 
 
 def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None:

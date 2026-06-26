@@ -11,11 +11,64 @@ the dependency check.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from agent.vendors.base import LMResponse, LMRouter
 
 _DEFAULT_MODEL = "claude-haiku-4-5"
+
+
+def _cache_enabled() -> bool:
+    """CacheAligner is on by default; `MUSUBI_PROMPT_CACHE=0` opts out.
+
+    Marking the static prefix (system + tool catalog) with `cache_control`
+    lets Anthropic's prompt cache hit across the loop's cycles — the tool
+    schemas alone are the largest, most repeated part of every request.
+    Disable it for a gateway that rejects `cache_control`.
+    """
+    return os.environ.get("MUSUBI_PROMPT_CACHE", "").strip().lower() not in (
+        "0", "false", "off", "no",
+    )
+
+
+def _split_system(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Pop a leading `role:"system"` message (the top-level agent's convention)
+    into Anthropic's separate `system` field. Sub-agents fold their prompt into
+    a user message, so this is a no-op for them."""
+    if messages and messages[0].get("role") == "system":
+        content = messages[0].get("content")
+        if isinstance(content, str):
+            return content, messages[1:]
+    return None, messages
+
+
+def _system_param(system_text: str | None, cache: bool) -> Any:
+    """Anthropic `system=`: a cache-marked text block when caching is on, else
+    the plain string (or None to omit the field)."""
+    if not system_text:
+        return None
+    if not cache:
+        return system_text
+    return [{
+        "type": "text",
+        "text": system_text,
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
+def _cache_aligned_tools(
+    tools: list[dict[str, Any]], cache: bool
+) -> list[dict[str, Any]]:
+    """Mark the last tool with `cache_control` so the whole tool block (the
+    biggest static prefix) caches. Copies — never mutates the caller's list."""
+    if not cache or not tools:
+        return tools
+    out = [dict(t) for t in tools]
+    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+    return out
 
 
 class AnthropicRouter(LMRouter):
@@ -48,12 +101,18 @@ class AnthropicRouter(LMRouter):
         *,
         max_tokens: int = 4096,
     ) -> LMResponse:
-        msg = self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            tools=tools,
-            messages=messages,
-        )
+        cache = _cache_enabled()
+        system_text, body = _split_system(messages)
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "tools": _cache_aligned_tools(tools, cache),
+            "messages": body,
+        }
+        system_param = _system_param(system_text, cache)
+        if system_param is not None:
+            kwargs["system"] = system_param
+        msg = self._client.messages.create(**kwargs)
         # Block objects → plain dicts so the loop is vendor-agnostic.
         content = [_block_to_dict(block) for block in msg.content]
         usage = _usage_to_dict(getattr(msg, "usage", None))

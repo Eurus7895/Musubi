@@ -52,6 +52,9 @@ deterministic, zero-LLM, and **reversible**:
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
   default** — reversible, so it's safe. ~67% reduction on indented JSON
   with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
+- The model can also compress a payload on demand with **`musubi_compress`**
+  and measure the feature's efficiency with **`musubi_compression_stats`**
+  (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
 
 ```bash
 agent "summarise the config files"     # compression on by default
@@ -83,6 +86,58 @@ The original is never lost (it's stored and reachable via
 `musubi_retrieve`), so leaving it on is safe; turn it off only when you
 want the model to read raw, uncompressed tool output.
 
+### Compression tools
+
+Three MCP tools expose the feature directly — the model (or you, via the
+agent) can compress, recover, and measure without touching the file/command
+tools:
+
+| Tool | Purpose |
+|---|---|
+| **`musubi_compress(text, hint=None)`** | Compress a payload on demand and store the original. `hint` (a filename, extension, or `"json"`/`"code"`/`"log"`/`"text"`) steers the compressor; without it the kind is detected from content. Returns `kind`, `ref_id`, `original_chars`, `compressed_chars`, `ratio`, and the `compressed` text. Inputs under ~800 chars, or any case where compression wouldn't shrink the text, come back unchanged with `ref_id: null` and `ratio: 1.0`. |
+| **`musubi_retrieve(ref_id)`** | Return the verbatim original for a `ref_id` — the reverse of any compression (implicit or via `musubi_compress`). |
+| **`musubi_compression_stats()`** | Aggregate efficiency over every stored blob: `total_blobs`, `total_original_chars`, `total_compressed_chars`, `bytes_saved`, `overall_ratio`, `savings_pct`, `rows_without_metric`, and a per-`kind` breakdown. |
+
+`ref_id` is a content hash, so compressing identical text twice dedups to a
+single stored row. The recorded sizes are the compressor output (excluding
+the ~80-char retrieval marker), so `musubi_compression_stats` reports the
+true compression win rather than marker overhead.
+
+```jsonc
+// musubi_compression_stats() after compressing a 21 KB indented JSON file
+{
+  "status": "ok",
+  "total_blobs": 1,
+  "total_original_chars": 21399,
+  "total_compressed_chars": 10991,
+  "bytes_saved": 10408,
+  "overall_ratio": 0.514,
+  "savings_pct": 48.6,
+  "rows_without_metric": 0,
+  "by_kind": [{ "kind": "json", "count": 1,
+               "original_chars": 21399, "compressed_chars": 10991 }]
+}
+```
+
+> Want a number for "how well is compression working?" — call
+> `musubi_compression_stats` at the end of a session; `savings_pct` is the
+> headline figure and `by_kind` shows where the wins come from.
+
+## Context controls (driver-side, deterministic)
+
+Alongside input compression, the standalone agent applies four
+deterministic, zero-LLM token controls at the LM-call boundary (the
+Musubi counterparts of Headroom's verbosity steering, prefix caching,
+effort routing, and IntelligentContext — implemented without any learned
+model, to keep the substrate LLM-free):
+
+| Control | What it does | Knob |
+|---|---|---|
+| **Verbosity steering** | The system prompt tells the model to be concise and not restate context — cuts output tokens. | always on |
+| **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native automatic prompt caching when available. Cache reads/writes show in the cycle log through shared keys. | `MUSUBI_PROMPT_CACHE=0` to disable Anthropic `cache_control` |
+| **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
+| **IntelligentContext** | When the conversation exceeds a budget, deterministically elides the oldest/largest tool results (pairing preserved, `musubi_retrieve` markers kept) instead of dropping turns. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
+
 ## Quick start (standalone CLI)
 
 ```bash
@@ -91,9 +146,13 @@ pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
 musubi setup                       # guided: deps check, LLM endpoint, mcp.json
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
-# agent "<task>" --vendor openai --model gpt-5-mini
-# agent "<task>" --vendor ollama --model llama3.1    # local, no key
+# agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
+# agent "<task>" --profile ollama.local     # local, no key
 ```
+
+`--profile` is the only endpoint switch — vendor, model, endpoint, and
+api-key all live in the chosen `.musubi/llm.json` profile. To use a
+different vendor or model, edit (or add) a profile, don't pass a flag.
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
@@ -121,8 +180,32 @@ agent "<task>" --profile azure.work
 
 Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`, …); the section
 selects the wire/client and its keys are shared defaults inherited by each
-`[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
-the file's `default` → env-key detection.
+`[<family>.<name>]` profile. Selection precedence: `--profile` → the file's
+`default` → env-key detection (when no config file exists). `--profile` is the
+only CLI selector; vendor and model are properties of the profile.
+
+#### Behind a corporate proxy (`407 Proxy Authentication Required`)
+
+If a `curl`-transport endpoint fails with `curl: (56) CONNECT tunnel failed,
+response 407`, the proxy needs authentication. Set **`proxy_auth`** on the
+profile to the scheme your proxy advertises:
+
+| `proxy_auth` | Use when | Credentials |
+|---|---|---|
+| `negotiate` | Windows/Kerberos proxy (most corporate setups) | none — your OS login via SSPI |
+| `ntlm` | older Windows proxy | none — your OS login |
+| `basic` / `digest` | proxy with a username/password | `proxy_user_env` (or inline `proxy_user`) = `user:password` |
+
+```jsonc
+// .musubi/llm.json — integrated Windows auth, no password stored
+"integrated-proxy": { "transport": "curl", "deployment": "…", "proxy_auth": "negotiate" }
+```
+
+For `negotiate`/`ntlm` Musubi hands curl an empty `:` user automatically, so
+it authenticates as your logged-in account with nothing stored. curl reuses
+the proxy URL from `$HTTPS_PROXY` if you omit `proxy`. Not sure which scheme?
+`curl.exe -I --proxy-negotiate -U : "<your endpoint url>"` — whichever flag
+gets you past the `407` is your `proxy_auth`.
 
 ### Sub-agents (multi-step delegation)
 

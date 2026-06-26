@@ -2179,6 +2179,69 @@ def musubi_retrieve(ref_id: str) -> str:
     return json.dumps({"status": "ok", "original": original})
 
 
+@mcp.tool()
+def musubi_compress(text: str, hint: str | None = None) -> str:
+    """Compress a payload on demand and store the verbatim original.
+
+    The substrate's reversible, zero-LLM compressor (JSON-minify, code
+    comment/blank-strip, or whitespace-collapse — chosen by `hint` or
+    content). `hint` may be a filename, extension, or a kind label
+    ("json"/"code"/"log"/"text"). Inputs under ~800 chars, or any case
+    where compression wouldn't shrink the text, are returned unchanged
+    with `ref_id: null` and `ratio: 1.0`. When `ref_id` is set, the
+    original is recoverable verbatim via `musubi_retrieve(ref_id)`.
+    Returns JSON {"status":"ok","kind","ref_id","original_chars",
+    "compressed_chars","ratio","compressed",[ "note" ]}.
+    """
+    from compression import compress
+    res = compress(text, hint=hint)
+    out = {
+        "status": "ok",
+        "kind": res.kind,
+        "ref_id": res.ref_id,
+        "original_chars": res.original_chars,
+        "compressed_chars": res.compressed_chars,
+        "ratio": round(res.ratio, 3),
+        "compressed": res.compressed,
+    }
+    if res.ref_id is None:
+        out["note"] = (
+            "skipped: below the size floor"
+            if res.kind == "skip"
+            else "no size win; returned unchanged"
+        )
+    return json.dumps(out)
+
+
+@mcp.tool()
+def musubi_compression_stats() -> str:
+    """Report aggregate efficiency of the compression feature.
+
+    Sums every stored blob's recorded sizes into an overall ratio and
+    bytes-saved figure, with a per-kind breakdown. Rows written before
+    size-recording existed are excluded from the totals and counted in
+    `rows_without_metric`. Returns JSON {"status":"ok","total_blobs",
+    "total_original_chars","total_compressed_chars","bytes_saved",
+    "overall_ratio","savings_pct","rows_without_metric","by_kind":[...]}.
+    """
+    from compression import store
+    s = store.stats()
+    orig = s["total_original_chars"]
+    comp = s["total_compressed_chars"]
+    ratio = comp / orig if orig else 1.0
+    return json.dumps({
+        "status": "ok",
+        "total_blobs": s["total_blobs"],
+        "rows_without_metric": s["rows_without_metric"],
+        "total_original_chars": orig,
+        "total_compressed_chars": comp,
+        "bytes_saved": orig - comp,
+        "overall_ratio": round(ratio, 3),
+        "savings_pct": round((1 - ratio) * 100, 1),
+        "by_kind": s["by_kind"],
+    })
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def serve() -> None:

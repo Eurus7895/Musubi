@@ -52,6 +52,7 @@ discovery of optional third-party tools.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -296,34 +297,59 @@ class McpGateway:
     ) -> None:
         """Open + register every spec, fail-open per server.
 
-        Sessions are entered on the caller's `AsyncExitStack` so they live
-        exactly as long as the agent run. `opener` (test seam) is an async
-        callable ``(stack, spec) -> ClientSession``; defaults to the real
-        stdio/http opener.
+        Each server is opened on its *own* `AsyncExitStack`, never the shared
+        run-lifetime one: an unreachable transport (notably a streamable-HTTP
+        server) holds its `ConnectError` inside an anyio task group and
+        re-raises it — wrapped in a `BaseExceptionGroup` — at *teardown*, which
+        the per-server stack absorbs so it can never reach the run's stack and
+        crash the agent. On success the per-server stack's teardown is deferred
+        to run-end via a swallow-all close (a server that dies mid-run must not
+        crash shutdown either). `opener` (test seam) is an async callable
+        ``(stack, spec) -> ClientSession``; defaults to the real opener.
         """
         open_session = opener or _open_session
         for spec in specs:
             try:
-                session = await open_session(stack, spec)
-                await session.initialize()
-                listed = (await session.list_tools()).tools
-                tools = [mcp_tool_to_schema(t) for t in listed]
-                added = self.register_remote(spec.name, session, tools)
-                _log(
-                    log,
-                    f"[agent] +mcp '{spec.name}': {len(added)} tool(s)"
-                    + (
-                        f" ({len(tools) - len(added)} skipped: name clash)"
-                        if len(added) != len(tools)
-                        else ""
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001 — additive; never fatal
-                _log(
-                    log,
-                    f"[agent] !mcp '{spec.name}' skipped: "
-                    f"{type(exc).__name__}: {exc}",
-                )
+                await self._connect_one(stack, spec, log, open_session)
+            except BaseException as exc:  # noqa: BLE001 — additive; never fatal
+                if _is_fatal(exc):
+                    raise
+                _log(log, f"[agent] !mcp '{spec.name}' skipped: {_describe_exc(exc)}")
+
+    async def _connect_one(
+        self,
+        stack: AsyncExitStack,
+        spec: McpServerSpec,
+        log: Any,
+        open_session: Any,
+    ) -> None:
+        """Connect one server on an isolated stack; register its tools.
+
+        On any failure the isolated stack is closed quietly (absorbing an
+        anyio teardown `BaseExceptionGroup`) and the error re-raised for the
+        caller to log as a skip. On success teardown is handed to the run's
+        stack behind the same quiet close.
+        """
+        server_stack = AsyncExitStack()
+        try:
+            session = await open_session(server_stack, spec)
+            await asyncio.wait_for(session.initialize(), timeout=spec.timeout_s)
+            listed = (await session.list_tools()).tools
+            tools = [mcp_tool_to_schema(t) for t in listed]
+            added = self.register_remote(spec.name, session, tools)
+            _log(
+                log,
+                f"[agent] +mcp '{spec.name}': {len(added)} tool(s)"
+                + (
+                    f" ({len(tools) - len(added)} skipped: name clash)"
+                    if len(added) != len(tools)
+                    else ""
+                ),
+            )
+        except BaseException:
+            await _aclose_quietly(server_stack)
+            raise
+        stack.push_async_callback(_aclose_quietly, server_stack)
 
     # -- query ----------------------------------------------------------------
 
@@ -381,3 +407,42 @@ def _log(log: Any, message: str) -> None:
         print(message, file=log)
     except Exception:  # noqa: BLE001 — logging must never break a run
         pass
+
+
+_FATAL: tuple[type[BaseException], ...] = (
+    KeyboardInterrupt,
+    SystemExit,
+    asyncio.CancelledError,
+)
+
+
+def _is_fatal(exc: BaseException) -> bool:
+    """True if `exc` is (or, for a group, contains) a real cancel/interrupt —
+    those must propagate; everything else from an optional server is skippable."""
+    if isinstance(exc, _FATAL):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return exc.subgroup(_FATAL) is not None
+    return False
+
+
+def _describe_exc(exc: BaseException) -> str:
+    """One-line cause for the skip log, unwrapping an anyio group to its leaf."""
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        leaf = exc.exceptions[0]
+        return f"{type(leaf).__name__}: {leaf}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+async def _aclose_quietly(stack: AsyncExitStack) -> None:
+    """Close `stack`, absorbing a dead transport's teardown error.
+
+    A streamable-HTTP (or stdio) server that failed to connect re-raises its
+    error — wrapped by anyio in a `BaseExceptionGroup` — when its contexts are
+    exited. That must never crash the agent, so swallow everything here except
+    a genuine cancel/interrupt."""
+    try:
+        await stack.aclose()
+    except BaseException as exc:  # noqa: BLE001 — teardown of optional server
+        if _is_fatal(exc):
+            raise

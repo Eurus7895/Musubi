@@ -94,6 +94,57 @@ def test_build_genai_farm_section_inline_key() -> None:
     assert "api_key_env" not in sec
 
 
+def test_build_genai_farm_section_integrated_proxy_auth() -> None:
+    """A proxy_auth scheme alone flips the section to the curl transport (no
+    proxy URL needed — curl reads $HTTPS_PROXY) and stores no credentials."""
+    sec = sw.build_profile_section("genai_farm", {
+        "endpoint": "https://genai-farm.internal",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-5-nano",
+        "api_key_env": "GENAI_FARM_API_KEY",
+        "proxy_auth": "negotiate",
+    })
+    assert sec["transport"] == "curl"
+    assert sec["proxy_auth"] == "negotiate"
+    assert "proxy" not in sec
+    assert "proxy_user_env" not in sec  # integrated auth → no stored secret
+
+
+def test_build_azure_section_with_proxy_auth() -> None:
+    sec = sw.build_profile_section("azure", {
+        "azure_endpoint": "https://x.openai.azure.com",
+        "api_version": "2024-06-01",
+        "deployment": "gpt-4o",
+        "api_key_env": "AZURE_OPENAI_API_KEY",
+        "proxy_auth": "ntlm",
+    })
+    assert sec["proxy_auth"] == "ntlm"
+
+
+def test_interactive_genai_farm_integrated_proxy(tmp_path: Path) -> None:
+    """A genai_farm run choosing negotiate proxy auth writes a curl profile
+    with proxy_auth and no stored credential."""
+    script = Script([
+        "genai_farm",                 # family
+        "https://farm.internal",      # endpoint
+        "2024-06-01",                 # api version
+        "gpt-5-nano",                 # deployment
+        "",                           # proxy URL (blank → use $HTTPS_PROXY)
+        "negotiate",                  # proxy auth scheme
+        "",                           # extra curl args
+        "GENAI_FARM_API_KEY",         # api key env
+        "work",                       # profile name
+        "n",                          # test connection?
+        "n",                          # generate mcp.json?
+    ])
+    rc = sw.run_interactive(prompt=script, out=_silent, root=tmp_path)
+    assert rc == 0
+    prof = load_profile("genai_farm.work", path=tmp_path / ".musubi" / "llm.json")
+    assert prof["transport"] == "curl"
+    assert prof["proxy_auth"] == "negotiate"
+    assert "proxy_user_env" not in prof
+
+
 def test_build_openai_and_ollama_sections() -> None:
     oai = sw.build_profile_section(
         "openai", {"model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"})
@@ -188,6 +239,42 @@ def test_connection_failure_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not ok and "openai SDK not installed" in msg
 
 
+def test_proxy_error_hint_detects_407() -> None:
+    msg = "RuntimeError: curl exited 56 ...: curl: (56) CONNECT tunnel failed, response 407"
+    hint = sw.proxy_error_hint(msg)
+    assert hint is not None
+    assert "proxy auth" in hint.lower()
+    assert "negotiate" in hint
+
+
+def test_proxy_error_hint_none_for_unrelated_error() -> None:
+    assert sw.proxy_error_hint("openai SDK not installed") is None
+
+
+def test_interactive_surfaces_proxy_hint_on_407(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the optional connection test fails with a 407, the wizard prints a
+    proxy-specific hint, not just FAILED."""
+    monkeypatch.setattr(
+        sw, "test_connection",
+        lambda _p: (False, "curl: (56) CONNECT tunnel failed, response 407"),
+    )
+    lines: list[str] = []
+    script = Script([
+        "genai_farm", "https://farm.internal", "2024-06-01", "gpt-5-nano",
+        "",             # proxy URL
+        "",             # proxy auth scheme (none — the misconfig we're catching)
+        "GENAI_FARM_API_KEY",  # api key env
+        "work",         # profile
+        "y",            # test connection? → yes (fails with 407)
+        "n",            # generate mcp.json?
+    ])
+    rc = sw.run_interactive(prompt=script, out=lines.append, root=tmp_path)
+    assert rc == 0
+    assert any("hint:" in ln and "negotiate" in ln for ln in lines)
+
+
 # ── end-to-end interactive run (scripted) ───────────────────────────────────
 
 
@@ -197,6 +284,7 @@ def test_interactive_azure_writes_config_and_mcp(tmp_path: Path) -> None:
         "https://x.openai.azure.com",         # endpoint
         "2024-06-01",                         # api version
         "gpt-4o",                             # deployment
+        "",                                   # proxy auth scheme (none)
         "",                                   # extra curl args
         "",                                   # api_key_env (default)
         "",                                   # profile (default 'work')

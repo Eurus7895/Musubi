@@ -52,6 +52,12 @@ _DEFAULT_MODEL: dict[str, str] = {
     "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
 }
 
+# Proxy auth schemes the curl transport understands (mirrors
+# curl_router._PROXY_AUTH_FLAGS). negotiate/ntlm use the OS login with no
+# stored password; basic/digest need a `user:password`.
+_PROXY_AUTH_SCHEMES: tuple[str, ...] = ("negotiate", "ntlm", "basic", "digest", "anyauth")
+_INTEGRATED_PROXY_AUTH: tuple[str, ...] = ("negotiate", "ntlm")
+
 Prompt = Callable[[str], str]
 Out = Callable[[str], None]
 
@@ -127,6 +133,14 @@ def _apply_api_key(section: dict[str, Any], a: dict[str, Any]) -> None:
         section["api_key"] = a["api_key"]
 
 
+def _apply_proxy_auth(section: dict[str, Any], a: dict[str, Any]) -> None:
+    """Copy proxy-auth fields (scheme + optional credentials env) if present."""
+    if a.get("proxy_auth"):
+        section["proxy_auth"] = a["proxy_auth"]
+    if a.get("proxy_user_env"):
+        section["proxy_user_env"] = a["proxy_user_env"]
+
+
 def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any]:
     """Family answers → a flat profile-settings dict (no profile name/family)."""
     a = answers
@@ -139,25 +153,27 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
             "auth_header": "api-key",
         }
         _apply_api_key(section, a)
+        _apply_proxy_auth(section, a)
         if a.get("curl_extra_args"):
             section["curl_extra_args"] = a["curl_extra_args"]
         return section
 
     if family == "genai_farm":
         # On-prem gateway with the Azure deployment-in-path URL + Bearer auth.
-        # SDK transport by default; a configured proxy implies the curl fallback
-        # (the only transport that rides an authenticated proxy / custom CA / mTLS).
+        # SDK transport by default; a configured proxy OR a proxy_auth scheme
+        # implies the curl fallback (the only transport that rides an
+        # authenticated proxy / custom CA / mTLS).
         section = {
             "endpoint": a["endpoint"],
             "api_version": a["api_version"],
             "deployment": a["deployment"],
         }
         _apply_api_key(section, a)
-        if a.get("proxy"):
+        if a.get("proxy") or a.get("proxy_auth"):
             section["transport"] = "curl"
-            section["proxy"] = a["proxy"]
-            if a.get("proxy_user_env"):
-                section["proxy_user_env"] = a["proxy_user_env"]
+            if a.get("proxy"):
+                section["proxy"] = a["proxy"]
+            _apply_proxy_auth(section, a)
             if a.get("curl_extra_args"):
                 section["curl_extra_args"] = a["curl_extra_args"]
         return section
@@ -278,6 +294,21 @@ def test_connection(profile: dict[str, Any]) -> tuple[bool, str]:
     return True, (text[:80].strip() or f"(stop_reason={resp.stop_reason})")
 
 
+def proxy_error_hint(message: str) -> str | None:
+    """A targeted next step when a failed connection looks like a proxy 407.
+
+    Returns None for any other error so the generic FAILED line stands alone.
+    """
+    low = message.lower()
+    if "407" in low or "proxy authentication" in low or "connect tunnel failed" in low:
+        return (
+            "that's a proxy 407 (authentication required). Re-run setup and set a "
+            "proxy auth scheme — 'negotiate' for a Windows/Kerberos proxy needs no "
+            'password. Probe it first with: curl -I --proxy-negotiate -U : "<url>"'
+        )
+    return None
+
+
 # ── Interactive shell ───────────────────────────────────────────────────────
 
 
@@ -312,6 +343,10 @@ def run_interactive(
     if _ask_yes_no(prompt, "Test the connection now?", default=False):
         ok, msg = test_connection({**section, "family": family})
         out(f"  connection: {'OK' if ok else 'FAILED'} — {msg}")
+        if not ok:
+            hint = proxy_error_hint(msg)
+            if hint:
+                out(f"  hint: {hint}")
 
     cfg_path = root / ".musubi" / "llm.json"
     raw = upsert(parse_existing(cfg_path), family, profile, section, set_default=True)
@@ -328,7 +363,11 @@ def run_interactive(
     out("\nNext steps:")
     if env_name:
         out(f"  export {env_name}=<your key>")
-    out(f'  agent "add a /health endpoint and a test" --profile {family}.{profile}')
+    # This profile was just written as the file's `default`, so a bare run uses
+    # it. `--profile` is the only endpoint switch — vendor and model live in the
+    # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
+    out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
+    out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
     return 0
 
 
@@ -345,6 +384,7 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         a["azure_endpoint"] = _ask(prompt, "Azure endpoint", "https://my-resource.openai.azure.com")
         a["api_version"] = _ask(prompt, "API version", "2024-06-01")
         a["deployment"] = _ask(prompt, "Deployment name", "gpt-4o")
+        _ask_proxy(prompt, out, a, ask_url=False)
         extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
         if extra.strip():
             a["curl_extra_args"] = extra.split()
@@ -352,10 +392,8 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         a["endpoint"] = _ask(prompt, "Gateway endpoint host", "https://genai-farm.internal")
         a["api_version"] = _ask(prompt, "API version", "2024-06-01")
         a["deployment"] = _ask(prompt, "Deployment / model name", _DEFAULT_MODEL[family])
-        proxy = _ask(prompt, "Proxy URL for the curl fallback (optional, blank = SDK)", "")
-        if proxy.strip():
-            a["proxy"] = proxy.strip()
-            a["proxy_user_env"] = _ask(prompt, "Env var holding proxy 'user:password' (optional)", "")
+        _ask_proxy(prompt, out, a, ask_url=True)
+        if a.get("proxy") or a.get("proxy_auth"):
             extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
             if extra.strip():
                 a["curl_extra_args"] = extra.split()
@@ -390,6 +428,47 @@ def _ask(prompt: Prompt, label: str, default: str) -> str:
     suffix = f" [{default}]" if default else ""
     raw = prompt(f"{label}{suffix}: ").strip()
     return raw or default
+
+
+def _ask_proxy(prompt: Prompt, out: Out, a: dict[str, Any], *, ask_url: bool) -> None:
+    """Collect proxy settings into `a`: an optional URL (genai_farm only — azure
+    rides $HTTPS_PROXY / curl_extra_args), an auth scheme, and, for the password
+    schemes, the env var holding `user:password`."""
+    proxy = ""
+    if ask_url:
+        proxy = _ask(
+            prompt,
+            "Proxy URL for the curl fallback (optional, blank = none/$HTTPS_PROXY)",
+            "",
+        ).strip()
+        if proxy:
+            a["proxy"] = proxy
+    scheme = _ask_proxy_auth(prompt, out)
+    if scheme:
+        a["proxy_auth"] = scheme
+    # negotiate/ntlm authenticate as the OS login (no stored secret); basic/
+    # digest need credentials. Also ask when a proxy is set without a scheme
+    # (a legacy basic-auth proxy).
+    if scheme in ("basic", "digest") or (proxy and not scheme):
+        pu = _ask(prompt, "Env var holding proxy 'user:password' (optional)", "").strip()
+        if pu:
+            a["proxy_user_env"] = pu
+
+
+def _ask_proxy_auth(prompt: Prompt, out: Out) -> str:
+    """Ask for a proxy auth scheme; '' means none. Re-prompts on an unknown
+    value (fail-closed: a typo shouldn't silently disable proxy auth)."""
+    while True:
+        raw = _ask(
+            prompt,
+            "Proxy auth for a 407 proxy (negotiate/ntlm/basic/digest, blank = none)",
+            "",
+        ).strip().lower()
+        if not raw or raw in _PROXY_AUTH_SCHEMES:
+            if raw in _INTEGRATED_PROXY_AUTH:
+                out("  using your OS login for the proxy — no password stored.")
+            return raw
+        out(f"  '{raw}' is not one of {_PROXY_AUTH_SCHEMES}")
 
 
 def _ask_choice(

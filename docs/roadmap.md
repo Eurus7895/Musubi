@@ -70,8 +70,12 @@ substrate; pipeline dissolution is postponed (see below).
 3. ◐ **Wire compression into input returns.** `musubi_read_file` /
    `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
    opts out per session/workspace); reversible via `musubi_retrieve`, so
-   default-on is safe. `musubi_read_stage` (after firewall) +
-   `musubi_get_conversation` + `stage_metrics` ratio recording remain.
+   default-on is safe. On-demand `musubi_compress` and efficiency
+   measurement landed: the blob store records each payload's
+   `original_chars`/`compressed_chars`, and `musubi_compression_stats`
+   aggregates the overall ratio, bytes saved, and a per-kind breakdown.
+   `musubi_read_stage` (after firewall) + `musubi_get_conversation`
+   compression remain.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
@@ -87,8 +91,19 @@ substrate; pipeline dissolution is postponed (see below).
    agent only (sub-agents stay Musubi-tool-scoped); the tools are **not**
    firewalled/audited by Musubi — a driver-side convenience, not a
    substrate control.
-   Remaining: port `BudgetEnforcer` + compaction into `agent/run.py`;
-   multi-turn CLI + conversation persistence.
+   Driver-side context controls landed (`agent/context.py` +
+   `agent/vendors/anthropic_router.py`): deterministic, zero-LLM
+   counterparts of Headroom's verbosity steering (terse system prompt),
+   CacheAligner (Anthropic `cache_control` on the static system+tools
+   prefix, `MUSUBI_PROMPT_CACHE=0` opts out; OpenAI-compatible vendors
+   surface provider-native cached-token telemetry through the same cycle-log
+   keys), effort routing (low per-cycle `max_tokens` floor that escalates
+   only on truncation, `MUSUBI_EFFORT_TOKENS`), and IntelligentContext (`fit_context` elides
+   the oldest/largest tool results when the convo exceeds
+   `MUSUBI_CONTEXT_BUDGET`, preserving tool pairing + `musubi_retrieve`
+   markers — the learned compaction stays out to honour HI #1).
+   Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
+   conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
    (`agent/subagent.py`): the standalone agent runs spawned roles to
    completion on a firewalled brief + restricted tool surface, summary
@@ -151,6 +166,14 @@ is what would license it. Postponed while the pipeline stays.
   data that makes dissolution decisions empirical rather than guessed.
 - **Lines-of-substrate vs lines-of-skill ratio** — track over time; the
   goal is the ratio improves even as features grow.
+- **Tool-catalog surface for the standalone agent (deferred cost-lever).**
+  The standalone host hands the model **all** `musubi_*` tools every call
+  (`agent/run.py` `register_local`), but ~20 are pipeline/audit machinery the
+  harness code calls, not tools the model should invoke. Sub-agents are
+  already filtered (`agent/subagent.py`); the top-level agent is not. A
+  driver-side allowlist would cut per-call tool-schema tokens with no HI #1
+  impact (the substrate keeps all tools registered). Observed, not yet acted
+  on — tracked so the lever isn't forgotten.
 - **Relocate substrate out of `.github/` (coordinated, later).** The
   skill catalog, 3-tier memory, agent catalog, and pipeline defs live
   under `.github/` only as a Copilot-extension artifact — substrate is

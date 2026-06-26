@@ -35,6 +35,20 @@ from agent.vendors.openai_wire import (
 
 _DEFAULT_TIMEOUT_S = 120
 
+# Proxy auth scheme → the curl config flag that selects it. Negotiate
+# (Kerberos/SSPI) and NTLM authenticate with the caller's OS login, so they
+# need no stored password — the common corporate-proxy case.
+_PROXY_AUTH_FLAGS = {
+    "negotiate": "proxy-negotiate",
+    "ntlm": "proxy-ntlm",
+    "basic": "proxy-basic",
+    "digest": "proxy-digest",
+    "anyauth": "proxy-anyauth",
+}
+#: Schemes that derive the identity from the OS session; an empty `:`
+#: user:password tells curl to use the logged-in account (no secret stored).
+_INTEGRATED_PROXY_AUTH = {"negotiate", "ntlm"}
+
 
 class CurlChatRouter(LMRouter):
     """OpenAI-wire chat completions issued through the system `curl` binary."""
@@ -52,6 +66,7 @@ class CurlChatRouter(LMRouter):
         auth_header: str = "api-key",
         proxy: str | None = None,
         proxy_user: str | None = None,
+        proxy_auth: str | None = None,
         curl_extra_args: list[str] | None = None,
         timeout_s: int = _DEFAULT_TIMEOUT_S,
         name: str = "azure",
@@ -64,6 +79,7 @@ class CurlChatRouter(LMRouter):
         self._auth_header = auth_header
         self._proxy = proxy
         self._proxy_user = proxy_user
+        self._proxy_auth = _normalise_proxy_auth(proxy_auth)
         self._extra = list(curl_extra_args or [])
         self._timeout_s = timeout_s
         self._url = _resolve_url(
@@ -176,8 +192,16 @@ class CurlChatRouter(LMRouter):
         # the api-key is here rather than on the command line.
         if self._proxy:
             lines.append(f"proxy = {q(self._proxy)}")
-        if self._proxy_user:
-            lines.append(f"proxy-user = {q(self._proxy_user)}")
+        if self._proxy_auth:
+            lines.append(_PROXY_AUTH_FLAGS[self._proxy_auth])
+        proxy_user = self._proxy_user
+        # Integrated schemes (Negotiate/NTLM) authenticate as the OS login;
+        # an empty `:` means "use the logged-in account", so default to it when
+        # one of those schemes is set without explicit credentials.
+        if proxy_user is None and self._proxy_auth in _INTEGRATED_PROXY_AUTH:
+            proxy_user = ":"
+        if proxy_user:
+            lines.append(f"proxy-user = {q(proxy_user)}")
         # The leading "@" is curl's "read body from file" directive, so it sits
         # outside the quoted-and-escaped path.
         lines.append(f'data-binary = "@{_cfg_escape(posix_body_path)}"')
@@ -201,6 +225,22 @@ def _cfg_escape(value: str) -> str:
 def _cfg_quote(value: str) -> str:
     """Render `value` as a safe double-quoted curl-config token."""
     return f'"{_cfg_escape(value)}"'
+
+
+def _normalise_proxy_auth(proxy_auth: str | None) -> str | None:
+    """Validate the `proxy_auth` profile value → a known scheme key, or None.
+
+    Fail-closed on a typo: an unknown scheme raises rather than silently
+    sending no proxy auth (which would surface later as an opaque 407)."""
+    if proxy_auth is None:
+        return None
+    key = proxy_auth.strip().lower()
+    if key not in _PROXY_AUTH_FLAGS:
+        raise ValueError(
+            f"unknown proxy_auth {proxy_auth!r}; use one of "
+            f"{', '.join(sorted(_PROXY_AUTH_FLAGS))}"
+        )
+    return key
 
 
 def _resolve_url(
