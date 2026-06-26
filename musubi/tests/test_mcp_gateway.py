@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -299,5 +299,51 @@ def test_connect_external_opener_failure_is_isolated() -> None:
         raise RuntimeError("cannot launch")
 
     log = _connect(gw, [McpServerSpec(name="x", command="z")], opener)
+    assert gw.tools() == []
+    assert any("skipped" in line for line in log)
+
+
+def test_connect_external_absorbs_teardown_exception_group() -> None:
+    """Regression: an unreachable streamable-HTTP server connects lazily, then
+    re-raises its ConnectError wrapped in a BaseExceptionGroup at *teardown*.
+    That must be absorbed by the per-server stack — never propagate to the run
+    and crash the agent (the Windows http-server traceback)."""
+    gw = McpGateway()
+    good = FakeSession([_tool("ls")])
+
+    @asynccontextmanager
+    async def exploding_transport():
+        yield
+        raise BaseExceptionGroup(
+            "teardown", [ConnectionError("All connection attempts failed")]
+        )
+
+    async def opener(server_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        # Enter a context whose *teardown* explodes, mimicking anyio's task
+        # group holding a late ConnectError. The session itself initialises OK.
+        await server_stack.enter_async_context(exploding_transport())
+        return good
+
+    # _connect closes the run stack on exit; this must not raise.
+    log = _connect(gw, [McpServerSpec(name="remote", command="x")], opener)
+    assert gw.route("remote__ls") == (good, "ls")  # connected + registered
+    assert any("remote" in line and "1 tool" in line for line in log)
+
+
+def test_connect_external_skips_server_failing_at_teardown_only() -> None:
+    """A server whose transport explodes at teardown but never returned a
+    usable session is skipped without crashing the run."""
+    gw = McpGateway()
+
+    @asynccontextmanager
+    async def exploding_transport():
+        yield
+        raise BaseExceptionGroup("teardown", [ConnectionError("refused")])
+
+    async def opener(server_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        await server_stack.enter_async_context(exploding_transport())
+        raise RuntimeError("connect failed")
+
+    log = _connect(gw, [McpServerSpec(name="remote", command="x")], opener)
     assert gw.tools() == []
     assert any("skipped" in line for line in log)
