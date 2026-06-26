@@ -207,16 +207,12 @@ def test_resolve_vendor_labels_which_profile(
     monkeypatch.setenv("MUSUBI_LLM_CONFIG", str(cfg))
     # Avoid importing a real vendor SDK — only the label logic is under test.
     monkeypatch.setattr(run_mod, "build_from_profile", lambda prof: "ROUTER")
-    monkeypatch.setattr(run_mod, "build_vendor", lambda v, model=None: "VENDOR")
 
-    _, default_src = run_mod._resolve_vendor(None, None, None)
+    _, default_src = run_mod._resolve_vendor(None)
     assert default_src == "ollama.local (llm.json default)"
 
-    _, profile_src = run_mod._resolve_vendor(None, "ollama.local", None)
+    _, profile_src = run_mod._resolve_vendor("ollama.local")
     assert profile_src == "ollama.local (--profile)"
-
-    _, vendor_src = run_mod._resolve_vendor("anthropic", None, None)
-    assert vendor_src == "--vendor anthropic"
 
 
 def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:

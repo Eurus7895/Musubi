@@ -146,9 +146,13 @@ pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
 musubi setup                       # guided: deps check, LLM endpoint, mcp.json
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
-# agent "<task>" --vendor openai --model gpt-5-mini
-# agent "<task>" --vendor ollama --model llama3.1    # local, no key
+# agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
+# agent "<task>" --profile ollama.local     # local, no key
 ```
+
+`--profile` is the only endpoint switch — vendor, model, endpoint, and
+api-key all live in the chosen `.musubi/llm.json` profile. To use a
+different vendor or model, edit (or add) a profile, don't pass a flag.
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
@@ -176,8 +180,9 @@ agent "<task>" --profile azure.work
 
 Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`, …); the section
 selects the wire/client and its keys are shared defaults inherited by each
-`[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
-the file's `default` → env-key detection.
+`[<family>.<name>]` profile. Selection precedence: `--profile` → the file's
+`default` → env-key detection (when no config file exists). `--profile` is the
+only CLI selector; vendor and model are properties of the profile.
 
 #### Behind a corporate proxy (`407 Proxy Authentication Required`)
 
