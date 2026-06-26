@@ -80,15 +80,21 @@ substrate; pipeline dissolution is postponed (see below).
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
    authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.json`
-   family profiles (`agent/config.py` + `agent/vendors/`). External-MCP
-   federation landed (`agent/mcp_gateway.py`): the standalone host reads an
-   `mcp.json` (the standard `mcpServers` schema — Claude Desktop / Cursor /
-   VS Code configs paste in unchanged), connects any number of other MCP
-   servers (stdio or streamable-HTTP), and splices their tools into the
-   catalog under a `<server>__<tool>` namespace, routing each call back to
-   its owner.
-   Fail-open per server (a bad entry is logged and skipped); top-level
-   agent only (sub-agents stay Musubi-tool-scoped); the tools are **not**
+   family profiles (`agent/config.py` + `agent/vendors/`); curl proxy auth
+   accepts either an env-var name or a literal `user:password` in
+   `proxy_user_env` for the common pasted-credential setup path, with the
+   README carrying the operator quickstart, default-profile selection, and
+   407-proxy troubleshooting path.
+   External-MCP federation landed (`agent/mcp_gateway.py`): the standalone
+   host reads an `mcp.json` (the standard `mcpServers` schema — Claude
+   Desktop / Cursor / VS Code configs paste in unchanged), connects any
+   number of other MCP servers (stdio or streamable-HTTP), and splices their
+   tools into the catalog under a `<server>__<tool>` namespace, routing each
+   call back to its owner.
+   Fail-open per server (a bad entry is logged and skipped, including
+   streamable-HTTP transport failures that surface during task-group
+   teardown before they can escape the agent-wide stack); top-level agent
+   only (sub-agents stay Musubi-tool-scoped); the tools are **not**
    firewalled/audited by Musubi — a driver-side convenience, not a
    substrate control.
    Driver-side context controls landed (`agent/context.py` +
@@ -102,6 +108,9 @@ substrate; pipeline dissolution is postponed (see below).
    the oldest/largest tool results when the convo exceeds
    `MUSUBI_CONTEXT_BUDGET`, preserving tool pairing + `musubi_retrieve`
    markers — the learned compaction stays out to honour HI #1).
+   Loop/vendor failures are re-raised outside the MCP teardown contexts as
+   clean `RuntimeError`s, so network/proxy errors do not become anyio
+   `BaseExceptionGroup` walls in the CLI.
    Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
    conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed

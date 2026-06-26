@@ -124,6 +124,20 @@ def test_resolve_proxy_user_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_proxy_user({"proxy_user_env": "FARM_PROXY"}) == "user:pass"
 
 
+def test_resolve_proxy_user_env_field_accepts_literal_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("user:pass", raising=False)
+    assert resolve_proxy_user({"proxy_user_env": "user:pass"}) == "user:pass"
+
+
+def test_resolve_proxy_user_missing_env_name_is_not_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FARM_PROXY", raising=False)
+    assert resolve_proxy_user({"proxy_user_env": "FARM_PROXY"}) is None
+
+
 def test_resolve_proxy_user_inline() -> None:
     assert resolve_proxy_user({"proxy_user": "u:p"}) == "u:p"
 

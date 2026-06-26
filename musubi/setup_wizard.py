@@ -355,7 +355,11 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
         proxy = _ask(prompt, "Proxy URL for the curl fallback (optional, blank = SDK)", "")
         if proxy.strip():
             a["proxy"] = proxy.strip()
-            a["proxy_user_env"] = _ask(prompt, "Env var holding proxy 'user:password' (optional)", "")
+            a["proxy_user_env"] = _ask(
+                prompt,
+                "Env var name or literal proxy 'user:password' (optional)",
+                "",
+            )
             extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
             if extra.strip():
                 a["curl_extra_args"] = extra.split()

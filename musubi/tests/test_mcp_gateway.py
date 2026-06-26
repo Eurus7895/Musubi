@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -301,3 +301,22 @@ def test_connect_external_opener_failure_is_isolated() -> None:
     log = _connect(gw, [McpServerSpec(name="x", command="z")], opener)
     assert gw.tools() == []
     assert any("skipped" in line for line in log)
+
+
+def test_connect_external_teardown_failure_is_isolated() -> None:
+    gw = McpGateway()
+
+    @asynccontextmanager
+    async def failing_transport() -> Any:
+        try:
+            yield
+        finally:
+            raise RuntimeError("deferred connect failure")
+
+    async def opener(stack: AsyncExitStack, _spec: McpServerSpec) -> Any:
+        await stack.enter_async_context(failing_transport())
+        return FakeSession([], fail_init=True)
+
+    log = _connect(gw, [McpServerSpec(name="remote", url="http://127.0.0.1/mcp")], opener)
+    assert gw.tools() == []
+    assert any("remote" in line and "skipped" in line for line in log)

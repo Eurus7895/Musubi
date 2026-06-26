@@ -156,10 +156,20 @@ def resolve_proxy_user(profile: dict[str, Any]) -> str | None:
     """Resolve the `user:password` for an authenticated curl proxy.
 
     Preference order mirrors `resolve_api_key`: `proxy_user_env` (the NAME of
-    an env var holding `user:password`) over an inline `proxy_user`. Returns
+    an env var holding `user:password`) over an inline `proxy_user`. For
+    convenience, `proxy_user_env` may also contain the literal `user:password`
+    itself — common when users paste credentials into the wrong field. Returns
     None when neither is set (no proxy auth, or an unauthenticated proxy).
     """
     env_name = profile.get("proxy_user_env")
     if env_name:
-        return os.environ.get(env_name)
+        env_name = str(env_name)
+        return os.environ.get(env_name) or (
+            env_name if _looks_like_proxy_user(env_name) else None
+        )
     return profile.get("proxy_user")
+
+
+def _looks_like_proxy_user(value: Any) -> bool:
+    """Return True when `value` looks like a literal curl `user:password`."""
+    return isinstance(value, str) and ":" in value

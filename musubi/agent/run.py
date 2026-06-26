@@ -110,6 +110,7 @@ async def run_agent(
     # in a BaseExceptionGroup, which would defeat `except RuntimeError`
     # at every call site (including main()).
     final_answer: str | None = None
+    loop_error: BaseException | None = None
 
     # One AsyncExitStack owns Musubi's session AND every federated external
     # session, so they all open in order and tear down (LIFO) together. This
@@ -173,16 +174,27 @@ async def run_agent(
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": task},
         ]
-        final_answer, _ = await _run_loop(
-            session, vendor, tools, messages,
-            max_cycles=max_cycles, log=log, orchestration=orchestration,
-            gateway=gateway,
-        )
+        # Catch a loop failure (an LLM/network error from `vendor.call`, a
+        # dispatch error) HERE, inside the `async with`, and stash it. Letting
+        # it escape into the stack's `__aexit__` makes anyio re-wrap it in a
+        # BaseExceptionGroup (the unreadable multi-page traceback) and defeats
+        # `except RuntimeError` at every call site. We re-raise it cleanly
+        # outside the contexts below.
+        try:
+            final_answer, _ = await _run_loop(
+                session, vendor, tools, messages,
+                max_cycles=max_cycles, log=log, orchestration=orchestration,
+                gateway=gateway,
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
+            loop_error = exc
 
-    # Raise OUTSIDE the MCP contexts: anyio's TaskGroup wraps anything raised
-    # inside `stdio_client`/`ClientSession` in a BaseExceptionGroup, which would
-    # defeat `except RuntimeError` at every call site. `_run_loop` therefore
-    # signals exhaustion by returning None rather than raising.
+    # Raise OUTSIDE the MCP contexts (see above): a clean message that
+    # `main()` prints as `agent-agent: …`, and that `except RuntimeError`
+    # callers can catch. `_run_loop` signals cycle exhaustion by returning
+    # None rather than raising, for the same reason.
+    if loop_error is not None:
+        raise RuntimeError(_clean_error(loop_error)) from None
     if final_answer is None:
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
@@ -422,6 +434,17 @@ def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
 def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
     parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
     return "".join(parts).strip()
+
+
+def _clean_error(exc: BaseException) -> str:
+    """A readable one-line message for a loop failure.
+
+    Unwraps an anyio/Exception group to its first leaf so a vendor error
+    (e.g. a curl proxy 407) reads as one line instead of a nested group dump.
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _call_with_effort(

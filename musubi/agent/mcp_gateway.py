@@ -304,11 +304,25 @@ class McpGateway:
         open_session = opener or _open_session
         for spec in specs:
             try:
-                session = await open_session(stack, spec)
-                await session.initialize()
-                listed = (await session.list_tools()).tools
-                tools = [mcp_tool_to_schema(t) for t in listed]
-                added = self.register_remote(spec.name, session, tools)
+                # Open each optional server on a temporary stack first. Some
+                # MCP transports (notably streamable HTTP) can surface connect
+                # failures from background task groups during context teardown
+                # rather than at the call site that triggered initialization.
+                # If we enter those contexts directly on the agent-wide stack,
+                # the deferred failure escapes after the loop and kills the
+                # whole agent. Keep the failure inside this per-server try; only
+                # transfer the live contexts to the parent stack after the
+                # server has initialized and listed tools successfully.
+                async with AsyncExitStack() as server_stack:
+                    session = await open_session(server_stack, spec)
+                    await session.initialize()
+                    listed = (await session.list_tools()).tools
+                    tools = [mcp_tool_to_schema(t) for t in listed]
+                    added = self.register_remote(spec.name, session, tools)
+
+                    live_stack = server_stack.pop_all()
+                    stack.push_async_callback(live_stack.aclose)
+
                 _log(
                     log,
                     f"[agent] +mcp '{spec.name}': {len(added)} tool(s)"

@@ -159,6 +159,94 @@ The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
 in the substrate itself. Requirements: Python 3.11+.
 
+### Using the standalone `agent` CLI
+
+1. **Install Musubi in the Python you will run `agent` with.**
+   ```bash
+   cd musubi
+   pip install -e ".[all]"
+   ```
+   If you use a corporate Python/toolbase, make sure `python`, `pip`, and
+   `agent` point at the same environment; the CLI starts the MCP server with
+   the same interpreter that launched the agent.
+
+2. **Create an LLM profile.** Use the wizard, or copy the example and edit it:
+   ```bash
+   musubi setup
+   # or:
+   cp .musubi/llm.json.example .musubi/llm.json
+   ```
+   Keep API keys in environment variables where possible:
+   ```bash
+   export GENAI_FARM_API_KEY=...
+   ```
+   The profile named by top-level `"default"` is used when you run `agent`
+   without `--profile`, so choose your day-to-day endpoint there:
+   ```jsonc
+   {
+     "default": "genai_farm.work",
+     "genai_farm": {
+       "work": {
+         "deployment": "gpt-5-nano-2025-08-07",
+         "transport": "curl"
+       }
+     }
+   }
+   ```
+
+3. **Run a task.**
+   ```bash
+   agent "explain the failing test and propose a fix"
+   # Optional overrides only when you want to switch away from the default:
+   agent "add a health endpoint and tests" --profile genai_farm.work
+   agent "inspect this repo" --vendor ollama --model llama3.1
+   ```
+   The agent resolves the vendor/model from `.musubi/llm.json` in this order:
+   `--vendor` → `--profile` → top-level `"default"` → env-key detection. You
+   do not need to put `--profile` in every chat/task when `"default"` points at
+   the profile you want. The cycle log confirms what was selected, for example
+   `[agent] vendor=genai_farm model=gpt-5-nano-2025-08-07 ...`, then shows the
+   Musubi tool count, external MCP tool count, sub-agent session id, and each
+   reason→tool→observe cycle.
+
+4. **Add optional external MCP tools.** Copy the example config, then run the
+   agent normally; configs are auto-discovered in `.mcp.json`,
+   `.musubi/mcp.json`, or `~/.musubi/mcp.json`.
+   ```bash
+   cp .musubi/mcp.json.example .musubi/mcp.json
+   agent "read the project files and summarize the architecture"
+   ```
+   External tools are additive: a bad external server is logged and skipped,
+   while Musubi's own governed `musubi_*` tools remain available.
+
+5. **Troubleshoot proxy-backed endpoints.** A clean error such as
+   `curl exited 56 ... CONNECT tunnel failed, response 407` means curl reached
+   a proxy that requires authentication. For curl profiles, set both the proxy
+   URL and proxy credentials:
+   ```jsonc
+   {
+     "genai_farm": {
+       "endpoint": "https://aoai-farm.example.com/api",
+       "api_version": "2025-04-01-preview",
+       "api_key_env": "GENAI_FARM_API_KEY",
+       "work": {
+         "transport": "curl",
+         "deployment": "gpt-5-nano-2025-08-07",
+         "proxy": "http://proxy.example.com:8080",
+         "proxy_user_env": "GENAI_FARM_PROXY_USER"
+       }
+     }
+   }
+   ```
+   `proxy_user_env` can be either an env-var name:
+   ```bash
+   export GENAI_FARM_PROXY_USER='DOMAIN\user:password'
+   ```
+   or the literal `user:password` value itself:
+   ```json
+   "proxy_user_env": "DOMAIN\\user:password"
+   ```
+
 ### Vendors & on-prem endpoints
 
 A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
@@ -178,6 +266,8 @@ Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`, �
 selects the wire/client and its keys are shared defaults inherited by each
 `[<family>.<name>]` profile. Selection precedence: `--vendor` → `--profile` →
 the file's `default` → env-key detection.
+For curl proxy auth, `proxy_user_env` may name an environment variable holding
+`user:password` or, for convenience, contain the literal `user:password` value.
 
 ### Sub-agents (multi-step delegation)
 

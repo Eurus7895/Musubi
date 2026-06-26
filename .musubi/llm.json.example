@@ -1,7 +1,7 @@
 {
   "//": "Musubi standalone-agent LLM endpoints — copy to .musubi/llm.json and edit.",
   "//cp": "cp .musubi/llm.json.example .musubi/llm.json",
-  "//run": "agent \"your task\" --profile azure.work",
+  "//run": "agent \"your task\"   (uses the top-level default profile unless --profile overrides it)",
   "//schema": "Object keyed by LLM family (azure | genai_farm | openai | anthropic | ollama). Within a family, scalar values are shared defaults that every profile (a nested object) inherits; profile keys win. Reference a profile as <family>.<profile> (e.g. azure.work), or a bare name when unique. With no --profile, `default` below is used.",
   "//secrets": "Prefer `api_key_env` (the NAME of an env var holding the key) over an inline `api_key`, so the key never lives in this file. .musubi/llm.json is gitignored.",
 
@@ -19,7 +19,7 @@
     "work-mini": { "deployment": "gpt-4o-mini" }
   },
 
-  "//genai_farm": "Gen AI Farm (on-prem gateway). Azure-style deployment-in-path URL, Bearer auth. Default transport is the openai SDK; transport='curl' is the FALLBACK for an authenticated proxy / custom CA / mTLS. proxy_user_env names the env var holding 'user:password'; it and the api-key are passed to curl on stdin so neither secret appears in argv.",
+  "//genai_farm": "Gen AI Farm (on-prem gateway). Azure-style deployment-in-path URL, Bearer auth. Default transport is the openai SDK; transport='curl' is the FALLBACK for an authenticated proxy / custom CA / mTLS. proxy_user_env may name an env var holding 'user:password' or contain the literal 'user:password'; it and the api-key are passed to curl on stdin so neither secret appears in argv.",
   "genai_farm": {
     "endpoint": "https://genai-farm.internal",
     "api_version": "2024-06-01",
