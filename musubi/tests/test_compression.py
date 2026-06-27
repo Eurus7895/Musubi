@@ -50,6 +50,113 @@ def test_collapse_text_strips_trailing_ws_and_blank_runs():
     assert "line one" in out and "line two" in out
 
 
+def test_smart_crush_json_summarizes_repeated_arrays_better_than_minify():
+    original = json.dumps(
+        {
+            "items": [
+                {
+                    "id": i,
+                    "name": f"item-{i}",
+                    "active": i % 2 == 0,
+                    "meta": {"score": i % 5, "tags": ["alpha", "beta"]},
+                }
+                for i in range(150)
+            ]
+        },
+        indent=2,
+    )
+
+    out = compressors.smart_crush_json(original)
+
+    assert len(out) < len(compressors.minify_json(original))
+    assert "json smart crush" in out
+    assert "$.items[]" in out
+    assert "count=150" in out
+    assert "sample[0]" in out
+
+
+def test_python_code_compressor_summarizes_signatures_without_bodies():
+    body = "\n".join(f"        total += {i}" for i in range(120))
+    src = (
+        "import os\n"
+        "from pathlib import Path\n\n"
+        "class Worker(Base):\n"
+        "    \"\"\"Commentary that should not survive.\"\"\"\n"
+        "    def run(self, item: str) -> bool:\n"
+        "        # expensive loop should be omitted\n"
+        "        total = 0\n"
+        f"{body}\n"
+        "        return bool(total and item)\n"
+    )
+
+    out = compressors.compress_python_code(src)
+
+    assert len(out) < len(src)
+    assert "python structure" in out
+    assert "import os" in out
+    assert "from pathlib import Path" in out
+    assert "class Worker(Base)" in out
+    assert "def run(self, item: str) -> bool" in out
+    assert "expensive loop" not in out
+    assert "total += 119" not in out
+
+
+def test_python_code_compressor_keeps_falsy_default_values():
+    src = "def configure(retries: int = 0, enabled: bool = False) -> None:\n    pass\n"
+
+    out = compressors.compress_python_code(src)
+
+    assert "def configure(retries: int=0, enabled: bool=False) -> None" in out
+
+
+def test_invalid_python_code_uses_conservative_fallback():
+    src = "def broken(:\n    # noisy comment\n    value = 1\n\n\n// c-style\n"
+
+    out = compressors.compress_python_code(src)
+
+    assert "value = 1" in out
+    assert "noisy comment" not in out
+    assert "c-style" not in out
+    assert "\n\n\n" not in out
+
+
+def test_log_pattern_grouping_keeps_first_last_examples():
+    lines = [
+        f"2026-06-27T10:{i:02d}:00Z INFO request id={1000 + i} path=/api/items/{i} status=200"
+        for i in range(40)
+    ]
+    out = compressors.group_log_patterns("\n".join(lines))
+
+    assert len(out) < len("\n".join(lines))
+    assert "log pattern groups" in out
+    assert "x40" in out
+    assert "first=" in out
+    assert "last=" in out
+    assert "/api/items/<num>" in out
+
+
+def test_text_outline_preserves_headings_and_bounded_snippets():
+    repeated = "This paragraph contains detailed background. " * 40
+    text = (
+        "# Overview\n\n"
+        f"{repeated}\n\n"
+        "## Details\n\n"
+        f"{repeated}\n\n"
+        "## Result\n\n"
+        f"{repeated}\n"
+    )
+
+    out = compressors.outline_text(text)
+
+    assert len(out) < len(text)
+    assert "text outline" in out
+    assert "# Overview" in out
+    assert "## Details" in out
+    assert "## Result" in out
+    assert "paragraphs=" in out
+    assert repeated not in out
+
+
 # ── routing ──────────────────────────────────────────────────────────────────
 
 def test_detect_kind_json_from_content():
@@ -107,6 +214,39 @@ def test_compress_no_win_returns_original_unstored(tmp_path):
     res = compress(text, db_path=db)
     assert res.ref_id is None
     assert res.compressed == text
+
+
+def test_compress_skips_when_marker_overhead_erases_savings(monkeypatch, tmp_path):
+    import compression.router as router
+
+    db = tmp_path / "audit.db"
+    text = "x" * 820
+    monkeypatch.setitem(router._COMPRESSORS, "text", lambda _text: "y" * 790)
+
+    res = compress(text, min_chars=0, db_path=db)
+
+    assert res.ref_id is None
+    assert res.compressed == text
+
+
+def test_compress_python_uses_structural_summary_and_retrieves(tmp_path):
+    db = tmp_path / "audit.db"
+    body = "\n".join(f"    return_value += {i}" for i in range(250))
+    original = (
+        "from typing import Iterable\n\n"
+        "def summarize(values: Iterable[int]) -> int:\n"
+        "    return_value = 0\n"
+        f"{body}\n"
+        "    return return_value\n"
+    )
+
+    res = compress(original, hint="worker.py", db_path=db)
+
+    assert res.ref_id is not None
+    assert res.kind == "code"
+    assert "python structure" in res.compressed
+    assert "def summarize(values: Iterable[int]) -> int" in res.compressed
+    assert retrieve(res.ref_id, db_path=db) == original
 
 
 # ── server-side gated wiring (Step 3) ────────────────────────────────────────

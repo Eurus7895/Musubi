@@ -24,12 +24,14 @@ _CODE_HINTS = {"code", "python", "py", "js", "ts", "go", "rust", "rs",
                "java", "kotlin", "kt", "cpp", "cc", "c", "ruby", "rb", "php"}
 _CODE_EXTS = (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs",
               ".java", ".kt", ".cpp", ".cc", ".c", ".h", ".rb", ".php")
+_PYTHON_HINTS = {"python", "py"}
+_PYTHON_EXTS = (".py", ".pyi")
 
 _COMPRESSORS = {
-    "json": compressors.minify_json,
+    "json": compressors.smart_crush_json,
     "code": compressors.strip_code,
-    "log": compressors.collapse_text,
-    "text": compressors.collapse_text,
+    "log": compressors.group_log_patterns,
+    "text": compressors.outline_text,
 }
 
 
@@ -97,22 +99,41 @@ def compress(
         return CompressResult(text, None, "skip", n, n)
     kind = detect_kind(text, hint)
     try:
-        body = _COMPRESSORS[kind](text)
+        body = _select_compressor(kind, hint)(text)
     except Exception:
         # Compressors must not break the tool result — fail open.
         return CompressResult(text, None, "skip", n, n)
     if len(body) >= n:
         return CompressResult(text, None, kind, n, n)
+    projected = body + _marker(kind, "0" * 16, n, len(body))
+    if len(projected) >= n:
+        return CompressResult(text, None, kind, n, n)
     ref_id = store.put(text, kind, compressed_chars=len(body), db_path=db_path)
-    marker = (
-        f"\n\n[musubi:compressed kind={kind} ref={ref_id} "
-        f"chars {n}->{len(body)}; "
-        f'call musubi_retrieve("{ref_id}") for the verbatim original]'
-    )
-    out = body + marker
+    out = body + _marker(kind, ref_id, n, len(body))
     return CompressResult(out, ref_id, kind, n, len(out))
 
 
 def retrieve(ref_id: str, *, db_path=None) -> str | None:
     """Return the verbatim original for `ref_id`, or None if unknown."""
     return store.get(ref_id, db_path=db_path)
+
+
+def _select_compressor(kind: str, hint: str | None):
+    if kind == "code" and _is_python_hint(hint):
+        return compressors.compress_python_code
+    return _COMPRESSORS[kind]
+
+
+def _is_python_hint(hint: str | None) -> bool:
+    if not hint:
+        return False
+    h = hint.lower()
+    return h in _PYTHON_HINTS or h.endswith(_PYTHON_EXTS)
+
+
+def _marker(kind: str, ref_id: str, original_chars: int, body_chars: int) -> str:
+    return (
+        f"\n\n[musubi:compressed kind={kind} ref={ref_id} "
+        f"chars {original_chars}->{body_chars}; "
+        f'call musubi_retrieve("{ref_id}") for the verbatim original]'
+    )
