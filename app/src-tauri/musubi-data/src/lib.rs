@@ -100,13 +100,17 @@ fn parse_tools(raw: &str) -> Vec<String> {
     if let Ok(v) = serde_json::from_str::<Vec<String>>(s) {
         return v;
     }
-    s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+    s.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }
 
 /// Read the full console state from an open connection to a Musubi `audit.db`.
 pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     let mut st = State {
-        active_profile: read_meta(conn, "active_profile").unwrap_or_else(|| "anthropic.default".into()),
+        active_profile: read_meta(conn, "active_profile")
+            .unwrap_or_else(|| "anthropic.default".into()),
         pipe_name: "feature-dev".into(),
         pipe_cur: -1,
         ..Default::default()
@@ -166,7 +170,11 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
                     wall: row.wall_remaining,
                     model: row.model.clone(),
                     profile: row.profile.clone(),
-                    parent: if row.parent.is_empty() { "driver · agent-loop".into() } else { row.parent.clone() },
+                    parent: if row.parent.is_empty() {
+                        "driver · agent-loop".into()
+                    } else {
+                        row.parent.clone()
+                    },
                 },
             );
         } else if row.event == "completed" {
@@ -183,9 +191,17 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 
         // every lifecycle row is an append-only audit ledger entry
         let detail = if row.event == "spawned" {
-            format!("allowed_tools=[{}] max_turns={}", tools.len(), row.max_turns)
+            format!(
+                "allowed_tools=[{}] max_turns={}",
+                tools.len(),
+                row.max_turns
+            )
         } else {
-            let err = if row.status.as_deref() == Some("done") { "" } else { " err" };
+            let err = if row.status.as_deref() == Some("done") {
+                ""
+            } else {
+                " err"
+            };
             format!("turns={} tools_used={}{}", row.turns, row.tools_used, err)
         };
         audit.push(AuditRow {
@@ -195,11 +211,18 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
             role: row.role.clone(),
             handle: row.handle.clone(),
             detail,
-            status: if row.event == "spawned" { None } else { row.status.clone() },
+            status: if row.event == "spawned" {
+                None
+            } else {
+                row.status.clone()
+            },
         });
     }
 
-    st.subagents = order.into_iter().filter_map(|h| agents.remove(&h)).collect();
+    st.subagents = order
+        .into_iter()
+        .filter_map(|h| agents.remove(&h))
+        .collect();
     audit.reverse(); // newest first
     audit.truncate(120);
     st.audit = audit;
@@ -221,14 +244,19 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    st.allow_count = count(conn, "SELECT COUNT(*) FROM policy_audit WHERE verdict='ALLOW'")?;
-    st.deny_count = count(conn, "SELECT COUNT(*) FROM policy_audit WHERE verdict='DENY'")?;
+    st.allow_count = count(
+        conn,
+        "SELECT COUNT(*) FROM policy_audit WHERE verdict='ALLOW'",
+    )?;
+    st.deny_count = count(
+        conn,
+        "SELECT COUNT(*) FROM policy_audit WHERE verdict='DENY'",
+    )?;
 
     // ── driver chat ──
     if table_exists(conn, "chat_log")? {
-        let mut cstmt = conn.prepare(
-            "SELECT role, ts, text, tone FROM chat_log ORDER BY id ASC LIMIT 60",
-        )?;
+        let mut cstmt =
+            conn.prepare("SELECT role, ts, text, tone FROM chat_log ORDER BY id ASC LIMIT 60")?;
         st.chat = cstmt
             .query_map([], |r| {
                 Ok(ChatMsg {
@@ -245,7 +273,12 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     st.pipe_steps = ["explorer", "planner", "coder", "reviewer"]
         .iter()
         .enumerate()
-        .map(|(i, r)| PipeStep { uid: (i + 1) as i64, role: r.to_string(), status: "idle".into(), handle: None })
+        .map(|(i, r)| PipeStep {
+            uid: (i + 1) as i64,
+            role: r.to_string(),
+            status: "idle".into(),
+            handle: None,
+        })
         .collect();
 
     Ok(st)
@@ -342,9 +375,22 @@ CREATE TABLE IF NOT EXISTS meta (
 /// app as a fallback demo DB when no real `audit.db` is configured.
 pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
     init_schema(conn)?;
-    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('active_profile','anthropic.default')", [])?;
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key,value) VALUES('active_profile','anthropic.default')",
+        [],
+    )?;
 
-    let spawn = |conn: &Connection, id: i64, ts: &str, handle: &str, role: &str, model: &str, profile: &str, brief: &str, tools: &str, max: i64| -> rusqlite::Result<()> {
+    let spawn = |conn: &Connection,
+                 id: i64,
+                 ts: &str,
+                 handle: &str,
+                 role: &str,
+                 model: &str,
+                 profile: &str,
+                 brief: &str,
+                 tools: &str,
+                 max: i64|
+     -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO subagent_audit(id,ts,event,handle,role,parent,model,profile,brief,allowed_tools,max_turns,turns,tools_used,status,wall_remaining)\
              VALUES(?1,?2,'spawned',?3,?4,'driver · agent-loop',?5,?6,?7,?8,?9,0,0,'running',300)",
@@ -352,7 +398,14 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
         )?;
         Ok(())
     };
-    let complete = |conn: &Connection, id: i64, ts: &str, handle: &str, role: &str, turns: i64, status: &str| -> rusqlite::Result<()> {
+    let complete = |conn: &Connection,
+                    id: i64,
+                    ts: &str,
+                    handle: &str,
+                    role: &str,
+                    turns: i64,
+                    status: &str|
+     -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO subagent_audit(id,ts,event,handle,role,turns,tools_used,status,wall_remaining)\
              VALUES(?1,?2,'completed',?3,?4,?5,?5,?6,0)",
@@ -361,33 +414,130 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
         Ok(())
     };
 
-    spawn(conn, 1, "14:46:01", "a1b2c3d4", "explorer", "llama3.1", "ollama.local", "Map callers of LMRouter across agent/vendors", r#"["musubi_read_file","musubi_run_command","musubi_retrieve"]"#, 6)?;
-    spawn(conn, 2, "14:46:09", "b2c3d4e5", "investigator", "claude-sonnet-4", "anthropic.default", "Reproduce the failing pytest in storage/db.py", r#"["musubi_read_file","musubi_run_command","musubi_query_subagent_events"]"#, 8)?;
-    spawn(conn, 3, "14:46:18", "c3d4e5f6", "reviewer-aux", "gpt-5-mini", "openai.default", "Verify the patch touches code only", r#"["musubi_read_file"]"#, 4)?;
+    spawn(
+        conn,
+        1,
+        "14:46:01",
+        "a1b2c3d4",
+        "explorer",
+        "llama3.1",
+        "ollama.local",
+        "Map callers of LMRouter across agent/vendors",
+        r#"["musubi_read_file","musubi_run_command","musubi_retrieve"]"#,
+        6,
+    )?;
+    spawn(
+        conn,
+        2,
+        "14:46:09",
+        "b2c3d4e5",
+        "investigator",
+        "claude-sonnet-4",
+        "anthropic.default",
+        "Reproduce the failing pytest in storage/db.py",
+        r#"["musubi_read_file","musubi_run_command","musubi_query_subagent_events"]"#,
+        8,
+    )?;
+    spawn(
+        conn,
+        3,
+        "14:46:18",
+        "c3d4e5f6",
+        "reviewer-aux",
+        "gpt-5-mini",
+        "openai.default",
+        "Verify the patch touches code only",
+        r#"["musubi_read_file"]"#,
+        4,
+    )?;
     complete(conn, 4, "14:46:31", "a1b2c3d4", "explorer", 6, "done")?;
 
-    let decide = |conn: &Connection, id: i64, ts: &str, verdict: &str, tool: &str, role: &str, handle: &str, reason: &str| -> rusqlite::Result<()> {
+    let decide = |conn: &Connection,
+                  id: i64,
+                  ts: &str,
+                  verdict: &str,
+                  tool: &str,
+                  role: &str,
+                  handle: &str,
+                  reason: &str|
+     -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO policy_audit(id,ts,verdict,tool,role,handle,reason) VALUES(?1,?2,?3,?4,?5,?6,?7)",
             rusqlite::params![id, ts, verdict, tool, role, handle, reason],
         )?;
         Ok(())
     };
-    decide(conn, 1, "14:46:02", "ALLOW", "musubi_read_file", "explorer", "a1b2c3d4", "in surface")?;
-    decide(conn, 2, "14:46:10", "ALLOW", "musubi_run_command", "investigator", "b2c3d4e5", "in surface")?;
-    decide(conn, 3, "14:46:19", "DENY", "musubi_write_file", "reviewer-aux", "c3d4e5f6", "outside firewall surface — code-only (HI #3)")?;
-    decide(conn, 4, "14:46:20", "ALLOW", "musubi_read_file", "reviewer-aux", "c3d4e5f6", "in surface")?;
+    decide(
+        conn,
+        1,
+        "14:46:02",
+        "ALLOW",
+        "musubi_read_file",
+        "explorer",
+        "a1b2c3d4",
+        "in surface",
+    )?;
+    decide(
+        conn,
+        2,
+        "14:46:10",
+        "ALLOW",
+        "musubi_run_command",
+        "investigator",
+        "b2c3d4e5",
+        "in surface",
+    )?;
+    decide(
+        conn,
+        3,
+        "14:46:19",
+        "DENY",
+        "musubi_write_file",
+        "reviewer-aux",
+        "c3d4e5f6",
+        "outside firewall surface — code-only (HI #3)",
+    )?;
+    decide(
+        conn,
+        4,
+        "14:46:20",
+        "ALLOW",
+        "musubi_read_file",
+        "reviewer-aux",
+        "c3d4e5f6",
+        "in surface",
+    )?;
 
-    let say = |conn: &Connection, id: i64, ts: Option<&str>, role: &str, tone: Option<&str>, text: &str| -> rusqlite::Result<()> {
+    let say = |conn: &Connection,
+               id: i64,
+               ts: Option<&str>,
+               role: &str,
+               tone: Option<&str>,
+               text: &str|
+     -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO chat_log(id,ts,role,tone,text) VALUES(?1,?2,?3,?4,?5)",
             rusqlite::params![id, ts, role, tone, text],
         )?;
         Ok(())
     };
-    say(conn, 1, Some("14:46:00"), "you", None, "Audit why run_command is denied for the reviewer. Tie everything to policy.")?;
+    say(
+        conn,
+        1,
+        Some("14:46:00"),
+        "you",
+        None,
+        "Audit why run_command is denied for the reviewer. Tie everything to policy.",
+    )?;
     say(conn, 2, Some("14:46:00"), "driver", None, "On it. I reach the model through one inject point and spawn governed threads — each turn-capped, firewalled, and bound into the audit.")?;
-    say(conn, 3, None, "system", Some("spawn"), "tied explorer · investigator · reviewer-aux into the audit")?;
+    say(
+        conn,
+        3,
+        None,
+        "system",
+        Some("spawn"),
+        "tied explorer · investigator · reviewer-aux into the audit",
+    )?;
 
     Ok(())
 }
@@ -411,7 +561,11 @@ mod tests {
         assert_eq!(explorer.turns, 6);
         assert_eq!(explorer.model, "llama3.1");
         assert_eq!(explorer.tools.len(), 3);
-        let reviewer = st.subagents.iter().find(|a| a.role == "reviewer-aux").unwrap();
+        let reviewer = st
+            .subagents
+            .iter()
+            .find(|a| a.role == "reviewer-aux")
+            .unwrap();
         assert_eq!(reviewer.status, "running");
         assert_eq!(reviewer.max, 4);
     }
@@ -431,7 +585,11 @@ mod tests {
         let st = load_state(&demo()).unwrap();
         assert_eq!(st.audit.len(), 4);
         assert!(st.audit[0].id > st.audit[1].id, "newest first");
-        let spawned = st.audit.iter().find(|r| r.event == "spawned" && r.handle == "c3d4e5f6").unwrap();
+        let spawned = st
+            .audit
+            .iter()
+            .find(|r| r.event == "spawned" && r.handle == "c3d4e5f6")
+            .unwrap();
         assert_eq!(spawned.detail, "allowed_tools=[1] max_turns=4");
         assert!(spawned.status.is_none());
         let completed = st.audit.iter().find(|r| r.event == "completed").unwrap();

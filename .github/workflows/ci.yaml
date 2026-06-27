@@ -1,8 +1,12 @@
-# CI — Python + TypeScript test suites.
+# CI — Python + TypeScript + Rust test suites.
 #
-# Runs on every PR + push to dev / main. Two parallel jobs:
+# Runs on every PR + push to dev / main. Three parallel jobs:
 #   - python: pytest (745 tests) + ruff (lint, non-blocking)
 #   - typescript: tsc --noEmit + npm test (236 tests)
+#   - rust: cargo test on the console's webkit-free audit.db reader
+#     (app/src-tauri/musubi-data). Headless — no Tauri/webview deps, so
+#     it needs no system libs. The full desktop bundle is built separately
+#     by .github/workflows/desktop.yml (release-only / manual).
 #
 # Lint runs with continue-on-error because there's pre-existing ruff debt
 # in code that pre-dates the linter config. CI surfaces the warnings on
@@ -124,3 +128,37 @@ jobs:
 
       - name: Test — node:test via tsx
         run: npm test
+
+  # ────────────────────────────────────────────────────────────────────
+  # Rust console core — app/src-tauri/musubi-data/
+  # ────────────────────────────────────────────────────────────────────
+  rust:
+    name: Rust console core
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/src-tauri/musubi-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'app/src-tauri/musubi-data -> target'
+
+      - name: Format — cargo fmt --check
+        run: cargo fmt --check
+
+      - name: Lint — cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test — cargo test
+        # The audit.db reader (load_state / seed_demo) and its 5 unit
+        # tests. Pure rusqlite + serde, no webkit, so it runs headless
+        # without the Linux webview libs the desktop bundle needs.
+        run: cargo test
