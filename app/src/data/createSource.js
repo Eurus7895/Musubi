@@ -1,13 +1,20 @@
 import SimulationSource from '../sim/SimulationSource.js'
 
 // Pick the DataSource for this environment:
-//  - inside the Tauri shell (window.__TAURI__) → native TauriSource
-//  - ?source=tauri | ?source=sim                → explicit override
-//  - otherwise                                  → in-browser simulation
+//  - inside the Tauri shell → native TauriSource
+//  - ?source=tauri | ?source=sim → explicit override
+//  - otherwise → in-browser simulation
+//
+// Detection: Tauri v2 leaves `app.withGlobalTauri` at its default `false`, so
+// `window.__TAURI__` is NOT injected in a packaged window. The always-present
+// marker is `window.__TAURI_INTERNALS__`; check it first (and `isTauri`) so a
+// normal desktop launch picks TauriSource — and honours MUSUBI_DB — without
+// needing `?source=tauri`.
 export function createSource(props) {
   const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams()
   const mode = props.source || q.get('source')
-  const inTauri = typeof window !== 'undefined' && !!window.__TAURI__
+  const inTauri = typeof window !== 'undefined'
+    && (!!window.__TAURI_INTERNALS__ || !!window.__TAURI__ || !!window.isTauri)
   if (mode === 'sim') return new SimulationSource(props)
   if (mode === 'tauri' || inTauri) {
     // Lazy so the simulation bundle never pulls in the Tauri source.

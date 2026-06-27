@@ -7,9 +7,10 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npx tauri icon src-tauri/icons/icon.png && npm run build"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",

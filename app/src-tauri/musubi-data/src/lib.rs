@@ -1,11 +1,31 @@
+//! musubi-tier: substrate
+//!
 //! Musubi data core — reads the governance substrate's `audit.db` (append-only
 //! SQLite) into the `State` object the console UI renders. Pure data: no LLM, no
 //! GUI deps, so it builds and tests in a headless environment.
 //!
-//! Schema contract (see SCHEMA.md): tables `subagent_audit`, `policy_audit`,
-//! `chat_log`, and a `meta` key/value table. The reader is tolerant of a fresh
-//! DB (empty tables → empty surfaces).
+//! Schema contract (see SCHEMA.md). The reader maps the **real** Musubi tables
+//! written by the substrate:
+//!   - `subagent_audit` (`musubi/storage/subagent_audit.py`) — real columns
+//!     `handle_id`, `parent_session_id`, `parent_agent_name`, `final_status`,
+//!     `wall_clock_timeout_s`, `tools_used` (JSON array), `ts` (epoch REAL).
+//!   - `tool_audit` (`scripts/post_tool_use.py`) — every governed tool call.
+//!     The Policy view folds from here when no console-side `policy_audit`
+//!     verdict ledger is present (the substrate's `pre_tool_use` hook returns
+//!     allow/deny but does not persist it, so executed = allowed).
+//!   - `chat_log`, `meta` — console-side (the GUI writes these).
+//!   - `policy_audit` — optional console/forward-compat verdict ledger; when it
+//!     has rows it wins over `tool_audit` (keeps the demo's HI #3 deny example).
+//!
+//! Active profile is the LMRouter source of truth: an explicit console choice
+//! (`meta.active_profile`) wins, else the `default` in `.musubi/llm.json`.
+//!
+//! The reader is tolerant of a fresh DB (empty tables → empty surfaces) and of
+//! either a REAL or a TEXT `ts`.
 
+use std::path::{Path, PathBuf};
+
+use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -91,7 +111,8 @@ pub struct PipeStep {
     pub handle: Option<String>,
 }
 
-/// Parse an `allowed_tools` column stored as a JSON array or a comma list.
+/// Parse an `allowed_tools` / `tools_used` column stored as a JSON array or a
+/// comma list.
 fn parse_tools(raw: &str) -> Vec<String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -106,11 +127,39 @@ fn parse_tools(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Render a `ts` column (REAL epoch seconds, INTEGER, or a pre-formatted TEXT
+/// like the demo's `14:46:01`) as a `HH:MM:SS` UTC string.
+fn fmt_ts(v: &Value) -> String {
+    let epoch = match v {
+        Value::Real(f) => *f,
+        Value::Integer(i) => *i as f64,
+        Value::Text(s) => return s.clone(),
+        _ => return String::new(),
+    };
+    let secs = epoch as i64;
+    let sod = ((secs % 86_400) + 86_400) % 86_400;
+    format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
+}
+
+/// Compose the parent label shown on an Orchestrator card. Real rows carry a
+/// `parent_agent_name` + a `parent_session_id` (a UUID); long ids are shortened.
+fn fmt_parent(agent: &str, session: &str) -> String {
+    let agent = if agent.is_empty() { "driver" } else { agent };
+    if session.is_empty() {
+        return agent.to_string();
+    }
+    let sid = if session.len() > 12 {
+        &session[..8]
+    } else {
+        session
+    };
+    format!("{agent} · {sid}")
+}
+
 /// Read the full console state from an open connection to a Musubi `audit.db`.
 pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     let mut st = State {
-        active_profile: read_meta(conn, "active_profile")
-            .unwrap_or_else(|| "anthropic.default".into()),
+        active_profile: read_active_profile(conn),
         pipe_name: "feature-dev".into(),
         pipe_cur: -1,
         ..Default::default()
@@ -118,10 +167,11 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 
     // ── sub-agent cohort: fold the append-only lifecycle log per handle ──
     // One row per (spawned|completed) event; a handle is 'running' until its
-    // 'completed' row lands.
+    // 'completed' row lands. Columns are the real subagent_audit schema.
     let mut stmt = conn.prepare(
-        "SELECT id, ts, event, handle, role, parent, model, profile, brief, \
-                allowed_tools, max_turns, turns, tools_used, status, wall_remaining \
+        "SELECT id, ts, event, handle_id, role, parent_session_id, parent_agent_name, \
+                brief, allowed_tools, max_turns, wall_clock_timeout_s, final_status, \
+                turns, tools_used \
          FROM subagent_audit ORDER BY id ASC",
     )?;
     let mut order: Vec<String> = Vec::new();
@@ -131,28 +181,27 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     let rows = stmt.query_map([], |r| {
         Ok(RawAudit {
             id: r.get(0)?,
-            ts: r.get(1)?,
+            ts: fmt_ts(&r.get::<_, Value>(1)?),
             event: r.get(2)?,
             handle: r.get(3)?,
             role: r.get(4)?,
-            parent: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
-            model: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-            profile: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
-            brief: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
-            allowed_tools: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
-            max_turns: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
-            turns: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
-            tools_used: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
-            status: r.get::<_, Option<String>>(13)?,
-            wall_remaining: r.get::<_, Option<i64>>(14)?.unwrap_or(0),
+            parent_session: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            parent_agent: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            brief: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            allowed_tools: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            max_turns: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
+            wall: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
+            final_status: r.get::<_, Option<String>>(11)?,
+            turns: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
+            tools_used: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
         })
     })?;
 
     for row in rows {
         let row = row?;
-        let tools = parse_tools(&row.allowed_tools);
         if row.event == "spawned" {
             st.total_spawned += 1;
+            let tools = parse_tools(&row.allowed_tools);
             if !agents.contains_key(&row.handle) {
                 order.push(row.handle.clone());
             }
@@ -166,26 +215,23 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
                     status: "running".into(),
                     turns: row.turns,
                     max: row.max_turns,
-                    tools: tools.clone(),
-                    wall: row.wall_remaining,
-                    model: row.model.clone(),
-                    profile: row.profile.clone(),
-                    parent: if row.parent.is_empty() {
-                        "driver · agent-loop".into()
-                    } else {
-                        row.parent.clone()
-                    },
+                    tools,
+                    wall: row.wall,
+                    // The real subagent_audit schema does not record the
+                    // resolved model/profile per handle; left blank.
+                    model: String::new(),
+                    profile: String::new(),
+                    parent: fmt_parent(&row.parent_agent, &row.parent_session),
                 },
             );
         } else if row.event == "completed" {
-            let status = row.status.clone().unwrap_or_else(|| "done".into());
+            let status = row.final_status.clone().unwrap_or_else(|| "done".into());
             if status == "done" {
                 st.total_done += 1;
             }
             if let Some(a) = agents.get_mut(&row.handle) {
                 a.status = status.clone();
                 a.turns = row.turns.max(a.turns);
-                a.wall = row.wall_remaining;
             }
         }
 
@@ -193,16 +239,21 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
         let detail = if row.event == "spawned" {
             format!(
                 "allowed_tools=[{}] max_turns={}",
-                tools.len(),
+                parse_tools(&row.allowed_tools).len(),
                 row.max_turns
             )
         } else {
-            let err = if row.status.as_deref() == Some("done") {
+            let err = if row.final_status.as_deref() == Some("done") {
                 ""
             } else {
                 " err"
             };
-            format!("turns={} tools_used={}{}", row.turns, row.tools_used, err)
+            format!(
+                "turns={} tools_used={}{}",
+                row.turns,
+                parse_tools(&row.tools_used).len(),
+                err
+            )
         };
         audit.push(AuditRow {
             id: row.id,
@@ -214,7 +265,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
             status: if row.event == "spawned" {
                 None
             } else {
-                row.status.clone()
+                Some(row.final_status.clone().unwrap_or_else(|| "done".into()))
             },
         });
     }
@@ -228,30 +279,59 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     st.audit = audit;
 
     // ── policy decisions ──
-    let mut pstmt = conn.prepare(
-        "SELECT id, ts, verdict, tool, role, handle, reason FROM policy_audit ORDER BY id DESC LIMIT 50",
-    )?;
-    st.policy = pstmt
-        .query_map([], |r| {
-            Ok(Decision {
-                id: r.get(0)?,
-                ts: r.get(1)?,
-                verdict: r.get(2)?,
-                tool: r.get(3)?,
-                role: r.get(4)?,
-                handle: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    st.allow_count = count(
-        conn,
-        "SELECT COUNT(*) FROM policy_audit WHERE verdict='ALLOW'",
-    )?;
-    st.deny_count = count(
-        conn,
-        "SELECT COUNT(*) FROM policy_audit WHERE verdict='DENY'",
-    )?;
+    // Prefer a console/forward-compat verdict ledger (policy_audit) when it has
+    // rows; otherwise fold from the real tool_audit (executed = allowed — the
+    // substrate's pre_tool_use deny is not persisted).
+    let has_policy = table_exists(conn, "policy_audit")?
+        && count(conn, "SELECT COUNT(*) FROM policy_audit")? > 0;
+    if has_policy {
+        let mut pstmt = conn.prepare(
+            "SELECT id, ts, verdict, tool, role, handle, reason \
+             FROM policy_audit ORDER BY id DESC LIMIT 50",
+        )?;
+        st.policy = pstmt
+            .query_map([], |r| {
+                Ok(Decision {
+                    id: r.get(0)?,
+                    ts: fmt_ts(&r.get::<_, Value>(1)?),
+                    verdict: r.get(2)?,
+                    tool: r.get(3)?,
+                    role: r.get(4)?,
+                    handle: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        st.allow_count = count(
+            conn,
+            "SELECT COUNT(*) FROM policy_audit WHERE verdict='ALLOW'",
+        )?;
+        st.deny_count = count(
+            conn,
+            "SELECT COUNT(*) FROM policy_audit WHERE verdict='DENY'",
+        )?;
+    } else if table_exists(conn, "tool_audit")? {
+        let mut tstmt = conn.prepare(
+            "SELECT id, ts, agent, tool, status FROM tool_audit ORDER BY id DESC LIMIT 50",
+        )?;
+        st.policy = tstmt
+            .query_map([], |r| {
+                let status: Option<String> = r.get(4)?;
+                Ok(Decision {
+                    id: r.get(0)?,
+                    ts: fmt_ts(&r.get::<_, Value>(1)?),
+                    verdict: "ALLOW".into(),
+                    tool: r.get(3)?,
+                    role: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    handle: String::new(),
+                    reason: status.unwrap_or_else(|| "executed".into()),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // pre_tool_use denies are not persisted, so every recorded call is an allow.
+        st.allow_count = count(conn, "SELECT COUNT(*) FROM tool_audit")?;
+        st.deny_count = 0;
+    }
 
     // ── driver chat ──
     if table_exists(conn, "chat_log")? {
@@ -290,16 +370,57 @@ struct RawAudit {
     event: String,
     handle: String,
     role: String,
-    parent: String,
-    model: String,
-    profile: String,
+    parent_session: String,
+    parent_agent: String,
     brief: String,
     allowed_tools: String,
     max_turns: i64,
+    wall: i64,
+    final_status: Option<String>,
     turns: i64,
-    tools_used: i64,
-    status: Option<String>,
-    wall_remaining: i64,
+    tools_used: String,
+}
+
+/// Active LMRouter profile: an explicit console choice wins, else the
+/// `default` recorded in `.musubi/llm.json` (the runner's source of truth),
+/// else a conservative fallback.
+fn read_active_profile(conn: &Connection) -> String {
+    if let Some(p) = read_meta(conn, "active_profile") {
+        if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Some(p) = read_llm_default() {
+        return p;
+    }
+    "anthropic.default".into()
+}
+
+/// Read the `default` profile name from `.musubi/llm.json`. Located via the
+/// `MUSUBI_LLM_CONFIG` env var, else by walking up from `$MUSUBI_DB`. Any
+/// failure (unset env, missing file, malformed JSON) yields `None`.
+fn read_llm_default() -> Option<String> {
+    let path = std::env::var("MUSUBI_LLM_CONFIG")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(find_llm_json_near_db)?;
+    let txt = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
+    v.get("default")?.as_str().map(str::to_string)
+}
+
+fn find_llm_json_near_db() -> Option<PathBuf> {
+    let db = std::env::var("MUSUBI_DB").ok().filter(|s| !s.is_empty())?;
+    let mut dir = Path::new(&db).parent();
+    while let Some(d) = dir {
+        let cand = d.join(".musubi").join("llm.json");
+        if cand.is_file() {
+            return Some(cand);
+        }
+        dir = d.parent();
+    }
+    None
 }
 
 fn read_meta(conn: &Connection, key: &str) -> Option<String> {
@@ -325,30 +446,49 @@ fn count(conn: &Connection, sql: &str) -> rusqlite::Result<i64> {
     conn.query_row(sql, [], |r| r.get(0))
 }
 
-/// Create the Musubi audit schema on a fresh database.
+/// Create the Musubi audit schema on a fresh database. Mirrors the real
+/// substrate tables (`subagent_audit`, `tool_audit`) plus the console-side
+/// `chat_log` / `meta`, and an optional `policy_audit` verdict ledger.
 pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)
 }
 
 pub const SCHEMA_SQL: &str = r#"
+-- Real substrate table — musubi/storage/subagent_audit.py (HI #8).
 CREATE TABLE IF NOT EXISTS subagent_audit (
-  id             INTEGER PRIMARY KEY,
-  ts             TEXT NOT NULL,
-  event          TEXT NOT NULL,              -- 'spawned' | 'completed'
-  handle         TEXT NOT NULL,
-  role           TEXT NOT NULL,
-  parent         TEXT,
-  model          TEXT,
-  profile        TEXT,
-  brief          TEXT,
-  allowed_tools  TEXT,                       -- JSON array of tool names
-  max_turns      INTEGER,
-  turns          INTEGER,
-  tools_used     INTEGER,
-  status         TEXT,                        -- running|done|failed|escalated|abandoned
-  wall_remaining INTEGER,
-  verification_errors INTEGER DEFAULT 0
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                   REAL NOT NULL,
+  handle_id            TEXT NOT NULL,
+  parent_session_id    TEXT NOT NULL,
+  parent_agent_name    TEXT NOT NULL,
+  role                 TEXT NOT NULL,
+  brief                TEXT NOT NULL,
+  event                TEXT NOT NULL,            -- 'spawned' | 'completed'
+  allowed_tools        TEXT,                     -- JSON array
+  max_turns            INTEGER,
+  wall_clock_timeout_s INTEGER,
+  final_status         TEXT,                     -- done|failed|escalated|abandoned
+  escalated            INTEGER,
+  turns                INTEGER,
+  tools_used           TEXT,                     -- JSON array
+  summary_truncated    INTEGER,
+  verification_errors  TEXT
 );
+-- Real substrate table — scripts/post_tool_use.py. Every governed tool call.
+CREATE TABLE IF NOT EXISTS tool_audit (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts           REAL NOT NULL,
+  session_id   TEXT,
+  pipeline     TEXT,
+  agent        TEXT,
+  tool         TEXT NOT NULL,
+  args_json    TEXT,
+  result_hash  TEXT,
+  status       TEXT
+);
+-- Optional console/forward-compat verdict ledger (allow/deny). The real
+-- pre_tool_use hook does not persist verdicts; when this is empty the Policy
+-- view folds from tool_audit instead.
 CREATE TABLE IF NOT EXISTS policy_audit (
   id      INTEGER PRIMARY KEY,
   ts      TEXT NOT NULL,
@@ -358,6 +498,7 @@ CREATE TABLE IF NOT EXISTS policy_audit (
   handle  TEXT,
   reason  TEXT
 );
+-- Console-side tables (the GUI writes these).
 CREATE TABLE IF NOT EXISTS chat_log (
   id   INTEGER PRIMARY KEY,
   ts   TEXT,
@@ -372,7 +513,9 @@ CREATE TABLE IF NOT EXISTS meta (
 "#;
 
 /// Seed a representative governed session — used by `cargo test`, and by the
-/// app as a fallback demo DB when no real `audit.db` is configured.
+/// app as a fallback demo DB when no real `audit.db` is configured. Rows use
+/// the real `subagent_audit` / `tool_audit` shapes, plus a `policy_audit` deny
+/// to illustrate the evaluator firewall (HI #3).
 pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
     init_schema(conn)?;
     conn.execute(
@@ -380,36 +523,42 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
         [],
     )?;
 
+    // A fixed base epoch so the demo ledger shows stable times.
+    let base = 1_736_500_000_i64;
+
+    #[allow(clippy::too_many_arguments)]
     let spawn = |conn: &Connection,
                  id: i64,
-                 ts: &str,
+                 off: i64,
                  handle: &str,
                  role: &str,
-                 model: &str,
-                 profile: &str,
                  brief: &str,
                  tools: &str,
-                 max: i64|
+                 max: i64,
+                 wall: i64|
      -> rusqlite::Result<()> {
         conn.execute(
-            "INSERT INTO subagent_audit(id,ts,event,handle,role,parent,model,profile,brief,allowed_tools,max_turns,turns,tools_used,status,wall_remaining)\
-             VALUES(?1,?2,'spawned',?3,?4,'driver · agent-loop',?5,?6,?7,?8,?9,0,0,'running',300)",
-            rusqlite::params![id, ts, handle, role, model, profile, brief, tools, max],
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(?1,?2,'spawned',?3,'agent-loop','driver',?4,?5,?6,?7,?8)",
+            rusqlite::params![id, (base + off) as f64, handle, role, brief, tools, max, wall],
         )?;
         Ok(())
     };
     let complete = |conn: &Connection,
                     id: i64,
-                    ts: &str,
+                    off: i64,
                     handle: &str,
                     role: &str,
                     turns: i64,
+                    tools_used: &str,
                     status: &str|
      -> rusqlite::Result<()> {
         conn.execute(
-            "INSERT INTO subagent_audit(id,ts,event,handle,role,turns,tools_used,status,wall_remaining)\
-             VALUES(?1,?2,'completed',?3,?4,?5,?5,?6,0)",
-            rusqlite::params![id, ts, handle, role, turns, status],
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,final_status,turns,tools_used)\
+             VALUES(?1,?2,'completed',?3,'agent-loop','driver',?4,'',?5,?6,?7)",
+            rusqlite::params![id, (base + off) as f64, handle, role, status, turns, tools_used],
         )?;
         Ok(())
     };
@@ -417,41 +566,67 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
     spawn(
         conn,
         1,
-        "14:46:01",
+        0,
         "a1b2c3d4",
         "explorer",
-        "llama3.1",
-        "ollama.local",
         "Map callers of LMRouter across agent/vendors",
         r#"["musubi_read_file","musubi_run_command","musubi_retrieve"]"#,
         6,
+        300,
     )?;
     spawn(
         conn,
         2,
-        "14:46:09",
+        8,
         "b2c3d4e5",
         "investigator",
-        "claude-sonnet-4",
-        "anthropic.default",
         "Reproduce the failing pytest in storage/db.py",
         r#"["musubi_read_file","musubi_run_command","musubi_query_subagent_events"]"#,
         8,
+        300,
     )?;
     spawn(
         conn,
         3,
-        "14:46:18",
+        17,
         "c3d4e5f6",
         "reviewer-aux",
-        "gpt-5-mini",
-        "openai.default",
         "Verify the patch touches code only",
         r#"["musubi_read_file"]"#,
         4,
+        300,
     )?;
-    complete(conn, 4, "14:46:31", "a1b2c3d4", "explorer", 6, "done")?;
+    complete(
+        conn,
+        4,
+        30,
+        "a1b2c3d4",
+        "explorer",
+        6,
+        r#"["musubi_read_file","musubi_run_command","musubi_retrieve"]"#,
+        "done",
+    )?;
 
+    // tool_audit — the real allowed-call ledger the Policy view folds from on a
+    // real DB (here policy_audit below wins because it has rows).
+    let call = |conn: &Connection,
+                id: i64,
+                off: i64,
+                agent: &str,
+                tool: &str,
+                status: &str|
+     -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO tool_audit(id,ts,session_id,pipeline,agent,tool,status) VALUES(?1,?2,'agent-loop','feature-dev',?3,?4,?5)",
+            rusqlite::params![id, (base + off) as f64, agent, tool, status],
+        )?;
+        Ok(())
+    };
+    call(conn, 1, 1, "explorer", "musubi_read_file", "ok")?;
+    call(conn, 2, 9, "investigator", "musubi_run_command", "ok")?;
+    call(conn, 3, 19, "reviewer-aux", "musubi_read_file", "ok")?;
+
+    // policy_audit — a deny example for the evaluator firewall (HI #3).
     let decide = |conn: &Connection,
                   id: i64,
                   ts: &str,
@@ -559,8 +734,8 @@ mod tests {
         let explorer = st.subagents.iter().find(|a| a.role == "explorer").unwrap();
         assert_eq!(explorer.status, "done", "explorer completed");
         assert_eq!(explorer.turns, 6);
-        assert_eq!(explorer.model, "llama3.1");
         assert_eq!(explorer.tools.len(), 3);
+        assert_eq!(explorer.parent, "driver · agent-loop");
         let reviewer = st
             .subagents
             .iter()
@@ -568,6 +743,7 @@ mod tests {
             .unwrap();
         assert_eq!(reviewer.status, "running");
         assert_eq!(reviewer.max, 4);
+        assert_eq!(reviewer.wall, 300);
     }
 
     #[test]
@@ -575,6 +751,7 @@ mod tests {
         let st = load_state(&demo()).unwrap();
         assert_eq!(st.total_spawned, 3);
         assert_eq!(st.total_done, 1);
+        // policy_audit has rows, so it wins over tool_audit.
         assert_eq!(st.allow_count, 3);
         assert_eq!(st.deny_count, 1);
         assert_eq!(st.active_profile, "anthropic.default");
@@ -594,6 +771,25 @@ mod tests {
         assert!(spawned.status.is_none());
         let completed = st.audit.iter().find(|r| r.event == "completed").unwrap();
         assert_eq!(completed.status.as_deref(), Some("done"));
+        assert_eq!(completed.detail, "turns=6 tools_used=3");
+    }
+
+    #[test]
+    fn policy_folds_from_tool_audit_when_no_verdict_ledger() {
+        // A real DB has tool_audit but no policy_audit rows.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO tool_audit(id,ts,agent,tool,status) VALUES(1,1736500001.0,'explorer','musubi_read_file','ok')",
+            [],
+        )
+        .unwrap();
+        let st = load_state(&conn).unwrap();
+        assert_eq!(st.policy.len(), 1);
+        assert_eq!(st.policy[0].verdict, "ALLOW");
+        assert_eq!(st.policy[0].tool, "musubi_read_file");
+        assert_eq!(st.allow_count, 1);
+        assert_eq!(st.deny_count, 0);
     }
 
     #[test]

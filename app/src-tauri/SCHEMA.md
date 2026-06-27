@@ -11,43 +11,73 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 When `MUSUBI_DB` is unset, an in-memory **demo** DB is seeded (`seed_demo`) so
 the app runs standalone with representative data.
 
-The reader is **read-mostly** and tolerant: a fresh DB with empty tables yields
-empty surfaces; missing optional columns fall back to defaults. It never writes
-to the append-only audit tables. The only writes the app performs are to the
+The reader maps the **real** tables the Musubi substrate writes
+(`musubi/storage/subagent_audit.py`, `scripts/post_tool_use.py`) — column
+names below match those writers. It is **read-mostly** and tolerant: a fresh DB
+with empty tables yields empty surfaces; missing optional columns fall back to
+defaults; `ts` may be a REAL epoch or a pre-formatted string. It never writes to
+the append-only audit tables. The only writes the app performs are to the
 GUI-side `chat_log` and `meta` tables (driver chat, active profile); governed
 mutations (spawning agents, running pipelines) must go through the MCP server,
 not direct DB writes — those action handlers are stubbed with a `todo`.
 
 ## Tables
 
-`init_schema()` / `SCHEMA_SQL` create these; a real Musubi `audit.db` should
-expose the same shape (column names matter; extra columns are ignored).
+`init_schema()` / `SCHEMA_SQL` create these on a fresh DB. On a real `audit.db`
+the substrate's own tables already exist, so the `CREATE TABLE IF NOT EXISTS`
+statements are no-ops there; only the GUI-side `chat_log` / `meta` (and an empty
+forward-compat `policy_audit`) are added.
 
 ### `subagent_audit` — append-only sub-agent lifecycle (HI #8: no silent sub-agents)
 
-One row per lifecycle event. A handle is **running** until its `completed` row
-lands; the cohort and the audit ledger are both folded from this table.
+Written by `musubi/storage/subagent_audit.py`. One row per lifecycle event; a
+handle is **running** until its `completed` row lands. The cohort and the audit
+ledger are both folded from this table.
 
 | column | type | notes |
 |---|---|---|
 | `id` | INTEGER PK | monotonic; ledger ordering |
-| `ts` | TEXT | timestamp string, shown verbatim (e.g. `14:46:01`) |
+| `ts` | REAL | epoch seconds; rendered `HH:MM:SS` (a TEXT value is shown verbatim) |
 | `event` | TEXT | `spawned` \| `completed` |
-| `handle` | TEXT | 8-hex sub-agent id |
+| `handle_id` | TEXT | sub-agent id → `handle` |
 | `role` | TEXT | `explorer` \| `investigator` \| `reviewer-aux` \| … |
-| `parent` | TEXT | e.g. `driver · agent-loop` |
-| `model` | TEXT | resolved per-agent model |
-| `profile` | TEXT | `llm.toml` profile |
+| `parent_session_id` | TEXT | parent session (UUID; shortened in the card label) |
+| `parent_agent_name` | TEXT | parent agent → composed into `parent` (`agent · sid`) |
 | `brief` | TEXT | firewalled brief |
 | `allowed_tools` | TEXT | JSON array (or comma list) of tool names |
 | `max_turns` | INTEGER | turn cap |
+| `wall_clock_timeout_s` | INTEGER | wall-clock budget seconds → `wall` |
+| `final_status` | TEXT | `done`\|`failed`\|`escalated`\|`abandoned` (on `completed`) → `status` |
 | `turns` | INTEGER | turns used (on `completed`) |
-| `tools_used` | INTEGER | |
-| `status` | TEXT | `running`\|`done`\|`failed`\|`escalated`\|`abandoned` (on `completed`) |
-| `wall_remaining` | INTEGER | seconds of wall-clock budget left |
-| `verification_errors` | INTEGER | reserved |
+| `tools_used` | TEXT | JSON array; the reader reports its **count** |
+| `escalated`, `summary_truncated`, `verification_errors` | INTEGER/TEXT | not surfaced |
 
-### `policy_audit` — fail-closed PreToolUse decisions
+> The real schema records **no per-handle `model`/`profile`**, so those card
+> fields render blank against a real DB.
+
+### `tool_audit` — governed tool calls (the real allow ledger)
+
+Written by `scripts/post_tool_use.py`. Every executed (i.e. allowed) tool call.
+The substrate's `pre_tool_use` hook returns allow/deny but **does not persist
+the verdict**, so denied calls never reach this table — the Policy view folds
+each row as an `ALLOW`, and `denyCount` is `0` against a real DB.
+
+| column | type | notes |
+|---|---|---|
+| `id` | INTEGER PK | |
+| `ts` | REAL | epoch seconds |
+| `session_id` | TEXT | |
+| `pipeline` | TEXT | |
+| `agent` | TEXT | requesting agent → `role` |
+| `tool` | TEXT | the executed tool |
+| `args_json`, `result_hash` | TEXT | not surfaced |
+| `status` | TEXT | shown as the decision `reason` |
+
+### `policy_audit` — optional verdict ledger (console / forward-compat)
+
+Not written by the current substrate. When present **with rows** it wins over
+`tool_audit` (so the demo can show a real `DENY` for the evaluator firewall,
+HI #3). Empty (the real-DB case) → the Policy view folds from `tool_audit`.
 
 | column | type | notes |
 |---|---|---|
@@ -69,21 +99,29 @@ lands; the cohort and the audit ledger are both folded from this table.
 | `tone` | TEXT | optional: `spawn` \| `deny` (styles system notes) |
 | `text` | TEXT | |
 
-### `meta` — key/value
+### `meta` — key/value (GUI-side)
 
 | key | meaning |
 |---|---|
-| `active_profile` | LMRouter default profile shown selected in **Models** |
+| `active_profile` | explicit console override for the active LMRouter profile |
+
+## Active profile resolution
+
+The **Models** view / trust strip show the active profile resolved as: an
+explicit console choice (`meta.active_profile`, written when you pick one) →
+else the `default` in `.musubi/llm.json` (the LMRouter source of truth, located
+via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
+`anthropic.default`.
 
 ## Mapping to the UI
 
 | UI surface | source |
 |---|---|
-| Orchestrator cohort | `subagent_audit` folded per handle |
-| Orchestrator counts (running/completed) | derived from statuses |
-| Policy stream + allow/deny tallies | `policy_audit` |
+| Orchestrator cohort | `subagent_audit` folded per `handle_id` |
+| Orchestrator counts (running/completed) | derived from `final_status` |
+| Policy stream + allow/deny tallies | `policy_audit` if it has rows, else `tool_audit` |
 | Audit ledger | `subagent_audit` (newest first, capped 120) |
-| Models active profile | `meta.active_profile` (+ static `profileDefs`) |
+| Models active profile | `meta.active_profile` → `.musubi/llm.json` `default` |
 | Driver chat | `chat_log` |
 | Pipeline studio | authoring surface — default `feature-dev`, not from the DB |
 

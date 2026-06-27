@@ -1,3 +1,5 @@
+//! musubi-tier: substrate
+//!
 //! Tauri desktop shell for the Musubi console.
 //!
 //! Bridges the webkit-free `musubi-data` core to the React UI:
