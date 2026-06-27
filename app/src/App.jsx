@@ -1,4 +1,4 @@
-import { useMusubi } from './sim/useMusubi.js'
+import { useMusubi } from './model/useMusubi.js'
 import ActivityBar from './components/ActivityBar.jsx'
 import TrustStrip from './components/TrustStrip.jsx'
 import Orchestrator from './views/Orchestrator.jsx'

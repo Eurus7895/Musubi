@@ -1,11 +1,11 @@
 // Native DataSource for the Tauri desktop shell. Domain data comes from the
 // Rust core (which reads Musubi's audit.db / llm.toml); navigation state stays
-// client-side. Implements the same contract as SimulationSource.
+// client-side.
 //
 //   get_state            invoke → initial domain snapshot
 //   state://update       event  → domain snapshot on every change (Rust poller)
 //   action               invoke({ kind, args }) → mutating actions (chat, run…)
-import { pipePresets } from '../sim/data.js'
+import { pipePresets } from '../model/data.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
 // auditFilter, pipeChatOpen) is local UI state.

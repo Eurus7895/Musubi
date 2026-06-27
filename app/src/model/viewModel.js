@@ -1,7 +1,6 @@
 // Pure presentation layer. Maps a domain state object + an actions object into
-// the flat view-model the React views render. Shared by every DataSource
-// (simulation, Tauri, …) so the UI is source-agnostic. Colours are derived from
-// role/status here, so a backend only needs to supply domain fields.
+// the flat view-model the React views render. Colours are derived from
+// role/status here, so the backend only needs to supply domain fields.
 import {
   statusMeta, pipeCatalog, pipePresets, policyRoleDefs, profileDefs, skillDefs,
   hueFor, modelColorFor,

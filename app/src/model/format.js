@@ -1,4 +1,4 @@
-// Small pure helpers shared by the simulation source and the view-model.
+// Small pure helpers shared by the data source and the view-model.
 export const fmtClock = (s) => {
   const n = Number.isFinite(s) ? s : 0
   const m = Math.floor(n / 60)

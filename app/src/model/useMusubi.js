@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { createSource } from '../data/createSource.js'
 import { buildViewModel } from './viewModel.js'
 
-// Owns a DataSource (simulation or Tauri), re-renders on its changes, and builds
-// the view-model the React views consume.
+// Owns the Tauri DataSource, re-renders on changes, and builds the view-model
+// the React views consume.
 export function useMusubi(props) {
   const [, force] = useState(0)
   const sourceRef = useRef(null)

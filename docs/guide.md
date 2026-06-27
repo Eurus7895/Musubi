@@ -189,19 +189,19 @@ are in [`app/README.md`](../app/README.md) · [`app/src-tauri/SCHEMA.md`](../app
 ```bash
 cd app
 npm install
-npm run dev                                  # browser + live simulation (no toolchain)
 npm run tauri:dev                            # desktop app, seeded demo data
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
 ```
 
-- **Browser** (`npm run dev`, → http://localhost:5173) — an in-browser
-  simulation, no Rust/DB needed. Fastest way to look around.
 - **Desktop** (Tauri) — reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
   in-memory demo so it runs standalone. Needs the Rust toolchain + webview libs
   (Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`).
   On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
   open a new terminal, and confirm `cargo --version` before running
   `npm run tauri:dev`.
+- Run npm commands from `app/`. Running `npm install` or `npm run tauri:dev`
+  from the repository root fails because the console package is
+  `app/package.json`.
 - **Prebuilt installer** (no local toolchain) — the `Desktop build` GitHub
   Actions workflow ([`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml))
   compiles `.dmg` / `.msi` / `.AppImage` / `.deb`. Run it manually
@@ -222,15 +222,14 @@ fail-closed policy, append-only audit, evaluator firewall) and the active model.
 | **Models** | LMRouter vendor profiles with a live config snippet; selecting one sets the active model. | `meta.active_profile` |
 | **Skills** | The pushed / pulled skill catalog + the "default to skill, not agent" rule. | static catalog |
 
-### Live data & URL options
+### Data Refresh & URL Options
 
 A background poller refreshes the desktop UI ~1×/second as `audit.db` grows — run
 a pipeline or spawn a sub-agent through the MCP server and the cohort, policy
 stream, and ledger update in place. A fresh DB yields empty surfaces (the reader
-is tolerant). Source selection is automatic (`SimulationSource` in the browser,
-`TauriSource` in the desktop shell), overridable with `?source=sim|tauri`. The
-prototype's editor props are URL params too: `?startView=…`, `?simSpeed=Calm|Normal|Brisk`,
-`?live=false`.
+is tolerant). The console is Tauri-only; it uses `TauriSource` through native
+IPC and has no standalone demo source. The supported URL option is
+`?startView=orchestrator|pipeline|policy|audit|models|skills`.
 
 ### Console troubleshooting
 

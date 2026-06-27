@@ -237,7 +237,6 @@ operates the governance layer.
 ```bash
 cd app
 npm install
-npm run dev                                  # browser + live simulation (no toolchain)
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
 ```
 
@@ -249,6 +248,10 @@ then open a new terminal:
 winget install --id Rustlang.Rustup -e
 cargo --version
 ```
+
+Run console npm commands from `app/`. Running `npm install` or
+`npm run tauri:dev` from the repository root fails because the console package
+lives in `app/package.json`.
 
 Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
 Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone.

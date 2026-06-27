@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
-import NetGraphic from '../sim/NetGraphic.jsx'
+import NetGraphic from '../model/NetGraphic.jsx'
 import ChatBody from '../components/ChatBody.jsx'
 
 // Scales the 1000×520 stage to fit its container (port of fitStage()).

@@ -418,7 +418,7 @@ def run_interactive(
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
     if (root / "app" / "package.json").is_file():
-        out("  cd app && npm run dev   # open the console GUI in browser mode")
+        out("  cd app && npm run tauri:dev   # open the console GUI desktop app")
     return 0
 
 

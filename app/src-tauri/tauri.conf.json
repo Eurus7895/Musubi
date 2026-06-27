@@ -5,8 +5,8 @@
   "identifier": "app.musubi.console",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "npx vite --host 127.0.0.1",
     "beforeBuildCommand": "npx tauri icon src-tauri/icons/icon.png && npm run build"
   },
   "app": {
