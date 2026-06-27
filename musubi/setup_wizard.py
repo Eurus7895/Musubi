@@ -2,7 +2,8 @@
 
 musubi-tier: substrate
 expires-when: never — onboarding a fresh install (deps, LLM endpoint config,
-  VS Code MCP wiring) is durable regardless of any pipeline-shape churn.
+  VS Code MCP wiring, console GUI guidance) is durable regardless of any
+  pipeline-shape churn.
 
 Full-onboarding flow, invoked as `musubi setup`:
 
@@ -11,6 +12,10 @@ Full-onboarding flow, invoked as `musubi setup`:
     3. connection  — optional live ping of the chosen endpoint
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
+
+The interactive shell points GUI users to prebuilt installers first, and only
+offers to install local console GUI development dependencies when
+`gui/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
@@ -28,6 +33,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -60,6 +66,7 @@ _INTEGRATED_PROXY_AUTH: tuple[str, ...] = ("negotiate", "ntlm")
 
 Prompt = Callable[[str], str]
 Out = Callable[[str], None]
+CommandRunner = Callable[[list[str], Path], int]
 
 
 # ── Doctor ──────────────────────────────────────────────────────────────────
@@ -270,6 +277,52 @@ def merge_mcp_json(existing: dict[str, Any] | None, server_arg: str) -> dict[str
     return data
 
 
+# â”€â”€ Console GUI install â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+def install_console_gui(
+    root: Path,
+    *,
+    run: CommandRunner | None = None,
+) -> tuple[bool, str]:
+    """Install the optional console GUI dependencies with npm."""
+    gui_dir = root / "gui"
+    if not (gui_dir / "package.json").is_file():
+        return False, f"console GUI app not found at {gui_dir}"
+    if not (root / "package.json").is_file():
+        return False, f"root package.json not found at {root}"
+    npm = shutil.which("npm")
+    if not npm:
+        return False, "npm was not found on PATH; install Node 20+ and rerun setup"
+    runner = run or _run_command
+    code = runner([npm, "install"], root)
+    cargo = shutil.which("cargo")
+    if code == 0:
+        if not cargo:
+            return False, (
+                "npm dependencies installed, but cargo was not found on PATH; "
+                "install the Rust toolchain for `npm run tauri:dev` "
+                "(Windows: `winget install --id Rustlang.Rustup -e`, then "
+                "open a new terminal)"
+            )
+        if os.name == "nt" and not shutil.which("link.exe"):
+            return False, (
+                "npm dependencies installed, but link.exe was not found on "
+                "PATH; install Visual Studio Build Tools with the C++ workload "
+                "for `npm run tauri:dev` (Windows: `winget install --id "
+                "Microsoft.VisualStudio.2022.BuildTools -e --override "
+                "\"--wait --passive --add "
+                "Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"`, "
+                "then open a new terminal)"
+            )
+        return True, f"console GUI dependencies installed in {gui_dir}"
+    return False, f"npm install failed with exit code {code}"
+
+
+def _run_command(cmd: list[str], cwd: Path) -> int:
+    return subprocess.run(cmd, cwd=cwd, check=False).returncode
+
+
 # ── Connection test ─────────────────────────────────────────────────────────
 
 
@@ -317,6 +370,7 @@ def run_interactive(
     prompt: Prompt = input,
     out: Out = print,
     root: Path | None = None,
+    gui_runner: CommandRunner | None = None,
 ) -> int:
     root = root or Path.cwd()
     out("Musubi setup\n============\n")
@@ -360,6 +414,14 @@ def run_interactive(
         _write(mcp_path, json.dumps(merged, indent=4) + "\n")
         out(f"  wrote {mcp_path}")
 
+    if (root / "gui" / "package.json").is_file() and _ask_yes_no(
+        prompt,
+        "Install local console GUI development dependencies now?",
+        default=False,
+    ):
+        ok, msg = install_console_gui(root, run=gui_runner)
+        out(f"  console GUI: {'OK' if ok else 'FAILED'} — {msg}")
+
     out("\nNext steps:")
     if env_name:
         out(f"  export {env_name}=<your key>")
@@ -368,6 +430,9 @@ def run_interactive(
     # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
+    if (root / "gui" / "package.json").is_file():
+        out("  Desktop build workflow: download a prebuilt installer for the console GUI")
+        out("  npm run tauri:dev   # optional local GUI development (requires Rust + native toolchain)")
     return 0
 
 

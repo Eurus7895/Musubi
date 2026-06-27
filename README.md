@@ -44,17 +44,20 @@ to `musubi_*` after the rename — see `docs/roadmap.md`.
 Musubi shrinks the tokens the model reads at the substrate boundary —
 deterministic, zero-LLM, and **reversible**:
 
-- Content-type-routed compressors — JSON-minify, code comment/blank-strip,
-  whitespace-collapse (`musubi/compression/`).
+- Content-type-routed native compressors — JSON smart-crush, Python AST
+  structure summaries, log pattern grouping, and heading-aware text outlines
+  (`musubi/compression/`).
 - The verbatim original is stored (content-hash keyed); the model pulls it
   back any time with the **`musubi_retrieve`** tool, and the audit trail
   always reads the original.
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
-  default** — reversible, so it's safe. ~67% reduction on indented JSON
-  with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
+  default** — reversible, so it's safe. The latest capability artifact
+  shows 339,930 chars compressed to 6,639 model-visible chars with exact
+  round-trip retrieval. Opt out with **`MUSUBI_COMPRESS=0`**.
 - The model can also compress a payload on demand with **`musubi_compress`**
   and measure the feature's efficiency with **`musubi_compression_stats`**
   (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
+  Detailed benchmark artifacts live in [`docs/compression.md`](./docs/compression.md).
 
 ```bash
 agent "summarise the config files"     # compression on by default
@@ -104,18 +107,22 @@ the ~80-char retrieval marker), so `musubi_compression_stats` reports the
 true compression win rather than marker overhead.
 
 ```jsonc
-// musubi_compression_stats() after compressing a 21 KB indented JSON file
+// compression capability artifact after Step 3 native compressors
 {
   "status": "ok",
-  "total_blobs": 1,
-  "total_original_chars": 21399,
-  "total_compressed_chars": 10991,
-  "bytes_saved": 10408,
-  "overall_ratio": 0.514,
-  "savings_pct": 48.6,
+  "total_blobs": 4,
+  "total_original_chars": 339930,
+  "total_compressed_chars": 6087,
+  "bytes_saved": 333843,
+  "overall_ratio": 0.018,
+  "savings_pct": 98.2,
   "rows_without_metric": 0,
-  "by_kind": [{ "kind": "json", "count": 1,
-               "original_chars": 21399, "compressed_chars": 10991 }]
+  "by_kind": [
+    { "kind": "json", "count": 1, "compressed_chars": 2521 },
+    { "kind": "code", "count": 1, "compressed_chars": 1408 },
+    { "kind": "log", "count": 1, "compressed_chars": 736 },
+    { "kind": "text", "count": 1, "compressed_chars": 1422 }
+  ]
 }
 ```
 
@@ -141,9 +148,8 @@ model, to keep the substrate LLM-free):
 ## Quick start (standalone CLI)
 
 ```bash
-cd musubi
-pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
-musubi setup                       # guided: deps check, LLM endpoint, mcp.json
+python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
+musubi setup                       # guided: deps check, LLM endpoint, mcp.json, GUI deps
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
@@ -154,10 +160,23 @@ agent "add a /health endpoint and a test for it"
 api-key all live in the chosen `.musubi/llm.json` profile. To use a
 different vendor or model, edit (or add) a profile, don't pass a flag.
 
+If `musubi` is not recognized after installation, add Python's user Scripts
+directory to `PATH` and open a new terminal:
+
+```powershell
+$scripts = python -c "import pathlib, site; print(pathlib.Path(site.USER_BASE) / 'Scripts')"
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $scripts, 'User')
+$env:Path += ';' + $scripts
+musubi setup
+```
+
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
-optionally tests the connection, and generates `.vscode/mcp.json` for the
-extension. The manual steps below still work if you prefer.
+optionally tests the connection, generates `.vscode/mcp.json` for the
+extension, and points console users to the prebuilt installer path. If you opt
+into local GUI development, it can also install npm dependencies and verify that
+`cargo` and the MSVC linker are on `PATH`. The manual steps below still work if
+you prefer.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
@@ -215,6 +234,44 @@ turn-capped child loop on a firewalled brief and restricted tool surface, then
 feeds the verified summary back — every spawn is policy-checked and audited
 (`musubi_query_subagent_events`).
 
+## Console (GUI — operator view)
+
+A dark, governance-focused desktop console reads `audit.db` directly and
+shows the substrate at work — the sub-agent cohort, fail-closed policy
+stream, and the append-only audit ledger. **Zero LLM calls**, no localhost
+server, no Copilot; the agent reasons, the console only observes and
+operates the governance layer.
+
+Primary path: use the prebuilt installer from the **Desktop build** GitHub
+Actions workflow. It builds macOS, Windows, and Linux installers in CI, so local
+machines do not need Rust, MSVC, or webview build dependencies.
+
+Local developer path:
+
+```bash
+npm install
+MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
+```
+
+`npm run tauri:dev` requires Rust's `cargo` binary and the MSVC linker on
+Windows. If Tauri reports `failed to run 'cargo metadata'` / `program not
+found`, install Rustup first. If Rust reports `link.exe not found`, install
+Visual Studio Build Tools with the C++ workload. Then open a new terminal:
+
+```powershell
+winget install --id Rustlang.Rustup -e
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+cargo --version
+where.exe link
+```
+
+Run local console npm commands from the repository root. The root
+`package.json` delegates to the GUI workspace in `gui/`.
+
+Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
+Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone. Full
+walkthrough: [`docs/guide.md`](./docs/guide.md) § Console.
+
 ## VS Code extension (Copilot surface)
 
 `copilot-harness-extension/` is the `@harness` Copilot-Chat surface — it
@@ -230,6 +287,8 @@ tracked in `docs/roadmap.md`.
 |---|---|
 | [`docs/roadmap.md`](./docs/roadmap.md) | **Read first** — direction, discipline, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · Hard Invariants · conventions · commands |
+| [`docs/guide.md`](./docs/guide.md) | **How to use Musubi** — install, CLI, profiles, compression, sub-agents, the console (GUI), and the VS Code extension, end to end |
+| [`docs/compression.md`](./docs/compression.md) | Compression capability — native compressor strategies, artifact links, and latest benchmark numbers |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map |
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 | [`docs/memory.md`](./docs/memory.md) | Memory architecture detail |

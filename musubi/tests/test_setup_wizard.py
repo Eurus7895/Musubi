@@ -216,7 +216,102 @@ def test_merge_mcp_json_preserves_other_servers() -> None:
     assert merged["servers"]["musubi"]["command"] == "python"
 
 
+def test_install_console_gui_runs_npm_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is True
+    assert "console GUI dependencies installed" in message
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
+
+
+def test_install_console_gui_reports_missing_npm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sw.shutil, "which", lambda _name: None)
+
+    ok, message = sw.install_console_gui(tmp_path)
+
+    assert ok is False
+    assert "npm was not found" in message
+
+
+def test_install_console_gui_reports_missing_cargo_after_npm_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
+    assert "cargo was not found" in message
+    assert "Rust toolchain" in message
+
+
 # ── connection test ─────────────────────────────────────────────────────────
+
+
+def test_install_console_gui_reports_missing_msvc_linker_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
+    assert "link.exe was not found" in message
+    assert "Visual Studio Build Tools" in message
+    assert "Microsoft.VisualStudio.Workload.VCTools" in message
 
 
 def test_connection_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,3 +414,122 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
     prof = load_profile("ollama.local", path=tmp_path / ".musubi" / "llm.json")
     assert prof["model"] == "llama3.1"
     assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_interactive_skips_local_console_gui_deps_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
+    )
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+        "",         # install local console GUI dependencies? default no
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(
+        prompt=script,
+        out=lines.append,
+        root=tmp_path,
+        gui_runner=fake_run,
+    )
+
+    assert rc == 0
+    assert calls == []
+    output = "\n".join(lines)
+    assert "Desktop build" in output
+    assert "prebuilt installer" in output
+
+
+def test_interactive_installs_local_console_gui_deps_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
+    )
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+        "y",        # install local console GUI dependencies?
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(
+        prompt=script,
+        out=lines.append,
+        root=tmp_path,
+        gui_runner=fake_run,
+    )
+
+    assert rc == 0
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
+    assert any("console GUI dependencies installed" in line for line in lines)
+
+
+def test_interactive_guides_console_users_to_desktop_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
+    )
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+        "n",        # install console GUI dependencies?
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(prompt=script, out=lines.append, root=tmp_path)
+
+    assert rc == 0
+    output = "\n".join(lines)
+    assert output.index("prebuilt installer") < output.index("npm run tauri:dev")
+    assert "optional local GUI development" in output
+    assert "cd app" not in output
+    assert "npm run dev" not in output
+    assert "browser mode" not in output
