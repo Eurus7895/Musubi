@@ -62,21 +62,46 @@ EFFORT_CEILING = 4096
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 
 
+#: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
+#: that is itself allowed to spawn may summon workers one level down. With the
+#: default, the root and its direct workers can spawn; their workers are leaves.
+DEFAULT_MAX_DEPTH = 2
+
+
 @dataclass
 class Orchestration:
-    """Context that lets the loop run sub-agents the model spawns.
+    """Context that lets a worker loop spawn further workers.
 
-    `parent_session_id` owns the spawn parentage; `parent_agent_name` is the
-    firewall identity ("agent" → MAIN_SUBAGENT_ALLOWLIST["agent"]). Disabled
-    (no spawning) when `parent_session_id` is None.
+    `parent_session_id` owns the spawn parentage (always the ROOT session — the
+    whole worker tree shares one session row); `parent_agent_name` is the
+    firewall identity of THIS worker (the role whose `spawn_allowlist` gates what
+    it may summon). `depth` is this worker's depth (0 = root). Disabled (no
+    spawning) when `parent_session_id` is None.
     """
 
     parent_session_id: str | None
     parent_agent_name: str = "agent"
+    depth: int = 0
+    max_depth: int = DEFAULT_MAX_DEPTH
 
     @property
     def enabled(self) -> bool:
         return self.parent_session_id is not None
+
+    def child(self, role: str) -> "Orchestration":
+        """Orchestration for a worker this one spawns: same root session, the
+        child's role as the new firewall identity, one level deeper."""
+        return Orchestration(
+            parent_session_id=self.parent_session_id,
+            parent_agent_name=role,
+            depth=self.depth + 1,
+            max_depth=self.max_depth,
+        )
+
+    @property
+    def can_spawn_deeper(self) -> bool:
+        """True if a worker at this depth is still allowed to nest."""
+        return self.enabled and self.depth < self.max_depth
 
 
 # ── Public entry ────────────────────────────────────────────────────────────
@@ -220,6 +245,7 @@ async def _run_loop(
     log: Any,
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
+    spawn_catalog: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -231,6 +257,11 @@ async def _run_loop(
     fed back as the tool result. `gateway`, when set, routes each tool call to
     its owning session (Musubi or a federated external server); when None,
     every call goes to `session` by its exact name (the sub-agent path).
+
+    `tools` is what THIS loop's model sees. `spawn_catalog` (defaults to `tools`)
+    is the full catalog a spawned worker draws its own surface from — they differ
+    only for a nesting worker, whose model surface is its restricted tools plus
+    the spawn tool, while its children still need the whole catalog.
     """
     final_answer: str | None = None
     cycles_used = 0
@@ -255,8 +286,8 @@ async def _run_loop(
 
         tool_results = await _dispatch(
             session, tool_uses, log,
-            vendor=vendor, tools=tools, orchestration=orchestration,
-            gateway=gateway,
+            vendor=vendor, tools=(spawn_catalog or tools),
+            orchestration=orchestration, gateway=gateway,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -274,6 +305,7 @@ async def run_unit(
     log: Any,
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
+    spawn_catalog: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -289,9 +321,10 @@ async def run_unit(
         by `build_subagent_system_prompt`) and `user_message` is None → seeds a
         single user turn, preserving the child message shape exactly.
 
-    `orchestration`/`gateway` are forwarded to `_run_loop` unchanged: a child is
-    a leaf today (no orchestration, restricted tools), the root may summon more
-    workers.
+    `orchestration`/`gateway`/`spawn_catalog` are forwarded to `_run_loop`: a
+    leaf worker passes orchestration=None and a restricted tool surface; a
+    nesting worker passes an orchestration one level deeper plus the full
+    catalog so its own children can be sized.
     """
     if user_message is None:
         messages: list[dict[str, Any]] = [
@@ -306,6 +339,7 @@ async def run_unit(
         session, vendor, tools, messages,
         max_cycles=max_cycles, log=log,
         orchestration=orchestration, gateway=gateway,
+        spawn_catalog=spawn_catalog,
     )
 
 
@@ -623,7 +657,9 @@ async def _dispatch_one(
         try:
             from agent import subagent
 
-            return await subagent.run_subagent(session, injected, vendor, tools, log)
+            return await subagent.run_subagent(
+                session, injected, vendor, tools, log, orchestration=orchestration
+            )
         except Exception as exc:  # noqa: BLE001 — surface to the model
             return f"[subagent error] {type(exc).__name__}: {exc}"
 

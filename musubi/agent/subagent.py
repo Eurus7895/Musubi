@@ -49,13 +49,20 @@ async def run_subagent(
     log: Any,
     *,
     agents_dir: Path | None = None,
+    orchestration: Any = None,
 ) -> str:
-    """Spawn, run, and complete one sub-agent. Returns the final summary text.
+    """Spawn, run, and complete one worker. Returns the final summary text.
 
     `spawn_args` is the model's `musubi_spawn_subagent` input with the owning
     `parent_session_id` / `parent_agent_name` already injected by the caller.
     Any harness-side rejection (bad role, firewall, missing session) is returned
     verbatim so the parent model can react.
+
+    `orchestration` is the SPAWNING worker's context. When it still has depth
+    budget (`can_spawn_deeper`) and this worker's role is itself allowed to
+    spawn, the worker is given the spawn tool and a one-level-deeper
+    orchestration so it can summon its own workers (bounded by `max_depth`).
+    Otherwise it is a leaf: no spawn tool, no orchestration.
     """
     # Lazy import avoids the run↔subagent module cycle.
     from agent.run import _call_tool_text, run_unit
@@ -87,20 +94,41 @@ async def run_subagent(
     system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
     child_tools = select_child_tools(tools, allowed)
 
+    # Nesting: this worker may itself spawn only when the parent still has depth
+    # budget AND this role declares a spawn_allowlist (a leaf role like explorer
+    # stays a leaf — its surface never gains the spawn tool). When nesting, hand
+    # it the spawn tool plus a one-level-deeper orchestration, and pass the full
+    # catalog as `spawn_catalog` so its own children can be sized.
+    child_orch = None
+    spawn_catalog = None
+    if (
+        orchestration is not None
+        and getattr(orchestration, "can_spawn_deeper", False)
+        and _frontmatter_spawn_allowlist(agent_md)
+    ):
+        spawn_tool = [t for t in tools if t.get("name") == "musubi_spawn_subagent"]
+        if spawn_tool:
+            child_tools = child_tools + spawn_tool
+            child_orch = orchestration.child(role)
+            spawn_catalog = tools
+
     print(
-        f"[agent]   ⮑ subagent {role} (handle={handle_id}, "
-        f"tools={len(child_tools)}, max_turns={max_turns})",
+        f"[agent]   ⮑ worker {role} (handle={handle_id}, "
+        f"tools={len(child_tools)}, max_turns={max_turns}, "
+        f"nests={child_orch is not None})",
         file=log,
     )
 
-    # A child worker is a leaf in v1: the firewalled brief is already baked into
-    # `system_prompt`, so it runs through `run_unit` with no extra user turn,
-    # no orchestration (cannot re-spawn), and a restricted tool surface.
+    # The firewalled brief is baked into `system_prompt`, so the worker runs
+    # through `run_unit` with no extra user turn. A leaf passes no orchestration
+    # and a restricted surface; a nesting worker carries the deeper orchestration.
     answer, turns = await run_unit(
         session, vendor, child_tools,
         system_prompt=system_prompt,
         user_message=None,
         max_cycles=max_turns, log=log,
+        orchestration=child_orch,
+        spawn_catalog=spawn_catalog,
     )
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
@@ -154,6 +182,29 @@ def select_child_tools(
     for sym in allowed_symbolic:
         wanted.update(SYMBOLIC_TO_MCP.get(sym, []))
     return [t for t in tools if t.get("name") in wanted]
+
+
+def _frontmatter_spawn_allowlist(agent_md: str) -> list[str]:
+    """Roles declared in the agent.md frontmatter `spawn_allowlist:` (the source
+    of truth since Increment 3). Empty list for a leaf role or a file with no
+    frontmatter — so nesting is enabled only for roles that actually declare
+    workers they may summon. The MCP server re-validates every spawn anyway, so
+    this is a surface hint, not the security boundary.
+    """
+    text = (agent_md or "").lstrip()
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        fm = yaml.safe_load(text[3:end]) or {}
+    except Exception:
+        return []
+    val = fm.get("spawn_allowlist") if isinstance(fm, dict) else None
+    return [s for s in val if isinstance(s, str)] if isinstance(val, list) else []
 
 
 def _strip_frontmatter(md: str) -> str:
