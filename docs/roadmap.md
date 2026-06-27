@@ -205,6 +205,32 @@ is what would license it. Postponed while the pipeline stays.
 
 ---
 
+## Operator console (`app/`) — substrate
+
+A dark, governance-focused UI for Musubi — **zero LLM calls**, reads
+`audit.db` directly (Tauri IPC → Rust core → SQLite). Ships as a standalone
+desktop app (macOS/Linux/Windows via the `desktop.yml` CI workflow) and as a
+browser-only simulation for local review.
+
+| surface | tier | notes |
+|---|---|---|
+| `app/` (React + Vite + Tauri) | **substrate** | operator view of the governance layer |
+| `app/src-tauri/musubi-data/` | substrate | webkit-free Rust core; reads `audit.db` |
+| `.github/workflows/desktop.yml` | substrate | builds installers for all platforms |
+
+**Views:** Orchestrator (sub-agent cohort), Pipeline studio, Policy
+(PreToolUse stream), Audit (append-only ledger), Models (LMRouter profiles),
+Skills (pushed/pulled catalog). The browser dev mode uses `SimulationSource`
+(live in-browser simulation); the desktop shell uses `TauriSource` (native IPC).
+
+**To run:**
+```bash
+cd app && npm install && npm run dev          # browser + simulation
+MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev  # desktop + real DB
+```
+
+---
+
 ## Still-live substrate work (independent of the phases)
 
 - **Skill catalog growth** — skills are the cheapest optimisation
