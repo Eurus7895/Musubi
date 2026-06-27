@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — onboarding a fresh install (deps, LLM endpoint config,
-  VS Code MCP wiring, console GUI deps) is durable regardless of any
+  VS Code MCP wiring, console GUI guidance) is durable regardless of any
   pipeline-shape churn.
 
 Full-onboarding flow, invoked as `musubi setup`:
@@ -13,7 +13,8 @@ Full-onboarding flow, invoked as `musubi setup`:
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
 
-The interactive shell also offers to install console GUI dependencies when
+The interactive shell points GUI users to prebuilt installers first, and only
+offers to install local console GUI development dependencies when
 `gui/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
@@ -415,8 +416,8 @@ def run_interactive(
 
     if (root / "gui" / "package.json").is_file() and _ask_yes_no(
         prompt,
-        "Install console GUI dependencies now?",
-        default=True,
+        "Install local console GUI development dependencies now?",
+        default=False,
     ):
         ok, msg = install_console_gui(root, run=gui_runner)
         out(f"  console GUI: {'OK' if ok else 'FAILED'} — {msg}")
@@ -430,7 +431,8 @@ def run_interactive(
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
     if (root / "gui" / "package.json").is_file():
-        out("  npm run tauri:dev   # open the console GUI desktop app")
+        out("  Desktop build workflow: download a prebuilt installer for the console GUI")
+        out("  npm run tauri:dev   # optional local GUI development (requires Rust + native toolchain)")
     return 0
 
 

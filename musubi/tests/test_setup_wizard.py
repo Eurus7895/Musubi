@@ -416,7 +416,7 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
     assert not (tmp_path / ".vscode" / "mcp.json").exists()
 
 
-def test_interactive_installs_console_gui_by_default(
+def test_interactive_skips_local_console_gui_deps_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gui_dir = tmp_path / "gui"
@@ -441,7 +441,50 @@ def test_interactive_installs_console_gui_by_default(
         "",         # profile
         "n",        # test connection?
         "n",        # generate mcp.json?
-        "",         # install console GUI dependencies? default yes
+        "",         # install local console GUI dependencies? default no
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(
+        prompt=script,
+        out=lines.append,
+        root=tmp_path,
+        gui_runner=fake_run,
+    )
+
+    assert rc == 0
+    assert calls == []
+    output = "\n".join(lines)
+    assert "Desktop build" in output
+    assert "prebuilt installer" in output
+
+
+def test_interactive_installs_local_console_gui_deps_when_requested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
+    )
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+        "y",        # install local console GUI dependencies?
     ])
     lines: list[str] = []
 
@@ -485,7 +528,8 @@ def test_interactive_guides_console_users_to_desktop_app(
 
     assert rc == 0
     output = "\n".join(lines)
-    assert "npm run tauri:dev" in output
+    assert output.index("prebuilt installer") < output.index("npm run tauri:dev")
+    assert "optional local GUI development" in output
     assert "cd app" not in output
     assert "npm run dev" not in output
     assert "browser mode" not in output

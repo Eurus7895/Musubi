@@ -224,9 +224,10 @@ Skills (pushed/pulled catalog). The console is Tauri-only and uses
 
 **To run:**
 ```bash
-musubi setup                              # offers npm install for the GUI
+musubi setup                              # points to the prebuilt GUI installer
+# Optional local GUI development:
 npm install
-MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev  # desktop + real DB
+MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
 User guide → [`docs/guide.md`](./guide.md) § Console.

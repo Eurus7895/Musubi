@@ -13,7 +13,11 @@ controls the environment.
 
 ## Run
 
-Run npm commands from the repository root:
+Primary path: install a prebuilt artifact from the **Desktop build** GitHub
+Actions workflow. That path needs no local Rust, MSVC, or webview build
+toolchain.
+
+Local developer path, from the repository root:
 
 ```bash
 npm install
@@ -24,7 +28,8 @@ npm run tauri:build
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
-`npm run tauri:dev` requires the Rust toolchain and platform webview libraries
+`npm run tauri:dev` is for local GUI development and requires the Rust toolchain
+and platform webview libraries
 (Linux: `webkit2gtk-4.1` and `libgtk-3-dev`; macOS/Windows: built in). If Tauri
 fails with `failed to run 'cargo metadata'` or `program not found`, `cargo` is
 missing from `PATH`. If Rust fails with `link.exe not found`, the MSVC linker is

@@ -42,11 +42,10 @@ musubi setup                       # guided wizard (recommended)
 `musubi setup` is the fastest path — it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and installs console GUI dependencies with `npm install` when
-`gui/package.json` is present. For desktop Tauri runs it also checks that
-`cargo` and the MSVC linker are on `PATH`; on Windows install Rustup and Visual
-Studio Build Tools with the C++ workload, then open a new terminal. Prefer
-manual? The steps below still work.
+extension, and points console users to the prebuilt installer path. If you opt
+into local GUI development, it can also install npm dependencies and verify that
+`cargo` and the MSVC linker are on `PATH`. Prefer manual? The steps below still
+work.
 
 ```bash
 export ANTHROPIC_API_KEY=...       # the env var the wizard recorded
@@ -184,7 +183,15 @@ the agent reasons, the console only *observes and operates* the governance
 layer. It lives in [`gui/`](../gui); deep architecture + the backend contract
 are in [`gui/README.md`](../gui/README.md) · [`gui/src-tauri/SCHEMA.md`](../gui/src-tauri/SCHEMA.md).
 
-### Run it
+### Install it
+
+Primary path: use the **Desktop build** GitHub Actions workflow. It produces
+prebuilt `.dmg`, `.msi`, `.AppImage`, and `.deb` artifacts, so you do not need a
+local Rust/MSVC/webview toolchain just to run the console. Run the workflow
+manually (Actions ▸ *Desktop build* ▸ *Run workflow*) and download the artifact
+for your platform, or push a tag to create a draft Release.
+
+### Local development
 
 ```bash
 npm install
@@ -192,7 +199,7 @@ npm run tauri:dev                            # desktop app, seeded demo data
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
 ```
 
-- **Desktop** (Tauri) — reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
+- **Local Tauri dev** — reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
   in-memory demo so it runs standalone. Needs the Rust toolchain + webview libs
   (Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`).
   On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
@@ -201,11 +208,6 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
   `npm run tauri:dev`.
 - Run npm commands from the repository root. The root `package.json` delegates
   to the GUI workspace in `gui/`.
-- **Prebuilt installer** (no local toolchain) — the `Desktop build` GitHub
-  Actions workflow ([`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml))
-  compiles `.dmg` / `.msi` / `.AppImage` / `.deb`. Run it manually
-  (Actions ▸ *Desktop build* ▸ *Run workflow* → download from artifacts) or push
-  a tag (`git tag v0.1.0 && git push --tags`) for a draft Release.
 
 ### The six views
 
