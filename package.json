@@ -1,0 +1,16 @@
+{
+  "name": "musubi",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "gui"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace musubi-gui",
+    "icons": "npm run icons --workspace musubi-gui",
+    "tauri": "npm run tauri --workspace musubi-gui --",
+    "tauri:dev": "npm run tauri:dev --workspace musubi-gui",
+    "tauri:build": "npm run tauri:build --workspace musubi-gui",
+    "test:data": "npm run test:data --workspace musubi-gui"
+  }
+}

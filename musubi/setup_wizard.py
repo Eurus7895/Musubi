@@ -14,7 +14,7 @@ Full-onboarding flow, invoked as `musubi setup`:
     5. summary     — next steps
 
 The interactive shell also offers to install console GUI dependencies when
-`app/package.json` is present.
+`gui/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
@@ -285,14 +285,16 @@ def install_console_gui(
     run: CommandRunner | None = None,
 ) -> tuple[bool, str]:
     """Install the optional console GUI dependencies with npm."""
-    app_dir = root / "app"
-    if not (app_dir / "package.json").is_file():
-        return False, f"console GUI app not found at {app_dir}"
+    gui_dir = root / "gui"
+    if not (gui_dir / "package.json").is_file():
+        return False, f"console GUI app not found at {gui_dir}"
+    if not (root / "package.json").is_file():
+        return False, f"root package.json not found at {root}"
     npm = shutil.which("npm")
     if not npm:
         return False, "npm was not found on PATH; install Node 20+ and rerun setup"
     runner = run or _run_command
-    code = runner([npm, "install"], app_dir)
+    code = runner([npm, "install"], root)
     cargo = shutil.which("cargo")
     if code == 0:
         if not cargo:
@@ -302,7 +304,7 @@ def install_console_gui(
                 "(Windows: `winget install --id Rustlang.Rustup -e`, then "
                 "open a new terminal)"
             )
-        return True, f"console GUI dependencies installed in {app_dir}"
+        return True, f"console GUI dependencies installed in {gui_dir}"
     return False, f"npm install failed with exit code {code}"
 
 
@@ -401,7 +403,7 @@ def run_interactive(
         _write(mcp_path, json.dumps(merged, indent=4) + "\n")
         out(f"  wrote {mcp_path}")
 
-    if (root / "app" / "package.json").is_file() and _ask_yes_no(
+    if (root / "gui" / "package.json").is_file() and _ask_yes_no(
         prompt,
         "Install console GUI dependencies now?",
         default=True,
@@ -417,8 +419,8 @@ def run_interactive(
     # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
-    if (root / "app" / "package.json").is_file():
-        out("  cd app && npm run tauri:dev   # open the console GUI desktop app")
+    if (root / "gui" / "package.json").is_file():
+        out("  npm run tauri:dev   # open the console GUI desktop app")
     return 0
 
 

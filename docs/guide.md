@@ -43,7 +43,7 @@ musubi setup                       # guided wizard (recommended)
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
-`app/package.json` is present. For desktop Tauri runs it also checks that
+`gui/package.json` is present. For desktop Tauri runs it also checks that
 `cargo` is on `PATH`; on Windows install it with
 `winget install --id Rustlang.Rustup -e`, then open a new terminal. Prefer
 manual? The steps below still work.
@@ -181,13 +181,12 @@ A dark, governance-focused console that reads `audit.db` directly and shows the
 substrate at work — the sub-agent cohort, fail-closed policy stream, and the
 append-only audit ledger. **Zero LLM calls**, no localhost server, no Copilot —
 the agent reasons, the console only *observes and operates* the governance
-layer. It lives in [`app/`](../app); deep architecture + the backend contract
-are in [`app/README.md`](../app/README.md) · [`app/src-tauri/SCHEMA.md`](../app/src-tauri/SCHEMA.md).
+layer. It lives in [`gui/`](../gui); deep architecture + the backend contract
+are in [`gui/README.md`](../gui/README.md) · [`gui/src-tauri/SCHEMA.md`](../gui/src-tauri/SCHEMA.md).
 
 ### Run it
 
 ```bash
-cd app
 npm install
 npm run tauri:dev                            # desktop app, seeded demo data
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
@@ -199,9 +198,8 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
   On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
   open a new terminal, and confirm `cargo --version` before running
   `npm run tauri:dev`.
-- Run npm commands from `app/`. Running `npm install` or `npm run tauri:dev`
-  from the repository root fails because the console package is
-  `app/package.json`.
+- Run npm commands from the repository root. The root `package.json` delegates
+  to the GUI workspace in `gui/`.
 - **Prebuilt installer** (no local toolchain) — the `Desktop build` GitHub
   Actions workflow ([`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml))
   compiles `.dmg` / `.msi` / `.AppImage` / `.deb`. Run it manually
@@ -261,7 +259,7 @@ surface** kept alongside the CLI. Build scripts live in that directory.
 | [`CLAUDE.md`](../CLAUDE.md) | Rules · Hard Invariants · git conventions |
 | [`AGENTS.md`](../AGENTS.md) | Session-start orientation map |
 | [`musubi/server.py`](../musubi/server.py) · [`musubi/storage/schema.sql`](../musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
-| [`app/README.md`](../app/README.md) | Console architecture + backend contract |
+| [`gui/README.md`](../gui/README.md) | Console architecture + backend contract |
 | [`docs/memory.md`](./memory.md) | Memory architecture detail |
 
 **Before opening a PR:** run `python scripts/check_musubi_tier.py` and

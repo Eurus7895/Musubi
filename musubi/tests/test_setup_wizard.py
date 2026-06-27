@@ -219,9 +219,10 @@ def test_merge_mcp_json_preserves_other_servers() -> None:
 def test_install_console_gui_runs_npm_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
 
     def fake_run(cmd: list[str], cwd: Path) -> int:
@@ -238,15 +239,16 @@ def test_install_console_gui_runs_npm_install(
 
     assert ok is True
     assert "console GUI dependencies installed" in message
-    assert calls == [(["/bin/npm", "install"], app_dir)]
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
 
 
 def test_install_console_gui_reports_missing_npm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(sw.shutil, "which", lambda _name: None)
 
     ok, message = sw.install_console_gui(tmp_path)
@@ -258,9 +260,10 @@ def test_install_console_gui_reports_missing_npm(
 def test_install_console_gui_reports_missing_cargo_after_npm_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
 
     def fake_run(cmd: list[str], cwd: Path) -> int:
@@ -274,7 +277,7 @@ def test_install_console_gui_reports_missing_cargo_after_npm_install(
     ok, message = sw.install_console_gui(tmp_path, run=fake_run)
 
     assert ok is False
-    assert calls == [(["/bin/npm", "install"], app_dir)]
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
     assert "cargo was not found" in message
     assert "Rust toolchain" in message
 
@@ -387,9 +390,10 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
 def test_interactive_installs_console_gui_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
 
     def fake_run(cmd: list[str], cwd: Path) -> int:
@@ -420,16 +424,17 @@ def test_interactive_installs_console_gui_by_default(
     )
 
     assert rc == 0
-    assert calls == [(["/bin/npm", "install"], app_dir)]
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
     assert any("console GUI dependencies installed" in line for line in lines)
 
 
 def test_interactive_guides_console_users_to_desktop_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_dir = tmp_path / "app"
-    app_dir.mkdir()
-    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
         sw.shutil,
@@ -451,6 +456,7 @@ def test_interactive_guides_console_users_to_desktop_app(
 
     assert rc == 0
     output = "\n".join(lines)
-    assert "cd app && npm run tauri:dev" in output
+    assert "npm run tauri:dev" in output
+    assert "cd app" not in output
     assert "npm run dev" not in output
     assert "browser mode" not in output

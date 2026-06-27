@@ -2,7 +2,7 @@ export function createSource(props) {
   const inTauri = typeof window !== 'undefined'
     && (!!window.__TAURI_INTERNALS__ || !!window.__TAURI__ || !!window.isTauri)
   if (!inTauri) {
-    throw new Error('Musubi Console must run inside the Tauri desktop shell. Use `npm run tauri:dev` from app/.')
+    throw new Error('Musubi Console must run inside the Tauri desktop shell. Use `npm run tauri:dev` from the repository root.')
   }
   return new LazyTauri(props)
 }

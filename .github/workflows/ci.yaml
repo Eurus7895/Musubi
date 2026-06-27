@@ -4,7 +4,7 @@
 #   - python: pytest (745 tests) + ruff (lint, non-blocking)
 #   - typescript: tsc --noEmit + npm test (236 tests)
 #   - rust: cargo test on the console's webkit-free audit.db reader
-#     (app/src-tauri/musubi-data). Headless — no Tauri/webview deps, so
+#     (gui/src-tauri/musubi-data). Headless — no Tauri/webview deps, so
 #     it needs no system libs. The full desktop bundle is built separately
 #     by .github/workflows/desktop.yml (release-only / manual).
 #
@@ -130,14 +130,14 @@ jobs:
         run: npm test
 
   # ────────────────────────────────────────────────────────────────────
-  # Rust console core — app/src-tauri/musubi-data/
+  # Rust console core — gui/src-tauri/musubi-data/
   # ────────────────────────────────────────────────────────────────────
   rust:
     name: Rust console core
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: app/src-tauri/musubi-data
+        working-directory: gui/src-tauri/musubi-data
     steps:
       - uses: actions/checkout@v4
 
@@ -149,7 +149,7 @@ jobs:
       - name: Cache cargo build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: 'app/src-tauri/musubi-data -> target'
+          workspaces: 'gui/src-tauri/musubi-data -> target'
 
       - name: Format — cargo fmt --check
         run: cargo fmt --check

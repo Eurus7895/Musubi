@@ -19,8 +19,8 @@ eggs/
 .eggs/
 lib/
 lib64/
-!app/src/lib/
-!app/src/lib/**
+!gui/src/lib/
+!gui/src/lib/**
 parts/
 sdist/
 var/
@@ -235,3 +235,4 @@ __marimo__/
 # Node.js
 node_modules/
 dist/
+.vite/

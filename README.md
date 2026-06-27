@@ -165,7 +165,7 @@ different vendor or model, edit (or add) a profile, don't pass a flag.
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
-`app/package.json` is present. For desktop Tauri runs it also checks that
+`gui/package.json` is present. For desktop Tauri runs it also checks that
 `cargo` is on `PATH`; on Windows install it with
 `winget install --id Rustlang.Rustup -e`, then open a new terminal. The manual
 steps below still work if you prefer.
@@ -235,7 +235,6 @@ server, no Copilot; the agent reasons, the console only observes and
 operates the governance layer.
 
 ```bash
-cd app
 npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
 ```
@@ -249,9 +248,8 @@ winget install --id Rustlang.Rustup -e
 cargo --version
 ```
 
-Run console npm commands from `app/`. Running `npm install` or
-`npm run tauri:dev` from the repository root fails because the console package
-lives in `app/package.json`.
+Run console npm commands from the repository root. The root `package.json`
+delegates to the GUI workspace in `gui/`.
 
 Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
 Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone.

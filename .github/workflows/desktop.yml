@@ -42,20 +42,19 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: './app/src-tauri -> target'
+          workspaces: './gui/src-tauri -> target'
 
       - name: Install JS dependencies
-        working-directory: app
         run: npm ci
 
       - name: Generate platform icons (.ico / .icns)
-        working-directory: app
+        working-directory: gui
         run: npx tauri icon src-tauri/icons/icon.png
 
       - name: Build the desktop app
@@ -63,7 +62,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: app
+          projectPath: gui
           args: ${{ matrix.args }}
           # On a tag push, publish a draft Release with the installers attached.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
@@ -79,9 +78,9 @@ jobs:
           name: musubi-console-${{ matrix.platform }}
           if-no-files-found: warn
           path: |
-            app/src-tauri/target/release/bundle/**/*.dmg
-            app/src-tauri/target/release/bundle/**/*.app
-            app/src-tauri/target/release/bundle/**/*.deb
-            app/src-tauri/target/release/bundle/**/*.AppImage
-            app/src-tauri/target/release/bundle/**/*.msi
-            app/src-tauri/target/release/bundle/**/*.exe
+            gui/src-tauri/target/release/bundle/**/*.dmg
+            gui/src-tauri/target/release/bundle/**/*.app
+            gui/src-tauri/target/release/bundle/**/*.deb
+            gui/src-tauri/target/release/bundle/**/*.AppImage
+            gui/src-tauri/target/release/bundle/**/*.msi
+            gui/src-tauri/target/release/bundle/**/*.exe

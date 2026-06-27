@@ -13,10 +13,9 @@ controls the environment.
 
 ## Run
 
-Run npm commands from this directory, not from the repository root:
+Run npm commands from the repository root:
 
 ```bash
-cd app
 npm install
 npm run tauri:dev
 npm run tauri:build
@@ -35,9 +34,8 @@ winget install --id Rustlang.Rustup -e
 cargo --version
 ```
 
-Open a new terminal after installing Rustup. If npm reports that `package.json`
-is missing, run `cd app` first. Without `MUSUBI_DB` the app seeds an in-memory
-demo so it runs standalone.
+Open a new terminal after installing Rustup. Without `MUSUBI_DB` the app seeds
+an in-memory demo so it runs standalone.
 
 Icons are generated with `npm run icons`. For `.ico`/`.icns` generation, run
 `npm run tauri icon src-tauri/icons/icon.png`.

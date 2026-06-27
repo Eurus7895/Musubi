@@ -47,8 +47,8 @@ SCOPE_PATTERNS = [
     ".github/pipelines/*/pipeline.yaml",
     # Console (GUI) — the Rust substrate that reads audit.db. The JS frontend
     # is presentation; the Rust core + Tauri shell carry the tier discipline.
-    "app/src-tauri/src/*.rs",
-    "app/src-tauri/musubi-data/src/*.rs",
+    "gui/src-tauri/src/*.rs",
+    "gui/src-tauri/musubi-data/src/*.rs",
 ]
 
 EXCLUDE_DIR_PARTS = {"tests", "__pycache__", "node_modules", "dist", "out"}

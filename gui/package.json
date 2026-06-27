@@ -1,9 +1,9 @@
 {
-  "name": "musubi-console",
+  "name": "musubi-gui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Musubi governance console — operator UI for tying agents to policy",
+  "description": "Musubi GUI — operator UI for tying agents to policy",
   "scripts": {
     "build": "vite build",
     "icons": "node src-tauri/gen-icons.mjs",
