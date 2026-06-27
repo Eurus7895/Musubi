@@ -58,7 +58,7 @@ async def run_subagent(
     verbatim so the parent model can react.
     """
     # Lazy import avoids the run↔subagent module cycle.
-    from agent.run import _call_tool_text, _run_loop
+    from agent.run import _call_tool_text, run_unit
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
@@ -93,9 +93,13 @@ async def run_subagent(
         file=log,
     )
 
-    messages: list[dict[str, Any]] = [{"role": "user", "content": system_prompt}]
-    answer, turns = await _run_loop(
-        session, vendor, child_tools, messages,
+    # A child worker is a leaf in v1: the firewalled brief is already baked into
+    # `system_prompt`, so it runs through `run_unit` with no extra user turn,
+    # no orchestration (cannot re-spawn), and a restricted tool surface.
+    answer, turns = await run_unit(
+        session, vendor, child_tools,
+        system_prompt=system_prompt,
+        user_message=None,
         max_cycles=max_turns, log=log,
     )
     if answer is None:

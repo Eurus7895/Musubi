@@ -170,21 +170,24 @@ async def run_agent(
             parent_session_id=await _open_parent_session(session, task, log),
         )
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": task},
-        ]
         # Catch a loop failure (an LLM/network error from `vendor.call`, a
         # dispatch error) HERE, inside the `async with`, and stash it. Letting
         # it escape into the stack's `__aexit__` makes anyio re-wrap it in a
         # BaseExceptionGroup (the unreadable multi-page traceback) and defeats
         # `except RuntimeError` at every call site. We re-raise it cleanly
         # outside the contexts below.
+        #
+        # The root task is just the depth-0 worker: it runs through the same
+        # `run_unit` entry every child worker does (see `run_unit`). The only
+        # difference is its prompt shape (system + user) and that orchestration
+        # is enabled so it may summon further workers.
         try:
-            final_answer, _ = await _run_loop(
-                session, vendor, tools, messages,
-                max_cycles=max_cycles, log=log, orchestration=orchestration,
-                gateway=gateway,
+            final_answer, _ = await run_unit(
+                session, vendor, tools,
+                system_prompt=build_system_prompt(),
+                user_message=task,
+                max_cycles=max_cycles, log=log,
+                orchestration=orchestration, gateway=gateway,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -249,6 +252,52 @@ async def _run_loop(
         messages.append({"role": "user", "content": tool_results})
 
     return final_answer, cycles_used
+
+
+async def run_unit(
+    session: ClientSession,
+    vendor: LMRouter,
+    tools: list[dict[str, Any]],
+    *,
+    system_prompt: str,
+    user_message: str | None,
+    max_cycles: int,
+    log: Any,
+    orchestration: Orchestration | None = None,
+    gateway: McpGateway | None = None,
+) -> tuple[str | None, int]:
+    """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
+
+    A "worker" is the single unit of agentic work — there is no "main agent"
+    vs "sub-agent" distinction, only workers at different depths. The root task
+    is the depth-0 worker; every spawned child is the same object one level
+    down. This is the one entry both go through; `_run_loop` is its engine.
+
+    Prompt shape is the only thing that varies by depth:
+      - root worker: `system_prompt` = the agent identity, `user_message` = the
+        task → seeds messages as [system, user].
+      - child worker: `system_prompt` already embeds the firewalled brief (built
+        by `build_subagent_system_prompt`) and `user_message` is None → seeds a
+        single user turn, preserving the child message shape exactly.
+
+    `orchestration`/`gateway` are forwarded to `_run_loop` unchanged: a child is
+    a leaf today (no orchestration, restricted tools), the root may summon more
+    workers.
+    """
+    if user_message is None:
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": system_prompt}
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+    return await _run_loop(
+        session, vendor, tools, messages,
+        max_cycles=max_cycles, log=log,
+        orchestration=orchestration, gateway=gateway,
+    )
 
 
 async def _open_parent_session(session: ClientSession, task: str, log: Any) -> str | None:
