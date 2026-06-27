@@ -160,8 +160,15 @@ agent "add a /health endpoint and a test for it"
 api-key all live in the chosen `.musubi/llm.json` profile. To use a
 different vendor or model, edit (or add) a profile, don't pass a flag.
 
-If `musubi` is not recognized after installation, open a new terminal or run it
-through Python's script launcher path for your environment.
+If `musubi` is not recognized after installation, add Python's user Scripts
+directory to `PATH` and open a new terminal:
+
+```powershell
+$scripts = python -c "import pathlib, site; print(pathlib.Path(site.USER_BASE) / 'Scripts')"
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $scripts, 'User')
+$env:Path += ';' + $scripts
+musubi setup
+```
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),

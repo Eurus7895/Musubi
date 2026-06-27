@@ -38,8 +38,15 @@ python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musub
 musubi setup                       # guided wizard (recommended)
 ```
 
-If `musubi` is not recognized after installation, open a new terminal so the
-environment's script directory is visible on `PATH`.
+If `musubi` is not recognized after installation, add Python's user Scripts
+directory to `PATH` and open a new terminal:
+
+```powershell
+$scripts = python -c "import pathlib, site; print(pathlib.Path(site.USER_BASE) / 'Scripts')"
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + $scripts, 'User')
+$env:Path += ';' + $scripts
+musubi setup
+```
 
 `musubi setup` is the fastest path — it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
