@@ -1,0 +1,15 @@
+# A user-defined pipeline composed from presets (Increment 6). plan → build →
+# check, where each stage is a worker; the prior stage's summary feeds the next
+# and `check` (the evaluator) sees only the build output (HI #3).
+#
+# This is the preset-composed shape: a flat `stages:` list of preset references,
+# resolved by composer against .github/pipelines/presets/. No Python edits were
+# needed to add it — composer loads any pipeline name dynamically and the boot
+# gate validates it fail-closed.
+name: dev-lite
+description: Lightweight plan→build→check pipeline composed from presets.
+version: 0.1.0
+stages:
+  - preset: plan
+  - preset: build
+  - preset: check

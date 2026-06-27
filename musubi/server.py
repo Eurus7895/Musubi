@@ -84,6 +84,11 @@ import policy_engine as _policy
 # surfaces in the extension's MCP-init log immediately.
 _policy.validate_policies_or_raise()
 
+# Increment 6 — validate the preset catalog + every preset-composed pipeline
+# (user-defined pipelines) against the agent catalog. Fail-closed: an unknown
+# preset/agent or a too-short chain aborts boot, same posture as the policy gate.
+composer.validate_catalog_or_raise()
+
 # Ensure DB directory + schema exist before any tool call (critical for first run
 # when MUSUBI_ROOT points to the extension install dir which has no data/ folder yet).
 _db.init_db()

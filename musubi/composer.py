@@ -93,6 +93,80 @@ def _load_pipeline_yaml(pipeline_name: str) -> dict[str, Any]:
     return data
 
 
+_presets_cache: dict[str, tuple[float, dict[str, dict[str, Any]]]] = {}
+
+
+def _load_presets() -> dict[str, dict[str, Any]]:
+    """Load the preset catalog from `.github/pipelines/presets/*.yaml`.
+
+    Each preset is a reusable worker/stage building block a user drops into a
+    pipeline (the data model a future drag-and-drop UI reads/writes):
+        id:    unique preset id (defaults to the file stem)
+        agent: the role it runs (a `.github/agents/<role>.agent.md`)
+        stage: default stage name (defaults to the agent name)
+        skill: optional skill id/path
+    Returns {id: {agent, stage, skill}}. Cached by directory mtime, fail-soft.
+    """
+    root = _pipelines_root() / "presets"
+    if not root.is_dir():
+        return {}
+    try:
+        mtime = root.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _presets_cache.get(str(root))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        import yaml  # type: ignore[import-untyped]
+        for f in sorted(root.glob("*.yaml")):
+            try:
+                data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            agent = data.get("agent")
+            if not isinstance(agent, str) or not agent.strip():
+                continue
+            pid = str(data.get("id") or f.stem)
+            out[pid] = {
+                "agent": agent.strip().lower(),
+                "stage": data.get("stage"),
+                "skill": data.get("skill"),
+            }
+    except Exception:
+        return {}
+    _presets_cache[str(root)] = (mtime, out)
+    return out
+
+
+def _resolve_stage_entry(
+    entry: Any, presets: dict[str, dict[str, Any]],
+) -> tuple[str, str] | None:
+    """Resolve one `stages:` entry to (agent, stage).
+
+    Supports a preset reference (`{preset: id, stage?: override}`) or an explicit
+    entry (`{agent|name: role, stage?: name}`). None when unresolvable.
+    """
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("preset"):
+        p = presets.get(str(entry["preset"]))
+        if not p:
+            return None
+        agent = p["agent"]
+        stage = entry.get("stage") or p.get("stage") or agent
+    else:
+        raw = entry.get("agent") or entry.get("name") or ""
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        agent = raw.strip().lower()
+        stage = entry.get("stage") or _CANONICAL_AGENT_OUTPUT_STAGE.get(agent) or agent
+    return (agent, str(stage))
+
+
 _SKILL_PATH_RE = re.compile(r"^skills/([^/]+)/SKILL\.md$")
 
 
@@ -121,7 +195,22 @@ def _pipeline_stage_chain(data: dict[str, Any]) -> list[tuple[str, str]]:
     Stage names come from each agent entry's `stage:` field when declared.
     When omitted, the canonical map is consulted as a fallback (so feature-dev's
     existing yaml still resolves correctly without a migration).
+
+    Preset-composed form (Increment 6): when the pipeline declares a flat
+    `stages:` list, each entry is resolved against the preset catalog (or given
+    explicitly) and the last entry is the evaluator. This is the form users
+    author by dropping presets into a pipeline.
     """
+    stages_list = data.get("stages")
+    if isinstance(stages_list, list) and stages_list:
+        presets = _load_presets()
+        chain: list[tuple[str, str]] = []
+        for entry in stages_list:
+            resolved = _resolve_stage_entry(entry, presets)
+            if resolved:
+                chain.append(resolved)
+        return chain
+
     out: list[tuple[str, str]] = []
     gen = data.get("generator") or {}
     if isinstance(gen, dict):
@@ -286,6 +375,84 @@ def injected_skill_ids(
     return []
 
 
+def validate_catalog() -> list[str]:
+    """Validate the preset catalog and every preset-composed pipeline against
+    the agent catalog. Fail-closed: an unknown agent, an unresolvable preset
+    reference, or a too-short chain is an error. Pipelines using the legacy
+    generator/evaluator shape are left to `policy_engine` and skipped here.
+    Returns human-readable error strings; empty ⇒ clean.
+    """
+    errors: list[str] = []
+    agents_root = _pipelines_root().parent / "agents"
+    known_agents: set[str] = set()
+    if agents_root.is_dir():
+        known_agents = {
+            f.name[: -len(".agent.md")] for f in agents_root.glob("*.agent.md")
+        }
+
+    presets = _load_presets()
+    for pid, p in presets.items():
+        if known_agents and p["agent"] not in known_agents:
+            errors.append(
+                f"preset {pid!r} references unknown agent {p['agent']!r}"
+            )
+
+    root = _pipelines_root()
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.name == "presets":
+                continue
+            stages_list = _load_pipeline_yaml(d.name).get("stages")
+            if not isinstance(stages_list, list) or not stages_list:
+                continue  # legacy generator/evaluator shape — not ours to check
+            resolved_count = 0
+            for entry in stages_list:
+                if not isinstance(entry, dict):
+                    errors.append(f"pipeline {d.name!r} has a non-dict stage entry")
+                    continue
+                if entry.get("preset") and str(entry["preset"]) not in presets:
+                    errors.append(
+                        f"pipeline {d.name!r} references unknown preset "
+                        f"{entry['preset']!r}"
+                    )
+                    continue
+                resolved = _resolve_stage_entry(entry, presets)
+                if resolved is None:
+                    errors.append(
+                        f"pipeline {d.name!r} has an unresolvable stage entry: "
+                        f"{entry!r}"
+                    )
+                elif known_agents and resolved[0] not in known_agents:
+                    errors.append(
+                        f"pipeline {d.name!r} stage references unknown agent "
+                        f"{resolved[0]!r}"
+                    )
+                else:
+                    resolved_count += 1
+            if resolved_count < 2:
+                errors.append(
+                    f"pipeline {d.name!r} needs at least 2 resolvable stages "
+                    f"(got {resolved_count})"
+                )
+    return errors
+
+
+def validate_catalog_or_raise() -> None:
+    """Boot gate. Raises RuntimeError listing every catalog error, mirroring
+    `policy_engine.validate_policies_or_raise`. Called from server startup so a
+    malformed preset/pipeline aborts the harness loudly instead of fail-opening.
+    """
+    errors = validate_catalog()
+    if errors:
+        bullets = "\n  - ".join(errors)
+        raise RuntimeError(
+            "Pipeline/preset catalog validation failed. "
+            f"Fix `.github/pipelines/`:\n  - {bullets}"
+        )
+
+
 def reset_cache() -> None:
-    """Test hook — drop the parsed-yaml cache so a mid-test rewrite is read."""
+    """Test hook — drop the parsed-yaml + preset caches so a mid-test rewrite
+    is read."""
     _yaml_cache.clear()
+    _presets_cache.clear()

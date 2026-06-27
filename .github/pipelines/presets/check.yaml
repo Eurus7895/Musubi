@@ -1,0 +1,4 @@
+id: check
+agent: reviewer
+stage: review
+description: Review the prior stage's output (evaluator — firewalled to it).
