@@ -229,7 +229,7 @@ cd app && npm install && npm run dev          # browser + simulation
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev  # desktop + real DB
 ```
 
-User guide → [`docs/console.md`](./console.md).
+User guide → [`docs/guide.md`](./guide.md) § Console.
 
 ---
 

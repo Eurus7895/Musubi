@@ -234,7 +234,7 @@ Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
 Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone.
 Prebuilt installers (macOS / Windows / Linux) are produced by the
 `Desktop build` GitHub Actions workflow — no local Rust/webview toolchain
-needed. Full walkthrough: [`docs/console.md`](./docs/console.md).
+needed. Full walkthrough: [`docs/guide.md`](./docs/guide.md) § Console.
 
 ## VS Code extension (Copilot surface)
 
@@ -251,8 +251,8 @@ tracked in `docs/roadmap.md`.
 |---|---|
 | [`docs/roadmap.md`](./docs/roadmap.md) | **Read first** — direction, discipline, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · Hard Invariants · conventions · commands |
+| [`docs/guide.md`](./docs/guide.md) | **How to use Musubi** — install, CLI, profiles, compression, sub-agents, the console (GUI), and the VS Code extension, end to end |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map |
-| [`docs/console.md`](./docs/console.md) | Governance console (GUI) — install, the six views, pointing at a real `audit.db` |
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 | [`docs/memory.md`](./docs/memory.md) | Memory architecture detail |
 

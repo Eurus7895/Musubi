@@ -1,6 +1,6 @@
 # Musubi Console
 
-> **New to the console? Start with the user guide:** [`docs/console.md`](../docs/console.md)
+> **New to the console? Start with the user guide:** [`docs/guide.md`](../docs/guide.md) § Console
 > — install, the six views, and pointing it at a real `audit.db`. This file is
 > the architecture + contributor reference.
 
