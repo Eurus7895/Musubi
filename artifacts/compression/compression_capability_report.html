@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musubi Compression Capability Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #17202a;
+      --muted: #5d6b7c;
+      --line: #d6dde7;
+      --green: #2f8f66;
+      --blue: #2f6f9f;
+      --amber: #b8752b;
+      --red: #bd4b4b;
+      --slate: #8fa2b5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.45;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 38px 0 48px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 24px 0;
+    }
+
+    .metric {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 18px;
+      border-left: 7px solid var(--blue);
+    }
+
+    .metric:nth-child(2) {
+      border-left-color: var(--green);
+    }
+
+    .metric:nth-child(3) {
+      border-left-color: var(--amber);
+    }
+
+    .metric:nth-child(4) {
+      border-left-color: var(--green);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 22px;
+      margin-top: 18px;
+    }
+
+    .chart {
+      display: grid;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 190px 1fr 155px 130px;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .label strong {
+      display: block;
+      font-size: 17px;
+    }
+
+    .label span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .bar {
+      position: relative;
+      min-height: 28px;
+      overflow: hidden;
+      border-radius: 6px;
+      background: #edf1f5;
+    }
+
+    .fill {
+      height: 28px;
+      border-radius: 6px;
+      background: var(--slate);
+    }
+
+    .fill.compressed {
+      background: var(--green);
+    }
+
+    .value {
+      position: absolute;
+      top: 3px;
+      left: 10px;
+      color: #102032;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .saving {
+      color: var(--green);
+      font-weight: 700;
+      font-size: 18px;
+    }
+
+    .ok {
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 14px;
+      border-radius: 4px;
+      background: var(--slate);
+    }
+
+    .swatch.green {
+      background: var(--green);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 15px;
+    }
+
+    th,
+    td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: #eef2f6;
+      color: #273444;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    .note-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .note {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 15px;
+      background: #fbfcfd;
+    }
+
+    .note strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .preview {
+      width: 100%;
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 850px) {
+      header,
+      .summary,
+      .note-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .tag {
+        white-space: normal;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Musubi Compression Capability</h1>
+        <p>Demo tinh nang nen input co the retrieve lai ban goc qua <code>musubi_retrieve(ref_id)</code>.</p>
+      </div>
+      <div class="tag">Baseline benchmark · model-visible chars include retrieval marker</div>
+    </header>
+
+    <section class="summary" aria-label="Summary metrics">
+      <div class="metric">
+        <span>Payloads compressed</span>
+        <strong>4 / 4</strong>
+      </div>
+      <div class="metric">
+        <span>Retrieve verification</span>
+        <strong>4 / 4 OK</strong>
+      </div>
+      <div class="metric">
+        <span>Visible chars saved</span>
+        <strong>126,543</strong>
+      </div>
+      <div class="metric">
+        <span>Overall saving</span>
+        <strong>28.3%</strong>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Original vs compressed</h2>
+      <p>Moi hang hien original chars va model-visible compressed chars sau khi da tinh retrieval marker overhead.</p>
+
+      <div class="chart">
+        <div class="row">
+          <div class="label">
+            <strong>Pretty JSON</strong>
+            <span>json / fixture.json</span>
+          </div>
+          <div class="bars">
+            <div class="bar"><div class="fill" style="width: 100%"></div><span class="value">215,528 original</span></div>
+            <div class="bar"><div class="fill compressed" style="width: 61.5%"></div><span class="value">132,457 compressed</span></div>
+          </div>
+          <div class="saving">38.5% saved</div>
+          <div class="ok">retrieve OK</div>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <strong>Commented code</strong>
+            <span>code / sample.py</span>
+          </div>
+          <div class="bars">
+            <div class="bar"><div class="fill" style="width: 34.5%"></div><span class="value">74,329 original</span></div>
+            <div class="bar"><div class="fill compressed" style="width: 17.6%"></div><span class="value">38,037 compressed</span></div>
+          </div>
+          <div class="saving">48.8% saved</div>
+          <div class="ok">retrieve OK</div>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <strong>Noisy log</strong>
+            <span>log / run.log</span>
+          </div>
+          <div class="bars">
+            <div class="bar"><div class="fill" style="width: 35.2%"></div><span class="value">75,886 original</span></div>
+            <div class="bar"><div class="fill compressed" style="width: 32.6%"></div><span class="value">70,366 compressed</span></div>
+          </div>
+          <div class="saving">7.3% saved</div>
+          <div class="ok">retrieve OK</div>
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <strong>Whitespace text</strong>
+            <span>text / notes.txt</span>
+          </div>
+          <div class="bars">
+            <div class="bar"><div class="fill" style="width: 37.9%"></div><span class="value">81,718 original</span></div>
+            <div class="bar"><div class="fill compressed" style="width: 37.1%"></div><span class="value">80,058 compressed</span></div>
+          </div>
+          <div class="saving">2.0% saved</div>
+          <div class="ok">retrieve OK</div>
+        </div>
+      </div>
+
+      <div class="legend" aria-label="Chart legend">
+        <span><i class="swatch"></i> Original chars</span>
+        <span><i class="swatch green"></i> Compressed chars visible to model</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Capability summary</h2>
+      <div class="note-grid">
+        <div class="note">
+          <strong>Reversible</strong>
+          <p>Ban goc duoc luu trong blob store bang content hash. Ket qua nen co <code>ref_id</code> de goi retrieve khi can exact text.</p>
+        </div>
+        <div class="note">
+          <strong>Zero LLM</strong>
+          <p>Compressor hien tai deterministic: JSON minify, code/comment strip, log/text whitespace collapse. Khong goi model trong substrate.</p>
+        </div>
+        <div class="note">
+          <strong>Best fit</strong>
+          <p>Baseline nen manh nhat voi pretty JSON va code nhieu comment. Log/text can Step tiep theo: pattern grouping va outline compression.</p>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Payload</th>
+            <th>Ref ID</th>
+            <th>Original</th>
+            <th>Compressed</th>
+            <th>Saved</th>
+            <th>Ratio</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Pretty JSON</td>
+            <td><code>7591476de31bacde</code></td>
+            <td>215,528</td>
+            <td>132,457</td>
+            <td>83,071</td>
+            <td>0.615</td>
+          </tr>
+          <tr>
+            <td>Commented code</td>
+            <td><code>41b710d7cfe053ea</code></td>
+            <td>74,329</td>
+            <td>38,037</td>
+            <td>36,292</td>
+            <td>0.512</td>
+          </tr>
+          <tr>
+            <td>Noisy log</td>
+            <td><code>ca301907cc6a4b61</code></td>
+            <td>75,886</td>
+            <td>70,366</td>
+            <td>5,520</td>
+            <td>0.927</td>
+          </tr>
+          <tr>
+            <td>Whitespace text</td>
+            <td><code>312ab81e90b00f87</code></td>
+            <td>81,718</td>
+            <td>80,058</td>
+            <td>1,660</td>
+            <td>0.980</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Generated benchmark image</h2>
+      <p>Ban PNG duoc tao tu cung data benchmark.</p>
+      <img class="preview" src="compression_feature_results.png" alt="Musubi compression benchmark result chart">
+    </section>
+
+    <footer>
+      Data source: <a href="compression_benchmark_results.json">compression_benchmark_results.json</a>.
+      Artifact is static and can be opened directly from disk.
+    </footer>
+  </main>
+</body>
+</html>
