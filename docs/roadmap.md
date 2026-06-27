@@ -121,6 +121,43 @@ substrate; pipeline dissolution is postponed (see below).
    calls to `musubi_*` so it works against the renamed server. The 4-stage
    pipeline lives here and stays.
 
+### Worker model — landed (standalone host)
+
+The standalone host no longer distinguishes "main agent" from "sub-agent":
+there are only **workers**, the root task being the depth-0 worker. The
+core purpose is **context-window offloading** — a worker does bounded work
+in its own firewalled context and returns only a compact summary, keeping
+the orchestrator lean.
+
+- ✓ **One code path.** `run_agent` and `run_subagent` both route through
+  `run_unit` (`agent/run.py`); the duplicated loop body is gone. "worker"
+  is terminology only — the MCP tool / DB names keep the `subagent`
+  spelling for contract + audit stability (no rename, no migration).
+- ✓ **Frontmatter spawn firewall.** Each agent's `spawn_allowlist:` is
+  authoritative when present (`scripts/policy_engine.py`), with the
+  constant as the fail-closed fallback for installed wheels. The `"agent"`
+  special-case is dissolved.
+- ✓ **Parallel + background workers.** `_dispatch` runs a turn's spawns
+  concurrently (`asyncio.gather` + `to_thread` on the blocking
+  `vendor.call`), ordered results, a per-role width guard, and depth-2
+  nesting (spawn-capable workers summon their own workers). A spike chose
+  the shared-MCP-session design over per-worker subprocesses (~9× faster
+  for small N, zero SQLite contention).
+- ✓ **Agent summons a pipeline.** A pipeline is an ordered recipe of
+  workers (`agent/pipeline_runner.py` + the zero-LLM `musubi_spawn_pipeline`
+  / `musubi_spawn_pipeline_stage` tools); the prior stage's summary feeds
+  the next and the evaluator sees only the prior stage (HI #3). This is the
+  worker-composition model, **not** a port of the schema-validated 4-stage
+  TS runner.
+- ✓ **User-defined pipelines from presets.** A preset
+  (`.github/pipelines/presets/<id>.yaml`) is a reusable worker/stage block;
+  a pipeline drops presets into a `stages:` list. `composer.validate_catalog_or_raise`
+  validates the catalog fail-closed at boot. Ships `dev-lite` as a sample.
+
+This advances the north star: the sub-agent split and the 4-stage shape
+were the ephemera; the worker model is where they re-home. The TS
+extension's 4-stage pipeline is untouched (still feature-frozen, step 6).
+
 ### Token economics steps (Headroom-inspired, native Musubi)
 
 Scope: learn the algorithms and architecture, not the runtime. Musubi
