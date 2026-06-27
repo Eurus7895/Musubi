@@ -434,6 +434,7 @@ def test_interactive_skips_local_console_gui_deps_by_default(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
+    monkeypatch.setattr(sw.os, "name", "nt")
     script = Script([
         "ollama",   # family
         "",         # model
@@ -477,6 +478,7 @@ def test_interactive_installs_local_console_gui_deps_when_requested(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
+    monkeypatch.setattr(sw.os, "name", "nt")
     script = Script([
         "ollama",   # family
         "",         # model
@@ -500,6 +502,45 @@ def test_interactive_installs_local_console_gui_deps_when_requested(
     assert any("console GUI dependencies installed" in line for line in lines)
 
 
+def test_interactive_skips_console_gui_install_on_non_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(sw.os, "name", "posix")
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(
+        prompt=script,
+        out=lines.append,
+        root=tmp_path,
+        gui_runner=fake_run,
+    )
+
+    assert rc == 0
+    assert calls == []
+    output = "\n".join(lines)
+    assert "Windows-only" in output
+    assert "Install local console GUI development dependencies" not in output
+    assert "npm run tauri:dev" not in output
+
+
 def test_interactive_guides_console_users_to_desktop_app(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -513,6 +554,7 @@ def test_interactive_guides_console_users_to_desktop_app(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
+    monkeypatch.setattr(sw.os, "name", "nt")
     script = Script([
         "ollama",   # family
         "",         # model
@@ -529,7 +571,7 @@ def test_interactive_guides_console_users_to_desktop_app(
     assert rc == 0
     output = "\n".join(lines)
     assert output.index("prebuilt installer") < output.index("npm run tauri:dev")
-    assert "optional local GUI development" in output
+    assert "optional Windows GUI development" in output
     assert "cd app" not in output
     assert "npm run dev" not in output
     assert "browser mode" not in output

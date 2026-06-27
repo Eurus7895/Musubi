@@ -149,7 +149,7 @@ model, to keep the substrate LLM-free):
 
 ```bash
 python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
-musubi setup                       # guided: deps check, LLM endpoint, mcp.json, GUI deps
+musubi setup                       # guided: deps check, LLM endpoint, mcp.json, Windows GUI guidance
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
@@ -173,10 +173,10 @@ musubi setup
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points console users to the prebuilt installer path. If you opt
-into local GUI development, it can also install npm dependencies and verify that
-`cargo` and the MSVC linker are on `PATH`. The manual steps below still work if
-you prefer.
+extension, and points Windows console users to the prebuilt installer path. On
+Windows, if you opt into local GUI development, it can also install npm
+dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
+and Linux setup skip GUI installation.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
@@ -242,21 +242,22 @@ stream, and the append-only audit ledger. **Zero LLM calls**, no localhost
 server, no Copilot; the agent reasons, the console only observes and
 operates the governance layer.
 
-Primary path: use the prebuilt installer from the **Desktop build** GitHub
-Actions workflow. It builds macOS, Windows, and Linux installers in CI, so local
-machines do not need Rust, MSVC, or webview build dependencies.
+Primary path on Windows: use the prebuilt installer from the **Desktop build**
+GitHub Actions workflow. It builds the Windows `.msi` / `.exe` installer in CI,
+so local machines do not need Rust or MSVC build dependencies. macOS and Linux
+GUI installers are intentionally not built.
 
-Local developer path:
+Local Windows developer path:
 
 ```bash
 npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
 ```
 
-`npm run tauri:dev` requires Rust's `cargo` binary and the MSVC linker on
-Windows. If Tauri reports `failed to run 'cargo metadata'` / `program not
-found`, install Rustup first. If Rust reports `link.exe not found`, install
-Visual Studio Build Tools with the C++ workload. Then open a new terminal:
+`npm run tauri:dev` requires Rust's `cargo` binary and the MSVC linker. If
+Tauri reports `failed to run 'cargo metadata'` / `program not found`, install
+Rustup first. If Rust reports `link.exe not found`, install Visual Studio Build
+Tools with the C++ workload. Then open a new terminal:
 
 ```powershell
 winget install --id Rustlang.Rustup -e

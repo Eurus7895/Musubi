@@ -13,11 +13,11 @@ controls the environment.
 
 ## Run
 
-Primary path: install a prebuilt artifact from the **Desktop build** GitHub
-Actions workflow. That path needs no local Rust, MSVC, or webview build
-toolchain.
+Primary Windows path: install a prebuilt artifact from the **Desktop build**
+GitHub Actions workflow. That path needs no local Rust or MSVC build toolchain.
+macOS and Linux GUI installers are intentionally not built.
 
-Local developer path, from the repository root:
+Local Windows developer path, from the repository root:
 
 ```bash
 npm install
@@ -28,12 +28,10 @@ npm run tauri:build
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
-`npm run tauri:dev` is for local GUI development and requires the Rust toolchain
-and platform webview libraries
-(Linux: `webkit2gtk-4.1` and `libgtk-3-dev`; macOS/Windows: built in). If Tauri
-fails with `failed to run 'cargo metadata'` or `program not found`, `cargo` is
-missing from `PATH`. If Rust fails with `link.exe not found`, the MSVC linker is
-missing. On Windows run:
+`npm run tauri:dev` is for local Windows GUI development and requires the Rust
+toolchain and MSVC linker. If Tauri fails with `failed to run 'cargo metadata'`
+or `program not found`, `cargo` is missing from `PATH`. If Rust fails with
+`link.exe not found`, the MSVC linker is missing. Run:
 
 ```powershell
 winget install --id Rustlang.Rustup -e
@@ -48,9 +46,8 @@ seeds an in-memory demo so it runs standalone.
 Icons are generated with `npm run icons`. For `.ico`/`.icns` generation, run
 `npm run tauri icon src-tauri/icons/icon.png`.
 
-Prebuilt installers are produced by the
-[`Desktop build`](../.github/workflows/desktop.yml) GitHub Actions workflow for
-macOS, Windows, and Linux.
+The Windows prebuilt installer is produced by the
+[`Desktop build`](../.github/workflows/desktop.yml) GitHub Actions workflow.
 
 ## Data Source
 

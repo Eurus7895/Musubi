@@ -13,9 +13,9 @@ Full-onboarding flow, invoked as `musubi setup`:
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
 
-The interactive shell points GUI users to prebuilt installers first, and only
-offers to install local console GUI development dependencies when
-`gui/package.json` is present.
+The interactive shell points Windows GUI users to the prebuilt installer first,
+and only offers to install local console GUI development dependencies on
+Windows when `gui/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
@@ -323,6 +323,14 @@ def _run_command(cmd: list[str], cwd: Path) -> int:
     return subprocess.run(cmd, cwd=cwd, check=False).returncode
 
 
+def _has_console_gui(root: Path) -> bool:
+    return (root / "gui" / "package.json").is_file()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 # ── Connection test ─────────────────────────────────────────────────────────
 
 
@@ -414,7 +422,9 @@ def run_interactive(
         _write(mcp_path, json.dumps(merged, indent=4) + "\n")
         out(f"  wrote {mcp_path}")
 
-    if (root / "gui" / "package.json").is_file() and _ask_yes_no(
+    has_gui = _has_console_gui(root)
+    is_windows = _is_windows()
+    if has_gui and is_windows and _ask_yes_no(
         prompt,
         "Install local console GUI development dependencies now?",
         default=False,
@@ -430,9 +440,11 @@ def run_interactive(
     # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
-    if (root / "gui" / "package.json").is_file():
-        out("  Desktop build workflow: download a prebuilt installer for the console GUI")
-        out("  npm run tauri:dev   # optional local GUI development (requires Rust + native toolchain)")
+    if has_gui and is_windows:
+        out("  Desktop build workflow: download the Windows prebuilt installer for the console GUI")
+        out("  npm run tauri:dev   # optional Windows GUI development (requires Rust + MSVC)")
+    elif has_gui:
+        out("  Console GUI installer: Windows-only; macOS/Linux setup skips GUI install")
     return 0
 
 
