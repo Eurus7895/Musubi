@@ -154,6 +154,81 @@ def test_maybe_compress_field_skips_error_results(monkeypatch):
     assert server._maybe_compress_field(d, "content", None) == d
 
 
+def test_musubi_read_stage_compresses_permitted_data(monkeypatch, tmp_path):
+    import server
+    from compression import retrieve
+
+    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
+    monkeypatch.setattr("storage.db.DEFAULT_DB_PATH", tmp_path / "audit.db")
+    monkeypatch.setattr(server._db, "get_pipeline_run", lambda sid: None)
+    monkeypatch.setattr(
+        server.composer, "active_stages", lambda pipeline: ["design"]
+    )
+    monkeypatch.setattr(
+        server.composer, "output_stage_for_agent", lambda pipeline, agent: None
+    )
+    monkeypatch.setattr(server.composer, "injected_skill_ids", lambda *a: [])
+    monkeypatch.setattr(server.memory_loader, "get_memory_context", lambda: {})
+
+    payload = {"items": [{"id": i, "name": f"item-{i}"} for i in range(300)]}
+    monkeypatch.setattr(
+        server.context_builder,
+        "read_stage_for_agent",
+        lambda *a, **k: payload,
+    )
+
+    out = json.loads(server.musubi_read_stage("sess", "design", "coder"))
+    assert out["compressed_ref"]
+    assert out["compression_ratio"] < 1.0
+    assert isinstance(out["data"], str)
+    assert "musubi_retrieve" in out["data"]
+    stored = retrieve(out["compressed_ref"], db_path=tmp_path / "audit.db")
+    assert stored == json.dumps(
+        payload, ensure_ascii=False, indent=2, sort_keys=True,
+    )
+
+
+def test_musubi_get_conversation_compresses_large_message(monkeypatch, tmp_path):
+    import server
+    from compression import retrieve
+    from session import conversations
+    from storage import db as _db
+
+    db = tmp_path / "audit.db"
+    _db.init_db(db)
+    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
+    monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
+    payload = json.dumps({"items": [{"id": i} for i in range(300)]}, indent=2)
+    conversations.append_message("chat-X", "tool", payload, db_path=db)
+
+    out = json.loads(server.musubi_get_conversation("chat-X"))
+    msg = out["messages"][0]
+    assert msg["compressed_ref"]
+    assert msg["compression_ratio"] < 1.0
+    assert "musubi_retrieve" in msg["content"]
+    assert retrieve(msg["compressed_ref"], db_path=db) == payload
+
+
+def test_musubi_get_conversation_opt_out_leaves_message_content(
+    monkeypatch, tmp_path,
+):
+    import server
+    from session import conversations
+    from storage import db as _db
+
+    db = tmp_path / "audit.db"
+    _db.init_db(db)
+    monkeypatch.setenv("MUSUBI_COMPRESS", "0")
+    monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
+    payload = json.dumps({"items": [{"id": i} for i in range(300)]}, indent=2)
+    conversations.append_message("chat-X", "tool", payload, db_path=db)
+
+    out = json.loads(server.musubi_get_conversation("chat-X"))
+    msg = out["messages"][0]
+    assert msg["content"] == payload
+    assert "compressed_ref" not in msg
+
+
 # ── store size recording + stats (measurement) ───────────────────────────────
 
 def test_put_records_sizes(tmp_path):

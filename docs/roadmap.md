@@ -67,15 +67,18 @@ substrate; pipeline dissolution is postponed (see below).
 2. ✓ **Reversible compression core.** `musubi/compression/` (router +
    json-minify + code/blank-strip + content-hash store) and the
    `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
-3. ◐ **Wire compression into input returns.** `musubi_read_file` /
+3. ✓ **Wire compression into input returns.** `musubi_read_file` /
    `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
    opts out per session/workspace); reversible via `musubi_retrieve`, so
    default-on is safe. On-demand `musubi_compress` and efficiency
    measurement landed: the blob store records each payload's
    `original_chars`/`compressed_chars`, and `musubi_compression_stats`
    aggregates the overall ratio, bytes saved, and a per-kind breakdown.
-   `musubi_read_stage` (after firewall) + `musubi_get_conversation`
-   compression remain.
+   `musubi_read_stage` compresses permitted data after the evaluator
+   firewall, and `musubi_get_conversation` compresses message content with
+   per-message retrieve metadata. Next: upgrade the compression algorithms
+   natively, learning from Headroom's token-economics architecture
+   without importing Headroom or adding any substrate-side LLM call.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
@@ -115,6 +118,49 @@ substrate; pipeline dissolution is postponed (see below).
    compression — to Copilot Chat). Update its hardcoded `harness_*` tool
    calls to `musubi_*` so it works against the renamed server. The 4-stage
    pipeline lives here and stays.
+
+### Token economics steps (Headroom-inspired, native Musubi)
+
+Scope: learn the algorithms and architecture, not the runtime. Musubi
+does **not** add Headroom as a dependency or proxy, and HI #1 still holds:
+the substrate remains deterministic, pure Python, and zero-LLM.
+
+1. **[done] Baseline CCR compression.** Reversible blob store,
+   `musubi_retrieve`, deterministic JSON/code/log/text baseline
+   compressors, default-on `musubi_read_file` / `musubi_run_command`
+   wiring, on-demand `musubi_compress`, and `musubi_compression_stats`
+   are landed.
+2. **[done] Complete compression coverage.** Added compression to
+   `musubi_read_stage` after the evaluator firewall and to
+   `musubi_get_conversation`, preserving permission boundaries,
+   tool-call pairing, and retrieve markers.
+3. **[planned] Smarter native compressors.** Replace the current minimal
+   compressors with native, deterministic strategies: JSON smart-crush
+   (schema/counts/samples/path stats), structural code compression
+   (Python AST first; conservative fallback for other languages), log
+   pattern grouping (normalized patterns + first/last examples), and
+   heading-aware text outline compression. Keep `musubi_retrieve` as the
+   source of truth and skip any output that does not shrink after marker
+   overhead.
+4. **[in progress] LM-boundary context controls.** Terse prompting,
+   effort-token routing, Anthropic prompt-cache controls,
+   provider-native cached-token telemetry, and a first `fit_context`
+   pass have landed. Next: extend `agent/context.py::fit_context` from
+   oldest/largest elision to a budgeted packing pass that preserves
+   system/tools/current task, keeps tool-call pairing intact, compresses
+   old tool outputs before dropping them, and retains retrieve markers
+   for any lossy view.
+5. **[planned] Cache hardening, output steering, and compression eval.**
+   Build on the landed prompt-cache controls by hardening stable prompt
+   prefixes and tool ordering, tighten tool-result formats, keep low
+   default `max_tokens` with truncation-based escalation, and add a
+   compression/context eval gate that measures savings, retrieve
+   correctness, retrieve-call frequency, and task-quality regression. This
+   is separate from the postponed pipeline-parity eval suite below.
+
+Default profile stays conservative. Aggressive compression must be
+opt-in until the compression/context eval gate shows no meaningful
+quality regression.
 
 ### Postponed (the pipeline stays for now)
 

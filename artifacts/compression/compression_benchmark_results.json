@@ -1,0 +1,87 @@
+{
+  "unit_test_command": "python -m pytest tests\\test_compression.py -q -p no:cacheprovider",
+  "unit_test_result": "23 passed, 1 warning",
+  "benchmark_note": "model_visible_chars includes retrieval marker overhead",
+  "results": [
+    {
+      "label": "Pretty JSON",
+      "hint": "fixture.json",
+      "kind": "json",
+      "ref_id": "7591476de31bacde",
+      "original_chars": 215528,
+      "model_visible_chars": 132457,
+      "saved_chars": 83071,
+      "savings_pct": 38.54301993244497,
+      "ratio": 0.6145698006755502,
+      "retrieved_ok": true
+    },
+    {
+      "label": "Commented code",
+      "hint": "sample.py",
+      "kind": "code",
+      "ref_id": "41b710d7cfe053ea",
+      "original_chars": 74329,
+      "model_visible_chars": 38037,
+      "saved_chars": 36292,
+      "savings_pct": 48.826164753999116,
+      "ratio": 0.5117383524600089,
+      "retrieved_ok": true
+    },
+    {
+      "label": "Noisy log",
+      "hint": "run.log",
+      "kind": "log",
+      "ref_id": "ca301907cc6a4b61",
+      "original_chars": 75886,
+      "model_visible_chars": 70366,
+      "saved_chars": 5520,
+      "savings_pct": 7.274068998234193,
+      "ratio": 0.927259310017658,
+      "retrieved_ok": true
+    },
+    {
+      "label": "Whitespace text",
+      "hint": "notes.txt",
+      "kind": "text",
+      "ref_id": "312ab81e90b00f87",
+      "original_chars": 81718,
+      "model_visible_chars": 80058,
+      "saved_chars": 1660,
+      "savings_pct": 2.0313761961868866,
+      "ratio": 0.9796862380381312,
+      "retrieved_ok": true
+    }
+  ],
+  "store_stats_body_only": {
+    "total_blobs": 4,
+    "rows_without_metric": 0,
+    "total_original_chars": 447461,
+    "total_compressed_chars": 320361,
+    "by_kind": [
+      {
+        "kind": "code",
+        "count": 1,
+        "original_chars": 74329,
+        "compressed_chars": 37898
+      },
+      {
+        "kind": "json",
+        "count": 1,
+        "original_chars": 215528,
+        "compressed_chars": 132316
+      },
+      {
+        "kind": "log",
+        "count": 1,
+        "original_chars": 75886,
+        "compressed_chars": 70228
+      },
+      {
+        "kind": "text",
+        "count": 1,
+        "original_chars": 81718,
+        "compressed_chars": 79919
+      }
+    ]
+  }
+}

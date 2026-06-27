@@ -233,6 +233,11 @@ def musubi_read_stage(
         )
     else:
         result["data"] = output
+        compressed = _maybe_compress_value(output, f"{stage}.json")
+        if compressed:
+            result["data"] = compressed["compressed"]
+            result["compressed_ref"] = compressed["compressed_ref"]
+            result["compression_ratio"] = compressed["compression_ratio"]
 
     # Auto-inject skills — pipeline.yaml-declared floor + plan-declared
     # required_skills. The pipeline.yaml floor is read via `composer`; that
@@ -1946,6 +1951,7 @@ def musubi_get_conversation(
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
+    history = _maybe_compress_history_messages(history)
     return json.dumps({"status": "ok", **history})
 
 
@@ -2056,6 +2062,66 @@ def _compression_enabled() -> bool:
     )
 
 
+def _stringify_for_compression(value: Any) -> str | None:
+    """Return the model-visible text to compress for structured values."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    except TypeError:
+        return None
+
+
+def _maybe_compress_value(value: Any, hint: str | None) -> dict[str, Any] | None:
+    """Compress an arbitrary value, returning replacement text + metadata."""
+    if not _compression_enabled():
+        return None
+    text = _stringify_for_compression(value)
+    if not isinstance(text, str):
+        return None
+    from compression import compress
+    res = compress(text, hint=hint)
+    if res.ref_id is None:
+        return None
+    return {
+        "compressed": res.compressed,
+        "compressed_ref": res.ref_id,
+        "compression_ratio": round(res.ratio, 3),
+    }
+
+
+def _maybe_compress_history_messages(history: dict[str, Any]) -> dict[str, Any]:
+    """Compress each conversation message content independently."""
+    if not _compression_enabled():
+        return history
+    messages = history.get("messages")
+    if not isinstance(messages, list):
+        return history
+
+    changed = False
+    compressed_messages: list[Any] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            compressed_messages.append(message)
+            continue
+        compressed = _maybe_compress_value(message.get("content"), "conversation")
+        if compressed is None:
+            compressed_messages.append(message)
+            continue
+        out = dict(message)
+        out["content"] = compressed["compressed"]
+        out["compressed_ref"] = compressed["compressed_ref"]
+        out["compression_ratio"] = compressed["compression_ratio"]
+        compressed_messages.append(out)
+        changed = True
+
+    if not changed:
+        return history
+    out = dict(history)
+    out["messages"] = compressed_messages
+    return out
+
+
 def _maybe_compress_field(
     result: dict, field: str, hint: str | None,
 ) -> dict:
@@ -2070,14 +2136,13 @@ def _maybe_compress_field(
     text = result.get(field)
     if not isinstance(text, str):
         return result
-    from compression import compress
-    res = compress(text, hint=hint)
-    if res.ref_id is None:
+    compressed = _maybe_compress_value(text, hint)
+    if compressed is None:
         return result
     out = dict(result)
-    out[field] = res.compressed
-    out["compressed_ref"] = res.ref_id
-    out["compression_ratio"] = round(res.ratio, 3)
+    out[field] = compressed["compressed"]
+    out["compressed_ref"] = compressed["compressed_ref"]
+    out["compression_ratio"] = compressed["compression_ratio"]
     return out
 
 
