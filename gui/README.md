@@ -27,15 +27,18 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 `npm run tauri:dev` requires the Rust toolchain and platform webview libraries
 (Linux: `webkit2gtk-4.1` and `libgtk-3-dev`; macOS/Windows: built in). If Tauri
 fails with `failed to run 'cargo metadata'` or `program not found`, `cargo` is
-missing from `PATH`; on Windows run:
+missing from `PATH`. If Rust fails with `link.exe not found`, the MSVC linker is
+missing. On Windows run:
 
 ```powershell
 winget install --id Rustlang.Rustup -e
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 cargo --version
+where.exe link
 ```
 
-Open a new terminal after installing Rustup. Without `MUSUBI_DB` the app seeds
-an in-memory demo so it runs standalone.
+Open a new terminal after installing these tools. Without `MUSUBI_DB` the app
+seeds an in-memory demo so it runs standalone.
 
 Icons are generated with `npm run icons`. For `.ico`/`.icns` generation, run
 `npm run tauri icon src-tauri/icons/icon.png`.

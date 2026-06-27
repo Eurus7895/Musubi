@@ -166,8 +166,8 @@ different vendor or model, edit (or add) a profile, don't pass a flag.
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
 `gui/package.json` is present. For desktop Tauri runs it also checks that
-`cargo` is on `PATH`; on Windows install it with
-`winget install --id Rustlang.Rustup -e`, then open a new terminal. The manual
+`cargo` and the MSVC linker are on `PATH`; on Windows install Rustup and Visual
+Studio Build Tools with the C++ workload, then open a new terminal. The manual
 steps below still work if you prefer.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
@@ -239,13 +239,16 @@ npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
 ```
 
-`npm run tauri:dev` requires Rust's `cargo` binary. If Tauri reports
-`failed to run 'cargo metadata'` / `program not found`, install Rustup first,
-then open a new terminal:
+`npm run tauri:dev` requires Rust's `cargo` binary and the MSVC linker on
+Windows. If Tauri reports `failed to run 'cargo metadata'` / `program not
+found`, install Rustup first. If Rust reports `link.exe not found`, install
+Visual Studio Build Tools with the C++ workload. Then open a new terminal:
 
 ```powershell
 winget install --id Rustlang.Rustup -e
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 cargo --version
+where.exe link
 ```
 
 Run console npm commands from the repository root. The root `package.json`

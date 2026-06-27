@@ -304,6 +304,16 @@ def install_console_gui(
                 "(Windows: `winget install --id Rustlang.Rustup -e`, then "
                 "open a new terminal)"
             )
+        if os.name == "nt" and not shutil.which("link.exe"):
+            return False, (
+                "npm dependencies installed, but link.exe was not found on "
+                "PATH; install Visual Studio Build Tools with the C++ workload "
+                "for `npm run tauri:dev` (Windows: `winget install --id "
+                "Microsoft.VisualStudio.2022.BuildTools -e --override "
+                "\"--wait --passive --add "
+                "Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"`, "
+                "then open a new terminal)"
+            )
         return True, f"console GUI dependencies installed in {gui_dir}"
     return False, f"npm install failed with exit code {code}"
 

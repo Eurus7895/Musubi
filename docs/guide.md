@@ -44,8 +44,8 @@ musubi setup                       # guided wizard (recommended)
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
 `gui/package.json` is present. For desktop Tauri runs it also checks that
-`cargo` is on `PATH`; on Windows install it with
-`winget install --id Rustlang.Rustup -e`, then open a new terminal. Prefer
+`cargo` and the MSVC linker are on `PATH`; on Windows install Rustup and Visual
+Studio Build Tools with the C++ workload, then open a new terminal. Prefer
 manual? The steps below still work.
 
 ```bash
@@ -196,7 +196,8 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
   in-memory demo so it runs standalone. Needs the Rust toolchain + webview libs
   (Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`).
   On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
-  open a new terminal, and confirm `cargo --version` before running
+  install Visual Studio Build Tools with the C++ workload, open a new terminal,
+  and confirm `cargo --version` and `where.exe link` before running
   `npm run tauri:dev`.
 - Run npm commands from the repository root. The root `package.json` delegates
   to the GUI workspace in `gui/`.
@@ -235,6 +236,7 @@ IPC and has no standalone demo source. The supported URL option is
 |---|---|
 | Fonts look generic | IBM Plex loads from Google Fonts; offline it falls back to system fonts. Layout/colours unaffected. |
 | `tauri:dev` fails on Linux with a webkit error | Install the webview libs listed above. |
+| `link.exe not found` on Windows | Install Visual Studio Build Tools with the C++ workload, then open a new terminal. |
 | App shows demo data | `MUSUBI_DB` is unset/empty — set it to your `audit.db` absolute path. |
 
 ---

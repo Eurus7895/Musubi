@@ -232,7 +232,7 @@ def test_install_console_gui_runs_npm_install(
     monkeypatch.setattr(
         sw.shutil,
         "which",
-        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
 
     ok, message = sw.install_console_gui(tmp_path, run=fake_run)
@@ -283,6 +283,35 @@ def test_install_console_gui_reports_missing_cargo_after_npm_install(
 
 
 # ── connection test ─────────────────────────────────────────────────────────
+
+
+def test_install_console_gui_reports_missing_msvc_linker_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    gui_dir.mkdir()
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert calls == [(["/bin/npm", "install"], tmp_path)]
+    assert "link.exe was not found" in message
+    assert "Visual Studio Build Tools" in message
+    assert "Microsoft.VisualStudio.Workload.VCTools" in message
 
 
 def test_connection_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -403,7 +432,7 @@ def test_interactive_installs_console_gui_by_default(
     monkeypatch.setattr(
         sw.shutil,
         "which",
-        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
     script = Script([
         "ollama",   # family
