@@ -1,86 +1,104 @@
 {
-  "unit_test_command": "python -m pytest tests\\test_compression.py -q -p no:cacheprovider",
-  "unit_test_result": "23 passed, 1 warning",
+  "unit_test_command": "python -m pytest musubi\\tests\\test_compression.py -q -p no:cacheprovider",
+  "unit_test_result": "34 passed, 1 warning",
   "benchmark_note": "model_visible_chars includes retrieval marker overhead",
+  "feature_level": "Token economics Step 3: smarter native compressors",
   "results": [
     {
       "label": "Pretty JSON",
       "hint": "fixture.json",
+      "strategy": "JSON smart-crush",
       "kind": "json",
-      "ref_id": "7591476de31bacde",
-      "original_chars": 215528,
-      "model_visible_chars": 132457,
-      "saved_chars": 83071,
-      "savings_pct": 38.54301993244497,
-      "ratio": 0.6145698006755502,
-      "retrieved_ok": true
+      "ref_id": "dc37a08050b933ea",
+      "original_chars": 145085,
+      "model_visible_chars": 2660,
+      "saved_chars": 142425,
+      "savings_pct": 98.1665919977944,
+      "ratio": 0.018334080022056037,
+      "retrieved_ok": true,
+      "compressed_preview": "json smart crush root=object\nroot_keys=build_id,items\narrays:\n- $.items[] count=420 types=object:420 sample[0]={\"id\":0,\"name\":\"artifact-0\",\"status\":\"queued\",\"owner\":{\"team\":\"platform\",\"region\":\"r0\"},\"metrics\":{\"chars\":1200,\"tokens\":300,\"cacheable\":true},\"tags\":[\"compression\",\"musubi\",\"ba... sample[-1]={\"id\":419,\"name\":\"artifact-419\",\"status\":\"ready\",\"owner\":{\"team\":\"platform\",\"region\":\"r4\"},\"metrics\":{\"chars\":1619,\"tokens\":311,\"cacheable\":false},\"tags\":[\"compression\",\"musubi\"...\n- $.items[].tags[] count=3 types=str:3 sample[0]=\"compression\" sample[-1]=\"batch-0\"\n- $.items[].tags[] count=3 types=str:3 sample[0]=\"compression\" sample[-1]=\"batch-1\"\n- $.items[].tags[] count=3 types=str:3 sample[0]=\"compression\" sample[-1]=\"batch-2\"\n- $.items[].tags[] count=3 types=str:3 sample[0]=\"compression\" sample[-1]=\"batch-3\"\n- $.items[].tags[] count=3 types=str:3 sample[0]=\"compression\" sample[-1]=\"batch"
     },
     {
-      "label": "Commented code",
-      "hint": "sample.py",
+      "label": "Python module",
+      "hint": "worker.py",
+      "strategy": "Python AST structure",
       "kind": "code",
-      "ref_id": "41b710d7cfe053ea",
-      "original_chars": 74329,
-      "model_visible_chars": 38037,
-      "saved_chars": 36292,
-      "savings_pct": 48.826164753999116,
-      "ratio": 0.5117383524600089,
-      "retrieved_ok": true
+      "ref_id": "ce10eccee67b1bf5",
+      "original_chars": 45330,
+      "model_visible_chars": 1546,
+      "saved_chars": 43784,
+      "savings_pct": 96.58945510699316,
+      "ratio": 0.03410544893006839,
+      "retrieved_ok": true,
+      "compressed_preview": "python structure\nimports:\n- import os\n- import json\n- from pathlib import Path\n- from typing import Iterable\nclasses:\n- class CompressionWorker(BaseWorker)\n  def transform_0(self, value: int=0, enabled: bool=False) -> int\n  def transform_1(self, value: int=0, enabled: bool=False) -> int\n  def transform_2(self, value: int=0, enabled: bool=False) -> int\n  def transform_3(self, value: int=0, enabled: bool=False) -> int\n  def transform_4(self, value: int=0, enabled: bool=False) -> int\n  def transform_5(self, value: int=0, enabled: bool=False) -> int\n  def transform_6(self, value: int=0, enabled: bool=False) -> int\n  def transform_7(self, value: int=0, enabled: bool=False) -> int\n  def transform_8(self, value: int=0, enabled: bool=False) -> int\n  def transform_9(self, value: int=0, enabled: bool=False) -> int\n  def transform_10(self, value: int=0, enabled: bool=False) -> int\n  def transform_1"
     },
     {
       "label": "Noisy log",
       "hint": "run.log",
+      "strategy": "Log pattern grouping",
       "kind": "log",
-      "ref_id": "ca301907cc6a4b61",
-      "original_chars": 75886,
-      "model_visible_chars": 70366,
-      "saved_chars": 5520,
-      "savings_pct": 7.274068998234193,
-      "ratio": 0.927259310017658,
-      "retrieved_ok": true
+      "ref_id": "3e3d74739d2f6503",
+      "original_chars": 107639,
+      "model_visible_chars": 873,
+      "saved_chars": 106766,
+      "savings_pct": 99.18895567591672,
+      "ratio": 0.008110443240832784,
+      "retrieved_ok": true,
+      "compressed_preview": "log pattern groups\nx818 <ts> INFO request id=<num> trace=<hash> path=/api/items/<num>/runs/<num> status=<num> elapsed_ms=<num>\n  first=2026-06-27T10:01:01Z INFO request id=840001 trace=ab12cd34ef560001 path=/api/items/1/runs/1 status=200 elapsed_ms=41\n  last=2026-06-27T10:59:59Z INFO request id=840899 trace=ab12cd34ef560383 path=/api/items/11/runs/899 status=200 elapsed_ms=46\nx82 <ts> WARN request id=<num> trace=<hash> path=/api/items/<num>/runs/<num> status=<num> elapsed_ms=<num>\n  first=2026-06-27T10:00:00Z WARN request id=840000 trace=ab12cd34ef560000 path=/api/items/0/runs/0 status=503 elapsed_ms=40\n  last=2026-06-27T10:51:51Z WARN request id=840891 trace=ab12cd34ef56037b path=/api/items/3/runs/891 status=503 elapsed_ms=57"
     },
     {
-      "label": "Whitespace text",
-      "hint": "notes.txt",
+      "label": "Markdown notes",
+      "hint": "notes.md",
+      "strategy": "Heading-aware text outline",
       "kind": "text",
-      "ref_id": "312ab81e90b00f87",
-      "original_chars": 81718,
-      "model_visible_chars": 80058,
-      "saved_chars": 1660,
-      "savings_pct": 2.0313761961868866,
-      "ratio": 0.9796862380381312,
-      "retrieved_ok": true
+      "ref_id": "99fcb266ae51ce2c",
+      "original_chars": 41876,
+      "model_visible_chars": 1560,
+      "saved_chars": 40316,
+      "savings_pct": 96.27471582768173,
+      "ratio": 0.03725284172318273,
+      "retrieved_ok": true,
+      "compressed_preview": "text outline\n# Musubi Compression Notes paragraphs=0 chars=0\n## Overview paragraphs=12 chars=10100\n  first=Overview paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains recov...\n  last=Overview paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains reco...\n## Compression Strategy paragraphs=12 chars=10820\n  first=Compression Strategy paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source r...\n  last=Compression Strategy paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source ...\n## Retrieval paragraphs=12 chars=10160\n  first=Retrieval paragraph 0 explains how deterministic compression keeps the model-visible input compact while the v"
     }
   ],
+  "summary": {
+    "payloads_compressed": 4,
+    "retrieve_ok": 4,
+    "total_original_chars": 339930,
+    "total_model_visible_chars": 6639,
+    "total_saved_chars": 333291,
+    "overall_savings_pct": 98.04695084282058,
+    "overall_ratio": 0.019530491571794192
+  },
   "store_stats_body_only": {
     "total_blobs": 4,
     "rows_without_metric": 0,
-    "total_original_chars": 447461,
-    "total_compressed_chars": 320361,
+    "total_original_chars": 339930,
+    "total_compressed_chars": 6087,
     "by_kind": [
       {
         "kind": "code",
         "count": 1,
-        "original_chars": 74329,
-        "compressed_chars": 37898
+        "original_chars": 45330,
+        "compressed_chars": 1408
       },
       {
         "kind": "json",
         "count": 1,
-        "original_chars": 215528,
-        "compressed_chars": 132316
+        "original_chars": 145085,
+        "compressed_chars": 2521
       },
       {
         "kind": "log",
         "count": 1,
-        "original_chars": 75886,
-        "compressed_chars": 70228
+        "original_chars": 107639,
+        "compressed_chars": 736
       },
       {
         "kind": "text",
         "count": 1,
-        "original_chars": 81718,
-        "compressed_chars": 79919
+        "original_chars": 41876,
+        "compressed_chars": 1422
       }
     ]
   }

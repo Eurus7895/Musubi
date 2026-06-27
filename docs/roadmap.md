@@ -65,7 +65,7 @@ substrate; pipeline dissolution is postponed (see below).
    run_command`) — already wired; the file/command tool results flow
    through the substrate (the biggest token sink).
 2. ✓ **Reversible compression core.** `musubi/compression/` (router +
-   json-minify + code/blank-strip + content-hash store) and the
+   native compressors + content-hash store) and the
    `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
 3. ✓ **Wire compression into input returns.** `musubi_read_file` /
    `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
@@ -76,9 +76,11 @@ substrate; pipeline dissolution is postponed (see below).
    aggregates the overall ratio, bytes saved, and a per-kind breakdown.
    `musubi_read_stage` compresses permitted data after the evaluator
    firewall, and `musubi_get_conversation` compresses message content with
-   per-message retrieve metadata. Next: upgrade the compression algorithms
-   natively, learning from Headroom's token-economics architecture
-   without importing Headroom or adding any substrate-side LLM call.
+   per-message retrieve metadata. Native deterministic compressor upgrades
+   have landed for JSON shape summaries, Python structure summaries, log
+   pattern grouping, and heading-aware text outlines, learning from
+   Headroom's token-economics architecture without importing Headroom or
+   adding any substrate-side LLM call.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
@@ -134,14 +136,14 @@ the substrate remains deterministic, pure Python, and zero-LLM.
    `musubi_read_stage` after the evaluator firewall and to
    `musubi_get_conversation`, preserving permission boundaries,
    tool-call pairing, and retrieve markers.
-3. **[planned] Smarter native compressors.** Replace the current minimal
+3. **[done] Smarter native compressors.** Replaced the minimal
    compressors with native, deterministic strategies: JSON smart-crush
    (schema/counts/samples/path stats), structural code compression
    (Python AST first; conservative fallback for other languages), log
    pattern grouping (normalized patterns + first/last examples), and
-   heading-aware text outline compression. Keep `musubi_retrieve` as the
-   source of truth and skip any output that does not shrink after marker
-   overhead.
+   heading-aware text outline compression. `musubi_retrieve` remains the
+   source of truth, and the router skips any output that does not shrink
+   after marker overhead.
 4. **[in progress] LM-boundary context controls.** Terse prompting,
    effort-token routing, Anthropic prompt-cache controls,
    provider-native cached-token telemetry, and a first `fit_context`

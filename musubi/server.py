@@ -2248,8 +2248,9 @@ def musubi_retrieve(ref_id: str) -> str:
 def musubi_compress(text: str, hint: str | None = None) -> str:
     """Compress a payload on demand and store the verbatim original.
 
-    The substrate's reversible, zero-LLM compressor (JSON-minify, code
-    comment/blank-strip, or whitespace-collapse — chosen by `hint` or
+    The substrate's reversible, zero-LLM compressor (JSON smart-crush,
+    Python structure compression, conservative code fallback, log pattern
+    grouping, or heading-aware text outline — chosen by `hint` or
     content). `hint` may be a filename, extension, or a kind label
     ("json"/"code"/"log"/"text"). Inputs under ~800 chars, or any case
     where compression wouldn't shrink the text, are returned unchanged
