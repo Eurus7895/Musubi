@@ -34,10 +34,12 @@ Requirements: **Python 3.11+**. For the console GUI also Node 20+ (and, for a
 native build, the Rust toolchain — [§6](#6-console-gui--operator-view)).
 
 ```bash
-cd musubi
-pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
+python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
 musubi setup                       # guided wizard (recommended)
 ```
+
+If `musubi` is not recognized after installation, open a new terminal so the
+environment's script directory is visible on `PATH`.
 
 `musubi setup` is the fastest path — it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),

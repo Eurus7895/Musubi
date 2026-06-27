@@ -148,8 +148,7 @@ model, to keep the substrate LLM-free):
 ## Quick start (standalone CLI)
 
 ```bash
-cd musubi
-pip install -e ".[all]"            # or ".[anthropic]" / ".[openai]"
+python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
 musubi setup                       # guided: deps check, LLM endpoint, mcp.json, GUI deps
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
@@ -160,6 +159,9 @@ agent "add a /health endpoint and a test for it"
 `--profile` is the only endpoint switch — vendor, model, endpoint, and
 api-key all live in the chosen `.musubi/llm.json` profile. To use a
 different vendor or model, edit (or add) a profile, don't pass a flag.
+
+If `musubi` is not recognized after installation, open a new terminal or run it
+through Python's script launcher path for your environment.
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
