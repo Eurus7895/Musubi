@@ -1,0 +1,129 @@
+"""Pipeline runner for the standalone agent — a pipeline as a recipe of workers.
+
+musubi-tier: ephemeral
+expires-when: models orchestrate multi-step pipelines natively
+cost-lever: deletes the driver-side stage sequencer (~90 lines)
+
+A pipeline is an ordered chain of workers (composer reads the chain from
+`.github/pipelines/<name>/pipeline.yaml`). When the model calls
+`musubi_spawn_pipeline`, this runner:
+
+    spawn_pipeline (open child session + plan)
+      → for each stage in order:
+          spawn_pipeline_stage (authorise by membership, get role + tools)
+          → build the stage worker prompt from its brief
+          → run a turn-capped worker loop (run_unit)
+          → complete_subagent (audit the worker)
+      → return the final stage's summary to the summoning agent
+
+The brief threads forward: generator stages see the request plus the prior
+summaries; the evaluator (last stage) sees ONLY the immediately prior stage's
+output — the HI #3 firewall, generalised to any pipeline.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+#: Per-stage cycle cap for a pipeline worker. Stages are single-purpose, so a
+#: small budget keeps a runaway stage from burning the whole pipeline.
+DEFAULT_STAGE_MAX_CYCLES = 8
+
+
+async def run_pipeline(
+    session: Any,
+    spawn_args: dict[str, Any],
+    vendor: Any,
+    tools: list[dict[str, Any]],
+    log: Any,
+    *,
+    agents_dir: Path | None = None,
+) -> str:
+    """Summon and run one pipeline. Returns the final stage's summary text.
+
+    `spawn_args` is the model's `musubi_spawn_pipeline` input with
+    `parent_session_id` / `parent_agent_name` already injected by the caller.
+    Any harness-side rejection is returned verbatim so the model can react.
+    """
+    from agent.run import _call_tool_text, run_unit
+    from agent.subagent import (
+        _read_agent_md,
+        build_subagent_system_prompt,
+        select_child_tools,
+    )
+
+    raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
+    spawned = _loads(raw)
+    if spawned.get("status") != "spawned":
+        return raw
+    psid = str(spawned.get("pipeline_session_id", ""))
+    pname = str(spawned.get("pipeline_name", ""))
+    plan = spawned.get("plan") or []
+    request = str(spawn_args.get("brief", ""))
+
+    print(f"[agent]   ⇶ pipeline {pname} ({len(plan)} stages)", file=log)
+
+    summaries: list[str] = []
+    for i, step in enumerate(plan):
+        stage = str(step.get("stage", ""))
+        role = str(step.get("role", ""))
+        brief = _stage_brief(request, summaries, i, len(plan))
+
+        stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
+            "pipeline_session_id": psid, "pipeline_name": pname,
+            "stage": stage, "brief": brief,
+        })
+        st = _loads(stage_raw)
+        if st.get("status") != "spawned":
+            return f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
+        handle_id = str(st.get("handle_id", ""))
+        allowed = st.get("allowed_tools") or []
+
+        agent_md = _read_agent_md(role, agents_dir)
+        system_prompt = build_subagent_system_prompt(agent_md, None, brief)
+        child_tools = select_child_tools(tools, allowed)
+        print(
+            f"[agent]     ⮑ stage {stage} (role={role}, tools={len(child_tools)})",
+            file=log,
+        )
+
+        answer, turns = await run_unit(
+            session, vendor, child_tools,
+            system_prompt=system_prompt, user_message=None,
+            max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
+        )
+        status = "done" if answer is not None else "escalated"
+        if answer is None:
+            answer = f"[stage {stage}] exceeded {DEFAULT_STAGE_MAX_CYCLES} cycles"
+
+        await _call_tool_text(session, "musubi_complete_subagent", {
+            "handle_id": handle_id, "summary": answer, "turns": turns, "status": status,
+        })
+        summaries.append(f"### {stage}\n{answer}")
+
+    return summaries[-1] if summaries else f"[pipeline {pname}] produced no output"
+
+
+def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> str:
+    """Brief for stage `idx`. Stage 0 gets the request; the last stage (the
+    evaluator) sees ONLY the prior stage's output (HI #3); middle stages see the
+    request plus all prior summaries."""
+    if idx == 0:
+        return request
+    if idx == total - 1:
+        return (
+            "Evaluate the output of the prior stage. You see only this stage — "
+            "not the original request or earlier stages.\n\n" + summaries[-1]
+        )
+    joined = "\n\n".join(summaries)
+    return f"{request}\n\n## Prior stage outputs\n\n{joined}"
+
+
+def _loads(raw: str) -> dict[str, Any]:
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return obj if isinstance(obj, dict) else {}

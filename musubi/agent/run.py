@@ -636,6 +636,28 @@ async def _dispatch_one(
     args = tu.get("input") or {}
 
     if (
+        name == "musubi_spawn_pipeline"
+        and orchestration is not None
+        and orchestration.enabled
+        and vendor is not None
+        and tools is not None
+    ):
+        injected = {
+            **args,
+            "parent_session_id": orchestration.parent_session_id,
+            "parent_agent_name": orchestration.parent_agent_name,
+        }
+        print(f"[agent]   → summon pipeline({args.get('pipeline_name')!r})", file=log)
+        try:
+            from agent import pipeline_runner
+
+            return await pipeline_runner.run_pipeline(
+                session, injected, vendor, tools, log
+            )
+        except Exception as exc:  # noqa: BLE001 — surface to the model
+            return f"[pipeline error] {type(exc).__name__}: {exc}"
+
+    if (
         name == "musubi_spawn_subagent"
         and orchestration is not None
         and orchestration.enabled

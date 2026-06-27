@@ -1500,6 +1500,140 @@ def musubi_spawn_subagent(
     })
 
 
+# ── Pipeline summon tools (worker-composition pipelines) ──────────────────────
+#
+# A pipeline is a named, ordered recipe of workers; composer reads its stage
+# chain from `.github/pipelines/<name>/pipeline.yaml`. These two tools are
+# substrate (zero LLM): `musubi_spawn_pipeline` opens a child pipeline session
+# and returns the ordered plan, and `musubi_spawn_pipeline_stage` authorises one
+# stage worker by PIPELINE MEMBERSHIP (the stage is declared in the pipeline)
+# rather than the ad-hoc spawn allow-list, recording it in the worker audit
+# (HI #8). The driver runs each stage as a worker, threading the prior stage's
+# summary forward; the evaluator (last stage) sees only the prior stage (HI #3).
+
+
+@mcp.tool()
+def musubi_spawn_pipeline(
+    parent_session_id: str,
+    parent_agent_name: str,
+    pipeline_name: str,
+    brief: str,
+) -> str:
+    """Summon a pipeline: open a child pipeline session and return its ordered
+    worker plan. Zero LLM — validates, records, and plans; the driver runs the
+    stages. Returns { status, pipeline_session_id, pipeline_name,
+    plan: [{stage, role}, ...] }.
+    """
+    plan: list[dict[str, str]] = []
+    for stage in composer.active_stages(pipeline_name):
+        role = composer.agent_for_stage(pipeline_name, stage)
+        if role:
+            plan.append({"stage": stage, "role": role})
+    if len(plan) < 2:
+        return json.dumps({
+            "status": "error",
+            "error": (
+                f"pipeline {pipeline_name!r} is not a registered multi-stage "
+                f"pipeline (resolved stages: {[p['stage'] for p in plan]})"
+            ),
+        })
+    if state.get_session(parent_session_id) is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"parent session {parent_session_id!r} not found",
+        })
+    pipeline_session_id = state.create_session(brief, pipeline_name=pipeline_name)
+    try:
+        subagent_audit.record_spawn(
+            handle_id=pipeline_session_id,
+            parent_session_id=parent_session_id,
+            parent_agent_name=parent_agent_name,
+            role=f"pipeline:{pipeline_name}",
+            brief=brief,
+            allowed_tools=[],
+            max_turns=len(plan),
+            wall_clock_timeout_s=0,
+        )
+    except Exception:
+        pass
+    return json.dumps({
+        "status": "spawned",
+        "pipeline_session_id": pipeline_session_id,
+        "pipeline_name": pipeline_name,
+        "plan": plan,
+    })
+
+
+@mcp.tool()
+def musubi_spawn_pipeline_stage(
+    pipeline_session_id: str,
+    pipeline_name: str,
+    stage: str,
+    brief: str,
+    max_turns: int = sub_sessions.DEFAULT_MAX_TURNS,
+) -> str:
+    """Authorise + record one pipeline stage worker, by pipeline membership.
+
+    The stage must be declared in `pipeline_name`; its role and tools come from
+    the pipeline (PIPELINE_POLICIES, falling back to the role's sub-agent tools
+    for user-defined pipelines). Returns { status, handle_id, role,
+    allowed_tools, brief } — the driver then runs and completes the worker.
+    """
+    if stage not in composer.active_stages(pipeline_name):
+        return json.dumps({
+            "status": "error",
+            "error": f"stage {stage!r} is not active in pipeline {pipeline_name!r}",
+        })
+    role = composer.agent_for_stage(pipeline_name, stage)
+    if not role:
+        return json.dumps({
+            "status": "error",
+            "error": f"no agent for stage {stage!r} in pipeline {pipeline_name!r}",
+        })
+    if state.get_session(pipeline_session_id) is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"pipeline session {pipeline_session_id!r} not found",
+        })
+    tools = list(_policy.PIPELINE_POLICIES.get(pipeline_name, {}).get(role, []))
+    if not tools:  # user-defined pipeline (Increment 6) → role's own cap
+        tools = _policy.get_subagent_tools(role)
+    try:
+        handle_id = sub_sessions.spawn(
+            parent_session_id=pipeline_session_id,
+            parent_agent_name=f"pipeline:{pipeline_name}",
+            role=role,
+            brief=brief,
+            allowed_tools=tools,
+            max_turns=max_turns,
+            per_turn_timeout_s=sub_sessions.DEFAULT_PER_TURN_TIMEOUT_S,
+            wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+            output_schema=None,
+        )
+    except ValueError as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+    try:
+        subagent_audit.record_spawn(
+            handle_id=handle_id,
+            parent_session_id=pipeline_session_id,
+            parent_agent_name=f"pipeline:{pipeline_name}",
+            role=role,
+            brief=brief,
+            allowed_tools=tools,
+            max_turns=max_turns,
+            wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+        )
+    except Exception:
+        pass
+    return json.dumps({
+        "status": "spawned",
+        "handle_id": handle_id,
+        "role": role,
+        "allowed_tools": tools,
+        "brief": brief,
+    })
+
+
 @mcp.tool()
 def musubi_complete_subagent(
     handle_id: str,
