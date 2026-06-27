@@ -185,6 +185,79 @@ def _reset_pipeline_spawns_cache() -> None:
     _PIPELINE_SPAWNS_CACHE.clear()
 
 
+# ── Agent-frontmatter spawn allow-lists ──────────────────────────────────
+#
+# `.github/agents/<role>.agent.md` may declare `spawn_allowlist:` in its YAML
+# frontmatter — the workers that role may summon. It is AUTHORITATIVE WHEN
+# PRESENT; the MAIN_SUBAGENT_ALLOWLIST constant above is the fail-closed
+# fallback for the installed-wheel case (no `.github/` adjacent) and for roles
+# whose file omits the field. This moves the spawn firewall toward data the user
+# can edit, without losing the safe default. Cached by mtime, fail-soft.
+
+_AGENT_SPAWNS_CACHE: dict[str, tuple[float, list[str] | None]] = {}
+
+
+def _agents_root() -> Path:
+    """Resolve `.github/agents/`. MUSUBI_ROOT wins when set."""
+    env = os.environ.get("MUSUBI_ROOT")
+    if env:
+        candidate = Path(env) / ".github" / "agents"
+        if candidate.is_dir():
+            return candidate
+    return Path(__file__).resolve().parent.parent / ".github" / "agents"
+
+
+def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
+    """`spawn_allowlist` from `<role>.agent.md` frontmatter.
+
+    None when the file is missing/malformed or omits the field — the caller
+    then falls back to the MAIN_SUBAGENT_ALLOWLIST constant. Cached by mtime.
+    """
+    safe = (role or "").strip().lower()
+    if not safe or "/" in safe or ".." in safe:
+        return None
+    path = _agents_root() / f"{safe}.agent.md"
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    cached = _AGENT_SPAWNS_CACHE.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1]
+    out: list[str] | None = None
+    try:
+        text = path.read_text(encoding="utf-8").lstrip()
+        if text.startswith("---"):
+            end = text.find("\n---", 3)
+            if end != -1:
+                import yaml  # type: ignore[import-untyped]
+                fm = yaml.safe_load(text[3:end]) or {}
+                if isinstance(fm, dict) and isinstance(fm.get("spawn_allowlist"), list):
+                    out = [s for s in fm["spawn_allowlist"] if isinstance(s, str)]
+    except Exception:
+        out = None
+    _AGENT_SPAWNS_CACHE[str(path)] = (mtime, out)
+    return out
+
+
+def _reset_agent_spawns_cache() -> None:
+    """Test hook — drop the cache so a mid-test rewrite is picked up."""
+    _AGENT_SPAWNS_CACHE.clear()
+
+
+def main_subagent_allowlist(agent: str) -> list[str]:
+    """Roles `agent` may EVER spawn — the firewall ceiling, before any
+    pipeline narrowing. Frontmatter `spawn_allowlist:` wins when present; the
+    MAIN_SUBAGENT_ALLOWLIST constant is the fail-closed fallback.
+    """
+    fm = _frontmatter_spawn_allowlist(agent)
+    if fm is not None:
+        return list(fm)
+    return list(MAIN_SUBAGENT_ALLOWLIST.get(agent.lower(), []))
+
+
 def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[str]:
     """Resolve `main_agent`'s spawn list under `pipeline_name`.
 
@@ -192,9 +265,13 @@ def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[s
       firewall entry verbatim (back-compat / agent path).
     - else → pipeline.yaml's `spawns:` for that agent ∩ firewall.
       If the pipeline declares no `spawns:` for the agent → [].
+
+    The firewall is `main_subagent_allowlist` (frontmatter-authoritative,
+    constant fallback), so the literal 'agent' string is no longer special —
+    it is just the role whose declared `spawn_allowlist` happens to be broad.
     """
     agent = main_agent.lower()
-    firewall = MAIN_SUBAGENT_ALLOWLIST.get(agent, [])
+    firewall = main_subagent_allowlist(agent)
     if agent == "agent" or pipeline_name is None:
         return list(firewall)
     declared = _load_pipeline_spawns(pipeline_name).get(agent)
@@ -297,7 +374,10 @@ def subagent_deny_reason(
             f"Unknown sub-agent role {role!r}. "
             f"Valid roles: {sorted(SUBAGENT_POLICIES.keys())}"
         )
-    if main_agent.lower() not in MAIN_SUBAGENT_ALLOWLIST:
+    if (
+        main_agent.lower() not in MAIN_SUBAGENT_ALLOWLIST
+        and _frontmatter_spawn_allowlist(main_agent) is None
+    ):
         return (
             f"Main agent {main_agent!r} has no spawn allow-list "
             f"(fail-closed)."
@@ -411,6 +491,23 @@ def validate_policy_table() -> list[str]:
                     f"MAIN_SUBAGENT_ALLOWLIST[{main!r}] references role "
                     f"{role!r} not declared in SUBAGENT_POLICIES"
                 )
+
+    # Frontmatter spawn_allowlist checks (authoritative-when-present). Only runs
+    # when `.github/agents/` is on disk — installed wheels skip this and the
+    # constant governs. Every declared spawn role must be a known sub-agent role.
+    agents_dir = _agents_root()
+    if agents_dir.is_dir():
+        for md in sorted(agents_dir.glob("*.agent.md")):
+            role = md.name[: -len(".agent.md")]
+            allow = _frontmatter_spawn_allowlist(role)
+            if allow is None:
+                continue
+            for r in allow:
+                if r not in SUBAGENT_POLICIES:
+                    errors.append(
+                        f"{md.name} spawn_allowlist references role {r!r} "
+                        f"not declared in SUBAGENT_POLICIES"
+                    )
 
     return errors
 

@@ -10,6 +10,13 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "edit", "bash"]
 disallowedTools: []
+# Workers this agent may summon (the spawn firewall, formerly only in
+# scripts/policy_engine.py::MAIN_SUBAGENT_ALLOWLIST). Authoritative when
+# present; the constant stays the fail-closed fallback for installed
+# wheels without .github/. Pipelines narrow further via pipeline.yaml.
+spawn_allowlist:
+  - explorer
+  - investigator
 # Coder is a pure JSON writer in the sub-agent-for-exploration model.
 # It does NOT call read tools directly — the harness's preSpawnAndSplice
 # fires explorer / investigator sub-agents (cheap haiku model) for each

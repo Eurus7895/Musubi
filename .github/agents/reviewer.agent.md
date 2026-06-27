@@ -10,6 +10,10 @@ model: claude-sonnet-4.5
 maxTurns: 1
 tools: ["view", "glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
+# Workers this agent may summon (the spawn firewall; constant fallback in
+# scripts/policy_engine.py for installed wheels without .github/).
+spawn_allowlist:
+  - reviewer-aux
 # Reviewer is a pure JSON writer in the sub-agent-for-exploration model.
 # It does NOT call read tools directly — for deeper per-file inspection
 # the harness's preSpawnAndSplice fires reviewer-aux (cheap haiku model)
