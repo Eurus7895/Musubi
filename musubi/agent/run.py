@@ -218,6 +218,7 @@ async def run_agent(
                 user_message=task,
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
+                salvage_on_exhaust=True,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -246,6 +247,7 @@ async def _run_loop(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     spawn_catalog: list[dict[str, Any]] | None = None,
+    salvage_on_exhaust: bool = False,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -264,6 +266,7 @@ async def _run_loop(
     the spawn tool, while its children still need the whole catalog.
     """
     final_answer: str | None = None
+    last_text = ""  # most recent non-empty assistant text, for salvage
     cycles_used = 0
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
@@ -280,8 +283,12 @@ async def _run_loop(
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
 
+        text = _extract_text(resp.content)
+        if text:
+            last_text = text  # remember even when the model also called a tool
+
         if resp.stop_reason != "tool_use" or not tool_uses:
-            final_answer = _extract_text(resp.content)
+            final_answer = text
             break
 
         tool_results = await _dispatch(
@@ -290,6 +297,17 @@ async def _run_loop(
             orchestration=orchestration, gateway=gateway,
         )
         messages.append({"role": "user", "content": tool_results})
+
+    # Salvage: a model that calls a tool on EVERY cycle never hits the break
+    # path, so `final_answer` stays None even though it may have produced text
+    # alongside its tool calls. Rather than hard-fail the whole turn, return that
+    # last text. Off for sub-agents (they signal exhaustion via None → escalate).
+    if final_answer is None and salvage_on_exhaust and last_text:
+        print(
+            f"[agent] cycles exhausted ({max_cycles}); salvaging last assistant text",
+            file=log,
+        )
+        final_answer = last_text
 
     return final_answer, cycles_used
 
@@ -306,6 +324,7 @@ async def run_unit(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     spawn_catalog: list[dict[str, Any]] | None = None,
+    salvage_on_exhaust: bool = False,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -340,6 +359,7 @@ async def run_unit(
         max_cycles=max_cycles, log=log,
         orchestration=orchestration, gateway=gateway,
         spawn_catalog=spawn_catalog,
+        salvage_on_exhaust=salvage_on_exhaust,
     )
 
 
