@@ -229,7 +229,9 @@ def test_install_console_gui_runs_npm_install(
         return 0
 
     monkeypatch.setattr(
-        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
 
     ok, message = sw.install_console_gui(tmp_path, run=fake_run)
@@ -251,6 +253,30 @@ def test_install_console_gui_reports_missing_npm(
 
     assert ok is False
     assert "npm was not found" in message
+
+
+def test_install_console_gui_reports_missing_cargo_after_npm_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert calls == [(["/bin/npm", "install"], app_dir)]
+    assert "cargo was not found" in message
+    assert "Rust toolchain" in message
 
 
 # ── connection test ─────────────────────────────────────────────────────────
@@ -371,7 +397,9 @@ def test_interactive_installs_console_gui_by_default(
         return 0
 
     monkeypatch.setattr(
-        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
     script = Script([
         "ollama",   # family

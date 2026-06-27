@@ -43,7 +43,10 @@ musubi setup                       # guided wizard (recommended)
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
-`app/package.json` is present. Prefer manual? The steps below still work.
+`app/package.json` is present. For desktop Tauri runs it also checks that
+`cargo` is on `PATH`; on Windows install it with
+`winget install --id Rustlang.Rustup -e`, then open a new terminal. Prefer
+manual? The steps below still work.
 
 ```bash
 export ANTHROPIC_API_KEY=...       # the env var the wizard recorded
@@ -196,6 +199,9 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
 - **Desktop** (Tauri) — reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
   in-memory demo so it runs standalone. Needs the Rust toolchain + webview libs
   (Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`).
+  On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
+  open a new terminal, and confirm `cargo --version` before running
+  `npm run tauri:dev`.
 - **Prebuilt installer** (no local toolchain) — the `Desktop build` GitHub
   Actions workflow ([`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml))
   compiles `.dmg` / `.msi` / `.AppImage` / `.deb`. Run it manually

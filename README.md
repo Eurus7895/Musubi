@@ -165,7 +165,10 @@ different vendor or model, edit (or add) a profile, don't pass a flag.
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and installs console GUI dependencies with `npm install` when
-`app/package.json` is present. The manual steps below still work if you prefer.
+`app/package.json` is present. For desktop Tauri runs it also checks that
+`cargo` is on `PATH`; on Windows install it with
+`winget install --id Rustlang.Rustup -e`, then open a new terminal. The manual
+steps below still work if you prefer.
 
 The CLI spawns the MCP substrate (`musubi/server.py`), lists its `musubi_*`
 tools, and drives them with the model through `LMRouter` — zero LLM calls
@@ -236,6 +239,15 @@ cd app
 npm install
 npm run dev                                  # browser + live simulation (no toolchain)
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
+```
+
+`npm run tauri:dev` requires Rust's `cargo` binary. If Tauri reports
+`failed to run 'cargo metadata'` / `program not found`, install Rustup first,
+then open a new terminal:
+
+```powershell
+winget install --id Rustlang.Rustup -e
+cargo --version
 ```
 
 Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·

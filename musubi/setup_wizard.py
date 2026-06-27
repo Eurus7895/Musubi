@@ -293,7 +293,15 @@ def install_console_gui(
         return False, "npm was not found on PATH; install Node 20+ and rerun setup"
     runner = run or _run_command
     code = runner([npm, "install"], app_dir)
+    cargo = shutil.which("cargo")
     if code == 0:
+        if not cargo:
+            return False, (
+                "npm dependencies installed, but cargo was not found on PATH; "
+                "install the Rust toolchain for `npm run tauri:dev` "
+                "(Windows: `winget install --id Rustlang.Rustup -e`, then "
+                "open a new terminal)"
+            )
         return True, f"console GUI dependencies installed in {app_dir}"
     return False, f"npm install failed with exit code {code}"
 
