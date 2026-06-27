@@ -1,5 +1,9 @@
 # Musubi Console
 
+> **New to the console? Start with the user guide:** [`docs/console.md`](../docs/console.md)
+> — install, the six views, and pointing it at a real `audit.db`. This file is
+> the architecture + contributor reference.
+
 A dark, technical **governance console** for Musubi (結び) — "tie agents to
 policy." A React + Vite UI (recreated from the Claude Design prototype in
 `../project/Musubi Console.dc.html`) packaged as a **standalone Tauri desktop

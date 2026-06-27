@@ -215,6 +215,27 @@ turn-capped child loop on a firewalled brief and restricted tool surface, then
 feeds the verified summary back — every spawn is policy-checked and audited
 (`musubi_query_subagent_events`).
 
+## Console (GUI — operator view)
+
+A dark, governance-focused desktop console reads `audit.db` directly and
+shows the substrate at work — the sub-agent cohort, fail-closed policy
+stream, and the append-only audit ledger. **Zero LLM calls**, no localhost
+server, no Copilot; the agent reasons, the console only observes and
+operates the governance layer.
+
+```bash
+cd app
+npm install
+npm run dev                                  # browser + live simulation (no toolchain)
+MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
+```
+
+Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
+Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone.
+Prebuilt installers (macOS / Windows / Linux) are produced by the
+`Desktop build` GitHub Actions workflow — no local Rust/webview toolchain
+needed. Full walkthrough: [`docs/console.md`](./docs/console.md).
+
 ## VS Code extension (Copilot surface)
 
 `copilot-harness-extension/` is the `@harness` Copilot-Chat surface — it
@@ -231,6 +252,7 @@ tracked in `docs/roadmap.md`.
 | [`docs/roadmap.md`](./docs/roadmap.md) | **Read first** — direction, discipline, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · Hard Invariants · conventions · commands |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map |
+| [`docs/console.md`](./docs/console.md) | Governance console (GUI) — install, the six views, pointing at a real `audit.db` |
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 | [`docs/memory.md`](./docs/memory.md) | Memory architecture detail |
 
