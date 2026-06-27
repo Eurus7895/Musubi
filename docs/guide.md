@@ -116,6 +116,12 @@ deterministic, zero-LLM, and **reversible**. The verbatim original is always
 stored (content-hash keyed) and reachable with `musubi_retrieve`; the audit
 trail always reads the original.
 
+Current native compressors are content-type routed: JSON smart-crush, Python
+AST structure summaries, log pattern grouping, and heading-aware text outlines.
+The latest capability artifact shows 339,930 chars compressed to 6,639
+model-visible chars with 4 / 4 retrieve checks passing. See
+[`docs/compression.md`](./compression.md) for the full artifact and numbers.
+
 ```bash
 agent "summarise the config files"     # compression on by default
 MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
@@ -245,6 +251,7 @@ surface** kept alongside the CLI. Build scripts live in that directory.
 | File | For |
 |---|---|
 | [`docs/roadmap.md`](./roadmap.md) | **Read first for direction** — discipline, numbered steps, dissolution candidates |
+| [`docs/compression.md`](./compression.md) | Compression capability — native compressor strategies, artifact links, and latest benchmark numbers |
 | [`CLAUDE.md`](../CLAUDE.md) | Rules · Hard Invariants · git conventions |
 | [`AGENTS.md`](../AGENTS.md) | Session-start orientation map |
 | [`musubi/server.py`](../musubi/server.py) · [`musubi/storage/schema.sql`](../musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |

@@ -44,17 +44,20 @@ to `musubi_*` after the rename — see `docs/roadmap.md`.
 Musubi shrinks the tokens the model reads at the substrate boundary —
 deterministic, zero-LLM, and **reversible**:
 
-- Content-type-routed compressors — JSON-minify, code comment/blank-strip,
-  whitespace-collapse (`musubi/compression/`).
+- Content-type-routed native compressors — JSON smart-crush, Python AST
+  structure summaries, log pattern grouping, and heading-aware text outlines
+  (`musubi/compression/`).
 - The verbatim original is stored (content-hash keyed); the model pulls it
   back any time with the **`musubi_retrieve`** tool, and the audit trail
   always reads the original.
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
-  default** — reversible, so it's safe. ~67% reduction on indented JSON
-  with an exact round-trip. Opt out with **`MUSUBI_COMPRESS=0`**.
+  default** — reversible, so it's safe. The latest capability artifact
+  shows 339,930 chars compressed to 6,639 model-visible chars with exact
+  round-trip retrieval. Opt out with **`MUSUBI_COMPRESS=0`**.
 - The model can also compress a payload on demand with **`musubi_compress`**
   and measure the feature's efficiency with **`musubi_compression_stats`**
   (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
+  Detailed benchmark artifacts live in [`docs/compression.md`](./docs/compression.md).
 
 ```bash
 agent "summarise the config files"     # compression on by default
@@ -104,18 +107,22 @@ the ~80-char retrieval marker), so `musubi_compression_stats` reports the
 true compression win rather than marker overhead.
 
 ```jsonc
-// musubi_compression_stats() after compressing a 21 KB indented JSON file
+// compression capability artifact after Step 3 native compressors
 {
   "status": "ok",
-  "total_blobs": 1,
-  "total_original_chars": 21399,
-  "total_compressed_chars": 10991,
-  "bytes_saved": 10408,
-  "overall_ratio": 0.514,
-  "savings_pct": 48.6,
+  "total_blobs": 4,
+  "total_original_chars": 339930,
+  "total_compressed_chars": 6087,
+  "bytes_saved": 333843,
+  "overall_ratio": 0.018,
+  "savings_pct": 98.2,
   "rows_without_metric": 0,
-  "by_kind": [{ "kind": "json", "count": 1,
-               "original_chars": 21399, "compressed_chars": 10991 }]
+  "by_kind": [
+    { "kind": "json", "count": 1, "compressed_chars": 2521 },
+    { "kind": "code", "count": 1, "compressed_chars": 1408 },
+    { "kind": "log", "count": 1, "compressed_chars": 736 },
+    { "kind": "text", "count": 1, "compressed_chars": 1422 }
+  ]
 }
 ```
 
@@ -252,6 +259,7 @@ tracked in `docs/roadmap.md`.
 | [`docs/roadmap.md`](./docs/roadmap.md) | **Read first** — direction, discipline, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · Hard Invariants · conventions · commands |
 | [`docs/guide.md`](./docs/guide.md) | **How to use Musubi** — install, CLI, profiles, compression, sub-agents, the console (GUI), and the VS Code extension, end to end |
+| [`docs/compression.md`](./docs/compression.md) | Compression capability — native compressor strategies, artifact links, and latest benchmark numbers |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map |
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |
 | [`docs/memory.md`](./docs/memory.md) | Memory architecture detail |
