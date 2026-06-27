@@ -536,7 +536,7 @@ async def _dispatch(
                 "parent_session_id": orchestration.parent_session_id,
                 "parent_agent_name": orchestration.parent_agent_name,
             }
-            print(f"[agent]   → spawn_subagent(role={args.get('role')!r})", file=log)
+            print(f"[agent]   → spawn worker(role={args.get('role')!r})", file=log)
             try:
                 from agent import subagent
 

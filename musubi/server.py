@@ -1351,14 +1351,21 @@ def musubi_distill_session(session_id: str) -> str:
     return json.dumps({"status": "ok", "appended": appended})
 
 
-# ── Sub-agent tools (Phase A.1) ───────────────────────────────────────────────
+# ── Worker tools (Phase A.1) ──────────────────────────────────────────────────
 #
-# A *sub-session* is the row for an agent-spawned-by-another-agent invocation.
-# The harness validates the spawn (policy intersection), records the row, and
-# tracks lifecycle. The actual sub-agent loop runs in the VS Code extension —
-# the harness never calls an LLM. The extension calls `musubi_complete_*`
-# when the sub-agent finishes; the parent agent calls `musubi_await_*` to
-# block until that happens (or until the wall-clock cap fires).
+# "Sub-agent" and "worker" name the same concept: a unit of agentic work
+# spawned by another. The MCP tool names (`musubi_spawn_subagent`, …) and DB
+# tables (`sub_sessions`, `subagent_audit`) keep the "subagent" spelling for
+# contract + audit-history stability; new code and docs say "worker". There is
+# no "main" vs "sub" distinction — only workers, the root task being the
+# depth-0 worker (see `agent/run.py::run_unit`).
+#
+# A *sub-session* is the row for one such worker invocation. The harness
+# validates the spawn (policy intersection), records the row, and tracks
+# lifecycle. The actual worker loop runs in the driver (VS Code extension or the
+# standalone `agent/` host) — the harness never calls an LLM. The driver calls
+# `musubi_complete_*` when the worker finishes; the parent calls `musubi_await_*`
+# to block until that happens (or until the wall-clock cap fires).
 
 # Polling cadence for musubi_await_subagent. Tests can override via the
 # MUSUBI_SUBAGENT_POLL_S env var to keep the suite fast.
