@@ -65,7 +65,7 @@ substrate; pipeline dissolution is postponed (see below).
    run_command`) — already wired; the file/command tool results flow
    through the substrate (the biggest token sink).
 2. ✓ **Reversible compression core.** `musubi/compression/` (router +
-   json-minify + code/blank-strip + content-hash store) and the
+   native compressors + content-hash store) and the
    `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
 3. ✓ **Wire compression into input returns.** `musubi_read_file` /
    `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
