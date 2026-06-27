@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -324,9 +324,9 @@
     <header>
       <div>
         <h1>Musubi Compression Capability</h1>
-        <p>Demo tinh nang nen input co the retrieve lai ban goc qua <code>musubi_retrieve(ref_id)</code>.</p>
+        <p>Demonstrates input compression with verbatim recovery through <code>musubi_retrieve(ref_id)</code>.</p>
       </div>
-      <div class="tag">Baseline benchmark · model-visible chars include retrieval marker</div>
+      <div class="tag">Baseline benchmark - model-visible chars include retrieval marker</div>
     </header>
 
     <section class="summary" aria-label="Summary metrics">
@@ -350,7 +350,7 @@
 
     <section class="panel">
       <h2>Original vs compressed</h2>
-      <p>Moi hang hien original chars va model-visible compressed chars sau khi da tinh retrieval marker overhead.</p>
+      <p>Each row shows original chars and model-visible compressed chars after retrieval marker overhead is included.</p>
 
       <div class="chart">
         <div class="row">
@@ -417,15 +417,15 @@
       <div class="note-grid">
         <div class="note">
           <strong>Reversible</strong>
-          <p>Ban goc duoc luu trong blob store bang content hash. Ket qua nen co <code>ref_id</code> de goi retrieve khi can exact text.</p>
+          <p>The original is stored in the blob store by content hash. Each compressed result carries a <code>ref_id</code> for exact retrieval.</p>
         </div>
         <div class="note">
           <strong>Zero LLM</strong>
-          <p>Compressor hien tai deterministic: JSON minify, code/comment strip, log/text whitespace collapse. Khong goi model trong substrate.</p>
+          <p>The current compressor is deterministic: JSON minify, code/comment strip, and log/text whitespace collapse. The substrate makes no model calls.</p>
         </div>
         <div class="note">
           <strong>Best fit</strong>
-          <p>Baseline nen manh nhat voi pretty JSON va code nhieu comment. Log/text can Step tiep theo: pattern grouping va outline compression.</p>
+          <p>The baseline is strongest on pretty JSON and heavily commented code. Logs and prose are the next targets for pattern grouping and outline compression.</p>
         </div>
       </div>
 
@@ -479,7 +479,7 @@
 
     <section class="panel">
       <h2>Generated benchmark image</h2>
-      <p>Ban PNG duoc tao tu cung data benchmark.</p>
+      <p>The PNG below was generated from the same benchmark data.</p>
       <img class="preview" src="compression_feature_results.png" alt="Musubi compression benchmark result chart">
     </section>
 
