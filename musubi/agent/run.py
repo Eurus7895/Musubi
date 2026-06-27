@@ -56,6 +56,11 @@ DEFAULT_MAX_CYCLES = 16
 #: to it only when a cycle actually stops on `max_tokens`.
 EFFORT_CEILING = 4096
 
+#: Per-cycle fan-out width guard: at most this many workers of the SAME role may
+#: be spawned in one model turn. Bounds runaway fan-out when workers run in
+#: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
+DEFAULT_MAX_SPAWNS_PER_ROLE = 3
+
 
 @dataclass
 class Orchestration:
@@ -234,7 +239,11 @@ async def _run_loop(
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages)
-        resp = _call_with_effort(vendor, messages, tools)
+        # `vendor.call` is synchronous (blocking network I/O). Run it off the
+        # event loop so that when several worker loops run concurrently (parent
+        # `_dispatch` gathers their spawns), siblings actually overlap on the LM
+        # round-trip instead of serializing. Single-loop cost is one thread hop.
+        resp = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -508,67 +517,126 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
 ) -> list[dict[str, Any]]:
-    """Call each tool and collect Anthropic-shaped tool_result blocks.
+    """Run every tool call in the batch CONCURRENTLY, returning tool_results in
+    the original `tool_uses` order.
 
-    When `orchestration` is enabled and the model calls
-    `musubi_spawn_subagent`, the spawn is run to completion in-process (port of
-    the extension's dispatcher) and the sub-agent's summary becomes the tool
-    result — so the model just spawns and gets the answer back.
+    Workers in one model turn run in parallel (`asyncio.gather`); a batch of N
+    spawns runs N worker loops at once, each overlapping on its LM round-trip
+    (see the `to_thread` in `_run_loop`). `gather` preserves input order, so the
+    `tool_use_id` ↔ `tool_result` pairing the model expects stays exact no
+    matter which worker finishes first.
 
-    Every other tool is routed via `gateway` (when set) to its owning session
-    and original name — so a federated `<server>__<tool>` call lands on that
-    external server. With no gateway, the call goes to `session` verbatim.
+    A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
+    spawns BEFORE launch so a single turn cannot fan out without bound.
     """
+    refused = _spawn_overflow_ids(tool_uses, log)
+    coros = [
+        _dispatch_one(
+            tu, session, log,
+            vendor=vendor, tools=tools,
+            orchestration=orchestration, gateway=gateway,
+            refused=tu.get("id", "") in refused,
+        )
+        for tu in tool_uses
+    ]
+    settled = await asyncio.gather(*coros, return_exceptions=True)
+
     results: list[dict[str, Any]] = []
-    for tu in tool_uses:
-        name = tu.get("name", "")
-        args = tu.get("input") or {}
-
-        if (
-            name == "musubi_spawn_subagent"
-            and orchestration is not None
-            and orchestration.enabled
-            and vendor is not None
-            and tools is not None
-        ):
-            injected = {
-                **args,
-                "parent_session_id": orchestration.parent_session_id,
-                "parent_agent_name": orchestration.parent_agent_name,
-            }
-            print(f"[agent]   → spawn worker(role={args.get('role')!r})", file=log)
-            try:
-                from agent import subagent
-
-                content = await subagent.run_subagent(
-                    session, injected, vendor, tools, log
-                )
-            except Exception as exc:  # noqa: BLE001 — surface to the model
-                content = f"[subagent error] {type(exc).__name__}: {exc}"
+    for tu, outcome in zip(tool_uses, settled):
+        if isinstance(outcome, BaseException):
+            content = f"[dispatch error] {type(outcome).__name__}: {outcome}"
         else:
-            print(
-                f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
-                file=log,
-            )
-            target = gateway.route(name) if gateway is not None else (session, name)
-            if target is None:
-                content = f"[tool error] no MCP server owns tool {name!r}"
-            else:
-                target_session, original_name = target
-                try:
-                    result = await target_session.call_tool(
-                        original_name, arguments=args
-                    )
-                    content = _first_text(result)
-                except Exception as exc:  # noqa: BLE001 — surface errors to the model
-                    content = f"[tool error] {type(exc).__name__}: {exc}"
-
+            content = outcome
         results.append({
             "type": "tool_result",
             "tool_use_id": tu.get("id", ""),
             "content": content,
         })
     return results
+
+
+def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
+    """tool_use ids of spawn calls that exceed the per-role width cap.
+
+    Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
+    batch and marks the rest refused. Non-spawn calls are never capped.
+    """
+    seen: dict[str, int] = {}
+    overflow: set[str] = set()
+    for tu in tool_uses:
+        if tu.get("name") != "musubi_spawn_subagent":
+            continue
+        role = str((tu.get("input") or {}).get("role", ""))
+        seen[role] = seen.get(role, 0) + 1
+        if seen[role] > DEFAULT_MAX_SPAWNS_PER_ROLE:
+            overflow.add(tu.get("id", ""))
+            print(
+                f"[agent]   ⨯ refused extra worker(role={role!r}): "
+                f"per-turn cap {DEFAULT_MAX_SPAWNS_PER_ROLE} reached",
+                file=log,
+            )
+    return overflow
+
+
+async def _dispatch_one(
+    tu: dict[str, Any],
+    session: ClientSession,
+    log: Any,
+    *,
+    vendor: LMRouter | None,
+    tools: list[dict[str, Any]] | None,
+    orchestration: Orchestration | None,
+    gateway: McpGateway | None,
+    refused: bool,
+) -> str:
+    """Run a single tool call and return its result text.
+
+    When `orchestration` is enabled and the model calls
+    `musubi_spawn_subagent`, the spawn is run to completion in-process and the
+    worker's summary becomes the result — so the model just spawns and gets the
+    answer back. Every other tool is routed via `gateway` (when set) to its
+    owning session and original name; with no gateway, the call goes to
+    `session` verbatim.
+    """
+    name = tu.get("name", "")
+    args = tu.get("input") or {}
+
+    if (
+        name == "musubi_spawn_subagent"
+        and orchestration is not None
+        and orchestration.enabled
+        and vendor is not None
+        and tools is not None
+    ):
+        if refused:
+            return (
+                f'{{"status": "refused", "reason": "per-turn spawn cap '
+                f'({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached for role '
+                f'{args.get("role")!r}"}}'
+            )
+        injected = {
+            **args,
+            "parent_session_id": orchestration.parent_session_id,
+            "parent_agent_name": orchestration.parent_agent_name,
+        }
+        print(f"[agent]   → spawn worker(role={args.get('role')!r})", file=log)
+        try:
+            from agent import subagent
+
+            return await subagent.run_subagent(session, injected, vendor, tools, log)
+        except Exception as exc:  # noqa: BLE001 — surface to the model
+            return f"[subagent error] {type(exc).__name__}: {exc}"
+
+    print(f"[agent]   → {name}({_truncate(json.dumps(args), 60)})", file=log)
+    target = gateway.route(name) if gateway is not None else (session, name)
+    if target is None:
+        return f"[tool error] no MCP server owns tool {name!r}"
+    target_session, original_name = target
+    try:
+        result = await target_session.call_tool(original_name, arguments=args)
+        return _first_text(result)
+    except Exception as exc:  # noqa: BLE001 — surface errors to the model
+        return f"[tool error] {type(exc).__name__}: {exc}"
 
 
 async def _call_tool_text(
