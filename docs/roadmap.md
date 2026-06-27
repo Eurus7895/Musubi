@@ -225,6 +225,7 @@ Skills (pushed/pulled catalog). The browser dev mode uses `SimulationSource`
 
 **To run:**
 ```bash
+musubi setup                              # offers npm install for app/
 cd app && npm install && npm run dev          # browser + simulation
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev  # desktop + real DB
 ```

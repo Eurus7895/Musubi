@@ -216,6 +216,43 @@ def test_merge_mcp_json_preserves_other_servers() -> None:
     assert merged["servers"]["musubi"]["command"] == "python"
 
 
+def test_install_console_gui_runs_npm_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is True
+    assert "console GUI dependencies installed" in message
+    assert calls == [(["/bin/npm", "install"], app_dir)]
+
+
+def test_install_console_gui_reports_missing_npm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sw.shutil, "which", lambda _name: None)
+
+    ok, message = sw.install_console_gui(tmp_path)
+
+    assert ok is False
+    assert "npm was not found" in message
+
+
 # ── connection test ─────────────────────────────────────────────────────────
 
 
@@ -319,3 +356,41 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
     prof = load_profile("ollama.local", path=tmp_path / ".musubi" / "llm.json")
     assert prof["model"] == "llama3.1"
     assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_interactive_installs_console_gui_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "package.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil, "which", lambda name: "/bin/npm" if name == "npm" else None
+    )
+    script = Script([
+        "ollama",   # family
+        "",         # model
+        "",         # base url
+        "",         # profile
+        "n",        # test connection?
+        "n",        # generate mcp.json?
+        "",         # install console GUI dependencies? default yes
+    ])
+    lines: list[str] = []
+
+    rc = sw.run_interactive(
+        prompt=script,
+        out=lines.append,
+        root=tmp_path,
+        gui_runner=fake_run,
+    )
+
+    assert rc == 0
+    assert calls == [(["/bin/npm", "install"], app_dir)]
+    assert any("console GUI dependencies installed" in line for line in lines)

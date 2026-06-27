@@ -2,7 +2,8 @@
 
 musubi-tier: substrate
 expires-when: never — onboarding a fresh install (deps, LLM endpoint config,
-  VS Code MCP wiring) is durable regardless of any pipeline-shape churn.
+  VS Code MCP wiring, console GUI deps) is durable regardless of any
+  pipeline-shape churn.
 
 Full-onboarding flow, invoked as `musubi setup`:
 
@@ -11,6 +12,9 @@ Full-onboarding flow, invoked as `musubi setup`:
     3. connection  — optional live ping of the chosen endpoint
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
+
+The interactive shell also offers to install console GUI dependencies when
+`app/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
@@ -28,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -60,6 +65,7 @@ _INTEGRATED_PROXY_AUTH: tuple[str, ...] = ("negotiate", "ntlm")
 
 Prompt = Callable[[str], str]
 Out = Callable[[str], None]
+CommandRunner = Callable[[list[str], Path], int]
 
 
 # ── Doctor ──────────────────────────────────────────────────────────────────
@@ -270,6 +276,32 @@ def merge_mcp_json(existing: dict[str, Any] | None, server_arg: str) -> dict[str
     return data
 
 
+# â”€â”€ Console GUI install â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+def install_console_gui(
+    root: Path,
+    *,
+    run: CommandRunner | None = None,
+) -> tuple[bool, str]:
+    """Install the optional console GUI dependencies with npm."""
+    app_dir = root / "app"
+    if not (app_dir / "package.json").is_file():
+        return False, f"console GUI app not found at {app_dir}"
+    npm = shutil.which("npm")
+    if not npm:
+        return False, "npm was not found on PATH; install Node 20+ and rerun setup"
+    runner = run or _run_command
+    code = runner([npm, "install"], app_dir)
+    if code == 0:
+        return True, f"console GUI dependencies installed in {app_dir}"
+    return False, f"npm install failed with exit code {code}"
+
+
+def _run_command(cmd: list[str], cwd: Path) -> int:
+    return subprocess.run(cmd, cwd=cwd, check=False).returncode
+
+
 # ── Connection test ─────────────────────────────────────────────────────────
 
 
@@ -317,6 +349,7 @@ def run_interactive(
     prompt: Prompt = input,
     out: Out = print,
     root: Path | None = None,
+    gui_runner: CommandRunner | None = None,
 ) -> int:
     root = root or Path.cwd()
     out("Musubi setup\n============\n")
@@ -360,6 +393,14 @@ def run_interactive(
         _write(mcp_path, json.dumps(merged, indent=4) + "\n")
         out(f"  wrote {mcp_path}")
 
+    if (root / "app" / "package.json").is_file() and _ask_yes_no(
+        prompt,
+        "Install console GUI dependencies now?",
+        default=True,
+    ):
+        ok, msg = install_console_gui(root, run=gui_runner)
+        out(f"  console GUI: {'OK' if ok else 'FAILED'} — {msg}")
+
     out("\nNext steps:")
     if env_name:
         out(f"  export {env_name}=<your key>")
@@ -368,6 +409,8 @@ def run_interactive(
     # profile, so to change them re-run `musubi setup` or edit .musubi/llm.json.
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
+    if (root / "app" / "package.json").is_file():
+        out("  cd app && npm run dev   # open the console GUI in browser mode")
     return 0
 
 

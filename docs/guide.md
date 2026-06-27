@@ -41,8 +41,9 @@ musubi setup                       # guided wizard (recommended)
 
 `musubi setup` is the fastest path — it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
-optionally tests the connection, and generates `.vscode/mcp.json` for the
-extension. Prefer manual? The steps below still work.
+optionally tests the connection, generates `.vscode/mcp.json` for the
+extension, and installs console GUI dependencies with `npm install` when
+`app/package.json` is present. Prefer manual? The steps below still work.
 
 ```bash
 export ANTHROPIC_API_KEY=...       # the env var the wizard recorded
