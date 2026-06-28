@@ -77,8 +77,10 @@ CREATE TABLE IF NOT EXISTS fail_patterns (
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
 
--- Sub-agent invocations (Phase A.1). One row per agent-spawned-by-another-agent
--- run; populated by session/sub_sessions.py. Lifecycle is single-shot:
+-- Worker invocations (Phase A.1). One row per worker (an agent spawned by
+-- another); the table keeps the "sub_sessions" name for stability — "worker"
+-- and "sub-agent" are the same concept. Populated by session/sub_sessions.py.
+-- Lifecycle is single-shot:
 --   running → done | failed | escalated | abandoned
 -- The harness records spawn, then the extension-side runner records the
 -- terminal result (turns, tools_used, summary, structured). Wall-clock /

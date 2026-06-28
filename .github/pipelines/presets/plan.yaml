@@ -1,0 +1,7 @@
+# Preset — a reusable worker/stage building block. Drop presets into a
+# pipeline's `stages:` list to compose it (the data model a drag-and-drop UI
+# would read/write). `agent` references .github/agents/<role>.agent.md.
+id: plan
+agent: planner
+stage: plan
+description: Produce an implementation plan for the brief.

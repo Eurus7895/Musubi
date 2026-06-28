@@ -56,22 +56,52 @@ DEFAULT_MAX_CYCLES = 16
 #: to it only when a cycle actually stops on `max_tokens`.
 EFFORT_CEILING = 4096
 
+#: Per-cycle fan-out width guard: at most this many workers of the SAME role may
+#: be spawned in one model turn. Bounds runaway fan-out when workers run in
+#: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
+DEFAULT_MAX_SPAWNS_PER_ROLE = 3
+
+
+#: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
+#: that is itself allowed to spawn may summon workers one level down. With the
+#: default, the root and its direct workers can spawn; their workers are leaves.
+DEFAULT_MAX_DEPTH = 2
+
 
 @dataclass
 class Orchestration:
-    """Context that lets the loop run sub-agents the model spawns.
+    """Context that lets a worker loop spawn further workers.
 
-    `parent_session_id` owns the spawn parentage; `parent_agent_name` is the
-    firewall identity ("agent" → MAIN_SUBAGENT_ALLOWLIST["agent"]). Disabled
-    (no spawning) when `parent_session_id` is None.
+    `parent_session_id` owns the spawn parentage (always the ROOT session — the
+    whole worker tree shares one session row); `parent_agent_name` is the
+    firewall identity of THIS worker (the role whose `spawn_allowlist` gates what
+    it may summon). `depth` is this worker's depth (0 = root). Disabled (no
+    spawning) when `parent_session_id` is None.
     """
 
     parent_session_id: str | None
     parent_agent_name: str = "agent"
+    depth: int = 0
+    max_depth: int = DEFAULT_MAX_DEPTH
 
     @property
     def enabled(self) -> bool:
         return self.parent_session_id is not None
+
+    def child(self, role: str) -> "Orchestration":
+        """Orchestration for a worker this one spawns: same root session, the
+        child's role as the new firewall identity, one level deeper."""
+        return Orchestration(
+            parent_session_id=self.parent_session_id,
+            parent_agent_name=role,
+            depth=self.depth + 1,
+            max_depth=self.max_depth,
+        )
+
+    @property
+    def can_spawn_deeper(self) -> bool:
+        """True if a worker at this depth is still allowed to nest."""
+        return self.enabled and self.depth < self.max_depth
 
 
 # ── Public entry ────────────────────────────────────────────────────────────
@@ -170,21 +200,25 @@ async def run_agent(
             parent_session_id=await _open_parent_session(session, task, log),
         )
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": task},
-        ]
         # Catch a loop failure (an LLM/network error from `vendor.call`, a
         # dispatch error) HERE, inside the `async with`, and stash it. Letting
         # it escape into the stack's `__aexit__` makes anyio re-wrap it in a
         # BaseExceptionGroup (the unreadable multi-page traceback) and defeats
         # `except RuntimeError` at every call site. We re-raise it cleanly
         # outside the contexts below.
+        #
+        # The root task is just the depth-0 worker: it runs through the same
+        # `run_unit` entry every child worker does (see `run_unit`). The only
+        # difference is its prompt shape (system + user) and that orchestration
+        # is enabled so it may summon further workers.
         try:
-            final_answer, _ = await _run_loop(
-                session, vendor, tools, messages,
-                max_cycles=max_cycles, log=log, orchestration=orchestration,
-                gateway=gateway,
+            final_answer, _ = await run_unit(
+                session, vendor, tools,
+                system_prompt=build_system_prompt(),
+                user_message=task,
+                max_cycles=max_cycles, log=log,
+                orchestration=orchestration, gateway=gateway,
+                salvage_on_exhaust=True,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -212,6 +246,8 @@ async def _run_loop(
     log: Any,
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
+    spawn_catalog: list[dict[str, Any]] | None = None,
+    salvage_on_exhaust: bool = False,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -223,32 +259,129 @@ async def _run_loop(
     fed back as the tool result. `gateway`, when set, routes each tool call to
     its owning session (Musubi or a federated external server); when None,
     every call goes to `session` by its exact name (the sub-agent path).
+
+    `tools` is what THIS loop's model sees. `spawn_catalog` (defaults to `tools`)
+    is the full catalog a spawned worker draws its own surface from — they differ
+    only for a nesting worker, whose model surface is its restricted tools plus
+    the spawn tool, while its children still need the whole catalog.
     """
     final_answer: str | None = None
+    last_text = ""  # most recent non-empty assistant text, for salvage
     cycles_used = 0
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages)
-        resp = _call_with_effort(vendor, messages, tools)
+        # `vendor.call` is synchronous (blocking network I/O). Run it off the
+        # event loop so that when several worker loops run concurrently (parent
+        # `_dispatch` gathers their spawns), siblings actually overlap on the LM
+        # round-trip instead of serializing. Single-loop cost is one thread hop.
+        resp = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
 
+        text = _extract_text(resp.content)
+        if text:
+            last_text = text  # remember even when the model also called a tool
+
         if resp.stop_reason != "tool_use" or not tool_uses:
-            final_answer = _extract_text(resp.content)
+            final_answer = text
             break
 
         tool_results = await _dispatch(
             session, tool_uses, log,
-            vendor=vendor, tools=tools, orchestration=orchestration,
-            gateway=gateway,
+            vendor=vendor, tools=(spawn_catalog or tools),
+            orchestration=orchestration, gateway=gateway,
         )
         messages.append({"role": "user", "content": tool_results})
 
+    # Salvage (root only — sub-agents signal exhaustion via None → escalate).
+    # A model that calls a tool on EVERY cycle never hits the break path, so
+    # `final_answer` stays None. Recover rather than hard-failing the turn:
+    if final_answer is None and salvage_on_exhaust:
+        if last_text:
+            # It produced text alongside its tool calls — return the last of it.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); salvaging last "
+                f"assistant text",
+                file=log,
+            )
+            final_answer = last_text
+        else:
+            # It only ever tool-called, never spoke. Make ONE final call with no
+            # tools offered so the model is forced to answer in words.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); forcing a no-tools "
+                f"final answer",
+                file=log,
+            )
+            try:
+                resp = await asyncio.to_thread(
+                    _call_with_effort, vendor, fit_context(messages), []
+                )
+                final_answer = _extract_text(resp.content) or None
+            except Exception as exc:  # noqa: BLE001 — fall through to the raise
+                print(
+                    f"[agent] forced final call failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=log,
+                )
+
     return final_answer, cycles_used
+
+
+async def run_unit(
+    session: ClientSession,
+    vendor: LMRouter,
+    tools: list[dict[str, Any]],
+    *,
+    system_prompt: str,
+    user_message: str | None,
+    max_cycles: int,
+    log: Any,
+    orchestration: Orchestration | None = None,
+    gateway: McpGateway | None = None,
+    spawn_catalog: list[dict[str, Any]] | None = None,
+    salvage_on_exhaust: bool = False,
+) -> tuple[str | None, int]:
+    """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
+
+    A "worker" is the single unit of agentic work — there is no "main agent"
+    vs "sub-agent" distinction, only workers at different depths. The root task
+    is the depth-0 worker; every spawned child is the same object one level
+    down. This is the one entry both go through; `_run_loop` is its engine.
+
+    Prompt shape is the only thing that varies by depth:
+      - root worker: `system_prompt` = the agent identity, `user_message` = the
+        task → seeds messages as [system, user].
+      - child worker: `system_prompt` already embeds the firewalled brief (built
+        by `build_subagent_system_prompt`) and `user_message` is None → seeds a
+        single user turn, preserving the child message shape exactly.
+
+    `orchestration`/`gateway`/`spawn_catalog` are forwarded to `_run_loop`: a
+    leaf worker passes orchestration=None and a restricted tool surface; a
+    nesting worker passes an orchestration one level deeper plus the full
+    catalog so its own children can be sized.
+    """
+    if user_message is None:
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": system_prompt}
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+    return await _run_loop(
+        session, vendor, tools, messages,
+        max_cycles=max_cycles, log=log,
+        orchestration=orchestration, gateway=gateway,
+        spawn_catalog=spawn_catalog,
+        salvage_on_exhaust=salvage_on_exhaust,
+    )
 
 
 async def _open_parent_session(session: ClientSession, task: str, log: Any) -> str | None:
@@ -459,67 +592,150 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
 ) -> list[dict[str, Any]]:
-    """Call each tool and collect Anthropic-shaped tool_result blocks.
+    """Run every tool call in the batch CONCURRENTLY, returning tool_results in
+    the original `tool_uses` order.
 
-    When `orchestration` is enabled and the model calls
-    `musubi_spawn_subagent`, the spawn is run to completion in-process (port of
-    the extension's dispatcher) and the sub-agent's summary becomes the tool
-    result — so the model just spawns and gets the answer back.
+    Workers in one model turn run in parallel (`asyncio.gather`); a batch of N
+    spawns runs N worker loops at once, each overlapping on its LM round-trip
+    (see the `to_thread` in `_run_loop`). `gather` preserves input order, so the
+    `tool_use_id` ↔ `tool_result` pairing the model expects stays exact no
+    matter which worker finishes first.
 
-    Every other tool is routed via `gateway` (when set) to its owning session
-    and original name — so a federated `<server>__<tool>` call lands on that
-    external server. With no gateway, the call goes to `session` verbatim.
+    A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
+    spawns BEFORE launch so a single turn cannot fan out without bound.
     """
+    refused = _spawn_overflow_ids(tool_uses, log)
+    coros = [
+        _dispatch_one(
+            tu, session, log,
+            vendor=vendor, tools=tools,
+            orchestration=orchestration, gateway=gateway,
+            refused=tu.get("id", "") in refused,
+        )
+        for tu in tool_uses
+    ]
+    settled = await asyncio.gather(*coros, return_exceptions=True)
+
     results: list[dict[str, Any]] = []
-    for tu in tool_uses:
-        name = tu.get("name", "")
-        args = tu.get("input") or {}
-
-        if (
-            name == "musubi_spawn_subagent"
-            and orchestration is not None
-            and orchestration.enabled
-            and vendor is not None
-            and tools is not None
-        ):
-            injected = {
-                **args,
-                "parent_session_id": orchestration.parent_session_id,
-                "parent_agent_name": orchestration.parent_agent_name,
-            }
-            print(f"[agent]   → spawn_subagent(role={args.get('role')!r})", file=log)
-            try:
-                from agent import subagent
-
-                content = await subagent.run_subagent(
-                    session, injected, vendor, tools, log
-                )
-            except Exception as exc:  # noqa: BLE001 — surface to the model
-                content = f"[subagent error] {type(exc).__name__}: {exc}"
+    for tu, outcome in zip(tool_uses, settled):
+        if isinstance(outcome, BaseException):
+            content = f"[dispatch error] {type(outcome).__name__}: {outcome}"
         else:
-            print(
-                f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
-                file=log,
-            )
-            target = gateway.route(name) if gateway is not None else (session, name)
-            if target is None:
-                content = f"[tool error] no MCP server owns tool {name!r}"
-            else:
-                target_session, original_name = target
-                try:
-                    result = await target_session.call_tool(
-                        original_name, arguments=args
-                    )
-                    content = _first_text(result)
-                except Exception as exc:  # noqa: BLE001 — surface errors to the model
-                    content = f"[tool error] {type(exc).__name__}: {exc}"
-
+            content = outcome
         results.append({
             "type": "tool_result",
             "tool_use_id": tu.get("id", ""),
             "content": content,
         })
     return results
+
+
+def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
+    """tool_use ids of spawn calls that exceed the per-role width cap.
+
+    Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
+    batch and marks the rest refused. Non-spawn calls are never capped.
+    """
+    seen: dict[str, int] = {}
+    overflow: set[str] = set()
+    for tu in tool_uses:
+        if tu.get("name") != "musubi_spawn_subagent":
+            continue
+        role = str((tu.get("input") or {}).get("role", ""))
+        seen[role] = seen.get(role, 0) + 1
+        if seen[role] > DEFAULT_MAX_SPAWNS_PER_ROLE:
+            overflow.add(tu.get("id", ""))
+            print(
+                f"[agent]   ⨯ refused extra worker(role={role!r}): "
+                f"per-turn cap {DEFAULT_MAX_SPAWNS_PER_ROLE} reached",
+                file=log,
+            )
+    return overflow
+
+
+async def _dispatch_one(
+    tu: dict[str, Any],
+    session: ClientSession,
+    log: Any,
+    *,
+    vendor: LMRouter | None,
+    tools: list[dict[str, Any]] | None,
+    orchestration: Orchestration | None,
+    gateway: McpGateway | None,
+    refused: bool,
+) -> str:
+    """Run a single tool call and return its result text.
+
+    When `orchestration` is enabled and the model calls
+    `musubi_spawn_subagent`, the spawn is run to completion in-process and the
+    worker's summary becomes the result — so the model just spawns and gets the
+    answer back. Every other tool is routed via `gateway` (when set) to its
+    owning session and original name; with no gateway, the call goes to
+    `session` verbatim.
+    """
+    name = tu.get("name", "")
+    args = tu.get("input") or {}
+
+    if (
+        name == "musubi_spawn_pipeline"
+        and orchestration is not None
+        and orchestration.enabled
+        and vendor is not None
+        and tools is not None
+    ):
+        injected = {
+            **args,
+            "parent_session_id": orchestration.parent_session_id,
+            "parent_agent_name": orchestration.parent_agent_name,
+        }
+        print(f"[agent]   → summon pipeline({args.get('pipeline_name')!r})", file=log)
+        try:
+            from agent import pipeline_runner
+
+            return await pipeline_runner.run_pipeline(
+                session, injected, vendor, tools, log
+            )
+        except Exception as exc:  # noqa: BLE001 — surface to the model
+            return f"[pipeline error] {type(exc).__name__}: {exc}"
+
+    if (
+        name == "musubi_spawn_subagent"
+        and orchestration is not None
+        and orchestration.enabled
+        and vendor is not None
+        and tools is not None
+    ):
+        if refused:
+            return (
+                f'{{"status": "refused", "reason": "per-turn spawn cap '
+                f'({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached for role '
+                f'{args.get("role")!r}"}}'
+            )
+        injected = {
+            **args,
+            "parent_session_id": orchestration.parent_session_id,
+            "parent_agent_name": orchestration.parent_agent_name,
+        }
+        print(f"[agent]   → spawn worker(role={args.get('role')!r})", file=log)
+        try:
+            from agent import subagent
+
+            return await subagent.run_subagent(
+                session, injected, vendor, tools, log, orchestration=orchestration
+            )
+        except Exception as exc:  # noqa: BLE001 — surface to the model
+            return f"[subagent error] {type(exc).__name__}: {exc}"
+
+    print(f"[agent]   → {name}({_truncate(json.dumps(args), 60)})", file=log)
+    target = gateway.route(name) if gateway is not None else (session, name)
+    if target is None:
+        return f"[tool error] no MCP server owns tool {name!r}"
+    target_session, original_name = target
+    try:
+        result = await target_session.call_tool(original_name, arguments=args)
+        return _first_text(result)
+    except Exception as exc:  # noqa: BLE001 — surface errors to the model
+        return f"[tool error] {type(exc).__name__}: {exc}"
 
 
 async def _call_tool_text(

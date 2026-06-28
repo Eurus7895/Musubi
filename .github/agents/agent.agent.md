@@ -32,6 +32,7 @@ spawn_allowlist:
   - planner
   - coder
   - reviewer
+  - summarizer
 max_spawns_per_role_per_turn: 3
 sees:
   - user_message

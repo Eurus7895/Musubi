@@ -21,7 +21,9 @@ _VERBOSITY_NOTE = (
     "user already has, and do not narrate what you are about to do. Prefer "
     "acting over explaining: call tools directly. When finished, give a short, "
     "direct answer covering only what changed or what was found - no preamble, "
-    "no filler, no summary of your own process unless asked."
+    "no filler, no summary of your own process unless asked. "
+    "If the request needs no tools - a greeting, or a question you can already "
+    "answer - reply directly in one turn without calling any tool."
 )
 
 DEFAULT_EFFORT_FLOOR = 2048

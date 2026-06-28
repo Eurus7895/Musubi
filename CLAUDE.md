@@ -24,8 +24,8 @@ Zero LLM calls inside the harness.
 
 | Substrate (invest) | Ephemeral (label + schedule for removal) |
 |---|---|
-| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) |
-| `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) |
+| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) — in the standalone host superseded by **pipelines as recipes of workers** (`agent/pipeline_runner.py`, composer-driven, user-definable from presets); the rigid TS shape stays only in the feature-frozen extension |
+| `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) — in the standalone host this is dissolving into the unified **worker model** (`agent/run.py::run_unit`): no main-vs-sub distinction, only workers at a depth, run in parallel |
 | 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
 | Hard Invariants (#1, #2, #3, #5, #7, #8, #9) | Path-rules / empty-project / workspace-root preamble blocks |

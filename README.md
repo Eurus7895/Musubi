@@ -24,15 +24,17 @@ compression) to GitHub Copilot Chat.
 Every component carries a CI-enforced `musubi-tier` tag. **Substrate**
 (audit DB, skill catalog, memory, policy engine, the `musubi_*` catalog,
 Hard Invariants) is invested in; **ephemeral** (the 4-stage pipeline
-shape, sub-agent split, correction loop) is labelled with an
+shape, the main-vs-sub split, correction loop) is labelled with an
 `expires-when:` trigger and deleted — not refactored — when models cross
-it. Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
+it. In the standalone host the main-vs-sub split has already dissolved
+into the **worker model** (one `run_unit` path; only workers at a depth).
+Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 ## Surfaces
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop + on-demand sub-agents over `LMRouter`; any vendor (anthropic / openai / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
 | `@harness /feature-dev <task>` (VS Code) | inside Copilot Chat | the 4-stage governed pipeline + substrate features, driven by Copilot's model |
 
 Both surfaces drive the **same** substrate (audit, firewall, policy,
@@ -226,13 +228,28 @@ the proxy URL from `$HTTPS_PROXY` if you omit `proxy`. Not sure which scheme?
 `curl.exe -I --proxy-negotiate -U : "<your endpoint url>"` — whichever flag
 gets you past the `407` is your `proxy_auth`.
 
-### Sub-agents (multi-step delegation)
+### Workers (parallel delegation & pipelines)
 
-The standalone agent can spawn governed sub-agents for delegated multi-step
-work: when the model calls `musubi_spawn_subagent(role, brief)`, Musubi runs a
-turn-capped child loop on a firewalled brief and restricted tool surface, then
-feeds the verified summary back — every spawn is policy-checked and audited
-(`musubi_query_subagent_events`).
+There is no "main agent" vs "sub-agent" — only **workers** (one code path,
+`agent/run.py::run_unit`); the top-level task is the depth-0 worker. The point
+is **context-window offloading**: a worker does bounded work in its own
+firewalled context and returns only a compact summary, keeping the orchestrator
+lean.
+
+- **Spawn & offload.** `musubi_spawn_subagent(role, brief)` runs a turn-capped
+  child on a firewalled brief + restricted tool surface and feeds back the
+  verified summary — every spawn policy-checked and audited
+  (`musubi_query_subagent_events`).
+- **Parallel / background.** Workers summoned in one turn run concurrently
+  (`asyncio.gather` + threaded LM calls), results paired back in order, with a
+  per-role width cap.
+- **Nesting.** A role that declares a `spawn_allowlist:` may summon its own
+  workers, up to a depth cap (default 2); leaf roles never gain the spawn tool.
+- **Pipelines.** `musubi_spawn_pipeline(name, brief)` runs an ordered recipe of
+  workers — each stage's summary feeds the next, the evaluator sees only the
+  prior stage. Users define their own pipelines by composing **presets**
+  (`.github/pipelines/presets/`), validated fail-closed at boot. See
+  `.github/pipelines/presets/README.md`.
 
 ## Console (GUI — operator view)
 
