@@ -6,51 +6,18 @@
   <title>Musubi Compression Capability Report</title>
   <style>
     :root { color-scheme: light; --bg:#f4f6f8; --panel:#fff; --ink:#17202a; --muted:#5d6b7c; --line:#d6dde7; --green:#2f8f66; --blue:#2f6f9f; --amber:#b8752b; --slate:#8fa2b5; }
-    * { box-sizing: border-box; }
-    body { margin:0; background:var(--bg); color:var(--ink); font-family:Arial, Helvetica, sans-serif; line-height:1.45; }
-    main { width:min(1180px, calc(100% - 36px)); margin:0 auto; padding:38px 0 48px; }
-    header { display:grid; grid-template-columns:1fr auto; gap:24px; align-items:end; margin-bottom:24px; }
-    h1 { margin:0; font-size:clamp(30px, 4vw, 48px); line-height:1.08; letter-spacing:0; }
-    h2 { margin:0 0 14px; font-size:24px; letter-spacing:0; }
-    p { margin:0; color:var(--muted); }
-    .tag { display:inline-flex; align-items:center; min-height:36px; padding:7px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--muted); font-size:14px; white-space:nowrap; }
-    .summary { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; margin:24px 0; }
-    .metric { min-height:112px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:18px; border-left:7px solid var(--blue); }
-    .metric:nth-child(2), .metric:nth-child(4) { border-left-color:var(--green); }
-    .metric:nth-child(3) { border-left-color:var(--amber); }
-    .metric span { display:block; color:var(--muted); font-size:14px; margin-bottom:8px; }
-    .metric strong { display:block; font-size:28px; letter-spacing:0; }
-    .panel { border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:22px; margin-top:18px; }
-    .chart { display:grid; gap:18px; margin-top:18px; }
-    .row { display:grid; grid-template-columns:210px 1fr 155px 130px; gap:16px; align-items:center; }
-    .label strong { display:block; font-size:17px; }
-    .label span { color:var(--muted); font-size:14px; }
-    .bars { display:grid; gap:8px; min-width:0; }
-    .bar { position:relative; min-height:28px; overflow:hidden; border-radius:6px; background:#edf1f5; }
-    .fill { height:28px; border-radius:6px; background:var(--slate); }
-    .fill.compressed { background:var(--green); }
-    .value { position:absolute; top:3px; left:10px; color:#102032; font-size:14px; font-weight:700; }
-    .saving,.ok { color:var(--green); font-weight:700; }
-    .saving { font-size:18px; }
-    .legend { display:flex; gap:20px; flex-wrap:wrap; margin-top:16px; color:var(--muted); font-size:14px; }
-    .legend span { display:inline-flex; align-items:center; gap:8px; }
-    .swatch { width:22px; height:14px; border-radius:4px; background:var(--slate); }
-    .swatch.green { background:var(--green); }
-    .note-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:14px; margin-top:12px; }
-    .note,.preview-card { border:1px solid var(--line); border-radius:8px; padding:15px; background:#fbfcfd; }
-    .note strong,.preview-card strong { display:block; margin-bottom:6px; }
-    .preview-card span { display:block; color:var(--muted); font-size:13px; margin-bottom:10px; }
-    .preview-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; margin-top:12px; }
-    pre { overflow:auto; max-height:190px; margin:0; padding:12px; border-radius:6px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:13px; white-space:pre-wrap; }
-    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:15px; }
-    th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
-    th { color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:0; }
-    code { padding:2px 5px; border-radius:5px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:.95em; }
-    .image-preview { width:100%; margin-top:14px; border:1px solid var(--line); border-radius:8px; background:#fff; }
-    footer { margin-top:20px; color:var(--muted); font-size:14px; }
-    a { color:var(--blue); text-decoration:none; font-weight:700; }
-    a:hover { text-decoration:underline; }
-    @media (max-width:850px) { header,.summary,.note-grid,.preview-grid { grid-template-columns:1fr; } .row { grid-template-columns:1fr; gap:8px; padding-bottom:14px; border-bottom:1px solid var(--line); } .tag { white-space:normal; } table { display:block; overflow-x:auto; white-space:nowrap; } }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:Arial, Helvetica, sans-serif; line-height:1.45; }
+    main { width:min(1180px, calc(100% - 36px)); margin:0 auto; padding:38px 0 48px; } header { display:grid; grid-template-columns:1fr auto; gap:24px; align-items:end; margin-bottom:24px; }
+    h1 { margin:0; font-size:clamp(30px, 4vw, 48px); line-height:1.08; letter-spacing:0; } h2 { margin:0 0 14px; font-size:24px; } p { margin:0; color:var(--muted); }
+    .tag { display:inline-flex; min-height:36px; padding:7px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--muted); font-size:14px; white-space:nowrap; }
+    .summary { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; margin:24px 0; } .metric { min-height:112px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:18px; border-left:7px solid var(--blue); }
+    .metric:nth-child(2), .metric:nth-child(4) { border-left-color:var(--green); } .metric:nth-child(3) { border-left-color:var(--amber); } .metric span { display:block; color:var(--muted); font-size:14px; margin-bottom:8px; } .metric strong { display:block; font-size:28px; }
+    .panel { border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:22px; margin-top:18px; } .note-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:14px; margin-top:12px; }
+    .note,.preview-card { border:1px solid var(--line); border-radius:8px; padding:15px; background:#fbfcfd; } .note strong,.preview-card strong { display:block; margin-bottom:6px; } .preview-card span { display:block; color:var(--muted); font-size:13px; margin-bottom:10px; }
+    .preview-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; margin-top:12px; } pre { overflow:auto; max-height:190px; margin:0; padding:12px; border-radius:6px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:13px; white-space:pre-wrap; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:15px; } th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } th { color:var(--muted); font-size:13px; text-transform:uppercase; }
+    code { padding:2px 5px; border-radius:5px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:.95em; } .image-preview { width:100%; margin-top:14px; border:1px solid var(--line); border-radius:8px; background:#fff; } footer { margin-top:20px; color:var(--muted); font-size:14px; } a { color:var(--blue); text-decoration:none; font-weight:700; } a:hover { text-decoration:underline; }
+    @media (max-width:850px) { header,.summary,.note-grid,.preview-grid { grid-template-columns:1fr; } .tag { white-space:normal; } table { display:block; overflow-x:auto; white-space:nowrap; } }
   </style>
 </head>
 <body>
@@ -58,86 +25,65 @@
     <header>
       <div>
         <h1>Musubi Compression Capability</h1>
-        <p>Demonstrates smarter native input compression with verbatim recovery through <code>musubi_retrieve(ref_id)</code>.</p>
+        <p>Step 4 demonstrates native input compression plus deterministic context packing with verbatim recovery through <code>musubi_retrieve(ref_id)</code>.</p>
       </div>
-      <div class="tag">Step 3 benchmark - model-visible chars include retrieval marker</div>
+      <div class="tag">Step 4 benchmark - model-visible chars include retrieval marker</div>
     </header>
-
     <section class="summary" aria-label="Summary metrics">
       <div class="metric"><span>Payloads compressed</span><strong>4 / 4</strong></div>
       <div class="metric"><span>Retrieve verification</span><strong>4 / 4 OK</strong></div>
-      <div class="metric"><span>Visible chars saved</span><strong>333,291</strong></div>
-      <div class="metric"><span>Overall saving</span><strong>98.0%</strong></div>
+      <div class="metric"><span>Payload saving</span><strong>96.6%</strong></div>
+      <div class="metric"><span>Context saving</span><strong>95.9%</strong></div>
     </section>
-
-    <section class="panel">
-      <h2>Original vs compressed</h2>
-      <p>Each row shows original chars and model-visible compressed chars after retrieval marker overhead is included.</p>
-      <div class="chart">
-        <div class="row">
-          <div class="label">
-            <strong>Pretty JSON</strong>
-            <span>json / JSON smart-crush</span>
-          </div>
-          <div class="bars">
-            <div class="bar"><div class="fill" style="width: 100.0%"></div><span class="value">145,085 original</span></div>
-            <div class="bar"><div class="fill compressed" style="width: 1.8%"></div><span class="value">2,660 visible</span></div>
-          </div>
-          <div class="saving">98.2% saved</div>
-          <div class="ok">retrieve OK</div>
-        </div>
-        <div class="row">
-          <div class="label">
-            <strong>Python module</strong>
-            <span>code / Python AST structure</span>
-          </div>
-          <div class="bars">
-            <div class="bar"><div class="fill" style="width: 31.2%"></div><span class="value">45,330 original</span></div>
-            <div class="bar"><div class="fill compressed" style="width: 1.1%"></div><span class="value">1,546 visible</span></div>
-          </div>
-          <div class="saving">96.6% saved</div>
-          <div class="ok">retrieve OK</div>
-        </div>
-        <div class="row">
-          <div class="label">
-            <strong>Noisy log</strong>
-            <span>log / Log pattern grouping</span>
-          </div>
-          <div class="bars">
-            <div class="bar"><div class="fill" style="width: 74.2%"></div><span class="value">107,639 original</span></div>
-            <div class="bar"><div class="fill compressed" style="width: 0.6%"></div><span class="value">873 visible</span></div>
-          </div>
-          <div class="saving">99.2% saved</div>
-          <div class="ok">retrieve OK</div>
-        </div>
-        <div class="row">
-          <div class="label">
-            <strong>Markdown notes</strong>
-            <span>text / Heading-aware text outline</span>
-          </div>
-          <div class="bars">
-            <div class="bar"><div class="fill" style="width: 28.9%"></div><span class="value">41,876 original</span></div>
-            <div class="bar"><div class="fill compressed" style="width: 1.1%"></div><span class="value">1,560 visible</span></div>
-          </div>
-          <div class="saving">96.3% saved</div>
-          <div class="ok">retrieve OK</div>
-        </div>
-      </div>
-      <div class="legend" aria-label="Chart legend"><span><i class="swatch"></i> Original chars</span><span><i class="swatch green"></i> Compressed chars visible to model</span></div>
-    </section>
-
-    <section class="panel">
-      <h2>What changed in Step 3</h2>
-      <div class="note-grid">
-        <div class="note"><strong>Native structure</strong><p>JSON now emits shape, counts, path stats, and bounded samples. Python uses AST signatures instead of body text.</p></div>
-        <div class="note"><strong>Pattern views</strong><p>Logs are grouped by normalized patterns with first and last examples. Text keeps headings and bounded section snippets.</p></div>
-        <div class="note"><strong>Still reversible</strong><p>Every lossy view stores the original by content hash. The retrieve marker points to the exact verbatim payload.</p></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Compressed view examples</h2>
-      <div class="preview-grid">
+    <section class="panel"><h2>What changed in Step 4</h2><div class="note-grid">
+      <div class="note"><strong>Budgeted packing</strong><p><code>fit_context</code> protects the system prompt, first task, and recent turns, then packs old tool results until the conversation fits the budget.</p></div>
+      <div class="note"><strong>Compress before trim</strong><p>Old tool outputs go through the same native reversible compressors before any lossy context-trimmed stub is used.</p></div>
+      <div class="note"><strong>Pairing preserved</strong><p>Tool result blocks stay in place with their <code>tool_use_id</code>. Any lossy view keeps a retrieve marker when a ref is available.</p></div>
+    </div></section>
+    <section class="panel"><h2>Context packing result</h2><p>Conversation chars fell from 193,228 to 7,933 under a 12,000-char budget. Compressed tool results: 1; trimmed tool results: 1; recent turn preserved: true.</p><pre>json smart crush root=object
+root_keys=build_id,items
+arrays:
+- $.items[] count=420 types=object:420 sample[0]={&quot;id&quot;:0,&quot;name&quot;:&quot;artifact-0&quot;,&quot;status&quot;:&quot;queued&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r0&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1200,&quot;tokens&quot;:300,&quot;cacheable&quot;:true},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;,&quot;ba... sample[-1]={&quot;id&quot;:419,&quot;name&quot;:&quot;artifact-419&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r4&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1619,&quot;tokens&quot;:311,&quot;cacheable&quot;:false},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;...
+- $.items[].tags</pre></section>
+    <section class="panel"><h2>Payload compression results</h2><p>The native payload benchmark remains reversible. Each row includes retrieval marker overhead in model-visible chars.</p><table><thead><tr><th>Payload</th><th>Strategy</th><th>Ref ID</th><th>Original</th><th>Visible</th><th>Saved</th><th>Ratio</th></tr></thead><tbody>
+        <tr>
+          <td>Pretty JSON</td>
+          <td>JSON smart-crush</td>
+          <td><code>70d53137422a3bab</code></td>
+          <td>145,085</td>
+          <td>2,660</td>
+          <td>142,425</td>
+          <td>0.018</td>
+        </tr>
+        <tr>
+          <td>Python module</td>
+          <td>Python AST structure</td>
+          <td><code>d63555ffe74267c9</code></td>
+          <td>42,546</td>
+          <td>6,367</td>
+          <td>36,179</td>
+          <td>0.150</td>
+        </tr>
+        <tr>
+          <td>Noisy log</td>
+          <td>Log pattern grouping</td>
+          <td><code>6f65a4fadbd2d259</code></td>
+          <td>107,139</td>
+          <td>873</td>
+          <td>106,266</td>
+          <td>0.008</td>
+        </tr>
+        <tr>
+          <td>Markdown notes</td>
+          <td>Heading-aware text outline</td>
+          <td><code>c3f412fe86065d1a</code></td>
+          <td>44,578</td>
+          <td>1,558</td>
+          <td>43,020</td>
+          <td>0.035</td>
+        </tr>
+        </tbody></table></section>
+    <section class="panel"><h2>Compressed view examples</h2><div class="preview-grid">
         <div class="preview-card">
           <strong>Pretty JSON</strong>
           <span>JSON smart-crush</span>
@@ -184,76 +130,26 @@ x818 &lt;ts&gt; INFO request id=&lt;num&gt; trace=&lt;hash&gt; path=/api/items/&
   last=2026-06-27T10:59:59Z INFO request id=840899 trace=ab12cd34ef560383 path=/api/items/11/runs/899 status=200 elapsed_ms=46
 x82 &lt;ts&gt; WARN request id=&lt;num&gt; trace=&lt;hash&gt; path=/api/items/&lt;num&gt;/runs/&lt;num&gt; status=&lt;num&gt; elapsed_ms=&lt;num&gt;
   first=2026-06-27T10:00:00Z WARN request id=840000 trace=ab12cd34ef560000 path=/api/items/0/runs/0 status=503 elapsed_ms=40
-  last=2026-06-27T10:51:51Z WARN request id=840891 trace=ab12cd34ef56037b path=/api/items/3/runs/891 status=503 elapsed_ms=57</pre>
+  last=2026-06-27T10:51:51Z WARN request id=840891 trace=ab12cd34ef56037b path=/api/items/3/runs/891 status=503 elapsed_ms=57
+
+[musubi:compressed kind=log ref=6f65a4fadbd2d259 chars 107139-&gt;736; call musubi_retrieve(&quot;6f65a4fadbd2d259&quot;) for the verbatim original]</pre>
         </div>
         <div class="preview-card">
           <strong>Markdown notes</strong>
           <span>Heading-aware text outline</span>
           <pre>text outline
 # Musubi Compression Notes paragraphs=0 chars=0
-## Overview paragraphs=12 chars=10100
+## Overview paragraphs=12 chars=10866
   first=Overview paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains recov...
   last=Overview paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains reco...
-## Compression Strategy paragraphs=12 chars=10820
+## Compression Strategy paragraphs=12 chars=11442
   first=Compression Strategy paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source r...
   last=Compression Strategy paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source ...
-## Retrieval paragraphs=12 chars=10160
+## Retrieval paragraphs=12 chars=10914
   first=Retrieval paragraph 0 explains how deterministic compression keeps the model-visible input compact while the v</pre>
         </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Detailed results</h2>
-      <table>
-        <thead><tr><th>Payload</th><th>Strategy</th><th>Ref ID</th><th>Original</th><th>Visible</th><th>Saved</th><th>Ratio</th></tr></thead>
-        <tbody>
-          <tr>
-            <td>Pretty JSON</td>
-            <td>JSON smart-crush</td>
-            <td><code>dc37a08050b933ea</code></td>
-            <td>145,085</td>
-            <td>2,660</td>
-            <td>142,425</td>
-            <td>0.018</td>
-          </tr>
-          <tr>
-            <td>Python module</td>
-            <td>Python AST structure</td>
-            <td><code>ce10eccee67b1bf5</code></td>
-            <td>45,330</td>
-            <td>1,546</td>
-            <td>43,784</td>
-            <td>0.034</td>
-          </tr>
-          <tr>
-            <td>Noisy log</td>
-            <td>Log pattern grouping</td>
-            <td><code>3e3d74739d2f6503</code></td>
-            <td>107,639</td>
-            <td>873</td>
-            <td>106,766</td>
-            <td>0.008</td>
-          </tr>
-          <tr>
-            <td>Markdown notes</td>
-            <td>Heading-aware text outline</td>
-            <td><code>99fcb266ae51ce2c</code></td>
-            <td>41,876</td>
-            <td>1,560</td>
-            <td>40,316</td>
-            <td>0.037</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="panel">
-      <h2>Generated benchmark image</h2>
-      <p>The PNG below was generated from the same benchmark data.</p>
-      <img class="image-preview" src="compression_feature_results.png" alt="Musubi smarter native compression benchmark chart">
-    </section>
-
+      </div></section>
+    <section class="panel"><h2>Generated benchmark image</h2><p>The PNG below was generated from the same benchmark data.</p><img class="image-preview" src="compression_feature_results.png" alt="Musubi compression and context packing benchmark chart"></section>
     <footer>Data source: <a href="compression_benchmark_results.json">compression_benchmark_results.json</a>. Artifact is static and can be opened directly from disk.</footer>
   </main>
 </body>

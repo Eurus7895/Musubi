@@ -6,6 +6,9 @@ musubi-tier: substrate test - pins the zero-LLM token-economy transforms.
 from __future__ import annotations
 
 import json
+import sys
+import types
+from pathlib import Path
 
 from agent.context import (
     DEFAULT_EFFORT_FLOOR,
@@ -81,7 +84,7 @@ def test_fit_context_disabled_when_budget_zero() -> None:
 
 def test_fit_context_elides_oldest_largest_first() -> None:
     msgs = _convo_with_big_results()
-    out = fit_context(msgs, budget_chars=6000, keep_last_turns=2)
+    out = fit_context(msgs, budget_chars=500, keep_last_turns=2)
     elided = out[3]["content"][0]["content"]
     assert "context-trimmed" in elided
     assert out[3]["content"][0]["type"] == "tool_result"
@@ -94,6 +97,168 @@ def test_fit_context_keeps_recent_turns() -> None:
     msgs = _convo_with_big_results()
     out = fit_context(msgs, budget_chars=6000, keep_last_turns=2)
     assert out[5]["content"][0]["content"] == "X" * 5000
+
+
+def test_fit_context_compresses_old_tool_results_before_trimming(tmp_path: Path) -> None:
+    original = json.dumps(
+        {
+            "events": [
+                {"kind": "tool", "status": "ok", "path": f"src/module_{i % 3}.py"}
+                for i in range(240)
+            ]
+        },
+        indent=2,
+    )
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "a", "name": "read", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "a", "content": original}],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+    ]
+
+    out = fit_context(
+        msgs,
+        budget_chars=1800,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed = out[3]["content"][0]["content"]
+    assert "[musubi:compressed" in packed
+    assert "context-trimmed" not in packed
+    assert "tool_use_id" in out[3]["content"][0]
+
+
+def test_fit_context_loads_local_compressor_when_name_is_taken(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    fake = types.ModuleType("compression")
+    fake.__file__ = str(tmp_path / "stdlib" / "compression" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "compression", fake)
+    original = json.dumps({"items": [{"id": i, "value": "A" * 20} for i in range(160)]})
+
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": original}
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+        ],
+        budget_chars=1200,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed = out[2]["content"][0]["content"]
+    assert "[musubi:compressed" in packed
+    assert sys.modules["compression"] is fake
+
+
+def test_fit_context_skips_already_compressed_tool_results(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    import agent.context as context_mod
+
+    marker = (
+        f"{'summary ' * 40}\n\n"
+        "[musubi:compressed kind=json ref=oldref chars 5000->400; "
+        'call musubi_retrieve("oldref") for the verbatim original]'
+    )
+
+    def fail_if_called(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("already compressed content should not be repacked")
+
+    monkeypatch.setattr(context_mod, "_compress_for_context", fail_if_called)
+
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "a", "content": marker}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+        ],
+        budget_chars=120,
+        keep_last_turns=1,
+    )
+
+    stub = out[2]["content"][0]["content"]
+    assert stub.startswith("[context-trimmed:")
+    assert 'musubi_retrieve("oldref")' in stub
+
+
+def test_fit_context_trims_compressed_result_when_budget_still_too_small(
+    tmp_path: Path,
+) -> None:
+    original = json.dumps({"items": [{"id": i, "value": "A" * 50} for i in range(120)]})
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "a", "content": original}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+        ],
+        budget_chars=250,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    stub = out[2]["content"][0]["content"]
+    assert "context-trimmed" in stub
+    assert "musubi_retrieve(" in stub
+
+
+def test_fit_context_trims_largest_remaining_block_after_compression(
+    tmp_path: Path,
+) -> None:
+    compressible = json.dumps({"items": [{"id": i} for i in range(2_000)]}, indent=2)
+    uncompressible = "Z" * 20_000
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "json", "content": compressible}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "raw", "content": uncompressible}
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "recent"}]},
+        ],
+        budget_chars=7_000,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed_json = out[2]["content"][0]["content"]
+    packed_raw = out[3]["content"][0]["content"]
+    assert "[musubi:compressed" in packed_json
+    assert "context-trimmed" not in packed_json
+    assert packed_raw.startswith("[context-trimmed:")
 
 
 def test_fit_context_preserves_retrieve_marker() -> None:

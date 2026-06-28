@@ -7,9 +7,12 @@ expires-when: never - the token economics of the LM-call boundary are
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
-from typing import Any
+import sys
+from pathlib import Path
+from typing import Any, Callable
 
 _BASE_SYSTEM = (
     "You are Musubi's standalone agent. You drive MCP tools to complete the "
@@ -28,6 +31,7 @@ _VERBOSITY_NOTE = (
 
 DEFAULT_EFFORT_FLOOR = 2048
 DEFAULT_CONTEXT_BUDGET = 40_000
+_CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
 
 def build_system_prompt(extra: str | None = None) -> str:
@@ -77,18 +81,75 @@ def _retrieve_hint(text: str) -> str:
     return " - recover with " + text[start:end + 2]
 
 
+def _has_compression_marker(text: str) -> bool:
+    return "[musubi:compressed" in text and "musubi_retrieve(" in text
+
+
+def _load_context_compress() -> Callable[..., Any]:
+    """Load Musubi's compressor without resolving Python's stdlib package."""
+    cached = sys.modules.get(_CONTEXT_COMPRESSION_MODULE)
+    if cached is not None:
+        compress = getattr(cached, "compress", None)
+        if callable(compress):
+            return compress
+
+    musubi_root = Path(__file__).resolve().parent.parent
+    package_init = musubi_root / "compression" / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        _CONTEXT_COMPRESSION_MODULE,
+        package_init,
+        submodule_search_locations=[str(package_init.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load Musubi compression package from {package_init}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_CONTEXT_COMPRESSION_MODULE] = module
+
+    root_text = str(musubi_root)
+    added_root = root_text not in sys.path
+    if added_root:
+        sys.path.insert(0, root_text)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(_CONTEXT_COMPRESSION_MODULE, None)
+        raise
+    finally:
+        if added_root:
+            try:
+                sys.path.remove(root_text)
+            except ValueError:
+                pass
+
+    compress = getattr(module, "compress", None)
+    if not callable(compress):
+        raise ImportError(f"Musubi compression package at {package_init} has no compress")
+    return compress
+
+
+def _compress_for_context(
+    text: str,
+    *,
+    db_path: Path | None,
+) -> Any:
+    compress = _load_context_compress()
+    return compress(text, min_chars=200, db_path=db_path)
+
+
 def fit_context(
     messages: list[dict[str, Any]],
     *,
     budget_chars: int | None = None,
     keep_last_turns: int = 4,
+    compression_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Elide bulky middle tool results while preserving message structure.
+    """Pack bulky middle tool results while preserving message structure.
 
     The leading system message, first user task, and recent messages are kept.
-    Eligible middle `tool_result` block contents are replaced biggest-first
-    until the conversation fits. Blocks are not removed, so tool_use/tool_result
-    pairing remains intact.
+    Eligible middle `tool_result` block contents are compressed biggest-first,
+    then trimmed only if the conversation still does not fit. Blocks are not
+    removed, so tool_use/tool_result pairing remains intact.
     """
     budget = context_budget() if budget_chars is None else budget_chars
     if budget <= 0:
@@ -125,25 +186,65 @@ def fit_context(
 
     out = list(messages)
     changed: dict[int, dict[str, Any]] = {}
-    for _size, msg_index, block_index in candidates:
-        if total <= budget:
-            break
+
+    def editable_block(msg_index: int, block_index: int) -> dict[str, Any]:
         msg = changed.get(msg_index)
         if msg is None:
             msg = dict(messages[msg_index])
             msg["content"] = [dict(block) for block in messages[msg_index]["content"]]
             changed[msg_index] = msg
             out[msg_index] = msg
-        block = msg["content"][block_index]
+        return msg["content"][block_index]
+
+    for _size, msg_index, block_index in candidates:
+        if total <= budget:
+            break
+        block = editable_block(msg_index, block_index)
         original = block.get("content")
         original_text = (
             original if isinstance(original, str) else json.dumps(original, default=str)
         )
+        if _has_compression_marker(original_text):
+            continue
+        try:
+            packed = _compress_for_context(
+                original_text,
+                db_path=compression_db_path,
+            )
+        except Exception:
+            continue
+        if packed.ref_id is None or len(packed.compressed) >= len(original_text):
+            continue
+        block["content"] = packed.compressed
+        total = _total_chars(out)
+
+    trim_candidates: list[tuple[int, int, int]] = []
+    for _size, msg_index, block_index in candidates:
+        block = out[msg_index]["content"][block_index]
+        current = block.get("content")
+        current_text = (
+            current if isinstance(current, str) else json.dumps(current, default=str)
+        )
+        if current_text.startswith("[context-trimmed:"):
+            continue
+        trim_candidates.append((len(current_text), msg_index, block_index))
+    trim_candidates.sort(reverse=True)
+
+    for _size, msg_index, block_index in trim_candidates:
+        if total <= budget:
+            break
+        block = editable_block(msg_index, block_index)
+        original = block.get("content")
+        original_text = (
+            original if isinstance(original, str) else json.dumps(original, default=str)
+        )
+        if original_text.startswith("[context-trimmed:"):
+            continue
         stub = (
             f"[context-trimmed: {len(original_text)} chars elided to save "
             f"tokens{_retrieve_hint(original_text)}]"
         )
         block["content"] = stub
-        total -= max(0, len(original_text) - len(stub))
+        total = _total_chars(out)
 
     return out

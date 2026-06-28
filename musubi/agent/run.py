@@ -127,10 +127,12 @@ async def run_agent(
     "tool_use"`) OR `max_cycles` is hit.
     """
     server_path = musubi_dir / "server.py"
+    server_env = _server_env()
+    context_compression_db_path = _server_db_path(musubi_dir, server_env)
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
-        env=_server_env(),
+        env=server_env,
     )
 
     # Track the result inside the MCP contexts but raise the
@@ -219,6 +221,7 @@ async def run_agent(
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
                 salvage_on_exhaust=True,
+                compression_db_path=context_compression_db_path,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -248,6 +251,7 @@ async def _run_loop(
     gateway: McpGateway | None = None,
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
+    compression_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -272,7 +276,7 @@ async def _run_loop(
         cycles_used = cycle + 1
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
-        messages = fit_context(messages)
+        messages = fit_context(messages, compression_db_path=compression_db_path)
         # `vendor.call` is synchronous (blocking network I/O). Run it off the
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
@@ -295,6 +299,7 @@ async def _run_loop(
             session, tool_uses, log,
             vendor=vendor, tools=(spawn_catalog or tools),
             orchestration=orchestration, gateway=gateway,
+            compression_db_path=compression_db_path,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -320,7 +325,8 @@ async def _run_loop(
             )
             try:
                 resp = await asyncio.to_thread(
-                    _call_with_effort, vendor, fit_context(messages), []
+                    _call_with_effort, vendor,
+                    fit_context(messages, compression_db_path=compression_db_path), []
                 )
                 final_answer = _extract_text(resp.content) or None
             except Exception as exc:  # noqa: BLE001 — fall through to the raise
@@ -346,6 +352,7 @@ async def run_unit(
     gateway: McpGateway | None = None,
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
+    compression_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -381,6 +388,7 @@ async def run_unit(
         orchestration=orchestration, gateway=gateway,
         spawn_catalog=spawn_catalog,
         salvage_on_exhaust=salvage_on_exhaust,
+        compression_db_path=compression_db_path,
     )
 
 
@@ -526,6 +534,14 @@ def _server_env() -> dict[str, str]:
     return {**get_default_environment(), **passthrough}
 
 
+def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
+    """Return the SQLite DB path used by the spawned Musubi server."""
+    root = server_env.get("MUSUBI_ROOT")
+    if root:
+        return Path(root) / "data" / "musubi.db"
+    return musubi_dir / "storage" / "musubi.db"
+
+
 def _default_musubi_dir() -> Path:
     """Resolve the Musubi server dir.
 
@@ -591,6 +607,7 @@ async def _dispatch(
     tools: list[dict[str, Any]] | None = None,
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
+    compression_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run every tool call in the batch CONCURRENTLY, returning tool_results in
     the original `tool_uses` order.
@@ -611,6 +628,7 @@ async def _dispatch(
             vendor=vendor, tools=tools,
             orchestration=orchestration, gateway=gateway,
             refused=tu.get("id", "") in refused,
+            compression_db_path=compression_db_path,
         )
         for tu in tool_uses
     ]
@@ -663,6 +681,7 @@ async def _dispatch_one(
     orchestration: Orchestration | None,
     gateway: McpGateway | None,
     refused: bool,
+    compression_db_path: Path | None,
 ) -> str:
     """Run a single tool call and return its result text.
 
@@ -721,7 +740,8 @@ async def _dispatch_one(
             from agent import subagent
 
             return await subagent.run_subagent(
-                session, injected, vendor, tools, log, orchestration=orchestration
+                session, injected, vendor, tools, log, orchestration=orchestration,
+                compression_db_path=compression_db_path,
             )
         except Exception as exc:  # noqa: BLE001 — surface to the model
             return f"[subagent error] {type(exc).__name__}: {exc}"
