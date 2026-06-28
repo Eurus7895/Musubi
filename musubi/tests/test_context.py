@@ -158,6 +158,41 @@ def test_fit_context_trims_compressed_result_when_budget_still_too_small(
     assert "musubi_retrieve(" in stub
 
 
+def test_fit_context_trims_largest_remaining_block_after_compression(
+    tmp_path: Path,
+) -> None:
+    compressible = json.dumps({"items": [{"id": i} for i in range(2_000)]}, indent=2)
+    uncompressible = "Z" * 20_000
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "json", "content": compressible}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "raw", "content": uncompressible}
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "recent"}]},
+        ],
+        budget_chars=7_000,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed_json = out[2]["content"][0]["content"]
+    packed_raw = out[3]["content"][0]["content"]
+    assert "[musubi:compressed" in packed_json
+    assert "context-trimmed" not in packed_json
+    assert packed_raw.startswith("[context-trimmed:")
+
+
 def test_fit_context_preserves_retrieve_marker() -> None:
     marker = 'see [musubi:compressed ref=abc; call musubi_retrieve("abc123") ok]'
     body = "Y" * 5000 + "\n" + marker

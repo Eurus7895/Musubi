@@ -160,7 +160,19 @@ def fit_context(
         block["content"] = packed.compressed
         total = _total_chars(out)
 
+    trim_candidates: list[tuple[int, int, int]] = []
     for _size, msg_index, block_index in candidates:
+        block = out[msg_index]["content"][block_index]
+        current = block.get("content")
+        current_text = (
+            current if isinstance(current, str) else json.dumps(current, default=str)
+        )
+        if current_text.startswith("[context-trimmed:"):
+            continue
+        trim_candidates.append((len(current_text), msg_index, block_index))
+    trim_candidates.sort(reverse=True)
+
+    for _size, msg_index, block_index in trim_candidates:
         if total <= budget:
             break
         block = editable_block(msg_index, block_index)
