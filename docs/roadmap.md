@@ -103,10 +103,12 @@ substrate; pipeline dissolution is postponed (see below).
    prefix, `MUSUBI_PROMPT_CACHE=0` opts out; OpenAI-compatible vendors
    surface provider-native cached-token telemetry through the same cycle-log
    keys), effort routing (low per-cycle `max_tokens` floor that escalates
-   only on truncation, `MUSUBI_EFFORT_TOKENS`), and IntelligentContext (`fit_context` elides
-   the oldest/largest tool results when the convo exceeds
-   `MUSUBI_CONTEXT_BUDGET`, preserving tool pairing + `musubi_retrieve`
-   markers — the learned compaction stays out to honour HI #1).
+   only on truncation, `MUSUBI_EFFORT_TOKENS`), and IntelligentContext
+   (`fit_context` runs a budgeted packing pass when the convo exceeds
+   `MUSUBI_CONTEXT_BUDGET`: protect system + first task + recent turns,
+   compress old tool outputs first, then trim only if needed while
+   preserving tool pairing + `musubi_retrieve` markers — the learned
+   compaction stays out to honour HI #1).
    Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
    conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
@@ -182,14 +184,13 @@ the substrate remains deterministic, pure Python, and zero-LLM.
    heading-aware text outline compression. `musubi_retrieve` remains the
    source of truth, and the router skips any output that does not shrink
    after marker overhead.
-4. **[in progress] LM-boundary context controls.** Terse prompting,
+4. **[done] LM-boundary context controls.** Terse prompting,
    effort-token routing, Anthropic prompt-cache controls,
-   provider-native cached-token telemetry, and a first `fit_context`
-   pass have landed. Next: extend `agent/context.py::fit_context` from
-   oldest/largest elision to a budgeted packing pass that preserves
-   system/tools/current task, keeps tool-call pairing intact, compresses
-   old tool outputs before dropping them, and retains retrieve markers
-   for any lossy view.
+   provider-native cached-token telemetry, and
+   `agent/context.py::fit_context` budgeted packing have landed. The
+   packing pass preserves system/tools/current task, keeps tool-call
+   pairing intact, compresses old tool outputs before trimming them, and
+   retains retrieve markers for any lossy view.
 5. **[planned] Cache hardening, output steering, and compression eval.**
    Build on the landed prompt-cache controls by hardening stable prompt
    prefixes and tool ordering, tighten tool-result formats, keep low

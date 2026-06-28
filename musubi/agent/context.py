@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 _BASE_SYSTEM = (
@@ -82,13 +83,14 @@ def fit_context(
     *,
     budget_chars: int | None = None,
     keep_last_turns: int = 4,
+    compression_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Elide bulky middle tool results while preserving message structure.
+    """Pack bulky middle tool results while preserving message structure.
 
     The leading system message, first user task, and recent messages are kept.
-    Eligible middle `tool_result` block contents are replaced biggest-first
-    until the conversation fits. Blocks are not removed, so tool_use/tool_result
-    pairing remains intact.
+    Eligible middle `tool_result` block contents are compressed biggest-first,
+    then trimmed only if the conversation still does not fit. Blocks are not
+    removed, so tool_use/tool_result pairing remains intact.
     """
     budget = context_budget() if budget_chars is None else budget_chars
     if budget <= 0:
@@ -125,25 +127,54 @@ def fit_context(
 
     out = list(messages)
     changed: dict[int, dict[str, Any]] = {}
-    for _size, msg_index, block_index in candidates:
-        if total <= budget:
-            break
+
+    def editable_block(msg_index: int, block_index: int) -> dict[str, Any]:
         msg = changed.get(msg_index)
         if msg is None:
             msg = dict(messages[msg_index])
             msg["content"] = [dict(block) for block in messages[msg_index]["content"]]
             changed[msg_index] = msg
             out[msg_index] = msg
-        block = msg["content"][block_index]
+        return msg["content"][block_index]
+
+    for _size, msg_index, block_index in candidates:
+        if total <= budget:
+            break
+        block = editable_block(msg_index, block_index)
         original = block.get("content")
         original_text = (
             original if isinstance(original, str) else json.dumps(original, default=str)
         )
+        try:
+            from compression import compress
+
+            packed = compress(
+                original_text,
+                min_chars=200,
+                db_path=compression_db_path,
+            )
+        except Exception:
+            continue
+        if packed.ref_id is None or len(packed.compressed) >= len(original_text):
+            continue
+        block["content"] = packed.compressed
+        total = _total_chars(out)
+
+    for _size, msg_index, block_index in candidates:
+        if total <= budget:
+            break
+        block = editable_block(msg_index, block_index)
+        original = block.get("content")
+        original_text = (
+            original if isinstance(original, str) else json.dumps(original, default=str)
+        )
+        if original_text.startswith("[context-trimmed:"):
+            continue
         stub = (
             f"[context-trimmed: {len(original_text)} chars elided to save "
             f"tokens{_retrieve_hint(original_text)}]"
         )
         block["content"] = stub
-        total -= max(0, len(original_text) - len(stub))
+        total = _total_chars(out)
 
     return out

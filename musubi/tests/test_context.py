@@ -6,6 +6,7 @@ musubi-tier: substrate test - pins the zero-LLM token-economy transforms.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from agent.context import (
     DEFAULT_EFFORT_FLOOR,
@@ -81,7 +82,7 @@ def test_fit_context_disabled_when_budget_zero() -> None:
 
 def test_fit_context_elides_oldest_largest_first() -> None:
     msgs = _convo_with_big_results()
-    out = fit_context(msgs, budget_chars=6000, keep_last_turns=2)
+    out = fit_context(msgs, budget_chars=500, keep_last_turns=2)
     elided = out[3]["content"][0]["content"]
     assert "context-trimmed" in elided
     assert out[3]["content"][0]["type"] == "tool_result"
@@ -94,6 +95,67 @@ def test_fit_context_keeps_recent_turns() -> None:
     msgs = _convo_with_big_results()
     out = fit_context(msgs, budget_chars=6000, keep_last_turns=2)
     assert out[5]["content"][0]["content"] == "X" * 5000
+
+
+def test_fit_context_compresses_old_tool_results_before_trimming(tmp_path: Path) -> None:
+    original = json.dumps(
+        {
+            "events": [
+                {"kind": "tool", "status": "ok", "path": f"src/module_{i % 3}.py"}
+                for i in range(240)
+            ]
+        },
+        indent=2,
+    )
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "a", "name": "read", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "a", "content": original}],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+    ]
+
+    out = fit_context(
+        msgs,
+        budget_chars=1800,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed = out[3]["content"][0]["content"]
+    assert "[musubi:compressed" in packed
+    assert "context-trimmed" not in packed
+    assert "tool_use_id" in out[3]["content"][0]
+
+
+def test_fit_context_trims_compressed_result_when_budget_still_too_small(
+    tmp_path: Path,
+) -> None:
+    original = json.dumps({"items": [{"id": i, "value": "A" * 50} for i in range(120)]})
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "a", "content": original}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+        ],
+        budget_chars=250,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    stub = out[2]["content"][0]["content"]
+    assert "context-trimmed" in stub
+    assert "musubi_retrieve(" in stub
 
 
 def test_fit_context_preserves_retrieve_marker() -> None:
