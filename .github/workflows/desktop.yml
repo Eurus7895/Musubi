@@ -1,7 +1,7 @@
 name: Desktop build
 
-# Builds the standalone Musubi Console Windows installer in the cloud so no
-# local Rust/MSVC toolchain is needed.
+# Builds the Windows Musubi installer bootstrap in the cloud so no local
+# Rust/MSVC toolchain is needed.
 #   - Manual run  (Actions > Desktop build > Run workflow) -> Windows installer
 #     as a downloadable artifact on the run.
 #   - Push a tag  (e.g. `v0.1.0`)                          -> a draft GitHub
@@ -45,8 +45,8 @@ jobs:
           args: --bundles msi,nsis
           # On a tag push, publish a draft Release with the installers attached.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: 'Musubi Console ${{ github.ref_name }}'
-          releaseBody: 'Standalone Musubi governance console. Download the Windows installer below.'
+          releaseName: 'Musubi Windows Installer ${{ github.ref_name }}'
+          releaseBody: 'Windows Musubi installer bootstrap: desktop GUI plus Python core CLI checks. Download the installer below.'
           releaseDraft: true
           includeUpdaterJson: false
 
@@ -54,7 +54,7 @@ jobs:
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: musubi-console-windows-latest
+          name: musubi-windows-installer-latest
           if-no-files-found: warn
           path: |
             gui/src-tauri/target/release/bundle/**/*.msi

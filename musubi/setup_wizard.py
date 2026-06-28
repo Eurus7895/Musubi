@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — onboarding a fresh install (deps, LLM endpoint config,
-  VS Code MCP wiring, console GUI guidance) is durable regardless of any
+  VS Code MCP wiring, Windows installer guidance) is durable regardless of any
   pipeline-shape churn.
 
 Full-onboarding flow, invoked as `musubi setup`:
@@ -13,9 +13,9 @@ Full-onboarding flow, invoked as `musubi setup`:
     4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
     5. summary     — next steps
 
-The interactive shell points Windows GUI users to the prebuilt installer first,
-and only offers to install local console GUI development dependencies on
-Windows when `gui/package.json` is present.
+The interactive shell points Windows users to the prebuilt Musubi installer
+bootstrap first, and only offers to install local GUI development dependencies
+on Windows when `gui/package.json` is present.
 
 Design: the pure helpers (doctor, profile/json/mcp renderers, connection test)
 carry the logic and are unit-tested without a TTY; `run_interactive` is the
@@ -88,6 +88,7 @@ def run_doctor() -> list[Check]:
         "Python >= 3.11", py_ok,
         "" if py_ok else f"found {sys.version.split()[0]}; install Python 3.11+",
     ))
+    checks.append(check_core_cli())
     for mod, hint in (
         ("mcp", "pip install -e ."),
         ("yaml", "pip install -e .  (pyyaml)"),
@@ -102,6 +103,32 @@ def run_doctor() -> list[Check]:
         "" if curl_ok else "needed for azure/on-prem endpoints; install curl",
     ))
     return checks
+
+
+def python_user_scripts_dir() -> Path | None:
+    """Return Python's per-user scripts directory for PATH repair hints."""
+    try:
+        import site
+
+        return Path(site.USER_BASE) / ("Scripts" if os.name == "nt" else "bin")
+    except Exception:  # noqa: BLE001 - best-effort diagnostics only.
+        return None
+
+
+def check_core_cli() -> Check:
+    """Verify the Musubi core command pair is visible on PATH."""
+    missing = [name for name in ("musubi", "agent") if shutil.which(name) is None]
+    if not missing:
+        return Check("musubi + agent CLIs", True)
+
+    hint = (
+        f"missing: {', '.join(missing)}; install the Python core with "
+        "python -m pip install --user musubi"
+    )
+    scripts = python_user_scripts_dir()
+    if scripts:
+        hint += f'; if scripts are already installed, add them to PATH: setx PATH "%PATH%;{scripts}"'
+    return Check("musubi + agent CLIs", False, hint)
 
 
 def family_requirement(family: str) -> Check:
@@ -426,7 +453,7 @@ def run_interactive(
     is_windows = _is_windows()
     if has_gui and is_windows and _ask_yes_no(
         prompt,
-        "Install local console GUI development dependencies now?",
+        "Install local GUI development dependencies now?",
         default=False,
     ):
         ok, msg = install_console_gui(root, run=gui_runner)
@@ -441,10 +468,11 @@ def run_interactive(
     out(f'  agent "add a /health endpoint and a test"   # uses {family}.{profile} (the default)')
     out(f'  agent "<task>" --profile {family}.{profile}   # or name a profile explicitly')
     if has_gui and is_windows:
-        out("  Desktop build workflow: download the Windows prebuilt installer for the console GUI")
+        out("  Desktop build workflow: download the Windows Musubi installer bootstrap")
+        out("  Installer bootstrap: desktop GUI plus checks for the Python musubi/agent CLIs")
         out("  npm run tauri:dev   # optional Windows GUI development (requires Rust + MSVC)")
     elif has_gui:
-        out("  Console GUI installer: Windows-only; macOS/Linux setup skips GUI install")
+        out("  Musubi desktop installer: Windows-only; macOS/Linux setup skips GUI install")
     return 0
 
 

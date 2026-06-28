@@ -49,6 +49,7 @@ pub struct State {
     pub pipe_prog: i64,
     pub pipe_done_flag: bool,
     pub paused: bool,
+    pub runtime_source: String,
     pub t: i64,
 }
 
@@ -162,6 +163,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
         active_profile: read_active_profile(conn),
         pipe_name: "feature-dev".into(),
         pipe_cur: -1,
+        runtime_source: "demo".into(),
         ..Default::default()
     };
 
@@ -798,8 +800,15 @@ mod tests {
         let v: serde_json::Value = serde_json::to_value(&st).unwrap();
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
+        assert!(v.get("runtimeSource").is_some());
         assert!(v["subagents"][0].get("max").is_some());
         assert!(v["pipeSteps"].as_array().unwrap().len() == 4);
+    }
+
+    #[test]
+    fn default_runtime_source_is_demo_until_backend_overrides_it() {
+        let st = load_state(&demo()).unwrap();
+        assert_eq!(st.runtime_source, "demo");
     }
 
     #[test]

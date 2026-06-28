@@ -51,8 +51,8 @@ musubi setup
 `musubi setup` is the fastest path - it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points Windows console users to the prebuilt installer path. On
-Windows, if you opt into local GUI development, it can also install npm
+extension, and points Windows users to the prebuilt Musubi installer bootstrap.
+On Windows, if you opt into local GUI development, it can also install npm
 dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
 and Linux setup skip GUI installation. Prefer manual? The steps below still
 work.
@@ -196,11 +196,13 @@ are in [`gui/README.md`](../gui/README.md) · [`gui/src-tauri/SCHEMA.md`](../gui
 ### Install it
 
 Primary path on Windows: use the **Desktop build** GitHub Actions workflow. It
-produces prebuilt `.msi` and `.exe` artifacts, so you do not need a local
-Rust/MSVC toolchain just to run the console. Run the workflow manually (Actions
-> *Desktop build* > *Run workflow*) and download the Windows artifact, or push a
-tag to create a draft Release. macOS and Linux GUI installers are intentionally
-not built.
+produces the prebuilt Musubi installer bootstrap (`.msi` and `.exe` artifacts),
+so you do not need a local Rust/MSVC toolchain just to install the desktop
+surface. The bootstrap expects the Python core CLIs (`musubi` and `agent`) to
+be installed or repaired through `musubi setup`. Run the workflow manually
+(Actions > *Desktop build* > *Run workflow*) and download the Windows artifact,
+or push a tag to create a draft Release. macOS and Linux GUI installers are
+intentionally not built.
 
 ### Local Windows development
 
@@ -221,7 +223,8 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
 ### The six views
 
 A persistent **trust strip** surfaces the Hard Invariants (zero-LLM substrate,
-fail-closed policy, append-only audit, evaluator firewall) and the active model.
+fail-closed policy, append-only audit, evaluator firewall), the active model,
+and whether the GUI is reading a real `audit.db` or fallback demo data.
 
 | View | Shows | Backed by |
 |---|---|---|

@@ -149,7 +149,7 @@ model, to keep the substrate LLM-free):
 
 ```bash
 python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
-musubi setup                       # guided: deps check, LLM endpoint, mcp.json, Windows GUI guidance
+musubi setup                       # guided: deps check, LLM endpoint, mcp.json, Windows installer guidance
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
@@ -173,8 +173,8 @@ musubi setup
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points Windows console users to the prebuilt installer path. On
-Windows, if you opt into local GUI development, it can also install npm
+extension, and points Windows users to the prebuilt Musubi installer bootstrap.
+On Windows, if you opt into local GUI development, it can also install npm
 dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
 and Linux setup skip GUI installation.
 
@@ -242,10 +242,12 @@ stream, and the append-only audit ledger. **Zero LLM calls**, no localhost
 server, no Copilot; the agent reasons, the console only observes and
 operates the governance layer.
 
-Primary path on Windows: use the prebuilt installer from the **Desktop build**
-GitHub Actions workflow. It builds the Windows `.msi` / `.exe` installer in CI,
-so local machines do not need Rust or MSVC build dependencies. macOS and Linux
-GUI installers are intentionally not built.
+Primary path on Windows: use the prebuilt Musubi installer bootstrap from the
+**Desktop build** GitHub Actions workflow. It builds the Windows `.msi` /
+`.exe` installer in CI, so local machines do not need Rust or MSVC build
+dependencies to install the desktop surface. The bootstrap expects the Python
+core CLIs (`musubi` and `agent`) to be installed or repaired through
+`musubi setup`. macOS and Linux GUI installers are intentionally not built.
 
 Local Windows developer path:
 
@@ -270,7 +272,8 @@ Run local console npm commands from the repository root. The root
 `package.json` delegates to the GUI workspace in `gui/`.
 
 Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
-Skills). Without `MUSUBI_DB` it seeds a demo so it runs standalone. Full
+Skills). The trust strip shows whether the app is reading a real `audit.db` or
+fallback demo data. Without `MUSUBI_DB` it seeds a demo. Full
 walkthrough: [`docs/guide.md`](./docs/guide.md) § Console.
 
 ## VS Code extension (Copilot surface)

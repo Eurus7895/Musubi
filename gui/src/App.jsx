@@ -25,7 +25,7 @@ export default function App(props) {
     <div style={{ display: 'flex', height: '100vh', width: '100vw', background: '#0d1117', color: '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 13, overflow: 'hidden', letterSpacing: '-0.01em' }}>
       <ActivityBar vals={vals} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <TrustStrip activeModel={vals.activeModel} />
+        <TrustStrip activeModel={vals.activeModel} runtimeSource={vals.runtimeSourceLabel} />
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <View vals={vals} />
         </div>

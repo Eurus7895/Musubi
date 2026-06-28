@@ -4,8 +4,9 @@
 > section "Console". This file is the architecture and contributor reference.
 
 A dark, technical governance console for Musubi. The React UI is packaged as a
-standalone Tauri desktop app that reads Musubi's `audit.db` directly through the
-Rust backend: no localhost-only preview, no demo source, no Copilot.
+Windows Musubi installer bootstrap: desktop GUI plus runtime checks for the
+Python `musubi` and `agent` CLIs. The GUI reads Musubi's `audit.db` directly
+through the Rust backend: no localhost-only preview, no Copilot.
 
 Musubi is a governance layer for agentic software-engineering work: firewall,
 audit, validator, budget, and skill injection. The agent reasons; Musubi
@@ -14,7 +15,9 @@ controls the environment.
 ## Run
 
 Primary Windows path: install a prebuilt artifact from the **Desktop build**
-GitHub Actions workflow. That path needs no local Rust or MSVC build toolchain.
+GitHub Actions workflow. That path needs no local Rust or MSVC build toolchain
+to install the desktop surface. The bootstrap expects the Python core CLIs
+(`musubi` and `agent`) to be installed or repaired through `musubi setup`.
 macOS and Linux GUI installers are intentionally not built.
 
 Local Windows developer path, from the repository root:
@@ -41,12 +44,13 @@ where.exe link
 ```
 
 Open a new terminal after installing these tools. Without `MUSUBI_DB` the app
-seeds an in-memory demo so it runs standalone.
+seeds an in-memory demo and labels the trust strip as `demo data`; with
+`MUSUBI_DB` set it labels the trust strip as `real audit.db`.
 
 Icons are generated with `npm run icons`. For `.ico`/`.icns` generation, run
 `npm run tauri icon src-tauri/icons/icon.png`.
 
-The Windows prebuilt installer is produced by the
+The Windows Musubi installer bootstrap is produced by the
 [`Desktop build`](../.github/workflows/desktop.yml) GitHub Actions workflow.
 
 ## Data Source

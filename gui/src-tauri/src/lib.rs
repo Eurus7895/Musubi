@@ -43,6 +43,11 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
     st.paused = state.paused.load(Ordering::Relaxed);
+    st.runtime_source = if std::env::var("MUSUBI_DB").ok().filter(|s| !s.is_empty()).is_some() {
+        "musubi-db".into()
+    } else {
+        "demo".into()
+    };
     Ok(st)
 }
 

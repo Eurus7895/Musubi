@@ -208,14 +208,15 @@ is what would license it. Postponed while the pipeline stays.
 ## Operator console (`gui/`) — substrate
 
 A dark, governance-focused UI for Musubi — **zero LLM calls**, reads
-`audit.db` directly (Tauri IPC → Rust core → SQLite). Ships as a standalone
-Windows desktop app via the `desktop.yml` CI workflow.
+`audit.db` directly (Tauri IPC → Rust core → SQLite). Ships as a Windows
+Musubi installer bootstrap via the `desktop.yml` CI workflow: desktop GUI plus
+runtime checks for the Python `musubi` / `agent` CLIs.
 
 | surface | tier | notes |
 |---|---|---|
 | `gui/` (React + Vite + Tauri) | **substrate** | operator view of the governance layer |
 | `gui/src-tauri/musubi-data/` | substrate | webkit-free Rust core; reads `audit.db` |
-| `.github/workflows/desktop.yml` | substrate | builds the Windows installer |
+| `.github/workflows/desktop.yml` | substrate | builds the Windows installer bootstrap |
 
 **Views:** Orchestrator (sub-agent cohort), Pipeline studio, Policy
 (PreToolUse stream), Audit (append-only ledger), Models (LMRouter profiles),
@@ -224,11 +225,15 @@ Skills (pushed/pulled catalog). The console is Tauri-only and uses
 
 **To run:**
 ```bash
-musubi setup                              # points to the prebuilt GUI installer
+musubi setup                              # points to the Windows installer bootstrap
 # Optional local Windows GUI development:
 npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
+
+Follow-up installer work: bundle or otherwise provide an offline Python
+core/runtime, sign the Windows installer, and wire the GUI to launch governed
+core actions instead of only observing the audit database.
 
 User guide → [`docs/guide.md`](./guide.md) § Console.
 

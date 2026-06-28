@@ -54,6 +54,38 @@ def test_family_requirement_maps_to_extra(monkeypatch: pytest.MonkeyPatch) -> No
     assert sw.family_requirement("ollama").name == "openai SDK"
 
 
+def test_check_core_cli_reports_available_scripts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("musubi", "agent") else None,
+    )
+
+    check = sw.check_core_cli()
+
+    assert check.ok is True
+    assert check.name == "musubi + agent CLIs"
+    assert check.hint == ""
+
+
+def test_check_core_cli_reports_missing_scripts_with_user_path_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sw.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        sw,
+        "python_user_scripts_dir",
+        lambda: Path(r"C:\Users\admin\AppData\Python\Scripts"),
+    )
+
+    check = sw.check_core_cli()
+
+    assert check.ok is False
+    assert "missing: musubi, agent" in check.hint
+    assert "python -m pip install --user musubi" in check.hint
+    assert "setx PATH" in check.hint
+
+
 # ── profile section builder ─────────────────────────────────────────────────
 
 
@@ -442,7 +474,7 @@ def test_interactive_skips_local_console_gui_deps_by_default(
         "",         # profile
         "n",        # test connection?
         "n",        # generate mcp.json?
-        "",         # install local console GUI dependencies? default no
+        "",         # install local GUI development dependencies? default no
     ])
     lines: list[str] = []
 
@@ -457,7 +489,8 @@ def test_interactive_skips_local_console_gui_deps_by_default(
     assert calls == []
     output = "\n".join(lines)
     assert "Desktop build" in output
-    assert "prebuilt installer" in output
+    assert "Musubi installer bootstrap" in output
+    assert "Python musubi/agent CLIs" in output
 
 
 def test_interactive_installs_local_console_gui_deps_when_requested(
@@ -486,7 +519,7 @@ def test_interactive_installs_local_console_gui_deps_when_requested(
         "",         # profile
         "n",        # test connection?
         "n",        # generate mcp.json?
-        "y",        # install local console GUI dependencies?
+        "y",        # install local GUI development dependencies?
     ])
     lines: list[str] = []
 
@@ -537,7 +570,7 @@ def test_interactive_skips_console_gui_install_on_non_windows(
     assert calls == []
     output = "\n".join(lines)
     assert "Windows-only" in output
-    assert "Install local console GUI development dependencies" not in output
+    assert "Install local GUI development dependencies" not in output
     assert "npm run tauri:dev" not in output
 
 
@@ -562,7 +595,7 @@ def test_interactive_guides_console_users_to_desktop_app(
         "",         # profile
         "n",        # test connection?
         "n",        # generate mcp.json?
-        "n",        # install console GUI dependencies?
+        "n",        # install local GUI development dependencies?
     ])
     lines: list[str] = []
 
@@ -570,7 +603,7 @@ def test_interactive_guides_console_users_to_desktop_app(
 
     assert rc == 0
     output = "\n".join(lines)
-    assert output.index("prebuilt installer") < output.index("npm run tauri:dev")
+    assert output.index("Musubi installer bootstrap") < output.index("npm run tauri:dev")
     assert "optional Windows GUI development" in output
     assert "cd app" not in output
     assert "npm run dev" not in output
