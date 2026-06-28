@@ -29,7 +29,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
-#[derive(Serialize, Default, Debug)]
+#[derive(Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub subagents: Vec<Agent>,
@@ -69,7 +69,7 @@ pub struct Agent {
     pub parent: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
     pub id: i64,
@@ -81,7 +81,7 @@ pub struct Decision {
     pub reason: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditRow {
     pub id: i64,
@@ -93,7 +93,7 @@ pub struct AuditRow {
     pub status: Option<String>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMsg {
     pub role: String,
@@ -102,7 +102,7 @@ pub struct ChatMsg {
     pub tone: Option<String>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PipeStep {
     pub uid: i64,
