@@ -110,11 +110,12 @@ substrate; pipeline dissolution is postponed (see below).
    Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
    conversation persistence.
 5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
-   (`agent/subagent.py`): the standalone agent runs spawned roles to
-   completion on a firewalled brief + restricted tool surface, summary
-   verified on `musubi_complete_subagent`, spawn audited. Remaining:
-   `PreToolUse` (policy/firewall) + `PostToolUse` (audit) on every standalone
-   tool call; surface cost/credits in the CLI.
+   (`agent/subagent.py`) and has since unified into the **worker model**
+   (see "Worker model — landed" below): one `run_unit` path, parallel +
+   depth-2 workers, agent-summoned and user-defined pipelines, all on
+   firewalled briefs + restricted tool surfaces with verified summaries and
+   audited spawns. Remaining: `PreToolUse` (policy/firewall) + `PostToolUse`
+   (audit) on every standalone tool call; surface cost/credits in the CLI.
 6. **Fix the VS Code extension for the rename.** The extension is a
    **supported** Copilot surface (it brings the substrate — governance +
    compression — to Copilot Chat). Update its hardcoded `harness_*` tool

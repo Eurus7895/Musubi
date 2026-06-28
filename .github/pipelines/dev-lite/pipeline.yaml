@@ -1,3 +1,6 @@
+# musubi-tier: ephemeral
+# expires-when: models orchestrate multi-step pipelines natively
+# cost-lever: deletes this sample pipeline (the preset mechanism stays)
 # A user-defined pipeline composed from presets (Increment 6). plan → build →
 # check, where each stage is a worker; the prior stage's summary feeds the next
 # and `check` (the evaluator) sees only the build output (HI #3).
