@@ -59,6 +59,51 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "PATH" in env
 
 
+def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
+    from agent.run import _server_db_path
+
+    musubi_dir = tmp_path / "checkout" / "musubi"
+    assert _server_db_path(musubi_dir, {}) == musubi_dir / "storage" / "musubi.db"
+
+    root = tmp_path / "portable-root"
+    assert (
+        _server_db_path(musubi_dir, {"MUSUBI_ROOT": str(root)})
+        == root / "data" / "musubi.db"
+    )
+
+
+def test_run_loop_passes_context_compression_db_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    seen: list[Path | None] = []
+
+    def spy_fit_context(messages, *, compression_db_path=None):  # noqa: ANN001
+        seen.append(compression_db_path)
+        return messages
+
+    monkeypatch.setattr(run_mod, "fit_context", spy_fit_context)
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    db_path = tmp_path / "server.db"
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            object(), router, [], [{"role": "user", "content": "hi"}],
+            max_cycles=1,
+            log=io.StringIO(),
+            compression_db_path=db_path,
+        )
+    )
+
+    assert answer == "ok"
+    assert cycles == 1
+    assert seen == [db_path]
+
+
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
     from agent.context import DEFAULT_EFFORT_FLOOR

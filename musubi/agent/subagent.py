@@ -50,6 +50,7 @@ async def run_subagent(
     *,
     agents_dir: Path | None = None,
     orchestration: Any = None,
+    compression_db_path: Path | None = None,
 ) -> str:
     """Spawn, run, and complete one worker. Returns the final summary text.
 
@@ -129,6 +130,7 @@ async def run_subagent(
         max_cycles=max_turns, log=log,
         orchestration=child_orch,
         spawn_catalog=spawn_catalog,
+        compression_db_path=compression_db_path,
     )
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"

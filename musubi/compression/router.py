@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from compression import compressors, store
+from . import compressors, store
 
 #: Inputs below this many characters are not worth compressing/storing.
 DEFAULT_MIN_CHARS = 800

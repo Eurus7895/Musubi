@@ -7,10 +7,12 @@ expires-when: never - the token economics of the LM-call boundary are
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _BASE_SYSTEM = (
     "You are Musubi's standalone agent. You drive MCP tools to complete the "
@@ -29,6 +31,7 @@ _VERBOSITY_NOTE = (
 
 DEFAULT_EFFORT_FLOOR = 2048
 DEFAULT_CONTEXT_BUDGET = 40_000
+_CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
 
 def build_system_prompt(extra: str | None = None) -> str:
@@ -76,6 +79,62 @@ def _retrieve_hint(text: str) -> str:
     if end == -1:
         return ""
     return " - recover with " + text[start:end + 2]
+
+
+def _has_compression_marker(text: str) -> bool:
+    return "[musubi:compressed" in text and "musubi_retrieve(" in text
+
+
+def _load_context_compress() -> Callable[..., Any]:
+    """Load Musubi's compressor without resolving Python's stdlib package."""
+    cached = sys.modules.get(_CONTEXT_COMPRESSION_MODULE)
+    if cached is not None:
+        compress = getattr(cached, "compress", None)
+        if callable(compress):
+            return compress
+
+    musubi_root = Path(__file__).resolve().parent.parent
+    package_init = musubi_root / "compression" / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        _CONTEXT_COMPRESSION_MODULE,
+        package_init,
+        submodule_search_locations=[str(package_init.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load Musubi compression package from {package_init}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_CONTEXT_COMPRESSION_MODULE] = module
+
+    root_text = str(musubi_root)
+    added_root = root_text not in sys.path
+    if added_root:
+        sys.path.insert(0, root_text)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(_CONTEXT_COMPRESSION_MODULE, None)
+        raise
+    finally:
+        if added_root:
+            try:
+                sys.path.remove(root_text)
+            except ValueError:
+                pass
+
+    compress = getattr(module, "compress", None)
+    if not callable(compress):
+        raise ImportError(f"Musubi compression package at {package_init} has no compress")
+    return compress
+
+
+def _compress_for_context(
+    text: str,
+    *,
+    db_path: Path | None,
+) -> Any:
+    compress = _load_context_compress()
+    return compress(text, min_chars=200, db_path=db_path)
 
 
 def fit_context(
@@ -145,12 +204,11 @@ def fit_context(
         original_text = (
             original if isinstance(original, str) else json.dumps(original, default=str)
         )
+        if _has_compression_marker(original_text):
+            continue
         try:
-            from compression import compress
-
-            packed = compress(
+            packed = _compress_for_context(
                 original_text,
-                min_chars=200,
                 db_path=compression_db_path,
             )
         except Exception:

@@ -6,6 +6,8 @@ musubi-tier: substrate test - pins the zero-LLM token-economy transforms.
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 from agent.context import (
@@ -132,6 +134,72 @@ def test_fit_context_compresses_old_tool_results_before_trimming(tmp_path: Path)
     assert "[musubi:compressed" in packed
     assert "context-trimmed" not in packed
     assert "tool_use_id" in out[3]["content"][0]
+
+
+def test_fit_context_loads_local_compressor_when_name_is_taken(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    fake = types.ModuleType("compression")
+    fake.__file__ = str(tmp_path / "stdlib" / "compression" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "compression", fake)
+    original = json.dumps({"items": [{"id": i, "value": "A" * 20} for i in range(160)]})
+
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": original}
+                ],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+        ],
+        budget_chars=1200,
+        keep_last_turns=1,
+        compression_db_path=tmp_path / "compression.db",
+    )
+
+    packed = out[2]["content"][0]["content"]
+    assert "[musubi:compressed" in packed
+    assert sys.modules["compression"] is fake
+
+
+def test_fit_context_skips_already_compressed_tool_results(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    import agent.context as context_mod
+
+    marker = (
+        f"{'summary ' * 40}\n\n"
+        "[musubi:compressed kind=json ref=oldref chars 5000->400; "
+        'call musubi_retrieve("oldref") for the verbatim original]'
+    )
+
+    def fail_if_called(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("already compressed content should not be repacked")
+
+    monkeypatch.setattr(context_mod, "_compress_for_context", fail_if_called)
+
+    out = fit_context(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "task"},
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "a", "content": marker}],
+            },
+            {"role": "assistant", "content": [{"type": "text", "text": "next"}]},
+        ],
+        budget_chars=120,
+        keep_last_turns=1,
+    )
+
+    stub = out[2]["content"][0]["content"]
+    assert stub.startswith("[context-trimmed:")
+    assert 'musubi_retrieve("oldref")' in stub
 
 
 def test_fit_context_trims_compressed_result_when_budget_still_too_small(

@@ -13,6 +13,6 @@ Idea credit: headroom (github.com/headroomlabs-ai/headroom); the learned
 text compressor is deliberately NOT adopted (it would be a model call).
 """
 
-from compression.router import CompressResult, compress, detect_kind, retrieve
+from .router import CompressResult, compress, detect_kind, retrieve
 
 __all__ = ["compress", "retrieve", "detect_kind", "CompressResult"]
