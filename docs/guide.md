@@ -30,8 +30,8 @@ two driver surfaces, both driving the same substrate:
 
 ## 1. Install & setup
 
-Requirements: **Python 3.11+**. For the console GUI also Node 20+ (and, for a
-native build, the Rust toolchain — [§6](#6-console-gui--operator-view)).
+Requirements: **Python 3.11+**. For local Windows console GUI development also
+Node 20+, Rust, and MSVC ([section 6](#6-console-gui--operator-view)).
 
 ```bash
 python -m pip install -e "./musubi[all]"   # or "./musubi[anthropic]" / "./musubi[openai]"
@@ -48,12 +48,13 @@ $env:Path += ';' + $scripts
 musubi setup
 ```
 
-`musubi setup` is the fastest path — it runs an environment doctor, builds a
+`musubi setup` is the fastest path - it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points console users to the prebuilt installer path. If you opt
-into local GUI development, it can also install npm dependencies and verify that
-`cargo` and the MSVC linker are on `PATH`. Prefer manual? The steps below still
+extension, and points Windows console users to the prebuilt installer path. On
+Windows, if you opt into local GUI development, it can also install npm
+dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
+and Linux setup skip GUI installation. Prefer manual? The steps below still
 work.
 
 ```bash
@@ -194,13 +195,14 @@ are in [`gui/README.md`](../gui/README.md) · [`gui/src-tauri/SCHEMA.md`](../gui
 
 ### Install it
 
-Primary path: use the **Desktop build** GitHub Actions workflow. It produces
-prebuilt `.dmg`, `.msi`, `.AppImage`, and `.deb` artifacts, so you do not need a
-local Rust/MSVC/webview toolchain just to run the console. Run the workflow
-manually (Actions ▸ *Desktop build* ▸ *Run workflow*) and download the artifact
-for your platform, or push a tag to create a draft Release.
+Primary path on Windows: use the **Desktop build** GitHub Actions workflow. It
+produces prebuilt `.msi` and `.exe` artifacts, so you do not need a local
+Rust/MSVC toolchain just to run the console. Run the workflow manually (Actions
+> *Desktop build* > *Run workflow*) and download the Windows artifact, or push a
+tag to create a draft Release. macOS and Linux GUI installers are intentionally
+not built.
 
-### Local development
+### Local Windows development
 
 ```bash
 npm install
@@ -208,13 +210,11 @@ npm run tauri:dev                            # desktop app, seeded demo data
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, your real DB
 ```
 
-- **Local Tauri dev** — reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
-  in-memory demo so it runs standalone. Needs the Rust toolchain + webview libs
-  (Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`).
-  On Windows, install Rustup with `winget install --id Rustlang.Rustup -e`,
-  install Visual Studio Build Tools with the C++ workload, open a new terminal,
-  and confirm `cargo --version` and `where.exe link` before running
-  `npm run tauri:dev`.
+- **Local Tauri dev** reads a real `audit.db`. Without `MUSUBI_DB` it seeds an
+  in-memory demo so it runs standalone. On Windows, install Rustup with
+  `winget install --id Rustlang.Rustup -e`, install Visual Studio Build Tools
+  with the C++ workload, open a new terminal, and confirm `cargo --version` and
+  `where.exe link` before running `npm run tauri:dev`.
 - Run npm commands from the repository root. The root `package.json` delegates
   to the GUI workspace in `gui/`.
 
@@ -246,7 +246,6 @@ IPC and has no standalone demo source. The supported URL option is
 | Symptom | Fix |
 |---|---|
 | Fonts look generic | IBM Plex loads from Google Fonts; offline it falls back to system fonts. Layout/colours unaffected. |
-| `tauri:dev` fails on Linux with a webkit error | Install the webview libs listed above. |
 | `link.exe not found` on Windows | Install Visual Studio Build Tools with the C++ workload, then open a new terminal. |
 | App shows demo data | `MUSUBI_DB` is unset/empty — set it to your `audit.db` absolute path. |
 

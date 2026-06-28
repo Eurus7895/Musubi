@@ -209,13 +209,13 @@ is what would license it. Postponed while the pipeline stays.
 
 A dark, governance-focused UI for Musubi — **zero LLM calls**, reads
 `audit.db` directly (Tauri IPC → Rust core → SQLite). Ships as a standalone
-desktop app (macOS/Linux/Windows via the `desktop.yml` CI workflow).
+Windows desktop app via the `desktop.yml` CI workflow.
 
 | surface | tier | notes |
 |---|---|---|
 | `gui/` (React + Vite + Tauri) | **substrate** | operator view of the governance layer |
 | `gui/src-tauri/musubi-data/` | substrate | webkit-free Rust core; reads `audit.db` |
-| `.github/workflows/desktop.yml` | substrate | builds installers for all platforms |
+| `.github/workflows/desktop.yml` | substrate | builds the Windows installer |
 
 **Views:** Orchestrator (sub-agent cohort), Pipeline studio, Policy
 (PreToolUse stream), Audit (append-only ledger), Models (LMRouter profiles),
@@ -225,7 +225,7 @@ Skills (pushed/pulled catalog). The console is Tauri-only and uses
 **To run:**
 ```bash
 musubi setup                              # points to the prebuilt GUI installer
-# Optional local GUI development:
+# Optional local Windows GUI development:
 npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
