@@ -298,16 +298,37 @@ async def _run_loop(
         )
         messages.append({"role": "user", "content": tool_results})
 
-    # Salvage: a model that calls a tool on EVERY cycle never hits the break
-    # path, so `final_answer` stays None even though it may have produced text
-    # alongside its tool calls. Rather than hard-fail the whole turn, return that
-    # last text. Off for sub-agents (they signal exhaustion via None → escalate).
-    if final_answer is None and salvage_on_exhaust and last_text:
-        print(
-            f"[agent] cycles exhausted ({max_cycles}); salvaging last assistant text",
-            file=log,
-        )
-        final_answer = last_text
+    # Salvage (root only — sub-agents signal exhaustion via None → escalate).
+    # A model that calls a tool on EVERY cycle never hits the break path, so
+    # `final_answer` stays None. Recover rather than hard-failing the turn:
+    if final_answer is None and salvage_on_exhaust:
+        if last_text:
+            # It produced text alongside its tool calls — return the last of it.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); salvaging last "
+                f"assistant text",
+                file=log,
+            )
+            final_answer = last_text
+        else:
+            # It only ever tool-called, never spoke. Make ONE final call with no
+            # tools offered so the model is forced to answer in words.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); forcing a no-tools "
+                f"final answer",
+                file=log,
+            )
+            try:
+                resp = await asyncio.to_thread(
+                    _call_with_effort, vendor, fit_context(messages), []
+                )
+                final_answer = _extract_text(resp.content) or None
+            except Exception as exc:  # noqa: BLE001 — fall through to the raise
+                print(
+                    f"[agent] forced final call failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=log,
+                )
 
     return final_answer, cycles_used
 
