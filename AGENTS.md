@@ -16,11 +16,12 @@ makes **zero LLM calls** (HI #1). Two supported surfaces drive it:
 - **Standalone `agent` CLI (active — the north star):** `musubi/agent/`
   reaches the model through the vendor-agnostic `LMRouter` — anthropic /
   openai / azure-on-prem (via curl) / genai_farm (on-prem; SDK by default,
-  curl fallback) / ollama, selected by `.musubi/llm.json`
-  profiles. A multi-step tool loop plus a sub-agent orchestrator
-  (`agent/subagent.py`) that runs spawned roles to completion. Model-
-  agnostic, no `vscode.lm` quota (roadmap north star, Steps 4–5). First run:
-  `musubi setup`.
+  curl fallback) / ollama, selected by `.musubi/llm.json` profiles.
+  One **worker model** (`agent/run.py::run_unit`): no main-vs-sub split —
+  only workers at a depth, run **in parallel**, nesting to depth 2, able to
+  **summon pipelines** (incl. user-defined preset pipelines). Workers offload
+  bounded work and return compact summaries so the orchestrator's context
+  stays small. Model-agnostic, no `vscode.lm` quota. First run: `musubi setup`.
 - **VS Code pipeline (active):** `@harness /feature-dev <task>` runs the
   4-stage governed pipeline (planner → designer → coder → reviewer +
   evaluator firewall, correction loop, append-only stage store) on Copilot's
@@ -39,10 +40,12 @@ The `@harness` participant routes by pure prefix match (zero LLM call):
 
 | Pipeline | Command | Level | Status |
 |---|---|---|---|
-| feature-dev | `/feature-dev` | 2 | ✅ planner → designer → coder → reviewer + evaluator firewall |
+| feature-dev | `/feature-dev` | 2 | ✅ planner → designer → coder → reviewer + evaluator firewall (VS Code) |
+| dev-lite | (worker host) | — | ✅ plan → build → check, composed from presets — sample user pipeline |
 
-Level-1 probe deferred from Week 3a; feature-dev stays at Level 2.
-No new pipelines until feature-dev is validated.
+Level-1 probe deferred from Week 3a; feature-dev stays at Level 2. In the
+standalone worker host, pipelines are recipes of workers composed from presets
+(`.github/pipelines/presets/`) and summoned via `musubi_spawn_pipeline`.
 
 ---
 

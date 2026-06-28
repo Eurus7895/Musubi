@@ -2,7 +2,8 @@
 
 > One place that walks you through **actually using Musubi** end to end:
 > install, run your first task, pick a model, control tokens, delegate to
-> sub-agents, watch it all in the console, and drive it from VS Code.
+> parallel workers (and whole pipelines), watch it all in the console, and
+> drive it from VS Code.
 >
 > This is the *how-to-use* guide. For **why** (direction, the substrate/ephemeral
 > discipline) read [`docs/roadmap.md`](./roadmap.md); for the **rules &
@@ -174,13 +175,52 @@ Four zero-LLM token controls apply at the LM-call boundary:
 
 ---
 
-## 5. Sub-agents (delegated multi-step work)
+## 5. Workers (delegated, parallel, context-offloading)
 
-When the model calls `musubi_spawn_subagent(role, brief)`, Musubi runs a
-turn-capped child loop on a **firewalled brief** and **restricted tool surface**,
-verifies the summary on completion, then feeds it back — every spawn is
-policy-checked and audited. Inspect spawns with `musubi_query_subagent_events`,
-or watch them live in the console ([§6](#6-console-gui--operator-view)).
+There is no "main agent" vs "sub-agent" — only **workers**. The top-level task
+is the depth-0 worker; everything it summons is the same kind of unit one level
+down (one code path, `agent/run.py::run_unit`). The point is **context-window
+offloading**: a worker does bounded work in its own firewalled context and
+returns only a compact summary, so the orchestrator's context stays small.
+
+- **Spawn.** When the model calls `musubi_spawn_subagent(role, brief)`, Musubi
+  runs a turn-capped child loop on a **firewalled brief** and **restricted tool
+  surface**, verifies the summary on completion, then feeds just that summary
+  back. Every spawn is policy-checked and audited (`musubi_query_subagent_events`).
+- **Parallel / background.** Workers summoned in one turn run **concurrently** —
+  a batch of N spawns runs N loops at once, results paired back in order, with a
+  per-role width cap so a turn can't fan out without bound.
+- **Nesting.** A worker whose role declares a `spawn_allowlist` (in its
+  `.github/agents/<role>.agent.md`) may summon its own workers, up to a depth
+  cap (default 2). Leaf roles never gain the spawn tool.
+- **Pipelines.** A worker can summon a whole **pipeline** —
+  `musubi_spawn_pipeline(pipeline_name, brief)` — an ordered recipe of workers
+  where each stage's summary feeds the next and the evaluator (last stage) sees
+  only the prior stage (the firewall, generalised).
+
+The spawn firewall (which role may summon which) lives in each agent's
+`spawn_allowlist:` frontmatter, fail-closed (an unknown role is denied).
+
+### User-defined pipelines from presets
+
+A **preset** (`.github/pipelines/presets/<id>.yaml`) is a reusable worker/stage
+building block — a role plus its default stage. A pipeline drops presets into a
+`stages:` list:
+
+```yaml
+# .github/pipelines/dev-lite/pipeline.yaml
+name: dev-lite
+stages:
+  - preset: plan      # planner
+  - preset: build     # coder
+  - preset: check     # reviewer — evaluator, firewalled to the prior stage
+```
+
+No Python is needed — composer loads any pipeline by name, and the catalog is
+validated **fail-closed at server boot** (an unknown preset/agent or a chain
+shorter than two stages aborts startup). This declarative format is the contract
+a drag-and-drop pipeline UI reads and writes. See
+`.github/pipelines/presets/README.md` for the authoring reference.
 
 ---
 
