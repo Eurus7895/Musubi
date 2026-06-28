@@ -250,6 +250,12 @@ A dark, governance-focused UI for Musubi — **zero LLM calls**, reads
 Musubi installer bootstrap via the `desktop.yml` CI workflow: desktop GUI plus
 runtime checks for the Python `musubi` / `agent` CLIs.
 
+The console is **not** the backend. The portable backend remains the Python
+`musubi/` package so a user can carry it into any project, run `musubi setup`,
+and use `agent` without the desktop app. The GUI is an operator shell: it may
+discover, configure, and launch backend commands, but all governed work still
+flows through the Musubi core.
+
 | surface | tier | notes |
 |---|---|---|
 | `gui/` (React + Vite + Tauri) | **substrate** | operator view of the governance layer |
@@ -269,9 +275,31 @@ npm install
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
-Follow-up installer work: bundle or otherwise provide an offline Python
-core/runtime, sign the Windows installer, and wire the GUI to launch governed
-core actions instead of only observing the audit database.
+### GUI implementation steps
+
+1. **[done] Windows installer bootstrap.** CI builds a Windows-only desktop
+   installer artifact. The installed app opens without requiring Rust, Node,
+   or MSVC on the user's machine, and the trust strip reports whether it is
+   reading a real `audit.db` or seeded demo data.
+2. **[next] Setup-aware first run.** Reuse the existing `musubi setup`
+   doctor/profile logic from `musubi/setup_wizard.py` behind a GUI Settings /
+   First Run surface. The GUI should check Python, locate `musubi` and `agent`
+   even when the scripts directory is not on `PATH`, write or repair
+   `.musubi/llm.json`, test the selected profile, and choose a default
+   project audit DB path without asking the user to set `MUSUBI_DB` manually.
+3. **[planned] On-demand task launcher.** Add a Tauri command that launches
+   one governed `agent "<task>"` process only when the user presses Run. The
+   GUI passes the selected project root, profile, and audit DB path through the
+   child process environment, streams stdout/stderr into the operator view, and
+   supports cancellation. There is no always-on background daemon in this
+   slice; idle GUI means no running agent process.
+4. **[planned] Installer runtime reduction.** Prefer a bundled or locally
+   repairable Python core payload so first run does not depend on a global
+   `pip install` or manual `PATH` edits. Keep network install as a fallback
+   for development builds.
+5. **[planned] Signing and release hardening.** Sign the Windows installer and
+   document the expected Defender / SmartScreen path so the primary install
+   route is suitable for non-developer machines.
 
 User guide → [`docs/guide.md`](./guide.md) § Console.
 
