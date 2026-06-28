@@ -54,8 +54,8 @@ deterministic, zero-LLM, and **reversible**:
   always reads the original.
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
   default** — reversible, so it's safe. The latest capability artifact
-  shows 339,930 chars compressed to 6,639 model-visible chars with exact
-  round-trip retrieval. Opt out with **`MUSUBI_COMPRESS=0`**.
+  shows 339,348 payload chars compressed to 11,458 model-visible chars
+  with exact round-trip retrieval. Opt out with **`MUSUBI_COMPRESS=0`**.
 - The model can also compress a payload on demand with **`musubi_compress`**
   and measure the feature's efficiency with **`musubi_compression_stats`**
   (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
@@ -109,21 +109,21 @@ the ~80-char retrieval marker), so `musubi_compression_stats` reports the
 true compression win rather than marker overhead.
 
 ```jsonc
-// compression capability artifact after Step 3 native compressors
+// compression capability artifact after Step 4 context packing
 {
   "status": "ok",
   "total_blobs": 4,
-  "total_original_chars": 339930,
-  "total_compressed_chars": 6087,
-  "bytes_saved": 333843,
-  "overall_ratio": 0.018,
-  "savings_pct": 98.2,
+  "total_original_chars": 339348,
+  "total_compressed_chars": 10906,
+  "bytes_saved": 328442,
+  "overall_ratio": 0.032,
+  "savings_pct": 96.8,
   "rows_without_metric": 0,
   "by_kind": [
     { "kind": "json", "count": 1, "compressed_chars": 2521 },
-    { "kind": "code", "count": 1, "compressed_chars": 1408 },
+    { "kind": "code", "count": 1, "compressed_chars": 6229 },
     { "kind": "log", "count": 1, "compressed_chars": 736 },
-    { "kind": "text", "count": 1, "compressed_chars": 1422 }
+    { "kind": "text", "count": 1, "compressed_chars": 1420 }
   ]
 }
 ```
@@ -145,7 +145,7 @@ model, to keep the substrate LLM-free):
 | **Verbosity steering** | The system prompt tells the model to be concise and not restate context — cuts output tokens. | always on |
 | **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native automatic prompt caching when available. Cache reads/writes show in the cycle log through shared keys. | `MUSUBI_PROMPT_CACHE=0` to disable Anthropic `cache_control` |
 | **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
-| **IntelligentContext** | When the conversation exceeds a budget, deterministically elides the oldest/largest tool results (pairing preserved, `musubi_retrieve` markers kept) instead of dropping turns. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
+| **IntelligentContext** | When the conversation exceeds a budget, deterministically protects system/task/recent turns, compresses old tool results first, and only then trims the largest remaining blocks. Pairing and `musubi_retrieve` markers are preserved. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 
 ## Quick start (standalone CLI)
 

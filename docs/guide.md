@@ -132,8 +132,10 @@ trail always reads the original.
 
 Current native compressors are content-type routed: JSON smart-crush, Python
 AST structure summaries, log pattern grouping, and heading-aware text outlines.
-The latest capability artifact shows 339,930 chars compressed to 6,639
-model-visible chars with 4 / 4 retrieve checks passing. See
+The latest capability artifact shows 339,348 payload chars compressed to
+11,458 model-visible chars with 4 / 4 retrieve checks passing. It also
+shows a context-packing scenario reduced from 193,228 chars to 7,933 while
+preserving the recent turn. See
 [`docs/compression.md`](./compression.md) for the full artifact and numbers.
 
 ```bash
@@ -171,7 +173,7 @@ Four zero-LLM token controls apply at the LM-call boundary:
 | **Verbosity steering** | System prompt steers the model to be concise. | always on |
 | **CacheAligner** | Marks the static prefix (system + tools) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native caching. | `MUSUBI_PROMPT_CACHE=0` |
 | **Effort routing** | Starts each cycle at a low output-token cap, escalates only on truncation. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
-| **IntelligentContext** | Over budget, elides oldest/largest tool results (pairing + retrieve markers kept) instead of dropping turns. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
+| **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 
 ---
 
