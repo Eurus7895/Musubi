@@ -953,7 +953,11 @@ mod tests {
         let root = temp_dir("python-status");
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let exe = bin.join(if cfg!(windows) { "python.exe" } else { "python" });
+        let exe = bin.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        });
         std::fs::write(&exe, "").unwrap();
         let mut env = std::collections::HashMap::new();
         env.insert("PATH".to_string(), bin.to_string_lossy().to_string());
