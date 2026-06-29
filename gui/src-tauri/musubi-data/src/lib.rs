@@ -254,40 +254,45 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
 
     for row in rows {
         let row = row?;
+        let is_pipeline_marker = row.role.starts_with("pipeline:");
         if row.event == "spawned" {
-            st.total_spawned += 1;
-            let tools = parse_tools(&row.allowed_tools);
-            if !agents.contains_key(&row.handle) {
-                order.push(row.handle.clone());
+            if !is_pipeline_marker {
+                st.total_spawned += 1;
+                let tools = parse_tools(&row.allowed_tools);
+                if !agents.contains_key(&row.handle) {
+                    order.push(row.handle.clone());
+                }
+                agents.insert(
+                    row.handle.clone(),
+                    Agent {
+                        id: row.id,
+                        handle: row.handle.clone(),
+                        role: row.role.clone(),
+                        brief: row.brief.clone(),
+                        status: "running".into(),
+                        turns: row.turns,
+                        max: row.max_turns,
+                        tools,
+                        wall: row.wall,
+                        // The real subagent_audit schema does not record the
+                        // resolved model/profile per handle; left blank.
+                        model: String::new(),
+                        profile: String::new(),
+                        parent: fmt_parent(&row.parent_agent, &row.parent_session),
+                        spawn_epoch: row.ts_epoch,
+                    },
+                );
             }
-            agents.insert(
-                row.handle.clone(),
-                Agent {
-                    id: row.id,
-                    handle: row.handle.clone(),
-                    role: row.role.clone(),
-                    brief: row.brief.clone(),
-                    status: "running".into(),
-                    turns: row.turns,
-                    max: row.max_turns,
-                    tools,
-                    wall: row.wall,
-                    // The real subagent_audit schema does not record the
-                    // resolved model/profile per handle; left blank.
-                    model: String::new(),
-                    profile: String::new(),
-                    parent: fmt_parent(&row.parent_agent, &row.parent_session),
-                    spawn_epoch: row.ts_epoch,
-                },
-            );
         } else if row.event == "completed" {
             let status = row.final_status.clone().unwrap_or_else(|| "done".into());
-            if status == "done" {
+            if !is_pipeline_marker && status == "done" {
                 st.total_done += 1;
             }
-            if let Some(a) = agents.get_mut(&row.handle) {
-                a.status = status.clone();
-                a.turns = row.turns.max(a.turns);
+            if !is_pipeline_marker {
+                if let Some(a) = agents.get_mut(&row.handle) {
+                    a.status = status.clone();
+                    a.turns = row.turns.max(a.turns);
+                }
             }
         }
 
@@ -900,6 +905,41 @@ mod tests {
 
         assert_eq!(st.subagents.len(), 1);
         assert_eq!(st.subagents[0].status, "abandoned");
+    }
+
+    #[test]
+    fn pipeline_markers_do_not_count_as_subagents() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','pipe-1','parent-1','driver','pipeline:dev-lite','build a thing','[]',3,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(2,1001.0,'spawned','worker-1','pipe-1','pipeline:dev-lite','planner','build a thing','[]',5,300)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,final_status,turns,tools_used)\
+             VALUES(3,1002.0,'completed','worker-1','pipe-1','pipeline:dev-lite','planner','build a thing','done',1,'[]')",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.total_spawned, 1);
+        assert_eq!(st.total_done, 1);
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].handle, "worker-1");
+        assert!(!st.subagents.iter().any(|a| a.role.starts_with("pipeline:")));
     }
 
     #[test]
