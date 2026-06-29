@@ -7,10 +7,14 @@
 //!   - `action`           → mutating actions (chat, profile, pipeline)
 //!   - `state://update`   → emitted ~1×/s by a background poller as audit.db grows
 //!
-//! Data source: the file at `$MUSUBI_DB` (Musubi's `storage/audit.db`). When
-//! unset, an in-memory demo DB is seeded so the app runs standalone.
+//! Data source: the configured Musubi `audit.db`. When no database can be
+//! resolved, the console opens an empty in-memory schema for first-run setup.
 
-use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
+use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -19,6 +23,8 @@ use tauri::{Emitter, Manager};
 struct AppState {
     db: Mutex<Connection>,
     paused: AtomicBool,
+    project_root: PathBuf,
+    audit_db: Option<musubi_data::ResolvedAuditDb>,
 }
 
 fn open_db() -> Connection {
@@ -32,10 +38,43 @@ fn open_db() -> Connection {
         }
         _ => {
             let conn = Connection::open_in_memory().expect("open in-memory db");
-            musubi_data::seed_demo(&conn).expect("seed demo");
-            eprintln!("[musubi] MUSUBI_DB not set — using in-memory demo data");
+            musubi_data::init_schema(&conn).expect("init empty schema");
+            eprintln!("[musubi] MUSUBI_DB not set — using empty in-memory state");
             conn
         }
+    }
+}
+
+struct OpenedDb {
+    conn: Connection,
+    project_root: PathBuf,
+    audit_db: Option<musubi_data::ResolvedAuditDb>,
+}
+
+fn open_configured_db() -> OpenedDb {
+    let env = musubi_data::current_env_map();
+    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &project_root) {
+        let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
+        let _ = musubi_data::init_schema(&conn);
+        eprintln!(
+            "[musubi] reading audit.db at {} ({})",
+            resolved.path.display(),
+            resolved.source
+        );
+        return OpenedDb {
+            conn,
+            project_root,
+            audit_db: Some(resolved),
+        };
+    }
+
+    let conn = open_db();
+    eprintln!("[musubi] no audit.db source found; using empty in-memory state");
+    OpenedDb {
+        conn,
+        project_root,
+        audit_db: None,
     }
 }
 
@@ -43,11 +82,16 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
     st.paused = state.paused.load(Ordering::Relaxed);
-    st.runtime_source = if std::env::var("MUSUBI_DB").ok().filter(|s| !s.is_empty()).is_some() {
-        "musubi-db".into()
-    } else {
-        "demo".into()
-    };
+    st.runtime_source = state
+        .audit_db
+        .as_ref()
+        .map(|r| r.source.clone())
+        .unwrap_or_else(|| "none".into());
+    st.setup_status = musubi_data::detect_setup_status(
+        &musubi_data::current_env_map(),
+        &state.project_root,
+        state.audit_db.as_ref(),
+    );
     Ok(st)
 }
 
@@ -57,8 +101,17 @@ fn get_state(state: tauri::State<AppState>) -> Result<musubi_data::State, String
 }
 
 #[tauri::command]
-fn action(kind: String, args: Vec<serde_json::Value>, state: tauri::State<AppState>) -> Result<(), String> {
-    let str_arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("").to_string();
+fn action(
+    kind: String,
+    args: Vec<serde_json::Value>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let str_arg = |i: usize| {
+        args.get(i)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     match kind.as_str() {
         "send_chat" => {
             let text = str_arg(0);
@@ -70,10 +123,16 @@ fn action(kind: String, args: Vec<serde_json::Value>, state: tauri::State<AppSta
                 "Acknowledged — re-checking the policy surface and re-tying threads to the audit for: “{}”",
                 &text.chars().take(72).collect::<String>()
             );
-            conn.execute("INSERT INTO chat_log(role,tone,text) VALUES('you',NULL,?1)", [&text])
-                .map_err(|e| e.to_string())?;
-            conn.execute("INSERT INTO chat_log(role,tone,text) VALUES('driver',NULL,?1)", [&ack])
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO chat_log(role,tone,text) VALUES('you',NULL,?1)",
+                [&text],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO chat_log(role,tone,text) VALUES('driver',NULL,?1)",
+                [&ack],
+            )
+            .map_err(|e| e.to_string())?;
         }
         "select_profile" => {
             let name = str_arg(0);
@@ -92,8 +151,8 @@ fn action(kind: String, args: Vec<serde_json::Value>, state: tauri::State<AppSta
         // Spawning agents / running pipelines is a write to the governed
         // substrate — it must go through the MCP server, not a direct DB write.
         // Wire these to musubi_spawn_subagent / the pipeline runner here.
-        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset"
-        | "run_pipe" | "stop_pipe" | "reset_pipe" => {
+        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset" | "run_pipe"
+        | "stop_pipe" | "reset_pipe" => {
             eprintln!("[musubi] pipeline action '{kind}' — route to MCP server (todo)");
         }
         other => eprintln!("[musubi] unknown action: {other}"),
@@ -103,10 +162,13 @@ fn action(kind: String, args: Vec<serde_json::Value>, state: tauri::State<AppSta
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let opened = open_configured_db();
     tauri::Builder::default()
         .manage(AppState {
-            db: Mutex::new(open_db()),
+            db: Mutex::new(opened.conn),
             paused: AtomicBool::new(false),
+            project_root: opened.project_root,
+            audit_db: opened.audit_db,
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {

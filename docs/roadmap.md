@@ -61,26 +61,9 @@ The pipeline and the single-agent host **coexist** — we are not removing
 the pipeline now. Near-term work grows the standalone host and the
 substrate; pipeline dissolution is postponed (see below).
 
-1. ✓ **`tools/fs.py` MCP tools** (`musubi_read_file/write_file/edit_file/
-   run_command`) — already wired; the file/command tool results flow
-   through the substrate (the biggest token sink).
-2. ✓ **Reversible compression core.** `musubi/compression/` (router +
-   native compressors + content-hash store) and the
-   `musubi_retrieve` tool. Zero-LLM, deterministic, pure Python.
-3. ✓ **Wire compression into input returns.** `musubi_read_file` /
-   `musubi_run_command` done and **on by default** (`MUSUBI_COMPRESS=0`
-   opts out per session/workspace); reversible via `musubi_retrieve`, so
-   default-on is safe. On-demand `musubi_compress` and efficiency
-   measurement landed: the blob store records each payload's
-   `original_chars`/`compressed_chars`, and `musubi_compression_stats`
-   aggregates the overall ratio, bytes saved, and a per-kind breakdown.
-   `musubi_read_stage` compresses permitted data after the evaluator
-   firewall, and `musubi_get_conversation` compresses message content with
-   per-message retrieve metadata. Native deterministic compressor upgrades
-   have landed for JSON shape summaries, Python structure summaries, log
-   pattern grouping, and heading-aware text outlines, learning from
-   Headroom's token-economics architecture without importing Headroom or
-   adding any substrate-side LLM call.
+1. ✓ **`tools/fs.py` MCP tools.** File/command tools are wired through the substrate.
+2. ✓ **Reversible compression core.** Deterministic blob-store compression plus `musubi_retrieve` landed.
+3. ✓ **Compression on input returns.** Tool/stage/conversation outputs compress by default, remain reversible, and expose stats.
 4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
    `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
    `genai_farm` on-prem gateway (SDK by default, curl fallback for an
@@ -132,30 +115,11 @@ core purpose is **context-window offloading** — a worker does bounded work
 in its own firewalled context and returns only a compact summary, keeping
 the orchestrator lean.
 
-- ✓ **One code path.** `run_agent` and `run_subagent` both route through
-  `run_unit` (`agent/run.py`); the duplicated loop body is gone. "worker"
-  is terminology only — the MCP tool / DB names keep the `subagent`
-  spelling for contract + audit stability (no rename, no migration).
-- ✓ **Frontmatter spawn firewall.** Each agent's `spawn_allowlist:` is
-  authoritative when present (`scripts/policy_engine.py`), with the
-  constant as the fail-closed fallback for installed wheels. The `"agent"`
-  special-case is dissolved.
-- ✓ **Parallel + background workers.** `_dispatch` runs a turn's spawns
-  concurrently (`asyncio.gather` + `to_thread` on the blocking
-  `vendor.call`), ordered results, a per-role width guard, and depth-2
-  nesting (spawn-capable workers summon their own workers). A spike chose
-  the shared-MCP-session design over per-worker subprocesses (~9× faster
-  for small N, zero SQLite contention).
-- ✓ **Agent summons a pipeline.** A pipeline is an ordered recipe of
-  workers (`agent/pipeline_runner.py` + the zero-LLM `musubi_spawn_pipeline`
-  / `musubi_spawn_pipeline_stage` tools); the prior stage's summary feeds
-  the next and the evaluator sees only the prior stage (HI #3). This is the
-  worker-composition model, **not** a port of the schema-validated 4-stage
-  TS runner.
-- ✓ **User-defined pipelines from presets.** A preset
-  (`.github/pipelines/presets/<id>.yaml`) is a reusable worker/stage block;
-  a pipeline drops presets into a `stages:` list. `composer.validate_catalog_or_raise`
-  validates the catalog fail-closed at boot. Ships `dev-lite` as a sample.
+- ✓ **One code path.** Root and spawned workers both run through `agent/run.py::run_unit`.
+- ✓ **Frontmatter spawn firewall.** Role `spawn_allowlist:` metadata is authoritative, with fail-closed fallback.
+- ✓ **Parallel + background workers.** Turn spawns run concurrently with width guards and depth-2 nesting.
+- ✓ **Agent summons a pipeline.** Pipelines compose ordered workers while preserving evaluator firewall boundaries.
+- ✓ **User-defined pipelines from presets.** Preset YAML blocks compose user pipelines such as `dev-lite`.
 
 This advances the north star: the sub-agent split and the 4-stage shape
 were the ephemera; the worker model is where they re-home. The TS
@@ -167,30 +131,10 @@ Scope: learn the algorithms and architecture, not the runtime. Musubi
 does **not** add Headroom as a dependency or proxy, and HI #1 still holds:
 the substrate remains deterministic, pure Python, and zero-LLM.
 
-1. **[done] Baseline CCR compression.** Reversible blob store,
-   `musubi_retrieve`, deterministic JSON/code/log/text baseline
-   compressors, default-on `musubi_read_file` / `musubi_run_command`
-   wiring, on-demand `musubi_compress`, and `musubi_compression_stats`
-   are landed.
-2. **[done] Complete compression coverage.** Added compression to
-   `musubi_read_stage` after the evaluator firewall and to
-   `musubi_get_conversation`, preserving permission boundaries,
-   tool-call pairing, and retrieve markers.
-3. **[done] Smarter native compressors.** Replaced the minimal
-   compressors with native, deterministic strategies: JSON smart-crush
-   (schema/counts/samples/path stats), structural code compression
-   (Python AST first; conservative fallback for other languages), log
-   pattern grouping (normalized patterns + first/last examples), and
-   heading-aware text outline compression. `musubi_retrieve` remains the
-   source of truth, and the router skips any output that does not shrink
-   after marker overhead.
-4. **[done] LM-boundary context controls.** Terse prompting,
-   effort-token routing, Anthropic prompt-cache controls,
-   provider-native cached-token telemetry, and
-   `agent/context.py::fit_context` budgeted packing have landed. The
-   packing pass preserves system/tools/current task, keeps tool-call
-   pairing intact, compresses old tool outputs before trimming them, and
-   retains retrieve markers for any lossy view.
+1. **[done] Baseline CCR compression.** Reversible blob store, default-on file/command compression, `musubi_compress`, and stats landed.
+2. **[done] Complete compression coverage.** Stage and conversation reads now compress within existing permission boundaries.
+3. **[done] Smarter native compressors.** JSON, Python, log, and text compressors now use deterministic structural summaries.
+4. **[done] LM-boundary context controls.** Terse prompting, cache controls, effort routing, telemetry, and `fit_context` packing landed.
 5. **[planned] Cache hardening, output steering, and compression eval.**
    Build on the landed prompt-cache controls by hardening stable prompt
    prefixes and tool ordering, tighten tool-result formats, keep low
@@ -278,17 +222,9 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 
 ### GUI implementation steps
 
-1. **[done] Windows installer bootstrap.** CI builds a Windows-only desktop
-   installer artifact. The installed app opens without requiring Rust, Node,
-   or MSVC on the user's machine, and the trust strip reports whether it is
-   reading a real `audit.db` or seeded demo data.
-2. **[next] Setup-aware first run.** Reuse the existing `musubi setup`
-   doctor/profile logic from `musubi/setup_wizard.py` behind a GUI Settings /
-   First Run surface. The GUI should check Python, locate `musubi` and `agent`
-   even when the scripts directory is not on `PATH`, write or repair
-   `.musubi/llm.json`, test the selected profile, and choose a default
-   project audit DB path without asking the user to set `MUSUBI_DB` manually.
-3. **[planned] On-demand task launcher.** Add a Tauri command that launches
+1. **[done] Windows installer bootstrap.** CI builds the Windows desktop installer artifact and labels real vs missing audit data.
+2. **[done] Setup-aware first run.** Settings shows Python/CLI/profile/audit-DB discovery and links the static artifact.
+3. **[next] On-demand task launcher.** Add a Tauri command that launches
    one governed `agent "<task>"` process only when the user presses Run. The
    GUI passes the selected project root, profile, and audit DB path through the
    child process environment, streams stdout/stderr into the operator view, and

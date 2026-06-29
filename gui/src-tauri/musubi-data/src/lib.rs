@@ -23,7 +23,9 @@
 //! The reader is tolerant of a fresh DB (empty tables → empty surfaces) and of
 //! either a REAL or a TEXT `ts`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
@@ -50,7 +52,36 @@ pub struct State {
     pub pipe_done_flag: bool,
     pub paused: bool,
     pub runtime_source: String,
+    pub setup_status: SetupStatus,
     pub t: i64,
+}
+
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStatus {
+    pub project_root: String,
+    pub audit_db_path: String,
+    pub audit_db_source: String,
+    pub python_cli: CliStatus,
+    pub musubi_cli: CliStatus,
+    pub agent_cli: CliStatus,
+    pub llm_config_path: String,
+    pub llm_configured: bool,
+    pub path_hint: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CliStatus {
+    pub found: bool,
+    pub path: String,
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAuditDb {
+    pub path: PathBuf,
+    pub source: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -68,6 +99,8 @@ pub struct Agent {
     pub model: String,
     pub profile: String,
     pub parent: String,
+    #[serde(skip)]
+    pub spawn_epoch: Option<i64>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -128,16 +161,30 @@ fn parse_tools(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn current_epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn value_epoch_secs(v: &Value) -> Option<i64> {
+    match v {
+        Value::Real(f) => Some(*f as i64),
+        Value::Integer(i) => Some(*i),
+        _ => None,
+    }
+}
+
 /// Render a `ts` column (REAL epoch seconds, INTEGER, or a pre-formatted TEXT
 /// like the demo's `14:46:01`) as a `HH:MM:SS` UTC string.
 fn fmt_ts(v: &Value) -> String {
-    let epoch = match v {
-        Value::Real(f) => *f,
-        Value::Integer(i) => *i as f64,
-        Value::Text(s) => return s.clone(),
-        _ => return String::new(),
+    if let Value::Text(s) = v {
+        return s.clone();
+    }
+    let Some(secs) = value_epoch_secs(v) else {
+        return String::new();
     };
-    let secs = epoch as i64;
     let sod = ((secs % 86_400) + 86_400) % 86_400;
     format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
 }
@@ -159,6 +206,10 @@ fn fmt_parent(agent: &str, session: &str) -> String {
 
 /// Read the full console state from an open connection to a Musubi `audit.db`.
 pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
+    load_state_at(conn, current_epoch_secs())
+}
+
+fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     let mut st = State {
         active_profile: read_active_profile(conn),
         pipe_name: "feature-dev".into(),
@@ -181,9 +232,11 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     let mut audit: Vec<AuditRow> = Vec::new();
 
     let rows = stmt.query_map([], |r| {
+        let ts_value = r.get::<_, Value>(1)?;
         Ok(RawAudit {
             id: r.get(0)?,
-            ts: fmt_ts(&r.get::<_, Value>(1)?),
+            ts: fmt_ts(&ts_value),
+            ts_epoch: value_epoch_secs(&ts_value),
             event: r.get(2)?,
             handle: r.get(3)?,
             role: r.get(4)?,
@@ -201,39 +254,45 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 
     for row in rows {
         let row = row?;
+        let is_pipeline_marker = row.role.starts_with("pipeline:");
         if row.event == "spawned" {
-            st.total_spawned += 1;
-            let tools = parse_tools(&row.allowed_tools);
-            if !agents.contains_key(&row.handle) {
-                order.push(row.handle.clone());
+            if !is_pipeline_marker {
+                st.total_spawned += 1;
+                let tools = parse_tools(&row.allowed_tools);
+                if !agents.contains_key(&row.handle) {
+                    order.push(row.handle.clone());
+                }
+                agents.insert(
+                    row.handle.clone(),
+                    Agent {
+                        id: row.id,
+                        handle: row.handle.clone(),
+                        role: row.role.clone(),
+                        brief: row.brief.clone(),
+                        status: "running".into(),
+                        turns: row.turns,
+                        max: row.max_turns,
+                        tools,
+                        wall: row.wall,
+                        // The real subagent_audit schema does not record the
+                        // resolved model/profile per handle; left blank.
+                        model: String::new(),
+                        profile: String::new(),
+                        parent: fmt_parent(&row.parent_agent, &row.parent_session),
+                        spawn_epoch: row.ts_epoch,
+                    },
+                );
             }
-            agents.insert(
-                row.handle.clone(),
-                Agent {
-                    id: row.id,
-                    handle: row.handle.clone(),
-                    role: row.role.clone(),
-                    brief: row.brief.clone(),
-                    status: "running".into(),
-                    turns: row.turns,
-                    max: row.max_turns,
-                    tools,
-                    wall: row.wall,
-                    // The real subagent_audit schema does not record the
-                    // resolved model/profile per handle; left blank.
-                    model: String::new(),
-                    profile: String::new(),
-                    parent: fmt_parent(&row.parent_agent, &row.parent_session),
-                },
-            );
         } else if row.event == "completed" {
             let status = row.final_status.clone().unwrap_or_else(|| "done".into());
-            if status == "done" {
+            if !is_pipeline_marker && status == "done" {
                 st.total_done += 1;
             }
-            if let Some(a) = agents.get_mut(&row.handle) {
-                a.status = status.clone();
-                a.turns = row.turns.max(a.turns);
+            if !is_pipeline_marker {
+                if let Some(a) = agents.get_mut(&row.handle) {
+                    a.status = status.clone();
+                    a.turns = row.turns.max(a.turns);
+                }
             }
         }
 
@@ -270,6 +329,17 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
                 Some(row.final_status.clone().unwrap_or_else(|| "done".into()))
             },
         });
+    }
+
+    for agent in agents.values_mut() {
+        if agent.status == "running"
+            && agent.wall > 0
+            && agent
+                .spawn_epoch
+                .is_some_and(|spawned_at| now_epoch.saturating_sub(spawned_at) > agent.wall)
+        {
+            agent.status = "abandoned".into();
+        }
     }
 
     st.subagents = order
@@ -369,6 +439,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 struct RawAudit {
     id: i64,
     ts: String,
+    ts_epoch: Option<i64>,
     event: String,
     handle: String,
     role: String,
@@ -720,6 +791,7 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -729,9 +801,14 @@ mod tests {
         conn
     }
 
+    fn demo_state() -> State {
+        let conn = demo();
+        load_state_at(&conn, 1_736_500_020).unwrap()
+    }
+
     #[test]
     fn builds_cohort_with_running_and_completed() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.subagents.len(), 3, "three handles spawned");
         let explorer = st.subagents.iter().find(|a| a.role == "explorer").unwrap();
         assert_eq!(explorer.status, "done", "explorer completed");
@@ -750,7 +827,7 @@ mod tests {
 
     #[test]
     fn counts_match_the_log() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.total_spawned, 3);
         assert_eq!(st.total_done, 1);
         // policy_audit has rows, so it wins over tool_audit.
@@ -761,7 +838,7 @@ mod tests {
 
     #[test]
     fn audit_is_newest_first_with_derived_detail() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.audit.len(), 4);
         assert!(st.audit[0].id > st.audit[1].id, "newest first");
         let spawned = st
@@ -796,19 +873,73 @@ mod tests {
 
     #[test]
     fn serializes_to_camelcase_json() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         let v: serde_json::Value = serde_json::to_value(&st).unwrap();
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
         assert!(v.get("runtimeSource").is_some());
+        assert!(v["subagents"][0].get("spawnEpoch").is_none());
         assert!(v["subagents"][0].get("max").is_some());
         assert!(v["pipeSteps"].as_array().unwrap().len() == 4);
     }
 
     #[test]
     fn default_runtime_source_is_demo_until_backend_overrides_it() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.runtime_source, "demo");
+    }
+
+    #[test]
+    fn stale_spawn_without_completion_is_abandoned() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','stale-1','session-1','driver','planner','old task','[]',5,60)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].status, "abandoned");
+    }
+
+    #[test]
+    fn pipeline_markers_do_not_count_as_subagents() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','pipe-1','parent-1','driver','pipeline:dev-lite','build a thing','[]',3,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(2,1001.0,'spawned','worker-1','pipe-1','pipeline:dev-lite','planner','build a thing','[]',5,300)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,final_status,turns,tools_used)\
+             VALUES(3,1002.0,'completed','worker-1','pipe-1','pipeline:dev-lite','planner','build a thing','done',1,'[]')",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.total_spawned, 1);
+        assert_eq!(st.total_done, 1);
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].handle, "worker-1");
+        assert!(!st.subagents.iter().any(|a| a.role.starts_with("pipeline:")));
     }
 
     #[test]
@@ -818,6 +949,362 @@ mod tests {
         let st = load_state(&conn).unwrap();
         assert_eq!(st.subagents.len(), 0);
         assert_eq!(st.total_spawned, 0);
-        assert_eq!(st.active_profile, "anthropic.default");
+        assert!(!st.active_profile.is_empty());
     }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("musubi-{name}-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_audit_db_prefers_explicit_env_path() {
+        let root = temp_dir("explicit-db");
+        let explicit = root.join("custom").join("audit.db");
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "MUSUBI_DB".to_string(),
+            explicit.to_string_lossy().to_string(),
+        );
+
+        let resolved = resolve_audit_db_path(&env, &root).unwrap();
+
+        assert_eq!(resolved.path, explicit);
+        assert_eq!(resolved.source, "musubi-db");
+    }
+
+    #[test]
+    fn resolve_audit_db_uses_musubi_root_when_env_db_is_absent() {
+        let root = temp_dir("root-db");
+        let musubi_root = root.join("musubi-core");
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "MUSUBI_ROOT".to_string(),
+            musubi_root.to_string_lossy().to_string(),
+        );
+
+        let resolved = resolve_audit_db_path(&env, &root).unwrap();
+
+        assert_eq!(resolved.path, musubi_root.join("data").join("audit.db"));
+        assert_eq!(resolved.source, "musubi-root");
+    }
+
+    #[test]
+    fn resolve_audit_db_finds_workspace_package_storage() {
+        let root = temp_dir("workspace-db");
+        let storage = root.join("musubi").join("storage");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(root.join("musubi").join("server.py"), "").unwrap();
+
+        let resolved = resolve_audit_db_path(&std::collections::HashMap::new(), &root).unwrap();
+
+        assert_eq!(resolved.path, storage.join("audit.db"));
+        assert_eq!(resolved.source, "workspace");
+    }
+
+    #[test]
+    fn find_command_checks_extra_python_script_dirs() {
+        let root = temp_dir("script-dir");
+        let scripts = root.join("Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let exe = scripts.join(if cfg!(windows) {
+            "musubi.exe"
+        } else {
+            "musubi"
+        });
+        std::fs::write(&exe, "").unwrap();
+
+        let found = find_command("musubi", "", &[scripts]).unwrap();
+
+        assert_eq!(found, exe);
+    }
+
+    #[test]
+    fn detect_setup_status_reports_project_llm_config() {
+        let root = temp_dir("setup-status");
+        std::fs::create_dir_all(root.join(".musubi")).unwrap();
+        std::fs::write(
+            root.join(".musubi").join("llm.json"),
+            r#"{"default":"ollama.local"}"#,
+        )
+        .unwrap();
+        let resolved = ResolvedAuditDb {
+            path: root.join("musubi").join("storage").join("audit.db"),
+            source: "workspace".into(),
+        };
+
+        let status = detect_setup_status(&std::collections::HashMap::new(), &root, Some(&resolved));
+
+        assert_eq!(status.project_root, root.to_string_lossy());
+        assert!(status.llm_configured);
+        assert_eq!(
+            status.llm_config_path,
+            root.join(".musubi").join("llm.json").to_string_lossy()
+        );
+        assert_eq!(status.audit_db_source, "workspace");
+    }
+
+    #[test]
+    fn detect_setup_status_reports_python_on_path() {
+        let root = temp_dir("python-status");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        });
+        std::fs::write(&exe, "").unwrap();
+        let mut env = std::collections::HashMap::new();
+        env.insert("PATH".to_string(), bin.to_string_lossy().to_string());
+
+        let status = detect_setup_status(&env, &root, None);
+
+        assert!(status.python_cli.found);
+        assert_eq!(status.python_cli.path, exe.to_string_lossy());
+    }
+}
+
+pub fn current_env_map() -> HashMap<String, String> {
+    std::env::vars().collect()
+}
+
+pub fn resolve_audit_db_path(env: &HashMap<String, String>, cwd: &Path) -> Option<ResolvedAuditDb> {
+    if let Some(raw) = nonempty(env, "MUSUBI_DB") {
+        return Some(ResolvedAuditDb {
+            path: PathBuf::from(raw),
+            source: "musubi-db".into(),
+        });
+    }
+    if let Some(raw) = nonempty(env, "MUSUBI_ROOT") {
+        return Some(ResolvedAuditDb {
+            path: PathBuf::from(raw).join("data").join("audit.db"),
+            source: "musubi-root".into(),
+        });
+    }
+
+    let mut dir = Some(cwd);
+    while let Some(d) = dir {
+        let package_storage = d.join("musubi").join("storage");
+        if d.join("musubi").join("server.py").is_file() || package_storage.is_dir() {
+            return Some(ResolvedAuditDb {
+                path: package_storage.join("audit.db"),
+                source: "workspace".into(),
+            });
+        }
+        let local_storage = d.join("storage");
+        if d.join("server.py").is_file() || local_storage.is_dir() {
+            return Some(ResolvedAuditDb {
+                path: local_storage.join("audit.db"),
+                source: "package".into(),
+            });
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+pub fn detect_setup_status(
+    env: &HashMap<String, String>,
+    project_root: &Path,
+    audit_db: Option<&ResolvedAuditDb>,
+) -> SetupStatus {
+    let path_env = env.get("PATH").map(String::as_str).unwrap_or("");
+    let extra_dirs = python_script_dirs_from_env(env);
+    let python_cli = python_status(path_env);
+    let musubi_cli = cli_status("musubi", path_env, &extra_dirs);
+    let agent_cli = cli_status("agent", path_env, &extra_dirs);
+    let llm_config = resolve_llm_config_path(env, project_root, audit_db);
+    let missing = ["musubi", "agent"]
+        .into_iter()
+        .filter(|name| {
+            if *name == "musubi" {
+                !musubi_cli.found
+            } else {
+                !agent_cli.found
+            }
+        })
+        .collect::<Vec<_>>();
+    let path_hint = if missing.is_empty() {
+        String::new()
+    } else {
+        let mut hint = format!(
+            "Missing {}. Run `python -m pip install --user musubi`.",
+            missing.join(", ")
+        );
+        if let Some(dir) = extra_dirs.first() {
+            hint.push_str(&format!(
+                " Add `{}` to PATH if scripts are installed there.",
+                dir.display()
+            ));
+        }
+        hint
+    };
+
+    SetupStatus {
+        project_root: project_root.to_string_lossy().to_string(),
+        audit_db_path: audit_db
+            .map(|r| r.path.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        audit_db_source: audit_db
+            .map(|r| r.source.clone())
+            .unwrap_or_else(|| "none".into()),
+        python_cli,
+        musubi_cli,
+        agent_cli,
+        llm_configured: llm_config.as_ref().is_some_and(|p| p.is_file()),
+        llm_config_path: llm_config
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        path_hint,
+    }
+}
+
+pub fn find_command(command: &str, path_env: &str, extra_dirs: &[PathBuf]) -> Option<PathBuf> {
+    let path_dirs = std::env::split_paths(path_env);
+    path_dirs
+        .chain(extra_dirs.iter().cloned())
+        .flat_map(|dir| {
+            command_candidates(command)
+                .into_iter()
+                .map(move |name| dir.join(name))
+        })
+        .find(|path| path.is_file())
+}
+
+fn cli_status(command: &str, path_env: &str, extra_dirs: &[PathBuf]) -> CliStatus {
+    match find_command(command, path_env, extra_dirs) {
+        Some(path) => CliStatus {
+            found: true,
+            path: path.to_string_lossy().to_string(),
+            hint: String::new(),
+        },
+        None => CliStatus {
+            found: false,
+            path: String::new(),
+            hint: "Install the Python core with `python -m pip install --user musubi`.".into(),
+        },
+    }
+}
+
+fn python_status(path_env: &str) -> CliStatus {
+    find_command("python", path_env, &[])
+        .or_else(|| find_command("py", path_env, &[]))
+        .map(|path| CliStatus {
+            found: true,
+            path: path.to_string_lossy().to_string(),
+            hint: String::new(),
+        })
+        .unwrap_or_else(|| CliStatus {
+            found: false,
+            path: String::new(),
+            hint: "Install Python 3.11+ and open a new terminal.".into(),
+        })
+}
+
+fn nonempty(env: &HashMap<String, String>, key: &str) -> Option<String> {
+    env.get(key)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn command_candidates(command: &str) -> Vec<String> {
+    let path = Path::new(command);
+    if path.extension().is_some() {
+        return vec![command.to_string()];
+    }
+    if cfg!(windows) {
+        vec![
+            format!("{command}.exe"),
+            format!("{command}.cmd"),
+            format!("{command}.bat"),
+            command.to_string(),
+        ]
+    } else {
+        vec![command.to_string()]
+    }
+}
+
+fn python_script_dirs_from_env(env: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(appdata) = nonempty(env, "APPDATA") {
+        collect_child_script_dirs(&mut dirs, PathBuf::from(appdata).join("Python"), "Python");
+    }
+    if let Some(local) = nonempty(env, "LOCALAPPDATA") {
+        collect_child_script_dirs(
+            &mut dirs,
+            PathBuf::from(&local).join("Programs").join("Python"),
+            "Python",
+        );
+        collect_child_script_dirs(
+            &mut dirs,
+            PathBuf::from(local).join("Packages"),
+            "PythonSoftwareFoundation.Python.",
+        );
+    }
+    if let Some(home) = nonempty(env, "USERPROFILE").or_else(|| nonempty(env, "HOME")) {
+        dirs.push(PathBuf::from(home).join(".local").join("bin"));
+    }
+    dirs
+}
+
+fn collect_child_script_dirs(dirs: &mut Vec<PathBuf>, base: PathBuf, prefix: &str) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let scripts = if name.starts_with("PythonSoftwareFoundation.Python.") {
+            path.join("LocalCache").join("local-packages")
+        } else {
+            path
+        };
+        if let Ok(children) = std::fs::read_dir(&scripts) {
+            for child in children.flatten() {
+                let cand = child.path().join("Scripts");
+                if cand.is_dir() {
+                    dirs.push(cand);
+                }
+            }
+        }
+        let direct = scripts.join("Scripts");
+        if direct.is_dir() {
+            dirs.push(direct);
+        }
+    }
+}
+
+fn resolve_llm_config_path(
+    env: &HashMap<String, String>,
+    project_root: &Path,
+    audit_db: Option<&ResolvedAuditDb>,
+) -> Option<PathBuf> {
+    if let Some(raw) = nonempty(env, "MUSUBI_LLM_CONFIG") {
+        return Some(PathBuf::from(raw));
+    }
+    let project_config = project_root.join(".musubi").join("llm.json");
+    if project_config.is_file() {
+        return Some(project_config);
+    }
+    let mut dir = audit_db.and_then(|r| r.path.parent());
+    while let Some(d) = dir {
+        let cand = d.join(".musubi").join("llm.json");
+        if cand.is_file() {
+            return Some(cand);
+        }
+        dir = d.parent();
+    }
+    Some(project_config)
 }

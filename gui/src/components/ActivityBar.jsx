@@ -1,6 +1,6 @@
 import Box from '../lib/Box.jsx'
 
-// Left activity bar: woven-knot logo + the six view nav buttons + settings.
+// Left activity bar: woven-knot logo + view navigation.
 export default function ActivityBar({ vals }) {
   return (
     <div style={{ width: 60, flexShrink: 0, background: '#111721', borderRight: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '14px 0', gap: 6 }}>
@@ -35,7 +35,7 @@ export default function ActivityBar({ vals }) {
       </Box>
 
       <div style={{ flex: 1 }} />
-      <Box as="button" title="Settings" css="display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:10px;border:none;cursor:pointer;background:transparent;color:#5a5a62" hover="color:#cfcfd4">
+      <Box as="button" onClick={vals.selSettings} title="Settings" css={vals.settingsNav} hover="color:#cfcfd4">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none"><path d="M5 8 H19 M5 16 H19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /><circle cx="9" cy="8" r="2.1" fill="#111721" stroke="currentColor" strokeWidth="1.5" /><circle cx="15" cy="16" r="2.1" fill="#111721" stroke="currentColor" strokeWidth="1.5" /></svg>
       </Box>
     </div>

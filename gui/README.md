@@ -27,7 +27,7 @@ npm install
 npm run tauri:dev
 npm run tauri:build
 
-# Point the console at a real Musubi database:
+# Optional explicit database override:
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
@@ -43,15 +43,20 @@ cargo --version
 where.exe link
 ```
 
-Open a new terminal after installing these tools. Without `MUSUBI_DB` the app
-seeds an in-memory demo and labels the trust strip as `demo data`; with
-`MUSUBI_DB` set it labels the trust strip as `real audit.db`.
+Open a new terminal after installing these tools. The app reads `MUSUBI_DB`
+when set, then `MUSUBI_ROOT/data/audit.db`, then the nearest workspace
+`musubi/storage/audit.db`; if none is available it opens an empty in-memory
+state for first-run setup.
+The Settings view shows Python, `musubi`, `agent`, `.musubi/llm.json`, and the
+selected audit DB path.
 
 Icons are generated with `npm run icons`. For `.ico`/`.icns` generation, run
 `npm run tauri icon src-tauri/icons/icon.png`.
 
 The Windows Musubi installer bootstrap is produced by the
 [`Desktop build`](../.github/workflows/desktop.yml) GitHub Actions workflow.
+The setup-aware first-run artifact lives at
+[`artifacts/gui/setup_first_run_report.html`](../artifacts/gui/setup_first_run_report.html).
 
 ## Data Source
 
@@ -77,6 +82,7 @@ Six sections are backed by the Tauri backend:
 - **Audit**: append-only ledger, filterable by event type.
 - **Models**: LMRouter vendor profiles and active profile selection.
 - **Skills**: pushed/pulled catalog with the "default to skill, not agent" rule.
+- **Settings**: first-run checks for Python, CLIs, profile config, and audit DB.
 
 A persistent trust strip surfaces the Hard Invariants: zero-LLM substrate,
 fail-closed policy, append-only audit, and evaluator firewall.
@@ -85,7 +91,7 @@ fail-closed policy, append-only audit, and evaluator firewall.
 
 The desktop window accepts a view selector:
 
-- `?startView=orchestrator|pipeline|policy|audit|models|skills`
+- `?startView=orchestrator|pipeline|policy|audit|models|skills|settings`
 
 ## Layout
 
@@ -93,7 +99,7 @@ The desktop window accepts a view selector:
 src/
   App.jsx                  shell: activity bar + trust strip + view switch
   components/              ActivityBar, TrustStrip, ChatBody
-  views/                   Orchestrator, Pipeline, Policy, Audit, Models, Skills
+  views/                   Orchestrator, Pipeline, Policy, Audit, Models, Skills, Settings
   data/
     createSource.js        requires the Tauri desktop shell
     TauriSource.js         native IPC source: invoke, listen, actions

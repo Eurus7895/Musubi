@@ -170,12 +170,34 @@ export function buildViewModel(s, act) {
     }
   })
 
+  const sourceLabels = {
+    'musubi-db': 'MUSUBI_DB audit.db',
+    'musubi-root': 'MUSUBI_ROOT audit.db',
+    workspace: 'workspace audit.db',
+    package: 'package audit.db',
+    none: 'no audit DB',
+    demo: 'demo data',
+  }
+  const setup = s.setupStatus || {}
+  const setupRows = [
+    { label: 'Project root', value: setup.projectRoot || 'not detected', ok: !!setup.projectRoot },
+    { label: 'Audit DB', value: setup.auditDbPath || 'not configured', ok: !['demo', 'none'].includes(setup.auditDbSource) },
+    { label: 'Python', value: setup.pythonCli?.path || setup.pythonCli?.hint || 'not found', ok: !!setup.pythonCli?.found },
+    { label: 'musubi CLI', value: setup.musubiCli?.path || setup.musubiCli?.hint || 'not found', ok: !!setup.musubiCli?.found },
+    { label: 'agent CLI', value: setup.agentCli?.path || setup.agentCli?.hint || 'not found', ok: !!setup.agentCli?.found },
+    { label: 'LLM config', value: setup.llmConfigPath || 'not configured', ok: !!setup.llmConfigured },
+  ].map((row) => ({
+    ...row,
+    badge: row.ok ? 'OK' : 'CHECK',
+    badgeStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;font-weight:600;color:' + (row.ok ? '#54c79a' : '#e3b341') + ';background:' + (row.ok ? 'rgba(84,199,154,0.12)' : 'rgba(227,179,65,0.12)') + ';border:1px solid ' + (row.ok ? 'rgba(84,199,154,0.32)' : 'rgba(227,179,65,0.32)') + ';padding:2px 8px;border-radius:5px;flex-shrink:0',
+  }))
+
   return {
-    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills',
+    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
     view: s.view,
-    runtimeSourceLabel: s.runtimeSource === 'musubi-db' ? 'real audit.db' : 'demo data',
-    orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'),
-    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'),
+    runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
+    orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
+    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, runLabel, runAction, runStyle, pipeStatusText, onClearPipe: () => act.clearPipe(),
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
@@ -191,6 +213,6 @@ export function buildViewModel(s, act) {
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),
     auditFAll: auditBtn(s.auditFilter === 'all'), auditFSpawn: auditBtn(s.auditFilter === 'spawned'), auditFDone: auditBtn(s.auditFilter === 'completed'),
-    profiles, skills,
+    profiles, skills, setupRows, setupPathHint: setup.pathHint || '',
   }
 }

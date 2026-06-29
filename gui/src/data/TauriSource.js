@@ -13,7 +13,7 @@ const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile',
   'pipeSteps', 'pipeName', 'pipeRunning', 'pipeCur', 'pipeProg', 'pipeDoneFlag', 'paused', 't',
-  'runtimeSource',
+  'runtimeSource', 'setupStatus',
 ]
 
 export default class TauriSource {
@@ -28,7 +28,8 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default',
       pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
-      runtimeSource: 'demo',
+      runtimeSource: 'none',
+      setupStatus: emptySetupStatus(),
     }
   }
 
@@ -98,5 +99,20 @@ export default class TauriSource {
       resetPipe: () => this._action('reset_pipe'),
     }
     return this._actions
+  }
+}
+
+function emptySetupStatus() {
+  const cli = { found: false, path: '', hint: '' }
+  return {
+    projectRoot: '',
+    auditDbPath: '',
+    auditDbSource: 'none',
+    pythonCli: { found: false, path: '', hint: '' },
+    musubiCli: cli,
+    agentCli: cli,
+    llmConfigPath: '',
+    llmConfigured: false,
+    pathHint: '',
   }
 }
