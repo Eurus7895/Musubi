@@ -222,7 +222,7 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 
 ### GUI implementation steps
 
-1. **[done] Windows installer bootstrap.** CI builds the Windows desktop installer artifact and labels real vs demo data.
+1. **[done] Windows installer bootstrap.** CI builds the Windows desktop installer artifact and labels real vs missing audit data.
 2. **[done] Setup-aware first run.** Settings shows Python/CLI/profile/audit-DB discovery and links the static artifact.
 3. **[next] On-demand task launcher.** Add a Tauri command that launches
    one governed `agent "<task>"` process only when the user presses Run. The

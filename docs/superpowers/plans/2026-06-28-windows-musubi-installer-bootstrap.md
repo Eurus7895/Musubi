@@ -161,7 +161,7 @@ st.runtime_source = if std::env::var("MUSUBI_DB").ok().filter(|s| !s.is_empty())
 In `gui/src/model/viewModel.js`, add:
 
 ```js
-runtimeSourceLabel: s.runtimeSource === 'musubi-db' ? 'real audit.db' : 'demo data',
+runtimeSourceLabel: s.runtimeSource === 'musubi-db' ? 'real audit.db' : 'no audit DB',
 ```
 
 In `gui/src/components/TrustStrip.jsx`, append that label to the trust pills.

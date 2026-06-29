@@ -256,8 +256,8 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 
 - **Local Tauri dev** reads a real `audit.db` when it can infer one from
   `MUSUBI_DB`, `MUSUBI_ROOT/data/audit.db`, or the nearest workspace
-  `musubi/storage/audit.db`. If none is found, it seeds an in-memory demo so
-  it runs standalone. On Windows, install Rustup with
+  `musubi/storage/audit.db`. If none is found, it opens an empty in-memory
+  first-run state. On Windows, install Rustup with
   `winget install --id Rustlang.Rustup -e`, install Visual Studio Build Tools
   with the C++ workload, open a new terminal, and confirm `cargo --version` and
   `where.exe link` before running `npm run tauri:dev`.
@@ -268,7 +268,8 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 
 A persistent **trust strip** surfaces the Hard Invariants (zero-LLM substrate,
 fail-closed policy, append-only audit, evaluator firewall), the active model,
-and whether the GUI is reading a real `audit.db` or fallback demo data.
+and whether the GUI is reading a real `audit.db` or no audit DB has been
+configured yet.
 
 | View | Shows | Backed by |
 |---|---|---|
@@ -295,7 +296,7 @@ IPC and has no standalone demo source. The supported URL option is
 |---|---|
 | Fonts look generic | IBM Plex loads from Google Fonts; offline it falls back to system fonts. Layout/colours unaffected. |
 | `link.exe not found` on Windows | Install Visual Studio Build Tools with the C++ workload, then open a new terminal. |
-| App shows demo data | No audit DB was inferred. Open Settings to see the checked project root, or set `MUSUBI_DB` to an absolute `audit.db` path. |
+| App shows no audit data | No audit DB was inferred. Open Settings to see the checked project root, or set `MUSUBI_DB` to an absolute `audit.db` path. |
 
 Setup-aware first-run artifact:
 [`artifacts/gui/setup_first_run_report.html`](../artifacts/gui/setup_first_run_report.html)

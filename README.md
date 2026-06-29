@@ -291,7 +291,7 @@ Run local console npm commands from the repository root. The root
 
 Seven views (Orchestrator / Pipeline studio / Policy / Audit / Models / Skills /
 Settings). The trust strip shows whether the app is reading an explicit,
-root-derived, workspace, package, or demo `audit.db`. Settings shows first-run
+root-derived, workspace, package, or no configured `audit.db`. Settings shows first-run
 checks for Python, `musubi`, `agent`, `.musubi/llm.json`, and the selected audit
 DB. Full walkthrough: [`docs/guide.md`](./docs/guide.md), Console section.
 Static first-run artifact:

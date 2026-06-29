@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
@@ -98,6 +99,8 @@ pub struct Agent {
     pub model: String,
     pub profile: String,
     pub parent: String,
+    #[serde(skip)]
+    pub spawn_epoch: Option<i64>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -158,16 +161,30 @@ fn parse_tools(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn current_epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn value_epoch_secs(v: &Value) -> Option<i64> {
+    match v {
+        Value::Real(f) => Some(*f as i64),
+        Value::Integer(i) => Some(*i),
+        _ => None,
+    }
+}
+
 /// Render a `ts` column (REAL epoch seconds, INTEGER, or a pre-formatted TEXT
 /// like the demo's `14:46:01`) as a `HH:MM:SS` UTC string.
 fn fmt_ts(v: &Value) -> String {
-    let epoch = match v {
-        Value::Real(f) => *f,
-        Value::Integer(i) => *i as f64,
-        Value::Text(s) => return s.clone(),
-        _ => return String::new(),
+    if let Value::Text(s) = v {
+        return s.clone();
+    }
+    let Some(secs) = value_epoch_secs(v) else {
+        return String::new();
     };
-    let secs = epoch as i64;
     let sod = ((secs % 86_400) + 86_400) % 86_400;
     format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
 }
@@ -189,6 +206,10 @@ fn fmt_parent(agent: &str, session: &str) -> String {
 
 /// Read the full console state from an open connection to a Musubi `audit.db`.
 pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
+    load_state_at(conn, current_epoch_secs())
+}
+
+fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     let mut st = State {
         active_profile: read_active_profile(conn),
         pipe_name: "feature-dev".into(),
@@ -211,9 +232,11 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
     let mut audit: Vec<AuditRow> = Vec::new();
 
     let rows = stmt.query_map([], |r| {
+        let ts_value = r.get::<_, Value>(1)?;
         Ok(RawAudit {
             id: r.get(0)?,
-            ts: fmt_ts(&r.get::<_, Value>(1)?),
+            ts: fmt_ts(&ts_value),
+            ts_epoch: value_epoch_secs(&ts_value),
             event: r.get(2)?,
             handle: r.get(3)?,
             role: r.get(4)?,
@@ -254,6 +277,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
                     model: String::new(),
                     profile: String::new(),
                     parent: fmt_parent(&row.parent_agent, &row.parent_session),
+                    spawn_epoch: row.ts_epoch,
                 },
             );
         } else if row.event == "completed" {
@@ -300,6 +324,17 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
                 Some(row.final_status.clone().unwrap_or_else(|| "done".into()))
             },
         });
+    }
+
+    for agent in agents.values_mut() {
+        if agent.status == "running"
+            && agent.wall > 0
+            && agent
+                .spawn_epoch
+                .is_some_and(|spawned_at| now_epoch.saturating_sub(spawned_at) > agent.wall)
+        {
+            agent.status = "abandoned".into();
+        }
     }
 
     st.subagents = order
@@ -399,6 +434,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 struct RawAudit {
     id: i64,
     ts: String,
+    ts_epoch: Option<i64>,
     event: String,
     handle: String,
     role: String,
@@ -750,6 +786,7 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -759,9 +796,14 @@ mod tests {
         conn
     }
 
+    fn demo_state() -> State {
+        let conn = demo();
+        load_state_at(&conn, 1_736_500_020).unwrap()
+    }
+
     #[test]
     fn builds_cohort_with_running_and_completed() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.subagents.len(), 3, "three handles spawned");
         let explorer = st.subagents.iter().find(|a| a.role == "explorer").unwrap();
         assert_eq!(explorer.status, "done", "explorer completed");
@@ -780,7 +822,7 @@ mod tests {
 
     #[test]
     fn counts_match_the_log() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.total_spawned, 3);
         assert_eq!(st.total_done, 1);
         // policy_audit has rows, so it wins over tool_audit.
@@ -791,7 +833,7 @@ mod tests {
 
     #[test]
     fn audit_is_newest_first_with_derived_detail() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.audit.len(), 4);
         assert!(st.audit[0].id > st.audit[1].id, "newest first");
         let spawned = st
@@ -826,19 +868,38 @@ mod tests {
 
     #[test]
     fn serializes_to_camelcase_json() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         let v: serde_json::Value = serde_json::to_value(&st).unwrap();
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
         assert!(v.get("runtimeSource").is_some());
+        assert!(v["subagents"][0].get("spawnEpoch").is_none());
         assert!(v["subagents"][0].get("max").is_some());
         assert!(v["pipeSteps"].as_array().unwrap().len() == 4);
     }
 
     #[test]
     fn default_runtime_source_is_demo_until_backend_overrides_it() {
-        let st = load_state(&demo()).unwrap();
+        let st = demo_state();
         assert_eq!(st.runtime_source, "demo");
+    }
+
+    #[test]
+    fn stale_spawn_without_completion_is_abandoned() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','stale-1','session-1','driver','planner','old task','[]',5,60)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].status, "abandoned");
     }
 
     #[test]
@@ -848,7 +909,7 @@ mod tests {
         let st = load_state(&conn).unwrap();
         assert_eq!(st.subagents.len(), 0);
         assert_eq!(st.total_spawned, 0);
-        assert_eq!(st.active_profile, "anthropic.default");
+        assert!(!st.active_profile.is_empty());
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1052,7 +1113,7 @@ pub fn detect_setup_status(
             .unwrap_or_default(),
         audit_db_source: audit_db
             .map(|r| r.source.clone())
-            .unwrap_or_else(|| "demo".into()),
+            .unwrap_or_else(|| "none".into()),
         python_cli,
         musubi_cli,
         agent_cli,

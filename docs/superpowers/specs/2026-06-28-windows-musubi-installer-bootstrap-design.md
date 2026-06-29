@@ -48,8 +48,8 @@ aligns their UX:
 1. `musubi setup` checks and reports whether the CLI pair is usable.
 2. The setup wizard explains that the Windows desktop installer is the primary
    GUI path and that local GUI development is optional.
-3. The GUI backend reports whether it is reading a real `MUSUBI_DB` or fallback
-   demo data.
+3. The GUI backend reports whether it is reading a real `MUSUBI_DB` or has no
+   configured audit DB yet.
 4. Documentation and release text describe the artifact as the Musubi Windows
    installer bootstrap.
 
@@ -59,8 +59,8 @@ The GUI remains attached to Musubi through configuration and SQLite:
 
 - `MUSUBI_DB` points the GUI at the real append-only audit database.
 - `MUSUBI_LLM_CONFIG` points the GUI at `.musubi/llm.json` for profile display.
-- If `MUSUBI_DB` is unset, the GUI uses the existing in-memory demo database and
-  surfaces that state clearly.
+- If `MUSUBI_DB` is unset and no audit DB can be inferred, the GUI uses an empty
+  in-memory first-run state and surfaces that state clearly.
 
 The Python core remains the source of truth for `musubi setup`, MCP serving,
 agent execution, policy, compression, and audit writes.
@@ -75,7 +75,8 @@ The bootstrap should fail soft and tell the user what to do next:
   directory and a `setx PATH` repair command.
 - Missing GUI build tools: keep the existing Rust/MSVC diagnostics for local
   development only.
-- Missing `MUSUBI_DB`: run the demo database, but label it as demo/fallback.
+- Missing `MUSUBI_DB`: open empty first-run state and point Settings at the
+  checked project root and audit DB search order.
 
 ## Testing
 

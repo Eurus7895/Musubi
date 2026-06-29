@@ -6,14 +6,15 @@ state the UI renders. DB selection order:
 1. `MUSUBI_DB`
 2. `MUSUBI_ROOT/data/audit.db`
 3. nearest workspace `musubi/storage/audit.db`
-4. seeded in-memory demo DB
+4. empty in-memory first-run state
 
 ```bash
 MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
 ```
 
-When no real DB can be inferred, an in-memory **demo** DB is seeded
-(`seed_demo`) so the app runs standalone with representative data.
+When no real DB can be inferred, the app initializes the schema in memory and
+shows empty surfaces. `seed_demo` remains available for unit tests and static
+artifacts, but runtime first-run state is not simulated.
 
 The reader maps the **real** tables the Musubi substrate writes
 (`musubi/storage/subagent_audit.py`, `scripts/post_tool_use.py`) — column

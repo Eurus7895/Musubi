@@ -45,7 +45,8 @@ where.exe link
 
 Open a new terminal after installing these tools. The app reads `MUSUBI_DB`
 when set, then `MUSUBI_ROOT/data/audit.db`, then the nearest workspace
-`musubi/storage/audit.db`; if none is available it seeds an in-memory demo.
+`musubi/storage/audit.db`; if none is available it opens an empty in-memory
+state for first-run setup.
 The Settings view shows Python, `musubi`, `agent`, `.musubi/llm.json`, and the
 selected audit DB path.
 

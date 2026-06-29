@@ -175,12 +175,13 @@ export function buildViewModel(s, act) {
     'musubi-root': 'MUSUBI_ROOT audit.db',
     workspace: 'workspace audit.db',
     package: 'package audit.db',
+    none: 'no audit DB',
     demo: 'demo data',
   }
   const setup = s.setupStatus || {}
   const setupRows = [
     { label: 'Project root', value: setup.projectRoot || 'not detected', ok: !!setup.projectRoot },
-    { label: 'Audit DB', value: setup.auditDbPath || 'demo data', ok: setup.auditDbSource !== 'demo' },
+    { label: 'Audit DB', value: setup.auditDbPath || 'not configured', ok: !['demo', 'none'].includes(setup.auditDbSource) },
     { label: 'Python', value: setup.pythonCli?.path || setup.pythonCli?.hint || 'not found', ok: !!setup.pythonCli?.found },
     { label: 'musubi CLI', value: setup.musubiCli?.path || setup.musubiCli?.hint || 'not found', ok: !!setup.musubiCli?.found },
     { label: 'agent CLI', value: setup.agentCli?.path || setup.agentCli?.hint || 'not found', ok: !!setup.agentCli?.found },

@@ -7,8 +7,8 @@
 //!   - `action`           → mutating actions (chat, profile, pipeline)
 //!   - `state://update`   → emitted ~1×/s by a background poller as audit.db grows
 //!
-//! Data source: the file at `$MUSUBI_DB` (Musubi's `storage/audit.db`). When
-//! unset, an in-memory demo DB is seeded so the app runs standalone.
+//! Data source: the configured Musubi `audit.db`. When no database can be
+//! resolved, the console opens an empty in-memory schema for first-run setup.
 
 use std::path::PathBuf;
 use std::sync::{
@@ -38,8 +38,8 @@ fn open_db() -> Connection {
         }
         _ => {
             let conn = Connection::open_in_memory().expect("open in-memory db");
-            musubi_data::seed_demo(&conn).expect("seed demo");
-            eprintln!("[musubi] MUSUBI_DB not set — using in-memory demo data");
+            musubi_data::init_schema(&conn).expect("init empty schema");
+            eprintln!("[musubi] MUSUBI_DB not set — using empty in-memory state");
             conn
         }
     }
@@ -70,7 +70,7 @@ fn open_configured_db() -> OpenedDb {
     }
 
     let conn = open_db();
-    eprintln!("[musubi] no audit.db source found; using in-memory demo data");
+    eprintln!("[musubi] no audit.db source found; using empty in-memory state");
     OpenedDb {
         conn,
         project_root,
@@ -86,7 +86,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         .audit_db
         .as_ref()
         .map(|r| r.source.clone())
-        .unwrap_or_else(|| "demo".into());
+        .unwrap_or_else(|| "none".into());
     st.setup_status = musubi_data::detect_setup_status(
         &musubi_data::current_env_map(),
         &state.project_root,

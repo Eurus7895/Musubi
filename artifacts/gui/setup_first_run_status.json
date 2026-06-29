@@ -6,7 +6,7 @@
     "MUSUBI_DB",
     "MUSUBI_ROOT/data/audit.db",
     "nearest workspace musubi/storage/audit.db",
-    "seeded in-memory demo database"
+    "empty in-memory first-run state"
   ],
   "settings_checks": [
     "Project root",
@@ -27,7 +27,7 @@
     "musubi-root": "MUSUBI_ROOT/data/audit.db",
     "workspace": "Nearest workspace musubi/storage/audit.db",
     "package": "Package-local storage/audit.db",
-    "demo": "Seeded in-memory demo data"
+    "none": "No configured audit.db; empty first-run state"
   },
   "verification": [
     "cargo test --manifest-path gui/src-tauri/musubi-data/Cargo.toml",

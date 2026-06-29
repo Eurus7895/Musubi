@@ -28,7 +28,7 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default',
       pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
-      runtimeSource: 'demo',
+      runtimeSource: 'none',
       setupStatus: emptySetupStatus(),
     }
   }
@@ -107,7 +107,7 @@ function emptySetupStatus() {
   return {
     projectRoot: '',
     auditDbPath: '',
-    auditDbSource: 'demo',
+    auditDbSource: 'none',
     pythonCli: { found: false, path: '', hint: '' },
     musubiCli: cli,
     agentCli: cli,
