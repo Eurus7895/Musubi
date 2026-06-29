@@ -1,0 +1,38 @@
+{
+  "feature": "GUI setup-aware first run",
+  "roadmap_step": "GUI implementation Step 2",
+  "status": "done",
+  "db_selection_order": [
+    "MUSUBI_DB",
+    "MUSUBI_ROOT/data/audit.db",
+    "nearest workspace musubi/storage/audit.db",
+    "seeded in-memory demo database"
+  ],
+  "settings_checks": [
+    "Project root",
+    "Audit DB",
+    "Python",
+    "musubi CLI",
+    "agent CLI",
+    "LLM config"
+  ],
+  "contract": {
+    "zero_llm": true,
+    "tauri_only": true,
+    "always_on_agent_process": false,
+    "writes_append_only_audit_tables": false
+  },
+  "example_runtime_sources": {
+    "musubi-db": "Explicit MUSUBI_DB audit.db",
+    "musubi-root": "MUSUBI_ROOT/data/audit.db",
+    "workspace": "Nearest workspace musubi/storage/audit.db",
+    "package": "Package-local storage/audit.db",
+    "demo": "Seeded in-memory demo data"
+  },
+  "verification": [
+    "cargo test --manifest-path gui/src-tauri/musubi-data/Cargo.toml",
+    "npm run build --workspace gui",
+    "python -m pytest musubi/tests/test_setup_wizard.py -q -p no:cacheprovider",
+    "git diff --check"
+  ]
+}

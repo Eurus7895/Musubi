@@ -282,13 +282,16 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev
    installer artifact. The installed app opens without requiring Rust, Node,
    or MSVC on the user's machine, and the trust strip reports whether it is
    reading a real `audit.db` or seeded demo data.
-2. **[next] Setup-aware first run.** Reuse the existing `musubi setup`
-   doctor/profile logic from `musubi/setup_wizard.py` behind a GUI Settings /
-   First Run surface. The GUI should check Python, locate `musubi` and `agent`
-   even when the scripts directory is not on `PATH`, write or repair
-   `.musubi/llm.json`, test the selected profile, and choose a default
-   project audit DB path without asking the user to set `MUSUBI_DB` manually.
-3. **[planned] On-demand task launcher.** Add a Tauri command that launches
+2. **[done] Setup-aware first run.** The GUI now opens a Settings / First Run
+   surface backed by the Rust core. It checks Python, locates `musubi` and
+   `agent` on `PATH` plus common Python user script directories, reports the
+   active `.musubi/llm.json`, and chooses an audit DB without requiring manual
+   `MUSUBI_DB`: explicit `MUSUBI_DB` wins, then `MUSUBI_ROOT/data/audit.db`,
+   then the nearest workspace `musubi/storage/audit.db`, else seeded demo data.
+   Profile editing and live profile testing still belong to `musubi setup`
+   until the launcher slice adds process orchestration. Static artifact:
+   [`artifacts/gui/setup_first_run_report.html`](../artifacts/gui/setup_first_run_report.html).
+3. **[next] On-demand task launcher.** Add a Tauri command that launches
    one governed `agent "<task>"` process only when the user presses Run. The
    GUI passes the selected project root, profile, and audit DB path through the
    child process environment, streams stdout/stderr into the operator view, and

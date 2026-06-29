@@ -7,6 +7,7 @@ import Policy from './views/Policy.jsx'
 import Audit from './views/Audit.jsx'
 import Models from './views/Models.jsx'
 import Skills from './views/Skills.jsx'
+import Settings from './views/Settings.jsx'
 
 const VIEWS = {
   orchestrator: Orchestrator,
@@ -15,6 +16,7 @@ const VIEWS = {
   audit: Audit,
   models: Models,
   skills: Skills,
+  settings: Settings,
 }
 
 export default function App(props) {

@@ -270,7 +270,8 @@ Local Windows developer path:
 
 ```bash
 npm install
-MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # desktop, real DB
+npm run tauri:dev                                      # desktop, auto-detect DB
+MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 ```
 
 `npm run tauri:dev` requires Rust's `cargo` binary and the MSVC linker. If
@@ -288,10 +289,13 @@ where.exe link
 Run local console npm commands from the repository root. The root
 `package.json` delegates to the GUI workspace in `gui/`.
 
-Six views (Orchestrator · Pipeline studio · Policy · Audit · Models ·
-Skills). The trust strip shows whether the app is reading a real `audit.db` or
-fallback demo data. Without `MUSUBI_DB` it seeds a demo. Full
-walkthrough: [`docs/guide.md`](./docs/guide.md) § Console.
+Seven views (Orchestrator / Pipeline studio / Policy / Audit / Models / Skills /
+Settings). The trust strip shows whether the app is reading an explicit,
+root-derived, workspace, package, or demo `audit.db`. Settings shows first-run
+checks for Python, `musubi`, `agent`, `.musubi/llm.json`, and the selected audit
+DB. Full walkthrough: [`docs/guide.md`](./docs/guide.md), Console section.
+Static first-run artifact:
+[`artifacts/gui/setup_first_run_report.html`](./artifacts/gui/setup_first_run_report.html).
 
 ## VS Code extension (Copilot surface)
 
