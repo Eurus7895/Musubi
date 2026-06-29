@@ -1,0 +1,39 @@
+{
+  "status": "done",
+  "roadmap_steps": [
+    {
+      "step": 4,
+      "name": "Finish single-agent host parity",
+      "summary": "Standalone agent parity now includes model-agnostic vendors, external-MCP federation, deterministic context controls, BudgetEnforcer credit caps, cycle usage telemetry, and multi-turn CLI persistence."
+    },
+    {
+      "step": 5,
+      "name": "Control at the boundary",
+      "summary": "Standalone Musubi tool calls now pass deterministic PreToolUse policy checks and append PostToolUse audit rows, with policy verdicts and tool outcomes written to audit storage."
+    }
+  ],
+  "capabilities": [
+    {
+      "name": "Multi-turn CLI persistence",
+      "evidence": "agent --chat-id stores user and assistant turns in conversation_messages and replays bounded history on the next run."
+    },
+    {
+      "name": "BudgetEnforcer in the standalone host",
+      "evidence": "--max-credits and MUSUBI_AGENT_MAX_CREDITS gate LM calls and surface token/credit telemetry in cycle logs."
+    },
+    {
+      "name": "Shared worker path",
+      "evidence": "Root tasks, workers, and summoned pipeline stages share agent/run.py::run_unit with passed-through budget and telemetry state."
+    },
+    {
+      "name": "PreToolUse boundary",
+      "evidence": "Model-requested musubi_* tool calls are role-checked before dispatch and denied fail-closed when outside the allowed surface."
+    },
+    {
+      "name": "PostToolUse audit",
+      "evidence": "Allowed, denied, refused, and errored Musubi tool calls append audit rows to policy_audit and tool_audit."
+    }
+  ],
+  "external_mcp_boundary": "Federated external MCP tools remain outside Musubi governance in this slice; they are driver-routed convenience tools, not substrate-controlled tools.",
+  "verification_note": "Local Python was unavailable on this workstation, so the new pytest coverage was written but could not be executed locally."
+}

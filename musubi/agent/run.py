@@ -33,6 +33,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,19 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from agent.context import build_system_prompt, effort_floor, fit_context
+from agent.budget import (
+    BudgetEnforcer,
+    BudgetExhaustedError,
+    estimate_call_credits,
+    estimate_tokens_from_chars,
+)
+from agent.boundary import (
+    evaluate_tool_call,
+    is_musubi_tool,
+    json_args,
+    record_policy_decision,
+    record_tool_audit,
+)
 from agent.mcp_gateway import (
     McpGateway,
     find_mcp_config_path,
@@ -51,6 +65,8 @@ from agent.mcp_gateway import (
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
+
+DEFAULT_AGENT_MAX_CREDITS = 30.0
 
 #: Ceiling for output tokens; effort routing starts below this and escalates
 #: to it only when a cycle actually stops on `max_tokens`.
@@ -104,6 +120,31 @@ class Orchestration:
         return self.enabled and self.depth < self.max_depth
 
 
+@dataclass
+class AgentRunStats:
+    """Cumulative telemetry for one CLI turn across root and workers."""
+
+    cycles: int = 0
+    lm_ms: int = 0
+    tokens_in_estimate: int = 0
+    tokens_out_estimate: int = 0
+    credits: float = 0.0
+
+    def record_cycle(
+        self,
+        *,
+        lm_ms: int,
+        tokens_in: int,
+        tokens_out: int,
+        credits: float,
+    ) -> None:
+        self.cycles += 1
+        self.lm_ms += lm_ms
+        self.tokens_in_estimate += tokens_in
+        self.tokens_out_estimate += tokens_out
+        self.credits += credits
+
+
 # ── Public entry ────────────────────────────────────────────────────────────
 
 
@@ -116,6 +157,8 @@ async def run_agent(
     log: Any = sys.stderr,
     mcp_config: str | os.PathLike[str] | None = None,
     vendor_source: str | None = None,
+    chat_id: str | None = None,
+    max_credits: float | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -129,6 +172,10 @@ async def run_agent(
     server_path = musubi_dir / "server.py"
     server_env = _server_env()
     context_compression_db_path = _server_db_path(musubi_dir, server_env)
+    audit_db_path = _server_audit_db_path(musubi_dir, server_env)
+    turn_started_at = time.time()
+    stats = AgentRunStats()
+    budget = _build_budget(max_credits, log)
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -142,6 +189,7 @@ async def run_agent(
     # at every call site (including main()).
     final_answer: str | None = None
     loop_error: BaseException | None = None
+    parent_session_id: str | None = None
 
     # One AsyncExitStack owns Musubi's session AND every federated external
     # session, so they all open in order and tear down (LIFO) together. This
@@ -198,9 +246,24 @@ async def run_agent(
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        orchestration = Orchestration(
-            parent_session_id=await _open_parent_session(session, task, log),
-        )
+        parent_session_id = await _open_parent_session(session, task, log)
+        orchestration = Orchestration(parent_session_id=parent_session_id)
+        system_prompt = build_system_prompt()
+        initial_messages: list[dict[str, Any]] | None = None
+        if chat_id:
+            _append_chat_message(
+                chat_id, "user", task,
+                db_path=context_compression_db_path, log=log,
+            )
+            history = _load_chat_history(
+                chat_id, db_path=context_compression_db_path, log=log,
+            )
+            initial_messages = _messages_from_chat_history(system_prompt, history)
+            print(
+                f"[agent] chat_id={chat_id} replay_messages="
+                f"{max(0, len(initial_messages) - 1)}",
+                file=log,
+            )
 
         # Catch a loop failure (an LLM/network error from `vendor.call`, a
         # dispatch error) HERE, inside the `async with`, and stash it. Letting
@@ -216,12 +279,17 @@ async def run_agent(
         try:
             final_answer, _ = await run_unit(
                 session, vendor, tools,
-                system_prompt=build_system_prompt(),
+                system_prompt=system_prompt,
                 user_message=task,
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
                 salvage_on_exhaust=True,
                 compression_db_path=context_compression_db_path,
+                initial_messages=initial_messages,
+                role="agent",
+                stats=stats,
+                budget=budget,
+                audit_db_path=audit_db_path,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -236,6 +304,22 @@ async def run_agent(
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
+    if chat_id:
+        _append_chat_message(
+            chat_id, "assistant", final_answer,
+            db_path=context_compression_db_path, log=log,
+        )
+        _record_agent_turn(
+            chat_id=chat_id,
+            parent_session_id=parent_session_id,
+            started_at=turn_started_at,
+            ended_at=time.time(),
+            model_family=vendor.model,
+            stats=stats,
+            db_path=context_compression_db_path,
+            log=log,
+        )
+    _log_turn_usage(log, stats, budget)
     return final_answer
 
 
@@ -252,6 +336,10 @@ async def _run_loop(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    role: str = "agent",
+    stats: AgentRunStats | None = None,
+    budget: BudgetEnforcer | None = None,
+    audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -277,15 +365,40 @@ async def _run_loop(
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages, compression_db_path=compression_db_path)
+        input_tokens_est = _estimate_input_tokens(messages, tools)
+        _check_budget_preflight(
+            budget, vendor.model, input_tokens_est, log,
+        )
         # `vendor.call` is synchronous (blocking network I/O). Run it off the
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
         # round-trip instead of serializing. Single-loop cost is one thread hop.
+        lm_started = time.perf_counter()
         resp = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
+        lm_ms = int((time.perf_counter() - lm_started) * 1000)
+        tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+            resp, input_tokens_est,
+        )
+        cycle_credits = estimate_call_credits(
+            vendor.model, tokens_in, tokens_out, cached_tokens,
+        )
+        if stats is not None:
+            stats.record_cycle(
+                lm_ms=lm_ms,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                credits=cycle_credits,
+            )
+        _charge_budget_postflight(
+            budget, vendor.model, cycle_credits, log,
+        )
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
+        _log_cycle_cost(
+            log, cycle, lm_ms, tokens_in, tokens_out, cycle_credits, budget,
+        )
 
         text = _extract_text(resp.content)
         if text:
@@ -300,6 +413,10 @@ async def _run_loop(
             vendor=vendor, tools=(spawn_catalog or tools),
             orchestration=orchestration, gateway=gateway,
             compression_db_path=compression_db_path,
+            role=role,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -324,9 +441,37 @@ async def _run_loop(
                 file=log,
             )
             try:
+                final_messages = fit_context(
+                    messages, compression_db_path=compression_db_path,
+                )
+                input_tokens_est = _estimate_input_tokens(final_messages, [])
+                _check_budget_preflight(
+                    budget, vendor.model, input_tokens_est, log,
+                )
+                lm_started = time.perf_counter()
                 resp = await asyncio.to_thread(
-                    _call_with_effort, vendor,
-                    fit_context(messages, compression_db_path=compression_db_path), []
+                    _call_with_effort, vendor, final_messages, []
+                )
+                lm_ms = int((time.perf_counter() - lm_started) * 1000)
+                tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+                    resp, input_tokens_est,
+                )
+                cycle_credits = estimate_call_credits(
+                    vendor.model, tokens_in, tokens_out, cached_tokens,
+                )
+                if stats is not None:
+                    stats.record_cycle(
+                        lm_ms=lm_ms,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        credits=cycle_credits,
+                    )
+                _charge_budget_postflight(
+                    budget, vendor.model, cycle_credits, log,
+                )
+                _log_cycle_cost(
+                    log, max_cycles, lm_ms, tokens_in, tokens_out,
+                    cycle_credits, budget,
                 )
                 final_answer = _extract_text(resp.content) or None
             except Exception as exc:  # noqa: BLE001 — fall through to the raise
@@ -353,6 +498,11 @@ async def run_unit(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    initial_messages: list[dict[str, Any]] | None = None,
+    role: str = "agent",
+    stats: AgentRunStats | None = None,
+    budget: BudgetEnforcer | None = None,
+    audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -373,7 +523,9 @@ async def run_unit(
     nesting worker passes an orchestration one level deeper plus the full
     catalog so its own children can be sized.
     """
-    if user_message is None:
+    if initial_messages is not None:
+        messages = [dict(message) for message in initial_messages]
+    elif user_message is None:
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": system_prompt}
         ]
@@ -389,6 +541,10 @@ async def run_unit(
         spawn_catalog=spawn_catalog,
         salvage_on_exhaust=salvage_on_exhaust,
         compression_db_path=compression_db_path,
+        role=role,
+        stats=stats,
+        budget=budget,
+        audit_db_path=audit_db_path,
     )
 
 
@@ -451,6 +607,23 @@ def main(argv: list[str] | None = None) -> int:
             "(the feature is off when none exists)."
         ),
     )
+    ap.add_argument(
+        "--chat-id",
+        default=None,
+        help=(
+            "Persist and replay this CLI conversation id across turns. "
+            "Omit for a one-shot turn."
+        ),
+    )
+    ap.add_argument(
+        "--max-credits",
+        type=float,
+        default=None,
+        help=(
+            "Per-turn credit cap. Defaults to MUSUBI_AGENT_MAX_CREDITS, "
+            f"then {DEFAULT_AGENT_MAX_CREDITS:g}. Use 0 to disable."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -474,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.task, vendor, musubi_dir,
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
                 vendor_source=vendor_source,
+                chat_id=args.chat_id,
+                max_credits=args.max_credits,
             )
         )
     except KeyboardInterrupt:
@@ -542,6 +717,18 @@ def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     return musubi_dir / "storage" / "musubi.db"
 
 
+def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
+    """Return the append-only audit DB path used by the spawned server."""
+    root = server_env.get("MUSUBI_ROOT")
+    if root:
+        return Path(root) / "data" / "audit.db"
+    return musubi_dir / "storage" / "audit.db"
+
+
+def _default_audit_db_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "storage" / "audit.db"
+
+
 def _default_musubi_dir() -> Path:
     """Resolve the Musubi server dir.
 
@@ -554,6 +741,147 @@ def _default_musubi_dir() -> Path:
     if env:
         return Path(env)
     return Path(__file__).resolve().parent.parent
+
+
+def _build_budget(max_credits: float | None, log: Any) -> BudgetEnforcer | None:
+    cap = max_credits
+    if cap is None:
+        raw = os.environ.get("MUSUBI_AGENT_MAX_CREDITS", "").strip()
+        if raw:
+            try:
+                cap = float(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"MUSUBI_AGENT_MAX_CREDITS must be numeric, got {raw!r}"
+                ) from exc
+        else:
+            cap = DEFAULT_AGENT_MAX_CREDITS
+    if cap <= 0:
+        print("[agent] budget: disabled", file=log)
+        return None
+    budget = BudgetEnforcer(cap)
+    print(
+        f"[agent] budget: {budget.max_credits:.1f} credits "
+        f"(warn at {int(budget.warn_at_ratio * 100)}%)",
+        file=log,
+    )
+    return budget
+
+
+def _ensure_core_import_path() -> None:
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
+def _append_chat_message(
+    chat_id: str,
+    role: str,
+    content: str,
+    *,
+    db_path: Path,
+    log: Any,
+) -> None:
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        conversations.append_message(
+            chat_id, role, content, db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - persistence must not hide answer
+        print(
+            f"[agent] conversation append failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
+def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, Any]:
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        return conversations.get_history(
+            chat_id,
+            max_tokens=_chat_history_tokens(),
+            db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - fall back to current turn only
+        print(
+            f"[agent] conversation replay failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return {"messages": [], "total_tokens": 0, "truncated": False}
+
+
+def _chat_history_tokens() -> int:
+    raw = os.environ.get("MUSUBI_CHAT_HISTORY_TOKENS", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 50_000
+
+
+def _messages_from_chat_history(
+    system_prompt: str,
+    history: dict[str, Any],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for row in history.get("messages") or []:
+        if not isinstance(row, dict):
+            continue
+        role = row.get("role")
+        content = str(row.get("content", ""))
+        if not content:
+            continue
+        if role in {"user", "assistant"}:
+            messages.append({"role": role, "content": content})
+        elif role == "tool":
+            messages.append({"role": "user", "content": f"[prior tool result]\n{content}"})
+        elif role == "system":
+            messages.append({"role": "user", "content": f"[prior system note]\n{content}"})
+    return messages
+
+
+def _record_agent_turn(
+    *,
+    chat_id: str,
+    parent_session_id: str | None,
+    started_at: float,
+    ended_at: float,
+    model_family: str,
+    stats: AgentRunStats,
+    db_path: Path,
+    log: Any,
+) -> None:
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        db.insert_agent_turn(
+            chat_id=chat_id,
+            parent_session_id=parent_session_id or "unavailable",
+            started_at=started_at,
+            ended_at=ended_at,
+            model_family=model_family,
+            cycles=stats.cycles,
+            tokens_in_estimate=stats.tokens_in_estimate,
+            tokens_out_estimate=stats.tokens_out_estimate,
+            lm_ms=stats.lm_ms,
+            total_ms=int((ended_at - started_at) * 1000),
+            db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
+        print(
+            f"[agent] agent_turn write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
 
 
 def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
@@ -598,6 +926,110 @@ def _call_with_effort(
     return resp
 
 
+def _estimate_input_tokens(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> int:
+    chars = len(json.dumps(messages, default=str, ensure_ascii=False))
+    chars += len(json.dumps(tools, default=str, ensure_ascii=False))
+    return estimate_tokens_from_chars(chars)
+
+
+def _cycle_token_counts(resp: LMResponse, input_estimate: int) -> tuple[int, int, int]:
+    usage = resp.usage or {}
+    tokens_in = _usage_int(usage, "input_tokens", "prompt_tokens") or input_estimate
+    output_estimate = estimate_tokens_from_chars(
+        len(json.dumps(resp.content, default=str, ensure_ascii=False))
+    )
+    tokens_out = (
+        _usage_int(usage, "output_tokens", "completion_tokens")
+        or output_estimate
+    )
+    cached = (
+        _usage_int(usage, "cache_read_input_tokens", "cached_input_tokens")
+        or _nested_usage_int(usage, ("prompt_tokens_details", "cached_tokens"))
+        or 0
+    )
+    return tokens_in, tokens_out, min(cached, tokens_in)
+
+
+def _usage_int(usage: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+    return None
+
+
+def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | None:
+    value = usage.get(path[0])
+    if not isinstance(value, dict):
+        return None
+    nested = value.get(path[1])
+    if isinstance(nested, int):
+        return nested
+    if isinstance(nested, float):
+        return int(nested)
+    return None
+
+
+def _check_budget_preflight(
+    budget: BudgetEnforcer | None,
+    family: str,
+    input_tokens: int,
+    log: Any,
+) -> None:
+    if budget is None:
+        return
+    estimated_output = max(1, int(input_tokens * 0.25))
+    credits = estimate_call_credits(family, input_tokens, estimated_output)
+    status = budget.preflight(credits)
+    if status == "allow":
+        return
+    projected = budget.credits_used + credits
+    print(
+        f"[agent] budget {status}: projected={projected:.2f}/"
+        f"{budget.max_credits:.2f} credits this_call={credits:.2f}",
+        file=log,
+    )
+    if status == "halt":
+        raise BudgetExhaustedError(
+            phase="preflight",
+            credits_used=projected,
+            max_credits=budget.max_credits,
+            family=family,
+            this_call_credits=credits,
+        )
+
+
+def _charge_budget_postflight(
+    budget: BudgetEnforcer | None,
+    family: str,
+    credits: float,
+    log: Any,
+) -> None:
+    if budget is None:
+        return
+    status = budget.charge(credits)
+    if status == "allow":
+        return
+    print(
+        f"[agent] budget {status}: used={budget.credits_used:.2f}/"
+        f"{budget.max_credits:.2f} credits this_call={credits:.2f}",
+        file=log,
+    )
+    if status == "halt":
+        raise BudgetExhaustedError(
+            phase="postflight",
+            credits_used=budget.credits_used,
+            max_credits=budget.max_credits,
+            family=family,
+            this_call_credits=credits,
+        )
+
+
 async def _dispatch(
     session: ClientSession,
     tool_uses: list[dict[str, Any]],
@@ -608,6 +1040,10 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
+    role: str = "agent",
+    budget: BudgetEnforcer | None = None,
+    stats: AgentRunStats | None = None,
+    audit_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run every tool call in the batch CONCURRENTLY, returning tool_results in
     the original `tool_uses` order.
@@ -629,6 +1065,10 @@ async def _dispatch(
             orchestration=orchestration, gateway=gateway,
             refused=tu.get("id", "") in refused,
             compression_db_path=compression_db_path,
+            role=role,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
         )
         for tu in tool_uses
     ]
@@ -682,6 +1122,10 @@ async def _dispatch_one(
     gateway: McpGateway | None,
     refused: bool,
     compression_db_path: Path | None,
+    role: str = "agent",
+    budget: BudgetEnforcer | None = None,
+    stats: AgentRunStats | None = None,
+    audit_db_path: Path | None = None,
 ) -> str:
     """Run a single tool call and return its result text.
 
@@ -694,6 +1138,31 @@ async def _dispatch_one(
     """
     name = tu.get("name", "")
     args = tu.get("input") or {}
+    session_id = orchestration.parent_session_id if orchestration else None
+    audit_path = audit_db_path or _default_audit_db_path()
+    call_role = (
+        orchestration.parent_agent_name
+        if orchestration is not None and orchestration.parent_agent_name
+        else role
+    )
+    should_audit = is_musubi_tool(name)
+    if should_audit:
+        decision = evaluate_tool_call(call_role, name)
+        _safe_record_policy(decision, db_path=audit_path, log=log)
+        if not decision.allowed:
+            denied = f"[policy denied] {decision.reason}"
+            print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+            _safe_record_tool_audit(
+                session_id=session_id,
+                role=call_role,
+                tool=name,
+                args=json_args(args),
+                status="denied",
+                db_path=audit_path,
+                result_text=denied,
+                log=log,
+            )
+            return denied
 
     if (
         name == "musubi_spawn_pipeline"
@@ -711,11 +1180,25 @@ async def _dispatch_one(
         try:
             from agent import pipeline_runner
 
-            return await pipeline_runner.run_pipeline(
-                session, injected, vendor, tools, log
+            result = await pipeline_runner.run_pipeline(
+                session, injected, vendor, tools, log,
+                compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001 — surface to the model
-            return f"[pipeline error] {type(exc).__name__}: {exc}"
+            result = f"[pipeline error] {type(exc).__name__}: {exc}"
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
 
     if (
         name == "musubi_spawn_subagent"
@@ -725,11 +1208,17 @@ async def _dispatch_one(
         and tools is not None
     ):
         if refused:
-            return (
+            result = (
                 f'{{"status": "refused", "reason": "per-turn spawn cap '
                 f'({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached for role '
                 f'{args.get("role")!r}"}}'
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="refused", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         injected = {
             **args,
             "parent_session_id": orchestration.parent_session_id,
@@ -739,23 +1228,57 @@ async def _dispatch_one(
         try:
             from agent import subagent
 
-            return await subagent.run_subagent(
+            result = await subagent.run_subagent(
                 session, injected, vendor, tools, log, orchestration=orchestration,
                 compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001 — surface to the model
-            return f"[subagent error] {type(exc).__name__}: {exc}"
+            result = f"[subagent error] {type(exc).__name__}: {exc}"
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
 
     print(f"[agent]   → {name}({_truncate(json.dumps(args), 60)})", file=log)
     target = gateway.route(name) if gateway is not None else (session, name)
     if target is None:
-        return f"[tool error] no MCP server owns tool {name!r}"
+        result = f"[tool error] no MCP server owns tool {name!r}"
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+        return result
     target_session, original_name = target
     try:
         result = await target_session.call_tool(original_name, arguments=args)
-        return _first_text(result)
+        text = _first_text(result)
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=text, log=log,
+            )
+        return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
-        return f"[tool error] {type(exc).__name__}: {exc}"
+        result = f"[tool error] {type(exc).__name__}: {exc}"
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+        return result
 
 
 async def _call_tool_text(
@@ -779,6 +1302,44 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:
+    try:
+        record_policy_decision(decision, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - audit must not crash tool result
+        print(
+            f"[agent] policy audit write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
+def _safe_record_tool_audit(
+    *,
+    session_id: str | None,
+    role: str,
+    tool: str,
+    args: dict[str, Any],
+    status: str,
+    db_path: Path,
+    result_text: str | None,
+    log: Any,
+) -> None:
+    try:
+        record_tool_audit(
+            session_id=session_id,
+            role=role,
+            tool=tool,
+            args=args,
+            status=status,
+            db_path=db_path,
+            result_text=result_text,
+        )
+    except Exception as exc:  # noqa: BLE001 - audit must not hide tool result
+        print(
+            f"[agent] tool audit write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
 def _log_cycle(
     log: Any,
     cycle: int,
@@ -799,6 +1360,49 @@ def _log_cycle(
             parts.append(f"cache_read={cache_read}")
         if cache_write:
             parts.append(f"cache_write={cache_write}")
+    print(" ".join(parts), file=log)
+
+
+def _log_cycle_cost(
+    log: Any,
+    cycle: int,
+    lm_ms: int,
+    tokens_in: int,
+    tokens_out: int,
+    credits: float,
+    budget: BudgetEnforcer | None,
+) -> None:
+    parts = [
+        f"[agent] cycle {cycle}: lm_ms={lm_ms}",
+        f"in_tokens={tokens_in}",
+        f"out_tokens={tokens_out}",
+        f"credits={credits:.4f}",
+    ]
+    if budget is not None:
+        parts.append(
+            f"budget={budget.credits_used:.2f}/{budget.max_credits:.2f}"
+        )
+    print(" ".join(parts), file=log)
+
+
+def _log_turn_usage(
+    log: Any,
+    stats: AgentRunStats,
+    budget: BudgetEnforcer | None,
+) -> None:
+    if stats.cycles <= 0:
+        return
+    parts = [
+        f"[agent] usage cycles={stats.cycles}",
+        f"lm_ms={stats.lm_ms}",
+        f"in_tokens={stats.tokens_in_estimate}",
+        f"out_tokens={stats.tokens_out_estimate}",
+        f"credits={stats.credits:.4f}",
+    ]
+    if budget is not None:
+        parts.append(
+            f"budget={budget.credits_used:.2f}/{budget.max_credits:.2f}"
+        )
     print(" ".join(parts), file=log)
 
 

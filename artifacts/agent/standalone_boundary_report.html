@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musubi Standalone Boundary Status</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f141b;
+      --panel: #17202c;
+      --line: #2a3748;
+      --text: #f4f7fb;
+      --muted: #9aa7b8;
+      --green: #5fe0aa;
+      --amber: #f6a64a;
+      --blue: #7bb7ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 42px 0 56px;
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 24px;
+      margin-bottom: 28px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 4vw, 46px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    p { margin: 0; color: var(--muted); }
+    code {
+      color: #d7e7ff;
+      background: #111923;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 2px 5px;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--green);
+      border: 1px solid rgba(95, 224, 170, 0.45);
+      border-radius: 999px;
+      padding: 5px 10px;
+      margin-bottom: 16px;
+      font-weight: 650;
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: .08em;
+    }
+    .status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      min-height: 150px;
+    }
+    .step {
+      color: var(--amber);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 8px;
+    }
+    .capabilities {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 28px;
+    }
+    .capability {
+      padding: 16px;
+      min-height: 176px;
+      border-right: 1px solid var(--line);
+      background: #131b26;
+    }
+    .capability:last-child { border-right: 0; }
+    .capability h3 {
+      margin: 0 0 10px;
+      color: var(--blue);
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .note {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .grid, .note, .capabilities { grid-template-columns: 1fr; }
+      .capability { border-right: 0; border-bottom: 1px solid var(--line); }
+      .capability:last-child { border-bottom: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="status">Done</div>
+      <h1>Standalone Host Parity and Boundary Control</h1>
+      <p>
+        Roadmap steps 4 and 5 are complete for the standalone agent host:
+        the worker path now carries budget telemetry, multi-turn state, and
+        deterministic Musubi tool boundary enforcement.
+      </p>
+    </header>
+
+    <section class="grid" aria-label="Completed roadmap steps">
+      <article class="card">
+        <div class="step">Step 4</div>
+        <h2>Finish single-agent host parity</h2>
+        <p>
+          Model-agnostic vendors, external-MCP federation, deterministic
+          context controls, <code>BudgetEnforcer</code> caps, cycle usage
+          telemetry, and <code>--chat-id</code> persistence are now part of
+          the standalone host.
+        </p>
+      </article>
+      <article class="card">
+        <div class="step">Step 5</div>
+        <h2>Control at the boundary</h2>
+        <p>
+          Standalone <code>musubi_*</code> tool calls now pass PreToolUse
+          policy checks and append PostToolUse audit records for allowed,
+          denied, refused, and errored calls.
+        </p>
+      </article>
+    </section>
+
+    <section class="capabilities" aria-label="Capability evidence">
+      <article class="capability">
+        <h3>Multi-turn CLI</h3>
+        <p><code>agent --chat-id</code> stores and replays bounded conversation history.</p>
+      </article>
+      <article class="capability">
+        <h3>Credit Caps</h3>
+        <p><code>--max-credits</code> and <code>MUSUBI_AGENT_MAX_CREDITS</code> gate LM calls.</p>
+      </article>
+      <article class="capability">
+        <h3>Shared Worker Path</h3>
+        <p>Root tasks, workers, and pipeline stages share <code>run_unit</code>.</p>
+      </article>
+      <article class="capability">
+        <h3>PreToolUse</h3>
+        <p>Musubi tool calls are role-checked before the MCP call is dispatched.</p>
+      </article>
+      <article class="capability">
+        <h3>PostToolUse</h3>
+        <p>Policy verdicts and outcomes are appended to <code>policy_audit</code> and <code>tool_audit</code>.</p>
+      </article>
+    </section>
+
+    <section class="note">
+      <article class="card">
+        <h2>External MCP Boundary</h2>
+        <p>
+          Federated external MCP tools remain outside Musubi governance in
+          this slice. They are driver-routed convenience tools, not
+          substrate-controlled tools.
+        </p>
+      </article>
+      <article class="card">
+        <h2>Verification Note</h2>
+        <p>
+          Focused pytest coverage was added for the new behavior. Local Python
+          was unavailable on this workstation, so the tests could not be
+          executed locally in this environment.
+        </p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
