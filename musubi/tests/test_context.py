@@ -23,6 +23,8 @@ def test_system_prompt_carries_terse_instruction() -> None:
     prompt = build_system_prompt()
     assert "concise" in prompt.lower()
     assert "do not restate" in prompt.lower()
+    assert "call tools directly" in prompt.lower()
+    assert "final answer" in prompt.lower()
 
 
 def test_system_prompt_appends_extra_after_steering() -> None:
@@ -334,6 +336,18 @@ def test_system_param_block_when_cached_string_when_not() -> None:
     blocks = _system_param("hi", cache=True)
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     assert _system_param(None, cache=True) is None
+
+
+def test_system_param_caches_only_stable_prompt_prefix() -> None:
+    from agent.vendors.anthropic_router import _system_param
+
+    prompt = build_system_prompt("workspace-specific note")
+    blocks = _system_param(prompt, cache=True)
+
+    assert len(blocks) == 2
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert "workspace-specific note" not in blocks[0]["text"]
+    assert blocks[1] == {"type": "text", "text": "workspace-specific note"}
 
 
 def test_cache_enabled_default_and_optout(monkeypatch) -> None:  # noqa: ANN001

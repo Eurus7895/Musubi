@@ -3,154 +3,127 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Musubi Compression Capability Report</title>
+  <title>Musubi Compression Eval Gate</title>
   <style>
-    :root { color-scheme: light; --bg:#f4f6f8; --panel:#fff; --ink:#17202a; --muted:#5d6b7c; --line:#d6dde7; --green:#2f8f66; --blue:#2f6f9f; --amber:#b8752b; --slate:#8fa2b5; }
-    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-family:Arial, Helvetica, sans-serif; line-height:1.45; }
-    main { width:min(1180px, calc(100% - 36px)); margin:0 auto; padding:38px 0 48px; } header { display:grid; grid-template-columns:1fr auto; gap:24px; align-items:end; margin-bottom:24px; }
-    h1 { margin:0; font-size:clamp(30px, 4vw, 48px); line-height:1.08; letter-spacing:0; } h2 { margin:0 0 14px; font-size:24px; } p { margin:0; color:var(--muted); }
-    .tag { display:inline-flex; min-height:36px; padding:7px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--muted); font-size:14px; white-space:nowrap; }
-    .summary { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; margin:24px 0; } .metric { min-height:112px; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:18px; border-left:7px solid var(--blue); }
-    .metric:nth-child(2), .metric:nth-child(4) { border-left-color:var(--green); } .metric:nth-child(3) { border-left-color:var(--amber); } .metric span { display:block; color:var(--muted); font-size:14px; margin-bottom:8px; } .metric strong { display:block; font-size:28px; }
-    .panel { border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:22px; margin-top:18px; } .note-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:14px; margin-top:12px; }
-    .note,.preview-card { border:1px solid var(--line); border-radius:8px; padding:15px; background:#fbfcfd; } .note strong,.preview-card strong { display:block; margin-bottom:6px; } .preview-card span { display:block; color:var(--muted); font-size:13px; margin-bottom:10px; }
-    .preview-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:14px; margin-top:12px; } pre { overflow:auto; max-height:190px; margin:0; padding:12px; border-radius:6px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:13px; white-space:pre-wrap; }
-    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:15px; } th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; } th { color:var(--muted); font-size:13px; text-transform:uppercase; }
-    code { padding:2px 5px; border-radius:5px; background:#eef2f6; color:#273444; font-family:Consolas, 'Courier New', monospace; font-size:.95em; } .image-preview { width:100%; margin-top:14px; border:1px solid var(--line); border-radius:8px; background:#fff; } footer { margin-top:20px; color:var(--muted); font-size:14px; } a { color:var(--blue); text-decoration:none; font-weight:700; } a:hover { text-decoration:underline; }
-    @media (max-width:850px) { header,.summary,.note-grid,.preview-grid { grid-template-columns:1fr; } .tag { white-space:normal; } table { display:block; overflow-x:auto; white-space:nowrap; } }
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --line: #2a3441;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #56d364;
+      --warn: #f2cc60;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 48px; }
+    header { margin-bottom: 24px; }
+    h1, h2, h3 { margin: 0; line-height: 1.2; }
+    h1 { font-size: 32px; }
+    h2 { font-size: 20px; margin-bottom: 12px; }
+    h3 { font-size: 15px; }
+    p { color: var(--muted); margin: 8px 0 0; }
+    code { color: var(--text); background: #0b0f14; padding: 1px 5px; border-radius: 4px; }
+    .tag {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 5px 9px;
+      border: 1px solid #29583a;
+      border-radius: 999px;
+      color: var(--accent);
+      background: #10281a;
+      font-size: 12px;
+    }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .panel {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 16px;
+    }
+    .metric strong { display: block; font-size: 28px; line-height: 1.1; }
+    .metric span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    pre {
+      margin: 10px 0 0;
+      padding: 12px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #090d12;
+      color: #c9d1d9;
+      max-height: 260px;
+    }
+    footer { margin-top: 24px; color: var(--muted); }
+    a { color: #79c0ff; }
+    @media (max-width: 780px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <div>
-        <h1>Musubi Compression Capability</h1>
-        <p>Step 4 demonstrates native input compression plus deterministic context packing with verbatim recovery through <code>musubi_retrieve(ref_id)</code>.</p>
-      </div>
-      <div class="tag">Step 4 benchmark - model-visible chars include retrieval marker</div>
+      <h1>Compression Eval Gate</h1>
+      <p>Token economics Step 5 verifies cache hardening, output steering, and deterministic compression quality without a default LLM call.</p>
+      <div class="tag">status: ok · deterministic default · optional real-LM probe</div>
     </header>
-    <section class="summary" aria-label="Summary metrics">
-      <div class="metric"><span>Payloads compressed</span><strong>4 / 4</strong></div>
-      <div class="metric"><span>Retrieve verification</span><strong>4 / 4 OK</strong></div>
-      <div class="metric"><span>Payload saving</span><strong>96.6%</strong></div>
-      <div class="metric"><span>Context saving</span><strong>95.9%</strong></div>
-    </section>
-    <section class="panel"><h2>What changed in Step 4</h2><div class="note-grid">
-      <div class="note"><strong>Budgeted packing</strong><p><code>fit_context</code> protects the system prompt, first task, and recent turns, then packs old tool results until the conversation fits the budget.</p></div>
-      <div class="note"><strong>Compress before trim</strong><p>Old tool outputs go through the same native reversible compressors before any lossy context-trimmed stub is used.</p></div>
-      <div class="note"><strong>Pairing preserved</strong><p>Tool result blocks stay in place with their <code>tool_use_id</code>. Any lossy view keeps a retrieve marker when a ref is available.</p></div>
-    </div></section>
-    <section class="panel"><h2>Context packing result</h2><p>Conversation chars fell from 193,228 to 7,933 under a 12,000-char budget. Compressed tool results: 1; trimmed tool results: 1; recent turn preserved: true.</p><pre>json smart crush root=object
-root_keys=build_id,items
-arrays:
-- $.items[] count=420 types=object:420 sample[0]={&quot;id&quot;:0,&quot;name&quot;:&quot;artifact-0&quot;,&quot;status&quot;:&quot;queued&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r0&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1200,&quot;tokens&quot;:300,&quot;cacheable&quot;:true},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;,&quot;ba... sample[-1]={&quot;id&quot;:419,&quot;name&quot;:&quot;artifact-419&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r4&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1619,&quot;tokens&quot;:311,&quot;cacheable&quot;:false},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;...
-- $.items[].tags</pre></section>
-    <section class="panel"><h2>Payload compression results</h2><p>The native payload benchmark remains reversible. Each row includes retrieval marker overhead in model-visible chars.</p><table><thead><tr><th>Payload</th><th>Strategy</th><th>Ref ID</th><th>Original</th><th>Visible</th><th>Saved</th><th>Ratio</th></tr></thead><tbody>
-        <tr>
-          <td>Pretty JSON</td>
-          <td>JSON smart-crush</td>
-          <td><code>70d53137422a3bab</code></td>
-          <td>145,085</td>
-          <td>2,660</td>
-          <td>142,425</td>
-          <td>0.018</td>
-        </tr>
-        <tr>
-          <td>Python module</td>
-          <td>Python AST structure</td>
-          <td><code>d63555ffe74267c9</code></td>
-          <td>42,546</td>
-          <td>6,367</td>
-          <td>36,179</td>
-          <td>0.150</td>
-        </tr>
-        <tr>
-          <td>Noisy log</td>
-          <td>Log pattern grouping</td>
-          <td><code>6f65a4fadbd2d259</code></td>
-          <td>107,139</td>
-          <td>873</td>
-          <td>106,266</td>
-          <td>0.008</td>
-        </tr>
-        <tr>
-          <td>Markdown notes</td>
-          <td>Heading-aware text outline</td>
-          <td><code>c3f412fe86065d1a</code></td>
-          <td>44,578</td>
-          <td>1,558</td>
-          <td>43,020</td>
-          <td>0.035</td>
-        </tr>
-        </tbody></table></section>
-    <section class="panel"><h2>Compressed view examples</h2><div class="preview-grid">
-        <div class="preview-card">
-          <strong>Pretty JSON</strong>
-          <span>JSON smart-crush</span>
-          <pre>json smart crush root=object
-root_keys=build_id,items
-arrays:
-- $.items[] count=420 types=object:420 sample[0]={&quot;id&quot;:0,&quot;name&quot;:&quot;artifact-0&quot;,&quot;status&quot;:&quot;queued&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r0&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1200,&quot;tokens&quot;:300,&quot;cacheable&quot;:true},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;,&quot;ba... sample[-1]={&quot;id&quot;:419,&quot;name&quot;:&quot;artifact-419&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;owner&quot;:{&quot;team&quot;:&quot;platform&quot;,&quot;region&quot;:&quot;r4&quot;},&quot;metrics&quot;:{&quot;chars&quot;:1619,&quot;tokens&quot;:311,&quot;cacheable&quot;:false},&quot;tags&quot;:[&quot;compression&quot;,&quot;musubi&quot;...
-- $.items[].tags[] count=3 types=str:3 sample[0]=&quot;compression&quot; sample[-1]=&quot;batch-0&quot;
-- $.items[].tags[] count=3 types=str:3 sample[0]=&quot;compression&quot; sample[-1]=&quot;batch-1&quot;
-- $.items[].tags[] count=3 types=str:3 sample[0]=&quot;compression&quot; sample[-1]=&quot;batch-2&quot;
-- $.items[].tags[] count=3 types=str:3 sample[0]=&quot;compression&quot; sample[-1]=&quot;batch-3&quot;
-- $.items[].tags[] count=3 types=str:3 sample[0]=&quot;compression&quot; sample[-1]=&quot;batch</pre>
-        </div>
-        <div class="preview-card">
-          <strong>Python module</strong>
-          <span>Python AST structure</span>
-          <pre>python structure
-imports:
-- import os
-- import json
-- from pathlib import Path
-- from typing import Iterable
-classes:
-- class CompressionWorker(BaseWorker)
-  def transform_0(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_1(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_2(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_3(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_4(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_5(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_6(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_7(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_8(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_9(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_10(self, value: int=0, enabled: bool=False) -&gt; int
-  def transform_1</pre>
-        </div>
-        <div class="preview-card">
-          <strong>Noisy log</strong>
-          <span>Log pattern grouping</span>
-          <pre>log pattern groups
-x818 &lt;ts&gt; INFO request id=&lt;num&gt; trace=&lt;hash&gt; path=/api/items/&lt;num&gt;/runs/&lt;num&gt; status=&lt;num&gt; elapsed_ms=&lt;num&gt;
-  first=2026-06-27T10:01:01Z INFO request id=840001 trace=ab12cd34ef560001 path=/api/items/1/runs/1 status=200 elapsed_ms=41
-  last=2026-06-27T10:59:59Z INFO request id=840899 trace=ab12cd34ef560383 path=/api/items/11/runs/899 status=200 elapsed_ms=46
-x82 &lt;ts&gt; WARN request id=&lt;num&gt; trace=&lt;hash&gt; path=/api/items/&lt;num&gt;/runs/&lt;num&gt; status=&lt;num&gt; elapsed_ms=&lt;num&gt;
-  first=2026-06-27T10:00:00Z WARN request id=840000 trace=ab12cd34ef560000 path=/api/items/0/runs/0 status=503 elapsed_ms=40
-  last=2026-06-27T10:51:51Z WARN request id=840891 trace=ab12cd34ef56037b path=/api/items/3/runs/891 status=503 elapsed_ms=57
 
-[musubi:compressed kind=log ref=6f65a4fadbd2d259 chars 107139-&gt;736; call musubi_retrieve(&quot;6f65a4fadbd2d259&quot;) for the verbatim original]</pre>
-        </div>
-        <div class="preview-card">
-          <strong>Markdown notes</strong>
-          <span>Heading-aware text outline</span>
-          <pre>text outline
-# Musubi Compression Notes paragraphs=0 chars=0
-## Overview paragraphs=12 chars=10866
-  first=Overview paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains recov...
-  last=Overview paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source remains reco...
-## Compression Strategy paragraphs=12 chars=11442
-  first=Compression Strategy paragraph 0 explains how deterministic compression keeps the model-visible input compact while the verbatim source r...
-  last=Compression Strategy paragraph 11 explains how deterministic compression keeps the model-visible input compact while the verbatim source ...
-## Retrieval paragraphs=12 chars=10914
-  first=Retrieval paragraph 0 explains how deterministic compression keeps the model-visible input compact while the v</pre>
-        </div>
-      </div></section>
-    <section class="panel"><h2>Generated benchmark image</h2><p>The PNG below was generated from the same benchmark data.</p><img class="image-preview" src="compression_feature_results.png" alt="Musubi compression and context packing benchmark chart"></section>
-    <footer>Data source: <a href="compression_benchmark_results.json">compression_benchmark_results.json</a>. Artifact is static and can be opened directly from disk.</footer>
+    <section class="grid">
+      <article class="panel metric"><strong>97.6%</strong><span>payload savings</span></article>
+      <article class="panel metric"><strong>98.2%</strong><span>context savings</span></article>
+      <article class="panel metric"><strong>4 / 4</strong><span>retrieve verified</span></article>
+      <article class="panel metric"><strong>5</strong><span>retrieve markers</span></article>
+    </section>
+
+    <section class="panel">
+      <h2>Eval Coverage</h2>
+      <p>The default gate uses deterministic synthetic payloads and the same native compressors used at runtime. It checks visible savings, exact round-trip retrieval, marker availability, context packing shape, and quality-proxy coverage for structural summaries.</p>
+      <table>
+        <thead><tr><th>Payload</th><th>Kind</th><th>Original</th><th>Visible</th><th>Savings</th><th>Retrieve</th></tr></thead>
+        <tbody>
+          <tr><td>structured json</td><td>json</td><td>145,222</td><td>2,660</td><td>98.2%</td><td>ok</td></tr>
+          <tr><td>python module</td><td>code</td><td>8,363</td><td>1,710</td><td>79.6%</td><td>ok</td></tr>
+          <tr><td>service log</td><td>log</td><td>102,531</td><td>515</td><td>99.5%</td><td>ok</td></tr>
+          <tr><td>markdown notes</td><td>text</td><td>10,735</td><td>1,549</td><td>85.6%</td><td>ok</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Context Packing</h2>
+      <p><code>fit_context</code> compressed one old tool result, trimmed one remaining raw block, preserved the recent turn, and retained a retrieve marker for exact recovery.</p>
+      <table>
+        <tbody>
+          <tr><th>Original context chars</th><td>188,943</td></tr>
+          <tr><th>Packed context chars</th><td>3,490</td></tr>
+          <tr><th>Compressed tool results</th><td>1</td></tr>
+          <tr><th>Trimmed tool results</th><td>1</td></tr>
+          <tr><th>Recent turn preserved</th><td>true</td></tr>
+        </tbody>
+      </table>
+      <pre>json smart crush root=object
+root_keys=build_id,items
+arrays:
+- $.items[] count=420 types=object:420 sample[0]={"id":0,"name":"artifact-0","status":"ready",...}
+[musubi:compressed ... call musubi_retrieve("e674743b3243ba60") for the verbatim original]</pre>
+    </section>
+
+    <section class="panel">
+      <h2>Operational Notes</h2>
+      <p>Run <code>python -m agent.compression_eval --output artifacts/compression/compression_benchmark_results.json</code> for the default zero-LLM gate. Add <code>--real-lm --profile &lt;profile&gt;</code> only for a manual retrieve-call probe at the driver boundary.</p>
+    </section>
+
+    <footer>
+      Data source: <a href="compression_benchmark_results.json">compression_benchmark_results.json</a>.
+    </footer>
   </main>
 </body>
 </html>

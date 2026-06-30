@@ -36,6 +36,26 @@ tool-use/tool-result pairing remains intact, and any compressed or
 trimmed view keeps a `musubi_retrieve(ref_id)` marker when a ref is
 available.
 
+## Eval Gate
+
+Token economics Step 5 adds a deterministic compression eval gate. The
+default path makes no LLM call: it runs bundled JSON, Python, log, text,
+and context-packing cases through the native compressors, then verifies
+visible savings, verbatim retrieval, retrieve-marker availability, and
+quality-proxy coverage for the structural summaries.
+
+```powershell
+python -m agent.compression_eval --output artifacts/compression/compression_benchmark_results.json
+```
+
+An optional manual probe can ask a real configured model whether it calls
+`musubi_retrieve` when an exact detail is only recoverable from the
+original. That probe lives in the standalone driver, not in the substrate:
+
+```powershell
+python -m agent.compression_eval --real-lm --profile azure.work
+```
+
 ## Latest Artifact
 
 The static capability artifact lives under
@@ -52,29 +72,31 @@ Latest benchmark summary:
 |---|---:|
 | Payloads compressed | 4 / 4 |
 | Retrieve verification | 4 / 4 OK |
-| Payload original chars | 339,348 |
-| Payload model-visible chars | 11,458 |
-| Payload visible chars saved | 327,890 |
-| Payload overall saving | 96.6% |
-| Context original chars | 193,228 |
-| Context packed chars | 7,933 |
-| Context visible chars saved | 185,295 |
-| Context overall saving | 95.9% |
+| Payload original chars | 266,851 |
+| Payload model-visible chars | 6,434 |
+| Payload visible chars saved | 260,417 |
+| Payload overall saving | 97.6% |
+| Context original chars | 188,943 |
+| Context packed chars | 3,490 |
+| Context visible chars saved | 185,453 |
+| Context overall saving | 98.2% |
+| Retrieve markers | 5 |
+| Quality proxy | OK |
 
 The benchmark covers pretty JSON, a Python module, noisy logs, and
 Markdown notes, plus one synthetic conversation packing scenario. In the
 context scenario, one old tool result is compressed, one raw block is
 trimmed, and the recent turn is preserved. `model_visible_chars`
-includes retrieval marker overhead; `store_stats_body_only` in the JSON
-artifact records compressor body size without that marker.
+includes retrieval marker overhead. Token counts and character savings
+are stable evaluation metrics; price tables and estimated credits are
+log-only and are not budget enforcement inputs.
 
 ## Verification
 
 The artifact records this verification command:
 
 ```powershell
-python -m pytest musubi\tests\test_context.py musubi\tests\test_compression.py -q -p no:cacheprovider
-python -m pytest musubi\tests\test_conversations.py -q -p no:cacheprovider
+python -m pytest musubi\tests\test_mcp_gateway.py musubi\tests\test_context.py musubi\tests\test_agent_loop.py musubi\tests\test_compression.py musubi\tests\test_compression_eval.py -q -p no:cacheprovider
 ```
 
-The recorded results are `55 passed, 1 warning` and `21 passed, 1 warning`.
+The recorded result is `109 passed, 1 warning`.

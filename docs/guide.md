@@ -161,9 +161,9 @@ trail always reads the original.
 
 Current native compressors are content-type routed: JSON smart-crush, Python
 AST structure summaries, log pattern grouping, and heading-aware text outlines.
-The latest capability artifact shows 339,348 payload chars compressed to
-11,458 model-visible chars with 4 / 4 retrieve checks passing. It also
-shows a context-packing scenario reduced from 193,228 chars to 7,933 while
+The latest deterministic eval artifact shows 266,851 payload chars compressed
+to 6,434 model-visible chars with 4 / 4 retrieve checks passing. It also
+shows a context-packing scenario reduced from 188,943 chars to 3,490 while
 preserving the recent turn. See
 [`docs/compression.md`](./compression.md) for the full artifact and numbers.
 
@@ -204,6 +204,17 @@ Four zero-LLM token controls apply at the LM-call boundary:
 | **Effort routing** | Starts each cycle at a low output-token cap, escalates only on truncation. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
 | **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 | **TokenBudgetEnforcer** | Preflights projected total tokens and charges measured/estimated token usage after each LM call. | `--max-tokens <n>` or `MUSUBI_AGENT_MAX_TOKENS=<n>` |
+
+Run the deterministic compression eval gate with:
+
+```powershell
+python -m agent.compression_eval --output artifacts/compression/compression_benchmark_results.json
+```
+
+Add `--real-lm --profile <profile>` only for a manual driver-side probe of
+whether a configured model calls `musubi_retrieve` for exact compressed
+details. Token counts and savings are the stable metrics; estimated credits
+are log-only because price tables drift.
 
 ---
 

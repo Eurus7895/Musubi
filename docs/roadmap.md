@@ -106,13 +106,7 @@ the substrate remains deterministic, pure Python, and zero-LLM.
 2. **[done] Complete compression coverage.** Stage and conversation reads now compress within existing permission boundaries.
 3. **[done] Smarter native compressors.** JSON, Python, log, and text compressors now use deterministic structural summaries.
 4. **[done] LM-boundary context controls.** Terse prompting, cache controls, effort routing, telemetry, and `fit_context` packing landed.
-5. **[planned] Cache hardening, output steering, and compression eval.**
-   Build on the landed prompt-cache controls by hardening stable prompt
-   prefixes and tool ordering, tighten tool-result formats, keep low
-   default `max_tokens` with truncation-based escalation, and add a
-   compression/context eval gate that measures savings, retrieve
-   correctness, retrieve-call frequency, and task-quality regression. This
-   is separate from the postponed pipeline-parity eval suite below.
+5. **[done] Cache hardening, output steering, and compression eval.** Stable prompt prefixes and tool ordering are hardened, tool-result text is normalized before the next LM call, and the deterministic compression eval gate measures savings, retrieve correctness, marker availability, and context quality proxies.
 
 Default profile stays conservative. Aggressive compression must be
 opt-in until the compression/context eval gate shows no meaningful

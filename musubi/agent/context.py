@@ -23,11 +23,13 @@ _VERBOSITY_NOTE = (
     "Be concise. Do not restate the task, the tool catalog, or context the "
     "user already has, and do not narrate what you are about to do. Prefer "
     "acting over explaining: call tools directly. When finished, give a short, "
-    "direct answer covering only what changed or what was found - no preamble, "
-    "no filler, no summary of your own process unless asked. "
+    "direct final answer covering only what changed or what was found - no "
+    "preamble, no filler, no summary of your own process unless asked. "
     "If the request needs no tools - a greeting, or a question you can already "
     "answer - reply directly in one turn without calling any tool."
 )
+
+_STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE])
 
 DEFAULT_EFFORT_FLOOR = 2048
 DEFAULT_CONTEXT_BUDGET = 40_000
@@ -36,10 +38,21 @@ _CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
 def build_system_prompt(extra: str | None = None) -> str:
     """Return the top-level agent system prompt plus verbosity steering."""
-    parts = [_BASE_SYSTEM, _VERBOSITY_NOTE]
+    parts = [_STABLE_SYSTEM_PROMPT]
     if extra:
         parts.append(extra.strip())
     return "\n\n".join(parts)
+
+
+def split_system_prompt(system_text: str) -> tuple[str, str | None]:
+    """Split the stable cacheable prompt prefix from run-specific extra text."""
+    if system_text == _STABLE_SYSTEM_PROMPT:
+        return system_text, None
+    prefix = _STABLE_SYSTEM_PROMPT + "\n\n"
+    if system_text.startswith(prefix):
+        extra = system_text[len(prefix):].strip()
+        return _STABLE_SYSTEM_PROMPT, extra or None
+    return system_text, None
 
 
 def effort_floor() -> int:

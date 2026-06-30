@@ -354,8 +354,11 @@ class McpGateway:
     # -- query ----------------------------------------------------------------
 
     def tools(self) -> list[dict[str, Any]]:
-        """The merged tool catalog (Musubi first, then external)."""
-        return list(self._tools)
+        """The merged, cache-stable tool catalog handed to the model."""
+        return sorted(
+            (_canonical_tool(tool) for tool in self._tools),
+            key=lambda tool: tool.get("name", ""),
+        )
 
     def route(self, name: str) -> tuple[Any, str] | None:
         """Map a tool name the model called to (session, original name)."""
@@ -367,6 +370,18 @@ class McpGateway:
 
 def namespaced(server: str, tool: str) -> str:
     return f"{server}{NAMESPACE_SEP}{tool}"
+
+
+def _canonical_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    return {key: _deep_sort(value) for key, value in sorted(tool.items())}
+
+
+def _deep_sort(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _deep_sort(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_deep_sort(item) for item in value]
+    return value
 
 
 def mcp_tool_to_schema(tool: Any) -> dict[str, Any]:
