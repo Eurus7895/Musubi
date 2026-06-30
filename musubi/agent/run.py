@@ -44,8 +44,8 @@ from mcp.client.stdio import stdio_client
 
 from agent.context import build_system_prompt, effort_floor, fit_context
 from agent.budget import (
-    BudgetEnforcer,
-    BudgetExhaustedError,
+    TokenBudgetEnforcer,
+    TokenBudgetExhaustedError,
     estimate_call_credits,
     estimate_tokens_from_chars,
 )
@@ -66,7 +66,7 @@ from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
 
-DEFAULT_AGENT_MAX_CREDITS = 30.0
+DEFAULT_AGENT_MAX_TOKENS = 200_000
 
 #: Ceiling for output tokens; effort routing starts below this and escalates
 #: to it only when a cycle actually stops on `max_tokens`.
@@ -128,7 +128,7 @@ class AgentRunStats:
     lm_ms: int = 0
     tokens_in_estimate: int = 0
     tokens_out_estimate: int = 0
-    credits: float = 0.0
+    estimated_credits: float = 0.0
 
     def record_cycle(
         self,
@@ -136,13 +136,13 @@ class AgentRunStats:
         lm_ms: int,
         tokens_in: int,
         tokens_out: int,
-        credits: float,
+        estimated_credits: float,
     ) -> None:
         self.cycles += 1
         self.lm_ms += lm_ms
         self.tokens_in_estimate += tokens_in
         self.tokens_out_estimate += tokens_out
-        self.credits += credits
+        self.estimated_credits += estimated_credits
 
 
 @dataclass
@@ -167,6 +167,7 @@ async def run_agent(
     vendor_source: str | None = None,
     chat_id: str | None = None,
     max_credits: float | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -183,7 +184,7 @@ async def run_agent(
     audit_db_path = _server_audit_db_path(musubi_dir, server_env)
     turn_started_at = time.time()
     stats = AgentRunStats()
-    budget = _build_budget(max_credits, log)
+    budget = _build_token_budget(max_tokens, max_credits, log)
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -346,7 +347,7 @@ async def _run_loop(
     compression_db_path: Path | None = None,
     role: str = "agent",
     stats: AgentRunStats | None = None,
-    budget: BudgetEnforcer | None = None,
+    budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
@@ -374,9 +375,7 @@ async def _run_loop(
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages, compression_db_path=compression_db_path)
         input_tokens_est = _estimate_input_tokens(messages, tools)
-        _check_budget_preflight(
-            budget, vendor.model, input_tokens_est, log,
-        )
+        _check_budget_preflight(budget, input_tokens_est, log)
         # `vendor.call` is synchronous (blocking network I/O). Run it off the
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
@@ -388,7 +387,7 @@ async def _run_loop(
         tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
             effort.attempts, input_tokens_est,
         )
-        cycle_credits = estimate_call_credits(
+        estimated_credits = estimate_call_credits(
             vendor.model, tokens_in, tokens_out, cached_tokens,
         )
         if stats is not None:
@@ -396,11 +395,9 @@ async def _run_loop(
                 lm_ms=lm_ms,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
-                credits=cycle_credits,
+                estimated_credits=estimated_credits,
             )
-        _charge_budget_postflight(
-            budget, vendor.model, cycle_credits, log,
-        )
+        _charge_budget_postflight(budget, tokens_in + tokens_out, log)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
@@ -410,7 +407,7 @@ async def _run_loop(
             attempt_count=len(effort.attempts),
         )
         _log_cycle_cost(
-            log, cycle, lm_ms, tokens_in, tokens_out, cycle_credits, budget,
+            log, cycle, lm_ms, tokens_in, tokens_out, estimated_credits, budget,
         )
 
         text = _extract_text(resp.content)
@@ -458,9 +455,7 @@ async def _run_loop(
                     messages, compression_db_path=compression_db_path,
                 )
                 input_tokens_est = _estimate_input_tokens(final_messages, [])
-                _check_budget_preflight(
-                    budget, vendor.model, input_tokens_est, log,
-                )
+                _check_budget_preflight(budget, input_tokens_est, log)
                 lm_started = time.perf_counter()
                 effort = await asyncio.to_thread(
                     _call_with_effort, vendor, final_messages, []
@@ -470,7 +465,7 @@ async def _run_loop(
                 tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
                     effort.attempts, input_tokens_est,
                 )
-                cycle_credits = estimate_call_credits(
+                estimated_credits = estimate_call_credits(
                     vendor.model, tokens_in, tokens_out, cached_tokens,
                 )
                 if stats is not None:
@@ -478,14 +473,12 @@ async def _run_loop(
                         lm_ms=lm_ms,
                         tokens_in=tokens_in,
                         tokens_out=tokens_out,
-                        credits=cycle_credits,
+                        estimated_credits=estimated_credits,
                     )
-                _charge_budget_postflight(
-                    budget, vendor.model, cycle_credits, log,
-                )
+                _charge_budget_postflight(budget, tokens_in + tokens_out, log)
                 _log_cycle_cost(
                     log, max_cycles, lm_ms, tokens_in, tokens_out,
-                    cycle_credits, budget,
+                    estimated_credits, budget,
                 )
                 final_answer = _extract_text(resp.content) or None
             except Exception as exc:  # noqa: BLE001 — fall through to the raise
@@ -515,7 +508,7 @@ async def run_unit(
     initial_messages: list[dict[str, Any]] | None = None,
     role: str = "agent",
     stats: AgentRunStats | None = None,
-    budget: BudgetEnforcer | None = None,
+    budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
@@ -630,12 +623,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Per-turn total token cap. Defaults to MUSUBI_AGENT_MAX_TOKENS, "
+            f"then {DEFAULT_AGENT_MAX_TOKENS}. Use 0 to disable."
+        ),
+    )
+    ap.add_argument(
         "--max-credits",
         type=float,
         default=None,
         help=(
-            "Per-turn credit cap. Defaults to MUSUBI_AGENT_MAX_CREDITS, "
-            f"then {DEFAULT_AGENT_MAX_CREDITS:g}. Use 0 to disable."
+            "Deprecated compatibility flag. Credits are no longer used for "
+            "budget enforcement; use --max-tokens instead. A value of 0 "
+            "still disables the token cap for older scripts."
         ),
     )
     args = ap.parse_args(argv)
@@ -663,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
                 vendor_source=vendor_source,
                 chat_id=args.chat_id,
                 max_credits=args.max_credits,
+                max_tokens=args.max_tokens,
             )
         )
     except KeyboardInterrupt:
@@ -757,25 +761,40 @@ def _default_musubi_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _build_budget(max_credits: float | None, log: Any) -> BudgetEnforcer | None:
-    cap = max_credits
+def _build_token_budget(
+    max_tokens: int | None,
+    max_credits: float | None,
+    log: Any,
+) -> TokenBudgetEnforcer | None:
+    cap = max_tokens
     if cap is None:
-        raw = os.environ.get("MUSUBI_AGENT_MAX_CREDITS", "").strip()
+        raw = os.environ.get("MUSUBI_AGENT_MAX_TOKENS", "").strip()
         if raw:
             try:
-                cap = float(raw)
+                cap = int(raw)
             except ValueError as exc:
                 raise RuntimeError(
-                    f"MUSUBI_AGENT_MAX_CREDITS must be numeric, got {raw!r}"
+                    f"MUSUBI_AGENT_MAX_TOKENS must be an integer, got {raw!r}"
                 ) from exc
         else:
-            cap = DEFAULT_AGENT_MAX_CREDITS
+            cap = DEFAULT_AGENT_MAX_TOKENS
+
+    if max_credits is not None:
+        if max_credits <= 0 and max_tokens is None:
+            cap = 0
+        else:
+            print(
+                "[agent] --max-credits is deprecated and ignored for budget "
+                "enforcement; use --max-tokens",
+                file=log,
+            )
+
     if cap <= 0:
-        print("[agent] budget: disabled", file=log)
+        print("[agent] token budget: disabled", file=log)
         return None
-    budget = BudgetEnforcer(cap)
+    budget = TokenBudgetEnforcer(cap)
     print(
-        f"[agent] budget: {budget.max_credits:.1f} credits "
+        f"[agent] token budget: {budget.max_tokens} tokens "
         f"(warn at {int(budget.warn_at_ratio * 100)}%)",
         file=log,
     )
@@ -1011,57 +1030,53 @@ def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | Non
 
 
 def _check_budget_preflight(
-    budget: BudgetEnforcer | None,
-    family: str,
+    budget: TokenBudgetEnforcer | None,
     input_tokens: int,
     log: Any,
 ) -> None:
     if budget is None:
         return
     estimated_output = max(1, int(input_tokens * 0.25))
-    credits = estimate_call_credits(family, input_tokens, estimated_output)
-    status = budget.preflight(credits)
+    estimated_tokens = input_tokens + estimated_output
+    status = budget.preflight(estimated_tokens)
     if status == "allow":
         return
-    projected = budget.credits_used + credits
+    projected = budget.tokens_used + estimated_tokens
     print(
-        f"[agent] budget {status}: projected={projected:.2f}/"
-        f"{budget.max_credits:.2f} credits this_call={credits:.2f}",
+        f"[agent] token budget {status}: projected={projected}/"
+        f"{budget.max_tokens} tokens this_call={estimated_tokens}",
         file=log,
     )
     if status == "halt":
-        raise BudgetExhaustedError(
+        raise TokenBudgetExhaustedError(
             phase="preflight",
-            credits_used=projected,
-            max_credits=budget.max_credits,
-            family=family,
-            this_call_credits=credits,
+            tokens_used=projected,
+            max_tokens=budget.max_tokens,
+            this_call_tokens=estimated_tokens,
         )
 
 
 def _charge_budget_postflight(
-    budget: BudgetEnforcer | None,
-    family: str,
-    credits: float,
+    budget: TokenBudgetEnforcer | None,
+    tokens: int,
     log: Any,
 ) -> None:
     if budget is None:
         return
-    status = budget.charge(credits)
+    status = budget.charge(tokens)
     if status == "allow":
         return
     print(
-        f"[agent] budget {status}: used={budget.credits_used:.2f}/"
-        f"{budget.max_credits:.2f} credits this_call={credits:.2f}",
+        f"[agent] token budget {status}: used={budget.tokens_used}/"
+        f"{budget.max_tokens} tokens this_call={tokens}",
         file=log,
     )
     if status == "halt":
-        raise BudgetExhaustedError(
+        raise TokenBudgetExhaustedError(
             phase="postflight",
-            credits_used=budget.credits_used,
-            max_credits=budget.max_credits,
-            family=family,
-            this_call_credits=credits,
+            tokens_used=budget.tokens_used,
+            max_tokens=budget.max_tokens,
+            this_call_tokens=tokens,
         )
 
 
@@ -1076,7 +1091,7 @@ async def _dispatch(
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
     role: str = "agent",
-    budget: BudgetEnforcer | None = None,
+    budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -1158,7 +1173,7 @@ async def _dispatch_one(
     refused: bool,
     compression_db_path: Path | None,
     role: str = "agent",
-    budget: BudgetEnforcer | None = None,
+    budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
 ) -> str:
@@ -1408,18 +1423,18 @@ def _log_cycle_cost(
     lm_ms: int,
     tokens_in: int,
     tokens_out: int,
-    credits: float,
-    budget: BudgetEnforcer | None,
+    estimated_credits: float,
+    budget: TokenBudgetEnforcer | None,
 ) -> None:
     parts = [
         f"[agent] cycle {cycle}: lm_ms={lm_ms}",
         f"in_tokens={tokens_in}",
         f"out_tokens={tokens_out}",
-        f"credits={credits:.4f}",
+        f"estimated_credits={estimated_credits:.4f}",
     ]
     if budget is not None:
         parts.append(
-            f"budget={budget.credits_used:.2f}/{budget.max_credits:.2f}"
+            f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )
     print(" ".join(parts), file=log)
 
@@ -1427,7 +1442,7 @@ def _log_cycle_cost(
 def _log_turn_usage(
     log: Any,
     stats: AgentRunStats,
-    budget: BudgetEnforcer | None,
+    budget: TokenBudgetEnforcer | None,
 ) -> None:
     if stats.cycles <= 0:
         return
@@ -1436,11 +1451,11 @@ def _log_turn_usage(
         f"lm_ms={stats.lm_ms}",
         f"in_tokens={stats.tokens_in_estimate}",
         f"out_tokens={stats.tokens_out_estimate}",
-        f"credits={stats.credits:.4f}",
+        f"estimated_credits={stats.estimated_credits:.4f}",
     ]
     if budget is not None:
         parts.append(
-            f"budget={budget.credits_used:.2f}/{budget.max_credits:.2f}"
+            f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )
     print(" ".join(parts), file=log)
 

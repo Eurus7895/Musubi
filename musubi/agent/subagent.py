@@ -141,7 +141,10 @@ async def run_subagent(
             audit_db_path=audit_db_path,
         )
     except Exception as exc:
-        if type(exc).__name__ == "BudgetExhaustedError":
+        if type(exc).__name__ in {
+            "BudgetExhaustedError",
+            "TokenBudgetExhaustedError",
+        }:
             await _safe_complete(
                 session, handle_id, status="escalated",
                 summary=f"[subagent {role}] budget exhausted: {exc}",

@@ -155,12 +155,14 @@ were previously only visible in narrower paths:
 - **Multi-turn CLI state:** pass `--chat-id <id>` to store user/assistant
   turns in `conversation_messages` and replay that bounded history on the
   next run.
-- **Credit caps:** each run is guarded by `BudgetEnforcer` at the LM boundary.
-  The default cap is `30` credits, `--max-credits <n>` overrides it, and
-  `--max-credits 0` or `MUSUBI_AGENT_MAX_CREDITS=0` disables the cap.
+- **Token caps:** each run is guarded by `TokenBudgetEnforcer` at the LM
+  boundary. The default cap is `200000` total tokens, `--max-tokens <n>`
+  overrides it, and `--max-tokens 0` or `MUSUBI_AGENT_MAX_TOKENS=0` disables
+  the cap.
 - **Usage telemetry:** every LM cycle logs estimated input/output tokens,
-  elapsed LM milliseconds, and credits. Persisted chat turns also write
-  `agent_turns` rows.
+  elapsed LM milliseconds, and optional estimated credits. Persisted chat turns
+  also write `agent_turns` rows. Token counts are the source of truth; credits
+  are only a price-table-dependent estimate.
 - **Tool boundary audit:** model-requested `musubi_*` tool calls pass a
   deterministic PreToolUse policy check before dispatch and append PostToolUse
   rows after success, denial, or error. Policy verdicts are stored in
@@ -169,8 +171,8 @@ were previously only visible in narrower paths:
 
 ```bash
 agent "continue the refactor" --chat-id musubi-refactor
-agent "large migration" --max-credits 20
-MUSUBI_AGENT_MAX_CREDITS=0 agent "one uncapped diagnostic pass"
+agent "large migration" --max-tokens 120000
+MUSUBI_AGENT_MAX_TOKENS=0 agent "one uncapped diagnostic pass"
 ```
 
 Capability evidence is captured in

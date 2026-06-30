@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from agent.run import Orchestration, run_agent
-from agent.budget import BudgetEnforcer, BudgetExhaustedError
+from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
 from agent.vendors.base import LMResponse, LMRouter
 
 
@@ -112,9 +112,9 @@ def test_run_loop_preflight_budget_halt_skips_vendor_call() -> None:
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    budget = BudgetEnforcer(max_credits=0.001)
+    budget = TokenBudgetEnforcer(max_tokens=100)
 
-    with pytest.raises(BudgetExhaustedError, match="preflight"):
+    with pytest.raises(TokenBudgetExhaustedError, match="preflight"):
         asyncio.run(
             run_mod._run_loop(
                 object(),
@@ -128,6 +128,45 @@ def test_run_loop_preflight_budget_halt_skips_vendor_call() -> None:
         )
 
     assert router.calls == []
+
+
+def test_build_token_budget_uses_token_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import run as run_mod
+
+    monkeypatch.delenv("MUSUBI_AGENT_MAX_TOKENS", raising=False)
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(1234, None, log)
+
+    assert budget is not None
+    assert budget.max_tokens == 1234
+    assert "token budget: 1234 tokens" in log.getvalue()
+
+
+def test_build_token_budget_preserves_max_credits_zero_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    monkeypatch.delenv("MUSUBI_AGENT_MAX_TOKENS", raising=False)
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(None, 0, log)
+
+    assert budget is None
+    assert "token budget: disabled" in log.getvalue()
+
+
+def test_build_token_budget_ignores_positive_max_credits() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(4321, 10, log)
+
+    assert budget is not None
+    assert budget.max_tokens == 4321
+    assert "--max-credits is deprecated and ignored" in log.getvalue()
 
 
 class _FakeToolSession:
@@ -307,7 +346,7 @@ def test_loop_returns_text_when_model_does_not_use_tools(
     ])
     log = io.StringIO()
     answer = asyncio.run(
-        run_agent("ping", router, _musubi_dir(), log=log, max_credits=0)
+        run_agent("ping", router, _musubi_dir(), log=log, max_tokens=0)
     )
     assert answer == "no tools needed."
     assert router.calls[0]["tools"], "expected the MCP tool catalog in the first call"
@@ -329,7 +368,7 @@ def test_run_agent_persists_and_replays_chat_history(
             _musubi_dir(),
             log=io.StringIO(),
             chat_id="chat-1",
-            max_credits=0,
+            max_tokens=0,
         )
     )
     assert first == "first answer"
@@ -344,7 +383,7 @@ def test_run_agent_persists_and_replays_chat_history(
             _musubi_dir(),
             log=io.StringIO(),
             chat_id="chat-1",
-            max_credits=0,
+            max_tokens=0,
         )
     )
     assert second == "second answer"
@@ -391,7 +430,7 @@ def test_loop_dispatches_real_tool_and_feeds_result_back(
     log = io.StringIO()
     answer = asyncio.run(
         run_agent(
-            "open a session", router, _musubi_dir(), log=log, max_credits=0,
+            "open a session", router, _musubi_dir(), log=log, max_tokens=0,
         )
     )
     assert answer == "session opened."
@@ -423,7 +462,7 @@ def test_loop_aborts_after_max_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError, match="exceeded 2 cycles"):
         asyncio.run(run_agent(
             "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
-            max_credits=0,
+            max_tokens=0,
         ))
 
 
@@ -447,7 +486,7 @@ def test_loop_passes_tool_error_to_model_rather_than_raising(
     ])
     log = io.StringIO()
     answer = asyncio.run(run_agent(
-        "bad tool", router, _musubi_dir(), log=log, max_credits=0,
+        "bad tool", router, _musubi_dir(), log=log, max_tokens=0,
     ))
     assert answer == "ack."
     assert len(router.calls) == 2, "loop should have completed both cycles"
@@ -496,7 +535,7 @@ def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
         asyncio.run(
             run_agent(
                 "hi", _ExplodingRouter(), _musubi_dir(), log=log,
-                max_credits=0,
+                max_tokens=0,
             )
         )
     # The message is a clean one-liner, not a nested group dump.

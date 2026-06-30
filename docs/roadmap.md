@@ -65,8 +65,8 @@ substrate; pipeline dissolution is postponed (see below).
 2. ✓ **Reversible compression core.** Deterministic blob-store compression plus `musubi_retrieve` landed.
 3. ✓ **Compression on input returns.** Tool/stage/conversation outputs compress by default, remain reversible, and expose stats.
 4. ✓ **Finish single-agent host parity.** Model-agnostic vendors,
-   external-MCP federation, deterministic context controls, `BudgetEnforcer`
-   credit caps, cycle usage telemetry, and `--chat-id` multi-turn CLI
+   external-MCP federation, deterministic context controls, token budget
+   caps, cycle usage telemetry, and `--chat-id` multi-turn CLI
    persistence landed in the standalone host.
 5. ✓ **Control at the boundary.** The worker model now runs through one
    `run_unit` path with parallel/depth-2 workers, summonable pipelines,

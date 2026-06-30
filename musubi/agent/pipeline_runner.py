@@ -105,7 +105,10 @@ async def run_pipeline(
                 audit_db_path=audit_db_path,
             )
         except Exception as exc:
-            if type(exc).__name__ == "BudgetExhaustedError":
+            if type(exc).__name__ in {
+                "BudgetExhaustedError",
+                "TokenBudgetExhaustedError",
+            }:
                 await _call_tool_text(session, "musubi_complete_subagent", {
                     "handle_id": handle_id,
                     "summary": f"[stage {stage}] budget exhausted: {exc}",

@@ -145,7 +145,7 @@
         <h2>Finish single-agent host parity</h2>
         <p>
           Model-agnostic vendors, external-MCP federation, deterministic
-          context controls, <code>BudgetEnforcer</code> caps, cycle usage
+          context controls, <code>TokenBudgetEnforcer</code> caps, cycle usage
           telemetry, and <code>--chat-id</code> persistence are now part of
           the standalone host.
         </p>
@@ -167,8 +167,8 @@
         <p><code>agent --chat-id</code> stores and replays bounded conversation history.</p>
       </article>
       <article class="capability">
-        <h3>Credit Caps</h3>
-        <p><code>--max-credits</code> and <code>MUSUBI_AGENT_MAX_CREDITS</code> gate LM calls.</p>
+        <h3>Token Caps</h3>
+        <p><code>--max-tokens</code> and <code>MUSUBI_AGENT_MAX_TOKENS</code> gate LM calls; credits are log-only estimates.</p>
       </article>
       <article class="capability">
         <h3>Shared Worker Path</h3>

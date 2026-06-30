@@ -1,9 +1,7 @@
-"""Standalone agent budget accounting.
+"""Standalone agent token and optional credit accounting.
 
-These tests pin the Python port of the BudgetEnforcer primitive used by
-the VS Code pipeline runner. The standalone host uses the same credit
-math so CLI telemetry and budget halts mean the same thing on both
-surfaces.
+Token counts are the standalone host's source of truth because public
+model prices drift. Credit math remains as an optional estimate for logs.
 """
 
 from __future__ import annotations
@@ -14,6 +12,8 @@ from agent.budget import (
     BudgetEnforcer,
     UNKNOWN_FAMILY_RATE,
     BudgetExhaustedError,
+    TokenBudgetEnforcer,
+    TokenBudgetExhaustedError,
     estimate_call_credits,
     estimate_tokens_from_chars,
     rate_for,
@@ -80,3 +80,37 @@ def test_budget_enforcer_rejects_invalid_values() -> None:
         BudgetEnforcer(10, warn_at_ratio=0)
     with pytest.raises(ValueError):
         BudgetEnforcer(10).charge(-1)
+
+
+def test_token_budget_enforcer_warns_once_then_halts() -> None:
+    budget = TokenBudgetEnforcer(max_tokens=1000, warn_at_ratio=0.8)
+    assert budget.preflight(799) == "allow"
+    assert budget.preflight(800) == "warn"
+    assert budget.charge(700) == "allow"
+    assert budget.charge(100) == "warn"
+    assert budget.charge(50) == "allow"
+    assert budget.charge(151) == "halt"
+    assert budget.tokens_used == 1001
+
+
+def test_token_budget_exhausted_error_carries_context() -> None:
+    err = TokenBudgetExhaustedError(
+        phase="postflight",
+        tokens_used=1201,
+        max_tokens=1000,
+        this_call_tokens=250,
+    )
+    assert err.phase == "postflight"
+    assert err.tokens_used == 1201
+    assert err.max_tokens == 1000
+    assert err.this_call_tokens == 250
+    assert "token budget" in str(err)
+
+
+def test_token_budget_enforcer_rejects_invalid_values() -> None:
+    with pytest.raises(ValueError):
+        TokenBudgetEnforcer(0)
+    with pytest.raises(ValueError):
+        TokenBudgetEnforcer(10, warn_at_ratio=0)
+    with pytest.raises(ValueError):
+        TokenBudgetEnforcer(10).charge(-1)

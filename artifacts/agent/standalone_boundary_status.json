@@ -4,7 +4,7 @@
     {
       "step": 4,
       "name": "Finish single-agent host parity",
-      "summary": "Standalone agent parity now includes model-agnostic vendors, external-MCP federation, deterministic context controls, BudgetEnforcer credit caps, cycle usage telemetry, and multi-turn CLI persistence."
+      "summary": "Standalone agent parity now includes model-agnostic vendors, external-MCP federation, deterministic context controls, token budget caps, cycle usage telemetry, and multi-turn CLI persistence."
     },
     {
       "step": 5,
@@ -18,8 +18,8 @@
       "evidence": "agent --chat-id stores user and assistant turns in conversation_messages and replays bounded history on the next run."
     },
     {
-      "name": "BudgetEnforcer in the standalone host",
-      "evidence": "--max-credits and MUSUBI_AGENT_MAX_CREDITS gate LM calls and surface token/credit telemetry in cycle logs."
+      "name": "TokenBudgetEnforcer in the standalone host",
+      "evidence": "--max-tokens and MUSUBI_AGENT_MAX_TOKENS gate LM calls with token counts as the source of truth; estimated credits are log-only."
     },
     {
       "name": "Shared worker path",

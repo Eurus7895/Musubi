@@ -82,16 +82,18 @@ The standalone host now has first-class parity controls:
 
 ```bash
 agent "continue the refactor" --chat-id musubi-refactor
-agent "large migration" --max-credits 20
-MUSUBI_AGENT_MAX_CREDITS=0 agent "one uncapped diagnostic pass"
+agent "large migration" --max-tokens 120000
+MUSUBI_AGENT_MAX_TOKENS=0 agent "one uncapped diagnostic pass"
 ```
 
 - `--chat-id <id>` stores user/assistant messages in `conversation_messages`
   and replays a bounded history for the next CLI turn.
-- `BudgetEnforcer` guards each LM call. The default cap is `30` credits;
-  `--max-credits <n>` overrides it and `0` disables it.
+- `TokenBudgetEnforcer` guards each LM call. The default cap is `200000`
+  total tokens; `--max-tokens <n>` overrides it and `0` disables it.
 - The cycle log prints estimated input/output tokens, LM milliseconds, and
-  credits. Persisted chats also write `agent_turns` telemetry.
+  optional estimated credits. Persisted chats also write `agent_turns`
+  telemetry. Token counts are the source of truth; credits are only a
+  price-table-dependent estimate.
 - Every model-requested `musubi_*` tool call passes deterministic PreToolUse
   policy before dispatch and appends PostToolUse rows after success, denial, or
   error. Verdicts land in `policy_audit`; tool outcomes land in `tool_audit`.
@@ -201,7 +203,7 @@ Four zero-LLM token controls apply at the LM-call boundary:
 | **CacheAligner** | Marks the static prefix (system + tools) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native caching. | `MUSUBI_PROMPT_CACHE=0` |
 | **Effort routing** | Starts each cycle at a low output-token cap, escalates only on truncation. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
 | **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
-| **BudgetEnforcer** | Preflights projected credits and charges measured/estimated usage after each LM call. | `--max-credits <n>` or `MUSUBI_AGENT_MAX_CREDITS=<n>` |
+| **TokenBudgetEnforcer** | Preflights projected total tokens and charges measured/estimated token usage after each LM call. | `--max-tokens <n>` or `MUSUBI_AGENT_MAX_TOKENS=<n>` |
 
 ---
 
