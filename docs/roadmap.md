@@ -64,43 +64,14 @@ substrate; pipeline dissolution is postponed (see below).
 1. ✓ **`tools/fs.py` MCP tools.** File/command tools are wired through the substrate.
 2. ✓ **Reversible compression core.** Deterministic blob-store compression plus `musubi_retrieve` landed.
 3. ✓ **Compression on input returns.** Tool/stage/conversation outputs compress by default, remain reversible, and expose stats.
-4. ◐ **Finish single-agent host parity.** Model-agnostic vendors landed:
-   `anthropic`/`openai`/`ollama`/`azure`-on-prem (curl transport) and the
-   `genai_farm` on-prem gateway (SDK by default, curl fallback for an
-   authenticated proxy / custom CA / mTLS) selected by `.musubi/llm.json`
-   family profiles (`agent/config.py` + `agent/vendors/`). External-MCP
-   federation landed (`agent/mcp_gateway.py`): the standalone host reads an
-   `mcp.json` (the standard `mcpServers` schema — Claude Desktop / Cursor /
-   VS Code configs paste in unchanged), connects any number of other MCP
-   servers (stdio or streamable-HTTP), and splices their tools into the
-   catalog under a `<server>__<tool>` namespace, routing each call back to
-   its owner.
-   Fail-open per server (a bad entry is logged and skipped); top-level
-   agent only (sub-agents stay Musubi-tool-scoped); the tools are **not**
-   firewalled/audited by Musubi — a driver-side convenience, not a
-   substrate control.
-   Driver-side context controls landed (`agent/context.py` +
-   `agent/vendors/anthropic_router.py`): deterministic, zero-LLM
-   counterparts of Headroom's verbosity steering (terse system prompt),
-   CacheAligner (Anthropic `cache_control` on the static system+tools
-   prefix, `MUSUBI_PROMPT_CACHE=0` opts out; OpenAI-compatible vendors
-   surface provider-native cached-token telemetry through the same cycle-log
-   keys), effort routing (low per-cycle `max_tokens` floor that escalates
-   only on truncation, `MUSUBI_EFFORT_TOKENS`), and IntelligentContext
-   (`fit_context` runs a budgeted packing pass when the convo exceeds
-   `MUSUBI_CONTEXT_BUDGET`: protect system + first task + recent turns,
-   compress old tool outputs first, then trim only if needed while
-   preserving tool pairing + `musubi_retrieve` markers — the learned
-   compaction stays out to honour HI #1).
-   Remaining: port `BudgetEnforcer` into `agent/run.py`; multi-turn CLI +
-   conversation persistence.
-5. ◐ **Control at the boundary.** Sub-agent orchestrator landed
-   (`agent/subagent.py`) and has since unified into the **worker model**
-   (see "Worker model — landed" below): one `run_unit` path, parallel +
-   depth-2 workers, agent-summoned and user-defined pipelines, all on
-   firewalled briefs + restricted tool surfaces with verified summaries and
-   audited spawns. Remaining: `PreToolUse` (policy/firewall) + `PostToolUse`
-   (audit) on every standalone tool call; surface cost/credits in the CLI.
+4. ✓ **Finish single-agent host parity.** Model-agnostic vendors,
+   external-MCP federation, deterministic context controls, token budget
+   caps, cycle usage telemetry, and `--chat-id` multi-turn CLI
+   persistence landed in the standalone host.
+5. ✓ **Control at the boundary.** The worker model now runs through one
+   `run_unit` path with parallel/depth-2 workers, summonable pipelines,
+   PreToolUse policy checks, PostToolUse audit rows, policy verdict audit,
+   and CLI-visible token/credit usage on standalone Musubi tool calls.
 6. **Fix the VS Code extension for the rename.** The extension is a
    **supported** Copilot surface (it brings the substrate — governance +
    compression — to Copilot Chat). Update its hardcoded `harness_*` tool

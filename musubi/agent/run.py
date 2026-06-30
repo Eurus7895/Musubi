@@ -33,6 +33,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,19 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from agent.context import build_system_prompt, effort_floor, fit_context
+from agent.budget import (
+    TokenBudgetEnforcer,
+    TokenBudgetExhaustedError,
+    estimate_call_credits,
+    estimate_tokens_from_chars,
+)
+from agent.boundary import (
+    evaluate_tool_call,
+    is_musubi_tool,
+    json_args,
+    record_policy_decision,
+    record_tool_audit,
+)
 from agent.mcp_gateway import (
     McpGateway,
     find_mcp_config_path,
@@ -51,6 +65,8 @@ from agent.mcp_gateway import (
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 
 DEFAULT_MAX_CYCLES = 16
+
+DEFAULT_AGENT_MAX_TOKENS = 200_000
 
 #: Ceiling for output tokens; effort routing starts below this and escalates
 #: to it only when a cycle actually stops on `max_tokens`.
@@ -104,6 +120,39 @@ class Orchestration:
         return self.enabled and self.depth < self.max_depth
 
 
+@dataclass
+class AgentRunStats:
+    """Cumulative telemetry for one CLI turn across root and workers."""
+
+    cycles: int = 0
+    lm_ms: int = 0
+    tokens_in_estimate: int = 0
+    tokens_out_estimate: int = 0
+    estimated_credits: float = 0.0
+
+    def record_cycle(
+        self,
+        *,
+        lm_ms: int,
+        tokens_in: int,
+        tokens_out: int,
+        estimated_credits: float,
+    ) -> None:
+        self.cycles += 1
+        self.lm_ms += lm_ms
+        self.tokens_in_estimate += tokens_in
+        self.tokens_out_estimate += tokens_out
+        self.estimated_credits += estimated_credits
+
+
+@dataclass
+class EffortCallResult:
+    """Final response plus every vendor call made to obtain it."""
+
+    response: LMResponse
+    attempts: list[LMResponse]
+
+
 # ── Public entry ────────────────────────────────────────────────────────────
 
 
@@ -116,6 +165,9 @@ async def run_agent(
     log: Any = sys.stderr,
     mcp_config: str | os.PathLike[str] | None = None,
     vendor_source: str | None = None,
+    chat_id: str | None = None,
+    max_credits: float | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -129,6 +181,10 @@ async def run_agent(
     server_path = musubi_dir / "server.py"
     server_env = _server_env()
     context_compression_db_path = _server_db_path(musubi_dir, server_env)
+    audit_db_path = _server_audit_db_path(musubi_dir, server_env)
+    turn_started_at = time.time()
+    stats = AgentRunStats()
+    budget = _build_token_budget(max_tokens, max_credits, log)
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -142,6 +198,7 @@ async def run_agent(
     # at every call site (including main()).
     final_answer: str | None = None
     loop_error: BaseException | None = None
+    parent_session_id: str | None = None
 
     # One AsyncExitStack owns Musubi's session AND every federated external
     # session, so they all open in order and tear down (LIFO) together. This
@@ -198,9 +255,24 @@ async def run_agent(
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        orchestration = Orchestration(
-            parent_session_id=await _open_parent_session(session, task, log),
-        )
+        parent_session_id = await _open_parent_session(session, task, log)
+        orchestration = Orchestration(parent_session_id=parent_session_id)
+        system_prompt = build_system_prompt()
+        initial_messages: list[dict[str, Any]] | None = None
+        if chat_id:
+            _append_chat_message(
+                chat_id, "user", task,
+                db_path=context_compression_db_path, log=log,
+            )
+            history = _load_chat_history(
+                chat_id, db_path=context_compression_db_path, log=log,
+            )
+            initial_messages = _messages_from_chat_history(system_prompt, history)
+            print(
+                f"[agent] chat_id={chat_id} replay_messages="
+                f"{max(0, len(initial_messages) - 1)}",
+                file=log,
+            )
 
         # Catch a loop failure (an LLM/network error from `vendor.call`, a
         # dispatch error) HERE, inside the `async with`, and stash it. Letting
@@ -216,12 +288,17 @@ async def run_agent(
         try:
             final_answer, _ = await run_unit(
                 session, vendor, tools,
-                system_prompt=build_system_prompt(),
+                system_prompt=system_prompt,
                 user_message=task,
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
                 salvage_on_exhaust=True,
                 compression_db_path=context_compression_db_path,
+                initial_messages=initial_messages,
+                role="agent",
+                stats=stats,
+                budget=budget,
+                audit_db_path=audit_db_path,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -236,6 +313,22 @@ async def run_agent(
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
+    if chat_id:
+        _append_chat_message(
+            chat_id, "assistant", final_answer,
+            db_path=context_compression_db_path, log=log,
+        )
+        _record_agent_turn(
+            chat_id=chat_id,
+            parent_session_id=parent_session_id,
+            started_at=turn_started_at,
+            ended_at=time.time(),
+            model_family=vendor.model,
+            stats=stats,
+            db_path=context_compression_db_path,
+            log=log,
+        )
+    _log_turn_usage(log, stats, budget)
     return final_answer
 
 
@@ -252,6 +345,10 @@ async def _run_loop(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    role: str = "agent",
+    stats: AgentRunStats | None = None,
+    budget: TokenBudgetEnforcer | None = None,
+    audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -277,15 +374,41 @@ async def _run_loop(
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages, compression_db_path=compression_db_path)
+        input_tokens_est = _estimate_input_tokens(messages, tools)
+        _check_budget_preflight(budget, input_tokens_est, log)
         # `vendor.call` is synchronous (blocking network I/O). Run it off the
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
         # round-trip instead of serializing. Single-loop cost is one thread hop.
-        resp = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
+        lm_started = time.perf_counter()
+        effort = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
+        lm_ms = int((time.perf_counter() - lm_started) * 1000)
+        resp = effort.response
+        tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+            effort.attempts, input_tokens_est,
+        )
+        estimated_credits = estimate_call_credits(
+            vendor.model, tokens_in, tokens_out, cached_tokens,
+        )
+        if stats is not None:
+            stats.record_cycle(
+                lm_ms=lm_ms,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                estimated_credits=estimated_credits,
+            )
+        _charge_budget_postflight(budget, tokens_in + tokens_out, log)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
-        _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
+        _log_cycle(
+            log, cycle, resp.stop_reason, tool_uses, resp.usage,
+            tokens_out=tokens_out,
+            attempt_count=len(effort.attempts),
+        )
+        _log_cycle_cost(
+            log, cycle, lm_ms, tokens_in, tokens_out, estimated_credits, budget,
+        )
 
         text = _extract_text(resp.content)
         if text:
@@ -300,6 +423,10 @@ async def _run_loop(
             vendor=vendor, tools=(spawn_catalog or tools),
             orchestration=orchestration, gateway=gateway,
             compression_db_path=compression_db_path,
+            role=role,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -324,9 +451,34 @@ async def _run_loop(
                 file=log,
             )
             try:
-                resp = await asyncio.to_thread(
-                    _call_with_effort, vendor,
-                    fit_context(messages, compression_db_path=compression_db_path), []
+                final_messages = fit_context(
+                    messages, compression_db_path=compression_db_path,
+                )
+                input_tokens_est = _estimate_input_tokens(final_messages, [])
+                _check_budget_preflight(budget, input_tokens_est, log)
+                lm_started = time.perf_counter()
+                effort = await asyncio.to_thread(
+                    _call_with_effort, vendor, final_messages, []
+                )
+                lm_ms = int((time.perf_counter() - lm_started) * 1000)
+                resp = effort.response
+                tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+                    effort.attempts, input_tokens_est,
+                )
+                estimated_credits = estimate_call_credits(
+                    vendor.model, tokens_in, tokens_out, cached_tokens,
+                )
+                if stats is not None:
+                    stats.record_cycle(
+                        lm_ms=lm_ms,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        estimated_credits=estimated_credits,
+                    )
+                _charge_budget_postflight(budget, tokens_in + tokens_out, log)
+                _log_cycle_cost(
+                    log, max_cycles, lm_ms, tokens_in, tokens_out,
+                    estimated_credits, budget,
                 )
                 final_answer = _extract_text(resp.content) or None
             except Exception as exc:  # noqa: BLE001 — fall through to the raise
@@ -353,6 +505,11 @@ async def run_unit(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    initial_messages: list[dict[str, Any]] | None = None,
+    role: str = "agent",
+    stats: AgentRunStats | None = None,
+    budget: TokenBudgetEnforcer | None = None,
+    audit_db_path: Path | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -373,7 +530,9 @@ async def run_unit(
     nesting worker passes an orchestration one level deeper plus the full
     catalog so its own children can be sized.
     """
-    if user_message is None:
+    if initial_messages is not None:
+        messages = [dict(message) for message in initial_messages]
+    elif user_message is None:
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": system_prompt}
         ]
@@ -389,6 +548,10 @@ async def run_unit(
         spawn_catalog=spawn_catalog,
         salvage_on_exhaust=salvage_on_exhaust,
         compression_db_path=compression_db_path,
+        role=role,
+        stats=stats,
+        budget=budget,
+        audit_db_path=audit_db_path,
     )
 
 
@@ -451,6 +614,33 @@ def main(argv: list[str] | None = None) -> int:
             "(the feature is off when none exists)."
         ),
     )
+    ap.add_argument(
+        "--chat-id",
+        default=None,
+        help=(
+            "Persist and replay this CLI conversation id across turns. "
+            "Omit for a one-shot turn."
+        ),
+    )
+    ap.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Per-turn total token cap. Defaults to MUSUBI_AGENT_MAX_TOKENS, "
+            f"then {DEFAULT_AGENT_MAX_TOKENS}. Use 0 to disable."
+        ),
+    )
+    ap.add_argument(
+        "--max-credits",
+        type=float,
+        default=None,
+        help=(
+            "Deprecated compatibility flag. Credits are no longer used for "
+            "budget enforcement; use --max-tokens instead. A value of 0 "
+            "still disables the token cap for older scripts."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -474,6 +664,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.task, vendor, musubi_dir,
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
                 vendor_source=vendor_source,
+                chat_id=args.chat_id,
+                max_credits=args.max_credits,
+                max_tokens=args.max_tokens,
             )
         )
     except KeyboardInterrupt:
@@ -542,6 +735,18 @@ def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     return musubi_dir / "storage" / "musubi.db"
 
 
+def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
+    """Return the append-only audit DB path used by the spawned server."""
+    root = server_env.get("MUSUBI_ROOT")
+    if root:
+        return Path(root) / "data" / "audit.db"
+    return musubi_dir / "storage" / "audit.db"
+
+
+def _default_audit_db_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "storage" / "audit.db"
+
+
 def _default_musubi_dir() -> Path:
     """Resolve the Musubi server dir.
 
@@ -554,6 +759,162 @@ def _default_musubi_dir() -> Path:
     if env:
         return Path(env)
     return Path(__file__).resolve().parent.parent
+
+
+def _build_token_budget(
+    max_tokens: int | None,
+    max_credits: float | None,
+    log: Any,
+) -> TokenBudgetEnforcer | None:
+    cap = max_tokens
+    if cap is None:
+        raw = os.environ.get("MUSUBI_AGENT_MAX_TOKENS", "").strip()
+        if raw:
+            try:
+                cap = int(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"MUSUBI_AGENT_MAX_TOKENS must be an integer, got {raw!r}"
+                ) from exc
+        else:
+            cap = DEFAULT_AGENT_MAX_TOKENS
+
+    if max_credits is not None:
+        if max_credits <= 0 and max_tokens is None:
+            cap = 0
+        else:
+            print(
+                "[agent] --max-credits is deprecated and ignored for budget "
+                "enforcement; use --max-tokens",
+                file=log,
+            )
+
+    if cap <= 0:
+        print("[agent] token budget: disabled", file=log)
+        return None
+    budget = TokenBudgetEnforcer(cap)
+    print(
+        f"[agent] token budget: {budget.max_tokens} tokens "
+        f"(warn at {int(budget.warn_at_ratio * 100)}%)",
+        file=log,
+    )
+    return budget
+
+
+def _ensure_core_import_path() -> None:
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+
+def _append_chat_message(
+    chat_id: str,
+    role: str,
+    content: str,
+    *,
+    db_path: Path,
+    log: Any,
+) -> None:
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        conversations.append_message(
+            chat_id, role, content, db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - persistence must not hide answer
+        print(
+            f"[agent] conversation append failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
+def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, Any]:
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        return conversations.get_history(
+            chat_id,
+            max_tokens=_chat_history_tokens(),
+            db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - fall back to current turn only
+        print(
+            f"[agent] conversation replay failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return {"messages": [], "total_tokens": 0, "truncated": False}
+
+
+def _chat_history_tokens() -> int:
+    raw = os.environ.get("MUSUBI_CHAT_HISTORY_TOKENS", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 50_000
+
+
+def _messages_from_chat_history(
+    system_prompt: str,
+    history: dict[str, Any],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for row in history.get("messages") or []:
+        if not isinstance(row, dict):
+            continue
+        role = row.get("role")
+        content = str(row.get("content", ""))
+        if not content:
+            continue
+        if role in {"user", "assistant"}:
+            messages.append({"role": role, "content": content})
+        elif role == "tool":
+            messages.append({"role": "user", "content": f"[prior tool result]\n{content}"})
+        elif role == "system":
+            messages.append({"role": "user", "content": f"[prior system note]\n{content}"})
+    return messages
+
+
+def _record_agent_turn(
+    *,
+    chat_id: str,
+    parent_session_id: str | None,
+    started_at: float,
+    ended_at: float,
+    model_family: str,
+    stats: AgentRunStats,
+    db_path: Path,
+    log: Any,
+) -> None:
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        db.insert_agent_turn(
+            chat_id=chat_id,
+            parent_session_id=parent_session_id or "unavailable",
+            started_at=started_at,
+            ended_at=ended_at,
+            model_family=model_family,
+            cycles=stats.cycles,
+            tokens_in_estimate=stats.tokens_in_estimate,
+            tokens_out_estimate=stats.tokens_out_estimate,
+            lm_ms=stats.lm_ms,
+            total_ms=int((ended_at - started_at) * 1000),
+            db_path=db_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
+        print(
+            f"[agent] agent_turn write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
 
 
 def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
@@ -584,7 +945,7 @@ def _call_with_effort(
     vendor: LMRouter,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-) -> LMResponse:
+) -> EffortCallResult:
     """Effort routing: start at a low output-token cap, escalate only on need.
 
     Most cycles emit a small tool_use block, so the floor cap costs nothing
@@ -593,9 +954,130 @@ def _call_with_effort(
     """
     floor = min(effort_floor(), EFFORT_CEILING)
     resp = vendor.call(messages, tools, max_tokens=floor)
+    attempts = [resp]
     if resp.stop_reason == "max_tokens" and floor < EFFORT_CEILING:
         resp = vendor.call(messages, tools, max_tokens=EFFORT_CEILING)
-    return resp
+        attempts.append(resp)
+    return EffortCallResult(response=resp, attempts=attempts)
+
+
+def _estimate_input_tokens(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> int:
+    chars = len(json.dumps(messages, default=str, ensure_ascii=False))
+    chars += len(json.dumps(tools, default=str, ensure_ascii=False))
+    return estimate_tokens_from_chars(chars)
+
+
+def _cycle_token_counts(
+    responses: LMResponse | list[LMResponse],
+    input_estimate: int,
+) -> tuple[int, int, int]:
+    attempts = responses if isinstance(responses, list) else [responses]
+    totals = [
+        _single_response_token_counts(resp, input_estimate)
+        for resp in attempts
+    ]
+    return (
+        sum(t[0] for t in totals),
+        sum(t[1] for t in totals),
+        sum(t[2] for t in totals),
+    )
+
+
+def _single_response_token_counts(
+    resp: LMResponse,
+    input_estimate: int,
+) -> tuple[int, int, int]:
+    usage = resp.usage or {}
+    tokens_in = _usage_int(usage, "input_tokens", "prompt_tokens") or input_estimate
+    output_estimate = estimate_tokens_from_chars(
+        len(json.dumps(resp.content, default=str, ensure_ascii=False))
+    )
+    tokens_out = (
+        _usage_int(usage, "output_tokens", "completion_tokens")
+        or output_estimate
+    )
+    cached = (
+        _usage_int(usage, "cache_read_input_tokens", "cached_input_tokens")
+        or _nested_usage_int(usage, ("prompt_tokens_details", "cached_tokens"))
+        or 0
+    )
+    return tokens_in, tokens_out, min(cached, tokens_in)
+
+
+def _usage_int(usage: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+    return None
+
+
+def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | None:
+    value = usage.get(path[0])
+    if not isinstance(value, dict):
+        return None
+    nested = value.get(path[1])
+    if isinstance(nested, int):
+        return nested
+    if isinstance(nested, float):
+        return int(nested)
+    return None
+
+
+def _check_budget_preflight(
+    budget: TokenBudgetEnforcer | None,
+    input_tokens: int,
+    log: Any,
+) -> None:
+    if budget is None:
+        return
+    estimated_output = max(1, int(input_tokens * 0.25))
+    estimated_tokens = input_tokens + estimated_output
+    status = budget.preflight(estimated_tokens)
+    if status == "allow":
+        return
+    projected = budget.tokens_used + estimated_tokens
+    print(
+        f"[agent] token budget {status}: projected={projected}/"
+        f"{budget.max_tokens} tokens this_call={estimated_tokens}",
+        file=log,
+    )
+    if status == "halt":
+        raise TokenBudgetExhaustedError(
+            phase="preflight",
+            tokens_used=projected,
+            max_tokens=budget.max_tokens,
+            this_call_tokens=estimated_tokens,
+        )
+
+
+def _charge_budget_postflight(
+    budget: TokenBudgetEnforcer | None,
+    tokens: int,
+    log: Any,
+) -> None:
+    if budget is None:
+        return
+    status = budget.charge(tokens)
+    if status == "allow":
+        return
+    print(
+        f"[agent] token budget {status}: used={budget.tokens_used}/"
+        f"{budget.max_tokens} tokens this_call={tokens}",
+        file=log,
+    )
+    if status == "halt":
+        raise TokenBudgetExhaustedError(
+            phase="postflight",
+            tokens_used=budget.tokens_used,
+            max_tokens=budget.max_tokens,
+            this_call_tokens=tokens,
+        )
 
 
 async def _dispatch(
@@ -608,6 +1090,10 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
+    role: str = "agent",
+    budget: TokenBudgetEnforcer | None = None,
+    stats: AgentRunStats | None = None,
+    audit_db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run every tool call in the batch CONCURRENTLY, returning tool_results in
     the original `tool_uses` order.
@@ -629,6 +1115,10 @@ async def _dispatch(
             orchestration=orchestration, gateway=gateway,
             refused=tu.get("id", "") in refused,
             compression_db_path=compression_db_path,
+            role=role,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
         )
         for tu in tool_uses
     ]
@@ -682,6 +1172,10 @@ async def _dispatch_one(
     gateway: McpGateway | None,
     refused: bool,
     compression_db_path: Path | None,
+    role: str = "agent",
+    budget: TokenBudgetEnforcer | None = None,
+    stats: AgentRunStats | None = None,
+    audit_db_path: Path | None = None,
 ) -> str:
     """Run a single tool call and return its result text.
 
@@ -694,6 +1188,31 @@ async def _dispatch_one(
     """
     name = tu.get("name", "")
     args = tu.get("input") or {}
+    session_id = orchestration.parent_session_id if orchestration else None
+    audit_path = audit_db_path or _default_audit_db_path()
+    call_role = (
+        orchestration.parent_agent_name
+        if orchestration is not None and orchestration.parent_agent_name
+        else role
+    )
+    should_audit = is_musubi_tool(name)
+    if should_audit:
+        decision = evaluate_tool_call(call_role, name)
+        _safe_record_policy(decision, db_path=audit_path, log=log)
+        if not decision.allowed:
+            denied = f"[policy denied] {decision.reason}"
+            print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+            _safe_record_tool_audit(
+                session_id=session_id,
+                role=call_role,
+                tool=name,
+                args=json_args(args),
+                status="denied",
+                db_path=audit_path,
+                result_text=denied,
+                log=log,
+            )
+            return denied
 
     if (
         name == "musubi_spawn_pipeline"
@@ -711,11 +1230,25 @@ async def _dispatch_one(
         try:
             from agent import pipeline_runner
 
-            return await pipeline_runner.run_pipeline(
-                session, injected, vendor, tools, log
+            result = await pipeline_runner.run_pipeline(
+                session, injected, vendor, tools, log,
+                compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001 — surface to the model
-            return f"[pipeline error] {type(exc).__name__}: {exc}"
+            result = f"[pipeline error] {type(exc).__name__}: {exc}"
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
 
     if (
         name == "musubi_spawn_subagent"
@@ -725,11 +1258,17 @@ async def _dispatch_one(
         and tools is not None
     ):
         if refused:
-            return (
+            result = (
                 f'{{"status": "refused", "reason": "per-turn spawn cap '
                 f'({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached for role '
                 f'{args.get("role")!r}"}}'
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="refused", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         injected = {
             **args,
             "parent_session_id": orchestration.parent_session_id,
@@ -739,23 +1278,57 @@ async def _dispatch_one(
         try:
             from agent import subagent
 
-            return await subagent.run_subagent(
+            result = await subagent.run_subagent(
                 session, injected, vendor, tools, log, orchestration=orchestration,
                 compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
             )
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
         except Exception as exc:  # noqa: BLE001 — surface to the model
-            return f"[subagent error] {type(exc).__name__}: {exc}"
+            result = f"[subagent error] {type(exc).__name__}: {exc}"
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+            return result
 
     print(f"[agent]   → {name}({_truncate(json.dumps(args), 60)})", file=log)
     target = gateway.route(name) if gateway is not None else (session, name)
     if target is None:
-        return f"[tool error] no MCP server owns tool {name!r}"
+        result = f"[tool error] no MCP server owns tool {name!r}"
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+        return result
     target_session, original_name = target
     try:
         result = await target_session.call_tool(original_name, arguments=args)
-        return _first_text(result)
+        text = _first_text(result)
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="ok", db_path=audit_path,
+                result_text=text, log=log,
+            )
+        return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
-        return f"[tool error] {type(exc).__name__}: {exc}"
+        result = f"[tool error] {type(exc).__name__}: {exc}"
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id, role=call_role, tool=name,
+                args=json_args(args), status="error", db_path=audit_path,
+                result_text=result, log=log,
+            )
+        return result
 
 
 async def _call_tool_text(
@@ -779,18 +1352,60 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:
+    try:
+        record_policy_decision(decision, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - audit must not crash tool result
+        print(
+            f"[agent] policy audit write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
+def _safe_record_tool_audit(
+    *,
+    session_id: str | None,
+    role: str,
+    tool: str,
+    args: dict[str, Any],
+    status: str,
+    db_path: Path,
+    result_text: str | None,
+    log: Any,
+) -> None:
+    try:
+        record_tool_audit(
+            session_id=session_id,
+            role=role,
+            tool=tool,
+            args=args,
+            status=status,
+            db_path=db_path,
+            result_text=result_text,
+        )
+    except Exception as exc:  # noqa: BLE001 - audit must not hide tool result
+        print(
+            f"[agent] tool audit write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
+
+
 def _log_cycle(
     log: Any,
     cycle: int,
     stop_reason: str,
     tool_uses: list[dict[str, Any]],
     usage: dict[str, Any] | None,
+    *,
+    tokens_out: int | None = None,
+    attempt_count: int = 1,
 ) -> None:
     parts = [f"[agent] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
+    if attempt_count > 1:
+        parts.append(f"attempts={attempt_count}")
+    if tokens_out is not None:
+        parts.append(f"out_tokens={tokens_out}")
     if usage:
-        toks = usage.get("output_tokens") or usage.get("completion_tokens")
-        if toks is not None:
-            parts.append(f"out_tokens={toks}")
         # CacheAligner measurement: how much of the prefix was served from the
         # prompt cache vs. (re)written this cycle.
         cache_read = usage.get("cache_read_input_tokens")
@@ -799,6 +1414,49 @@ def _log_cycle(
             parts.append(f"cache_read={cache_read}")
         if cache_write:
             parts.append(f"cache_write={cache_write}")
+    print(" ".join(parts), file=log)
+
+
+def _log_cycle_cost(
+    log: Any,
+    cycle: int,
+    lm_ms: int,
+    tokens_in: int,
+    tokens_out: int,
+    estimated_credits: float,
+    budget: TokenBudgetEnforcer | None,
+) -> None:
+    parts = [
+        f"[agent] cycle {cycle}: lm_ms={lm_ms}",
+        f"in_tokens={tokens_in}",
+        f"out_tokens={tokens_out}",
+        f"estimated_credits={estimated_credits:.4f}",
+    ]
+    if budget is not None:
+        parts.append(
+            f"token_budget={budget.tokens_used}/{budget.max_tokens}"
+        )
+    print(" ".join(parts), file=log)
+
+
+def _log_turn_usage(
+    log: Any,
+    stats: AgentRunStats,
+    budget: TokenBudgetEnforcer | None,
+) -> None:
+    if stats.cycles <= 0:
+        return
+    parts = [
+        f"[agent] usage cycles={stats.cycles}",
+        f"lm_ms={stats.lm_ms}",
+        f"in_tokens={stats.tokens_in_estimate}",
+        f"out_tokens={stats.tokens_out_estimate}",
+        f"estimated_credits={stats.estimated_credits:.4f}",
+    ]
+    if budget is not None:
+        parts.append(
+            f"token_budget={budget.tokens_used}/{budget.max_tokens}"
+        )
     print(" ".join(parts), file=log)
 
 

@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from agent.run import run_agent
+from agent.run import Orchestration, run_agent
+from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
 from agent.vendors.base import LMResponse, LMRouter
 
 
@@ -104,6 +106,176 @@ def test_run_loop_passes_context_compression_db_path(
     assert seen == [db_path]
 
 
+def test_run_loop_preflight_budget_halt_skips_vendor_call() -> None:
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    budget = TokenBudgetEnforcer(max_tokens=100)
+
+    with pytest.raises(TokenBudgetExhaustedError, match="preflight"):
+        asyncio.run(
+            run_mod._run_loop(
+                object(),
+                router,
+                [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+                [{"role": "user", "content": "x" * 20_000}],
+                max_cycles=1,
+                log=io.StringIO(),
+                budget=budget,
+            )
+        )
+
+    assert router.calls == []
+
+
+def test_build_token_budget_uses_token_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import run as run_mod
+
+    monkeypatch.delenv("MUSUBI_AGENT_MAX_TOKENS", raising=False)
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(1234, None, log)
+
+    assert budget is not None
+    assert budget.max_tokens == 1234
+    assert "token budget: 1234 tokens" in log.getvalue()
+
+
+def test_build_token_budget_preserves_max_credits_zero_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    monkeypatch.delenv("MUSUBI_AGENT_MAX_TOKENS", raising=False)
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(None, 0, log)
+
+    assert budget is None
+    assert "token budget: disabled" in log.getvalue()
+
+
+def test_build_token_budget_ignores_positive_max_credits() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+
+    budget = run_mod._build_token_budget(4321, 10, log)
+
+    assert budget is not None
+    assert budget.max_tokens == 4321
+    assert "--max-credits is deprecated and ignored" in log.getvalue()
+
+
+class _FakeToolSession:
+    def __init__(self, text: str = "ok") -> None:
+        self.text = text
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((name, arguments))
+
+        class _Chunk:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        class _Result:
+            def __init__(self, text: str) -> None:
+                self.content = [_Chunk(text)]
+
+        return _Result(self.text)
+
+
+def _read_policy_rows(db_path: Path) -> list[tuple[str, str, str]]:
+    with sqlite3.connect(db_path) as conn:
+        return list(conn.execute(
+            "SELECT verdict, role, tool FROM policy_audit ORDER BY id"
+        ))
+
+
+def _read_tool_rows(db_path: Path) -> list[tuple[str, str, str]]:
+    with sqlite3.connect(db_path) as conn:
+        return list(conn.execute(
+            "SELECT agent, tool, status FROM tool_audit ORDER BY id"
+        ))
+
+
+def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession()
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-denied",
+                "name": "musubi_write_file",
+                "input": {"path": "x.py", "content": "print('x')"},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="agent"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[policy denied]" in result
+    assert session.calls == []
+    assert _read_policy_rows(audit_db) == [
+        ("DENY", "agent", "musubi_write_file")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("agent", "musubi_write_file", "denied")
+    ]
+
+
+def test_dispatch_allows_coder_write_and_records_post_tool_audit(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-allowed",
+                "name": "musubi_write_file",
+                "input": {"path": "x.py", "content": "print('x')"},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert result == "stored"
+    assert session.calls == [("musubi_write_file", {"path": "x.py", "content": "print('x')"})]
+    assert _read_policy_rows(audit_db) == [
+        ("ALLOW", "coder", "musubi_write_file")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("coder", "musubi_write_file", "ok")
+    ]
+
+
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
     from agent.context import DEFAULT_EFFORT_FLOOR
@@ -113,8 +285,9 @@ def test_call_with_effort_escalates_on_max_tokens() -> None:
         LMResponse(stop_reason="max_tokens", content=[{"type": "text", "text": ""}]),
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    resp = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
-    assert resp.stop_reason == "end_turn"
+    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert result.response.stop_reason == "end_turn"
+    assert len(result.attempts) == 2
     assert [c["max_tokens"] for c in router.calls] == [
         DEFAULT_EFFORT_FLOOR,
         EFFORT_CEILING,
@@ -128,9 +301,38 @@ def test_call_with_effort_no_escalation_when_complete() -> None:
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert result.response.stop_reason == "end_turn"
+    assert len(result.attempts) == 1
     assert len(router.calls) == 1
     assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
+def test_cycle_token_counts_sum_effort_retry_attempts() -> None:
+    from agent import run as run_mod
+
+    attempts = [
+        LMResponse(
+            stop_reason="max_tokens",
+            content=[{"type": "text", "text": "partial"}],
+            usage={"input_tokens": 100, "output_tokens": 20},
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "final"}],
+            usage={
+                "input_tokens": 110,
+                "output_tokens": 30,
+                "cache_read_input_tokens": 80,
+            },
+        ),
+    ]
+
+    assert run_mod._cycle_token_counts(attempts, input_estimate=999) == (
+        210,
+        50,
+        80,
+    )
 
 
 def test_loop_returns_text_when_model_does_not_use_tools(
@@ -143,9 +345,68 @@ def test_loop_returns_text_when_model_does_not_use_tools(
         ),
     ])
     log = io.StringIO()
-    answer = asyncio.run(run_agent("ping", router, _musubi_dir(), log=log))
+    answer = asyncio.run(
+        run_agent("ping", router, _musubi_dir(), log=log, max_tokens=0)
+    )
     assert answer == "no tools needed."
     assert router.calls[0]["tools"], "expected the MCP tool catalog in the first call"
+
+
+def test_run_agent_persists_and_replays_chat_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+
+    first_router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "first answer"}]),
+    ])
+    first = asyncio.run(
+        run_agent(
+            "first question",
+            first_router,
+            _musubi_dir(),
+            log=io.StringIO(),
+            chat_id="chat-1",
+            max_tokens=0,
+        )
+    )
+    assert first == "first answer"
+
+    second_router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "second answer"}]),
+    ])
+    second = asyncio.run(
+        run_agent(
+            "second question",
+            second_router,
+            _musubi_dir(),
+            log=io.StringIO(),
+            chat_id="chat-1",
+            max_tokens=0,
+        )
+    )
+    assert second == "second answer"
+
+    replay = "\n".join(
+        str(message.get("content"))
+        for message in second_router.calls[0]["messages"]
+    )
+    assert "first question" in replay
+    assert "first answer" in replay
+    assert "second question" in replay
+
+    with sqlite3.connect(tmp_path / "data" / "musubi.db") as conn:
+        rows = list(conn.execute(
+            "SELECT role, content FROM conversation_messages "
+            "WHERE chat_id='chat-1' ORDER BY id"
+        ))
+    assert rows == [
+        ("user", "first question"),
+        ("assistant", "first answer"),
+        ("user", "second question"),
+        ("assistant", "second answer"),
+    ]
 
 
 def test_loop_dispatches_real_tool_and_feeds_result_back(
@@ -167,7 +428,11 @@ def test_loop_dispatches_real_tool_and_feeds_result_back(
         ),
     ])
     log = io.StringIO()
-    answer = asyncio.run(run_agent("open a session", router, _musubi_dir(), log=log))
+    answer = asyncio.run(
+        run_agent(
+            "open a session", router, _musubi_dir(), log=log, max_tokens=0,
+        )
+    )
     assert answer == "session opened."
     second_call_messages = router.calls[1]["messages"]
     user_results = [
@@ -197,6 +462,7 @@ def test_loop_aborts_after_max_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError, match="exceeded 2 cycles"):
         asyncio.run(run_agent(
             "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
+            max_tokens=0,
         ))
 
 
@@ -220,7 +486,7 @@ def test_loop_passes_tool_error_to_model_rather_than_raising(
     ])
     log = io.StringIO()
     answer = asyncio.run(run_agent(
-        "bad tool", router, _musubi_dir(), log=log,
+        "bad tool", router, _musubi_dir(), log=log, max_tokens=0,
     ))
     assert answer == "ack."
     assert len(router.calls) == 2, "loop should have completed both cycles"
@@ -266,6 +532,11 @@ def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
     wall raised at AsyncExitStack teardown (the Windows curl-407 traceback)."""
     log = io.StringIO()
     with pytest.raises(RuntimeError, match="407 proxy auth") as ei:
-        asyncio.run(run_agent("hi", _ExplodingRouter(), _musubi_dir(), log=log))
+        asyncio.run(
+            run_agent(
+                "hi", _ExplodingRouter(), _musubi_dir(), log=log,
+                max_tokens=0,
+            )
+        )
     # The message is a clean one-liner, not a nested group dump.
     assert not isinstance(ei.value, BaseExceptionGroup)

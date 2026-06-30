@@ -51,6 +51,9 @@ async def run_subagent(
     agents_dir: Path | None = None,
     orchestration: Any = None,
     compression_db_path: Path | None = None,
+    budget: Any = None,
+    stats: Any = None,
+    audit_db_path: Path | None = None,
 ) -> str:
     """Spawn, run, and complete one worker. Returns the final summary text.
 
@@ -123,15 +126,30 @@ async def run_subagent(
     # The firewalled brief is baked into `system_prompt`, so the worker runs
     # through `run_unit` with no extra user turn. A leaf passes no orchestration
     # and a restricted surface; a nesting worker carries the deeper orchestration.
-    answer, turns = await run_unit(
-        session, vendor, child_tools,
-        system_prompt=system_prompt,
-        user_message=None,
-        max_cycles=max_turns, log=log,
-        orchestration=child_orch,
-        spawn_catalog=spawn_catalog,
-        compression_db_path=compression_db_path,
-    )
+    try:
+        answer, turns = await run_unit(
+            session, vendor, child_tools,
+            system_prompt=system_prompt,
+            user_message=None,
+            max_cycles=max_turns, log=log,
+            orchestration=child_orch,
+            spawn_catalog=spawn_catalog,
+            compression_db_path=compression_db_path,
+            role=role,
+            stats=stats,
+            budget=budget,
+            audit_db_path=audit_db_path,
+        )
+    except Exception as exc:
+        if type(exc).__name__ in {
+            "BudgetExhaustedError",
+            "TokenBudgetExhaustedError",
+        }:
+            await _safe_complete(
+                session, handle_id, status="escalated",
+                summary=f"[subagent {role}] budget exhausted: {exc}",
+            )
+        raise
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"

@@ -76,6 +76,35 @@ substrate itself. The agent reads files, runs commands, and edits code through
 governed tools; every file/command result flows through the substrate (where
 compression and audit happen).
 
+### Multi-turn state, budgets, and boundary audit
+
+The standalone host now has first-class parity controls:
+
+```bash
+agent "continue the refactor" --chat-id musubi-refactor
+agent "large migration" --max-tokens 120000
+MUSUBI_AGENT_MAX_TOKENS=0 agent "one uncapped diagnostic pass"
+```
+
+- `--chat-id <id>` stores user/assistant messages in `conversation_messages`
+  and replays a bounded history for the next CLI turn.
+- `TokenBudgetEnforcer` guards each LM call. The default cap is `200000`
+  total tokens; `--max-tokens <n>` overrides it and `0` disables it.
+- The cycle log prints estimated input/output tokens, LM milliseconds, and
+  optional estimated credits. Persisted chats also write `agent_turns`
+  telemetry. Token counts are the source of truth; credits are only a
+  price-table-dependent estimate.
+- Every model-requested `musubi_*` tool call passes deterministic PreToolUse
+  policy before dispatch and appends PostToolUse rows after success, denial, or
+  error. Verdicts land in `policy_audit`; tool outcomes land in `tool_audit`.
+  Federated external MCP tools remain a driver-side convenience outside Musubi
+  governance.
+
+Capability evidence is captured in
+[`artifacts/agent/standalone_boundary_report.html`](../artifacts/agent/standalone_boundary_report.html)
+with machine-readable status in
+[`standalone_boundary_status.json`](../artifacts/agent/standalone_boundary_status.json).
+
 ---
 
 ## 3. Choosing a model / vendor
@@ -174,6 +203,7 @@ Four zero-LLM token controls apply at the LM-call boundary:
 | **CacheAligner** | Marks the static prefix (system + tools) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native caching. | `MUSUBI_PROMPT_CACHE=0` |
 | **Effort routing** | Starts each cycle at a low output-token cap, escalates only on truncation. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
 | **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
+| **TokenBudgetEnforcer** | Preflights projected total tokens and charges measured/estimated token usage after each LM call. | `--max-tokens <n>` or `MUSUBI_AGENT_MAX_TOKENS=<n>` |
 
 ---
 
@@ -275,7 +305,7 @@ configured yet.
 |---|---|---|
 | **Orchestrator** | The driver "knot" spawning governed sub-agents over a woven net — each card's model, spawn order, turn cap, wall-clock budget; click for the firewalled brief + restricted tools. | `subagent_audit` per handle |
 | **Pipeline studio** | Author a chain (or load `feature-dev` / `bugfix` / `explore`), reorder, then **Run** with a policy gate at each handoff. | authoring surface |
-| **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` |
+| **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` + `tool_audit` |
 | **Audit** | The append-only ledger (spawned / completed), filterable. | `subagent_audit` |
 | **Models** | LMRouter vendor profiles with a live config snippet; selecting one sets the active model. | `meta.active_profile` |
 | **Skills** | The pushed / pulled skill catalog + the "default to skill, not agent" rule. | static catalog |

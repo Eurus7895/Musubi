@@ -40,6 +40,10 @@ async def run_pipeline(
     log: Any,
     *,
     agents_dir: Path | None = None,
+    compression_db_path: Path | None = None,
+    budget: Any = None,
+    stats: Any = None,
+    audit_db_path: Path | None = None,
 ) -> str:
     """Summon and run one pipeline. Returns the final stage's summary text.
 
@@ -89,11 +93,29 @@ async def run_pipeline(
             file=log,
         )
 
-        answer, turns = await run_unit(
-            session, vendor, child_tools,
-            system_prompt=system_prompt, user_message=None,
-            max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
-        )
+        try:
+            answer, turns = await run_unit(
+                session, vendor, child_tools,
+                system_prompt=system_prompt, user_message=None,
+                max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
+                compression_db_path=compression_db_path,
+                role=role,
+                stats=stats,
+                budget=budget,
+                audit_db_path=audit_db_path,
+            )
+        except Exception as exc:
+            if type(exc).__name__ in {
+                "BudgetExhaustedError",
+                "TokenBudgetExhaustedError",
+            }:
+                await _call_tool_text(session, "musubi_complete_subagent", {
+                    "handle_id": handle_id,
+                    "summary": f"[stage {stage}] budget exhausted: {exc}",
+                    "turns": 0,
+                    "status": "escalated",
+                })
+            raise
         status = "done" if answer is not None else "escalated"
         if answer is None:
             answer = f"[stage {stage}] exceeded {DEFAULT_STAGE_MAX_CYCLES} cycles"

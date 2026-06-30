@@ -147,6 +147,39 @@ model, to keep the substrate LLM-free):
 | **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
 | **IntelligentContext** | When the conversation exceeds a budget, deterministically protects system/task/recent turns, compresses old tool results first, and only then trims the largest remaining blocks. Pairing and `musubi_retrieve` markers are preserved. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 
+## Standalone host controls
+
+The standalone `agent` host now carries the same operational controls that
+were previously only visible in narrower paths:
+
+- **Multi-turn CLI state:** pass `--chat-id <id>` to store user/assistant
+  turns in `conversation_messages` and replay that bounded history on the
+  next run.
+- **Token caps:** each run is guarded by `TokenBudgetEnforcer` at the LM
+  boundary. The default cap is `200000` total tokens, `--max-tokens <n>`
+  overrides it, and `--max-tokens 0` or `MUSUBI_AGENT_MAX_TOKENS=0` disables
+  the cap.
+- **Usage telemetry:** every LM cycle logs estimated input/output tokens,
+  elapsed LM milliseconds, and optional estimated credits. Persisted chat turns
+  also write `agent_turns` rows. Token counts are the source of truth; credits
+  are only a price-table-dependent estimate.
+- **Tool boundary audit:** model-requested `musubi_*` tool calls pass a
+  deterministic PreToolUse policy check before dispatch and append PostToolUse
+  rows after success, denial, or error. Policy verdicts are stored in
+  `policy_audit`; tool outcomes are stored in `tool_audit`. Federated external
+  MCP tools remain outside Musubi governance and are routed by the driver only.
+
+```bash
+agent "continue the refactor" --chat-id musubi-refactor
+agent "large migration" --max-tokens 120000
+MUSUBI_AGENT_MAX_TOKENS=0 agent "one uncapped diagnostic pass"
+```
+
+Capability evidence is captured in
+[`artifacts/agent/standalone_boundary_report.html`](./artifacts/agent/standalone_boundary_report.html)
+with machine-readable status in
+[`standalone_boundary_status.json`](./artifacts/agent/standalone_boundary_status.json).
+
 ## Quick start (standalone CLI)
 
 ```bash
