@@ -217,6 +217,48 @@ def test_remote_tools_are_namespaced() -> None:
     assert [t["name"] for t in gw.tools()] == ["fs__read_file"]
 
 
+def test_tool_catalog_order_is_stable_independent_of_registration_order() -> None:
+    first = McpGateway()
+    second = McpGateway()
+    sess = FakeSession([])
+
+    first.register_remote("zeta", sess, [mcp_tool_to_schema(_tool("search"))])
+    first.register_local(sess, [mcp_tool_to_schema(_tool("musubi_read_file"))])
+    first.register_remote("alpha", sess, [mcp_tool_to_schema(_tool("grep"))])
+
+    second.register_remote("alpha", sess, [mcp_tool_to_schema(_tool("grep"))])
+    second.register_remote("zeta", sess, [mcp_tool_to_schema(_tool("search"))])
+    second.register_local(sess, [mcp_tool_to_schema(_tool("musubi_read_file"))])
+
+    assert [t["name"] for t in first.tools()] == [
+        "alpha__grep",
+        "musubi_read_file",
+        "zeta__search",
+    ]
+    assert first.tools() == second.tools()
+
+
+def test_tool_catalog_schema_is_canonicalized_without_rerouting() -> None:
+    gw = McpGateway()
+    sess = FakeSession([])
+    schema = {
+        "type": "object",
+        "required": ["b", "a"],
+        "properties": {
+            "z": {"type": "string", "description": "last"},
+            "a": {"description": "first", "type": "string"},
+        },
+    }
+    gw.register_remote("fs", sess, [mcp_tool_to_schema(_tool("read", schema=schema))])
+
+    tool = gw.tools()[0]
+
+    assert list(tool["input_schema"].keys()) == ["properties", "required", "type"]
+    assert list(tool["input_schema"]["properties"].keys()) == ["a", "z"]
+    assert tool["input_schema"]["required"] == ["b", "a"]
+    assert gw.route("fs__read") == (sess, "read")
+
+
 def test_two_servers_with_same_tool_do_not_collide() -> None:
     gw = McpGateway()
     a, b = FakeSession([]), FakeSession([])

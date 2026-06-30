@@ -276,6 +276,49 @@ def test_dispatch_allows_coder_write_and_records_post_tool_audit(
     ]
 
 
+def test_normalize_tool_result_text_minifies_json() -> None:
+    from agent.run import normalize_tool_result_text
+
+    raw = '{\n  "z": 2,\n  "a": [1, 2]\n}\n\n'
+
+    assert normalize_tool_result_text(raw) == '{"z":2,"a":[1,2]}'
+
+
+def test_normalize_tool_result_text_preserves_retrieve_marker() -> None:
+    from agent.run import normalize_tool_result_text
+
+    marker = (
+        'summary\n\n[musubi:compressed kind=json ref=abc chars 1000->100; '
+        'call musubi_retrieve("abc") for the verbatim original]\n\n'
+    )
+
+    assert normalize_tool_result_text(marker).endswith(
+        'musubi_retrieve("abc") for the verbatim original]'
+    )
+
+
+def test_dispatch_feeds_normalized_tool_result_to_model() -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession('{\n  "z": 2,\n  "a": [1, 2]\n}\n\n')
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {"id": "call-json", "name": "external_json", "input": {}},
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=None,
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+        )
+    )
+
+    assert result == '{"z":2,"a":[1,2]}'
+
+
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
     from agent.context import DEFAULT_EFFORT_FLOOR

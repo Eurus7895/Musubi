@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from agent.context import split_system_prompt
 from agent.vendors.base import LMResponse, LMRouter
 
 _DEFAULT_MODEL = "claude-haiku-4-5"
@@ -52,11 +53,15 @@ def _system_param(system_text: str | None, cache: bool) -> Any:
         return None
     if not cache:
         return system_text
-    return [{
+    stable, extra = split_system_prompt(system_text)
+    blocks: list[dict[str, Any]] = [{
         "type": "text",
-        "text": system_text,
+        "text": stable,
         "cache_control": {"type": "ephemeral"},
     }]
+    if extra:
+        blocks.append({"type": "text", "text": extra})
+    return blocks
 
 
 def _cache_aligned_tools(

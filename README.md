@@ -54,12 +54,13 @@ deterministic, zero-LLM, and **reversible**:
   always reads the original.
 - Wired into `musubi_read_file` / `musubi_run_command` and **on by
   default** — reversible, so it's safe. The latest capability artifact
-  shows 339,348 payload chars compressed to 11,458 model-visible chars
+  shows 266,851 payload chars compressed to 6,434 model-visible chars
   with exact round-trip retrieval. Opt out with **`MUSUBI_COMPRESS=0`**.
 - The model can also compress a payload on demand with **`musubi_compress`**
   and measure the feature's efficiency with **`musubi_compression_stats`**
   (aggregate ratio, bytes saved, per-kind breakdown over every stored blob).
-  Detailed benchmark artifacts live in [`docs/compression.md`](./docs/compression.md).
+  The deterministic eval gate is `python -m agent.compression_eval`; detailed
+  benchmark artifacts live in [`docs/compression.md`](./docs/compression.md).
 
 ```bash
 agent "summarise the config files"     # compression on by default

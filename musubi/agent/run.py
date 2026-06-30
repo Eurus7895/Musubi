@@ -32,6 +32,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from contextlib import AsyncExitStack
@@ -1312,7 +1313,7 @@ async def _dispatch_one(
     target_session, original_name = target
     try:
         result = await target_session.call_tool(original_name, arguments=args)
-        text = _first_text(result)
+        text = normalize_tool_result_text(_first_text(result))
         if should_audit:
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
@@ -1346,6 +1347,18 @@ def _first_text(call_result: Any) -> str:
         if text:
             return text
     return ""
+
+
+def normalize_tool_result_text(text: str) -> str:
+    """Return a compact, deterministic tool result string for the next LM call."""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(stripped)
+    except (TypeError, json.JSONDecodeError):
+        return re.sub(r"\n{3,}", "\n\n", stripped)
+    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
 
 def _truncate(text: str, limit: int) -> str:
