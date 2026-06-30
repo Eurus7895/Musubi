@@ -31,6 +31,7 @@ def test_factory_explicit_anthropic_requires_sdk(monkeypatch: pytest.MonkeyPatch
     available, the factory raises with a clear install hint."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     # If anthropic is installed in this env, this test is a no-op; skip.
     try:
         import anthropic  # noqa: F401
@@ -47,6 +48,7 @@ def test_factory_rejects_unknown_vendor() -> None:
 def test_factory_errors_when_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="No API key"):
         build_vendor()
 
@@ -57,6 +59,7 @@ def test_factory_prefers_anthropic_when_both_keys_present(
     """Documented precedence: anthropic wins the env race."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setenv("OPENAI_API_KEY", "y")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "z")
     try:
         import anthropic  # noqa: F401
     except ImportError:
@@ -529,6 +532,49 @@ def test_ollama_router_points_at_local_v1(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["api_key"] == "ollama"
 
 
+def test_deepseek_router_points_at_api_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None, default_query=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+            captured["default_query"] = default_query
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+
+    router = build_vendor("deepseek")
+
+    assert router.name == "deepseek"
+    assert router.model == "deepseek-v4-flash"
+    assert captured["base_url"] == "https://api.deepseek.com"
+    assert captured["api_key"] == "deepseek-key"
+    assert captured["default_query"] is None
+
+
+def test_factory_detects_deepseek_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None, default_query=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+
+    router = build_vendor()
+
+    assert router.name == "deepseek"
+    assert captured["base_url"] == "https://api.deepseek.com"
+    assert captured["api_key"] == "deepseek-key"
+
+
 # ── factory.build_from_profile ──────────────────────────────────────────────
 
 
@@ -620,6 +666,32 @@ def test_build_from_profile_genai_farm_curl_fallback_with_proxy(
     # Neither secret is allowed on the command line.
     argv = " ".join(captured["cmd"])
     assert "SECRET" not in argv and "user:pass" not in argv
+
+
+def test_build_from_profile_deepseek_defaults_to_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, base_url=None, api_key=None, default_query=None):  # noqa: ANN001
+            captured["base_url"] = base_url
+            captured["api_key"] = api_key
+            captured["default_query"] = default_query
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    router = build_from_profile({
+        "family": "deepseek",
+        "model": "deepseek-v4-pro",
+        "api_key": "K",
+    })
+
+    assert router.name == "deepseek"
+    assert router.model == "deepseek-v4-pro"
+    assert captured["base_url"] == "https://api.deepseek.com"
+    assert captured["api_key"] == "K"
+    assert captured["default_query"] is None
 
 
 def test_build_from_profile_unknown_family() -> None:

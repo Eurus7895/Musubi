@@ -15,8 +15,8 @@ makes **zero LLM calls** (HI #1). Two supported surfaces drive it:
 
 - **Standalone `agent` CLI (active — the north star):** `musubi/agent/`
   reaches the model through the vendor-agnostic `LMRouter` — anthropic /
-  openai / azure-on-prem (via curl) / genai_farm (on-prem; SDK by default,
-  curl fallback) / ollama, selected by `.musubi/llm.json` profiles.
+  openai / deepseek / azure-on-prem (via curl) / genai_farm (on-prem; SDK by
+  default, curl fallback) / ollama, selected by `.musubi/llm.json` profiles.
   One **worker model** (`agent/run.py::run_unit`): no main-vs-sub split —
   only workers at a depth, run **in parallel**, nesting to depth 2, able to
   **summon pipelines** (incl. user-defined preset pipelines). Workers offload
@@ -68,6 +68,7 @@ musubi setup
 # Standalone CLI (active — any vendor; spawns sub-agents on demand)
 agent "add a login endpoint and a test"
 agent "<task>" --profile azure.work          # on-prem endpoint
+agent "<task>" --profile deepseek.cloud      # DeepSeek API
 agent "<task>" --vendor ollama --model llama3.1
 
 # VS Code pipeline (governed pipeline + evaluator firewall)

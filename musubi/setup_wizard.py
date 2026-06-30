@@ -40,21 +40,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-KNOWN_FAMILIES: tuple[str, ...] = ("azure", "genai_farm", "openai", "anthropic", "ollama")
+KNOWN_FAMILIES: tuple[str, ...] = (
+    "azure",
+    "genai_farm",
+    "openai",
+    "deepseek",
+    "anthropic",
+    "ollama",
+)
 
 _DEFAULT_KEY_ENV: dict[str, str] = {
     "azure": "AZURE_OPENAI_API_KEY",
     "genai_farm": "GENAI_FARM_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "ollama": "",  # local, no key
 }
 _DEFAULT_PROFILE: dict[str, str] = {
     "azure": "work", "genai_farm": "default", "openai": "cloud",
-    "anthropic": "cloud", "ollama": "local",
+    "deepseek": "cloud", "anthropic": "cloud", "ollama": "local",
 }
 _DEFAULT_MODEL: dict[str, str] = {
     "genai_farm": "gpt-5-nano", "openai": "gpt-5-mini",
+    "deepseek": "deepseek-v4-flash",
     "anthropic": "claude-haiku-4-5", "ollama": "llama3.1",
 }
 
@@ -139,8 +148,9 @@ def family_requirement(family: str) -> Check:
     if family == "anthropic":
         ok = importlib.util.find_spec("anthropic") is not None
         return Check("anthropic SDK", ok, "" if ok else "pip install -e .[anthropic]")
-    # openai + ollama + genai_farm all ride the openai SDK on the default
-    # (sdk) transport; genai_farm's curl fallback additionally needs curl.
+    # openai + deepseek + ollama + genai_farm all ride the openai SDK on the
+    # default (sdk) transport; genai_farm's curl fallback additionally needs
+    # curl.
     ok = importlib.util.find_spec("openai") is not None
     return Check("openai SDK", ok, "" if ok else "pip install -e .[openai]")
 
@@ -212,7 +222,7 @@ def build_profile_section(family: str, answers: dict[str, Any]) -> dict[str, Any
                 section["curl_extra_args"] = a["curl_extra_args"]
         return section
 
-    if family in ("openai", "anthropic"):
+    if family in ("openai", "deepseek", "anthropic"):
         section = {"model": a["model"]}
         if a.get("base_url"):
             section["base_url"] = a["base_url"]
@@ -502,7 +512,7 @@ def _ask_family_fields(prompt: Prompt, out: Out, family: str) -> dict[str, Any]:
             extra = _ask(prompt, "Extra curl args (space-separated, optional)", "")
             if extra.strip():
                 a["curl_extra_args"] = extra.split()
-    elif family in ("openai", "anthropic"):
+    elif family in ("openai", "deepseek", "anthropic"):
         a["model"] = _ask(prompt, "Model id", _DEFAULT_MODEL[family])
         base = _ask(prompt, "Base URL (optional, for a gateway)", "")
         if base.strip():

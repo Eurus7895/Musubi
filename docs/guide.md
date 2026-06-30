@@ -50,7 +50,8 @@ musubi setup
 ```
 
 `musubi setup` is the fastest path - it runs an environment doctor, builds a
-`.musubi/llm.json` endpoint profile (cloud / local Ollama / on-prem Azure),
+`.musubi/llm.json` endpoint profile (cloud / DeepSeek / local Ollama /
+on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and points Windows users to the prebuilt Musubi installer bootstrap.
 On Windows, if you opt into local GUI development, it can also install npm
@@ -110,22 +111,28 @@ with machine-readable status in
 ## 3. Choosing a model / vendor
 
 A new vendor is one `LMRouter` subclass; **endpoints are configuration**.
-Supported out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and
-the **Gen AI Farm** on-prem gateway. Vendor, model, endpoint, and api-key all
+Supported out of the box: `anthropic`, `openai`, `deepseek`, `ollama` (local),
+`azure`, and the **Gen AI Farm** on-prem gateway. Vendor, model, endpoint, and api-key all
 live in a `.musubi/llm.json` **profile** — `--profile` is the only switch:
 
 ```bash
 agent "<task>" --profile openai.cloud     # pick a profile
+agent "<task>" --profile deepseek.cloud   # DeepSeek API
 agent "<task>" --profile ollama.local     # local, no key
 ```
 
 ```bash
 cp .musubi/llm.json.example .musubi/llm.json   # then edit; secrets via api_key_env
 agent "<task>" --profile azure.work
+agent "<task>" --profile deepseek.cloud
 ```
 
+DeepSeek profiles use the OpenAI-compatible transport. The default base URL is
+`https://api.deepseek.com`, the default model is `deepseek-v4-flash`, and the
+default key env var is `DEEPSEEK_API_KEY`.
+
 Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`,
-…); the section selects the wire/client and its keys are shared defaults
+`[deepseek]`, ...); the section selects the wire/client and its keys are shared defaults
 inherited by each `[<family>.<name>]` profile. Selection precedence:
 `--profile` → the file's `default` → env-key detection (when no config file
 exists). To use a different vendor or model, **edit a profile — don't pass a

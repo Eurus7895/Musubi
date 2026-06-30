@@ -2,8 +2,8 @@
 
 musubi-tier: substrate
 expires-when: never — the resolution rule for how a standalone-agent user
-  selects an LLM endpoint (cloud, local Ollama, or an on-prem Azure / Gen AI
-  Farm OpenAI-compatible gateway). Read-only JSON via stdlib `json`; no
+  selects an LLM endpoint (cloud, DeepSeek, local Ollama, or an on-prem Azure /
+  Gen AI Farm OpenAI-compatible gateway). Read-only JSON via stdlib `json`; no
   dependency.
 
 Config is a JSON object **keyed by LLM family**. The key is the family (and
@@ -38,7 +38,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-KNOWN_FAMILIES = frozenset({"openai", "azure", "genai_farm", "anthropic", "ollama"})
+KNOWN_FAMILIES = frozenset({
+    "openai",
+    "deepseek",
+    "azure",
+    "genai_farm",
+    "anthropic",
+    "ollama",
+})
 
 
 def find_config_path(explicit: str | os.PathLike[str] | None = None) -> Path | None:

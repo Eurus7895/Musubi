@@ -51,6 +51,7 @@ def test_family_requirement_maps_to_extra(monkeypatch: pytest.MonkeyPatch) -> No
     assert sw.family_requirement("azure").name == "curl on PATH"
     assert sw.family_requirement("anthropic").name == "anthropic SDK"
     assert sw.family_requirement("openai").name == "openai SDK"
+    assert sw.family_requirement("deepseek").name == "openai SDK"
     assert sw.family_requirement("ollama").name == "openai SDK"
 
 
@@ -181,6 +182,14 @@ def test_build_openai_and_ollama_sections() -> None:
     oai = sw.build_profile_section(
         "openai", {"model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"})
     assert oai == {"model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"}
+    dps = sw.build_profile_section(
+        "deepseek",
+        {"model": "deepseek-v4-flash", "api_key_env": "DEEPSEEK_API_KEY"},
+    )
+    assert dps == {
+        "model": "deepseek-v4-flash",
+        "api_key_env": "DEEPSEEK_API_KEY",
+    }
     olm = sw.build_profile_section("ollama", {"model": "llama3.1"})
     assert olm == {"model": "llama3.1"}  # no key for local
 
@@ -446,6 +455,25 @@ def test_interactive_ollama_skips_mcp(tmp_path: Path) -> None:
     prof = load_profile("ollama.local", path=tmp_path / ".musubi" / "llm.json")
     assert prof["model"] == "llama3.1"
     assert not (tmp_path / ".vscode" / "mcp.json").exists()
+
+
+def test_interactive_deepseek_writes_config(tmp_path: Path) -> None:
+    script = Script([
+        "deepseek",          # family
+        "",                  # model (default deepseek-v4-flash)
+        "",                  # base url
+        "",                  # api key env
+        "",                  # profile (default 'cloud')
+        "n",                 # test connection?
+        "n",                 # generate mcp.json?
+    ])
+
+    rc = sw.run_interactive(prompt=script, out=_silent, root=tmp_path)
+
+    assert rc == 0
+    prof = load_profile("deepseek.cloud", path=tmp_path / ".musubi" / "llm.json")
+    assert prof["model"] == "deepseek-v4-flash"
+    assert prof["api_key_env"] == "DEEPSEEK_API_KEY"
 
 
 def test_interactive_skips_local_console_gui_deps_by_default(

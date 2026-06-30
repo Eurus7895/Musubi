@@ -20,6 +20,7 @@ CLI switch; to change the vendor or model, edit the profile (see
 Env vars:
     ANTHROPIC_API_KEY   used by the anthropic vendor
     OPENAI_API_KEY      used by the openai vendor
+    DEEPSEEK_API_KEY    used by the deepseek vendor
     OLLAMA_HOST         optional; ollama base URL (default http://localhost:11434)
 
 The Musubi MCP server is auto-located: same repo as this module by

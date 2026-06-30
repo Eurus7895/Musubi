@@ -141,3 +141,21 @@ def test_genai_farm_family_ref_resolves(tmp_path: Path) -> None:
     prof = load_profile("genai_farm.default", path=cfg)
     assert prof["family"] == "genai_farm"
     assert prof["base_url"] == "https://farm.internal/v1"
+
+
+def test_deepseek_family_ref_resolves(tmp_path: Path) -> None:
+    obj = json.loads(json.dumps(_SAMPLE))  # deep copy
+    obj["deepseek"] = {
+        "cloud": {
+            "model": "deepseek-v4-flash",
+            "api_key_env": "DEEPSEEK_API_KEY",
+        },
+    }
+    cfg = _write(tmp_path, obj)
+
+    prof = load_profile("deepseek.cloud", path=cfg)
+
+    assert prof["family"] == "deepseek"
+    assert prof["profile"] == "cloud"
+    assert prof["model"] == "deepseek-v4-flash"
+    assert prof["api_key_env"] == "DEEPSEEK_API_KEY"
