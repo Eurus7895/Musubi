@@ -246,8 +246,9 @@ def test_call_with_effort_escalates_on_max_tokens() -> None:
         LMResponse(stop_reason="max_tokens", content=[{"type": "text", "text": ""}]),
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    resp = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
-    assert resp.stop_reason == "end_turn"
+    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert result.response.stop_reason == "end_turn"
+    assert len(result.attempts) == 2
     assert [c["max_tokens"] for c in router.calls] == [
         DEFAULT_EFFORT_FLOOR,
         EFFORT_CEILING,
@@ -261,9 +262,38 @@ def test_call_with_effort_no_escalation_when_complete() -> None:
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    assert result.response.stop_reason == "end_turn"
+    assert len(result.attempts) == 1
     assert len(router.calls) == 1
     assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
+def test_cycle_token_counts_sum_effort_retry_attempts() -> None:
+    from agent import run as run_mod
+
+    attempts = [
+        LMResponse(
+            stop_reason="max_tokens",
+            content=[{"type": "text", "text": "partial"}],
+            usage={"input_tokens": 100, "output_tokens": 20},
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "final"}],
+            usage={
+                "input_tokens": 110,
+                "output_tokens": 30,
+                "cache_read_input_tokens": 80,
+            },
+        ),
+    ]
+
+    assert run_mod._cycle_token_counts(attempts, input_estimate=999) == (
+        210,
+        50,
+        80,
+    )
 
 
 def test_loop_returns_text_when_model_does_not_use_tools(

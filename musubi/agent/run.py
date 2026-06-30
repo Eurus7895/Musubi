@@ -145,6 +145,14 @@ class AgentRunStats:
         self.credits += credits
 
 
+@dataclass
+class EffortCallResult:
+    """Final response plus every vendor call made to obtain it."""
+
+    response: LMResponse
+    attempts: list[LMResponse]
+
+
 # ── Public entry ────────────────────────────────────────────────────────────
 
 
@@ -374,10 +382,11 @@ async def _run_loop(
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
         # round-trip instead of serializing. Single-loop cost is one thread hop.
         lm_started = time.perf_counter()
-        resp = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
+        effort = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
         lm_ms = int((time.perf_counter() - lm_started) * 1000)
+        resp = effort.response
         tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
-            resp, input_tokens_est,
+            effort.attempts, input_tokens_est,
         )
         cycle_credits = estimate_call_credits(
             vendor.model, tokens_in, tokens_out, cached_tokens,
@@ -395,7 +404,11 @@ async def _run_loop(
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
-        _log_cycle(log, cycle, resp.stop_reason, tool_uses, resp.usage)
+        _log_cycle(
+            log, cycle, resp.stop_reason, tool_uses, resp.usage,
+            tokens_out=tokens_out,
+            attempt_count=len(effort.attempts),
+        )
         _log_cycle_cost(
             log, cycle, lm_ms, tokens_in, tokens_out, cycle_credits, budget,
         )
@@ -449,12 +462,13 @@ async def _run_loop(
                     budget, vendor.model, input_tokens_est, log,
                 )
                 lm_started = time.perf_counter()
-                resp = await asyncio.to_thread(
+                effort = await asyncio.to_thread(
                     _call_with_effort, vendor, final_messages, []
                 )
                 lm_ms = int((time.perf_counter() - lm_started) * 1000)
+                resp = effort.response
                 tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
-                    resp, input_tokens_est,
+                    effort.attempts, input_tokens_est,
                 )
                 cycle_credits = estimate_call_credits(
                     vendor.model, tokens_in, tokens_out, cached_tokens,
@@ -912,7 +926,7 @@ def _call_with_effort(
     vendor: LMRouter,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-) -> LMResponse:
+) -> EffortCallResult:
     """Effort routing: start at a low output-token cap, escalate only on need.
 
     Most cycles emit a small tool_use block, so the floor cap costs nothing
@@ -921,9 +935,11 @@ def _call_with_effort(
     """
     floor = min(effort_floor(), EFFORT_CEILING)
     resp = vendor.call(messages, tools, max_tokens=floor)
+    attempts = [resp]
     if resp.stop_reason == "max_tokens" and floor < EFFORT_CEILING:
         resp = vendor.call(messages, tools, max_tokens=EFFORT_CEILING)
-    return resp
+        attempts.append(resp)
+    return EffortCallResult(response=resp, attempts=attempts)
 
 
 def _estimate_input_tokens(
@@ -935,7 +951,26 @@ def _estimate_input_tokens(
     return estimate_tokens_from_chars(chars)
 
 
-def _cycle_token_counts(resp: LMResponse, input_estimate: int) -> tuple[int, int, int]:
+def _cycle_token_counts(
+    responses: LMResponse | list[LMResponse],
+    input_estimate: int,
+) -> tuple[int, int, int]:
+    attempts = responses if isinstance(responses, list) else [responses]
+    totals = [
+        _single_response_token_counts(resp, input_estimate)
+        for resp in attempts
+    ]
+    return (
+        sum(t[0] for t in totals),
+        sum(t[1] for t in totals),
+        sum(t[2] for t in totals),
+    )
+
+
+def _single_response_token_counts(
+    resp: LMResponse,
+    input_estimate: int,
+) -> tuple[int, int, int]:
     usage = resp.usage or {}
     tokens_in = _usage_int(usage, "input_tokens", "prompt_tokens") or input_estimate
     output_estimate = estimate_tokens_from_chars(
@@ -1346,12 +1381,16 @@ def _log_cycle(
     stop_reason: str,
     tool_uses: list[dict[str, Any]],
     usage: dict[str, Any] | None,
+    *,
+    tokens_out: int | None = None,
+    attempt_count: int = 1,
 ) -> None:
     parts = [f"[agent] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
+    if attempt_count > 1:
+        parts.append(f"attempts={attempt_count}")
+    if tokens_out is not None:
+        parts.append(f"out_tokens={tokens_out}")
     if usage:
-        toks = usage.get("output_tokens") or usage.get("completion_tokens")
-        if toks is not None:
-            parts.append(f"out_tokens={toks}")
         # CacheAligner measurement: how much of the prefix was served from the
         # prompt cache vs. (re)written this cycle.
         cache_read = usage.get("cache_read_input_tokens")
