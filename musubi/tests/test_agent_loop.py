@@ -395,6 +395,43 @@ def test_loop_returns_text_when_model_does_not_use_tools(
     assert router.calls[0]["tools"], "expected the MCP tool catalog in the first call"
 
 
+def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    answer = asyncio.run(
+        run_agent("inspect files", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
+    )
+
+    assert answer == "ok"
+    names = {tool["name"] for tool in router.calls[0]["tools"]}
+    assert "musubi_read_file" in names
+    assert "musubi_recommend_skills" in names
+    assert "musubi_retrieve" in names
+    assert "musubi_write_stage" not in names
+    assert "musubi_read_stage" not in names
+    assert "musubi_get_subagent_context" not in names
+    assert "musubi_record_agent_cycle" not in names
+
+
+def test_run_agent_full_tool_surface_keeps_internal_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MUSUBI_TOOL_SURFACE", "full")
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    asyncio.run(
+        run_agent("debug", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
+    )
+
+    names = {tool["name"] for tool in router.calls[0]["tools"]}
+    assert "musubi_write_stage" in names
+    assert "musubi_read_stage" in names
+
+
 def test_run_agent_persists_and_replays_chat_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -473,7 +510,12 @@ def test_loop_dispatches_real_tool_and_feeds_result_back(
     log = io.StringIO()
     answer = asyncio.run(
         run_agent(
-            "open a session", router, _musubi_dir(), log=log, max_tokens=0,
+            "open a session",
+            router,
+            _musubi_dir(),
+            log=log,
+            max_tokens=0,
+            tool_surface="full",
         )
     )
     assert answer == "session opened."
