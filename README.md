@@ -34,7 +34,7 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
 | `@harness /feature-dev <task>` (VS Code) | inside Copilot Chat | the 4-stage governed pipeline + substrate features, driven by Copilot's model |
 
 Both surfaces drive the **same** substrate (audit, firewall, policy,
@@ -189,6 +189,7 @@ musubi setup                       # guided: deps check, LLM endpoint, mcp.json,
 export ANTHROPIC_API_KEY=...        # the env var the wizard recorded
 agent "add a /health endpoint and a test for it"
 # agent "<task>" --profile openai.cloud     # pick a profile from .musubi/llm.json
+# agent "<task>" --profile deepseek.cloud   # DeepSeek API
 # agent "<task>" --profile ollama.local     # local, no key
 ```
 
@@ -207,8 +208,8 @@ musubi setup
 ```
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
-`.musubi/llm.json` endpoint profile (cloud, local Ollama, or on-prem Azure),
-optionally tests the connection, generates `.vscode/mcp.json` for the
+`.musubi/llm.json` endpoint profile (cloud, DeepSeek, local Ollama, or on-prem
+Azure), optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and points Windows users to the prebuilt Musubi installer bootstrap.
 On Windows, if you opt into local GUI development, it can also install npm
 dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
@@ -221,7 +222,7 @@ in the substrate itself. Requirements: Python 3.11+.
 ### Vendors & on-prem endpoints
 
 A new vendor is one `LMRouter` subclass; endpoints are configuration. Supported
-out of the box: `anthropic`, `openai`, `ollama` (local), `azure`, and the
+out of the box: `anthropic`, `openai`, `deepseek`, `ollama` (local), `azure`, and the
 **Gen AI Farm** on-prem gateway (Azure-style deployment-in-path URL with Bearer
 auth). For named endpoints — including **Azure OpenAI** and the **Gen AI
 Farm**, which can fall back to `curl` so corporate proxy (with proxy auth) /
@@ -231,9 +232,27 @@ custom CA / mTLS are honoured — describe them once in `.musubi/llm.json` (copy
 ```bash
 cp .musubi/llm.json.example .musubi/llm.json   # then edit; secrets via api_key_env
 agent "<task>" --profile azure.work
+agent "<task>" --profile deepseek.cloud
 ```
 
-Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`, …); the section
+DeepSeek uses the OpenAI-compatible transport with default base URL
+`https://api.deepseek.com`, default model `deepseek-v4-flash`, and
+`DEEPSEEK_API_KEY` by default:
+
+```jsonc
+{
+  "default": "deepseek.cloud",
+  "deepseek": {
+    "cloud": {
+      "model": "deepseek-v4-flash",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    }
+  }
+}
+```
+
+Profiles are grouped by **LLM family** (`[azure]`, `[genai_farm]`, `[openai]`,
+`[deepseek]`, ...); the section
 selects the wire/client and its keys are shared defaults inherited by each
 `[<family>.<name>]` profile. Selection precedence: `--profile` → the file's
 `default` → env-key detection (when no config file exists). `--profile` is the

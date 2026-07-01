@@ -7,7 +7,8 @@ Two entry points:
 
 `build_vendor(name, ...)` — ad-hoc selection for the `--vendor` flag. Resolves
     explicit `name` OR env detection (ANTHROPIC_API_KEY → "anthropic",
-    OPENAI_API_KEY → "openai"). Accepts optional `base_url`/`api_key` overrides.
+    OPENAI_API_KEY → "openai", DEEPSEEK_API_KEY → "deepseek"). Accepts
+    optional `base_url`/`api_key` overrides.
 
 `build_from_profile(profile)` — builds an LMRouter from a resolved
     `.musubi/llm.json` profile dict (see `agent.config.load_profile`). The
@@ -49,6 +50,11 @@ def build_vendor(
 
         return OpenAIRouter(model=model, base_url=base_url, api_key=api_key)
 
+    if resolved == "deepseek":
+        from agent.vendors.deepseek_router import DeepSeekRouter
+
+        return DeepSeekRouter(model=model, base_url=base_url, api_key=api_key)
+
     if resolved == "ollama":
         from agent.vendors.ollama_router import OllamaRouter
 
@@ -88,7 +94,8 @@ def build_vendor(
 
     raise ValueError(
         f"Unknown agent vendor {resolved!r}. "
-        f"Supported: 'anthropic', 'openai', 'ollama', 'azure', 'genai_farm'. "
+        f"Supported: 'anthropic', 'openai', 'deepseek', 'ollama', 'azure', "
+        f"'genai_farm'. "
         f"For on-prem endpoints use a .musubi/llm.json profile (--profile)."
     )
 
@@ -123,6 +130,22 @@ def build_from_profile(profile: dict[str, Any]) -> LMRouter:
         from agent.vendors.openai_router import OpenAIRouter
 
         return OpenAIRouter(model=model, base_url=base_url, api_key=api_key)
+
+    if family == "deepseek":
+        if transport == "curl":
+            from agent.vendors.deepseek_router import DEFAULT_DEEPSEEK_BASE_URL
+
+            return _build_curl(
+                profile,
+                model,
+                api_key,
+                base_url or DEFAULT_DEEPSEEK_BASE_URL,
+                name="deepseek",
+                default_auth="Authorization: Bearer",
+            )
+        from agent.vendors.deepseek_router import DeepSeekRouter
+
+        return DeepSeekRouter(model=model, base_url=base_url, api_key=api_key)
 
     if family == "genai_farm":
         # On-prem gateway using the Azure deployment-in-path URL —
@@ -235,8 +258,11 @@ def _detect_vendor() -> str:
         return "anthropic"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        return "deepseek"
     raise RuntimeError(
-        "No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY, pass "
-        "--vendor explicitly (anthropic|openai|ollama|azure), or configure a "
-        ".musubi/llm.json profile and pass --profile <family>.<name>."
+        "No API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or "
+        "DEEPSEEK_API_KEY, pass --vendor explicitly "
+        "(anthropic|openai|deepseek|ollama|azure), or configure a .musubi/"
+        "llm.json profile and pass --profile <family>.<name>."
     )
