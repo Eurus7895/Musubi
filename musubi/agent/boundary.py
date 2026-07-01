@@ -41,6 +41,33 @@ _TOOL_CAPABILITIES: dict[str, str] = {
     "musubi_run_tests": "Bash",
 }
 
+_DENIED_TOOL_ROUTING_HINTS: dict[str, str] = {
+    "musubi_write_file": (
+        "do not retry this tool from the root agent; spawn `coder` for "
+        "file creation or writes"
+    ),
+    "musubi_edit_file": (
+        "do not retry this tool from the root agent; spawn `coder` for "
+        "file edits"
+    ),
+    "musubi_run_command": (
+        "do not retry this tool from the root agent; spawn `investigator` "
+        "for command-based diagnostics"
+    ),
+    "musubi_run_lint": (
+        "do not retry this tool from the root agent; spawn `investigator` "
+        "for lint diagnostics"
+    ),
+    "musubi_run_typecheck": (
+        "do not retry this tool from the root agent; spawn `investigator` "
+        "for typecheck diagnostics"
+    ),
+    "musubi_run_tests": (
+        "do not retry this tool from the root agent; spawn `investigator` "
+        "for test diagnostics"
+    ),
+}
+
 _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_get_active_session",
     "musubi_get_status",
@@ -192,6 +219,17 @@ def evaluate_tool_call(role: str, tool_name: str) -> PolicyDecision:
         f"capability {capability} is not allowed for role {clean_role}; "
         f"allowed: {sorted(allowed)}",
     )
+
+
+def denied_tool_guidance(role: str, tool_name: str) -> str:
+    """Return a short model-facing recovery hint for denied root tool calls."""
+    clean_role = (role or "agent").lower()
+    if clean_role != "agent":
+        return ""
+    hint = _DENIED_TOOL_ROUTING_HINTS.get(tool_name)
+    if not hint:
+        return ""
+    return f" Next action: {hint}."
 
 
 def record_policy_decision(

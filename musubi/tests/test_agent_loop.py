@@ -230,12 +230,53 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
     )
 
     assert "[policy denied]" in result
+    assert "spawn `coder`" in result
+    assert "do not retry" in result
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
         ("DENY", "agent", "musubi_write_file")
     ]
     assert _read_tool_rows(audit_db) == [
         ("agent", "musubi_write_file", "denied")
+    ]
+
+
+def test_dispatch_denies_root_command_with_investigator_hint(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession()
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-denied",
+                "name": "musubi_run_command",
+                "input": {"command": "pytest"},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="agent"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[policy denied]" in result
+    assert "spawn `investigator`" in result
+    assert "do not retry" in result
+    assert session.calls == []
+    assert _read_policy_rows(audit_db) == [
+        ("DENY", "agent", "musubi_run_command")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("agent", "musubi_run_command", "denied")
     ]
 
 
@@ -409,6 +450,11 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
     assert "musubi_read_file" in names
     assert "musubi_recommend_skills" in names
     assert "musubi_retrieve" in names
+    assert "musubi_spawn_subagent" in names
+    assert "musubi_write_file" not in names
+    assert "musubi_edit_file" not in names
+    assert "musubi_run_command" not in names
+    assert "musubi_run_tests" not in names
     assert "musubi_write_stage" not in names
     assert "musubi_read_stage" not in names
     assert "musubi_get_subagent_context" not in names
@@ -428,6 +474,8 @@ def test_run_agent_full_tool_surface_keeps_internal_tools(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
+    assert "musubi_write_file" in names
+    assert "musubi_run_command" in names
     assert "musubi_write_stage" in names
     assert "musubi_read_stage" in names
 

@@ -52,6 +52,7 @@ from agent.budget import (
     estimate_tokens_from_chars,
 )
 from agent.boundary import (
+    denied_tool_guidance,
     evaluate_tool_call,
     is_musubi_tool,
     json_args,
@@ -1222,7 +1223,10 @@ async def _dispatch_one(
         decision = evaluate_tool_call(call_role, name)
         _safe_record_policy(decision, db_path=audit_path, log=log)
         if not decision.allowed:
-            denied = f"[policy denied] {decision.reason}"
+            denied = (
+                f"[policy denied] {decision.reason}"
+                f"{denied_tool_guidance(call_role, name)}"
+            )
             print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
             _safe_record_tool_audit(
                 session_id=session_id,
