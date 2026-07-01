@@ -137,8 +137,13 @@ shrink-and-pray.
   type/scope AND a `BREAKING CHANGE:` footer.
 - **Always update [`docs/roadmap.md`](./docs/roadmap.md) before opening
   any PR.** If the change shifts direction, scope, step status, or the
-  dissolution set, reflect it in the roadmap in the same PR. A PR that
-  moves the work but leaves the roadmap stale gets pushed back.
+  dissolution set, reflect it in the roadmap in the same PR. Roadmap
+  entries stay summary-only: when a roadmap item needs implementation
+  detail, put the full plan in a separate markdown file (usually
+  `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`) and link it from the
+  roadmap. That plan file must spell out context, goal, tech stack, and
+  implementation steps. A PR that moves the work but leaves the roadmap
+  stale gets pushed back.
 
 ## Hooks
 
