@@ -96,6 +96,8 @@ shrink-and-pray.
 
 - **Never push to `claude/implement-*` or any `claude/*` branch.** They
   are harness scratch aliases, not review branches.
+- **Never add `codex` to branch names.** Branch names describe the product
+  change, not the tool or person doing the work.
 - **Never set `user.name` / `user.email` via `git config`.** The harness
   pre-sets `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars; touching
   git-config silently overrides them.
@@ -116,10 +118,13 @@ shrink-and-pray.
   ```bash
   git fetch origin && git rebase origin/dev
   ```
-- **Always name branches `<type>/<short-kebab-slug>`** — no random
-  session suffix. `<type>` is a Conventional Commits type (`feat`,
-  `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`,
-  `style`, `revert`).
+- **Always name branches `<type>/<area>-<outcome>`** — lowercase,
+  kebab-case, no random session suffix, no user/tool prefix. `<type>` is
+  a Conventional Commits type (`feat`, `fix`, `docs`, `refactor`,
+  `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`). Use
+  outcome-oriented names such as `feat/agent-deepseek-provider`,
+  `fix/gui-token-usage`, `docs/setup-wizard-guide`, or
+  `ci/windows-installer`.
 - **Always commit with the identity flags** (committer must match
   author):
   ```bash
