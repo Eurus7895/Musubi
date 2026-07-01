@@ -52,6 +52,7 @@ from session import chunks as session_chunks
 from session import conversations, state, sub_sessions
 from skills import router as skill_router
 from skills import skill_loader
+from skills.recommender import recommend_skills
 from storage import db as _db
 from storage import subagent_audit
 from validation import context_builder, subagent_context, verifier
@@ -1171,6 +1172,46 @@ def musubi_list_skills(agent_name: str) -> str:
     return json.dumps({
         "agent_name": key,
         "skills": catalog,
+        "filtered_by_profile": profile is not None,
+    })
+
+
+@mcp.tool()
+def musubi_recommend_skills(
+    task: str,
+    agent_name: str,
+    context_summary: str = "",
+    tools_used: list[str] | None = None,
+    limit: int = 5,
+) -> str:
+    """Return deterministic skill recommendations for the calling agent.
+
+    This ranks only skills the caller may already load. It never injects skill
+    content and never widens AGENT_SKILL_ALLOWLIST.
+    """
+    key = agent_name.lower().strip()
+    allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
+    metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
+    profile = _load_project_profile()
+    applicable = skill_router.applicable_skills(profile, metas)
+    recommended = recommend_skills(
+        task,
+        applicable,
+        context_summary=context_summary,
+        tools_used=tools_used or [],
+        limit=limit,
+    )
+    return json.dumps({
+        "agent_name": key,
+        "recommended": [
+            {
+                "skill_id": item.skill_id,
+                "title": item.title,
+                "confidence": item.confidence,
+                "reasons": item.reasons,
+            }
+            for item in recommended
+        ],
         "filtered_by_profile": profile is not None,
     })
 

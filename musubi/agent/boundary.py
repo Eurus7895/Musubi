@@ -66,6 +66,7 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_credits_since",
     "musubi_query_schema_migrations",
     "musubi_list_skills",
+    "musubi_recommend_skills",
     "musubi_get_memory_context",
     "musubi_query_subagent_events",
     "musubi_list_subagent_spawns",
