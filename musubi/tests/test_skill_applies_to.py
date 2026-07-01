@@ -209,3 +209,39 @@ def test_list_skills_payload_still_has_skill_id_and_title() -> None:
 # Sanity guard: the importable name didn't change.
 def test_skill_loader_module_exposes_applies_to_field() -> None:
     assert "applies_to" in SkillMeta.__dataclass_fields__
+
+
+def test_list_skills_parses_recommender_metadata(tmp_path: Path) -> None:
+    skills = tmp_path / "skills"
+    skill = skills / "compression-aware-context" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\n"
+        "name: compression-aware-context\n"
+        "description: Use compression markers safely.\n"
+        "triggers:\n"
+        "  - musubi_retrieve\n"
+        "  - compressed output\n"
+        "tools:\n"
+        "  - musubi_retrieve\n"
+        "  - musubi_compression_stats\n"
+        "---\n"
+        "# Compression-aware Context\n\n"
+        "Body.\n",
+        encoding="utf-8",
+    )
+
+    by_id = {s.skill_id: s for s in list_skills(skills_dir=skills)}
+
+    meta = by_id["compression-aware-context"]
+    assert meta.description == "Use compression markers safely."
+    assert meta.triggers == ["musubi_retrieve", "compressed output"]
+    assert meta.tools == ["musubi_retrieve", "musubi_compression_stats"]
+
+
+def test_skill_meta_recommender_fields_default_empty() -> None:
+    meta = SkillMeta(skill_id="x", title="X", path="/tmp/x/SKILL.md")
+
+    assert meta.description == ""
+    assert meta.triggers == []
+    assert meta.tools == []

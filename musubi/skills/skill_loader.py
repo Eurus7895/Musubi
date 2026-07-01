@@ -62,6 +62,9 @@ class SkillMeta:
     title: str
     path: str
     applies_to: dict[str, list[str]] | None = field(default=None)
+    description: str = ""
+    triggers: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
 
 
 _FRONTMATTER_DELIM = "---"
@@ -117,6 +120,18 @@ def _coerce_applies_to(raw: Any) -> dict[str, list[str]] | None:
     return out
 
 
+def _coerce_str_list(raw: Any) -> list[str]:
+    """Return a clean string list from frontmatter scalar-or-list values."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    if isinstance(raw, (str, int, float, bool)):
+        value = str(raw).strip()
+        return [value] if value else []
+    return []
+
+
 def get_skill(skill_id: str, skills_dir: Path | None = None) -> str | None:
     """Return SKILL.md content for skill_id, or None if not found."""
     base = skills_dir or _SKILLS_DIR
@@ -154,11 +169,17 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
                 break
         frontmatter = _parse_frontmatter(text)
         applies_to = _coerce_applies_to(frontmatter.get("applies-to"))
+        description = str(frontmatter.get("description") or "").strip()
+        triggers = _coerce_str_list(frontmatter.get("triggers"))
+        tools = _coerce_str_list(frontmatter.get("tools"))
         skills.append(SkillMeta(
             skill_id=skill_id,
             title=title,
             path=str(skill_path),
             applies_to=applies_to,
+            description=description,
+            triggers=triggers,
+            tools=tools,
         ))
     return skills
 
