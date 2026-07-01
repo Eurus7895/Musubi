@@ -65,6 +65,7 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
 )
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
+from tool_surface import filter_tool_catalog, tool_names_for_surface
 
 DEFAULT_MAX_CYCLES = 16
 
@@ -170,6 +171,7 @@ async def run_agent(
     chat_id: str | None = None,
     max_credits: float | None = None,
     max_tokens: int | None = None,
+    tool_surface: str | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -212,9 +214,10 @@ async def run_agent(
 
         gateway = McpGateway()
         mcp_tools = (await session.list_tools()).tools
-        gateway.register_local(
-            session, [_mcp_to_anthropic_tool(t) for t in mcp_tools]
-        )
+        local_tools = [_mcp_to_anthropic_tool(t) for t in mcp_tools]
+        surface = _tool_surface(tool_surface)
+        visible_local_tools = filter_tool_catalog(local_tools, surface)
+        gateway.register_local(session, visible_local_tools)
         # External MCP servers are additive and fail-open (a bad entry is
         # logged and skipped). Surface *which* config was used (or that none
         # was found, and exactly where we looked) — that resolution is
@@ -245,11 +248,13 @@ async def run_agent(
         await gateway.connect_external(stack, specs, log)
 
         tools = gateway.tools()
-        n_external = len(tools) - len(mcp_tools)
+        n_external = len(tools) - len(visible_local_tools)
         profile_part = f"profile={vendor_source} " if vendor_source else ""
         print(
             f"[agent] vendor={vendor.name} model={vendor.model} {profile_part}"
-            f"tools={len(tools)} (musubi={len(mcp_tools)}, external={n_external})",
+            f"tool_surface={surface} tools={len(tools)} "
+            f"(musubi_visible={len(visible_local_tools)}, "
+            f"musubi_total={len(mcp_tools)}, external={n_external})",
             file=log,
         )
 
@@ -643,6 +648,12 @@ def main(argv: list[str] | None = None) -> int:
             "still disables the token cap for older scripts."
         ),
     )
+    ap.add_argument(
+        "--tool-surface",
+        choices=["agent", "operator", "full"],
+        default=None,
+        help="Local Musubi tool catalog exposed to the model; default agent.",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -669,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
                 chat_id=args.chat_id,
                 max_credits=args.max_credits,
                 max_tokens=args.max_tokens,
+                tool_surface=args.tool_surface,
             )
         )
     except KeyboardInterrupt:
@@ -707,6 +719,14 @@ def _resolve_vendor(profile: str | None) -> tuple[LMRouter, str]:
         return build_from_profile(prof), label
 
     return build_vendor(None), "env-key auto-detect"
+
+
+def _tool_surface(cli_value: str | None = None) -> str:
+    raw = (cli_value or os.environ.get("MUSUBI_TOOL_SURFACE") or "agent").strip().lower()
+    if raw == "pipeline":
+        raise ValueError("standalone agent supports tool surfaces: agent, operator, full")
+    tool_names_for_surface(raw)
+    return raw
 
 
 def _server_env() -> dict[str, str]:

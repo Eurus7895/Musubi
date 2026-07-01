@@ -38,23 +38,17 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
    against the renamed server.
 
-2. **Skill recommendation router.** Add deterministic skill recommendations for
-   the standalone agent so it can pull the right procedural knowledge without
-   inflating the system prompt or weakening skill allowlists. Implementation
-   plan:
-   [`2026-07-01-skill-recommender.md`](./superpowers/plans/2026-07-01-skill-recommender.md).
-
-3. **GUI on-demand task launcher.** Add a Tauri command that launches one
+2. **GUI on-demand task launcher.** Add a Tauri command that launches one
    governed `agent "<task>"` process only when the user presses Run. The GUI
    passes project root, profile, and audit DB path through the child process
    environment, streams stdout/stderr, and supports cancellation.
 
-4. **Installer runtime reduction.** Prefer a bundled or locally repairable
+3. **Installer runtime reduction.** Prefer a bundled or locally repairable
    Python core payload so first run does not depend on global `pip install` or
    manual `PATH` edits. Keep network install as a fallback for development
    builds.
 
-5. **Signing and release hardening.** Sign the Windows installer and document
+4. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
 ---
@@ -77,8 +71,9 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   and relevant tools.
 - **Per-cycle audit (`agent_cycles`).** Persist one row per LM call so
   architecture decisions can be empirical rather than guessed.
-- **Standalone tool-catalog trimming.** Reduce model-visible `musubi_*` tool
-  schemas for the root standalone agent without removing any substrate tools.
+- **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
+  and external drivers without removing substrate tools. Implementation plan:
+  [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.
@@ -94,6 +89,7 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Model-agnostic `LMRouter` vendors
 - Boundary policy and audit controls
 - Reversible compression and deterministic compression eval
+- Skill recommendation router and compression-aware context skill
 - Token/context economics controls
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run

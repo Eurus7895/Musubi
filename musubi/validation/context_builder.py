@@ -76,7 +76,12 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # MVP item 9 — first non-coding skills (docs-writing, research) added
     # to the agent allowlist so the agent can pull them on demand
     # when a user asks "write a design doc" or "how does X work?".
-    "agent": {"agent-routing", "docs-writing", "research"},
+    "agent": {
+        "agent-routing",
+        "compression-aware-context",
+        "docs-writing",
+        "research",
+    },
     # Phase H.1 — /code-review pipeline roles.
     # scoper        triages files; needs the scope-detection skill only.
     # finder        cross-cutting pass; needs per-file-review (its checklist)

@@ -25,6 +25,8 @@ _VERBOSITY_NOTE = (
     "acting over explaining: call tools directly. When finished, give a short, "
     "direct final answer covering only what changed or what was found - no "
     "preamble, no filler, no summary of your own process unless asked. "
+    "If procedural knowledge may be missing, call `musubi_recommend_skills` "
+    "and then pull only the most relevant skill with `musubi_get_skill`. "
     "If the request needs no tools - a greeting, or a question you can already "
     "answer - reply directly in one turn without calling any tool."
 )

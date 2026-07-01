@@ -99,6 +99,13 @@ def test_reviewer_code_review_not_blocked() -> None:
         assert "not permitted" not in result.get("error", "").lower()
 
 
+def test_agent_can_load_compression_aware_context_skill() -> None:
+    raw = server.musubi_get_skill("compression-aware-context", "agent")
+
+    assert "Compression-aware Context" in raw
+    assert "musubi_retrieve" in raw
+
+
 # ── musubi_get_reference — allowlist enforcement ─────────────────────────────
 
 def test_unauthorized_reference_blocked() -> None:
