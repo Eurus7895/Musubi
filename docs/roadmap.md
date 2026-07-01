@@ -71,8 +71,9 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   and relevant tools.
 - **Per-cycle audit (`agent_cycles`).** Persist one row per LM call so
   architecture decisions can be empirical rather than guessed.
-- **Standalone tool-catalog trimming.** Reduce model-visible `musubi_*` tool
-  schemas for the root standalone agent without removing any substrate tools.
+- **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
+  and external drivers without removing substrate tools. Implementation plan:
+  [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.

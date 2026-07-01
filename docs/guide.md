@@ -77,6 +77,23 @@ substrate itself. The agent reads files, runs commands, and edits code through
 governed tools; every file/command result flows through the substrate (where
 compression and audit happen).
 
+### Tool surfaces
+
+Musubi keeps the full substrate API, but drivers should expose only the tools
+their model needs.
+
+- Standalone `agent` defaults to `--tool-surface agent`, a focused root-agent
+  catalog of file, execution, skill, compression, memory, and orchestration
+  tools.
+- `agent --tool-surface full` is an escape hatch for debugging.
+- External MCP clients can opt into a smaller server catalog with
+  `musubi serve --surface agent`.
+- `musubi serve` still defaults to `--surface full` for compatibility with
+  existing VS Code, GUI, and custom MCP configurations.
+
+Surface profiles hide tools from `list_tools()`; they do not delete tool
+implementations or replace the policy boundary.
+
 ### Multi-turn state, budgets, and boundary audit
 
 The standalone host now has first-class parity controls:
