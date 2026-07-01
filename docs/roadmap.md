@@ -212,7 +212,9 @@ User guide → [`docs/guide.md`](./guide.md) § Console.
 
 - **Skill catalog growth** — skills are the cheapest optimisation
   surface. Distil more from real sessions (`musubi_distill_session`);
-  each new skill ships with an `applies-to` tag.
+  each new skill ships with an `applies-to` tag. Next planned slice:
+  deterministic skill recommendations for the standalone agent, tracked in
+  [`2026-07-01-skill-recommender.md`](./superpowers/plans/2026-07-01-skill-recommender.md).
 - **Per-cycle audit (`agent_cycles`)** — one row per `sendRequest`; the
   data that makes dissolution decisions empirical rather than guessed.
 - **Lines-of-substrate vs lines-of-skill ratio** — track over time; the
