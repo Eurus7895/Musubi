@@ -27,6 +27,13 @@ def test_system_prompt_carries_terse_instruction() -> None:
     assert "final answer" in prompt.lower()
 
 
+def test_system_prompt_mentions_skill_recommendations() -> None:
+    prompt = build_system_prompt()
+
+    assert "musubi_recommend_skills" in prompt
+    assert "procedural knowledge" in prompt
+
+
 def test_system_prompt_appends_extra_after_steering() -> None:
     prompt = build_system_prompt("task-specific note")
     assert prompt.endswith("task-specific note")
