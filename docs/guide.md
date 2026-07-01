@@ -200,6 +200,14 @@ never lost.
 | **`musubi_retrieve(ref_id)`** | Return the verbatim original — the reverse of any compression. |
 | **`musubi_compression_stats()`** | Aggregate efficiency over every stored blob: `bytes_saved`, `overall_ratio`, `savings_pct`, per-`kind` breakdown. `savings_pct` is the headline "how well is it working?" number. |
 
+### Skill recommendations
+
+The standalone agent can call `musubi_recommend_skills` when it is unsure which
+procedural knowledge applies. The tool is deterministic: it ranks only skills
+already visible to the caller after the role allowlist and project-profile
+filters. It returns a shortlist with reasons; the agent still pulls full skill
+content with `musubi_get_skill`.
+
 ### Context controls (driver-side, deterministic)
 
 Four zero-LLM token controls apply at the LM-call boundary:
