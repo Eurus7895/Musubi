@@ -281,6 +281,27 @@ def test_route_unknown_tool_returns_none() -> None:
     assert McpGateway().route("nope") is None
 
 
+def test_local_surface_filter_does_not_filter_external_tools() -> None:
+    from tool_surface import filter_tool_catalog
+
+    gw = McpGateway()
+    local = FakeSession([])
+    remote = FakeSession([])
+    local_tools = [
+        mcp_tool_to_schema(_tool("musubi_read_file")),
+        mcp_tool_to_schema(_tool("musubi_write_stage")),
+    ]
+    gw.register_local(local, filter_tool_catalog(local_tools, "agent"))
+    gw.register_remote("github", remote, [mcp_tool_to_schema(_tool("search_issues"))])
+
+    names = [tool["name"] for tool in gw.tools()]
+
+    assert "musubi_read_file" in names
+    assert "musubi_write_stage" not in names
+    assert "github__search_issues" in names
+    assert gw.route("github__search_issues") == (remote, "search_issues")
+
+
 def test_schema_falls_back_for_missing_fields() -> None:
     schema = mcp_tool_to_schema(_tool("t", desc="", schema=None))
     assert schema["description"] == ""
