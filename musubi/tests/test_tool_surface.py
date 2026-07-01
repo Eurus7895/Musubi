@@ -17,12 +17,20 @@ def _tool(name: str) -> dict:
 
 
 def test_agent_surface_has_expected_count_and_core_tools() -> None:
-    assert len(ROOT_AGENT_TOOL_NAMES) == 20
+    assert len(ROOT_AGENT_TOOL_NAMES) == 14
     assert "musubi_read_file" in ROOT_AGENT_TOOL_NAMES
-    assert "musubi_run_tests" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_recommend_skills" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_retrieve" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_spawn_subagent" in ROOT_AGENT_TOOL_NAMES
+
+
+def test_agent_surface_excludes_mutating_tools() -> None:
+    assert "musubi_write_file" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_edit_file" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_run_command" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_run_lint" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_run_typecheck" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_run_tests" not in ROOT_AGENT_TOOL_NAMES
 
 
 def test_agent_surface_excludes_driver_and_pipeline_internals() -> None:

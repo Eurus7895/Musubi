@@ -34,6 +34,15 @@ def test_system_prompt_mentions_skill_recommendations() -> None:
     assert "procedural knowledge" in prompt
 
 
+def test_system_prompt_routes_mutating_work_to_workers() -> None:
+    prompt = build_system_prompt()
+
+    assert "musubi_spawn_subagent" in prompt
+    assert "coder" in prompt
+    assert "investigator" in prompt
+    assert "write" in prompt.lower()
+
+
 def test_system_prompt_appends_extra_after_steering() -> None:
     prompt = build_system_prompt("task-specific note")
     assert prompt.endswith("task-specific note")

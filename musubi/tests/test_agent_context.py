@@ -316,6 +316,16 @@ def test_agent_routing_skill_has_name_frontmatter() -> None:
 
 # ── SUBAGENT_ROLE_SKILLS lockstep with new pipeline roles ──────────────────
 
+def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
+    text = _SKILL_FILE.read_text(encoding="utf-8")
+
+    assert "never spawn sub-agents while their runners are not wired" not in text
+    assert "Create or edit files" in text
+    assert "coder" in text
+    assert "diagnostics" in text
+    assert "investigator" in text
+
+
 def test_pipeline_roles_register_no_role_skill() -> None:
     """B.1 ships pipeline roles in SUBAGENT_POLICIES with no role-procedure
     SKILL.md (the agent.md body is the procedure; the runner pushes that
@@ -370,25 +380,19 @@ def test_summarizer_skill_file_exists() -> None:
 
 def test_planner_context_unchanged_by_agent_addition(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Adding the agent branch must not bleed memory or other keys
     into the existing planner path."""
     from session import state
     from storage import db as _db
 
-    tmp_root = Path(_REPO_ROOT) / "musubi" / "tests"
     # Build an isolated DB rather than importing the conftest fixture chain.
-    db_path = tmp_root / "_orch_regress.db"
-    if db_path.exists():
-        db_path.unlink()
+    db_path = tmp_path / "orch_regress.db"
     _db.init_db(db_path)
     sid = state.create_session("smoke request", db_path=db_path)
-    try:
-        ctx: dict[str, Any] = context_builder.build_context(
-            sid, "planner", db_path=db_path
-        )
-        assert set(ctx.keys()) == {"request"}
-        assert ctx["request"] == "smoke request"
-    finally:
-        if db_path.exists():
-            db_path.unlink()
+    ctx: dict[str, Any] = context_builder.build_context(
+        sid, "planner", db_path=db_path
+    )
+    assert set(ctx.keys()) == {"request"}
+    assert ctx["request"] == "smoke request"

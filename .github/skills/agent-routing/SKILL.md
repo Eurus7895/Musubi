@@ -1,17 +1,16 @@
 ---
 name: agent-routing
-description: Routing rules for the Agent — answer directly using the available read tools, defer multi-stage work to pipelines, never spawn sub-agents while their runners are not wired. Pushed by the harness via the agent's inject_skills frontmatter.
+description: Routing rules for the Agent — answer directly using the available read tools, delegate write-capable and diagnostic work to bounded sub-agents, and keep vague requests out of the tool loop.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---
 
 ## Today
 
-Sub-agent runners (`explorer`, `investigator`, `reviewer-aux`) are
-wired (Phase G.1.6). The harness advertises `musubi_spawn_subagent`
-/ `await` / `list` in your catalog. Before spawning, read **Writing
-sub-agent briefs** below — a vague brief produces empty results and
-burns a wall-clock cap.
+Sub-agent runners are wired. The harness advertises
+`musubi_spawn_subagent` / `await` / `list` in your catalog. Before
+spawning, read **Writing sub-agent briefs** below — a vague brief
+produces empty results and burns a wall-clock cap.
 
 Default per-role wall-clock caps:
 
@@ -25,6 +24,24 @@ If you genuinely need longer (e.g. a long-running terminal command),
 pass `max_wait_s` explicitly on the await call. Don't default to
 generous waits — the cap is what protects the parent turn from a
 runaway sub-agent.
+
+## Route by capability
+
+The root Agent is a read and routing role. It must not call write,
+edit, bash, test, lint, or typecheck tools directly. Use the smallest
+route that can finish the request:
+
+| User intent | Route |
+|---|---|
+| Read a known file, answer from memory, or inspect a small known target | Root Agent read/search tools |
+| Create or edit files | `musubi_spawn_subagent` with `role="coder"` |
+| Run commands, tests, lint, typechecks, or diagnostics | `musubi_spawn_subagent` with `role="investigator"` |
+| Review a specific file | `musubi_spawn_subagent` with `role="reviewer-aux"` |
+| Vague request without a concrete file, symbol, or target | Ask one clarifying question before any tool call |
+
+If policy denies a write/edit/bash/test/lint/typecheck tool, do not
+retry it. Spawn the matching worker instead, or ask for clarification
+when the target is still unclear.
 
 ## Answer with no tool
 

@@ -38,17 +38,22 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
    against the renamed server.
 
-2. **GUI on-demand task launcher.** Add a Tauri command that launches one
-   governed `agent "<task>"` process only when the user presses Run. The GUI
-   passes project root, profile, and audit DB path through the child process
-   environment, streams stdout/stderr, and supports cancellation.
+2. **Agent catalog worker modes.** Split root, standalone worker, pipeline
+   stage, and meta-agent prompts so standalone workers can act directly without
+   inheriting pipeline ceremony. Implementation plan:
+   [`2026-07-01-agent-catalog-worker-modes.md`](./superpowers/plans/2026-07-01-agent-catalog-worker-modes.md).
 
-3. **Installer runtime reduction.** Prefer a bundled or locally repairable
+3. **GUI on-demand task launcher.** Add a native Tauri task runner that
+   launches one governed `agent "<task>"` process only when the user presses
+   Run. Implementation plan:
+   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md).
+
+4. **Installer runtime reduction.** Prefer a bundled or locally repairable
    Python core payload so first run does not depend on global `pip install` or
    manual `PATH` edits. Keep network install as a fallback for development
    builds.
 
-4. **Signing and release hardening.** Sign the Windows installer and document
+5. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
 ---
@@ -90,6 +95,7 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Boundary policy and audit controls
 - Reversible compression and deterministic compression eval
 - Skill recommendation router and compression-aware context skill
+- Root-agent mutation steering through bounded workers
 - Token/context economics controls
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
