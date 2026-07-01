@@ -120,7 +120,7 @@ ROOT_AGENT_TOOL_NAMES = frozenset({
   - `filter_tool_catalog(tools: list[dict[str, Any]], surface: str) -> list[dict[str, Any]]`
   - `apply_fastmcp_tool_surface(mcp: Any, surface: str) -> None`
 
-- [ ] **Step 1: Write failing surface tests**
+- [x] **Step 1: Write failing surface tests**
 
 Create `musubi/tests/test_tool_surface.py`:
 
@@ -207,7 +207,7 @@ def test_apply_fastmcp_tool_surface_filters_tool_manager() -> None:
     }
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -217,7 +217,7 @@ Run:
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'tool_surface'`.
 
-- [ ] **Step 3: Implement `musubi/tool_surface.py`**
+- [x] **Step 3: Implement `musubi/tool_surface.py`**
 
 Create `musubi/tool_surface.py`:
 
@@ -329,7 +329,7 @@ def apply_fastmcp_tool_surface(mcp: Any, surface: str) -> None:
     manager._tools = {name: tool for name, tool in tools.items() if name in allowed}
 ```
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run:
 
@@ -339,7 +339,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add musubi/tool_surface.py musubi/tests/test_tool_surface.py
@@ -362,7 +362,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "feat(t
   - CLI flag `--tool-surface agent|operator|full`.
   - Env override `MUSUBI_TOOL_SURFACE=agent|operator|full`.
 
-- [ ] **Step 1: Write failing agent catalog tests**
+- [x] **Step 1: Write failing agent catalog tests**
 
 Append to `musubi/tests/test_agent_loop.py`:
 
@@ -402,7 +402,7 @@ def test_run_agent_full_tool_surface_keeps_internal_tools(monkeypatch: pytest.Mo
     assert "musubi_read_stage" in names
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -412,7 +412,7 @@ Run:
 
 Expected: FAIL because the default root catalog still contains hidden tools and `MUSUBI_TOOL_SURFACE` is ignored.
 
-- [ ] **Step 3: Implement internal filtering helper in `agent/run.py`**
+- [x] **Step 3: Implement internal filtering helper in `agent/run.py`**
 
 In `musubi/agent/run.py`, import:
 
@@ -481,7 +481,7 @@ ap.add_argument(
 
 Pass it into `run_agent(..., tool_surface=args.tool_surface)`.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run:
 
@@ -491,7 +491,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add musubi/agent/run.py musubi/tests/test_agent_loop.py
@@ -514,7 +514,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "feat(a
   - Local Musubi tools may be filtered before registration.
   - Federated external tools remain additive and visible when configured.
 
-- [ ] **Step 1: Add regression tests for external tools**
+- [x] **Step 1: Add regression tests for external tools**
 
 Append to `musubi/tests/test_mcp_gateway.py`:
 
@@ -540,7 +540,7 @@ def test_local_surface_filter_does_not_filter_external_tools() -> None:
     assert gw.route("github__search_issues") == (remote, "search_issues")
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run:
 
@@ -550,7 +550,7 @@ Run:
 
 Expected: PASS. If this fails, fix `McpGateway` without changing external tool namespacing or route ownership.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git add musubi/tests/test_mcp_gateway.py musubi/agent/mcp_gateway.py
@@ -576,7 +576,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "test(a
   - `musubi serve --surface operator` external operator/debug catalog.
   - `musubi serve --surface pipeline` external pipeline/VS Code catalog.
 
-- [ ] **Step 1: Write failing server surface tests**
+- [x] **Step 1: Write failing server surface tests**
 
 Create `musubi/tests/test_server_surface.py`:
 
@@ -633,7 +633,7 @@ def test_cli_serve_passes_surface(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called == ["agent"]
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -643,7 +643,7 @@ Run:
 
 Expected: FAIL because `server.serve(surface=...)` and CLI parsing do not exist.
 
-- [ ] **Step 3: Implement `server.serve(surface=...)`**
+- [x] **Step 3: Implement `server.serve(surface=...)`**
 
 In `musubi/server.py`, import:
 
@@ -668,7 +668,7 @@ def serve(surface: str = "full") -> None:
     mcp.run(transport="stdio")
 ```
 
-- [ ] **Step 4: Implement `musubi serve --surface` in `cli.py`**
+- [x] **Step 4: Implement `musubi serve --surface` in `cli.py`**
 
 Replace the `serve` branch in `musubi/cli.py`:
 
@@ -705,7 +705,7 @@ Keep the top-level usage string as:
 print("Usage: musubi {serve|setup}", file=sys.stderr)
 ```
 
-- [ ] **Step 5: Run tests to verify GREEN**
+- [x] **Step 5: Run tests to verify GREEN**
 
 Run:
 
@@ -715,7 +715,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add musubi/server.py musubi/cli.py musubi/tests/test_server_surface.py
@@ -740,7 +740,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "feat(s
   - Docs that distinguish internal driver trimming from external MCP server profiles.
   - No default external behavior change unless explicitly configured.
 
-- [ ] **Step 1: Update `docs/guide.md`**
+- [x] **Step 1: Update `docs/guide.md`**
 
 Add a subsection under the MCP/server or agent area:
 
@@ -763,7 +763,7 @@ Surface profiles hide tools from `list_tools()`; they do not delete tool
 implementations or replace the policy boundary.
 ```
 
-- [ ] **Step 2: Update `docs/roadmap.md` summary**
+- [x] **Step 2: Update `docs/roadmap.md` summary**
 
 Replace the current Live Substrate Work line:
 
@@ -780,11 +780,11 @@ with:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
 ```
 
-- [ ] **Step 3: Check setup wizard generated MCP config**
+- [x] **Step 3: Check setup wizard generated MCP config**
 
 Inspect `musubi/setup_wizard.py` for `.vscode/mcp.json` generation. If it writes `musubi serve`, leave it unchanged for this rollout because `musubi serve` defaults to `full`. Add only a doc comment if the setup wizard already has comments near the generated command.
 
-- [ ] **Step 4: Run docs and focused verification**
+- [x] **Step 4: Run docs and focused verification**
 
 Run:
 
@@ -802,7 +802,7 @@ all selected tests pass
 git diff --check exits 0
 ```
 
-- [ ] **Step 5: Commit docs**
+- [x] **Step 5: Commit docs**
 
 ```powershell
 git add docs/guide.md docs/roadmap.md musubi/setup_wizard.py musubi/tests/test_setup_wizard.py
