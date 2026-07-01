@@ -17,8 +17,19 @@ def main() -> None:
     cmd = args[0] if args else ""
 
     if cmd == "serve":
+        surface = "full"
+        rest = args[1:]
+        if rest:
+            if len(rest) == 2 and rest[0] == "--surface":
+                surface = rest[1]
+            else:
+                print(
+                    "Usage: musubi serve [--surface agent|operator|pipeline|full]",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         from server import serve
-        serve()
+        serve(surface=surface)
         return
 
     if cmd == "setup":

@@ -55,6 +55,7 @@ from skills import skill_loader
 from skills.recommender import recommend_skills
 from storage import db as _db
 from storage import subagent_audit
+from tool_surface import apply_fastmcp_tool_surface
 from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
@@ -2497,8 +2498,9 @@ def musubi_compression_stats() -> str:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def serve() -> None:
+def serve(surface: str = "full") -> None:
     """Start the MCP stdio server. Called by cli.py."""
+    apply_fastmcp_tool_surface(mcp, surface)
     mcp.run(transport="stdio")
 
 
