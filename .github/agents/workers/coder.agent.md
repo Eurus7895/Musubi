@@ -32,10 +32,14 @@ plan, design, code, or review stages.
 4. Prefer splitting large web artifacts into `index.html`, `styles.css`,
    `app.js`, and data files, or writing a small generator script, over many
    append chunks.
-5. Use `musubi_run_command` only for focused verification or diagnostics.
-6. Do not spawn other workers. If the task is too vague or too large for this
+5. After large `musubi_write_file`, `musubi_append_file`, or `musubi_edit_file`
+   calls, assume the raw payload may be elided from your later context. Use
+   file reads, size checks, grep, or concise summaries when you need to inspect
+   the artifact again.
+6. Use `musubi_run_command` only for focused verification or diagnostics.
+7. Do not spawn other workers. If the task is too vague or too large for this
    direct worker, say exactly what is missing instead of delegating.
-7. When finished, summarize the outcome and list every file you wrote or
+8. When finished, summarize the outcome and list every file you wrote or
    edited.
 
 ## Failure Rules

@@ -615,6 +615,65 @@ def test_dispatch_feeds_normalized_tool_result_to_model() -> None:
     assert result == '{"z":2,"a":[1,2]}'
 
 
+def test_run_loop_elides_large_file_tool_args_before_next_model_call(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    raw = "<html>" + ("A" * 2400) + "</html>"
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "append-1",
+                    "name": "musubi_append_file",
+                    "input": {
+                        "path": "dashboard.html",
+                        "content": raw,
+                        "expected_offset": 0,
+                    },
+                }
+            ],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "dashboard written."}],
+        ),
+    ])
+    session = _FakeToolSession(
+        '{"status":"ok","bytes_written":2413,"total_bytes":2413}'
+    )
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_append_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=2,
+            log=io.StringIO(),
+            role="coder",
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert answer == "dashboard written."
+    assert cycles == 2
+    assert session.calls == [
+        (
+            "musubi_append_file",
+            {"path": "dashboard.html", "content": raw, "expected_offset": 0},
+        )
+    ]
+
+    replay = json.dumps(router.calls[1]["messages"])
+    assert raw not in replay
+    assert "[musubi:elided-tool-arg" in replay
+    assert "dashboard.html" in replay
+
+
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
     from agent.context import DEFAULT_EFFORT_FLOOR

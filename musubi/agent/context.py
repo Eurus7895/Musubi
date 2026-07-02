@@ -7,6 +7,7 @@ expires-when: never - the token economics of the LM-call boundary are
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -41,6 +42,12 @@ _STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE])
 
 DEFAULT_EFFORT_FLOOR = 2048
 DEFAULT_CONTEXT_BUDGET = 40_000
+FILE_TOOL_ARG_ELISION_MIN_CHARS = 800
+_FILE_TOOL_ARG_FIELDS = {
+    "musubi_write_file": ("content",),
+    "musubi_append_file": ("content",),
+    "musubi_edit_file": ("old_string", "new_string"),
+}
 _CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
 
@@ -158,6 +165,78 @@ def _compress_for_context(
     return compress(text, min_chars=200, db_path=db_path)
 
 
+def _elided_tool_arg_stub(tool_name: str, field: str, value: str) -> str:
+    encoded = value.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:16]
+    return (
+        f"[musubi:elided-tool-arg tool={tool_name} field={field} "
+        f"chars={len(value)} bytes={len(encoded)} sha256={digest}; "
+        "argument was already sent to the MCP tool]"
+    )
+
+
+def _should_elide_tool_arg(value: Any, min_chars: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) >= min_chars
+        and not value.startswith("[musubi:elided-tool-arg")
+    )
+
+
+def _elide_large_file_tool_inputs(
+    messages: list[dict[str, Any]],
+    *,
+    min_chars: int = FILE_TOOL_ARG_ELISION_MIN_CHARS,
+) -> list[dict[str, Any]]:
+    out = messages
+    changed_messages: dict[int, dict[str, Any]] = {}
+
+    def editable_message(index: int) -> dict[str, Any]:
+        nonlocal out
+        if out is messages:
+            out = list(messages)
+        msg = changed_messages.get(index)
+        if msg is None:
+            msg = dict(messages[index])
+            msg["content"] = [
+                dict(block) if isinstance(block, dict) else block
+                for block in messages[index].get("content", [])
+            ]
+            changed_messages[index] = msg
+            out[index] = msg
+        return msg
+
+    for msg_index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block_index, block in enumerate(content):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "")
+            fields = _FILE_TOOL_ARG_FIELDS.get(name)
+            if not fields:
+                continue
+            raw_input = block.get("input")
+            if not isinstance(raw_input, dict):
+                continue
+            replacements = {
+                field: _elided_tool_arg_stub(name, field, raw_input[field])
+                for field in fields
+                if _should_elide_tool_arg(raw_input.get(field), min_chars)
+            }
+            if not replacements:
+                continue
+            msg = editable_message(msg_index)
+            editable_block = dict(msg["content"][block_index])
+            editable_input = dict(raw_input)
+            editable_input.update(replacements)
+            editable_block["input"] = editable_input
+            msg["content"][block_index] = editable_block
+
+    return out
+
+
 def fit_context(
     messages: list[dict[str, Any]],
     *,
@@ -175,6 +254,7 @@ def fit_context(
     budget = context_budget() if budget_chars is None else budget_chars
     if budget <= 0:
         return messages
+    messages = _elide_large_file_tool_inputs(messages)
     total = _total_chars(messages)
     if total <= budget:
         return messages

@@ -44,7 +44,10 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    standalone workers draw from the full local Musubi catalog before role policy
    narrows their tools. The same branch is adding chunk-safe large-file writes:
    worker-only append support, dispatcher argument validation, and ordered file
-   mutation dispatch without raising output-token ceilings. Implementation plan:
+   mutation dispatch without raising output-token ceilings. Follow-up: elide
+   large file mutation tool arguments from agent replay after dispatch,
+   preserving path/offset/hash metadata while keeping the workspace file as
+   source of truth. Implementation plan:
    [`2026-07-01-agent-catalog-worker-modes.md`](./superpowers/plans/2026-07-01-agent-catalog-worker-modes.md).
 
 3. **GUI on-demand task launcher.** Add a native Tauri task runner that
