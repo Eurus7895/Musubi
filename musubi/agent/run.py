@@ -428,7 +428,7 @@ async def _run_loop(
         if text:
             last_text = text  # remember even when the model also called a tool
 
-        if resp.stop_reason != "tool_use" or not tool_uses:
+        if not tool_uses:
             final_answer = text
             break
 

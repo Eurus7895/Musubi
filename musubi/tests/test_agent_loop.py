@@ -106,6 +106,50 @@ def test_run_loop_passes_context_compression_db_path(
     assert seen == [db_path]
 
 
+def test_run_loop_dispatches_tool_blocks_even_when_stop_reason_is_end_turn() -> None:
+    """Some OpenAI-compatible routers emit tool_use blocks with end_turn.
+
+    The loop must key off the presence of tool_use content, not only the
+    stop_reason string, or write-capable workers silently skip their writes.
+    """
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "tool_use",
+            "id": "write-1",
+            "name": "musubi_write_file",
+            "input": {"path": "dashboard.html", "content": "<html></html>"},
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": "created dashboard.html",
+        }]),
+    ])
+    session = _FakeToolSession('{"status":"ok","path":"dashboard.html"}')
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=2,
+            log=io.StringIO(),
+            role="coder",
+        )
+    )
+
+    assert answer == "created dashboard.html"
+    assert cycles == 2
+    assert session.calls == [
+        (
+            "musubi_write_file",
+            {"path": "dashboard.html", "content": "<html></html>"},
+        )
+    ]
+
+
 def test_run_loop_preflight_budget_halt_skips_vendor_call() -> None:
     from agent import run as run_mod
 
