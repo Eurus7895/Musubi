@@ -436,6 +436,38 @@ def test_call_with_effort_no_escalation_when_complete() -> None:
     assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
 
 
+def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None:
+    from agent import run as run_mod
+
+    partial_write = {
+        "type": "tool_use",
+        "id": "partial-write",
+        "name": "musubi_write_file",
+        "input": {},
+    }
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=1,
+            log=io.StringIO(),
+            role="coder",
+        )
+    )
+
+    assert answer is None
+    assert cycles == 1
+    assert session.calls == []
+
+
 def test_cycle_token_counts_sum_effort_retry_attempts() -> None:
     from agent import run as run_mod
 

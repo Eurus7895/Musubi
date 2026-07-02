@@ -432,6 +432,14 @@ async def _run_loop(
             final_answer = text
             break
 
+        if resp.stop_reason == "max_tokens":
+            print(
+                "[agent] max_tokens response contained tool calls; "
+                "not dispatching possibly truncated tool arguments",
+                file=log,
+            )
+            break
+
         tool_results = await _dispatch(
             session, tool_uses, log,
             vendor=vendor, tools=(spawn_catalog or tools),
