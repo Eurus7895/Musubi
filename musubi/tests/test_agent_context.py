@@ -258,6 +258,9 @@ def test_reviewer_subagent_is_read_only() -> None:
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
 _AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "agent.agent.md"
+_CODER_WORKER_FILE = (
+    _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
+)
 _SKILL_FILE = (
     _REPO_ROOT / ".github" / "skills" / "agent-routing" / "SKILL.md"
 )
@@ -302,6 +305,34 @@ def test_agent_agent_disallows_writes() -> None:
     """The agent routes; it must not write to disk itself."""
     text = _AGENT_FILE.read_text(encoding="utf-8")
     assert 'disallowedTools: ["Write", "Edit", "Bash"]' in text
+
+
+def test_agent_prompt_has_artifact_task_fast_path() -> None:
+    text = _AGENT_FILE.read_text(encoding="utf-8")
+
+    assert "Artifact creation requests are concrete targets" in text
+    assert "create html dashboard" in text
+    assert "Pull one relevant skill" in text
+    assert "spawn coder once" in text
+    assert "compact single-file HTML" in text
+
+
+def test_agent_prompt_has_blocked_retry_guard() -> None:
+    text = _AGENT_FILE.read_text(encoding="utf-8")
+
+    assert "output_too_large_for_single_tool_call" in text
+    assert "retry_same_strategy=false" in text
+    assert "Do not spawn the same role with the same brief" in text
+    assert "Do not summon a pipeline only to recover" in text
+
+
+def test_coder_prompt_prefers_direct_html_over_generator() -> None:
+    text = _CODER_WORKER_FILE.read_text(encoding="utf-8")
+
+    assert "HTML/page/dashboard artifact" in text
+    assert "write the requested HTML file as the primary artifact" in text
+    assert "Do not substitute a generator script" in text
+    assert "explicitly accepts that fallback" in text
 
 
 def test_agent_routing_skill_file_exists() -> None:

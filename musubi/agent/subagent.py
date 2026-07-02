@@ -26,6 +26,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
+
 # Symbolic capability (role allow-list) → MCP tool names. The role allow-list
 # uses Copilot's symbolic names; the standalone path drives `musubi_*` MCP
 # tools. Grep/Glob have no read-only MCP equivalent, so a read-only role is
@@ -33,7 +35,7 @@ from typing import Any
 SYMBOLIC_TO_MCP: dict[str, list[str]] = {
     "Read": ["musubi_read_file"],
     "View": ["musubi_read_file"],
-    "Write": ["musubi_write_file"],
+    "Write": ["musubi_write_file", "musubi_append_file"],
     "Edit": ["musubi_edit_file"],
     "Bash": ["musubi_run_command"],
 }
@@ -153,6 +155,8 @@ async def run_subagent(
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
+    elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
+        summary, status = answer, "escalated"
     else:
         summary, status = answer, "done"
 
@@ -241,11 +245,8 @@ def _strip_frontmatter(md: str) -> str:
 
 def _read_agent_md(role: str, agents_dir: Path | None) -> str:
     base = agents_dir or _default_agents_dir()
-    path = base / f"{role}.agent.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""  # installed wheel without .github/, or unregistered role
+    root = base.parent.parent if base.name == "agents" else base
+    return read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
 
 
 def _default_agents_dir() -> Path:

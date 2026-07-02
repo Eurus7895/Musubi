@@ -34,6 +34,7 @@ class PolicyDecision:
 _TOOL_CAPABILITIES: dict[str, str] = {
     "musubi_read_file": "Read",
     "musubi_write_file": "Write",
+    "musubi_append_file": "Write",
     "musubi_edit_file": "Edit",
     "musubi_run_command": "Bash",
     "musubi_run_lint": "Bash",
@@ -45,6 +46,10 @@ _DENIED_TOOL_ROUTING_HINTS: dict[str, str] = {
     "musubi_write_file": (
         "do not retry this tool from the root agent; spawn `coder` for "
         "file creation or writes"
+    ),
+    "musubi_append_file": (
+        "do not retry this tool from the root agent; spawn `coder` for "
+        "large file appends or chunked writes"
     ),
     "musubi_edit_file": (
         "do not retry this tool from the root agent; spawn `coder` for "

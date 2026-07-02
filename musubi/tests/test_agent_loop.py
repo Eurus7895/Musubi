@@ -106,6 +106,50 @@ def test_run_loop_passes_context_compression_db_path(
     assert seen == [db_path]
 
 
+def test_run_loop_dispatches_tool_blocks_even_when_stop_reason_is_end_turn() -> None:
+    """Some OpenAI-compatible routers emit tool_use blocks with end_turn.
+
+    The loop must key off the presence of tool_use content, not only the
+    stop_reason string, or write-capable workers silently skip their writes.
+    """
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "tool_use",
+            "id": "write-1",
+            "name": "musubi_write_file",
+            "input": {"path": "dashboard.html", "content": "<html></html>"},
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": "created dashboard.html",
+        }]),
+    ])
+    session = _FakeToolSession('{"status":"ok","path":"dashboard.html"}')
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=2,
+            log=io.StringIO(),
+            role="coder",
+        )
+    )
+
+    assert answer == "created dashboard.html"
+    assert cycles == 2
+    assert session.calls == [
+        (
+            "musubi_write_file",
+            {"path": "dashboard.html", "content": "<html></html>"},
+        )
+    ]
+
+
 def test_run_loop_preflight_budget_halt_skips_vendor_call() -> None:
     from agent import run as run_mod
 
@@ -317,6 +361,217 @@ def test_dispatch_allows_coder_write_and_records_post_tool_audit(
     ]
 
 
+def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession()
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-denied",
+                "name": "musubi_append_file",
+                "input": {"path": "x.py", "content": "print('x')"},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="agent"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[policy denied]" in result
+    assert "spawn `coder`" in result
+    assert session.calls == []
+    assert _read_policy_rows(audit_db) == [
+        ("DENY", "agent", "musubi_append_file")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("agent", "musubi_append_file", "denied")
+    ]
+
+
+def test_dispatch_allows_coder_append_and_records_post_tool_audit(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-allowed",
+                "name": "musubi_append_file",
+                "input": {"path": "x.py", "content": "print('x')", "expected_offset": 0},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert result == "stored"
+    assert session.calls == [
+        (
+            "musubi_append_file",
+            {"path": "x.py", "content": "print('x')", "expected_offset": 0},
+        )
+    ]
+    assert _read_policy_rows(audit_db) == [
+        ("ALLOW", "coder", "musubi_append_file")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("coder", "musubi_append_file", "ok")
+    ]
+
+
+def test_dispatch_rejects_invalid_file_tool_args_before_mcp_call(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {"id": "call-bad", "name": "musubi_write_file", "input": {}},
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[tool error] invalid arguments" in result
+    assert "path must be a string" in result
+    assert "content must be a string" in result
+    assert session.calls == []
+    assert _read_policy_rows(audit_db) == [
+        ("ALLOW", "coder", "musubi_write_file")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("coder", "musubi_write_file", "error")
+    ]
+
+
+def test_dispatch_rejects_invalid_append_args_before_mcp_call(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / "audit.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-bad",
+                "name": "musubi_append_file",
+                "input": {"path": "x.py", "content": "x", "expected_offset": -1},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[tool error] invalid arguments" in result
+    assert "expected_offset must be a non-negative integer" in result
+    assert session.calls == []
+    assert _read_tool_rows(audit_db) == [
+        ("coder", "musubi_append_file", "error")
+    ]
+
+
+def test_dispatch_runs_file_mutations_sequentially_in_model_order(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    class _ConcurrencySession(_FakeToolSession):
+        def __init__(self) -> None:
+            super().__init__("stored")
+            self.active = 0
+            self.max_active = 0
+
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            try:
+                return await super().call_tool(name, arguments)
+            finally:
+                self.active -= 1
+
+    session = _ConcurrencySession()
+    audit_db = tmp_path / "audit.db"
+    tool_uses = [
+        {
+            "id": "w",
+            "name": "musubi_write_file",
+            "input": {"path": "x.py", "content": ""},
+        },
+        {
+            "id": "a1",
+            "name": "musubi_append_file",
+            "input": {"path": "x.py", "content": "one", "expected_offset": 0},
+        },
+        {
+            "id": "a2",
+            "name": "musubi_append_file",
+            "input": {"path": "x.py", "content": "two", "expected_offset": 3},
+        },
+    ]
+
+    asyncio.run(
+        run_mod._dispatch(
+            session,
+            tool_uses,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert session.max_active == 1
+    assert [name for name, _ in session.calls] == [
+        "musubi_write_file",
+        "musubi_append_file",
+        "musubi_append_file",
+    ]
+
+
 def test_normalize_tool_result_text_minifies_json() -> None:
     from agent.run import normalize_tool_result_text
 
@@ -360,6 +615,146 @@ def test_dispatch_feeds_normalized_tool_result_to_model() -> None:
     assert result == '{"z":2,"a":[1,2]}'
 
 
+def test_dispatch_logs_loaded_skill_id() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    session = _FakeToolSession("---\nname: HTML Dashboard\n---\n")
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "skill-call",
+                "name": "musubi_get_skill",
+                "input": {
+                    "skill_id": "html-css-dashboard",
+                    "agent_name": "root",
+                },
+            },
+            session,
+            log,
+            vendor=None,
+            tools=[],
+            orchestration=None,
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+        )
+    )
+
+    assert result.startswith("---")
+    assert "skill used=html-css-dashboard agent=root" in log.getvalue()
+
+
+def test_dispatch_does_not_log_skill_used_for_skill_errors() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    session = _FakeToolSession('{"error":"not permitted"}')
+
+    asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "skill-call",
+                "name": "musubi_get_skill",
+                "input": {
+                    "skill_id": "devops",
+                    "agent_name": "coder",
+                },
+            },
+            session,
+            log,
+            vendor=None,
+            tools=[],
+            orchestration=None,
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+        )
+    )
+
+    assert "skill used=" not in log.getvalue()
+
+
+def test_log_cycle_includes_human_readable_model_action() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+
+    run_mod._log_cycle(
+        log,
+        3,
+        "tool_use",
+        [{"type": "tool_use", "name": "musubi_get_skill"}],
+        {"cache_read_input_tokens": 512},
+        tokens_out=42,
+    )
+
+    line = log.getvalue()
+    assert "model_action=tool_calls" in line
+    assert "stop=tool_use" in line
+    assert "tools=1" in line
+
+
+def test_run_loop_elides_large_file_tool_args_before_next_model_call(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    raw = "<html>" + ("A" * 2400) + "</html>"
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "append-1",
+                    "name": "musubi_append_file",
+                    "input": {
+                        "path": "dashboard.html",
+                        "content": raw,
+                        "expected_offset": 0,
+                    },
+                }
+            ],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "dashboard written."}],
+        ),
+    ])
+    session = _FakeToolSession(
+        '{"status":"ok","bytes_written":2413,"total_bytes":2413}'
+    )
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_append_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=2,
+            log=io.StringIO(),
+            role="coder",
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert answer == "dashboard written."
+    assert cycles == 2
+    assert session.calls == [
+        (
+            "musubi_append_file",
+            {"path": "dashboard.html", "content": raw, "expected_offset": 0},
+        )
+    ]
+
+    replay = json.dumps(router.calls[1]["messages"])
+    assert raw not in replay
+    assert "[musubi:elided-tool-arg" in replay
+    assert "dashboard.html" in replay
+
+
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
     from agent.context import DEFAULT_EFFORT_FLOOR
@@ -390,6 +785,46 @@ def test_call_with_effort_no_escalation_when_complete() -> None:
     assert len(result.attempts) == 1
     assert len(router.calls) == 1
     assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
+def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None:
+    from agent import run as run_mod
+
+    partial_write = {
+        "type": "tool_use",
+        "id": "partial-write",
+        "name": "musubi_write_file",
+        "input": {},
+    }
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=1,
+            log=io.StringIO(),
+            role="coder",
+        )
+    )
+
+    assert answer is not None
+    assert answer.startswith("[blocked] ")
+    payload = json.loads(answer.removeprefix("[blocked] "))
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "output_too_large_for_single_tool_call"
+    assert payload["retry_same_strategy"] is False
+    assert payload["attempted_tools"] == ["musubi_write_file"]
+    assert "append_chunks" in payload["recommended_strategies"]
+    assert "max_tokens" in payload["message"]
+    assert cycles == 1
+    assert session.calls == []
 
 
 def test_cycle_token_counts_sum_effort_retry_attempts() -> None:
@@ -592,11 +1027,13 @@ def test_loop_aborts_after_max_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     router = FakeRouter([looping_response, looping_response, looping_response])
     log = io.StringIO()
-    with pytest.raises(RuntimeError, match="exceeded 2 cycles"):
-        asyncio.run(run_agent(
-            "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
-            max_tokens=0,
-        ))
+    answer = asyncio.run(run_agent(
+        "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
+        max_tokens=0,
+    ))
+
+    assert "incomplete" in answer.lower()
+    assert "2 cycles" in answer
 
 
 def test_loop_passes_tool_error_to_model_rather_than_raising(

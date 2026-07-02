@@ -81,6 +81,12 @@ EFFORT_CEILING = 4096
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 
+ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
+    "musubi_write_file",
+    "musubi_append_file",
+    "musubi_edit_file",
+})
+
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
 #: that is itself allowed to spawn may summon workers one level down. With the
@@ -249,6 +255,11 @@ async def run_agent(
         await gateway.connect_external(stack, specs, log)
 
         tools = gateway.tools()
+        external_tools = [
+            tool for tool in tools
+            if not is_musubi_tool(str(tool.get("name", "")))
+        ]
+        worker_catalog = local_tools + external_tools
         n_external = len(tools) - len(visible_local_tools)
         profile_part = f"profile={vendor_source} " if vendor_source else ""
         print(
@@ -300,6 +311,7 @@ async def run_agent(
                 user_message=task,
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
+                spawn_catalog=worker_catalog,
                 salvage_on_exhaust=True,
                 compression_db_path=context_compression_db_path,
                 initial_messages=initial_messages,
@@ -422,8 +434,17 @@ async def _run_loop(
         if text:
             last_text = text  # remember even when the model also called a tool
 
-        if resp.stop_reason != "tool_use" or not tool_uses:
+        if not tool_uses:
             final_answer = text
+            break
+
+        if resp.stop_reason == "max_tokens":
+            print(
+                "[agent] max_tokens response contained tool calls; "
+                "not dispatching possibly truncated tool arguments",
+                file=log,
+            )
+            final_answer = _truncated_tool_call_answer(tool_uses)
             break
 
         tool_results = await _dispatch(
@@ -494,6 +515,12 @@ async def _run_loop(
                     f"[agent] forced final call failed: "
                     f"{type(exc).__name__}: {exc}",
                     file=log,
+                )
+            if final_answer is None:
+                final_answer = (
+                    f"[incomplete] agent reached {max_cycles} cycles without "
+                    "a final answer. The model kept requesting tools, so "
+                    "Musubi stopped the loop instead of continuing indefinitely."
                 )
 
     return final_answer, cycles_used
@@ -1131,21 +1158,39 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
     refused = _spawn_overflow_ids(tool_uses, log)
-    coros = [
-        _dispatch_one(
-            tu, session, log,
-            vendor=vendor, tools=tools,
-            orchestration=orchestration, gateway=gateway,
-            refused=tu.get("id", "") in refused,
-            compression_db_path=compression_db_path,
-            role=role,
-            budget=budget,
-            stats=stats,
-            audit_db_path=audit_db_path,
-        )
-        for tu in tool_uses
-    ]
-    settled = await asyncio.gather(*coros, return_exceptions=True)
+    if _has_order_sensitive_file_tool(tool_uses):
+        settled = []
+        for tu in tool_uses:
+            try:
+                settled.append(await _dispatch_one(
+                    tu, session, log,
+                    vendor=vendor, tools=tools,
+                    orchestration=orchestration, gateway=gateway,
+                    refused=tu.get("id", "") in refused,
+                    compression_db_path=compression_db_path,
+                    role=role,
+                    budget=budget,
+                    stats=stats,
+                    audit_db_path=audit_db_path,
+                ))
+            except Exception as exc:  # noqa: BLE001 - match gather semantics
+                settled.append(exc)
+    else:
+        coros = [
+            _dispatch_one(
+                tu, session, log,
+                vendor=vendor, tools=tools,
+                orchestration=orchestration, gateway=gateway,
+                refused=tu.get("id", "") in refused,
+                compression_db_path=compression_db_path,
+                role=role,
+                budget=budget,
+                stats=stats,
+                audit_db_path=audit_db_path,
+            )
+            for tu in tool_uses
+        ]
+        settled = await asyncio.gather(*coros, return_exceptions=True)
 
     results: list[dict[str, Any]] = []
     for tu, outcome in zip(tool_uses, settled):
@@ -1159,6 +1204,35 @@ async def _dispatch(
             "content": content,
         })
     return results
+
+
+def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
+    return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
+
+
+def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
+    names = sorted({str(tu.get("name") or "<unknown>") for tu in tool_uses})
+    payload = {
+        "status": "blocked",
+        "reason": "output_too_large_for_single_tool_call",
+        "attempted_tools": names,
+        "retry_same_strategy": False,
+        "recommended_strategies": [
+            "compact_artifact",
+            "split_files",
+            "append_chunks",
+            "ask_scope",
+        ],
+        "message": (
+            "Model output hit max_tokens while emitting tool calls, so Musubi "
+            "did not dispatch possibly truncated arguments. For requested HTML "
+            "or dashboard artifacts, prefer a compact direct HTML file first; "
+            "use ordered musubi_append_file chunks when one file is unavoidable; "
+            "do not switch to a generator script unless the user asked for one "
+            "or explicitly accepts that fallback."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
 
 
 def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
@@ -1239,6 +1313,23 @@ async def _dispatch_one(
                 log=log,
             )
             return denied
+
+    arg_error = _file_tool_argument_error(name, args)
+    if arg_error is not None:
+        result = f"[tool error] invalid arguments for {name}: {arg_error}"
+        print(f"[agent]   invalid args for {name}: {arg_error}", file=log)
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id,
+                role=call_role,
+                tool=name,
+                args=json_args(args),
+                status="error",
+                db_path=audit_path,
+                result_text=result,
+                log=log,
+            )
+        return result
 
     if (
         name == "musubi_spawn_pipeline"
@@ -1339,6 +1430,13 @@ async def _dispatch_one(
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
+        if name == "musubi_get_skill" and _skill_loaded_successfully(text):
+            skill_id = str(args.get("skill_id") or "<unknown>")
+            agent_name = str(args.get("agent_name") or call_role)
+            print(
+                f"[agent]   skill used={skill_id} agent={agent_name}",
+                file=log,
+            )
         if should_audit:
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
@@ -1355,6 +1453,43 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+def _file_tool_argument_error(name: str, args: Any) -> str | None:
+    if name not in ORDER_SENSITIVE_FILE_TOOLS:
+        return None
+    if not isinstance(args, dict):
+        return "arguments must be an object"
+
+    errors: list[str] = []
+    _require_string(args, "path", errors)
+    if name in {"musubi_write_file", "musubi_append_file"}:
+        _require_string(args, "content", errors)
+        _optional_bool(args, "create_parents", errors)
+    elif name == "musubi_edit_file":
+        _require_string(args, "old_string", errors)
+        _require_string(args, "new_string", errors)
+        _optional_bool(args, "replace_all", errors)
+
+    if name == "musubi_append_file" and "expected_offset" in args:
+        offset = args.get("expected_offset")
+        if (
+            offset is not None
+            and (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0)
+        ):
+            errors.append("expected_offset must be a non-negative integer")
+
+    return "; ".join(errors) if errors else None
+
+
+def _require_string(args: dict[str, Any], key: str, errors: list[str]) -> None:
+    if not isinstance(args.get(key), str):
+        errors.append(f"{key} must be a string")
+
+
+def _optional_bool(args: dict[str, Any], key: str, errors: list[str]) -> None:
+    if key in args and not isinstance(args.get(key), bool):
+        errors.append(f"{key} must be a boolean")
 
 
 async def _call_tool_text(
@@ -1384,6 +1519,17 @@ def normalize_tool_result_text(text: str) -> str:
     except (TypeError, json.JSONDecodeError):
         return re.sub(r"\n{3,}", "\n\n", stripped)
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+
+def _skill_loaded_successfully(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return True
+    return not (isinstance(payload, dict) and "error" in payload)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -1428,6 +1574,16 @@ def _safe_record_tool_audit(
         )
 
 
+def _model_action(stop_reason: str, tool_uses: list[dict[str, Any]]) -> str:
+    if stop_reason == "max_tokens":
+        return "truncated"
+    if tool_uses:
+        return "tool_calls"
+    if stop_reason == "end_turn":
+        return "final"
+    return "empty"
+
+
 def _log_cycle(
     log: Any,
     cycle: int,
@@ -1438,7 +1594,11 @@ def _log_cycle(
     tokens_out: int | None = None,
     attempt_count: int = 1,
 ) -> None:
-    parts = [f"[agent] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
+    parts = [
+        f"[agent] cycle {cycle}: model_action={_model_action(stop_reason, tool_uses)}",
+        f"stop={stop_reason}",
+        f"tools={len(tool_uses)}",
+    ]
     if attempt_count > 1:
         parts.append(f"attempts={attempt_count}")
     if tokens_out is not None:

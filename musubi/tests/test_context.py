@@ -117,6 +117,127 @@ def test_fit_context_keeps_recent_turns() -> None:
     assert out[5]["content"][0]["content"] == "X" * 5000
 
 
+def test_fit_context_elides_large_file_tool_use_inputs_even_under_budget() -> None:
+    raw = "<html>" + ("A" * 2400) + "</html>"
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "create dashboard"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "append-1",
+                    "name": "musubi_append_file",
+                    "input": {
+                        "path": "dashboard.html",
+                        "content": raw,
+                        "expected_offset": 0,
+                    },
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "append-1",
+                    "content": (
+                        '{"status":"ok","bytes_written":2413,'
+                        '"total_bytes":2413}'
+                    ),
+                }
+            ],
+        },
+    ]
+
+    out = fit_context(msgs, budget_chars=1_000_000)
+
+    payload = out[2]["content"][0]["input"]
+    assert payload["path"] == "dashboard.html"
+    assert payload["expected_offset"] == 0
+    assert payload["content"].startswith("[musubi:elided-tool-arg")
+    assert "chars=" in payload["content"]
+    assert "bytes=" in payload["content"]
+    assert "sha256=" in payload["content"]
+    assert raw not in json.dumps(out)
+    assert msgs[2]["content"][0]["input"]["content"] == raw
+
+
+def test_fit_context_elides_large_edit_file_strings() -> None:
+    old = "old-line\n" + ("B" * 1600)
+    new = "new-line\n" + ("C" * 1700)
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "edit file"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "edit-1",
+                    "name": "musubi_edit_file",
+                    "input": {
+                        "path": "src/app.py",
+                        "old_string": old,
+                        "new_string": new,
+                    },
+                }
+            ],
+        },
+    ]
+
+    out = fit_context(msgs, budget_chars=1_000_000)
+
+    payload = out[2]["content"][0]["input"]
+    assert payload["old_string"].startswith("[musubi:elided-tool-arg")
+    assert payload["new_string"].startswith("[musubi:elided-tool-arg")
+    assert old not in json.dumps(out)
+    assert new not in json.dumps(out)
+
+
+def test_fit_context_keeps_small_file_tool_use_inputs() -> None:
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "small"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "write-1",
+                    "name": "musubi_write_file",
+                    "input": {"path": "note.txt", "content": "short"},
+                }
+            ],
+        },
+    ]
+
+    assert fit_context(msgs, budget_chars=1_000_000) is msgs
+
+
+def test_fit_context_keeps_non_file_tool_use_inputs() -> None:
+    raw = "X" * 3000
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "run command"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "cmd-1",
+                    "name": "musubi_run_command",
+                    "input": {"command": raw},
+                }
+            ],
+        },
+    ]
+
+    assert fit_context(msgs, budget_chars=1_000_000) is msgs
+
+
 def test_fit_context_compresses_old_tool_results_before_trimming(tmp_path: Path) -> None:
     original = json.dumps(
         {
