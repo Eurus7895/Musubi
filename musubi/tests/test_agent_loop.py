@@ -636,11 +636,13 @@ def test_loop_aborts_after_max_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     router = FakeRouter([looping_response, looping_response, looping_response])
     log = io.StringIO()
-    with pytest.raises(RuntimeError, match="exceeded 2 cycles"):
-        asyncio.run(run_agent(
-            "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
-            max_tokens=0,
-        ))
+    answer = asyncio.run(run_agent(
+        "loop forever", router, _musubi_dir(), max_cycles=2, log=log,
+        max_tokens=0,
+    ))
+
+    assert "incomplete" in answer.lower()
+    assert "2 cycles" in answer
 
 
 def test_loop_passes_tool_error_to_model_rather_than_raising(

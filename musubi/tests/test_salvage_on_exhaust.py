@@ -83,11 +83,11 @@ class PureToolRouter(LMRouter):
         ])
 
 
-def test_exhaustion_with_no_recoverable_text_still_raises() -> None:
-    import pytest
+def test_exhaustion_with_no_recoverable_text_returns_incomplete_answer() -> None:
+    answer = asyncio.run(
+        run_agent("hello", PureToolRouter(), _musubi_dir(),
+                  max_cycles=2, log=io.StringIO())
+    )
 
-    with pytest.raises(RuntimeError, match="exceeded"):
-        asyncio.run(
-            run_agent("hello", PureToolRouter(), _musubi_dir(),
-                      max_cycles=2, log=io.StringIO())
-        )
+    assert "incomplete" in answer.lower()
+    assert "2 cycles" in answer

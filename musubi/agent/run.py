@@ -501,6 +501,12 @@ async def _run_loop(
                     f"{type(exc).__name__}: {exc}",
                     file=log,
                 )
+            if final_answer is None:
+                final_answer = (
+                    f"[incomplete] agent reached {max_cycles} cycles without "
+                    "a final answer. The model kept requesting tools, so "
+                    "Musubi stopped the loop instead of continuing indefinitely."
+                )
 
     return final_answer, cycles_used
 
