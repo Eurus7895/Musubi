@@ -14,6 +14,8 @@ Public API (all return JSON-shaped dicts with `status`):
 
     read_file(path)                                  → {"status": "ok", "content": str, "bytes": int}
     write_file(path, content, create_parents=True)   → {"status": "ok", "bytes_written": int}
+    append_file(path, content, create_parents=True,
+                expected_offset=None)                → {"status": "ok", "bytes_written": int, "total_bytes": int}
     edit_file(path, old_string, new_string, replace_all=False)
                                                      → {"status": "ok", "replacements": int}
     run_command(command, timeout_seconds=60, cwd=None)
@@ -146,6 +148,60 @@ def write_file(
         return _error(exc)
     _audit("write", target, f"bytes={len(encoded)}")
     return {"status": "ok", "bytes_written": len(encoded)}
+
+
+def append_file(
+    path: str,
+    content: str,
+    *,
+    create_parents: bool = True,
+    expected_offset: int | None = None,
+) -> dict[str, Any]:
+    """Append `content` to `path`, creating the file when needed.
+
+    When `expected_offset` is provided, it must match the target's current byte
+    size before the append happens. This lets chunked writers detect dropped or
+    reordered chunks without turning the tool into a heavier file-session API.
+    """
+    try:
+        target = resolve_path(path)
+    except (ValueError, PermissionError) as exc:
+        return _error(exc)
+    if target.exists() and target.is_dir():
+        return {"status": "error", "error": f"path is a directory: {path}"}
+    parent = target.parent
+    if not parent.exists():
+        if not create_parents:
+            return {
+                "status": "error",
+                "error": f"parent directory does not exist: {parent}",
+            }
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return _error(exc)
+    try:
+        current_size = target.stat().st_size if target.exists() else 0
+        if expected_offset is not None and current_size != expected_offset:
+            return {
+                "status": "error",
+                "error": (
+                    f"expected offset {expected_offset} but current size "
+                    f"{current_size}"
+                ),
+            }
+        encoded = content.encode("utf-8")
+        with target.open("ab") as handle:
+            handle.write(encoded)
+        total = current_size + len(encoded)
+    except OSError as exc:
+        return _error(exc)
+    _audit("append", target, f"bytes={len(encoded)} total={total}")
+    return {
+        "status": "ok",
+        "bytes_written": len(encoded),
+        "total_bytes": total,
+    }
 
 
 def edit_file(

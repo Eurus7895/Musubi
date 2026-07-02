@@ -26,6 +26,7 @@ def test_agent_surface_has_expected_count_and_core_tools() -> None:
 
 def test_agent_surface_excludes_mutating_tools() -> None:
     assert "musubi_write_file" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_append_file" not in ROOT_AGENT_TOOL_NAMES
     assert "musubi_edit_file" not in ROOT_AGENT_TOOL_NAMES
     assert "musubi_run_command" not in ROOT_AGENT_TOOL_NAMES
     assert "musubi_run_lint" not in ROOT_AGENT_TOOL_NAMES

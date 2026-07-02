@@ -2366,6 +2366,33 @@ def musubi_write_file(
 
 
 @mcp.tool()
+def musubi_append_file(
+    path: str,
+    content: str,
+    create_parents: bool = True,
+    expected_offset: int | None = None,
+) -> str:
+    """Append `content` to `path`, creating the file when needed.
+
+    Parent directories are created by default. Pass create_parents=False
+    to require the parent to exist already. If expected_offset is provided,
+    the current byte size must match before the append happens. Workspace-
+    scoped; refuses to write outside the workspace root.
+    Returns JSON {"status":"ok","bytes_written":N,"total_bytes":M} or
+    {"status":"error",...}.
+    """
+    from tools import fs
+    return json.dumps(
+        fs.append_file(
+            path,
+            content,
+            create_parents=create_parents,
+            expected_offset=expected_offset,
+        )
+    )
+
+
+@mcp.tool()
 def musubi_edit_file(
     path: str,
     old_string: str,

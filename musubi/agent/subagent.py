@@ -35,7 +35,7 @@ from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
 SYMBOLIC_TO_MCP: dict[str, list[str]] = {
     "Read": ["musubi_read_file"],
     "View": ["musubi_read_file"],
-    "Write": ["musubi_write_file"],
+    "Write": ["musubi_write_file", "musubi_append_file"],
     "Edit": ["musubi_edit_file"],
     "Bash": ["musubi_run_command"],
 }

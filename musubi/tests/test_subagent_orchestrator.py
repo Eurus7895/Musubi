@@ -158,10 +158,15 @@ def test_child_max_turns_escalates_not_hangs() -> None:
 def test_select_child_tools_maps_symbolic_to_mcp() -> None:
     catalog = [
         {"name": "musubi_read_file"}, {"name": "musubi_write_file"},
-        {"name": "musubi_run_command"}, {"name": "musubi_new_session"},
+        {"name": "musubi_append_file"}, {"name": "musubi_run_command"},
+        {"name": "musubi_new_session"},
     ]
     read_only = {t["name"] for t in select_child_tools(catalog, ["Read", "View"])}
     assert read_only == {"musubi_read_file"}
+    assert {t["name"] for t in select_child_tools(catalog, ["Write"])} == {
+        "musubi_write_file",
+        "musubi_append_file",
+    }
     assert {t["name"] for t in select_child_tools(catalog, ["Bash"])} == {"musubi_run_command"}
     # Grep/Glob have no MCP equivalent → no silent shell upgrade.
     assert select_child_tools(catalog, ["Grep", "Glob"]) == []

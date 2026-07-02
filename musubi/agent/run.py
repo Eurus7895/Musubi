@@ -81,6 +81,12 @@ EFFORT_CEILING = 4096
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 
+ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
+    "musubi_write_file",
+    "musubi_append_file",
+    "musubi_edit_file",
+})
+
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
 #: that is itself allowed to spawn may summon workers one level down. With the
@@ -1151,21 +1157,39 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
     refused = _spawn_overflow_ids(tool_uses, log)
-    coros = [
-        _dispatch_one(
-            tu, session, log,
-            vendor=vendor, tools=tools,
-            orchestration=orchestration, gateway=gateway,
-            refused=tu.get("id", "") in refused,
-            compression_db_path=compression_db_path,
-            role=role,
-            budget=budget,
-            stats=stats,
-            audit_db_path=audit_db_path,
-        )
-        for tu in tool_uses
-    ]
-    settled = await asyncio.gather(*coros, return_exceptions=True)
+    if _has_order_sensitive_file_tool(tool_uses):
+        settled = []
+        for tu in tool_uses:
+            try:
+                settled.append(await _dispatch_one(
+                    tu, session, log,
+                    vendor=vendor, tools=tools,
+                    orchestration=orchestration, gateway=gateway,
+                    refused=tu.get("id", "") in refused,
+                    compression_db_path=compression_db_path,
+                    role=role,
+                    budget=budget,
+                    stats=stats,
+                    audit_db_path=audit_db_path,
+                ))
+            except Exception as exc:  # noqa: BLE001 - match gather semantics
+                settled.append(exc)
+    else:
+        coros = [
+            _dispatch_one(
+                tu, session, log,
+                vendor=vendor, tools=tools,
+                orchestration=orchestration, gateway=gateway,
+                refused=tu.get("id", "") in refused,
+                compression_db_path=compression_db_path,
+                role=role,
+                budget=budget,
+                stats=stats,
+                audit_db_path=audit_db_path,
+            )
+            for tu in tool_uses
+        ]
+        settled = await asyncio.gather(*coros, return_exceptions=True)
 
     results: list[dict[str, Any]] = []
     for tu, outcome in zip(tool_uses, settled):
@@ -1179,6 +1203,10 @@ async def _dispatch(
             "content": content,
         })
     return results
+
+
+def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
+    return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
 
 
 def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
@@ -1259,6 +1287,23 @@ async def _dispatch_one(
                 log=log,
             )
             return denied
+
+    arg_error = _file_tool_argument_error(name, args)
+    if arg_error is not None:
+        result = f"[tool error] invalid arguments for {name}: {arg_error}"
+        print(f"[agent]   invalid args for {name}: {arg_error}", file=log)
+        if should_audit:
+            _safe_record_tool_audit(
+                session_id=session_id,
+                role=call_role,
+                tool=name,
+                args=json_args(args),
+                status="error",
+                db_path=audit_path,
+                result_text=result,
+                log=log,
+            )
+        return result
 
     if (
         name == "musubi_spawn_pipeline"
@@ -1375,6 +1420,43 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+def _file_tool_argument_error(name: str, args: Any) -> str | None:
+    if name not in ORDER_SENSITIVE_FILE_TOOLS:
+        return None
+    if not isinstance(args, dict):
+        return "arguments must be an object"
+
+    errors: list[str] = []
+    _require_string(args, "path", errors)
+    if name in {"musubi_write_file", "musubi_append_file"}:
+        _require_string(args, "content", errors)
+        _optional_bool(args, "create_parents", errors)
+    elif name == "musubi_edit_file":
+        _require_string(args, "old_string", errors)
+        _require_string(args, "new_string", errors)
+        _optional_bool(args, "replace_all", errors)
+
+    if name == "musubi_append_file" and "expected_offset" in args:
+        offset = args.get("expected_offset")
+        if (
+            offset is not None
+            and (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0)
+        ):
+            errors.append("expected_offset must be a non-negative integer")
+
+    return "; ".join(errors) if errors else None
+
+
+def _require_string(args: dict[str, Any], key: str, errors: list[str]) -> None:
+    if not isinstance(args.get(key), str):
+        errors.append(f"{key} must be a string")
+
+
+def _optional_bool(args: dict[str, Any], key: str, errors: list[str]) -> None:
+    if key in args and not isinstance(args.get(key), bool):
+        errors.append(f"{key} must be a boolean")
 
 
 async def _call_tool_text(

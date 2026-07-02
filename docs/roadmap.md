@@ -42,7 +42,9 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    `feat/agent-catalog-worker-modes`: root, standalone worker, pipeline-stage,
    and meta-agent prompts now have purpose-specific resolver precedence, and
    standalone workers draw from the full local Musubi catalog before role policy
-   narrows their tools. Implementation plan:
+   narrows their tools. The same branch is adding chunk-safe large-file writes:
+   worker-only append support, dispatcher argument validation, and ordered file
+   mutation dispatch without raising output-token ceilings. Implementation plan:
    [`2026-07-01-agent-catalog-worker-modes.md`](./superpowers/plans/2026-07-01-agent-catalog-worker-modes.md).
 
 3. **GUI on-demand task launcher.** Add a native Tauri task runner that

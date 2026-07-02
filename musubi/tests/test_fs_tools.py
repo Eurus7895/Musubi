@@ -135,6 +135,64 @@ def test_write_file_traversal_blocked(workspace: Path) -> None:
 # ── edit_file ──────────────────────────────────────────────────────────────
 
 
+# -- append_file ------------------------------------------------------------
+
+
+def test_append_file_creates_new(workspace: Path) -> None:
+    result = fs.append_file("note.md", "# Hello\n")
+    assert result == {
+        "status": "ok",
+        "bytes_written": len(b"# Hello\n"),
+        "total_bytes": len(b"# Hello\n"),
+    }
+    assert (workspace / "note.md").read_text(encoding="utf-8") == "# Hello\n"
+
+
+def test_append_file_appends_existing(workspace: Path) -> None:
+    (workspace / "f").write_text("old", encoding="utf-8")
+    result = fs.append_file("f", "new", expected_offset=3)
+    assert result == {
+        "status": "ok",
+        "bytes_written": len(b"new"),
+        "total_bytes": len(b"oldnew"),
+    }
+    assert (workspace / "f").read_text(encoding="utf-8") == "oldnew"
+
+
+def test_append_file_creates_parents_by_default(workspace: Path) -> None:
+    result = fs.append_file("a/b/c/file.txt", "x")
+    assert result["status"] == "ok"
+    assert (workspace / "a" / "b" / "c" / "file.txt").exists()
+
+
+def test_append_file_respects_create_parents_false(workspace: Path) -> None:
+    result = fs.append_file("a/b/file.txt", "x", create_parents=False)
+    assert result["status"] == "error"
+    assert "parent directory" in result["error"]
+
+
+def test_append_file_refuses_directory_path(workspace: Path) -> None:
+    (workspace / "d").mkdir()
+    result = fs.append_file("d", "x")
+    assert result["status"] == "error"
+    assert "directory" in result["error"]
+
+
+def test_append_file_traversal_blocked(workspace: Path) -> None:
+    result = fs.append_file("../outside.txt", "x")
+    assert result["status"] == "error"
+    assert "outside the workspace" in result["error"]
+
+
+def test_append_file_expected_offset_mismatch(workspace: Path) -> None:
+    (workspace / "f").write_text("abc", encoding="utf-8")
+    result = fs.append_file("f", "d", expected_offset=2)
+    assert result["status"] == "error"
+    assert "expected offset 2" in result["error"]
+    assert "current size 3" in result["error"]
+    assert (workspace / "f").read_text(encoding="utf-8") == "abc"
+
+
 def test_edit_file_unique_match_replaces(workspace: Path) -> None:
     (workspace / "f.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
     result = fs.edit_file("f.py", "b = 2", "b = 99")
@@ -263,6 +321,14 @@ def test_mcp_write_file_round_trip(workspace: Path) -> None:
     payload = json.loads(server.musubi_write_file("out.txt", "hello"))
     assert payload["status"] == "ok"
     assert (workspace / "out.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_mcp_append_file_round_trip(workspace: Path) -> None:
+    payload = json.loads(server.musubi_append_file("out.txt", "hello"))
+    assert payload["status"] == "ok"
+    payload = json.loads(server.musubi_append_file("out.txt", " world", expected_offset=5))
+    assert payload == {"status": "ok", "bytes_written": 6, "total_bytes": 11}
+    assert (workspace / "out.txt").read_text(encoding="utf-8") == "hello world"
 
 
 def test_mcp_edit_file_round_trip(workspace: Path) -> None:
