@@ -615,6 +615,87 @@ def test_dispatch_feeds_normalized_tool_result_to_model() -> None:
     assert result == '{"z":2,"a":[1,2]}'
 
 
+def test_dispatch_logs_loaded_skill_id() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    session = _FakeToolSession("---\nname: HTML Dashboard\n---\n")
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "skill-call",
+                "name": "musubi_get_skill",
+                "input": {
+                    "skill_id": "html-css-dashboard",
+                    "agent_name": "root",
+                },
+            },
+            session,
+            log,
+            vendor=None,
+            tools=[],
+            orchestration=None,
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+        )
+    )
+
+    assert result.startswith("---")
+    assert "skill used=html-css-dashboard agent=root" in log.getvalue()
+
+
+def test_dispatch_does_not_log_skill_used_for_skill_errors() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    session = _FakeToolSession('{"error":"not permitted"}')
+
+    asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "skill-call",
+                "name": "musubi_get_skill",
+                "input": {
+                    "skill_id": "devops",
+                    "agent_name": "coder",
+                },
+            },
+            session,
+            log,
+            vendor=None,
+            tools=[],
+            orchestration=None,
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+        )
+    )
+
+    assert "skill used=" not in log.getvalue()
+
+
+def test_log_cycle_includes_human_readable_model_action() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+
+    run_mod._log_cycle(
+        log,
+        3,
+        "tool_use",
+        [{"type": "tool_use", "name": "musubi_get_skill"}],
+        {"cache_read_input_tokens": 512},
+        tokens_out=42,
+    )
+
+    line = log.getvalue()
+    assert "model_action=tool_calls" in line
+    assert "stop=tool_use" in line
+    assert "tools=1" in line
+
+
 def test_run_loop_elides_large_file_tool_args_before_next_model_call(
     tmp_path: Path,
 ) -> None:

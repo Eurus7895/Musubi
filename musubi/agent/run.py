@@ -1417,6 +1417,13 @@ async def _dispatch_one(
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
+        if name == "musubi_get_skill" and _skill_loaded_successfully(text):
+            skill_id = str(args.get("skill_id") or "<unknown>")
+            agent_name = str(args.get("agent_name") or call_role)
+            print(
+                f"[agent]   skill used={skill_id} agent={agent_name}",
+                file=log,
+            )
         if should_audit:
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
@@ -1501,6 +1508,17 @@ def normalize_tool_result_text(text: str) -> str:
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
 
+def _skill_loaded_successfully(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return True
+    return not (isinstance(payload, dict) and "error" in payload)
+
+
 def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -1543,6 +1561,16 @@ def _safe_record_tool_audit(
         )
 
 
+def _model_action(stop_reason: str, tool_uses: list[dict[str, Any]]) -> str:
+    if stop_reason == "max_tokens":
+        return "truncated"
+    if tool_uses:
+        return "tool_calls"
+    if stop_reason == "end_turn":
+        return "final"
+    return "empty"
+
+
 def _log_cycle(
     log: Any,
     cycle: int,
@@ -1553,7 +1581,11 @@ def _log_cycle(
     tokens_out: int | None = None,
     attempt_count: int = 1,
 ) -> None:
-    parts = [f"[agent] cycle {cycle}: stop={stop_reason}", f"tools={len(tool_uses)}"]
+    parts = [
+        f"[agent] cycle {cycle}: model_action={_model_action(stop_reason, tool_uses)}",
+        f"stop={stop_reason}",
+        f"tools={len(tool_uses)}",
+    ]
     if attempt_count > 1:
         parts.append(f"attempts={attempt_count}")
     if tokens_out is not None:
