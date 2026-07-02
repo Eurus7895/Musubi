@@ -98,6 +98,8 @@ shrink-and-pray.
   are harness scratch aliases, not review branches.
 - **Never add `codex` to branch names.** Branch names describe the product
   change, not the tool or person doing the work.
+- **Never add `codex` or `claude` to PR titles.** PR titles describe the
+  product change, not the tool or person doing the work.
 - **Never set `user.name` / `user.email` via `git config`.** The harness
   pre-sets `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars; touching
   git-config silently overrides them.
