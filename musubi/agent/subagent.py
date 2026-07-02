@@ -155,7 +155,7 @@ async def run_subagent(
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
-    elif answer.lstrip().lower().startswith("[incomplete]"):
+    elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
         summary, status = answer, "escalated"
     else:
         summary, status = answer, "done"

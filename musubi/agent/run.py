@@ -1212,14 +1212,27 @@ def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
 
 def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
     names = sorted({str(tu.get("name") or "<unknown>") for tu in tool_uses})
-    return (
-        "[incomplete] model output hit max_tokens while emitting tool calls "
-        f"({', '.join(names)}), so Musubi did not dispatch the possibly "
-        "truncated arguments. For large files, split the artifact into smaller "
-        "files, write a small generator script, or reset the file with "
-        "`musubi_write_file(path, \"\")` and add ordered chunks with "
-        "`musubi_append_file` plus `expected_offset`."
-    )
+    payload = {
+        "status": "blocked",
+        "reason": "output_too_large_for_single_tool_call",
+        "attempted_tools": names,
+        "retry_same_strategy": False,
+        "recommended_strategies": [
+            "compact_artifact",
+            "split_files",
+            "append_chunks",
+            "ask_scope",
+        ],
+        "message": (
+            "Model output hit max_tokens while emitting tool calls, so Musubi "
+            "did not dispatch possibly truncated arguments. For requested HTML "
+            "or dashboard artifacts, prefer a compact direct HTML file first; "
+            "use ordered musubi_append_file chunks when one file is unavoidable; "
+            "do not switch to a generator script unless the user asked for one "
+            "or explicitly accepts that fallback."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
 
 
 def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:

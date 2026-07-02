@@ -815,9 +815,14 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     )
 
     assert answer is not None
-    assert "incomplete" in answer.lower()
-    assert "max_tokens" in answer
-    assert "musubi_append_file" in answer
+    assert answer.startswith("[blocked] ")
+    payload = json.loads(answer.removeprefix("[blocked] "))
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "output_too_large_for_single_tool_call"
+    assert payload["retry_same_strategy"] is False
+    assert payload["attempted_tools"] == ["musubi_write_file"]
+    assert "append_chunks" in payload["recommended_strategies"]
+    assert "max_tokens" in payload["message"]
     assert cycles == 1
     assert session.calls == []
 

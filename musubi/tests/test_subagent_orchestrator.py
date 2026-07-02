@@ -152,6 +152,35 @@ def test_child_max_turns_escalates_not_hangs() -> None:
     assert "exceeded 1 cycles" in fed_back or "escalat" in fed_back.lower()
 
 
+def test_child_blocked_reason_escalates_to_parent() -> None:
+    blocked = (
+        '[blocked] {"status":"blocked",'
+        '"reason":"output_too_large_for_single_tool_call",'
+        '"retry_same_strategy":false}'
+    )
+    router = FakeRouter([
+        _spawn("coder", "create html dashboard"),
+        _text(blocked),
+        _text("done"),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "create html dashboard",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+    ))
+
+    assert answer == "done"
+    fed_back = "".join(
+        b["content"] for m in router.calls[2]["messages"]
+        if isinstance(m.get("content"), list)
+        for b in m["content"] if b.get("type") == "tool_result"
+    )
+    assert "output_too_large_for_single_tool_call" in fed_back
+    assert "blocked" in fed_back
+
+
 # ── pure helpers ────────────────────────────────────────────────────────────
 
 

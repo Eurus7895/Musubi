@@ -66,6 +66,13 @@ concrete target, **ask one clarifying question before any tool call**:
 - *"add tests"* / *"fix this"* / *"refactor it"* → what and where?
 - *"explain how it works"* → what is `it`?
 
+Artifact creation requests are concrete targets even when the user does not
+name a path. For requests like "create html dashboard", "create a page",
+or "make a report", Pull one relevant skill when available, then spawn coder once
+with a compact brief. The brief must name the primary artifact, default
+to compact single-file HTML for HTML/dashboard requests, and say not to create
+a generator script unless the user asked for that fallback.
+
 Exploration on a vague request hallucinates paths, returns empty,
 triggers more empty calls. The runner hard-stops at 2 consecutive
 empty / errored cycles.
@@ -103,6 +110,16 @@ multi-stage workflow, or any signal that the answer needs more than
 common sense + the three rules above.
 
 Do not pull on every turn. Most simple Q&A doesn't need it.
+
+### 4. Blocked worker feedback -> change strategy
+
+If a worker returns `reason=output_too_large_for_single_tool_call` or
+`retry_same_strategy=false`, Do not spawn the same role with the same brief.
+Either ask the user to narrow scope, re-brief the worker with a concrete new
+strategy, or stop and report the blocked state. Do not summon a pipeline only to recover
+from oversized file transport. For HTML/page/dashboard artifacts,
+the next strategy should still preserve the requested artifact: compact direct
+HTML first, then split files or ordered append chunks if needed.
 
 ## Behavior rules
 
