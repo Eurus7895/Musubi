@@ -444,6 +444,7 @@ async def _run_loop(
                 "not dispatching possibly truncated tool arguments",
                 file=log,
             )
+            final_answer = _truncated_tool_call_answer(tool_uses)
             break
 
         tool_results = await _dispatch(
@@ -1207,6 +1208,18 @@ async def _dispatch(
 
 def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
     return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
+
+
+def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
+    names = sorted({str(tu.get("name") or "<unknown>") for tu in tool_uses})
+    return (
+        "[incomplete] model output hit max_tokens while emitting tool calls "
+        f"({', '.join(names)}), so Musubi did not dispatch the possibly "
+        "truncated arguments. For large files, split the artifact into smaller "
+        "files, write a small generator script, or reset the file with "
+        "`musubi_write_file(path, \"\")` and add ordered chunks with "
+        "`musubi_append_file` plus `expected_offset`."
+    )
 
 
 def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
