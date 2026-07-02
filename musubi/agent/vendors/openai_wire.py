@@ -166,6 +166,16 @@ def openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
     return blocks
 
 
+def finish_reason_to_stop(finish_reason: Any) -> str:
+    """Map OpenAI-compatible finish reasons to the loop's stop reasons."""
+    reason = str(finish_reason or "").strip().lower()
+    if reason == "length":
+        return "max_tokens"
+    if reason == "tool_calls":
+        return "tool_use"
+    return "end_turn"
+
+
 def usage_to_dict(usage: Any) -> dict[str, Any] | None:
     if usage is None:
         return None

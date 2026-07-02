@@ -17,6 +17,7 @@ from agent.vendors import LMResponse, LMRouter
 from agent.vendors.curl_router import CurlChatRouter, _auth_header_line, _resolve_url
 from agent.vendors.factory import build_from_profile, build_vendor
 from agent.vendors.openai_router import (
+    finish_reason_to_stop,
     openai_message_to_blocks,
     to_openai_messages,
     token_budget_field,
@@ -201,6 +202,14 @@ def test_openai_blocks_from_wire_dict() -> None:
         {"type": "text", "text": "hi"},
         {"type": "tool_use", "id": "t1", "name": "fn", "input": {"a": 1}},
     ]
+
+
+def test_finish_reason_length_maps_to_max_tokens_even_with_tool_calls() -> None:
+    assert finish_reason_to_stop("length") == "max_tokens"
+
+
+def test_finish_reason_tool_calls_maps_to_tool_use() -> None:
+    assert finish_reason_to_stop("tool_calls") == "tool_use"
 
 
 def test_openai_usage_dict_normalizes_cached_prompt_tokens_from_sdk() -> None:
@@ -500,6 +509,31 @@ def test_curl_router_tool_call_response(monkeypatch: pytest.MonkeyPatch) -> None
     assert resp.stop_reason == "tool_use"
     assert resp.content[0]["type"] == "tool_use"
     assert resp.content[0]["name"] == "look"
+
+
+def test_curl_router_length_finish_reason_surfaces_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_curl(monkeypatch, body={
+        "choices": [{
+            "message": {
+                "content": None,
+                "tool_calls": [{
+                    "id": "c1",
+                    "function": {"name": "write", "arguments": "{\"path\":"},
+                }],
+            },
+            "finish_reason": "length",
+        }],
+    })
+    router = CurlChatRouter(base_url="https://gw.local/v1", model="m", api_key="K")
+
+    resp = router.call([{"role": "user", "content": "go"}], [
+        {"name": "write", "description": "", "input_schema": {"type": "object"}},
+    ])
+
+    assert resp.stop_reason == "max_tokens"
+    assert resp.content[0]["type"] == "tool_use"
 
 
 def test_curl_router_nonzero_exit_raises(monkeypatch: pytest.MonkeyPatch) -> None:

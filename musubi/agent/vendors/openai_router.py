@@ -24,6 +24,7 @@ from typing import Any
 
 from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
+    finish_reason_to_stop,
     openai_message_to_blocks,
     to_openai_messages,
     token_budget_field,
@@ -34,6 +35,7 @@ from agent.vendors.openai_wire import (
 # Re-export for back-compat: callers/tests import these from openai_router.
 __all__ = [
     "OpenAIRouter",
+    "finish_reason_to_stop",
     "openai_message_to_blocks",
     "to_openai_messages",
     "token_budget_field",
@@ -88,7 +90,7 @@ class OpenAIRouter(LMRouter):
         )
         choice = resp.choices[0]
         content_blocks = openai_message_to_blocks(choice.message)
-        stop = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
+        stop = finish_reason_to_stop(choice.finish_reason)
         return LMResponse(
             stop_reason=stop,
             content=content_blocks,

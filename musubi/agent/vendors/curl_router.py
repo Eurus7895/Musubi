@@ -26,6 +26,7 @@ from typing import Any
 
 from agent.vendors.base import LMResponse, LMRouter
 from agent.vendors.openai_wire import (
+    finish_reason_to_stop,
     openai_message_to_blocks,
     to_openai_messages,
     token_budget_field,
@@ -115,7 +116,7 @@ class CurlChatRouter(LMRouter):
             )
         choice = choices[0]
         blocks = openai_message_to_blocks(choice.get("message") or {})
-        stop = "tool_use" if choice.get("finish_reason") == "tool_calls" else "end_turn"
+        stop = finish_reason_to_stop(choice.get("finish_reason"))
         return LMResponse(
             stop_reason=stop,
             content=blocks,
