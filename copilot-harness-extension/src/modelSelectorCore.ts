@@ -14,6 +14,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { readAgentPrompt } from "./agentPromptResolver";
 
 const FRONTMATTER_MODEL_RE = /^\s*model:\s*['"]?([^'"\s#]+)['"]?\s*(?:#.*)?$/;
 
@@ -104,15 +105,8 @@ export function readAgentModelFamily(
   roots: readonly string[],
   agentName: string,
 ): string | null {
-  for (const root of roots) {
-    if (!root) { continue; }
-    const p = path.join(root, ".github", "agents", `${agentName}.agent.md`);
-    let text: string;
-    try { text = fs.readFileSync(p, "utf-8"); } catch { continue; }
-    const fam = parseFrontmatterModel(text);
-    if (fam) { return fam; }
-  }
-  return null;
+  const text = readAgentText(roots, agentName);
+  return text ? parseFrontmatterModel(text) : null;
 }
 
 /**
@@ -179,12 +173,7 @@ export function parseFrontmatterMaxTurns(text: string): number | null {
  * Returns null if not found in any root.
  */
 export function readAgentText(roots: readonly string[], agentName: string): string | null {
-  for (const root of roots) {
-    if (!root) { continue; }
-    const p = path.join(root, ".github", "agents", `${agentName}.agent.md`);
-    try { return fs.readFileSync(p, "utf-8"); } catch { continue; }
-  }
-  return null;
+  return readAgentPrompt(roots, agentName, { purpose: "root" });
 }
 
 /** Read `lm_tools:` from an agent's frontmatter. Returns [] when absent. */
@@ -206,4 +195,3 @@ export function readAgentMaxTurns(
   if (!text) { return fallback; }
   return parseFrontmatterMaxTurns(text) ?? fallback;
 }
-

@@ -262,12 +262,21 @@ returns only a compact summary, so the orchestrator's context stays small.
   runs a turn-capped child loop on a **firewalled brief** and **restricted tool
   surface**, verifies the summary on completion, then feeds just that summary
   back. Every spawn is policy-checked and audited (`musubi_query_subagent_events`).
+- **Catalog modes.** Root, direct worker, pipeline-stage, and meta-agent prompts
+  live under separate `.github/agents/` purpose directories. Direct standalone
+  workers use `workers/<role>.agent.md`; pipeline slash commands use
+  `pipeline-stages/<pipeline>/<role>.agent.md`; legacy flat files remain as
+  fallback during migration.
+- **Tool catalogs.** The root model sees the small `agent` surface. Workers are
+  sized from the full local Musubi catalog and then narrowed by role policy, so
+  a direct `coder` can write/edit/run commands without exposing those tools to
+  the root router.
 - **Parallel / background.** Workers summoned in one turn run **concurrently** —
   a batch of N spawns runs N loops at once, results paired back in order, with a
   per-role width cap so a turn can't fan out without bound.
-- **Nesting.** A worker whose role declares a `spawn_allowlist` (in its
-  `.github/agents/<role>.agent.md`) may summon its own workers, up to a depth
-  cap (default 2). Leaf roles never gain the spawn tool.
+- **Nesting.** A worker whose prompt declares a `spawn_allowlist` may summon its
+  own workers, up to a depth cap (default 2). Direct worker prompts are leaves
+  by default; pipeline-stage prompts keep nesting only where explicitly declared.
 - **Pipelines.** A worker can summon a whole **pipeline** —
   `musubi_spawn_pipeline(pipeline_name, brief)` — an ordered recipe of workers
   where each stage's summary feeds the next and the evaluator (last stage) sees

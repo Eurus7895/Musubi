@@ -26,6 +26,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
+
 # Symbolic capability (role allow-list) → MCP tool names. The role allow-list
 # uses Copilot's symbolic names; the standalone path drives `musubi_*` MCP
 # tools. Grep/Glob have no read-only MCP equivalent, so a read-only role is
@@ -241,11 +243,8 @@ def _strip_frontmatter(md: str) -> str:
 
 def _read_agent_md(role: str, agents_dir: Path | None) -> str:
     base = agents_dir or _default_agents_dir()
-    path = base / f"{role}.agent.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""  # installed wheel without .github/, or unregistered role
+    root = base.parent.parent if base.name == "agents" else base
+    return read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
 
 
 def _default_agents_dir() -> Path:

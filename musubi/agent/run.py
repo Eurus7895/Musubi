@@ -249,6 +249,11 @@ async def run_agent(
         await gateway.connect_external(stack, specs, log)
 
         tools = gateway.tools()
+        external_tools = [
+            tool for tool in tools
+            if not is_musubi_tool(str(tool.get("name", "")))
+        ]
+        worker_catalog = local_tools + external_tools
         n_external = len(tools) - len(visible_local_tools)
         profile_part = f"profile={vendor_source} " if vendor_source else ""
         print(
@@ -300,6 +305,7 @@ async def run_agent(
                 user_message=task,
                 max_cycles=max_cycles, log=log,
                 orchestration=orchestration, gateway=gateway,
+                spawn_catalog=worker_catalog,
                 salvage_on_exhaust=True,
                 compression_db_path=context_compression_db_path,
                 initial_messages=initial_messages,

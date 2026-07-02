@@ -13,6 +13,7 @@ import * as vscode from "vscode";
 import {
   extractFileDiff, isResolveError, resolveCodeReviewInput,
 } from "./codeReviewInput";
+import { readAgentPrompt } from "./agentPromptResolver";
 export { extractFileDiff, resolveCodeReviewInput } from "./codeReviewInput";
 export type {
   CodeReviewInput, CodeReviewResolveError, CodeReviewResolveResult,
@@ -386,20 +387,12 @@ function loadAgentPrompt(
   // extension in any other workspace would silently drop to the generic
   // placeholder prompt below.
   const rootList = Array.isArray(roots) ? roots.filter(Boolean) : [roots];
-  for (const root of rootList) {
-    const candidates: string[] = [];
-    if (pipelineName && pipelineName !== "feature-dev") {
-      candidates.push(path.join(root, ".github", "agents", `${pipelineName}-${agentName}.agent.md`));
-    }
-    candidates.push(path.join(root, ".github", "agents", `${agentName}.agent.md`));
-    for (const filePath of candidates) {
-      try {
-        return fs.readFileSync(filePath, "utf-8");
-      } catch {
-        // try next candidate
-      }
-    }
-  }
+  const resolved = readAgentPrompt(
+    rootList,
+    agentName,
+    { purpose: "pipeline-stage", pipelineName },
+  );
+  if (resolved) { return resolved; }
   return (
     `You are the ${agentName} agent in the CopilotHarness pipeline. ` +
     `Analyse the provided input context and produce valid JSON output matching your output schema.`

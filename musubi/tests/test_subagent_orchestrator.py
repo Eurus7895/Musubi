@@ -90,6 +90,25 @@ def test_child_tool_surface_is_restricted() -> None:
     assert "musubi_spawn_subagent" not in child_tools  # leaves can't re-spawn
 
 
+def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
+    """The root model sees the small agent surface, while the coder worker is
+    sized from the full local Musubi catalog and can write when policy allows."""
+    router = FakeRouter([
+        _spawn("coder", "create a file"),
+        _text("created: hello.html"),
+        _text("done"),
+    ])
+    asyncio.run(run_agent("create a file", router, _musubi_dir(), log=io.StringIO()))
+
+    root_tools = {t["name"] for t in router.calls[0]["tools"]}
+    child_tools = {t["name"] for t in router.calls[1]["tools"]}
+
+    assert "musubi_write_file" not in root_tools
+    assert "musubi_edit_file" not in root_tools
+    assert "musubi_run_command" not in root_tools
+    assert {"musubi_write_file", "musubi_edit_file", "musubi_run_command"} <= child_tools
+
+
 # ── deny path: an un-spawnable role surfaces the harness error verbatim ─────
 
 
