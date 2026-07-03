@@ -100,6 +100,10 @@ shrink-and-pray.
   change, not the tool or person doing the work.
 - **Never add `codex` or `claude` to PR titles.** PR titles describe the
   product change, not the tool or person doing the work.
+- **Never add co-author attribution anywhere.** No `Co-Authored-By:`
+  trailer (or any AI/tool co-author credit) in commit messages, PR
+  titles or bodies, or any document. Commits and PRs are authored by
+  `Eurus <t.hoang7895@gmail.com>` alone.
 - **Never set `user.name` / `user.email` via `git config`.** The harness
   pre-sets `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars; touching
   git-config silently overrides them.
