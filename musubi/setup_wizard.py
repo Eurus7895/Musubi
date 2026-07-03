@@ -322,7 +322,15 @@ def install_console_gui(
     *,
     run: CommandRunner | None = None,
 ) -> tuple[bool, str]:
-    """Install the optional console GUI dependencies with npm."""
+    """Install the console GUI dependencies and generate its desktop icons.
+
+    Runs the whole local `npm run tauri:dev` prerequisite chain: `npm install`,
+    a Rust-toolchain check, an MSVC-linker check on Windows, and — the step the
+    dev flow otherwise skips — `npx tauri icon` to generate `icons/icon.ico`
+    and `icons/icon.icns` from the source PNG. Tauri's `beforeDevCommand` runs
+    only vite, so on a fresh clone the Windows build script fails on a missing
+    `icons/icon.ico`; generating it here closes that gap.
+    """
     gui_dir = root / "gui"
     if not (gui_dir / "package.json").is_file():
         return False, f"console GUI app not found at {gui_dir}"
@@ -333,27 +341,86 @@ def install_console_gui(
         return False, "npm was not found on PATH; install Node 20+ and rerun setup"
     runner = run or _run_command
     code = runner([npm, "install"], root)
-    cargo = shutil.which("cargo")
-    if code == 0:
-        if not cargo:
+    if code != 0:
+        return False, f"npm install failed with exit code {code}"
+
+    if not shutil.which("cargo"):
+        return False, (
+            "npm dependencies installed, but cargo was not found on PATH; "
+            "install the Rust toolchain for `npm run tauri:dev` "
+            "(Windows: `winget install --id Rustlang.Rustup -e`, then "
+            "open a new terminal)"
+        )
+    if os.name == "nt" and not _has_msvc_linker():
+        return False, (
+            "npm dependencies installed, but the MSVC C++ linker was not "
+            "found; install Visual Studio Build Tools with the C++ workload "
+            "for `npm run tauri:dev` (Windows: `winget install --id "
+            "Microsoft.VisualStudio.2022.BuildTools -e --override "
+            "\"--wait --passive --add "
+            "Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"`, "
+            "then open a new terminal)"
+        )
+
+    # Generate icon.ico / icon.icns from the source PNG so the Windows build
+    # script has the resource it embeds into the .exe. `npx` lives beside the
+    # `npm` we just ran; skip only if it or the source PNG is unexpectedly
+    # absent (icons may already be present in that case).
+    icons_generated = False
+    npx = shutil.which("npx")
+    icon_src = gui_dir / "src-tauri" / "icons" / "icon.png"
+    if npx and icon_src.is_file():
+        icon_code = runner([npx, "tauri", "icon", "src-tauri/icons/icon.png"], gui_dir)
+        if icon_code != 0:
             return False, (
-                "npm dependencies installed, but cargo was not found on PATH; "
-                "install the Rust toolchain for `npm run tauri:dev` "
-                "(Windows: `winget install --id Rustlang.Rustup -e`, then "
-                "open a new terminal)"
+                "npm dependencies installed, but generating the desktop icons "
+                f"failed with exit code {icon_code}; run "
+                "`npx tauri icon src-tauri/icons/icon.png` in "
+                f"{gui_dir}"
             )
-        if os.name == "nt" and not shutil.which("link.exe"):
-            return False, (
-                "npm dependencies installed, but link.exe was not found on "
-                "PATH; install Visual Studio Build Tools with the C++ workload "
-                "for `npm run tauri:dev` (Windows: `winget install --id "
-                "Microsoft.VisualStudio.2022.BuildTools -e --override "
-                "\"--wait --passive --add "
-                "Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"`, "
-                "then open a new terminal)"
-            )
-        return True, f"console GUI dependencies installed in {gui_dir}"
-    return False, f"npm install failed with exit code {code}"
+        icons_generated = True
+
+    suffix = " and icons generated" if icons_generated else ""
+    return True, f"console GUI dependencies installed{suffix} in {gui_dir}"
+
+
+def _has_msvc_linker() -> bool:
+    """True when the MSVC C++ linker is available to cargo.
+
+    `link.exe` is rarely on the global PATH — cargo locates it through vswhere —
+    so a PATH miss is not conclusive. Fall back to vswhere, querying for the
+    VC++ build-tools component, before reporting the linker as missing.
+    """
+    if shutil.which("link.exe"):
+        return True
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    # os.path (string ops) rather than pathlib: tests monkeypatch os.name to
+    # "nt", which would make pathlib.Path instantiate an unusable WindowsPath on
+    # the (non-Windows) test host.
+    vswhere = os.path.join(
+        program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe"
+    )
+    if not os.path.isfile(vswhere):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                vswhere,
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                "-property",
+                "installationPath",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def _run_command(cmd: list[str], cwd: Path) -> int:
