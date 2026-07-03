@@ -10,12 +10,14 @@
 //! Data source: the configured Musubi `audit.db`. When no database can be
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
+use std::io::Read;
 use std::path::PathBuf;
+use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
@@ -25,6 +27,184 @@ struct AppState {
     paused: AtomicBool,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
+    task: Arc<Mutex<TaskRuntime>>,
+}
+
+/// The single active `agent "<task>"` child process plus its serializable
+/// status. Output tails are bounded; the audit DB — not this overlay — stays
+/// the orchestration source of truth.
+#[derive(Default)]
+struct TaskRuntime {
+    status: musubi_data::TaskLauncherStatus,
+    child: Option<Arc<Mutex<Child>>>,
+}
+
+/// Keep the last 64 KiB per stream.
+const TAIL_CAP: usize = 64 * 1024;
+
+fn epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+enum TailStream {
+    Stdout,
+    Stderr,
+}
+
+/// Drain a child stream into the bounded tail from a background thread.
+fn pump_stream(
+    stream: impl Read + Send + 'static,
+    shared: Arc<Mutex<TaskRuntime>>,
+    which: TailStream,
+) {
+    std::thread::spawn(move || {
+        let mut reader = stream;
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    if let Ok(mut rt) = shared.lock() {
+                        let tail = match which {
+                            TailStream::Stdout => &mut rt.status.stdout_tail,
+                            TailStream::Stderr => &mut rt.status.stderr_tail,
+                        };
+                        musubi_data::push_bounded_tail(tail, &chunk, TAIL_CAP);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Spawn one governed `agent` process for `task_text`. Rejects an empty task
+/// and refuses to start while another task is running. Never blocks the Tauri
+/// event loop: readers and the exit waiter run on background threads.
+fn start_task(state: &AppState, task_text: String, profile: String) -> Result<(), String> {
+    // Resolve everything that needs the db lock *before* taking the task lock
+    // so no code path ever holds both at once.
+    let default_profile = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        musubi_data::read_active_profile(&conn)
+    };
+    let env = musubi_data::current_env_map();
+    let setup =
+        musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
+    let agent_path = setup
+        .agent_cli
+        .found
+        .then(|| PathBuf::from(&setup.agent_cli.path));
+    let spec = musubi_data::build_agent_launch_spec(
+        &task_text,
+        &profile,
+        &default_profile,
+        agent_path.as_deref(),
+        &state.project_root,
+        &env,
+    )?;
+
+    let mut rt = state.task.lock().map_err(|e| e.to_string())?;
+    if rt.status.running {
+        return Err("a task is already running — stop it first".into());
+    }
+
+    let spawned = std::process::Command::new(&spec.program)
+        .args(&spec.args)
+        .current_dir(&spec.cwd)
+        .envs(spec.env.iter().cloned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("failed to launch {}: {e}", spec.program.display());
+            rt.status.error = msg.clone();
+            return Err(msg);
+        }
+    };
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let child = Arc::new(Mutex::new(child));
+
+    rt.status = musubi_data::TaskLauncherStatus {
+        running: true,
+        task: task_text,
+        profile,
+        started_at: Some(epoch_secs()),
+        ..Default::default()
+    };
+    rt.child = Some(child.clone());
+    drop(rt);
+
+    let shared = state.task.clone();
+    if let Some(out) = stdout {
+        pump_stream(out, shared.clone(), TailStream::Stdout);
+    }
+    if let Some(err) = stderr {
+        pump_stream(err, shared.clone(), TailStream::Stderr);
+    }
+
+    // Exit waiter: poll try_wait so cancel_task can take the child lock to kill.
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(200));
+        let polled = match child.lock() {
+            Ok(mut c) => c.try_wait(),
+            Err(_) => break,
+        };
+        match polled {
+            Ok(None) => continue,
+            Ok(Some(status)) => {
+                if let Ok(mut rt) = shared.lock() {
+                    rt.status.running = false;
+                    rt.status.finished_at = Some(epoch_secs());
+                    // On unix a kill() exit has no code; surface -1 so the UI
+                    // still distinguishes it from success.
+                    rt.status.exit_code = Some(status.code().unwrap_or(-1));
+                    rt.child = None;
+                }
+                break;
+            }
+            Err(e) => {
+                if let Ok(mut rt) = shared.lock() {
+                    rt.status.running = false;
+                    rt.status.finished_at = Some(epoch_secs());
+                    rt.status.error = format!("wait failed: {e}");
+                    rt.child = None;
+                }
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Kill the active child process, if any. Audit rows already written by the
+/// backend are left intact; the exit waiter records the final state.
+fn cancel_task(state: &AppState) -> Result<(), String> {
+    let child = state.task.lock().map_err(|e| e.to_string())?.child.clone();
+    if let Some(c) = child {
+        if let Ok(mut c) = c.lock() {
+            let _ = c.kill();
+        }
+    }
+    Ok(())
+}
+
+/// Clear the local stdout/stderr/error tails only.
+fn clear_task_output(state: &AppState) -> Result<(), String> {
+    let mut rt = state.task.lock().map_err(|e| e.to_string())?;
+    rt.status.stdout_tail.clear();
+    rt.status.stderr_tail.clear();
+    rt.status.error.clear();
+    Ok(())
 }
 
 fn open_db() -> Connection {
@@ -79,6 +259,14 @@ fn open_configured_db() -> OpenedDb {
 }
 
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
+    // Copy the launcher overlay before touching the db lock so no code path
+    // ever holds both mutexes at once.
+    let task_launcher = state
+        .task
+        .lock()
+        .map_err(|e| e.to_string())?
+        .status
+        .clone();
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
     st.paused = state.paused.load(Ordering::Relaxed);
@@ -92,6 +280,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
+    st.task_launcher = task_launcher;
     Ok(st)
 }
 
@@ -148,6 +337,17 @@ fn action(
             let cur = state.paused.load(Ordering::Relaxed);
             state.paused.store(!cur, Ordering::Relaxed);
         }
+        // On-demand task launcher: Run spawns exactly one governed
+        // `agent "<task>"` process; opening the GUI never starts one.
+        "run_task" => {
+            start_task(&state, str_arg(0), str_arg(1))?;
+        }
+        "cancel_task" => {
+            cancel_task(&state)?;
+        }
+        "clear_task_output" => {
+            clear_task_output(&state)?;
+        }
         // Spawning agents / running pipelines is a write to the governed
         // substrate — it must go through the MCP server, not a direct DB write.
         // Wire these to musubi_spawn_subagent / the pipeline runner here.
@@ -169,6 +369,7 @@ pub fn run() {
             paused: AtomicBool::new(false),
             project_root: opened.project_root,
             audit_db: opened.audit_db,
+            task: Arc::new(Mutex::new(TaskRuntime::default())),
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {

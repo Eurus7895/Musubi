@@ -43,17 +43,12 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    removing the temporary flat legacy root prompt from this repo, and keeping
    artifact routing skill-first instead of task-template-specific.
 
-3. **GUI on-demand task launcher.** Add a native Tauri task runner that
-   launches one governed `agent "<task>"` process only when the user presses
-   Run. Implementation plan:
-   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md).
-
-4. **Installer runtime reduction.** Prefer a bundled or locally repairable
+3. **Installer runtime reduction.** Prefer a bundled or locally repairable
    Python core payload so first run does not depend on global `pip install` or
    manual `PATH` edits. Keep network install as a fallback for development
    builds.
 
-5. **Signing and release hardening.** Sign the Windows installer and document
+4. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
 ---
@@ -100,3 +95,6 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
 - Agent catalog worker modes and chunk-safe large-file writes
+- GUI on-demand task launcher (single-task slice — queueing, saved templates,
+  and pipeline execution from the GUI stay future work; plan:
+  [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))

@@ -130,6 +130,7 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 | Settings first-run status | runtime discovery of Python, `musubi`, `agent`, `.musubi/llm.json`, and audit DB |
 | Driver chat | `chat_log` |
 | Pipeline studio | authoring surface — default `feature-dev`, not from the DB |
+| Run task (launcher) | GUI-side process overlay (`taskLauncher`), not from the DB — spawns one governed `agent "<task>"` child; orchestration state still arrives via `audit.db` |
 
 ## State shape (Rust → JSON → `buildViewModel`)
 
@@ -138,3 +139,12 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 `allowCount`, `denyCount`, `activeProfile`, `pipeSteps[]`, … The frontend derives
 all presentation (colours, chips) from `role`/`status`, so the backend only
 supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
+
+The snapshot also carries `taskLauncher` — the on-demand launcher overlay
+(`running`, `task`, `profile`, `startedAt`, `finishedAt`, `exitCode`,
+`stdoutTail`, `stderrTail`, `error`), filled in by the Tauri process manager
+(`src/lib.rs`), defaulting to idle. Stdout/stderr tails are bounded to the
+newest 64 KiB per stream on UTF-8 boundaries. The launch recipe itself is the
+pure, unit-tested `build_agent_launch_spec()` in `musubi-data`: the task as the
+positional argument, `--profile` only when non-default, and
+`--tool-surface agent`.

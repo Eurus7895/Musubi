@@ -283,12 +283,17 @@ pipeline execution from GUI, and profile editing can follow later.
 This gives users the needed behavior first: install the GUI, open it from any
 Musubi project, type a task, and let the existing governed backend do the work.
 
-## Open Questions
+## Open Questions — resolved (2026-07-02, first slice shipped)
 
-- Should the task runner live in the current Pipeline view, or should the nav
-  label become `Run` / `Tasks` once the launcher is implemented?
-- Should profile selection initially be a free-form text field or loaded from
-  `.musubi/llm.json` into a dropdown?
-- Should the GUI pass an explicit `--tool-surface agent` once the standalone
-  CLI exposes that as a stable public flag for launcher use?
+- **Where does the task runner live?** In a dedicated **Run task** view
+  (`gui/src/views/TaskLauncher.jsx`) with its own activity-bar entry, not
+  inside the Pipeline studio. The Pipeline view stays untouched as the future
+  workflow builder.
+- **Profile selection?** A dropdown seeded from the known `profileDefs`
+  catalog, defaulting to the active profile. `--profile` is passed only when
+  the selection differs from the resolved default. Loading the list from
+  `.musubi/llm.json` remains a possible follow-up.
+- **Pass `--tool-surface agent`?** Yes. The standalone CLI already exposes
+  `--tool-surface {agent,operator,full}` as a stable flag (`agent/run.py`),
+  so the launcher always passes `--tool-surface agent`.
 

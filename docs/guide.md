@@ -348,7 +348,20 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 - Run npm commands from the repository root. The root `package.json` delegates
   to the GUI workspace in `gui/`.
 
-### The seven views
+### Run a task from the console
+
+Opening the console never starts an agent. The **Run task** view launches one
+governed standalone `agent "<task>"` process only when you press **Run**: type
+the task, optionally pick an LM profile (the active profile is the default —
+`--profile` is passed only when you pick a different one), and the child runs
+in the detected project root with `--tool-surface agent`. Stdout/stderr stream
+into a bounded panel (last 64 KiB per stream); **Stop** kills the process, and
+audit rows the backend already wrote stay intact. The output panel is a runtime
+overlay only — orchestration state still comes from `audit.db`, so the
+Orchestrator/Policy/Audit views update as the task works. One task runs at a
+time. Run is disabled until the `agent` CLI is found (see Settings).
+
+### The eight views
 
 A persistent **trust strip** surfaces the Hard Invariants (zero-LLM substrate,
 fail-closed policy, append-only audit, evaluator firewall), the active model,
@@ -358,6 +371,7 @@ configured yet.
 | View | Shows | Backed by |
 |---|---|---|
 | **Orchestrator** | The driver "knot" spawning governed sub-agents over a woven net — each card's model, spawn order, turn cap, wall-clock budget; click for the firewalled brief + restricted tools. | `subagent_audit` per handle |
+| **Run task** | The on-demand launcher — task textarea, profile select, Run/Stop, bounded stdout/stderr. Spawns one governed `agent` process per Run. | GUI process overlay + `audit.db` |
 | **Pipeline studio** | Author a chain (or load `feature-dev` / `bugfix` / `explore`), reorder, then **Run** with a policy gate at each handoff. | authoring surface |
 | **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` + `tool_audit` |
 | **Audit** | The append-only ledger (spawned / completed), filterable. | `subagent_audit` |
@@ -372,7 +386,7 @@ a pipeline or spawn a sub-agent through the MCP server and the cohort, policy
 stream, and ledger update in place. A fresh DB yields empty surfaces (the reader
 is tolerant). The console is Tauri-only; it uses `TauriSource` through native
 IPC and has no standalone demo source. The supported URL option is
-`?startView=orchestrator|pipeline|policy|audit|models|skills|settings`.
+`?startView=orchestrator|run|pipeline|policy|audit|models|skills|settings`.
 
 ### Console troubleshooting
 
