@@ -69,18 +69,6 @@ The Rust reader and its tests are in `src-tauri/musubi-data/`:
 npm run test:data
 ```
 
-## On-demand task launcher
-
-Opening the GUI never starts an agent. The **Run task** view spawns exactly one
-governed standalone `agent "<task>" --tool-surface agent` process when Run is
-pressed — the portable Python Musubi package stays the backend, and the audit
-DB stays the orchestration source of truth (the launcher output panel is a
-bounded runtime overlay, last 64 KiB per stream). The child runs in the
-detected project root with the parent environment (provider credentials
-included) plus explicit `MUSUBI_ROOT` / `MUSUBI_DB` forwards; `--profile` is
-passed only when a non-default profile is selected. Stop kills the process;
-audit rows already written stay intact. One task at a time — no queueing.
-
 ## Views
 
 The sections backed by the Tauri backend:
@@ -88,8 +76,6 @@ The sections backed by the Tauri backend:
 - **Orchestrator**: the driver knot spawning governed sub-agents over a woven
   net; each card shows model, spawn-order badge, turn cap, and wall-clock
   budget.
-- **Run task**: the on-demand launcher above — task textarea, profile select,
-  Run/Stop, and bounded stdout/stderr panels.
 - **Pipeline studio**: build or run chains such as `feature-dev`, `bugfix`, and
   `explore`.
 - **Policy**: fail-closed PreToolUse allow/deny stream and role tool surfaces.
@@ -105,7 +91,7 @@ fail-closed policy, append-only audit, and evaluator firewall.
 
 The desktop window accepts a view selector:
 
-- `?startView=orchestrator|run|pipeline|policy|audit|models|skills|settings`
+- `?startView=orchestrator|pipeline|policy|audit|models|skills|settings`
 
 ## Layout
 
@@ -113,7 +99,7 @@ The desktop window accepts a view selector:
 src/
   App.jsx                  shell: activity bar + trust strip + view switch
   components/              ActivityBar, TrustStrip, ChatBody
-  views/                   Orchestrator, TaskLauncher, Pipeline, Policy, Audit, Models, Skills, Settings
+  views/                   Orchestrator, Pipeline, Policy, Audit, Models, Skills, Settings
   data/
     createSource.js        requires the Tauri desktop shell
     TauriSource.js         native IPC source: invoke, listen, actions

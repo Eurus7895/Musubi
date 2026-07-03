@@ -26,7 +26,7 @@ export default function ChatBody({ vals }) {
           value={vals.draft}
           onChange={vals.onDraft}
           onKeyDown={vals.onDraftKey}
-          placeholder="Message the driver…"
+          placeholder="Message the driver..."
           style={{ flex: 1, minWidth: 0, background: '#19212f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '9px 12px', color: '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 12.5, outline: 'none' }}
         />
         <Box as="button" onClick={vals.onSend} title="Send" css="display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex-shrink:0;border-radius:9px;border:1px solid rgba(255,155,61,0.4);background:rgba(255,155,61,0.14);color:#ff9b3d;cursor:pointer" hover="background:rgba(255,155,61,0.24)">

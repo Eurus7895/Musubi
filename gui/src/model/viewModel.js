@@ -170,25 +170,6 @@ export function buildViewModel(s, act) {
     }
   })
 
-  // ── on-demand task launcher view-model ──
-  // Runtime overlay of the single spawned `agent "<task>"` process; the audit
-  // DB (rendered by the other views) stays the orchestration source of truth.
-  const tl = s.taskLauncher || { running: false, stdoutTail: '', stderrTail: '', error: '', exitCode: null }
-  const taskRunning = !!tl.running
-  const taskDraftEmpty = !(s.taskDraft || '').trim()
-  const agentCliMissing = !s.setupStatus?.agentCli?.found
-  const taskRunDisabled = !taskRunning && (taskDraftEmpty || agentCliMissing)
-  let taskStatusText
-  if (taskRunning) taskStatusText = 'running · ' + tl.task
-  else if (tl.error) taskStatusText = 'error · ' + tl.error
-  else if (tl.exitCode !== null && tl.exitCode !== undefined) taskStatusText = 'exited · code ' + tl.exitCode + ' · ' + tl.task
-  else if (agentCliMissing) taskStatusText = 'agent CLI not found — see Settings'
-  else taskStatusText = 'idle · one governed agent process per Run'
-  const taskProfiles = profileDefs.map((p) => p.name)
-  const taskProfile = s.taskProfile || s.activeProfile
-  const taskRunLabel = taskRunning ? '■ Stop' : '▶ Run task'
-  const taskRunStyle = 'display:inline-flex;align-items:center;gap:8px;font-family:\'IBM Plex Mono\',monospace;font-size:12px;padding:9px 16px;border-radius:9px;cursor:' + (taskRunDisabled ? 'not-allowed' : 'pointer') + ';border:1px solid ' + (taskRunning ? 'rgba(232,106,95,0.5)' : 'rgba(255,155,61,0.5)') + ';background:' + (taskRunning ? 'rgba(232,106,95,0.14)' : 'rgba(255,155,61,0.14)') + ';color:' + (taskRunning ? '#e86a5f' : '#ff9b3d') + ';opacity:' + (taskRunDisabled ? '0.4' : '1')
-
   const sourceLabels = {
     'musubi-db': 'MUSUBI_DB audit.db',
     'musubi-root': 'MUSUBI_ROOT audit.db',
@@ -212,18 +193,11 @@ export function buildViewModel(s, act) {
   }))
 
   return {
-    isOrch: s.view === 'orchestrator', isRun: s.view === 'run', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
+    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
     view: s.view,
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
-    orchNav: navStyle(s.view === 'orchestrator'), runNav: navStyle(s.view === 'run'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
-    selOrch: () => act.setView('orchestrator'), selRun: () => act.setView('run'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    // task launcher
-    taskDraft: s.taskDraft || '', onTaskDraft: act.onTaskDraft,
-    taskProfiles, taskProfile, setTaskProfile: act.setTaskProfile,
-    taskRunning, taskRunLabel, taskRunStyle, taskRunDisabled, taskStatusText,
-    taskStdout: tl.stdoutTail || '', taskStderr: tl.stderrTail || '', taskError: tl.error || '', taskExitCode: tl.exitCode,
-    onRunTask: taskRunning ? (() => act.cancelTask()) : (taskRunDisabled ? (() => {}) : (() => act.runTask())),
-    onClearTaskOutput: () => act.clearTaskOutput(),
+    orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
+    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, runLabel, runAction, runStyle, pipeStatusText, onClearPipe: () => act.clearPipe(),
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),

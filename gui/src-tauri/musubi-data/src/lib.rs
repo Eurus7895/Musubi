@@ -53,7 +53,6 @@ pub struct State {
     pub paused: bool,
     pub runtime_source: String,
     pub setup_status: SetupStatus,
-    pub task_launcher: TaskLauncherStatus,
     pub t: i64,
 }
 
@@ -61,20 +60,6 @@ pub struct State {
 /// `agent "<task>"` process only when the user presses Run; this snapshot is a
 /// console-side view of that child process, not orchestration state — the audit
 /// DB stays the source of truth.
-#[derive(Serialize, Default, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskLauncherStatus {
-    pub running: bool,
-    pub task: String,
-    pub profile: String,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub exit_code: Option<i32>,
-    pub stdout_tail: String,
-    pub stderr_tail: String,
-    pub error: String,
-}
-
 #[derive(Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupStatus {
@@ -1089,14 +1074,10 @@ mod tests {
     }
 
     #[test]
-    fn default_state_serializes_idle_task_launcher() {
+    fn default_state_omits_task_launcher_overlay() {
         let st = demo_state();
         let v: serde_json::Value = serde_json::to_value(&st).unwrap();
-        let tl = v.get("taskLauncher").expect("taskLauncher key");
-        assert_eq!(tl["running"], false);
-        assert_eq!(tl["task"], "");
-        assert_eq!(tl["exitCode"], serde_json::Value::Null);
-        assert_eq!(tl["stdoutTail"], "");
+        assert!(v.get("taskLauncher").is_none());
     }
 
     #[test]

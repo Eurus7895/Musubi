@@ -4,7 +4,7 @@
 //
 //   get_state            invoke → initial domain snapshot
 //   state://update       event  → domain snapshot on every change (Rust poller)
-//   action               invoke({ kind, args }) → mutating actions (chat, run…)
+//   action               invoke({ kind, args }) → mutating actions (chat, pipeline)
 import { pipePresets } from '../model/data.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
@@ -13,7 +13,7 @@ const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile',
   'pipeSteps', 'pipeName', 'pipeRunning', 'pipeCur', 'pipeProg', 'pipeDoneFlag', 'paused', 't',
-  'runtimeSource', 'setupStatus', 'taskLauncher',
+  'runtimeSource', 'setupStatus',
 ]
 
 export default class TauriSource {
@@ -30,10 +30,6 @@ export default class TauriSource {
       pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
       setupStatus: emptySetupStatus(),
-      // on-demand task launcher: taskDraft/taskProfile are local UI state,
-      // taskLauncher mirrors the backend overlay (idle until Run is pressed)
-      taskDraft: '', taskProfile: '',
-      taskLauncher: emptyTaskLauncher(),
     }
   }
 
@@ -101,26 +97,8 @@ export default class TauriSource {
       runPipe: () => this._action('run_pipe'),
       stopPipe: () => this._action('stop_pipe'),
       resetPipe: () => this._action('reset_pipe'),
-      // on-demand task launcher
-      onTaskDraft: (e) => this._setLocal({ taskDraft: e.target.value }),
-      setTaskProfile: (p) => this._setLocal({ taskProfile: p }),
-      runTask: () => {
-        const task = (this.state.taskDraft || '').trim()
-        if (!task || this.state.taskLauncher.running) return
-        this._action('run_task', [task, this.state.taskProfile || ''])
-      },
-      cancelTask: () => this._action('cancel_task'),
-      clearTaskOutput: () => this._action('clear_task_output'),
     }
     return this._actions
-  }
-}
-
-function emptyTaskLauncher() {
-  return {
-    running: false, task: '', profile: '',
-    startedAt: null, finishedAt: null, exitCode: null,
-    stdoutTail: '', stderrTail: '', error: '',
   }
 }
 

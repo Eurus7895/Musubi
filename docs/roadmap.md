@@ -95,6 +95,6 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
 - Agent catalog worker modes and chunk-safe large-file writes
-- GUI on-demand task launcher (single-task slice — queueing, saved templates,
-  and pipeline execution from the GUI stay future work; plan:
+- GUI audit/orchestrator console first-run slice (the separate task launcher
+  was removed so the Orchestrator remains the single session surface; plan:
   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))

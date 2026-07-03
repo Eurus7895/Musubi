@@ -2,7 +2,6 @@ import { useMusubi } from './model/useMusubi.js'
 import ActivityBar from './components/ActivityBar.jsx'
 import TrustStrip from './components/TrustStrip.jsx'
 import Orchestrator from './views/Orchestrator.jsx'
-import TaskLauncher from './views/TaskLauncher.jsx'
 import Pipeline from './views/Pipeline.jsx'
 import Policy from './views/Policy.jsx'
 import Audit from './views/Audit.jsx'
@@ -12,7 +11,6 @@ import Settings from './views/Settings.jsx'
 
 const VIEWS = {
   orchestrator: Orchestrator,
-  run: TaskLauncher,
   pipeline: Pipeline,
   policy: Policy,
   audit: Audit,
