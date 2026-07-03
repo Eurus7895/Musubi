@@ -1,0 +1,9 @@
+# `tauri icon` (beforeBuildCommand) regenerates a full icon set at build time.
+# The base sizes plus icon.ico / icon.icns are committed so `tauri dev` and a
+# direct `cargo build` work without a generation step; the platform-bundle
+# extras below are build-time only — ignore them so builds don't dirty status.
+64x64.png
+Square*Logo.png
+StoreLogo.png
+/android/
+/ios/
