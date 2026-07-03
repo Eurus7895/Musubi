@@ -38,17 +38,10 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
    against the renamed server.
 
-2. **Agent catalog worker modes.** In implementation on
-   `feat/agent-catalog-worker-modes`: root, standalone worker, pipeline-stage,
-   and meta-agent prompts now have purpose-specific resolver precedence, and
-   standalone workers draw from the full local Musubi catalog before role policy
-   narrows their tools. The same branch is adding chunk-safe large-file writes:
-   worker-only append support, dispatcher argument validation, and ordered file
-   mutation dispatch without raising output-token ceilings. Follow-up: elide
-   large file mutation tool arguments from agent replay after dispatch,
-   preserving path/offset/hash metadata while keeping the workspace file as
-   source of truth. Implementation plan:
-   [`2026-07-01-agent-catalog-worker-modes.md`](./superpowers/plans/2026-07-01-agent-catalog-worker-modes.md).
+2. **Root prompt catalog cleanup.** Finish the post-worker-modes migration by
+   keeping the canonical root prompt under the purpose-specific catalog path,
+   removing the temporary flat legacy root prompt from this repo, and keeping
+   artifact routing skill-first instead of task-template-specific.
 
 3. **GUI on-demand task launcher.** Add a native Tauri task runner that
    launches one governed `agent "<task>"` process only when the user presses
@@ -106,3 +99,4 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Token/context economics controls
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
+- Agent catalog worker modes and chunk-safe large-file writes
