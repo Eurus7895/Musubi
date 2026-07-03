@@ -55,7 +55,9 @@ on-prem Azure),
 optionally tests the connection, generates `.vscode/mcp.json` for the
 extension, and points Windows users to the prebuilt Musubi installer bootstrap.
 On Windows, if you opt into local GUI development, it can also install npm
-dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
+dependencies, verify `cargo` and the MSVC linker (via `vswhere`, so an
+installed-but-not-on-`PATH` toolchain is still detected), and generate the
+desktop icons (`icon.ico` / `icon.icns`) that `npm run tauri:dev` needs. macOS
 and Linux setup skip GUI installation. Prefer manual? The steps below still
 work.
 

@@ -350,9 +350,107 @@ def test_install_console_gui_reports_missing_msvc_linker_on_windows(
 
     assert ok is False
     assert calls == [(["/bin/npm", "install"], tmp_path)]
-    assert "link.exe was not found" in message
+    assert "MSVC C++ linker was not found" in message
     assert "Visual Studio Build Tools" in message
     assert "Microsoft.VisualStudio.Workload.VCTools" in message
+
+
+def test_install_console_gui_generates_icons_when_toolchain_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    icons_dir = gui_dir / "src-tauri" / "icons"
+    icons_dir.mkdir(parents=True)
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    (icons_dir / "icon.png").write_bytes(b"png")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}"
+        if name in ("npm", "cargo", "link.exe", "npx")
+        else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is True
+    assert "icons generated" in message
+    assert calls == [
+        (["/bin/npm", "install"], tmp_path),
+        (["/bin/npx", "tauri", "icon", "src-tauri/icons/icon.png"], gui_dir),
+    ]
+
+
+def test_install_console_gui_reports_icon_generation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gui_dir = tmp_path / "gui"
+    icons_dir = gui_dir / "src-tauri" / "icons"
+    icons_dir.mkdir(parents=True)
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    (icons_dir / "icon.png").write_bytes(b"png")
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        # npm install succeeds; `tauri icon` fails.
+        return 0 if "install" in cmd else 3
+
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}"
+        if name in ("npm", "cargo", "link.exe", "npx")
+        else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert "generating the desktop icons failed" in message
+    assert "exit code 3" in message
+
+
+def test_install_console_gui_generates_icons_before_toolchain_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Icons must be generated even when the Rust toolchain is missing, so a
+    # fresh machine still ends up with icon.ico and `npm run tauri:dev` works
+    # once the user installs cargo — without rerunning setup (PR #116 review).
+    gui_dir = tmp_path / "gui"
+    icons_dir = gui_dir / "src-tauri" / "icons"
+    icons_dir.mkdir(parents=True)
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (gui_dir / "package.json").write_text("{}", encoding="utf-8")
+    (icons_dir / "icon.png").write_bytes(b"png")
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_run(cmd: list[str], cwd: Path) -> int:
+        calls.append((cmd, cwd))
+        return 0
+
+    # npm + npx present; cargo absent.
+    monkeypatch.setattr(
+        sw.shutil,
+        "which",
+        lambda name: f"/bin/{name}" if name in ("npm", "npx") else None,
+    )
+
+    ok, message = sw.install_console_gui(tmp_path, run=fake_run)
+
+    assert ok is False
+    assert "cargo was not found" in message
+    # Icons were generated before the cargo bail-out.
+    assert calls == [
+        (["/bin/npm", "install"], tmp_path),
+        (["/bin/npx", "tauri", "icon", "src-tauri/icons/icon.png"], gui_dir),
+    ]
 
 
 def test_connection_ok(monkeypatch: pytest.MonkeyPatch) -> None:
