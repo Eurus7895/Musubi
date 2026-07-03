@@ -18,6 +18,9 @@ export default function ActivityBar({ vals }) {
       <Box as="button" onClick={vals.selOrch} title="Orchestrator" css={vals.orchNav} hover="color:#cfcfd4">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M5 6 L12 11 M12 4 L12 11 M19 6 L12 11 M12 11 L12 18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><circle cx="5" cy="6" r="1.5" fill="currentColor" /><circle cx="12" cy="4" r="1.5" fill="currentColor" /><circle cx="19" cy="6" r="1.5" fill="currentColor" /><circle cx="12" cy="11" r="2.1" fill="currentColor" /><circle cx="12" cy="18" r="1.6" fill="currentColor" /></svg>
       </Box>
+      <Box as="button" onClick={vals.selRun} title="Run task" css={vals.runNav} hover="color:#cfcfd4">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M8 5.5 L18 12 L8 18.5 Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+      </Box>
       <Box as="button" onClick={vals.selPipe} title="Run pipeline" css={vals.pipeNav} hover="color:#cfcfd4">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><circle cx="5" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.6" /><circle cx="12" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.6" /><circle cx="19" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.6" /><path d="M7.1 12 H9.9 M14.1 12 H16.9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
       </Box>

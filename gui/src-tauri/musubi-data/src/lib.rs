@@ -53,7 +53,26 @@ pub struct State {
     pub paused: bool,
     pub runtime_source: String,
     pub setup_status: SetupStatus,
+    pub task_launcher: TaskLauncherStatus,
     pub t: i64,
+}
+
+/// Runtime overlay for the on-demand task launcher. The GUI spawns one governed
+/// `agent "<task>"` process only when the user presses Run; this snapshot is a
+/// console-side view of that child process, not orchestration state — the audit
+/// DB stays the source of truth.
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskLauncherStatus {
+    pub running: bool,
+    pub task: String,
+    pub profile: String,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub exit_code: Option<i32>,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub error: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -457,7 +476,7 @@ struct RawAudit {
 /// Active LMRouter profile: an explicit console choice wins, else the
 /// `default` recorded in `.musubi/llm.json` (the runner's source of truth),
 /// else a conservative fallback.
-fn read_active_profile(conn: &Connection) -> String {
+pub fn read_active_profile(conn: &Connection) -> String {
     if let Some(p) = read_meta(conn, "active_profile") {
         if !p.trim().is_empty() {
             return p;
@@ -1068,6 +1087,129 @@ mod tests {
         assert!(status.python_cli.found);
         assert_eq!(status.python_cli.path, exe.to_string_lossy());
     }
+
+    #[test]
+    fn default_state_serializes_idle_task_launcher() {
+        let st = demo_state();
+        let v: serde_json::Value = serde_json::to_value(&st).unwrap();
+        let tl = v.get("taskLauncher").expect("taskLauncher key");
+        assert_eq!(tl["running"], false);
+        assert_eq!(tl["task"], "");
+        assert_eq!(tl["exitCode"], serde_json::Value::Null);
+        assert_eq!(tl["stdoutTail"], "");
+    }
+
+    #[test]
+    fn launch_spec_places_task_first_with_stable_tool_surface() {
+        let root = PathBuf::from("/proj");
+        let spec = build_agent_launch_spec(
+            "add a health endpoint",
+            "",
+            "anthropic.default",
+            None,
+            &root,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(spec.program, PathBuf::from("agent"));
+        assert_eq!(
+            spec.args,
+            vec!["add a health endpoint", "--tool-surface", "agent"]
+        );
+        assert_eq!(spec.cwd, root);
+        assert!(spec.env.is_empty());
+    }
+
+    #[test]
+    fn launch_spec_adds_profile_only_when_it_differs_from_default() {
+        let root = PathBuf::from("/proj");
+        let with = build_agent_launch_spec(
+            "task",
+            "azure.work",
+            "anthropic.default",
+            None,
+            &root,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            with.args,
+            vec!["task", "--profile", "azure.work", "--tool-surface", "agent"]
+        );
+
+        let same = build_agent_launch_spec(
+            "task",
+            "anthropic.default",
+            "anthropic.default",
+            None,
+            &root,
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(same.args, vec!["task", "--tool-surface", "agent"]);
+    }
+
+    #[test]
+    fn launch_spec_uses_detected_agent_cli_and_forwards_musubi_env() {
+        let root = PathBuf::from("/proj");
+        let cli = PathBuf::from("/scripts/agent.exe");
+        let mut env = std::collections::HashMap::new();
+        env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
+        env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-…".to_string());
+
+        let spec = build_agent_launch_spec("task", "", "", Some(&cli), &root, &env).unwrap();
+
+        assert_eq!(spec.program, cli);
+        let mut forwarded = spec.env.clone();
+        forwarded.sort();
+        assert_eq!(
+            forwarded,
+            vec![
+                ("MUSUBI_DB".to_string(), "/data/audit.db".to_string()),
+                ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
+            ],
+            "only MUSUBI_* is forwarded explicitly; the rest is inherited"
+        );
+    }
+
+    #[test]
+    fn launch_spec_rejects_empty_task() {
+        let err = build_agent_launch_spec(
+            "  \n ",
+            "",
+            "",
+            None,
+            Path::new("/proj"),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn bounded_tail_keeps_newest_content_on_utf8_boundaries() {
+        let mut buf = String::new();
+        push_bounded_tail(&mut buf, "hello ", 64);
+        push_bounded_tail(&mut buf, "world", 64);
+        assert_eq!(buf, "hello world");
+
+        let mut buf = String::from("0123456789");
+        push_bounded_tail(&mut buf, "abcde", 8);
+        assert_eq!(buf, "789abcde", "newest bytes win");
+
+        // A multi-byte char straddling the cut is dropped whole, never split.
+        let mut buf = String::new();
+        push_bounded_tail(&mut buf, "aé", 2); // 'é' is 2 bytes
+        assert_eq!(buf, "é");
+        let mut buf = String::new();
+        push_bounded_tail(&mut buf, "aaé", 2);
+        assert_eq!(buf, "é");
+        let mut buf = String::new();
+        push_bounded_tail(&mut buf, "é日本", 4); // cut lands mid-'日'
+        assert_eq!(buf, "本");
+    }
 }
 
 pub fn current_env_map() -> HashMap<String, String> {
@@ -1284,6 +1426,83 @@ fn collect_child_script_dirs(dirs: &mut Vec<PathBuf>, base: PathBuf, prefix: &st
             dirs.push(direct);
         }
     }
+}
+
+/// Deterministic launch recipe for one governed `agent "<task>"` child process.
+/// Pure data so the spawn path is unit-testable without running an LLM-backed
+/// process (the driver stays the only layer that reaches a model — HI #1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLaunchSpec {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub env: Vec<(String, String)>,
+}
+
+/// Build the launch spec for the on-demand task launcher.
+///
+/// - `program`: the detected `agent` CLI when setup found one, else `"agent"`
+///   resolved via `PATH`.
+/// - `args`: the task as the positional argument, `--profile` only when a
+///   non-default profile is selected, and `--tool-surface agent` (the stable
+///   launcher surface).
+/// - `cwd`: the detected project root so the backend anchors its own discovery.
+/// - `env`: explicit `MUSUBI_ROOT` / `MUSUBI_DB` forwards; the child inherits
+///   the rest of the parent environment (provider credentials included).
+pub fn build_agent_launch_spec(
+    task: &str,
+    profile: &str,
+    default_profile: &str,
+    agent_cli_path: Option<&Path>,
+    project_root: &Path,
+    env: &HashMap<String, String>,
+) -> Result<AgentLaunchSpec, String> {
+    let task = task.trim();
+    if task.is_empty() {
+        return Err("task is empty — type what the agent should do".into());
+    }
+
+    let program = agent_cli_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("agent"));
+
+    let mut args = vec![task.to_string()];
+    let profile = profile.trim();
+    if !profile.is_empty() && profile != default_profile.trim() {
+        args.push("--profile".into());
+        args.push(profile.to_string());
+    }
+    args.push("--tool-surface".into());
+    args.push("agent".into());
+
+    let mut spec_env = Vec::new();
+    for key in ["MUSUBI_ROOT", "MUSUBI_DB"] {
+        if let Some(val) = nonempty(env, key) {
+            spec_env.push((key.to_string(), val));
+        }
+    }
+
+    Ok(AgentLaunchSpec {
+        program,
+        args,
+        cwd: project_root.to_path_buf(),
+        env: spec_env,
+    })
+}
+
+/// Append `chunk` to `buf`, keeping only the newest `cap` bytes and never
+/// splitting a UTF-8 character. Bounds the stdout/stderr tails the launcher
+/// holds in memory.
+pub fn push_bounded_tail(buf: &mut String, chunk: &str, cap: usize) {
+    buf.push_str(chunk);
+    if buf.len() <= cap {
+        return;
+    }
+    let mut cut = buf.len() - cap;
+    while cut < buf.len() && !buf.is_char_boundary(cut) {
+        cut += 1;
+    }
+    buf.drain(..cut);
 }
 
 fn resolve_llm_config_path(

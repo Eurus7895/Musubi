@@ -31,6 +31,12 @@ class LazyTauri {
         llmConfigured: false,
         pathHint: '',
       },
+      taskDraft: '', taskProfile: '',
+      taskLauncher: {
+        running: false, task: '', profile: '',
+        startedAt: null, finishedAt: null, exitCode: null,
+        stdoutTail: '', stderrTail: '', error: '',
+      },
     }
   }
   subscribe(cb) { this.subs.add(cb); return () => this.subs.delete(cb) }
