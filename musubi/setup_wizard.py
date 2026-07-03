@@ -344,6 +344,28 @@ def install_console_gui(
     if code != 0:
         return False, f"npm install failed with exit code {code}"
 
+    # Generate icon.ico / icon.icns from the source PNG so the Windows build
+    # script has the resource it embeds into the .exe. Do this right after
+    # `npm install` — before the toolchain checks below that may early-return —
+    # because it needs only the npm-installed `npx`, not cargo/MSVC. A machine
+    # missing the Rust toolchain then still ends up with the icons, so once the
+    # user installs it `npm run tauri:dev` works without rerunning setup. Skip
+    # only if `npx` or the source PNG is unexpectedly absent (icons may already
+    # be present in that case).
+    icons_generated = False
+    npx = shutil.which("npx")
+    icon_src = gui_dir / "src-tauri" / "icons" / "icon.png"
+    if npx and icon_src.is_file():
+        icon_code = runner([npx, "tauri", "icon", "src-tauri/icons/icon.png"], gui_dir)
+        if icon_code != 0:
+            return False, (
+                "npm dependencies installed, but generating the desktop icons "
+                f"failed with exit code {icon_code}; run "
+                "`npx tauri icon src-tauri/icons/icon.png` in "
+                f"{gui_dir}"
+            )
+        icons_generated = True
+
     if not shutil.which("cargo"):
         return False, (
             "npm dependencies installed, but cargo was not found on PATH; "
@@ -361,24 +383,6 @@ def install_console_gui(
             "Microsoft.VisualStudio.Workload.VCTools --includeRecommended\"`, "
             "then open a new terminal)"
         )
-
-    # Generate icon.ico / icon.icns from the source PNG so the Windows build
-    # script has the resource it embeds into the .exe. `npx` lives beside the
-    # `npm` we just ran; skip only if it or the source PNG is unexpectedly
-    # absent (icons may already be present in that case).
-    icons_generated = False
-    npx = shutil.which("npx")
-    icon_src = gui_dir / "src-tauri" / "icons" / "icon.png"
-    if npx and icon_src.is_file():
-        icon_code = runner([npx, "tauri", "icon", "src-tauri/icons/icon.png"], gui_dir)
-        if icon_code != 0:
-            return False, (
-                "npm dependencies installed, but generating the desktop icons "
-                f"failed with exit code {icon_code}; run "
-                "`npx tauri icon src-tauri/icons/icon.png` in "
-                f"{gui_dir}"
-            )
-        icons_generated = True
 
     suffix = " and icons generated" if icons_generated else ""
     return True, f"console GUI dependencies installed{suffix} in {gui_dir}"
