@@ -183,8 +183,14 @@ async def run_agent(
     max_credits: float | None = None,
     max_tokens: int | None = None,
     tool_surface: str | None = None,
+    pipeline: str | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
+
+    When `pipeline` is set, the root task runs that named pipeline directly
+    (deterministically, via `pipeline_runner.run_pipeline`) instead of the
+    model-routed `run_unit` loop — the same code path the model reaches through
+    `musubi_spawn_pipeline`, but summoned by the caller rather than the LLM.
 
     Spawns the Musubi MCP server, optionally connects every external MCP
     server declared in an `mcp.json` (federating their tools into the
@@ -309,21 +315,52 @@ async def run_agent(
         # difference is its prompt shape (system + user) and that orchestration
         # is enabled so it may summon further workers.
         try:
-            final_answer, _ = await run_unit(
-                session, vendor, tools,
-                system_prompt=system_prompt,
-                user_message=task,
-                max_cycles=max_cycles, log=log,
-                orchestration=orchestration, gateway=gateway,
-                spawn_catalog=worker_catalog,
-                salvage_on_exhaust=True,
-                compression_db_path=context_compression_db_path,
-                initial_messages=initial_messages,
-                role="agent",
-                stats=stats,
-                budget=budget,
-                audit_db_path=audit_db_path,
-            )
+            if pipeline:
+                # Deterministic pipeline run: summon the named pipeline directly
+                # rather than letting the model decide. Same runner the driver
+                # reaches via musubi_spawn_pipeline (see the tool intercept
+                # below), so stage firewalling and audit are identical.
+                from agent import pipeline_runner
+
+                spawn_args = {
+                    "parent_session_id": parent_session_id,
+                    "parent_agent_name": "agent",
+                    "pipeline_name": pipeline,
+                    "brief": task,
+                }
+                print(
+                    f"[agent] running pipeline {pipeline!r} directly "
+                    f"(no model routing)",
+                    file=log,
+                )
+                # Stages select from the FULL worker catalog (not the
+                # surface-filtered `tools`): the root `agent` surface hides
+                # mutation tools, so a coder stage would otherwise be starved of
+                # Write/Edit/Bash despite its policy allowing them. `strict`
+                # turns a rejected spawn/stage into a nonzero exit — there is no
+                # model loop here to react to an error return.
+                final_answer = await pipeline_runner.run_pipeline(
+                    session, spawn_args, vendor, worker_catalog, log,
+                    compression_db_path=context_compression_db_path,
+                    budget=budget, stats=stats, audit_db_path=audit_db_path,
+                    strict=True,
+                )
+            else:
+                final_answer, _ = await run_unit(
+                    session, vendor, tools,
+                    system_prompt=system_prompt,
+                    user_message=task,
+                    max_cycles=max_cycles, log=log,
+                    orchestration=orchestration, gateway=gateway,
+                    spawn_catalog=worker_catalog,
+                    salvage_on_exhaust=True,
+                    compression_db_path=context_compression_db_path,
+                    initial_messages=initial_messages,
+                    role="agent",
+                    stats=stats,
+                    budget=budget,
+                    audit_db_path=audit_db_path,
+                )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
 
@@ -716,6 +753,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Local Musubi tool catalog exposed to the model; default agent.",
     )
+    ap.add_argument(
+        "--pipeline",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Run the named pipeline directly (a linear recipe under "
+            ".github/pipelines/<name>, e.g. feature-dev or dev-lite) with the "
+            "task as its brief, instead of the model-routed single-agent loop. "
+            "Pipelines needing per-file fan-out (e.g. code-review) are not "
+            "supported by this deterministic runner."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -743,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_credits=args.max_credits,
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
+                pipeline=args.pipeline,
             )
         )
     except KeyboardInterrupt:
