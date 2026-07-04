@@ -92,3 +92,28 @@ def test_agent_summons_pipeline_runs_stages_in_order_with_evaluator_firewall() -
     assert "build a thing" not in router.reviewer_brief
     assert "plan: step1" not in router.reviewer_brief
     assert "design: moduleX" not in router.reviewer_brief
+
+
+def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
+    """`run_agent(..., pipeline="feature-dev")` runs the pipeline deterministically
+    — the model never has to decide to spawn it (no musubi_spawn_pipeline tool_use
+    from the router), yet the stages, order, and evaluator firewall are identical
+    to the model-summoned path."""
+    router = PipelineRouter()
+    answer = asyncio.run(
+        run_agent(
+            "ship it", router, _musubi_dir(), log=io.StringIO(),
+            pipeline="feature-dev",
+        )
+    )
+
+    # Every stage ran, in declared order, without the model routing to it.
+    assert router.order == ["planner", "designer", "coder", "reviewer"]
+    # The final stage's summary is returned verbatim.
+    assert "review: PASS" in answer
+    # HI #3 holds under direct invocation: the evaluator sees only the prior
+    # stage (coder), not the original task or earlier stage outputs.
+    assert "code: wrote moduleX" in router.reviewer_brief
+    assert "ship it" not in router.reviewer_brief
+    assert "plan: step1" not in router.reviewer_brief
+    assert "design: moduleX" not in router.reviewer_brief
