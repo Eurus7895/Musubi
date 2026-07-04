@@ -107,3 +107,8 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Deterministic pipeline run: `agent --pipeline <name>` CLI entry point plus the
   GUI Pipeline studio wired to spawn it (Run/Stop), with stage workers surfaced
   through the Orchestrator/Audit views
+- Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
+  Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
+  find files deterministically instead of blind-guessing paths — closing the gap
+  where stages authored for the embedded harness's injected workspace tree ran
+  blind in the standalone runner

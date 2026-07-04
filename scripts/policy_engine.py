@@ -65,6 +65,7 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     # pipeline. Kept in sync manually; if PIPELINE_POLICIES changes,
     # update here too.
     "planner":      ["Read", "View", "Grep", "Glob"],
+    "designer":     ["Read", "View", "Grep", "Glob"],
     "coder":        ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
     "reviewer":     ["Read", "View", "Grep", "Glob"],
     # Phase C.2 — text-only sub-agent driving 90% reactive compaction.

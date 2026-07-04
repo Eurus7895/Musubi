@@ -76,8 +76,9 @@ def test_spawn_runs_child_and_feeds_summary_back() -> None:
 
 
 def test_child_tool_surface_is_restricted() -> None:
-    """The explorer's child loop must be offered only the read-only file tool,
-    never write/run — captured from the FakeRouter's second call."""
+    """The explorer's child loop must be offered only read-only tools (file
+    read + glob/grep discovery), never write/run — captured from the
+    FakeRouter's second call."""
     router = FakeRouter([
         _spawn("explorer", "scan"),
         _text("ok"),
@@ -85,8 +86,10 @@ def test_child_tool_surface_is_restricted() -> None:
     ])
     asyncio.run(run_agent("scan", router, _musubi_dir(), log=io.StringIO()))
     child_tools = {t["name"] for t in router.calls[1]["tools"]}
-    assert child_tools == {"musubi_read_file"}
+    # Read-only explorer: file read + discovery (glob/grep), never write/run.
+    assert child_tools == {"musubi_read_file", "musubi_glob", "musubi_grep"}
     assert "musubi_write_file" not in child_tools
+    assert "musubi_run_command" not in child_tools
     assert "musubi_spawn_subagent" not in child_tools  # leaves can't re-spawn
 
 

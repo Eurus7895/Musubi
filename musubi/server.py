@@ -2349,6 +2349,43 @@ def musubi_read_file(path: str) -> str:
 
 
 @mcp.tool()
+def musubi_glob(path: str | None = None, pattern: str = "**/*") -> str:
+    """List workspace files matching a glob pattern (read-only discovery).
+
+    `pattern` is matched against each file's workspace-relative POSIX path
+    and basename (e.g. `*.py`, `gui/src/**`, `**/*.jsx`); the default `**/*`
+    lists the whole tree. `path` optionally scopes to a sub-directory. Heavy
+    build/VCS directories (`.git`, `node_modules`, …) are skipped. Use this
+    to discover files instead of guessing paths.
+    Returns JSON {"status":"ok","matches":[...],"count":N,"truncated":bool}.
+    """
+    from tools import fs
+    return json.dumps(fs.glob(pattern, path=path))
+
+
+@mcp.tool()
+def musubi_grep(
+    pattern: str,
+    path: str | None = None,
+    file_glob: str | None = None,
+    ignore_case: bool = False,
+) -> str:
+    """Search workspace file contents for a regex (read-only).
+
+    Returns matching lines as {"file","line","text"} hits (bounded). `path`
+    scopes to a sub-directory; `file_glob` limits which files are scanned
+    (same semantics as musubi_glob). Oversized, binary, or non-UTF-8 files
+    are skipped.
+    Returns JSON {"status":"ok","matches":[...],"count":N,
+    "files_scanned":M,"truncated":bool}.
+    """
+    from tools import fs
+    return json.dumps(fs.grep(
+        pattern, path=path, file_glob=file_glob, ignore_case=ignore_case,
+    ))
+
+
+@mcp.tool()
 def musubi_write_file(
     path: str,
     content: str,

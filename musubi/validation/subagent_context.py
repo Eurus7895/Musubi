@@ -60,6 +60,7 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     # at request-build time; the harness pushes None here so no stray
     # role skill is loaded.
     "planner":      None,
+    "designer":     None,
     "coder":        None,
     "reviewer":     None,
     # Phase C.2 — summarizer drives the 90% reactive-compaction branch.
