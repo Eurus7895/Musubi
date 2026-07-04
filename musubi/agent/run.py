@@ -69,6 +69,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
+from agent.scope import ScopeHint, classify_task, is_simple_scope
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
 
@@ -206,6 +207,7 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, max_credits, log)
+    scope_hint = classify_task(task)
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -286,7 +288,8 @@ async def run_agent(
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
         parent_session_id = await _open_parent_session(session, task, log)
         orchestration = Orchestration(parent_session_id=parent_session_id)
-        system_prompt = build_system_prompt()
+        print(f"[agent] {scope_hint.log_line()}", file=log)
+        system_prompt = build_system_prompt(scope_hint.prompt_block())
         initial_messages: list[dict[str, Any]] | None = None
         if chat_id:
             _append_chat_message(
@@ -357,6 +360,7 @@ async def run_agent(
                     compression_db_path=context_compression_db_path,
                     initial_messages=initial_messages,
                     role="agent",
+                    scope_hint=scope_hint,
                     stats=stats,
                     budget=budget,
                     audit_db_path=audit_db_path,
@@ -407,6 +411,7 @@ async def _run_loop(
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
     role: str = "agent",
+    scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
@@ -516,6 +521,7 @@ async def _run_loop(
             orchestration=orchestration, gateway=gateway,
             compression_db_path=compression_db_path,
             role=role,
+            scope_hint=scope_hint,
             budget=budget,
             stats=stats,
             audit_db_path=audit_db_path,
@@ -613,6 +619,7 @@ async def run_unit(
     compression_db_path: Path | None = None,
     initial_messages: list[dict[str, Any]] | None = None,
     role: str = "agent",
+    scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
@@ -655,6 +662,7 @@ async def run_unit(
         salvage_on_exhaust=salvage_on_exhaust,
         compression_db_path=compression_db_path,
         role=role,
+        scope_hint=scope_hint,
         stats=stats,
         budget=budget,
         audit_db_path=audit_db_path,
@@ -1244,6 +1252,7 @@ async def _dispatch(
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
     role: str = "agent",
+    scope_hint: ScopeHint | None = None,
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
@@ -1260,7 +1269,7 @@ async def _dispatch(
     A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
-    refused = _spawn_overflow_ids(tool_uses, log)
+    refused = _spawn_overflow_reasons(tool_uses, log, role=role, scope_hint=scope_hint)
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
         for tu in tool_uses:
@@ -1269,7 +1278,7 @@ async def _dispatch(
                     tu, session, log,
                     vendor=vendor, tools=tools,
                     orchestration=orchestration, gateway=gateway,
-                    refused=tu.get("id", "") in refused,
+                    refused_reason=refused.get(tu.get("id", "")),
                     compression_db_path=compression_db_path,
                     role=role,
                     budget=budget,
@@ -1284,7 +1293,7 @@ async def _dispatch(
                 tu, session, log,
                 vendor=vendor, tools=tools,
                 orchestration=orchestration, gateway=gateway,
-                refused=tu.get("id", "") in refused,
+                refused_reason=refused.get(tu.get("id", "")),
                 compression_db_path=compression_db_path,
                 role=role,
                 budget=budget,
@@ -1338,24 +1347,40 @@ def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
     return "[blocked] " + json.dumps(payload, separators=(",", ":"))
 
 
-def _spawn_overflow_ids(tool_uses: list[dict[str, Any]], log: Any) -> set[str]:
-    """tool_use ids of spawn calls that exceed the per-role width cap.
+def _spawn_overflow_reasons(
+    tool_uses: list[dict[str, Any]],
+    log: Any,
+    *,
+    role: str,
+    scope_hint: ScopeHint | None,
+) -> dict[str, str]:
+    """tool_use ids of spawn calls that exceed the active route width cap.
 
     Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
-    batch and marks the rest refused. Non-spawn calls are never capped.
+    batch by default. Simple root tasks are tighter: one coder worker per
+    model turn. Non-spawn calls are never capped.
     """
+    caller_role = role
     seen: dict[str, int] = {}
-    overflow: set[str] = set()
+    overflow: dict[str, str] = {}
     for tu in tool_uses:
         if tu.get("name") != "musubi_spawn_subagent":
             continue
-        role = str((tu.get("input") or {}).get("role", ""))
-        seen[role] = seen.get(role, 0) + 1
-        if seen[role] > DEFAULT_MAX_SPAWNS_PER_ROLE:
-            overflow.add(tu.get("id", ""))
+        spawn_role = str((tu.get("input") or {}).get("role", ""))
+        seen[spawn_role] = seen.get(spawn_role, 0) + 1
+        cap = DEFAULT_MAX_SPAWNS_PER_ROLE
+        reason = (
+            f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
+            f"for role {spawn_role!r}"
+        )
+        if caller_role == "agent" and spawn_role == "coder" and is_simple_scope(scope_hint):
+            cap = 1
+            reason = "simple task route allows only one coder worker"
+        if seen[spawn_role] > cap:
+            overflow[tu.get("id", "")] = reason
             print(
-                f"[agent]   ⨯ refused extra worker(role={role!r}): "
-                f"per-turn cap {DEFAULT_MAX_SPAWNS_PER_ROLE} reached",
+                f"[agent]   ⨯ refused extra worker(role={spawn_role!r}): "
+                f"{reason}",
                 file=log,
             )
     return overflow
@@ -1370,8 +1395,9 @@ async def _dispatch_one(
     tools: list[dict[str, Any]] | None,
     orchestration: Orchestration | None,
     gateway: McpGateway | None,
-    refused: bool,
-    compression_db_path: Path | None,
+    refused_reason: str | None = None,
+    refused: bool = False,
+    compression_db_path: Path | None = None,
     role: str = "agent",
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
@@ -1388,6 +1414,12 @@ async def _dispatch_one(
     """
     name = tu.get("name", "")
     args = tu.get("input") or {}
+    if refused and refused_reason is None:
+        refused_role = args.get("role", "")
+        refused_reason = (
+            f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
+            f"for role {refused_role!r}"
+        )
     session_id = orchestration.parent_session_id if orchestration else None
     audit_path = audit_db_path or _default_audit_db_path()
     call_role = (
@@ -1477,11 +1509,10 @@ async def _dispatch_one(
         and vendor is not None
         and tools is not None
     ):
-        if refused:
+        if refused_reason:
             result = (
-                f'{{"status": "refused", "reason": "per-turn spawn cap '
-                f'({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached for role '
-                f'{args.get("role")!r}"}}'
+                '{"status": "refused", "reason": '
+                f"{json.dumps(refused_reason)}" + "}"
             )
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,

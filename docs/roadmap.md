@@ -76,7 +76,8 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   simple edits and artifacts should use bounded single-worker/default-direct
   flows, larger features should require plan/design/pipeline-style structure,
   and route decisions, skill use, worker spawns, and budget halts should be
-  visible in logs and audit.
+  visible in logs and audit. Implementation plan:
+  [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md).
 - **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
   and external drivers without removing substrate tools. Implementation plan:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
