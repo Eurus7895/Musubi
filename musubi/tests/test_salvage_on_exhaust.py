@@ -107,3 +107,20 @@ def test_token_budget_exhaustion_returns_incomplete_answer() -> None:
 
     assert "incomplete" in answer.lower()
     assert "token budget exhausted" in answer.lower()
+
+
+def test_token_budget_halt_marks_salvaged_text_incomplete() -> None:
+    answer = asyncio.run(
+        run_agent(
+            "hello",
+            AlwaysToolsRouter(),
+            _musubi_dir(),
+            max_cycles=3,
+            max_tokens=5_000,
+            log=io.StringIO(),
+        )
+    )
+
+    assert answer.startswith("[incomplete]")
+    assert "token budget exhausted" in answer.lower()
+    assert "Hello! Working on it." in answer

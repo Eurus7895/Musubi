@@ -410,7 +410,12 @@ async def _run_loop(
                 file=log,
             )
             if last_text:
-                final_answer = last_text
+                final_answer = (
+                    "[incomplete] token budget exhausted before the next "
+                    f"model call: {exc}\n\n"
+                    "Last assistant text before the halt:\n"
+                    f"{last_text}"
+                )
             else:
                 final_answer = (
                     "[incomplete] token budget exhausted before the next "

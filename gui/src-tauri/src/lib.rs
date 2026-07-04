@@ -11,12 +11,15 @@
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
 use std::io::Read;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
@@ -85,6 +88,17 @@ fn workspace_root_from_musubi_config(path: &std::path::Path) -> Option<PathBuf> 
         return None;
     }
     dir.parent().map(PathBuf::from)
+}
+
+fn scoped_chat_id(project_root: &Path) -> String {
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    format!("gui-orchestrator-{:016x}", hasher.finish())
 }
 
 fn percent_encode(input: &str) -> String {
@@ -268,7 +282,7 @@ fn pump_stream(
     stream: impl Read + Send + 'static,
     shared: Arc<Mutex<ChatAgentRuntime>>,
     which: TailStream,
-) {
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = stream;
         let mut buf = [0u8; 4096];
@@ -291,7 +305,7 @@ fn pump_stream(
                 }
             }
         }
-    });
+    })
 }
 
 fn start_chat_agent(
@@ -317,14 +331,12 @@ fn start_chat_agent(
         rt.stderr_tail.clear();
     }
 
-    let profile = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        musubi_data::read_active_profile(&conn)
-    };
     let mut env = musubi_data::current_env_map();
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
     let mut launch_root = state.project_root.clone();
+    let llm_config_path = (!setup.llm_config_path.is_empty())
+        .then(|| PathBuf::from(&setup.llm_config_path));
     if !setup.llm_config_path.is_empty() {
         env.entry("MUSUBI_LLM_CONFIG".into())
             .or_insert_with(|| setup.llm_config_path.clone());
@@ -334,6 +346,14 @@ fn start_chat_agent(
             launch_root = root;
         }
     }
+    let default_profile = llm_config_path
+        .as_deref()
+        .and_then(musubi_data::read_llm_default_from_path)
+        .unwrap_or_default();
+    let profile = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref())
+    };
     let mcp_config = launch_root.join(".musubi").join("mcp.json");
     if mcp_config.is_file() {
         env.entry("MUSUBI_MCP_CONFIG".into())
@@ -346,7 +366,7 @@ fn start_chat_agent(
     let spec = musubi_data::build_agent_launch_spec(
         &task_text,
         &profile,
-        "",
+        &default_profile,
         agent_path.as_deref(),
         &launch_root,
         &env,
@@ -386,12 +406,8 @@ fn start_chat_agent(
     }
 
     let shared = state.chat_agent.clone();
-    if let Some(out) = stdout {
-        pump_stream(out, shared.clone(), TailStream::Stdout);
-    }
-    if let Some(err) = stderr {
-        pump_stream(err, shared.clone(), TailStream::Stderr);
-    }
+    let stdout_pump = stdout.map(|out| pump_stream(out, shared.clone(), TailStream::Stdout));
+    let stderr_pump = stderr.map(|err| pump_stream(err, shared.clone(), TailStream::Stderr));
 
     let artifact_root = launch_root.clone();
     std::thread::spawn(move || loop {
@@ -403,6 +419,12 @@ fn start_chat_agent(
         match polled {
             Ok(None) => continue,
             Ok(Some(status)) => {
+                if let Some(handle) = stdout_pump {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = stderr_pump {
+                    let _ = handle.join();
+                }
                 let (stdout_tail, stderr_tail, cancelled) = match shared.lock() {
                     Ok(mut rt) => {
                         let cancelled = rt.cancel_requested;
@@ -566,10 +588,14 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
-    if !st.setup_status.llm_config_path.is_empty() {
-        st.profiles = musubi_data::read_llm_profiles_from_path(PathBuf::from(
-            &st.setup_status.llm_config_path,
-        ));
+    let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
+        .then(|| PathBuf::from(&st.setup_status.llm_config_path));
+    st.active_profile = musubi_data::read_active_profile_for_config(
+        &conn,
+        llm_config_path.as_deref(),
+    );
+    if let Some(path) = llm_config_path {
+        st.profiles = musubi_data::read_llm_profiles_from_path(path);
     }
     if let Ok(rt) = state.chat_agent.lock() {
         st.driver_status = musubi_data::DriverStatus {
@@ -651,6 +677,7 @@ fn action(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let opened = open_configured_db();
+    let chat_id = scoped_chat_id(&opened.project_root);
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
@@ -658,7 +685,7 @@ pub fn run() {
             project_root: opened.project_root,
             audit_db: opened.audit_db,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
-            chat_id: "gui-orchestrator".into(),
+            chat_id,
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {

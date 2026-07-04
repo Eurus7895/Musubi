@@ -490,8 +490,17 @@ struct RawAudit {
 /// `default` recorded in `.musubi/llm.json` (the runner's source of truth),
 /// else a conservative fallback.
 pub fn read_active_profile(conn: &Connection) -> String {
+    read_active_profile_for_config(conn, None)
+}
+
+pub fn read_active_profile_for_config(conn: &Connection, llm_config_path: Option<&Path>) -> String {
     if let Some(p) = read_meta(conn, "active_profile") {
         if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Some(path) = llm_config_path {
+        if let Some(p) = read_llm_default_from_path(path) {
             return p;
         }
     }
@@ -510,6 +519,10 @@ fn read_llm_default() -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(find_llm_json_near_db)?;
+    read_llm_default_from_path(path)
+}
+
+pub fn read_llm_default_from_path(path: impl AsRef<Path>) -> Option<String> {
     let txt = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
     v.get("default")?.as_str().map(str::to_string)
@@ -1254,6 +1267,39 @@ mod tests {
                 && p.model == "gpt-4o"
                 && p.endpoint == "https://example.openai.azure.com"
         }));
+    }
+
+    #[test]
+    fn active_profile_uses_detected_config_default_when_meta_is_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let root = temp_dir("active-profile-default");
+        let cfg = root.join("llm.json");
+        std::fs::write(&cfg, r#"{"default":"ollama.local"}"#).unwrap();
+
+        assert_eq!(
+            read_active_profile_for_config(&conn, Some(&cfg)),
+            "ollama.local"
+        );
+    }
+
+    #[test]
+    fn active_profile_meta_wins_over_detected_config_default() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('active_profile','azure.work')",
+            [],
+        )
+        .unwrap();
+        let root = temp_dir("active-profile-meta");
+        let cfg = root.join("llm.json");
+        std::fs::write(&cfg, r#"{"default":"ollama.local"}"#).unwrap();
+
+        assert_eq!(
+            read_active_profile_for_config(&conn, Some(&cfg)),
+            "azure.work"
+        );
     }
 
     #[test]
