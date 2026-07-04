@@ -676,7 +676,26 @@ async def _open_parent_session(session: ClientSession, task: str, log: Any) -> s
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr encode any character the model emits.
+
+    Windows consoles default to a legacy code page (e.g. cp1252) that cannot
+    encode emoji or other non-Latin-1 characters, so ``print(answer)`` raises
+    ``UnicodeEncodeError`` and crashes the CLI. Force UTF-8 with a replacement
+    fallback on both streams; a stream that cannot be reconfigured is left as-is.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     ap = argparse.ArgumentParser(
         prog="agent-agent",
         description=(
