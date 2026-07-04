@@ -41,6 +41,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_MUSUBI_MODULE_ROOT = Path(__file__).resolve().parents[1]
+if str(_MUSUBI_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MUSUBI_MODULE_ROOT))
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -395,7 +399,29 @@ async def _run_loop(
         # before the call (oldest/largest tool results elided, pairing intact).
         messages = fit_context(messages, compression_db_path=compression_db_path)
         input_tokens_est = _estimate_input_tokens(messages, tools)
-        _check_budget_preflight(budget, input_tokens_est, log)
+        try:
+            _check_budget_preflight(budget, input_tokens_est, log)
+        except TokenBudgetExhaustedError as exc:
+            if not salvage_on_exhaust:
+                raise
+            print(
+                f"[agent] token budget exhausted before cycle {cycle}; "
+                "returning the best available answer",
+                file=log,
+            )
+            if last_text:
+                final_answer = (
+                    "[incomplete] token budget exhausted before the next "
+                    f"model call: {exc}\n\n"
+                    "Last assistant text before the halt:\n"
+                    f"{last_text}"
+                )
+            else:
+                final_answer = (
+                    "[incomplete] token budget exhausted before the next "
+                    f"model call: {exc}"
+                )
+            break
         # `vendor.call` is synchronous (blocking network I/O). Run it off the
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
@@ -484,7 +510,15 @@ async def _run_loop(
                     messages, compression_db_path=compression_db_path,
                 )
                 input_tokens_est = _estimate_input_tokens(final_messages, [])
-                _check_budget_preflight(budget, input_tokens_est, log)
+                try:
+                    _check_budget_preflight(budget, input_tokens_est, log)
+                except TokenBudgetExhaustedError as exc:
+                    final_answer = (
+                        "[incomplete] token budget exhausted before the final "
+                        f"no-tools answer: {exc}"
+                    )
+                    print(final_answer, file=log)
+                    raise
                 lm_started = time.perf_counter()
                 effort = await asyncio.to_thread(
                     _call_with_effort, vendor, final_messages, []

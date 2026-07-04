@@ -71,6 +71,12 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   and relevant tools.
 - **Per-cycle audit (`agent_cycles`).** Persist one row per LM call so
   architecture decisions can be empirical rather than guessed.
+- **Scope-aware root routing / agent gearbox.** Add hybrid scope hints from
+  the substrate while keeping the root agent responsible for the final route:
+  simple edits and artifacts should use bounded single-worker/default-direct
+  flows, larger features should require plan/design/pipeline-style structure,
+  and route decisions, skill use, worker spawns, and budget halts should be
+  visible in logs and audit.
 - **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
   and external drivers without removing substrate tools. Implementation plan:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
@@ -95,6 +101,6 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
 - Agent catalog worker modes and chunk-safe large-file writes
-- GUI on-demand task launcher (single-task slice — queueing, saved templates,
-  and pipeline execution from the GUI stay future work; plan:
+- GUI audit/orchestrator console first-run slice (the separate task launcher
+  was removed so the Orchestrator remains the single session surface; plan:
   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))

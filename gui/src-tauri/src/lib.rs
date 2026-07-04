@@ -3,20 +3,23 @@
 //! Tauri desktop shell for the Musubi console.
 //!
 //! Bridges the webkit-free `musubi-data` core to the React UI:
-//!   - `get_state`        → snapshot of the console state
-//!   - `action`           → mutating actions (chat, profile, pipeline)
-//!   - `state://update`   → emitted ~1×/s by a background poller as audit.db grows
+//!   - `get_state`      -> snapshot of the console state
+//!   - `action`         -> mutating actions (chat, profile, pipeline)
+//!   - `state://update` -> emitted about once per second as audit.db grows
 //!
 //! Data source: the configured Musubi `audit.db`. When no database can be
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
@@ -27,20 +30,31 @@ struct AppState {
     paused: AtomicBool,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
-    task: Arc<Mutex<TaskRuntime>>,
+    chat_agent: Arc<Mutex<ChatAgentRuntime>>,
+    chat_id: String,
 }
 
-/// The single active `agent "<task>"` child process plus its serializable
-/// status. Output tails are bounded; the audit DB — not this overlay — stays
-/// the orchestration source of truth.
 #[derive(Default)]
-struct TaskRuntime {
-    status: musubi_data::TaskLauncherStatus,
+struct ChatAgentRuntime {
+    running: bool,
     child: Option<Arc<Mutex<Child>>>,
+    cancel_requested: bool,
+    task: String,
+    started_at: Option<i64>,
+    stdout_tail: String,
+    stderr_tail: String,
 }
 
-/// Keep the last 64 KiB per stream.
+enum TailStream {
+    Stdout,
+    Stderr,
+}
+
 const TAIL_CAP: usize = 64 * 1024;
+const ARTIFACT_EXTENSIONS: &[&str] = &[
+    "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
+    "pptx",
+];
 
 fn epoch_secs() -> i64 {
     SystemTime::now()
@@ -49,17 +63,229 @@ fn epoch_secs() -> i64 {
         .unwrap_or(0)
 }
 
-enum TailStream {
-    Stdout,
-    Stderr,
+fn clock_label(epoch: i64) -> String {
+    let sod = ((epoch % 86_400) + 86_400) % 86_400;
+    format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
 }
 
-/// Drain a child stream into the bounded tail from a background thread.
+fn insert_chat(
+    conn: &Connection,
+    role: &str,
+    tone: Option<&str>,
+    text: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO chat_log(ts,role,tone,text) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![clock_label(epoch_secs()), role, tone, text],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+fn workspace_root_from_musubi_config(path: &std::path::Path) -> Option<PathBuf> {
+    let dir = path.parent()?;
+    if dir.file_name().and_then(|s| s.to_str()) != Some(".musubi") {
+        return None;
+    }
+    dir.parent().map(PathBuf::from)
+}
+
+fn scoped_chat_id(project_root: &Path) -> String {
+    let root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase();
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    format!("gui-orchestrator-{:016x}", hasher.finish())
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.as_bytes() {
+        let c = *b as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn is_artifact_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|ext| {
+            ARTIFACT_EXTENSIONS
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(ext))
+        })
+        .unwrap_or(false)
+}
+
+fn should_skip_dir(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|s| s.to_str()),
+        Some(
+            ".git" | ".venv" | "node_modules" | "target" | "dist" | ".pytest_cache" | "__pycache__"
+        )
+    )
+}
+
+fn file_modified_epoch(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+fn collect_recent_artifacts(root: &Path, since_epoch: i64, limit: usize) -> Vec<PathBuf> {
+    fn walk(root: &Path, dir: &Path, since_epoch: i64, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > 5 || should_skip_dir(dir) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, since_epoch, depth + 1, out);
+                continue;
+            }
+            if !path.is_file() || !is_artifact_file(&path) {
+                continue;
+            }
+            let Some(modified) = file_modified_epoch(&path) else {
+                continue;
+            };
+            if modified + 2 >= since_epoch && path.starts_with(root) {
+                out.push(path);
+            }
+        }
+    }
+
+    let mut paths = Vec::new();
+    walk(root, root, since_epoch, 0, &mut paths);
+    paths.sort_by_key(|p| std::cmp::Reverse(file_modified_epoch(p).unwrap_or(0)));
+    paths.truncate(limit);
+    paths
+}
+
+fn append_artifact_links(answer: &str, root: &Path, artifacts: &[PathBuf]) -> String {
+    if artifacts.is_empty() {
+        return answer.to_string();
+    }
+    let mut out = answer.trim_end().to_string();
+    out.push_str("\n\nArtifacts:");
+    for path in artifacts {
+        let label = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let encoded = percent_encode(&path.to_string_lossy());
+        out.push_str(&format!("\n- [{label}](musubi-artifact:{encoded})"));
+    }
+    out
+}
+
+fn process_log(stdout_tail: &str, stderr_tail: &str) -> String {
+    [
+        (!stderr_tail.trim().is_empty()).then(|| format!("stderr:\n{}", stderr_tail.trim())),
+        (!stdout_tail.trim().is_empty()).then(|| format!("stdout:\n{}", stdout_tail.trim())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn append_process_log_link(summary: &str, log: &str) -> String {
+    if log.trim().is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n[Open full process log](musubi-log:last)")
+    }
+}
+
+fn last_log_line(log: &str) -> String {
+    let line = log
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    if line.chars().count() <= 260 {
+        line.to_string()
+    } else {
+        format!("{}...", line.chars().take(260).collect::<String>())
+    }
+}
+
+fn summarize_agent_failure(code: i32, detail: &str) -> String {
+    if detail.contains("TokenBudgetExhaustedError") || detail.contains("token budget halt") {
+        return [
+            "Budget halted before the next model call.".to_string(),
+            "Musubi stopped the run because the projected request would exceed the configured token budget. Open the full process log for the exact token counts.".to_string(),
+        ]
+        .join("\n\n");
+    }
+    if detail.is_empty() {
+        format!("Agent exited with code {code}.")
+    } else {
+        format!(
+            "Agent exited with code {code}.\n\n{}",
+            last_log_line(detail)
+        )
+    }
+}
+
+fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String> {
+    let path = PathBuf::from(raw_path);
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("cannot open artifact: {e}"))?;
+    let root = project_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve project root: {e}"))?;
+    if !canonical.starts_with(&root) {
+        return Err("refusing to open a path outside the project root".into());
+    }
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("explorer.exe");
+        c.arg(&canonical);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(&canonical);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&canonical);
+        c
+    };
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open artifact: {e}"))
+}
+
+fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
+    let state = app.state::<AppState>();
+    let Ok(conn) = state.db.lock() else {
+        return;
+    };
+    let _ = insert_chat(&conn, "driver", tone, text);
+}
+
 fn pump_stream(
     stream: impl Read + Send + 'static,
-    shared: Arc<Mutex<TaskRuntime>>,
+    shared: Arc<Mutex<ChatAgentRuntime>>,
     which: TailStream,
-) {
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = stream;
         let mut buf = [0u8; 4096];
@@ -68,32 +294,74 @@ fn pump_stream(
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    match which {
+                        TailStream::Stdout => eprint!("{chunk}"),
+                        TailStream::Stderr => eprint!("{chunk}"),
+                    }
                     if let Ok(mut rt) = shared.lock() {
                         let tail = match which {
-                            TailStream::Stdout => &mut rt.status.stdout_tail,
-                            TailStream::Stderr => &mut rt.status.stderr_tail,
+                            TailStream::Stdout => &mut rt.stdout_tail,
+                            TailStream::Stderr => &mut rt.stderr_tail,
                         };
                         musubi_data::push_bounded_tail(tail, &chunk, TAIL_CAP);
                     }
                 }
             }
         }
-    });
+    })
 }
 
-/// Spawn one governed `agent` process for `task_text`. Rejects an empty task
-/// and refuses to start while another task is running. Never blocks the Tauri
-/// event loop: readers and the exit waiter run on background threads.
-fn start_task(state: &AppState, task_text: String, profile: String) -> Result<(), String> {
-    // Resolve everything that needs the db lock *before* taking the task lock
-    // so no code path ever holds both at once.
-    let default_profile = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        musubi_data::read_active_profile(&conn)
-    };
-    let env = musubi_data::current_env_map();
+fn start_chat_agent(
+    app: tauri::AppHandle,
+    state: &AppState,
+    task_text: String,
+) -> Result<(), String> {
+    let started_at = epoch_secs();
+    {
+        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        if rt.running {
+            return Err(
+                "Agent is already running. Wait for it to finish before sending another request."
+                    .into(),
+            );
+        }
+        rt.running = true;
+        rt.child = None;
+        rt.cancel_requested = false;
+        rt.task = task_text.clone();
+        rt.started_at = Some(started_at);
+        rt.stdout_tail.clear();
+        rt.stderr_tail.clear();
+    }
+
+    let mut env = musubi_data::current_env_map();
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
+    let mut launch_root = state.project_root.clone();
+    let llm_config_path =
+        (!setup.llm_config_path.is_empty()).then(|| PathBuf::from(&setup.llm_config_path));
+    if !setup.llm_config_path.is_empty() {
+        env.entry("MUSUBI_LLM_CONFIG".into())
+            .or_insert_with(|| setup.llm_config_path.clone());
+        if let Some(root) =
+            workspace_root_from_musubi_config(std::path::Path::new(&setup.llm_config_path))
+        {
+            launch_root = root;
+        }
+    }
+    let default_profile = llm_config_path
+        .as_deref()
+        .and_then(musubi_data::read_llm_default_from_path)
+        .unwrap_or_default();
+    let profile = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref())
+    };
+    let mcp_config = launch_root.join(".musubi").join("mcp.json");
+    if mcp_config.is_file() {
+        env.entry("MUSUBI_MCP_CONFIG".into())
+            .or_insert_with(|| mcp_config.to_string_lossy().to_string());
+    }
     let agent_path = setup
         .agent_cli
         .found
@@ -103,14 +371,15 @@ fn start_task(state: &AppState, task_text: String, profile: String) -> Result<()
         &profile,
         &default_profile,
         agent_path.as_deref(),
-        &state.project_root,
+        &launch_root,
         &env,
+        Some(&state.chat_id),
     )?;
-
-    let mut rt = state.task.lock().map_err(|e| e.to_string())?;
-    if rt.status.running {
-        return Err("a task is already running — stop it first".into());
-    }
+    eprintln!(
+        "[musubi] launching agent cwd={} args={:?}",
+        spec.cwd.display(),
+        spec.args
+    );
 
     let spawned = std::process::Command::new(&spec.program)
         .args(&spec.args)
@@ -123,35 +392,27 @@ fn start_task(state: &AppState, task_text: String, profile: String) -> Result<()
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("failed to launch {}: {e}", spec.program.display());
-            rt.status.error = msg.clone();
-            return Err(msg);
+            if let Ok(mut rt) = state.chat_agent.lock() {
+                rt.running = false;
+                rt.child = None;
+            }
+            return Err(format!("Failed to launch {}: {e}", spec.program.display()));
         }
     };
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let child = Arc::new(Mutex::new(child));
-
-    rt.status = musubi_data::TaskLauncherStatus {
-        running: true,
-        task: task_text,
-        profile,
-        started_at: Some(epoch_secs()),
-        ..Default::default()
-    };
-    rt.child = Some(child.clone());
-    drop(rt);
-
-    let shared = state.task.clone();
-    if let Some(out) = stdout {
-        pump_stream(out, shared.clone(), TailStream::Stdout);
-    }
-    if let Some(err) = stderr {
-        pump_stream(err, shared.clone(), TailStream::Stderr);
+    {
+        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        rt.child = Some(child.clone());
     }
 
-    // Exit waiter: poll try_wait so cancel_task can take the child lock to kill.
+    let shared = state.chat_agent.clone();
+    let stdout_pump = stdout.map(|out| pump_stream(out, shared.clone(), TailStream::Stdout));
+    let stderr_pump = stderr.map(|err| pump_stream(err, shared.clone(), TailStream::Stderr));
+
+    let artifact_root = launch_root.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
         let polled = match child.lock() {
@@ -161,23 +422,63 @@ fn start_task(state: &AppState, task_text: String, profile: String) -> Result<()
         match polled {
             Ok(None) => continue,
             Ok(Some(status)) => {
-                if let Ok(mut rt) = shared.lock() {
-                    rt.status.running = false;
-                    rt.status.finished_at = Some(epoch_secs());
-                    // On unix a kill() exit has no code; surface -1 so the UI
-                    // still distinguishes it from success.
-                    rt.status.exit_code = Some(status.code().unwrap_or(-1));
-                    rt.child = None;
+                if let Some(handle) = stdout_pump {
+                    let _ = handle.join();
+                }
+                if let Some(handle) = stderr_pump {
+                    let _ = handle.join();
+                }
+                let (stdout_tail, stderr_tail, cancelled) = match shared.lock() {
+                    Ok(mut rt) => {
+                        let cancelled = rt.cancel_requested;
+                        rt.running = false;
+                        rt.child = None;
+                        rt.cancel_requested = false;
+                        (rt.stdout_tail.clone(), rt.stderr_tail.clone(), cancelled)
+                    }
+                    Err(_) => (String::new(), String::new(), false),
+                };
+                let log = process_log(&stdout_tail, &stderr_tail);
+                if cancelled {
+                    append_driver_chat(
+                        &app,
+                        Some("deny"),
+                        &append_process_log_link("Agent cancelled by user.", &log),
+                    );
+                    break;
+                }
+                let code = status.code().unwrap_or(-1);
+                if code == 0 {
+                    let answer = stdout_tail.trim();
+                    let artifacts = collect_recent_artifacts(&artifact_root, started_at, 8);
+                    if answer.is_empty() {
+                        let text = append_artifact_links(
+                            "Agent finished without a text answer. Check the audit panels for tool activity.",
+                            &artifact_root,
+                            &artifacts,
+                        );
+                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                    } else {
+                        let text = append_artifact_links(answer, &artifact_root, &artifacts);
+                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                    }
+                } else {
+                    let detail = if !stderr_tail.trim().is_empty() {
+                        stderr_tail.trim()
+                    } else {
+                        stdout_tail.trim()
+                    };
+                    let text = summarize_agent_failure(code, detail);
+                    append_driver_chat(&app, Some("deny"), &append_process_log_link(&text, &log));
                 }
                 break;
             }
             Err(e) => {
                 if let Ok(mut rt) = shared.lock() {
-                    rt.status.running = false;
-                    rt.status.finished_at = Some(epoch_secs());
-                    rt.status.error = format!("wait failed: {e}");
+                    rt.running = false;
                     rt.child = None;
                 }
+                append_driver_chat(&app, Some("deny"), &format!("Agent wait failed: {e}"));
                 break;
             }
         }
@@ -186,24 +487,42 @@ fn start_task(state: &AppState, task_text: String, profile: String) -> Result<()
     Ok(())
 }
 
-/// Kill the active child process, if any. Audit rows already written by the
-/// backend are left intact; the exit waiter records the final state.
-fn cancel_task(state: &AppState) -> Result<(), String> {
-    let child = state.task.lock().map_err(|e| e.to_string())?.child.clone();
-    if let Some(c) = child {
-        if let Ok(mut c) = c.lock() {
-            let _ = c.kill();
+fn cancel_chat_agent(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    let child = {
+        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        if !rt.running {
+            return Ok(());
+        }
+        rt.cancel_requested = true;
+        rt.child.clone()
+    };
+
+    let Some(child) = child else {
+        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        rt.running = false;
+        rt.child = None;
+        rt.cancel_requested = false;
+        append_driver_chat(app, Some("deny"), "Agent cancelled by user.");
+        return Ok(());
+    };
+
+    let pid = child.lock().map_err(|e| e.to_string())?.id();
+
+    #[cfg(windows)]
+    {
+        let pid_s = pid.to_string();
+        let status = std::process::Command::new("taskkill")
+            .args(["/PID", pid_s.as_str(), "/T", "/F"])
+            .status();
+        if status.as_ref().map(|s| s.success()).unwrap_or(false) {
+            return Ok(());
         }
     }
-    Ok(())
-}
 
-/// Clear the local stdout/stderr/error tails only.
-fn clear_task_output(state: &AppState) -> Result<(), String> {
-    let mut rt = state.task.lock().map_err(|e| e.to_string())?;
-    rt.status.stdout_tail.clear();
-    rt.status.stderr_tail.clear();
-    rt.status.error.clear();
+    let mut guard = child.lock().map_err(|e| e.to_string())?;
+    guard
+        .kill()
+        .map_err(|e| format!("failed to cancel agent: {e}"))?;
     Ok(())
 }
 
@@ -211,7 +530,6 @@ fn open_db() -> Connection {
     match std::env::var("MUSUBI_DB") {
         Ok(path) if !path.is_empty() => {
             let conn = Connection::open(&path).expect("open MUSUBI_DB");
-            // append-only tables already exist in a real audit.db; harmless on a new file
             let _ = musubi_data::init_schema(&conn);
             eprintln!("[musubi] reading audit.db at {path}");
             conn
@@ -219,7 +537,7 @@ fn open_db() -> Connection {
         _ => {
             let conn = Connection::open_in_memory().expect("open in-memory db");
             musubi_data::init_schema(&conn).expect("init empty schema");
-            eprintln!("[musubi] MUSUBI_DB not set — using empty in-memory state");
+            eprintln!("[musubi] MUSUBI_DB not set - using empty in-memory state");
             conn
         }
     }
@@ -259,14 +577,6 @@ fn open_configured_db() -> OpenedDb {
 }
 
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
-    // Copy the launcher overlay before touching the db lock so no code path
-    // ever holds both mutexes at once.
-    let task_launcher = state
-        .task
-        .lock()
-        .map_err(|e| e.to_string())?
-        .status
-        .clone();
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
     st.paused = state.paused.load(Ordering::Relaxed);
@@ -280,7 +590,22 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
-    st.task_launcher = task_launcher;
+    let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
+        .then(|| PathBuf::from(&st.setup_status.llm_config_path));
+    st.active_profile =
+        musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref());
+    if let Some(path) = llm_config_path {
+        st.profiles = musubi_data::read_llm_profiles_from_path(path);
+    }
+    if let Ok(rt) = state.chat_agent.lock() {
+        st.driver_status = musubi_data::DriverStatus {
+            running: rt.running,
+            task: rt.task.clone(),
+            started_at: rt.started_at,
+            stdout_tail: rt.stdout_tail.clone(),
+            stderr_tail: rt.stderr_tail.clone(),
+        };
+    }
     Ok(st)
 }
 
@@ -293,6 +618,7 @@ fn get_state(state: tauri::State<AppState>) -> Result<musubi_data::State, String
 fn action(
     kind: String,
     args: Vec<serde_json::Value>,
+    app: tauri::AppHandle,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
     let str_arg = |i: usize| {
@@ -307,21 +633,14 @@ fn action(
             if text.trim().is_empty() {
                 return Ok(());
             }
-            let conn = state.db.lock().map_err(|e| e.to_string())?;
-            let ack = format!(
-                "Acknowledged — re-checking the policy surface and re-tying threads to the audit for: “{}”",
-                &text.chars().take(72).collect::<String>()
-            );
-            conn.execute(
-                "INSERT INTO chat_log(role,tone,text) VALUES('you',NULL,?1)",
-                [&text],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO chat_log(role,tone,text) VALUES('driver',NULL,?1)",
-                [&ack],
-            )
-            .map_err(|e| e.to_string())?;
+            {
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                insert_chat(&conn, "you", None, &text)?;
+            }
+            if let Err(e) = start_chat_agent(app, state.inner(), text) {
+                let conn = state.db.lock().map_err(|err| err.to_string())?;
+                insert_chat(&conn, "driver", Some("deny"), &e)?;
+            }
         }
         "select_profile" => {
             let name = str_arg(0);
@@ -337,23 +656,18 @@ fn action(
             let cur = state.paused.load(Ordering::Relaxed);
             state.paused.store(!cur, Ordering::Relaxed);
         }
-        // On-demand task launcher: Run spawns exactly one governed
-        // `agent "<task>"` process; opening the GUI never starts one.
-        "run_task" => {
-            start_task(&state, str_arg(0), str_arg(1))?;
+        "cancel_agent" => {
+            cancel_chat_agent(&app, state.inner())?;
         }
-        "cancel_task" => {
-            cancel_task(&state)?;
-        }
-        "clear_task_output" => {
-            clear_task_output(&state)?;
+        "open_artifact" => {
+            open_workspace_path(&state.project_root, &str_arg(0))?;
         }
         // Spawning agents / running pipelines is a write to the governed
-        // substrate — it must go through the MCP server, not a direct DB write.
+        // substrate - it must go through the MCP server, not a direct DB write.
         // Wire these to musubi_spawn_subagent / the pipeline runner here.
         "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset" | "run_pipe"
         | "stop_pipe" | "reset_pipe" => {
-            eprintln!("[musubi] pipeline action '{kind}' — route to MCP server (todo)");
+            eprintln!("[musubi] pipeline action '{kind}' - route to MCP server (todo)");
         }
         other => eprintln!("[musubi] unknown action: {other}"),
     }
@@ -363,13 +677,15 @@ fn action(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let opened = open_configured_db();
+    let chat_id = scoped_chat_id(&opened.project_root);
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
             paused: AtomicBool::new(false),
             project_root: opened.project_root,
             audit_db: opened.audit_db,
-            task: Arc::new(Mutex::new(TaskRuntime::default())),
+            chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
+            chat_id,
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {

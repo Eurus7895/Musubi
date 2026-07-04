@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import server
 from tools import fs
+
+
+def _py_cmd(code: str) -> str:
+    return f'"{sys.executable}" -c "{code}"'
 
 
 @pytest.fixture
@@ -263,9 +269,31 @@ def test_run_command_captures_stderr(workspace: Path) -> None:
     assert "err" in result["stderr"]
 
 
+def test_run_command_decodes_as_utf8_with_replacement(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="✓ ok", stderr="")
+
+    monkeypatch.setattr(fs.subprocess, "run", fake_run)
+
+    result = fs.run_command("type page.html")
+
+    assert result["status"] == "ok"
+    assert result["stdout"] == "✓ ok"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
 def test_run_command_runs_in_workspace_root(workspace: Path) -> None:
     (workspace / "marker.txt").write_text("here", encoding="utf-8")
-    result = fs.run_command("ls marker.txt")
+    result = fs.run_command(
+        _py_cmd("from pathlib import Path; print(Path('marker.txt').name if Path('marker.txt').exists() else '')")
+    )
     assert result["status"] == "ok"
     assert "marker.txt" in result["stdout"]
 
@@ -273,7 +301,10 @@ def test_run_command_runs_in_workspace_root(workspace: Path) -> None:
 def test_run_command_explicit_cwd_resolves_inside_workspace(workspace: Path) -> None:
     (workspace / "sub").mkdir()
     (workspace / "sub" / "x").write_text("hi", encoding="utf-8")
-    result = fs.run_command("ls x", cwd="sub")
+    result = fs.run_command(
+        _py_cmd("from pathlib import Path; print(Path('x').name if Path('x').exists() else '')"),
+        cwd="sub",
+    )
     assert result["status"] == "ok"
     assert "x" in result["stdout"]
 
@@ -291,7 +322,7 @@ def test_run_command_empty_errors(workspace: Path) -> None:
 
 
 def test_run_command_timeout(workspace: Path) -> None:
-    result = fs.run_command("sleep 5", timeout_seconds=1)
+    result = fs.run_command(_py_cmd("import time; time.sleep(5)"), timeout_seconds=1)
     assert result["status"] == "error"
     assert "timed out" in result["error"]
 
@@ -302,7 +333,7 @@ def test_run_command_timeout(workspace: Path) -> None:
 def test_run_command_output_truncated_at_cap(workspace: Path) -> None:
     """A command that emits >1M chars gets head+tail-preserved output."""
     # Emit ~1.5M chars of 'A's via head/yes — cheap and bounded.
-    result = fs.run_command("yes A | head -c 1500000")
+    result = fs.run_command(_py_cmd("import sys; sys.stdout.write('A' * 1500000)"))
     assert result["status"] == "ok"
     assert "truncated by Musubi" in result["stdout"]
 

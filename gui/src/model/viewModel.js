@@ -11,6 +11,15 @@ import { fmtClock } from './format.js'
 export function buildViewModel(s, act) {
   const sm = statusMeta
   const shown = s.subagents.slice(-3)
+  const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
+  const selectedAgent = s.subagents.find((a) => a.handle === s.selected)
+  const latestAgent = s.subagents[s.subagents.length - 1]
+  const activeSessionId = selectedAgent?.parentSession || latestAgent?.parentSession || ''
+  const activeSessionAgents = activeSessionId
+    ? s.subagents.filter((a) => a.parentSession === activeSessionId)
+    : s.subagents
+  const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
+  const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
   const subagents = shown.map((a, i) => {
     const m = sm[a.status]
@@ -22,13 +31,39 @@ export function buildViewModel(s, act) {
     return {
       role: a.role, handle: a.handle, brief: a.brief, statusLabel: m.label, statusColor: m.color,
       model: a.model, profile: a.profile, modelColor: modelColorFor(a.role),
-      orderLabel: '#' + a.id,
+      orderLabel: 'W' + String(workerOrder.get(a.handle) || i + 1).padStart(2, '0'),
+      auditId: '#' + a.id,
+      parentLabel: a.parent || 'driver',
       orderBadge: 'display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:18px;padding:0 5px;border-radius:5px;font-family:\'IBM Plex Mono\',monospace;font-size:10px;font-weight:600;color:#cfcfd4;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12)',
       roleChipStyle: roleChip(a.role, hue), cardStyle,
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       barFillStyle: 'height:100%;width:' + pct + '%;background:' + m.color + ';border-radius:2px;transition:width .4s ease',
       turnsLabel: a.turns + '/' + a.max, toolCount: a.tools.length,
       wallLabel: a.status === 'running' ? fmtClock(a.wall) : '—',
+      onSelect: () => act.selectAgent(a.handle),
+    }
+  })
+
+  const sessionSteps = activeSessionAgents.map((a, i) => {
+    const m = sm[a.status] || sm.abandoned
+    const hue = hueFor(a.role)
+    const isCurrent = a.handle === currentSessionAgent?.handle
+    const pct = a.max ? Math.min(100, Math.round(a.turns / a.max * 100)) : 0
+    return {
+      handle: a.handle,
+      role: a.role,
+      brief: a.brief,
+      status: a.status,
+      statusLabel: m.label,
+      statusColor: m.color,
+      orderLabel: 'W' + String(workerOrder.get(a.handle) || i + 1).padStart(2, '0'),
+      roleChipStyle: roleChip(a.role, hue),
+      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
+      barFillStyle: 'height:100%;width:' + pct + '%;background:' + m.color + ';border-radius:3px;transition:width .4s ease',
+      cardStyle: 'position:relative;width:218px;flex-shrink:0;background:#141b27;border:1px solid ' + (isCurrent ? m.color : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:13px 14px;cursor:pointer;' + (isCurrent ? 'box-shadow:0 0 0 1px ' + m.color + '55,0 0 24px ' + m.color + '22;' : ''),
+      turnsLabel: a.turns + '/' + a.max,
+      toolsLabel: a.tools.length + ' tools',
+      showConnector: i < activeSessionAgents.length - 1,
       onSelect: () => act.selectAgent(a.handle),
     }
   })
@@ -40,6 +75,8 @@ export function buildViewModel(s, act) {
     const fw = selAgent.role === 'reviewer-aux'
     detail = {
       role: selAgent.role, handle: selAgent.handle, brief: selAgent.brief, parent: selAgent.parent,
+      auditId: '#' + selAgent.id,
+      workerLabel: 'W' + String(workerOrder.get(selAgent.handle) || 1).padStart(2, '0'),
       model: selAgent.model, profile: selAgent.profile, modelColor: modelColorFor(selAgent.role),
       statusLabel: m.label, statusColor: m.color, tools: selAgent.tools,
       roleChipStyle: roleChip(selAgent.role, hueFor(selAgent.role)),
@@ -77,7 +114,32 @@ export function buildViewModel(s, act) {
       : 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:#ff9b3d;background:rgba(255,155,61,0.1);border:1px solid rgba(255,155,61,0.3);padding:2px 7px;border-radius:5px;justify-self:start',
   }))
 
-  const profiles = profileDefs.map((p) => {
+  const profilePalette = {
+    anthropic: '#ff9b3d',
+    deepseek: '#86c7c0',
+    openai: '#9ed8b4',
+    ollama: '#8ab4d8',
+    azure: '#d8b48a',
+  }
+  const runtimeProfiles = Array.isArray(s.profiles) && s.profiles.length ? s.profiles : profileDefs
+  const profileList = runtimeProfiles.map((p) => ({
+    ...p,
+    fc: p.fc || profilePalette[p.family] || '#8a8a92',
+    model: p.model || p.name,
+    transport: p.transport || 'profile',
+    endpoint: p.endpoint || '',
+    keyEnv: p.keyEnv || '',
+  }))
+  const activeDef = profileList.find((p) => p.name === s.activeProfile) || {
+    name: s.activeProfile || 'unconfigured',
+    family: (s.activeProfile || 'custom').split('.')[0],
+    model: s.activeProfile || 'unconfigured',
+    transport: 'profile',
+    endpoint: '',
+    keyEnv: '',
+    fc: '#ff9b3d',
+  }
+  const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
     return {
       name: p.name, family: p.family, model: p.model, transport: p.transport, endpoint: p.endpoint, keyEnv: p.keyEnv,
@@ -92,7 +154,6 @@ export function buildViewModel(s, act) {
       onSelect: () => act.selectProfile(p.name),
     }
   })
-  const activeDef = profileDefs.find((p) => p.name === s.activeProfile) || profileDefs[0]
 
   const skills = skillDefs.map((sk) => ({
     name: sk.name, appliesTo: sk.appliesTo, desc: sk.desc, mode: sk.mode,
@@ -149,45 +210,26 @@ export function buildViewModel(s, act) {
   const chatView = s.chat.map((msg) => {
     if (msg.role === 'you') {
       return {
-        text: msg.text, showMeta: false, meta: '', metaStyle: '',
+        text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
         rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
-        bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45',
+        bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
       }
     }
     if (msg.role === 'driver') {
       return {
-        text: msg.text, showMeta: true, meta: 'driver · the knot · ' + (msg.ts || ''),
+        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + (msg.ts || ''),
         metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
         rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
-        bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45',
+        bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
       }
     }
     const red = msg.tone === 'deny'
     return {
-      text: msg.text, showMeta: false, meta: '', metaStyle: '',
+      text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
       rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
       bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
     }
   })
-
-  // ── on-demand task launcher view-model ──
-  // Runtime overlay of the single spawned `agent "<task>"` process; the audit
-  // DB (rendered by the other views) stays the orchestration source of truth.
-  const tl = s.taskLauncher || { running: false, stdoutTail: '', stderrTail: '', error: '', exitCode: null }
-  const taskRunning = !!tl.running
-  const taskDraftEmpty = !(s.taskDraft || '').trim()
-  const agentCliMissing = !s.setupStatus?.agentCli?.found
-  const taskRunDisabled = !taskRunning && (taskDraftEmpty || agentCliMissing)
-  let taskStatusText
-  if (taskRunning) taskStatusText = 'running · ' + tl.task
-  else if (tl.error) taskStatusText = 'error · ' + tl.error
-  else if (tl.exitCode !== null && tl.exitCode !== undefined) taskStatusText = 'exited · code ' + tl.exitCode + ' · ' + tl.task
-  else if (agentCliMissing) taskStatusText = 'agent CLI not found — see Settings'
-  else taskStatusText = 'idle · one governed agent process per Run'
-  const taskProfiles = profileDefs.map((p) => p.name)
-  const taskProfile = s.taskProfile || s.activeProfile
-  const taskRunLabel = taskRunning ? '■ Stop' : '▶ Run task'
-  const taskRunStyle = 'display:inline-flex;align-items:center;gap:8px;font-family:\'IBM Plex Mono\',monospace;font-size:12px;padding:9px 16px;border-radius:9px;cursor:' + (taskRunDisabled ? 'not-allowed' : 'pointer') + ';border:1px solid ' + (taskRunning ? 'rgba(232,106,95,0.5)' : 'rgba(255,155,61,0.5)') + ';background:' + (taskRunning ? 'rgba(232,106,95,0.14)' : 'rgba(255,155,61,0.14)') + ';color:' + (taskRunning ? '#e86a5f' : '#ff9b3d') + ';opacity:' + (taskRunDisabled ? '0.4' : '1')
 
   const sourceLabels = {
     'musubi-db': 'MUSUBI_DB audit.db',
@@ -210,31 +252,47 @@ export function buildViewModel(s, act) {
     badge: row.ok ? 'OK' : 'CHECK',
     badgeStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;font-weight:600;color:' + (row.ok ? '#54c79a' : '#e3b341') + ';background:' + (row.ok ? 'rgba(84,199,154,0.12)' : 'rgba(227,179,65,0.12)') + ';border:1px solid ' + (row.ok ? 'rgba(84,199,154,0.32)' : 'rgba(227,179,65,0.32)') + ';padding:2px 8px;border-radius:5px;flex-shrink:0',
   }))
+  const driverStatus = s.driverStatus || {}
+  const statusTail = (driverStatus.stderrTail || driverStatus.stdoutTail || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const driverStatusText = statusTail.length
+    ? statusTail[statusTail.length - 1]
+    : (driverStatus.running ? 'working...' : '')
+  const driverProcessLog = [
+    driverStatus.stderrTail ? 'stderr:\n' + driverStatus.stderrTail.trim() : '',
+    driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
+  ].filter(Boolean).join('\n\n')
 
   return {
-    isOrch: s.view === 'orchestrator', isRun: s.view === 'run', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
+    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
     view: s.view,
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
-    orchNav: navStyle(s.view === 'orchestrator'), runNav: navStyle(s.view === 'run'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
-    selOrch: () => act.setView('orchestrator'), selRun: () => act.setView('run'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    // task launcher
-    taskDraft: s.taskDraft || '', onTaskDraft: act.onTaskDraft,
-    taskProfiles, taskProfile, setTaskProfile: act.setTaskProfile,
-    taskRunning, taskRunLabel, taskRunStyle, taskRunDisabled, taskStatusText,
-    taskStdout: tl.stdoutTail || '', taskStderr: tl.stderrTail || '', taskError: tl.error || '', taskExitCode: tl.exitCode,
-    onRunTask: taskRunning ? (() => act.cancelTask()) : (taskRunDisabled ? (() => {}) : (() => act.runTask())),
-    onClearTaskOutput: () => act.clearTaskOutput(),
+    orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
+    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, runLabel, runAction, runStyle, pipeStatusText, onClearPipe: () => act.clearPipe(),
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: s.subagents.filter((a) => a.status === 'running').length, totalDone: s.totalDone, totalSpawned: s.totalSpawned, driverCycle: s.t || 0,
-    togglePause: () => act.togglePause(), pauseLabel: s.paused ? '▶ Resume' : '∥ Pause',
-    driverStyle: 'position:absolute;left:500px;top:0;transform:translate(-50%,0);z-index:3;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:14px;padding:16px 24px;min-width:296px;text-align:center;' + (!s.paused ? 'animation:glow 3s ease-in-out infinite;' : 'box-shadow:0 10px 34px rgba(0,0,0,0.5);'),
-    driverDotStyle: 'width:8px;height:8px;border-radius:50%;background:#ff9b3d;' + (!s.paused ? 'animation:pulse 1.6s ease-in-out infinite;' : ''),
-    subagents, webShown: shown,
+    driverStyle: 'position:absolute;left:500px;top:0;transform:translate(-50%,0);z-index:3;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:14px;padding:16px 24px;min-width:296px;text-align:center;animation:glow 3s ease-in-out infinite;',
+    driverDotStyle: 'width:8px;height:8px;border-radius:50%;background:#ff9b3d;animation:pulse 1.6s ease-in-out infinite;',
+    subagents: [], webShown: [],
+    sessionSteps,
+    sessionTitle: activeSessionId ? ('Session ' + activeSessionId.slice(0, 12)) : 'Session history',
+    sessionSubtitle: sessionSteps.length
+      ? (sessionSteps.length + ' workers · full history for this parent run')
+      : 'no workers in this session yet',
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
-    events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey, onSend: act.sendChat,
+    driverBusy: !!driverStatus.running, driverTask: driverStatus.task || '', driverStatusText,
+    driverProcessOpen: !!s.processOpen, driverProcessLog, onToggleProcess: act.toggleProcess,
+    logWindowOpen: !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
+    events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
+    onSend: driverStatus.running ? act.cancelAgent : act.sendChat,
+    sendTitle: driverStatus.running ? 'Cancel running agent' : 'Send',
+    sendMode: driverStatus.running ? 'cancel' : 'send',
+    onOpenArtifact: act.openArtifact,
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),

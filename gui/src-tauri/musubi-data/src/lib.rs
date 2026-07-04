@@ -44,6 +44,7 @@ pub struct State {
     pub allow_count: i64,
     pub deny_count: i64,
     pub active_profile: String,
+    pub profiles: Vec<LmProfile>,
     pub pipe_steps: Vec<PipeStep>,
     pub pipe_name: String,
     pub pipe_running: bool,
@@ -53,7 +54,7 @@ pub struct State {
     pub paused: bool,
     pub runtime_source: String,
     pub setup_status: SetupStatus,
-    pub task_launcher: TaskLauncherStatus,
+    pub driver_status: DriverStatus,
     pub t: i64,
 }
 
@@ -61,20 +62,6 @@ pub struct State {
 /// `agent "<task>"` process only when the user presses Run; this snapshot is a
 /// console-side view of that child process, not orchestration state — the audit
 /// DB stays the source of truth.
-#[derive(Serialize, Default, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskLauncherStatus {
-    pub running: bool,
-    pub task: String,
-    pub profile: String,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub exit_code: Option<i32>,
-    pub stdout_tail: String,
-    pub stderr_tail: String,
-    pub error: String,
-}
-
 #[derive(Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupStatus {
@@ -95,6 +82,27 @@ pub struct CliStatus {
     pub found: bool,
     pub path: String,
     pub hint: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverStatus {
+    pub running: bool,
+    pub task: String,
+    pub started_at: Option<i64>,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LmProfile {
+    pub name: String,
+    pub family: String,
+    pub model: String,
+    pub transport: String,
+    pub endpoint: String,
+    pub key_env: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +126,8 @@ pub struct Agent {
     pub model: String,
     pub profile: String,
     pub parent: String,
+    pub parent_session: String,
+    pub parent_agent: String,
     #[serde(skip)]
     pub spawn_epoch: Option<i64>,
 }
@@ -231,6 +241,7 @@ pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
 fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     let mut st = State {
         active_profile: read_active_profile(conn),
+        profiles: read_llm_profiles(),
         pipe_name: "feature-dev".into(),
         pipe_cur: -1,
         runtime_source: "demo".into(),
@@ -298,6 +309,8 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                         model: String::new(),
                         profile: String::new(),
                         parent: fmt_parent(&row.parent_agent, &row.parent_session),
+                        parent_session: row.parent_session.clone(),
+                        parent_agent: row.parent_agent.clone(),
                         spawn_epoch: row.ts_epoch,
                     },
                 );
@@ -477,8 +490,17 @@ struct RawAudit {
 /// `default` recorded in `.musubi/llm.json` (the runner's source of truth),
 /// else a conservative fallback.
 pub fn read_active_profile(conn: &Connection) -> String {
+    read_active_profile_for_config(conn, None)
+}
+
+pub fn read_active_profile_for_config(conn: &Connection, llm_config_path: Option<&Path>) -> String {
     if let Some(p) = read_meta(conn, "active_profile") {
         if !p.trim().is_empty() {
+            return p;
+        }
+    }
+    if let Some(path) = llm_config_path {
+        if let Some(p) = read_llm_default_from_path(path) {
             return p;
         }
     }
@@ -497,9 +519,124 @@ fn read_llm_default() -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(find_llm_json_near_db)?;
+    read_llm_default_from_path(path)
+}
+
+pub fn read_llm_default_from_path(path: impl AsRef<Path>) -> Option<String> {
     let txt = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&txt).ok()?;
     v.get("default")?.as_str().map(str::to_string)
+}
+
+fn read_llm_profiles() -> Vec<LmProfile> {
+    let Some(path) = std::env::var("MUSUBI_LLM_CONFIG")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(find_llm_json_near_db)
+    else {
+        return vec![];
+    };
+    read_llm_profiles_from_path(path)
+}
+
+pub fn read_llm_profiles_from_path(path: impl AsRef<Path>) -> Vec<LmProfile> {
+    let Ok(txt) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+        return vec![];
+    };
+    parse_llm_profiles(&v)
+}
+
+fn parse_llm_profiles(v: &serde_json::Value) -> Vec<LmProfile> {
+    let Some(root) = v.as_object() else {
+        return vec![];
+    };
+    let mut profiles = Vec::new();
+    for (family, family_value) in root {
+        if family == "default" || family.starts_with("//") {
+            continue;
+        }
+        let Some(family_profiles) = family_value.as_object() else {
+            continue;
+        };
+        for (profile, config) in family_profiles {
+            if profile.starts_with("//") {
+                continue;
+            }
+            let Some(config) = config.as_object() else {
+                continue;
+            };
+            let field = |name: &str| {
+                config
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let model = first_nonempty(&[field("model"), field("deployment")]);
+            let transport =
+                first_nonempty(&[field("transport"), default_transport(family, config)]);
+            let endpoint = first_nonempty(&[
+                field("base_url"),
+                field("azure_endpoint"),
+                field("endpoint"),
+                default_endpoint(family),
+            ]);
+            let key_env = first_nonempty(&[
+                field("api_key_env"),
+                field("key_env"),
+                if config.get("api_key").and_then(|v| v.as_str()).is_some() {
+                    "inline key".to_string()
+                } else {
+                    String::new()
+                },
+            ]);
+            profiles.push(LmProfile {
+                name: format!("{family}.{profile}"),
+                family: family.to_string(),
+                model,
+                transport,
+                endpoint,
+                key_env,
+            });
+        }
+    }
+    profiles
+}
+
+fn first_nonempty(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn default_transport(family: &str, config: &serde_json::Map<String, serde_json::Value>) -> String {
+    if config.get("transport").and_then(|v| v.as_str()).is_some() {
+        return String::new();
+    }
+    match family {
+        "ollama" => "local",
+        "azure" => "curl",
+        _ => "SDK",
+    }
+    .to_string()
+}
+
+fn default_endpoint(family: &str) -> String {
+    match family {
+        "anthropic" => "api.anthropic.com",
+        "deepseek" => "api.deepseek.com",
+        "openai" => "api.openai.com",
+        "ollama" => "127.0.0.1:11434",
+        _ => "",
+    }
+    .to_string()
 }
 
 fn find_llm_json_near_db() -> Option<PathBuf> {
@@ -1089,14 +1226,85 @@ mod tests {
     }
 
     #[test]
-    fn default_state_serializes_idle_task_launcher() {
+    fn read_llm_profiles_from_path_parses_project_profiles() {
+        let root = temp_dir("llm-profiles");
+        let cfg = root.join("llm.json");
+        std::fs::write(
+            &cfg,
+            r#"{
+              "default": "deepseek.cloud",
+              "deepseek": {
+                "cloud": {
+                  "model": "deepseek-v4-flash",
+                  "api_key_env": "DEEPSEEK_API_KEY"
+                }
+              },
+              "azure": {
+                "work": {
+                  "transport": "curl",
+                  "azure_endpoint": "https://example.openai.azure.com",
+                  "deployment": "gpt-4o",
+                  "api_key_env": "AZURE_OPENAI_API_KEY"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let profiles = read_llm_profiles_from_path(&cfg);
+
+        assert!(profiles.iter().any(|p| {
+            p.name == "deepseek.cloud"
+                && p.family == "deepseek"
+                && p.model == "deepseek-v4-flash"
+                && p.endpoint == "api.deepseek.com"
+        }));
+        assert!(profiles.iter().any(|p| {
+            p.name == "azure.work"
+                && p.transport == "curl"
+                && p.model == "gpt-4o"
+                && p.endpoint == "https://example.openai.azure.com"
+        }));
+    }
+
+    #[test]
+    fn active_profile_uses_detected_config_default_when_meta_is_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let root = temp_dir("active-profile-default");
+        let cfg = root.join("llm.json");
+        std::fs::write(&cfg, r#"{"default":"ollama.local"}"#).unwrap();
+
+        assert_eq!(
+            read_active_profile_for_config(&conn, Some(&cfg)),
+            "ollama.local"
+        );
+    }
+
+    #[test]
+    fn active_profile_meta_wins_over_detected_config_default() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('active_profile','azure.work')",
+            [],
+        )
+        .unwrap();
+        let root = temp_dir("active-profile-meta");
+        let cfg = root.join("llm.json");
+        std::fs::write(&cfg, r#"{"default":"ollama.local"}"#).unwrap();
+
+        assert_eq!(
+            read_active_profile_for_config(&conn, Some(&cfg)),
+            "azure.work"
+        );
+    }
+
+    #[test]
+    fn default_state_omits_task_launcher_overlay() {
         let st = demo_state();
         let v: serde_json::Value = serde_json::to_value(&st).unwrap();
-        let tl = v.get("taskLauncher").expect("taskLauncher key");
-        assert_eq!(tl["running"], false);
-        assert_eq!(tl["task"], "");
-        assert_eq!(tl["exitCode"], serde_json::Value::Null);
-        assert_eq!(tl["stdoutTail"], "");
+        assert!(v.get("taskLauncher").is_none());
     }
 
     #[test]
@@ -1109,6 +1317,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
+            None,
         )
         .unwrap();
 
@@ -1131,6 +1340,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1145,9 +1355,36 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
+            None,
         )
         .unwrap();
         assert_eq!(same.args, vec!["task", "--tool-surface", "agent"]);
+    }
+
+    #[test]
+    fn launch_spec_adds_chat_id_for_replay() {
+        let root = PathBuf::from("/proj");
+        let spec = build_agent_launch_spec(
+            "task",
+            "",
+            "",
+            None,
+            &root,
+            &std::collections::HashMap::new(),
+            Some("gui-orchestrator"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.args,
+            vec![
+                "task",
+                "--chat-id",
+                "gui-orchestrator",
+                "--tool-surface",
+                "agent"
+            ]
+        );
     }
 
     #[test]
@@ -1157,9 +1394,17 @@ mod tests {
         let mut env = std::collections::HashMap::new();
         env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
         env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
+        env.insert(
+            "MUSUBI_LLM_CONFIG".to_string(),
+            "/proj/.musubi/llm.json".to_string(),
+        );
+        env.insert(
+            "MUSUBI_MCP_CONFIG".to_string(),
+            "/proj/.musubi/mcp.json".to_string(),
+        );
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-…".to_string());
 
-        let spec = build_agent_launch_spec("task", "", "", Some(&cli), &root, &env).unwrap();
+        let spec = build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None).unwrap();
 
         assert_eq!(spec.program, cli);
         let mut forwarded = spec.env.clone();
@@ -1168,6 +1413,14 @@ mod tests {
             forwarded,
             vec![
                 ("MUSUBI_DB".to_string(), "/data/audit.db".to_string()),
+                (
+                    "MUSUBI_LLM_CONFIG".to_string(),
+                    "/proj/.musubi/llm.json".to_string()
+                ),
+                (
+                    "MUSUBI_MCP_CONFIG".to_string(),
+                    "/proj/.musubi/mcp.json".to_string()
+                ),
                 ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
             ],
             "only MUSUBI_* is forwarded explicitly; the rest is inherited"
@@ -1183,6 +1436,7 @@ mod tests {
             None,
             Path::new("/proj"),
             &std::collections::HashMap::new(),
+            None,
         )
         .unwrap_err();
         assert!(err.contains("empty"));
@@ -1456,6 +1710,7 @@ pub fn build_agent_launch_spec(
     agent_cli_path: Option<&Path>,
     project_root: &Path,
     env: &HashMap<String, String>,
+    chat_id: Option<&str>,
 ) -> Result<AgentLaunchSpec, String> {
     let task = task.trim();
     if task.is_empty() {
@@ -1472,11 +1727,20 @@ pub fn build_agent_launch_spec(
         args.push("--profile".into());
         args.push(profile.to_string());
     }
+    if let Some(chat_id) = chat_id.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--chat-id".into());
+        args.push(chat_id.to_string());
+    }
     args.push("--tool-surface".into());
     args.push("agent".into());
 
     let mut spec_env = Vec::new();
-    for key in ["MUSUBI_ROOT", "MUSUBI_DB"] {
+    for key in [
+        "MUSUBI_ROOT",
+        "MUSUBI_DB",
+        "MUSUBI_LLM_CONFIG",
+        "MUSUBI_MCP_CONFIG",
+    ] {
         if let Some(val) = nonempty(env, key) {
             spec_env.push((key.to_string(), val));
         }
