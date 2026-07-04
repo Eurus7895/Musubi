@@ -49,6 +49,18 @@ export default function Pipeline({ vals }) {
           </div>
         </div>
 
+        {/* ░ pipeline brief — the task the selected pipeline runs on ░ */}
+        <div style={{ padding: '0 26px 12px' }}>
+          <textarea
+            value={vals.pipeDraft}
+            onChange={vals.onPipeDraft}
+            disabled={vals.pipeRunning}
+            placeholder={'Describe the task for the ' + vals.pipeName + ' pipeline… e.g. "add a /health endpoint and tests"'}
+            rows={2}
+            style={{ width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, lineHeight: 1.5, color: '#e9e9ea', background: '#0f1620', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', outline: 'none', opacity: vals.pipeRunning ? 0.6 : 1 }}
+          />
+        </div>
+
         <div style={{ flex: 1, minHeight: 0, padding: '6px 26px 26px' }}>
           {vals.pipeEmpty && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, height: 280, background: '#0f1620', border: '1px dashed rgba(255,255,255,0.12)', borderRadius: 14, color: '#6a6a72', textAlign: 'center' }}>

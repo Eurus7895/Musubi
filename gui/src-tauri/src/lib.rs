@@ -43,6 +43,9 @@ struct ChatAgentRuntime {
     started_at: Option<i64>,
     stdout_tail: String,
     stderr_tail: String,
+    /// The pipeline name when the active run is a `agent --pipeline` run, else
+    /// None for a normal chat run. Gates `pipe_running` in the snapshot.
+    pipeline: Option<String>,
 }
 
 enum TailStream {
@@ -315,13 +318,14 @@ fn start_chat_agent(
     app: tauri::AppHandle,
     state: &AppState,
     task_text: String,
+    pipeline: Option<String>,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
     {
         let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
         if rt.running {
             return Err(
-                "Agent is already running. Wait for it to finish before sending another request."
+                "Agent is already running. Wait for it to finish before starting another run."
                     .into(),
             );
         }
@@ -332,6 +336,7 @@ fn start_chat_agent(
         rt.started_at = Some(started_at);
         rt.stdout_tail.clear();
         rt.stderr_tail.clear();
+        rt.pipeline = pipeline.clone();
     }
 
     let mut env = musubi_data::current_env_map();
@@ -366,15 +371,28 @@ fn start_chat_agent(
         .agent_cli
         .found
         .then(|| PathBuf::from(&setup.agent_cli.path));
-    let spec = musubi_data::build_agent_launch_spec(
-        &task_text,
-        &profile,
-        &default_profile,
-        agent_path.as_deref(),
-        &launch_root,
-        &env,
-        Some(&state.chat_id),
-    )?;
+    let spec = if let Some(name) = pipeline.as_deref() {
+        // Deterministic pipeline run — one-shot, no chat-id conversation.
+        musubi_data::build_pipeline_launch_spec(
+            name,
+            &task_text,
+            &profile,
+            &default_profile,
+            agent_path.as_deref(),
+            &launch_root,
+            &env,
+        )?
+    } else {
+        musubi_data::build_agent_launch_spec(
+            &task_text,
+            &profile,
+            &default_profile,
+            agent_path.as_deref(),
+            &launch_root,
+            &env,
+            Some(&state.chat_id),
+        )?
+    };
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",
         spec.cwd.display(),
@@ -605,6 +623,9 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
             stdout_tail: rt.stdout_tail.clone(),
             stderr_tail: rt.stderr_tail.clone(),
         };
+        // A pipeline run occupies the same single agent slot as chat; mark the
+        // Pipeline studio "running" only when the active run is a pipeline.
+        st.pipe_running = rt.running && rt.pipeline.is_some();
     }
     Ok(st)
 }
@@ -637,7 +658,7 @@ fn action(
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 insert_chat(&conn, "you", None, &text)?;
             }
-            if let Err(e) = start_chat_agent(app, state.inner(), text) {
+            if let Err(e) = start_chat_agent(app, state.inner(), text, None) {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
                 insert_chat(&conn, "driver", Some("deny"), &e)?;
             }
@@ -662,12 +683,31 @@ fn action(
         "open_artifact" => {
             open_workspace_path(&state.project_root, &str_arg(0))?;
         }
-        // Spawning agents / running pipelines is a write to the governed
-        // substrate - it must go through the MCP server, not a direct DB write.
-        // Wire these to musubi_spawn_subagent / the pipeline runner here.
-        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset" | "run_pipe"
-        | "stop_pipe" | "reset_pipe" => {
-            eprintln!("[musubi] pipeline action '{kind}' - route to MCP server (todo)");
+        // Run a pipeline: spawn one governed `agent "<brief>" --pipeline <name>`
+        // process (the deterministic runner), reusing the single agent slot.
+        // Args: [brief, pipeline_name]. Stage activity is audited and shows in
+        // the Orchestrator / Audit views as the workers run.
+        "run_pipe" => {
+            let brief = str_arg(0);
+            let name = str_arg(1);
+            if brief.trim().is_empty() || name.trim().is_empty() {
+                return Ok(());
+            }
+            {
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                insert_chat(&conn, "you", None, &format!("▶ pipeline {name}: {brief}"))?;
+            }
+            if let Err(e) = start_chat_agent(app, state.inner(), brief, Some(name)) {
+                let conn = state.db.lock().map_err(|err| err.to_string())?;
+                insert_chat(&conn, "driver", Some("deny"), &e)?;
+            }
+        }
+        "stop_pipe" => {
+            cancel_chat_agent(&app, state.inner())?;
+        }
+        // Studio authoring actions remain client-side scaffolding for now.
+        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset" | "reset_pipe" => {
+            eprintln!("[musubi] pipeline studio action '{kind}' - client-side only");
         }
         other => eprintln!("[musubi] unknown action: {other}"),
     }
