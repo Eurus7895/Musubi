@@ -1474,13 +1474,26 @@ mod tests {
     fn pipeline_spec_adds_profile_only_when_non_default_and_never_chat_id() {
         let root = PathBuf::from("/proj");
         let with = build_pipeline_launch_spec(
-            "dev-lite", "b", "azure.work", "anthropic.default", None, &root,
+            "dev-lite",
+            "b",
+            "azure.work",
+            "anthropic.default",
+            None,
+            &root,
             &std::collections::HashMap::new(),
         )
         .unwrap();
         assert_eq!(
             with.args,
-            vec!["b", "--profile", "azure.work", "--pipeline", "dev-lite", "--tool-surface", "agent"]
+            vec![
+                "b",
+                "--profile",
+                "azure.work",
+                "--pipeline",
+                "dev-lite",
+                "--tool-surface",
+                "agent"
+            ]
         );
         assert!(!with.args.iter().any(|a| a == "--chat-id"));
     }
@@ -1489,12 +1502,16 @@ mod tests {
     fn pipeline_spec_rejects_empty_brief_or_name() {
         let root = PathBuf::from("/proj");
         let empty = &std::collections::HashMap::new();
-        assert!(build_pipeline_launch_spec("feature-dev", "  ", "", "", None, &root, empty)
-            .unwrap_err()
-            .contains("brief is empty"));
-        assert!(build_pipeline_launch_spec("", "do it", "", "", None, &root, empty)
-            .unwrap_err()
-            .contains("no pipeline"));
+        assert!(
+            build_pipeline_launch_spec("feature-dev", "  ", "", "", None, &root, empty)
+                .unwrap_err()
+                .contains("brief is empty")
+        );
+        assert!(
+            build_pipeline_launch_spec("", "do it", "", "", None, &root, empty)
+                .unwrap_err()
+                .contains("no pipeline")
+        );
     }
 
     #[test]

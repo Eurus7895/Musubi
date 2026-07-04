@@ -706,8 +706,7 @@ fn action(
             cancel_chat_agent(&app, state.inner())?;
         }
         // Studio authoring actions remain client-side scaffolding for now.
-        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset"
-        | "reset_pipe" => {
+        "add_pipe" | "remove_pipe" | "move_pipe" | "clear_pipe" | "load_preset" | "reset_pipe" => {
             eprintln!("[musubi] pipeline studio action '{kind}' - client-side only");
         }
         other => eprintln!("[musubi] unknown action: {other}"),
