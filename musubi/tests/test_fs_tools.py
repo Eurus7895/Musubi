@@ -374,3 +374,74 @@ def test_mcp_run_command_round_trip(workspace: Path) -> None:
     payload = json.loads(server.musubi_run_command("echo ok"))
     assert payload["status"] == "ok"
     assert payload["stdout"].strip() == "ok"
+
+
+# ── Read-only discovery: glob ───────────────────────────────────────────────
+
+
+def _seed_tree(root: Path) -> None:
+    (root / "src").mkdir()
+    (root / "src" / "main.py").write_text("import os\nprint('hi')\n", encoding="utf-8")
+    (root / "src" / "util.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    (root / "README.md").write_text("# title\nTODO: docs\n", encoding="utf-8")
+    # A directory that must never be walked.
+    (root / "node_modules" / "pkg").mkdir(parents=True)
+    (root / "node_modules" / "pkg" / "index.js").write_text("junk", encoding="utf-8")
+
+
+def test_glob_lists_whole_tree_and_skips_heavy_dirs(workspace: Path) -> None:
+    _seed_tree(workspace)
+    payload = json.loads(server.musubi_glob())
+    assert payload["status"] == "ok"
+    assert payload["matches"] == ["README.md", "src/main.py", "src/util.py"]
+    assert not any("node_modules" in m for m in payload["matches"])
+    assert payload["truncated"] is False
+
+
+def test_glob_pattern_and_path_scope(workspace: Path) -> None:
+    _seed_tree(workspace)
+    assert json.loads(server.musubi_glob(pattern="**/*.py"))["matches"] == [
+        "src/main.py",
+        "src/util.py",
+    ]
+    assert json.loads(server.musubi_glob(path="src", pattern="*.py"))["count"] == 2
+    assert json.loads(server.musubi_glob(pattern="*.md"))["matches"] == ["README.md"]
+
+
+def test_glob_rejects_empty_pattern_and_traversal(workspace: Path) -> None:
+    assert json.loads(server.musubi_glob(pattern="  "))["status"] == "error"
+    assert json.loads(server.musubi_glob(path="../.."))["status"] == "error"
+
+
+# ── Read-only discovery: grep ───────────────────────────────────────────────
+
+
+def test_grep_finds_matches_with_file_and_line(workspace: Path) -> None:
+    _seed_tree(workspace)
+    payload = json.loads(server.musubi_grep("TODO"))
+    assert payload["status"] == "ok"
+    assert payload["matches"] == [{"file": "README.md", "line": 2, "text": "TODO: docs"}]
+    assert payload["files_scanned"] >= 1
+
+
+def test_grep_file_glob_and_ignore_case(workspace: Path) -> None:
+    _seed_tree(workspace)
+    only_py = json.loads(server.musubi_grep("import", file_glob="*.py"))
+    assert [h["file"] for h in only_py["matches"]] == ["src/main.py"]
+    ci = json.loads(server.musubi_grep("todo", ignore_case=True))
+    assert ci["count"] == 1
+    assert json.loads(server.musubi_grep("todo"))["count"] == 0
+
+
+def test_grep_rejects_bad_regex_and_empty_pattern(workspace: Path) -> None:
+    assert json.loads(server.musubi_grep("("))["status"] == "error"
+    assert json.loads(server.musubi_grep(""))["status"] == "error"
+
+
+def test_grep_skips_non_utf8_files(workspace: Path) -> None:
+    _seed_tree(workspace)
+    (workspace / "blob.bin").write_bytes(b"\xff\xfe\x00binarypattern")
+    # Must not raise; the binary file is skipped, text matches still found.
+    payload = json.loads(server.musubi_grep("helper"))
+    assert payload["status"] == "ok"
+    assert [h["file"] for h in payload["matches"]] == ["src/util.py"]

@@ -33,6 +33,8 @@ class PolicyDecision:
 
 _TOOL_CAPABILITIES: dict[str, str] = {
     "musubi_read_file": "Read",
+    "musubi_glob": "Glob",
+    "musubi_grep": "Grep",
     "musubi_write_file": "Write",
     "musubi_append_file": "Write",
     "musubi_edit_file": "Edit",

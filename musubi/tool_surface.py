@@ -12,6 +12,8 @@ ToolSurface = Literal["agent", "operator", "pipeline", "full"]
 
 ROOT_AGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "musubi_read_file",
+    "musubi_glob",
+    "musubi_grep",
     "musubi_list_skills",
     "musubi_recommend_skills",
     "musubi_get_skill",

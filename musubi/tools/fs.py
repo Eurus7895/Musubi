@@ -20,6 +20,9 @@ Public API (all return JSON-shaped dicts with `status`):
                                                      → {"status": "ok", "replacements": int}
     run_command(command, timeout_seconds=60, cwd=None)
                                                      → {"status": "ok", "stdout": str, "stderr": str, "exit_code": int}
+    glob(pattern="**/*", path=None)                  → {"status": "ok", "matches": list[str], "count": int, "truncated": bool}
+    grep(pattern, path=None, file_glob=None, ignore_case=False)
+                                                     → {"status": "ok", "matches": list[dict], "count": int, "files_scanned": int, "truncated": bool}
 
 On any error each returns `{"status": "error", "error": str}` — the
 MCP boundary serialises the dict to JSON for the caller.
@@ -27,9 +30,12 @@ MCP boundary serialises the dict to JSON for the caller.
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +44,19 @@ from typing import Any
 # use cases hit it.
 _MAX_READ_BYTES = 5 * 1024 * 1024
 _MAX_OUTPUT_CHARS = 1_000_000
+
+# Read-only discovery (glob/grep): directories never worth walking for
+# source search, plus result caps so a discovery call over a huge tree
+# cannot blow the model's context budget.
+_DISCOVERY_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+    "target", "dist", "build", ".next", ".tauri", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", ".idea", ".gradle",
+})
+_MAX_GLOB_MATCHES = 2000
+_MAX_GREP_MATCHES = 300
+_GREP_MAX_FILE_BYTES = 2 * 1024 * 1024
+_GREP_MAX_LINE_CHARS = 500
 
 
 # ── Path resolution ────────────────────────────────────────────────────────
@@ -309,7 +328,140 @@ def run_command(
     }
 
 
+# ── Read-only discovery (Grep/Glob capabilities) ────────────────────────────
+
+
+def glob(pattern: str = "**/*", *, path: str | None = None) -> dict[str, Any]:
+    """List workspace files matching `pattern` (read-only discovery).
+
+    `pattern` is matched with fnmatch against each file's workspace-relative
+    POSIX path and its basename, so `*.py`, `gui/src/**`, and `**/*.jsx` all
+    work; the whole-tree default `**/*` lists every file. `path` optionally
+    scopes the search to a sub-directory. Heavy build/VCS directories
+    (`.git`, `node_modules`, …) are never walked. Results are sorted and
+    capped at `_MAX_GLOB_MATCHES`.
+    """
+    if not (pattern or "").strip():
+        return {"status": "error", "error": "pattern must be non-empty"}
+    try:
+        base = resolve_path(path) if path else _workspace_root()
+    except (ValueError, PermissionError) as exc:
+        return _error(exc)
+    if not base.is_dir():
+        return {"status": "error", "error": f"not a directory: {path}"}
+    matches: list[str] = []
+    truncated = False
+    try:
+        for rel, _full in _iter_workspace_files(base, pattern):
+            matches.append(rel)
+            if len(matches) >= _MAX_GLOB_MATCHES:
+                truncated = True
+                break
+    except OSError as exc:
+        return _error(exc)
+    matches.sort()
+    _audit("glob", base, f"pattern={pattern!r} matches={len(matches)}")
+    return {
+        "status": "ok",
+        "matches": matches,
+        "count": len(matches),
+        "truncated": truncated,
+    }
+
+
+def grep(
+    pattern: str,
+    *,
+    path: str | None = None,
+    file_glob: str | None = None,
+    ignore_case: bool = False,
+) -> dict[str, Any]:
+    """Search workspace file contents for a regex (read-only).
+
+    Returns up to `_MAX_GREP_MATCHES` `{"file","line","text"}` hits. `path`
+    scopes the search to a sub-directory; `file_glob` limits which files are
+    scanned (same fnmatch semantics as `glob`). Oversized, binary, or
+    non-UTF-8 files are skipped silently. Heavy build/VCS directories are
+    never walked.
+    """
+    if not pattern:
+        return {"status": "error", "error": "pattern must be non-empty"}
+    try:
+        rx = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+    except re.error as exc:
+        return {"status": "error", "error": f"invalid regex: {exc}"}
+    try:
+        base = resolve_path(path) if path else _workspace_root()
+    except (ValueError, PermissionError) as exc:
+        return _error(exc)
+    if not base.is_dir():
+        return {"status": "error", "error": f"not a directory: {path}"}
+    hits: list[dict[str, Any]] = []
+    files_scanned = 0
+    truncated = False
+    try:
+        for rel, full in _iter_workspace_files(base, file_glob):
+            try:
+                if full.stat().st_size > _GREP_MAX_FILE_BYTES:
+                    continue
+                text = full.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            files_scanned += 1
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if rx.search(line):
+                    hits.append({
+                        "file": rel,
+                        "line": lineno,
+                        "text": line[:_GREP_MAX_LINE_CHARS],
+                    })
+                    if len(hits) >= _MAX_GREP_MATCHES:
+                        truncated = True
+                        break
+            if truncated:
+                break
+    except OSError as exc:
+        return _error(exc)
+    _audit("grep", base, f"pattern={pattern!r} hits={len(hits)} files={files_scanned}")
+    return {
+        "status": "ok",
+        "matches": hits,
+        "count": len(hits),
+        "files_scanned": files_scanned,
+        "truncated": truncated,
+    }
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _iter_workspace_files(
+    base: Path, file_glob: str | None
+) -> Iterator[tuple[str, Path]]:
+    """Yield `(rel_posix, full_path)` for files under `base`, pruning heavy
+    build/VCS directories. When `file_glob` is set, only files whose relative
+    POSIX path or basename fnmatches it are yielded."""
+    root = _workspace_root()
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Prune in place so os.walk never descends into skipped trees.
+        dirnames[:] = sorted(d for d in dirnames if d not in _DISCOVERY_SKIP_DIRS)
+        for name in sorted(filenames):
+            full = Path(dirpath) / name
+            try:
+                rel = full.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if file_glob and not _glob_match(rel, name, file_glob):
+                continue
+            yield rel, full
+
+
+def _glob_match(rel_posix: str, base_name: str, pattern: str) -> bool:
+    """True when `pattern` selects a file. The whole-tree patterns match
+    everything; otherwise fnmatch against the relative path or the basename."""
+    if pattern in ("", "*", "**", "**/*"):
+        return True
+    return fnmatch.fnmatch(rel_posix, pattern) or fnmatch.fnmatch(base_name, pattern)
 
 
 def _error(exc: BaseException) -> dict[str, Any]:

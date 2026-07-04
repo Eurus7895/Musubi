@@ -30,11 +30,14 @@ from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
 
 # Symbolic capability (role allow-list) → MCP tool names. The role allow-list
 # uses Copilot's symbolic names; the standalone path drives `musubi_*` MCP
-# tools. Grep/Glob have no read-only MCP equivalent, so a read-only role is
-# limited to file reads — it is never silently upgraded to shell access.
+# tools. Grep/Glob map to read-only discovery tools so a read-only role (e.g.
+# a pipeline planner/designer/reviewer) can find files without guessing paths
+# — it is still never silently upgraded to shell (Bash) access.
 SYMBOLIC_TO_MCP: dict[str, list[str]] = {
     "Read": ["musubi_read_file"],
     "View": ["musubi_read_file"],
+    "Grep": ["musubi_grep"],
+    "Glob": ["musubi_glob"],
     "Write": ["musubi_write_file", "musubi_append_file"],
     "Edit": ["musubi_edit_file"],
     "Bash": ["musubi_run_command"],
@@ -197,10 +200,10 @@ def select_child_tools(
 ) -> list[dict[str, Any]]:
     """Filter the MCP tool catalog to the role's mapped capabilities.
 
-    Symbolic role tools (Read/Write/...) map to `musubi_*` MCP tools via
-    SYMBOLIC_TO_MCP. Unmapped capabilities (Grep/Glob) contribute nothing — a
-    read-only role is never silently granted shell. An empty result is valid
-    (a text-only role, summarizer-shaped).
+    Symbolic role tools (Read/Grep/Glob/Write/...) map to `musubi_*` MCP tools
+    via SYMBOLIC_TO_MCP. A read-only role gets read + discovery (grep/glob) but
+    is never silently granted shell. An unmapped capability contributes
+    nothing; an empty result is valid (a text-only role, summarizer-shaped).
     """
     wanted: set[str] = set()
     for sym in allowed_symbolic:

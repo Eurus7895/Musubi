@@ -28,8 +28,11 @@ from pathlib import Path
 from typing import Any
 
 #: Per-stage cycle cap for a pipeline worker. Stages are single-purpose, so a
-#: small budget keeps a runaway stage from burning the whole pipeline.
-DEFAULT_STAGE_MAX_CYCLES = 8
+#: small budget keeps a runaway stage from burning the whole pipeline. In the
+#: standalone runner a stage self-explores via grep/glob before doing its work
+#: (there is no harness-injected workspace tree), so the cap leaves a few
+#: cycles for discovery on top of the stage's real output.
+DEFAULT_STAGE_MAX_CYCLES = 12
 
 
 async def run_pipeline(
