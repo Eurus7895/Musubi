@@ -14,12 +14,13 @@ class LazyTauri {
     this.inner = null
     this.state = {
       view: props.startView || 'orchestrator',
-      selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
+      selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false, processOpen: false, logWindowOpen: false,
       subagents: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
-      activeProfile: 'anthropic.default',
+      activeProfile: 'anthropic.default', profiles: [],
       pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
+      driverStatus: { running: false, task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
       setupStatus: {
         projectRoot: '',
         auditDbPath: '',

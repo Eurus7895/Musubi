@@ -40,7 +40,10 @@ plan, design, code, or review stages.
    calls, assume the raw payload may be elided from your later context. Use
    file reads, size checks, grep, or concise summaries when you need to inspect
    the artifact again.
-7. Use `musubi_run_command` only for focused verification or diagnostics.
+7. Use `musubi_run_command` only for focused verification or diagnostics. Do
+   not use shell commands such as `cat`, `type`, or `Get-Content` just to read
+   source files; use `musubi_read_file`, then `musubi_retrieve` if the read
+   result was compressed.
 8. Do not spawn other workers. If the task is too vague or too large for this
    direct worker, say exactly what is missing instead of delegating.
 9. When finished, summarize the outcome and list every file you wrote or

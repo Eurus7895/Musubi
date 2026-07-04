@@ -5,7 +5,9 @@ const pill = (label) => (
   </span>
 )
 
-export default function TrustStrip({ activeModel, runtimeSource }) {
+export default function TrustStrip({ vals }) {
+  const profiles = vals.profiles || []
+  const hasActiveOption = profiles.some((p) => p.name === vals.activeProfileName)
   return (
     <div style={{ height: 46, flexShrink: 0, background: '#111721', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', padding: '0 16px', gap: 13 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexShrink: 0 }}>
@@ -20,9 +22,36 @@ export default function TrustStrip({ activeModel, runtimeSource }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#6a6a72' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none"><path d="M4 7 L9 4 L15 7 L20 4 V17 L15 20 L9 17 L4 20 Z M9 4 V17 M15 7 V20" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
-          {runtimeSource}
+          {vals.runtimeSourceLabel}
         </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ff9b3d' }}>{activeModel}</span>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ff9b3d' }}>
+          <span style={{ color: '#6a6a72' }}>profile</span>
+          <select
+            value={vals.activeProfileName}
+            onChange={(e) => {
+              const selected = profiles.find((p) => p.name === e.target.value)
+              selected?.onSelect()
+            }}
+            style={{
+              maxWidth: 280,
+              background: '#19212f',
+              border: '1px solid rgba(255,155,61,0.35)',
+              borderRadius: 7,
+              color: '#ffbe7a',
+              fontFamily: "'IBM Plex Mono',monospace",
+              fontSize: 11,
+              padding: '5px 28px 5px 8px',
+              outline: 'none',
+            }}
+          >
+            {!hasActiveOption && (
+              <option value={vals.activeProfileName}>{vals.activeProfileName || vals.activeModel}</option>
+            )}
+            {profiles.map((p) => (
+              <option key={p.name} value={p.name}>{p.name} · {p.model}</option>
+            ))}
+          </select>
+        </label>
       </div>
     </div>
   )

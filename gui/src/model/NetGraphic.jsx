@@ -36,11 +36,19 @@ export default function NetGraphic({ shown }) {
   els.push(<circle key={k++} cx={500} cy={1} r={2.6} fill="#ff9b3d" />)
   // each card hangs from the net; running agent lit amber
   const cols = [1.33, 4, 6.67]
+  const anchors = []
   ;(shown || []).forEach((a, i) => {
     const c = cols[i], cx = X(c), top = [cx, Y(R, c)], running = a.status === 'running'
+    anchors.push({ cx, parent: a.parent || 'driver', running })
     line(top, [cx, H], running ? '#ff9b3d' : 'rgba(255,255,255,0.28)', running ? 1.7 : 1.1, running ? {} : { strokeDasharray: '2 4' })
     els.push(<circle key={k++} cx={cx} cy={top[1]} r={2.6} fill={running ? '#ff9b3d' : '#8a8a92'} />)
   })
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i], b = anchors[i + 1]
+    if (a.parent && a.parent === b.parent) {
+      line([a.cx, H - 8], [b.cx, H - 8], '#ff9b3d', 1.2, { opacity: 0.45, strokeDasharray: '4 5' })
+    }
+  }
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" style={{ display: 'block', overflow: 'visible' }}>

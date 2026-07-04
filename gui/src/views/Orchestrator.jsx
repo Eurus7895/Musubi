@@ -39,7 +39,6 @@ export default function Orchestrator({ vals }) {
           <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexShrink: 0 }}>
             <div style={{ textAlign: 'right' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 20, fontWeight: 600, color: '#e9e9ea', lineHeight: 1 }}>{vals.runningCount}</div><div style={{ fontSize: 10, color: '#6a6a72', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 2 }}>running</div></div>
             <div style={{ textAlign: 'right' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 20, fontWeight: 600, color: '#54c79a', lineHeight: 1 }}>{vals.totalDone}</div><div style={{ fontSize: 10, color: '#6a6a72', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 2 }}>completed</div></div>
-            <Box as="button" onClick={vals.togglePause} css="display:inline-flex;align-items:center;gap:7px;background:#232c3c;border:1px solid rgba(255,255,255,0.1);color:#e9e9ea;padding:8px 13px;border-radius:8px;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:11px" hover="border-color:rgba(255,155,61,0.5)">{vals.pauseLabel}</Box>
           </div>
         </div>
 
@@ -79,6 +78,7 @@ export default function Orchestrator({ vals }) {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: a.statusColor, fontFamily: "'IBM Plex Mono',monospace" }}><span style={cssToObj(a.dotStyle)} />{a.statusLabel}</span>
                 </div>
                 <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#8a8a92', marginBottom: 4 }}>{a.handle}</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: '#6a6a72', marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>parent {a.parentLabel}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#9b9ba2' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: a.modelColor, flexShrink: 0 }} />{a.model}<span style={{ color: '#6a6a72' }}>· {a.profile}</span></div>
                 <div style={{ fontSize: 11.5, color: '#cfcfd4', lineHeight: 1.4, height: 32, overflow: 'hidden' }}>{a.brief}</div>
                 <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px 0 9px' }} />
@@ -93,6 +93,7 @@ export default function Orchestrator({ vals }) {
               </Box>
             ))}
           </div>
+          <SessionHistory vals={vals} />
         </div>
       </div>
 
@@ -100,6 +101,47 @@ export default function Orchestrator({ vals }) {
       <div style={{ width: 322, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {vals.hasDetail && <DetailPanel vals={vals} />}
         {vals.showFeed && <FeedPanel vals={vals} />}
+      </div>
+    </div>
+  )
+}
+
+function SessionHistory({ vals }) {
+  return (
+    <div style={{ width: 'min(1180px, 100%)', flexShrink: 0, marginTop: 12, background: '#111721', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', boxShadow: '0 14px 34px rgba(0,0,0,0.28)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '12px 16px 8px' }}>
+        <div style={{ minWidth: 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 650 }}>{vals.sessionTitle}</span>
+          <span style={{ marginLeft: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#7a7a82' }}>{vals.sessionSubtitle}</span>
+        </div>
+        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ff9b3d', whiteSpace: 'nowrap' }}>spawn order</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'stretch', gap: 16, overflowX: 'auto', padding: '10px 16px 16px' }}>
+        {vals.sessionSteps.map((st) => (
+          <div key={st.handle} style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
+            <Box css={st.cardStyle} onClick={st.onSelect} hover="border-color:rgba(255,155,61,0.55)">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 28, height: 20, padding: '0 6px', borderRadius: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, fontWeight: 650, color: '#cfcfd4', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>{st.orderLabel}</span>
+                  <span style={cssToObj(st.roleChipStyle)}>{st.role}</span>
+                </div>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: st.statusColor }}><span style={cssToObj(st.dotStyle)} />{st.statusLabel}</span>
+              </div>
+              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92', marginBottom: 8 }}>{st.handle}</div>
+              <div style={{ height: 38, overflow: 'hidden', fontSize: 11.5, lineHeight: 1.45, color: '#d4d4d8', marginBottom: 12 }}>{st.brief}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1, height: 4, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={cssToObj(st.barFillStyle)} /></div>
+                <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92' }}>{st.turnsLabel}</span>
+              </div>
+              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>{st.toolsLabel}</div>
+            </Box>
+            {st.showConnector && (
+              <div style={{ display: 'flex', alignItems: 'center', color: '#3a4250', flexShrink: 0 }}>
+                <svg viewBox="0 0 42 24" width="42" height="24" fill="none"><path d="M3 12 H35 M29 6 L35 12 L29 18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -119,7 +161,7 @@ function DetailPanel({ vals }) {
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: d.statusColor, fontFamily: "'IBM Plex Mono',monospace" }}><span style={cssToObj(d.dotStyle)} />{d.statusLabel}</span>
         </div>
         <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: '#fff', marginBottom: 4 }}>{d.handle}</div>
-        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72', marginBottom: 14 }}>parent · {d.parent}</div>
+        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72', marginBottom: 14 }}>{d.workerLabel} · audit {d.auditId} · parent {d.parent}</div>
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 6 }}>Model · resolved per agent</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, color: '#e9e9ea', marginBottom: 18, padding: '11px 13px', background: '#19212f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.modelColor, flexShrink: 0 }} />{d.model}<span style={{ color: '#6a6a72' }}>· {d.profile}</span></div>
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 6 }}>Brief</div>

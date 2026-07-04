@@ -11,9 +11,9 @@ import { pipePresets } from '../model/data.js'
 // auditFilter, pipeChatOpen) is local UI state.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat',
-  'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile',
+  'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'pipeSteps', 'pipeName', 'pipeRunning', 'pipeCur', 'pipeProg', 'pipeDoneFlag', 'paused', 't',
-  'runtimeSource', 'setupStatus',
+  'runtimeSource', 'setupStatus', 'driverStatus',
 ]
 
 export default class TauriSource {
@@ -24,11 +24,13 @@ export default class TauriSource {
     this.state = {
       view: this.props.startView || 'orchestrator',
       selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
+      processOpen: false, logWindowOpen: false,
       subagents: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
-      activeProfile: 'anthropic.default',
+      activeProfile: 'anthropic.default', profiles: [],
       pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
+      driverStatus: emptyDriverStatus(),
       setupStatus: emptySetupStatus(),
     }
   }
@@ -73,10 +75,18 @@ export default class TauriSource {
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
       openPipeChat: local({ pipeChatOpen: true }),
       closePipeChat: local({ pipeChatOpen: false }),
+      toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
+      openProcessLog: () => this._setLocal({ logWindowOpen: true }),
+      closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
       onDraft: (e) => this._setLocal({ draft: e.target.value }),
-      onDraftKey: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.actions.sendChat() } },
+      onDraftKey: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          if (!this.state.driverStatus?.running) this.actions.sendChat()
+        }
+      },
       // backend-mutating actions
-      togglePause: () => this._action('toggle_pause'),
+      cancelAgent: () => this._action('cancel_agent'),
       selectProfile: (n) => this._action('select_profile', [n]),
       sendChat: () => {
         const d = (this.state.draft || '').trim()
@@ -84,6 +94,7 @@ export default class TauriSource {
         this._setLocal({ draft: '' })
         this._action('send_chat', [d])
       },
+      openArtifact: (path) => this._action('open_artifact', [path]),
       addPipe: (r) => this._action('add_pipe', [r]),
       removePipe: (u) => this._action('remove_pipe', [u]),
       movePipe: (u, dir) => this._action('move_pipe', [u, dir]),
@@ -115,4 +126,8 @@ function emptySetupStatus() {
     llmConfigured: false,
     pathHint: '',
   }
+}
+
+function emptyDriverStatus() {
+  return { running: false, task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
 }
