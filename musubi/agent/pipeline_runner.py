@@ -44,12 +44,17 @@ async def run_pipeline(
     budget: Any = None,
     stats: Any = None,
     audit_db_path: Path | None = None,
+    strict: bool = False,
 ) -> str:
     """Summon and run one pipeline. Returns the final stage's summary text.
 
     `spawn_args` is the model's `musubi_spawn_pipeline` input with
     `parent_session_id` / `parent_agent_name` already injected by the caller.
-    Any harness-side rejection is returned verbatim so the model can react.
+    Any harness-side rejection is returned verbatim so the model can react —
+    unless `strict` is set, in which case a rejected spawn or stage raises
+    `RuntimeError`. Callers with no model loop to react (e.g. the deterministic
+    `agent --pipeline` CLI) pass `strict=True` so a failure is a nonzero exit,
+    not a "successful" answer.
     """
     from agent.run import _call_tool_text, run_unit
     from agent.subagent import (
@@ -61,6 +66,8 @@ async def run_pipeline(
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
     spawned = _loads(raw)
     if spawned.get("status") != "spawned":
+        if strict:
+            raise RuntimeError(f"pipeline spawn rejected: {raw}")
         return raw
     psid = str(spawned.get("pipeline_session_id", ""))
     pname = str(spawned.get("pipeline_name", ""))
@@ -81,7 +88,10 @@ async def run_pipeline(
         })
         st = _loads(stage_raw)
         if st.get("status") != "spawned":
-            return f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
+            msg = f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
+            if strict:
+                raise RuntimeError(msg)
+            return msg
         handle_id = str(st.get("handle_id", ""))
         allowed = st.get("allowed_tools") or []
 

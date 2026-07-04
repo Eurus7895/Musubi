@@ -333,10 +333,17 @@ async def run_agent(
                     f"(no model routing)",
                     file=log,
                 )
+                # Stages select from the FULL worker catalog (not the
+                # surface-filtered `tools`): the root `agent` surface hides
+                # mutation tools, so a coder stage would otherwise be starved of
+                # Write/Edit/Bash despite its policy allowing them. `strict`
+                # turns a rejected spawn/stage into a nonzero exit — there is no
+                # model loop here to react to an error return.
                 final_answer = await pipeline_runner.run_pipeline(
-                    session, spawn_args, vendor, tools, log,
+                    session, spawn_args, vendor, worker_catalog, log,
                     compression_db_path=context_compression_db_path,
                     budget=budget, stats=stats, audit_db_path=audit_db_path,
+                    strict=True,
                 )
             else:
                 final_answer, _ = await run_unit(
@@ -751,10 +758,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="NAME",
         help=(
-            "Run the named pipeline directly (a recipe under "
-            ".github/pipelines/<name>, e.g. feature-dev, dev-lite, "
-            "code-review) with the task as its brief, instead of the "
-            "model-routed single-agent loop."
+            "Run the named pipeline directly (a linear recipe under "
+            ".github/pipelines/<name>, e.g. feature-dev or dev-lite) with the "
+            "task as its brief, instead of the model-routed single-agent loop. "
+            "Pipelines needing per-file fan-out (e.g. code-review) are not "
+            "supported by this deterministic runner."
         ),
     )
     args = ap.parse_args(argv)

@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from agent.run import run_agent
 from agent.vendors.base import LMResponse, LMRouter
@@ -117,3 +120,38 @@ def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
     assert "ship it" not in router.reviewer_brief
     assert "plan: step1" not in router.reviewer_brief
     assert "design: moduleX" not in router.reviewer_brief
+
+
+def test_run_pipeline_strict_raises_on_spawn_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`strict=True` (the deterministic CLI path) turns a rejected spawn into a
+    RuntimeError instead of returning the raw error text as a 'successful'
+    answer. The default (model) path still returns the text so the model can
+    react."""
+    from agent import pipeline_runner
+
+    async def fake_reject(session: Any, name: str, args: dict[str, Any]) -> str:
+        return json.dumps({"status": "error", "error": "no such pipeline"})
+
+    # run_pipeline imports _call_tool_text from agent.run at call time.
+    monkeypatch.setattr("agent.run._call_tool_text", fake_reject)
+
+    async def _strict() -> str:
+        return await pipeline_runner.run_pipeline(
+            None, {"pipeline_name": "x", "brief": "b"}, None, [],
+            io.StringIO(), strict=True,
+        )
+
+    with pytest.raises(RuntimeError, match="spawn rejected"):
+        asyncio.run(_strict())
+
+    # Default (non-strict) path returns the raw text, unchanged.
+    async def _lenient() -> str:
+        return await pipeline_runner.run_pipeline(
+            None, {"pipeline_name": "x", "brief": "b"}, None, [],
+            io.StringIO(),
+        )
+
+    result = asyncio.run(_lenient())
+    assert "no such pipeline" in result
