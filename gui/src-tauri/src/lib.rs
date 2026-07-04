@@ -10,9 +10,9 @@
 //! Data source: the configured Musubi `audit.db`. When no database can be
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
-use std::io::Read;
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
@@ -237,7 +237,10 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
     if detail.is_empty() {
         format!("Agent exited with code {code}.")
     } else {
-        format!("Agent exited with code {code}.\n\n{}", last_log_line(detail))
+        format!(
+            "Agent exited with code {code}.\n\n{}",
+            last_log_line(detail)
+        )
     }
 }
 
@@ -335,8 +338,8 @@ fn start_chat_agent(
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
     let mut launch_root = state.project_root.clone();
-    let llm_config_path = (!setup.llm_config_path.is_empty())
-        .then(|| PathBuf::from(&setup.llm_config_path));
+    let llm_config_path =
+        (!setup.llm_config_path.is_empty()).then(|| PathBuf::from(&setup.llm_config_path));
     if !setup.llm_config_path.is_empty() {
         env.entry("MUSUBI_LLM_CONFIG".into())
             .or_insert_with(|| setup.llm_config_path.clone());
@@ -503,10 +506,7 @@ fn cancel_chat_agent(app: &tauri::AppHandle, state: &AppState) -> Result<(), Str
         return Ok(());
     };
 
-    let pid = child
-        .lock()
-        .map_err(|e| e.to_string())?
-        .id();
+    let pid = child.lock().map_err(|e| e.to_string())?.id();
 
     #[cfg(windows)]
     {
@@ -520,7 +520,9 @@ fn cancel_chat_agent(app: &tauri::AppHandle, state: &AppState) -> Result<(), Str
     }
 
     let mut guard = child.lock().map_err(|e| e.to_string())?;
-    guard.kill().map_err(|e| format!("failed to cancel agent: {e}"))?;
+    guard
+        .kill()
+        .map_err(|e| format!("failed to cancel agent: {e}"))?;
     Ok(())
 }
 
@@ -590,10 +592,8 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     );
     let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
         .then(|| PathBuf::from(&st.setup_status.llm_config_path));
-    st.active_profile = musubi_data::read_active_profile_for_config(
-        &conn,
-        llm_config_path.as_deref(),
-    );
+    st.active_profile =
+        musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref());
     if let Some(path) = llm_config_path {
         st.profiles = musubi_data::read_llm_profiles_from_path(path);
     }

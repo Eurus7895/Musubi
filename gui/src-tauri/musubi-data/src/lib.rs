@@ -577,7 +577,8 @@ fn parse_llm_profiles(v: &serde_json::Value) -> Vec<LmProfile> {
                     .to_string()
             };
             let model = first_nonempty(&[field("model"), field("deployment")]);
-            let transport = first_nonempty(&[field("transport"), default_transport(family, config)]);
+            let transport =
+                first_nonempty(&[field("transport"), default_transport(family, config)]);
             let endpoint = first_nonempty(&[
                 field("base_url"),
                 field("azure_endpoint"),
@@ -615,10 +616,7 @@ fn first_nonempty(values: &[String]) -> String {
         .to_string()
 }
 
-fn default_transport(
-    family: &str,
-    config: &serde_json::Map<String, serde_json::Value>,
-) -> String {
+fn default_transport(family: &str, config: &serde_json::Map<String, serde_json::Value>) -> String {
     if config.get("transport").and_then(|v| v.as_str()).is_some() {
         return String::new();
     }
@@ -1406,8 +1404,7 @@ mod tests {
         );
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-…".to_string());
 
-        let spec =
-            build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None).unwrap();
+        let spec = build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None).unwrap();
 
         assert_eq!(spec.program, cli);
         let mut forwarded = spec.env.clone();
