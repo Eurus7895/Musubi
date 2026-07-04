@@ -104,3 +104,6 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - GUI audit/orchestrator console first-run slice (the separate task launcher
   was removed so the Orchestrator remains the single session surface; plan:
   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))
+- Deterministic pipeline run: `agent --pipeline <name>` CLI entry point plus the
+  GUI Pipeline studio wired to spawn it (Run/Stop), with stage workers surfaced
+  through the Orchestrator/Audit views

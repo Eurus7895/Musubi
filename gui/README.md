@@ -76,8 +76,10 @@ The sections backed by the Tauri backend:
 - **Orchestrator**: the driver knot spawning governed sub-agents over a woven
   net; each card shows model, spawn-order badge, turn cap, and wall-clock
   budget.
-- **Pipeline studio**: build or run chains such as `feature-dev`, `bugfix`, and
-  `explore`.
+- **Pipeline studio**: pick a preset, describe the task, and **Run** — spawns
+  one governed `agent "<brief>" --pipeline <name>` process (the deterministic
+  pipeline runner); Stop cancels it. Stage workers stream into the Orchestrator
+  and Audit views as they run.
 - **Policy**: fail-closed PreToolUse allow/deny stream and role tool surfaces.
 - **Audit**: append-only ledger, filterable by event type.
 - **Models**: LMRouter vendor profiles and active profile selection.
