@@ -105,11 +105,12 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 - GUI audit/orchestrator console first-run slice (the separate task launcher
   was removed so the Orchestrator remains the single session surface; plan:
   [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))
-- Deterministic pipeline run: `agent --pipeline <name>` CLI entry point. In the
-  GUI, pipelines launch through the Orchestrator session input (the driver's
-  chat, root agent → `musubi_spawn_pipeline`); the Pipeline studio is a preset
-  composer / inspector, with stage workers surfaced through the Orchestrator/
-  Audit views
+- Deterministic pipeline run: `agent --pipeline <name>` CLI entry point. The
+  root agent does NOT auto-summon whole pipelines (`musubi_spawn_pipeline` is
+  off the agent tool surface — a pipeline is a user-invoked run via the CLI
+  flag, per policy locked decision #4), so a simple task can't be silently
+  routed into a multi-stage pipeline. The Pipeline studio is a preset composer /
+  inspector; stage workers surface through the Orchestrator/Audit views
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
   find files deterministically instead of blind-guessing paths — closing the gap

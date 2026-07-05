@@ -306,6 +306,11 @@ def run_command(
             encoding="utf-8",
             errors="replace",
             timeout=timeout_seconds,
+            # Never inherit the server's stdin: a command that reads stdin
+            # (e.g. a bare `python` that drops into its REPL, or a mangled
+            # `python -c`) would otherwise block until the timeout, stalling
+            # the whole agent. Feed EOF so such commands exit immediately.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         partial_out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""

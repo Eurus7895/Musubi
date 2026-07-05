@@ -376,6 +376,17 @@ def test_mcp_run_command_round_trip(workspace: Path) -> None:
     assert payload["stdout"].strip() == "ok"
 
 
+def test_run_command_does_not_hang_on_stdin_read(workspace: Path) -> None:
+    # A command that reads stdin must get EOF immediately (stdin=DEVNULL),
+    # not block until the timeout. The short timeout makes a regression fail
+    # fast instead of stalling the suite.
+    code = "import sys; print('eof' if sys.stdin.read() == '' else 'blocked')"
+    payload = json.loads(server.musubi_run_command(_py_cmd(code), timeout_seconds=10))
+    assert payload["status"] == "ok"
+    assert payload["exit_code"] == 0
+    assert payload["stdout"].strip() == "eof"
+
+
 # ── Read-only discovery: glob ───────────────────────────────────────────────
 
 
