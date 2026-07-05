@@ -1,103 +1,15 @@
-import { useEffect, useRef } from 'react'
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
-import NetGraphic from '../model/NetGraphic.jsx'
 import ChatBody from '../components/ChatBody.jsx'
 
-// Scales the 1000×520 stage to fit its container (port of fitStage()).
-function useFitStage() {
-  const stageRef = useRef(null)
-  useEffect(() => {
-    const el = stageRef.current
-    if (!el || !el.parentElement) return
-    const p = el.parentElement
-    const fit = () => {
-      const sc = Math.min(1, (p.clientWidth - 16) / 1000, (p.clientHeight - 16) / 520)
-      el.style.transform = 'scale(' + sc.toFixed(4) + ')'
-    }
-    fit()
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(fit) : null
-    ro?.observe(p)
-    return () => ro?.disconnect()
-  }, [])
-  return stageRef
-}
-
 export default function Orchestrator({ vals }) {
-  const stageRef = useFitStage()
-
   return (
     <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      {/* canvas */}
+      <RunRail vals={vals} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'auto', position: 'relative' }}>
-        {/* header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, padding: '22px 26px 8px' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em' }}>Orchestrator</div>
-            <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 3 }}>The knot ties every thread to policy. Sub-agents are governed threads — turn-capped, firewalled brief, restricted tools, every spawn bound into the audit.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexShrink: 0 }}>
-            <div style={{ textAlign: 'right' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 20, fontWeight: 600, color: '#e9e9ea', lineHeight: 1 }}>{vals.runningCount}</div><div style={{ fontSize: 10, color: '#6a6a72', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 2 }}>running</div></div>
-            <div style={{ textAlign: 'right' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 20, fontWeight: 600, color: '#54c79a', lineHeight: 1 }}>{vals.totalDone}</div><div style={{ fontSize: 10, color: '#6a6a72', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 2 }}>completed</div></div>
-          </div>
-        </div>
-
-        {/* graph */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px 26px 20px', position: 'relative' }}>
-          {/* watermark */}
-          <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 26px), repeating-linear-gradient(-45deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 26px)', WebkitMaskImage: 'radial-gradient(ellipse 62% 58% at 50% 42%, #000 30%, transparent 75%)', maskImage: 'radial-gradient(ellipse 62% 58% at 50% 42%, #000 30%, transparent 75%)' }} />
-
-          {/* woven net · driver at top, governed threads hang below */}
-          <div ref={stageRef} style={{ position: 'relative', width: 1000, height: 520, flexShrink: 0, transformOrigin: 'top center' }}>
-            <div style={{ position: 'absolute', left: 0, top: 158, width: 1000, height: 130, pointerEvents: 'none' }}>
-              <NetGraphic shown={vals.webShown} />
-            </div>
-
-            {/* driver · the knot (hub) */}
-            <div style={cssToObj(vals.driverStyle)}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, marginBottom: 9 }}>
-                <span style={cssToObj(vals.driverDotStyle)} />
-                <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#ff9b3d', fontWeight: 600 }}>Driver · the knot</span>
-              </div>
-              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 14, fontWeight: 600, color: '#fff' }}>{vals.activeModel}</div>
-              <div style={{ fontSize: 11, color: '#7a7a82', marginTop: 5, lineHeight: 1.45 }}>Reaches the model through <span style={{ color: '#cfcfd4' }}>one inject point</span> · LMRouter</div>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginTop: 11, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>
-                <span>cycle <span style={{ color: '#cfcfd4' }}>{vals.driverCycle}</span></span>
-                <span>spawns <span style={{ color: '#cfcfd4' }}>{vals.totalSpawned}</span></span>
-              </div>
-            </div>
-
-            {/* governed sub-agent threads, tied around the knot */}
-            {vals.subagents.map((a) => (
-              <Box key={a.handle} css={a.cardStyle} onClick={a.onSelect} hover="border-color:rgba(255,155,61,0.45)">
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 9 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                    <span style={cssToObj(a.orderBadge)}>{a.orderLabel}</span>
-                    <span style={cssToObj(a.roleChipStyle)}>{a.role}</span>
-                  </div>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: a.statusColor, fontFamily: "'IBM Plex Mono',monospace" }}><span style={cssToObj(a.dotStyle)} />{a.statusLabel}</span>
-                </div>
-                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#8a8a92', marginBottom: 4 }}>{a.handle}</div>
-                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: '#6a6a72', marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>parent {a.parentLabel}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#9b9ba2' }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: a.modelColor, flexShrink: 0 }} />{a.model}<span style={{ color: '#6a6a72' }}>· {a.profile}</span></div>
-                <div style={{ fontSize: 11.5, color: '#cfcfd4', lineHeight: 1.4, height: 32, overflow: 'hidden' }}>{a.brief}</div>
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px 0 9px' }} />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <div style={{ flex: 1, height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}><div style={cssToObj(a.barFillStyle)} /></div>
-                  <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#7a7a82' }}>{a.turnsLabel}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#6a6a72' }}>
-                  <span>{a.toolCount} tools</span>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><svg viewBox="0 0 24 24" width="11" height="11" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" /><path d="M12 8 V12 L15 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>{a.wallLabel}</span>
-                </div>
-              </Box>
-            ))}
-          </div>
-          <SessionHistory vals={vals} />
-        </div>
+        <Header vals={vals} />
+        <RunWorkspace vals={vals} />
       </div>
-
-      {/* right panel: detail OR feed */}
       <div style={{ width: 322, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {vals.hasDetail && <DetailPanel vals={vals} />}
         {vals.showFeed && <FeedPanel vals={vals} />}
@@ -106,54 +18,163 @@ export default function Orchestrator({ vals }) {
   )
 }
 
-function SessionHistory({ vals }) {
+function Header({ vals }) {
   return (
-    <div style={{ width: 'min(1180px, 100%)', flexShrink: 0, marginTop: 12, background: '#111721', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', boxShadow: '0 14px 34px rgba(0,0,0,0.28)' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '12px 16px 8px' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, padding: '22px 26px 8px' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 18, fontWeight: 650 }}>Orchestrator</div>
+        <div style={{ fontSize: 12, color: '#7a7a82', marginTop: 3 }}>Runs are grouped by parent session. Each step is ordered, turn-capped, tool-restricted, and tied back to the audit.</div>
+      </div>
+      <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexShrink: 0 }}>
+        <Metric value={vals.runningCount} label="running" color="#e9e9ea" />
+        <Metric value={vals.totalDone} label="completed" color="#54c79a" />
+      </div>
+    </div>
+  )
+}
+
+function Metric({ value, label, color }) {
+  return (
+    <div style={{ textAlign: 'right' }}>
+      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 20, fontWeight: 650, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#6a6a72', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 2 }}>{label}</div>
+    </div>
+  )
+}
+
+function RunRail({ vals }) {
+  return (
+    <aside style={{ width: 250, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,0.06)', background: '#0f151f', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ padding: '18px 16px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ fontSize: 13, fontWeight: 650 }}>Parent runs</div>
+        <div style={{ marginTop: 3, fontSize: 10.5, color: '#6a6a72', lineHeight: 1.4 }}>newest first · one governed run per session</div>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 9 }}>
+        {vals.runs.length ? vals.runs.map((run) => (
+          <Box key={run.id} as="button" css={run.cardStyle} onClick={run.onSelect} hover="border-color:rgba(255,155,61,0.45)">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ffbe7a' }}>{run.orderLabel}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: run.statusColor }}><span style={cssToObj(run.dotStyle)} />{run.statusLabel}</span>
+            </div>
+            <div style={{ marginTop: 7, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: '#f4f4f5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{run.title}</div>
+            <div style={{ marginTop: 4, fontSize: 11, color: '#8a8a92' }}>{run.subtitle}</div>
+            {run.currentBrief && <div style={{ marginTop: 8, fontSize: 11, color: '#cfcfd4', lineHeight: 1.35, maxHeight: 45, overflow: 'hidden' }}>{run.currentBrief}</div>}
+          </Box>
+        )) : (
+          <div style={{ border: '1px dashed rgba(255,255,255,0.12)', borderRadius: 10, padding: 14, color: '#7a7a82', fontSize: 12, lineHeight: 1.45 }}>
+            No session runs yet. Send a request to the driver to start one.
+          </div>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function RunWorkspace({ vals }) {
+  return (
+    <main style={{ flex: 1, minHeight: 0, padding: '14px 26px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 26px), repeating-linear-gradient(-45deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 26px)', WebkitMaskImage: 'radial-gradient(ellipse 68% 58% at 55% 36%, #000 22%, transparent 74%)', maskImage: 'radial-gradient(ellipse 68% 58% at 55% 36%, #000 22%, transparent 74%)' }} />
+      <DriverCard vals={vals} />
+      <Timeline vals={vals} />
+    </main>
+  )
+}
+
+function DriverCard({ vals }) {
+  const summary = vals.driverSummary || {
+    title: 'Run summary',
+    countLine: vals.runStatusSummary || 'No run selected',
+    focusLine: '',
+    alertLine: '',
+    metaLine: vals.activeModel,
+  }
+  return (
+    <div style={{ position: 'relative', zIndex: 1, alignSelf: 'center', width: 'min(460px, 100%)', background: '#19212f', border: '1px solid rgba(255,155,61,0.4)', borderRadius: 14, padding: '15px 20px', boxShadow: '0 18px 42px rgba(0,0,0,0.28)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, marginBottom: 8 }}>
+        <span style={cssToObj(vals.driverDotStyle)} />
+        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#ff9b3d', fontWeight: 650 }}>{summary.title}</span>
+      </div>
+      <div style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 14, fontWeight: 650, color: '#fff' }}>{summary.countLine}</div>
+      <div style={{ textAlign: 'center', marginTop: 7, fontSize: 12.5, color: '#f4f4f5', lineHeight: 1.4 }}>{summary.focusLine}</div>
+      {summary.alertLine && <div style={{ margin: '11px auto 0', width: 'fit-content', maxWidth: '100%', fontSize: 11.5, color: '#ffcc77', lineHeight: 1.35, background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '6px 9px' }}>{summary.alertLine}</div>}
+      <div style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#7a7a82', marginTop: 10 }}>{summary.metaLine}</div>
+    </div>
+  )
+}
+
+function Timeline({ vals }) {
+  const steps = vals.activeRunSteps || []
+  return (
+    <section style={{ position: 'relative', zIndex: 1, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'rgba(17,23,33,0.78)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', boxShadow: '0 14px 34px rgba(0,0,0,0.24)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '13px 16px 9px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <div style={{ minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 650 }}>{vals.sessionTitle}</span>
           <span style={{ marginLeft: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#7a7a82' }}>{vals.sessionSubtitle}</span>
         </div>
         <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ff9b3d', whiteSpace: 'nowrap' }}>spawn order</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'stretch', gap: 16, overflowX: 'auto', padding: '10px 16px 16px' }}>
-        {vals.sessionSteps.map((st) => (
-          <div key={st.handle} style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
-            <Box css={st.cardStyle} onClick={st.onSelect} hover="border-color:rgba(255,155,61,0.55)">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 28, height: 20, padding: '0 6px', borderRadius: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, fontWeight: 650, color: '#cfcfd4', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>{st.orderLabel}</span>
-                  <span style={cssToObj(st.roleChipStyle)}>{st.role}</span>
-                </div>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: st.statusColor }}><span style={cssToObj(st.dotStyle)} />{st.statusLabel}</span>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 18 }}>
+        {steps.length ? (
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 16, minHeight: 210 }}>
+            {steps.map((st) => (
+              <div key={st.handle} style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
+                <StepCard step={st} />
+                {st.showConnector && <Connector />}
               </div>
-              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92', marginBottom: 8 }}>{st.handle}</div>
-              <div style={{ height: 38, overflow: 'hidden', fontSize: 11.5, lineHeight: 1.45, color: '#d4d4d8', marginBottom: 12 }}>{st.brief}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <div style={{ flex: 1, height: 4, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={cssToObj(st.barFillStyle)} /></div>
-                <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92' }}>{st.turnsLabel}</span>
-              </div>
-              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>{st.toolsLabel}</div>
-            </Box>
-            {st.showConnector && (
-              <div style={{ display: 'flex', alignItems: 'center', color: '#3a4250', flexShrink: 0 }}>
-                <svg viewBox="0 0 42 24" width="42" height="24" fill="none"><path d="M3 12 H35 M29 6 L35 12 L29 18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              </div>
-            )}
+            ))}
           </div>
-        ))}
+        ) : (
+          <div style={{ height: '100%', minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7a7a82', fontSize: 12 }}>
+            No workers have been spawned for this session yet.
+          </div>
+        )}
       </div>
+    </section>
+  )
+}
+
+function StepCard({ step }) {
+  return (
+    <Box css={step.cardStyle} onClick={step.onSelect} hover="border-color:rgba(255,155,61,0.55)">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 28, height: 20, padding: '0 6px', borderRadius: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, fontWeight: 650, color: '#cfcfd4', background: step.isCurrent ? 'rgba(255,155,61,0.13)' : 'rgba(255,255,255,0.06)', border: '1px solid ' + (step.isCurrent ? 'rgba(255,155,61,0.42)' : 'rgba(255,255,255,0.12)') }}>{step.orderLabel}</span>
+          <span style={cssToObj(step.roleChipStyle)}>{step.role}</span>
+        </div>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: step.statusColor }}><span style={cssToObj(step.dotStyle)} />{step.statusLabel}</span>
+      </div>
+      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92', marginBottom: 8 }}>{step.handle}</div>
+      <div style={{ minHeight: 54, maxHeight: 70, overflow: 'hidden', fontSize: 12, lineHeight: 1.45, color: '#f4f4f5', marginBottom: 12 }}>{step.brief}</div>
+      {step.stopHint && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#ffcc77', background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '7px 8px', marginBottom: 10 }}>{step.stopHint}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1, height: 4, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={cssToObj(step.barFillStyle)} /></div>
+        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92' }}>{step.turnsLabel}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>
+        <span>{step.toolsLabel}</span>
+        <span>{step.isCurrent ? 'current' : 'step'}</span>
+      </div>
+    </Box>
+  )
+}
+
+function Connector() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', color: '#3a4250', flexShrink: 0 }}>
+      <svg viewBox="0 0 42 24" width="42" height="24" fill="none"><path d="M3 12 H35 M29 6 L35 12 L29 18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
     </div>
   )
 }
 
 function DetailPanel({ vals }) {
   const d = vals.detail
+  const modelLabel = d.model || 'not captured'
+  const profileLabel = d.profile || 'audit only'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '15px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <Box as="button" onClick={vals.clearSelect} css="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:#232c3c;color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M14 6 L8 12 L14 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg></Box>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>Sub-agent detail</span>
+        <span style={{ fontSize: 13, fontWeight: 650 }}>Step detail</span>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -162,8 +183,8 @@ function DetailPanel({ vals }) {
         </div>
         <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: '#fff', marginBottom: 4 }}>{d.handle}</div>
         <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72', marginBottom: 14 }}>{d.workerLabel} · audit {d.auditId} · parent {d.parent}</div>
-        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 6 }}>Model · resolved per agent</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, color: '#e9e9ea', marginBottom: 18, padding: '11px 13px', background: '#19212f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.modelColor, flexShrink: 0 }} />{d.model}<span style={{ color: '#6a6a72' }}>· {d.profile}</span></div>
+        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 6 }}>Model profile</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, color: '#e9e9ea', marginBottom: 18, padding: '11px 13px', background: '#19212f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: d.modelColor, flexShrink: 0 }} />{modelLabel}<span style={{ color: '#6a6a72' }}>· {profileLabel}</span></div>
         <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 6 }}>Brief</div>
         <div style={{ fontSize: 12.5, color: '#cfcfd4', lineHeight: 1.5, marginBottom: 18, padding: '11px 13px', background: '#19212f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 }}>{d.brief}</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 18 }}>
@@ -189,10 +210,32 @@ function FeedPanel({ vals }) {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>Chat · driver</span>
-          <span style={{ fontSize: 10, color: '#6a6a72' }}>every reply tied to policy</span>
+          <span style={{ fontSize: 13, fontWeight: 650 }}>Chat · driver</span>
+          <span style={{ fontSize: 10, color: '#6a6a72' }}>final result and process summaries</span>
         </div>
-        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#ff9b3d', display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff9b3d', animation: 'pulse 1.6s ease-in-out infinite' }} />the knot</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            type="button"
+            onClick={vals.onClearDriverChat}
+            disabled={vals.clearDriverDisabled}
+            title={vals.clearDriverDisabled ? 'Wait for the running agent before clearing' : 'Clear chat and session view'}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 30,
+              height: 28,
+              borderRadius: 7,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: vals.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#19212f',
+              color: vals.clearDriverDisabled ? '#4f5665' : '#9b9ba2',
+              cursor: vals.clearDriverDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+          </button>
+          <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#ff9b3d', display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff9b3d', animation: 'pulse 1.6s ease-in-out infinite' }} />driver</span>
+        </div>
       </div>
       <ChatBody vals={vals} />
     </div>

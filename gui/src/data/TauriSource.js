@@ -6,11 +6,13 @@
 //   state://update       event  → domain snapshot on every change (Rust poller)
 //   action               invoke({ kind, args }) → mutating actions (chat, pipeline)
 import { pipePresets } from '../model/data.js'
+import { classifyChatCommand } from './chatCommands.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
 // auditFilter, pipeChatOpen) is local UI state.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat',
+  'agentTurns',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'pipeSteps', 'pipeName', 'pipeRunning', 'pipeCur', 'pipeProg', 'pipeDoneFlag', 'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
@@ -24,11 +26,12 @@ export default class TauriSource {
     this.state = {
       view: this.props.startView || 'orchestrator',
       selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
-      processOpen: false, logWindowOpen: false,
-      subagents: [], events: [], policy: [], audit: [], chat: [],
+      pipeDraft: '',
+      processOpen: false, logWindowOpen: false, clearedSubagentId: 0,
+      subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
-      pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
+      pipeSteps: [], pipeName: '', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
       driverStatus: emptyDriverStatus(),
       setupStatus: emptySetupStatus(),
@@ -42,6 +45,9 @@ export default class TauriSource {
     if (!dom || typeof dom !== 'object') return
     const patch = {}
     for (const k of DOMAIN_KEYS) if (k in dom) patch[k] = dom[k]
+    if (Array.isArray(patch.subagents) && this.state.clearedSubagentId > 0) {
+      patch.subagents = patch.subagents.filter((a) => Number(a.id || 0) > this.state.clearedSubagentId)
+    }
     this.state = { ...this.state, ...patch }
     this._notify()
   }
@@ -78,6 +84,20 @@ export default class TauriSource {
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
       openProcessLog: () => this._setLocal({ logWindowOpen: true }),
       closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
+      clearDriverChat: () => {
+        if (this.state.driverStatus?.running) return
+        const cutoff = Math.max(0, ...this.state.subagents.map((a) => Number(a.id || 0)))
+        this._setLocal({
+          chat: [],
+          selected: null,
+          draft: '',
+          processOpen: false,
+          logWindowOpen: false,
+          clearedSubagentId: cutoff,
+          driverStatus: emptyDriverStatus(),
+        })
+        this._action('clear_driver_chat')
+      },
       onDraft: (e) => this._setLocal({ draft: e.target.value }),
       onDraftKey: (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -92,19 +112,63 @@ export default class TauriSource {
         const d = (this.state.draft || '').trim()
         if (!d) return
         this._setLocal({ draft: '' })
+        const command = classifyChatCommand(d)
+        if (command.kind === 'openPipelinePicker') {
+          this._setLocal({ view: 'pipeline', pipeChatOpen: false })
+          this._action('pipeline_hint', [d])
+          return
+        }
         this._action('send_chat', [d])
       },
       openArtifact: (path) => this._action('open_artifact', [path]),
-      addPipe: (r) => this._action('add_pipe', [r]),
-      removePipe: (u) => this._action('remove_pipe', [u]),
-      movePipe: (u, dir) => this._action('move_pipe', [u, dir]),
-      clearPipe: () => this._action('clear_pipe'),
+      addPipe: (r) => {
+        const uid = Math.max(0, ...this.state.pipeSteps.map((s) => Number(s.uid || 0))) + 1
+        this._setLocal({
+          pipeName: this.state.pipeName || 'custom',
+          pipeSteps: [...this.state.pipeSteps, { uid, role: r, status: 'idle', handle: null }],
+        })
+        this._action('add_pipe', [r])
+      },
+      removePipe: (u) => {
+        const steps = this.state.pipeSteps.filter((s) => s.uid !== u)
+        this._setLocal({ pipeName: steps.length ? 'custom' : '', pipeSteps: steps })
+        this._action('remove_pipe', [u])
+      },
+      movePipe: (u, dir) => {
+        const steps = [...this.state.pipeSteps]
+        const index = steps.findIndex((s) => s.uid === u)
+        const next = index + dir
+        if (index >= 0 && next >= 0 && next < steps.length) {
+          const tmp = steps[index]
+          steps[index] = steps[next]
+          steps[next] = tmp
+          this._setLocal({ pipeName: this.state.pipeName ? 'custom' : '', pipeSteps: steps })
+        }
+        this._action('move_pipe', [u, dir])
+      },
+      clearPipe: () => {
+        this._setLocal({ pipeName: '', pipeSteps: [] })
+        this._action('clear_pipe')
+      },
       loadPreset: (n) => {
         // optimistic name so the chip updates instantly; backend confirms steps
         const p = pipePresets.find((x) => x.name === n)
-        if (p) this._setLocal({ pipeName: n })
+        if (p) {
+          this._setLocal({
+            pipeName: n,
+            pipeSteps: p.roles.map((role, i) => ({ uid: i + 1, role, status: 'idle', handle: null })),
+          })
+        }
         this._action('load_preset', [n])
       },
+      onPipeDraft: (e) => this._setLocal({ pipeDraft: e.target.value }),
+      runPipe: () => {
+        const brief = (this.state.pipeDraft || '').trim()
+        if (!brief || this.state.pipeRunning) return
+        this._action('run_pipe', [brief, this.state.pipeName])
+      },
+      stopPipe: () => this._action('stop_pipe'),
+      resetPipe: () => this._action('reset_pipe'),
     }
     return this._actions
   }
