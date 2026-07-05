@@ -4,17 +4,20 @@
 //
 //   get_state            invoke → initial domain snapshot
 //   state://update       event  → domain snapshot on every change (Rust poller)
-//   action               invoke({ kind, args }) → mutating actions (chat, pipeline)
+//   action               invoke({ kind, args }) → backend mutating actions (chat, profile)
 import { pipePresets } from '../model/data.js'
 import { classifyChatCommand } from './chatCommands.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
-// auditFilter, pipeChatOpen) is local UI state.
+// auditFilter, pipeChatOpen, and the whole pipe* composer) is local UI state.
+// The Pipeline studio is a client-side preset composer/inspector, so pipeSteps
+// and pipeName are NOT backend-owned — otherwise the snapshot poll would clobber
+// every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat',
   'agentTurns',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
-  'pipeSteps', 'pipeName', 'pipeRunning', 'pipeCur', 'pipeProg', 'pipeDoneFlag', 'paused', 't',
+  'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
 ]
 
@@ -23,15 +26,16 @@ export default class TauriSource {
     this.props = props || {}
     this.subs = new Set()
     this._unlisten = null
+    this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
       selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
-      pipeDraft: '',
       processOpen: false, logWindowOpen: false, clearedSubagentId: 0, clearedAgentTurnId: 0,
       subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
-      pipeSteps: [], pipeName: '', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
+      pipeName: 'feature-dev', pipeSteps: this._stepsFromPreset('feature-dev'),
+      pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
       driverStatus: emptyDriverStatus(),
       setupStatus: emptySetupStatus(),
@@ -41,6 +45,14 @@ export default class TauriSource {
   subscribe(cb) { this.subs.add(cb); return () => this.subs.delete(cb) }
   _notify() { for (const cb of this.subs) cb() }
   _setLocal(patch) { this.state = { ...this.state, ...patch }; this._notify() }
+  _nextPipeUid() { this._pipeUid += 1; return this._pipeUid }
+  // Build studio stage rows from a preset's role list. The composer is purely
+  // client-side; roles carry their display metadata from `pipeCatalog`.
+  _stepsFromPreset(name) {
+    const preset = pipePresets.find((p) => p.name === name)
+    const roles = preset ? preset.roles : []
+    return roles.map((role) => ({ uid: this._nextPipeUid(), role, status: 'idle', handle: null }))
+  }
   _mergeDomain(dom) {
     if (!dom || typeof dom !== 'object') return
     const patch = {}
@@ -127,54 +139,24 @@ export default class TauriSource {
         this._action('send_chat', [d])
       },
       openArtifact: (path) => this._action('open_artifact', [path]),
-      addPipe: (r) => {
-        const uid = Math.max(0, ...this.state.pipeSteps.map((s) => Number(s.uid || 0))) + 1
-        this._setLocal({
-          pipeName: this.state.pipeName || 'custom',
-          pipeSteps: [...this.state.pipeSteps, { uid, role: r, status: 'idle', handle: null }],
-        })
-        this._action('add_pipe', [r])
-      },
-      removePipe: (u) => {
-        const steps = this.state.pipeSteps.filter((s) => s.uid !== u)
-        this._setLocal({ pipeName: steps.length ? 'custom' : '', pipeSteps: steps })
-        this._action('remove_pipe', [u])
-      },
-      movePipe: (u, dir) => {
+      // Pipeline studio composer — pure client-side UI state (see DOMAIN_KEYS).
+      addPipe: (role) => this._setLocal({
+        pipeSteps: [...this.state.pipeSteps, { uid: this._nextPipeUid(), role, status: 'idle', handle: null }],
+      }),
+      removePipe: (uid) => this._setLocal({
+        pipeSteps: this.state.pipeSteps.filter((st) => st.uid !== uid),
+      }),
+      movePipe: (uid, dir) => {
         const steps = [...this.state.pipeSteps]
-        const index = steps.findIndex((s) => s.uid === u)
-        const next = index + dir
-        if (index >= 0 && next >= 0 && next < steps.length) {
-          const tmp = steps[index]
-          steps[index] = steps[next]
-          steps[next] = tmp
-          this._setLocal({ pipeName: this.state.pipeName ? 'custom' : '', pipeSteps: steps })
-        }
-        this._action('move_pipe', [u, dir])
+        const i = steps.findIndex((st) => st.uid === uid)
+        const j = i + dir
+        if (i < 0 || j < 0 || j >= steps.length) return
+        const moved = steps.splice(i, 1)[0]
+        steps.splice(j, 0, moved)
+        this._setLocal({ pipeSteps: steps })
       },
-      clearPipe: () => {
-        this._setLocal({ pipeName: '', pipeSteps: [] })
-        this._action('clear_pipe')
-      },
-      loadPreset: (n) => {
-        // optimistic name so the chip updates instantly; backend confirms steps
-        const p = pipePresets.find((x) => x.name === n)
-        if (p) {
-          this._setLocal({
-            pipeName: n,
-            pipeSteps: p.roles.map((role, i) => ({ uid: i + 1, role, status: 'idle', handle: null })),
-          })
-        }
-        this._action('load_preset', [n])
-      },
-      onPipeDraft: (e) => this._setLocal({ pipeDraft: e.target.value }),
-      runPipe: () => {
-        const brief = (this.state.pipeDraft || '').trim()
-        if (!brief || this.state.pipeRunning) return
-        this._action('run_pipe', [brief, this.state.pipeName])
-      },
-      stopPipe: () => this._action('stop_pipe'),
-      resetPipe: () => this._action('reset_pipe'),
+      clearPipe: () => this._setLocal({ pipeSteps: [] }),
+      loadPreset: (name) => this._setLocal({ pipeName: name, pipeSteps: this._stepsFromPreset(name) }),
     }
     return this._actions
   }
