@@ -25,7 +25,13 @@ ROOT_AGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "musubi_get_memory_entry",
     "musubi_query_sessions",
     "musubi_spawn_subagent",
-    "musubi_spawn_pipeline",
+    # NOTE: musubi_spawn_pipeline is intentionally NOT here. The root agent
+    # spawns bounded workers, not whole pipelines — "spawning an entire
+    # pipeline is reserved for user-invoked commands" (policy_engine.py locked
+    # decision #4). Leaving it out stops the driver from auto-summoning a
+    # pipeline for tasks the user never asked to run as one. Pipelines run
+    # deterministically via the CLI `agent --pipeline <name>`; the tool stays
+    # registered and reachable in the "full" surface.
     "musubi_list_subagents",
 })
 
