@@ -29,7 +29,7 @@ export default class TauriSource {
     this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
+      selected: null, selectedSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
       processOpen: false, logWindowOpen: false,
       subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
@@ -88,8 +88,11 @@ export default class TauriSource {
     this._actions = {
       // client-side navigation / UI
       setView: (v) => this._setLocal({ view: v }),
-      selectAgent: (h) => this._setLocal({ view: 'orchestrator', selected: h }),
-      clearSelect: local({ selected: null }),
+      selectAgent: (h) => this._setLocal({ view: 'orchestrator', selected: h, selectedSession: null }),
+      // Choose a whole session from the Parent runs list (works for driver-only
+      // runs too). Clears any per-worker selection so the session wins.
+      selectSession: (id) => this._setLocal({ view: 'orchestrator', selectedSession: id, selected: null }),
+      clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
       openPipeChat: local({ pipeChatOpen: true }),
       closePipeChat: local({ pipeChatOpen: false }),

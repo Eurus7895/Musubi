@@ -6,6 +6,7 @@ function baseState(overrides = {}) {
   return {
     view: 'orchestrator',
     selected: null,
+    selectedSession: null,
     paused: false,
     t: 3,
     auditFilter: 'all',
@@ -62,6 +63,7 @@ function actions() {
   return {
     setView() {},
     selectAgent() {},
+    selectSession() {},
     clearSelect() {},
     setAuditFilter() {},
     movePipe() {},
@@ -124,12 +126,13 @@ test('numbers visible runs instead of using worker count', () => {
     },
   }), actions())
 
-  // The running turn is newest (R02) even though only it is shown; the
-  // completed session-a before it is R01. Label is a run ordinal, not the
-  // worker count (3).
+  // Every session is listed. The running turn is newest (R02); the completed
+  // session-a before it is R01. Label is a run ordinal, not the worker count (3).
+  assert.equal(vm.runs.length, 2)
   assert.equal(vm.runs[0].id, 'driver-running-99')
   assert.equal(vm.runs[0].orderLabel, 'R02')
-  assert.equal(vm.runs.length, 1)
+  assert.equal(vm.runs[1].id, 'session-a')
+  assert.equal(vm.runs[1].orderLabel, 'R01')
 })
 
 test('chooses selected step parent session before newest running run', () => {
@@ -230,7 +233,7 @@ test('does not treat a pipeline preset as selected by default', () => {
   assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
 })
 
-test('shows the latest driver turn instead of old audit sessions', () => {
+test('lists every session but focuses the latest driver turn', () => {
   const vm = buildViewModel(baseState({
     subagents: [
       agent(190, 'old-session', 'escalated', 'coder'),
@@ -246,6 +249,22 @@ test('shows the latest driver turn instead of old audit sessions', () => {
     }],
   }), actions())
 
+  // The full run history stays listed (no collapse to the current run)...
+  assert.deepEqual(vm.runs.map((run) => run.id), ['older-session', 'old-session', 'latest-direct'])
+  // ...and the latest driver turn is the focused/active one by default.
   assert.equal(vm.activeRunId, 'latest-direct')
-  assert.deepEqual(vm.runs.map((run) => run.id), ['latest-direct'])
+})
+
+test('selecting a session focuses and highlights it', () => {
+  const vm = buildViewModel(baseState({
+    selectedSession: 'old-session',
+    subagents: [
+      agent(190, 'old-session', 'done', 'coder'),
+      agent(191, 'new-session', 'running', 'planner'),
+    ],
+  }), actions())
+
+  assert.equal(vm.activeRunId, 'old-session')
+  const chosen = vm.runs.find((run) => run.id === 'old-session')
+  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
 })
