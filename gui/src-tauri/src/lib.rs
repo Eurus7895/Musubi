@@ -10,7 +10,7 @@
 //! Data source: the configured Musubi `audit.db`. When no database can be
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -63,9 +63,8 @@ fn epoch_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn clock_label(epoch: i64) -> String {
-    let sod = ((epoch % 86_400) + 86_400) % 86_400;
-    format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
+fn chat_timestamp(epoch: i64) -> String {
+    format!("epoch:{epoch}")
 }
 
 fn insert_chat(
@@ -76,7 +75,7 @@ fn insert_chat(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO chat_log(ts,role,tone,text) VALUES(?1,?2,?3,?4)",
-        rusqlite::params![clock_label(epoch_secs()), role, tone, text],
+        rusqlite::params![chat_timestamp(epoch_secs()), role, tone, text],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -104,6 +103,67 @@ fn workspace_root_from_musubi_config(path: &std::path::Path) -> Option<PathBuf> 
         return None;
     }
     dir.parent().map(PathBuf::from)
+}
+
+fn env_path(env: &HashMap<String, String>, key: &str) -> Option<PathBuf> {
+    env.get(key)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn project_root_from_audit_db(resolved: &musubi_data::ResolvedAuditDb) -> Option<PathBuf> {
+    let audit_file = &resolved.path;
+    match resolved.source.as_str() {
+        "workspace" => audit_file
+            .parent()
+            .and_then(|storage| storage.parent())
+            .and_then(|package| {
+                if package.file_name().and_then(|s| s.to_str()) == Some("musubi") {
+                    package.parent().map(PathBuf::from)
+                } else {
+                    None
+                }
+            }),
+        "package" => audit_file
+            .parent()
+            .and_then(|storage| storage.parent())
+            .map(PathBuf::from),
+        _ => None,
+    }
+}
+
+fn climb_for_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join(".musubi").join("llm.json").is_file()
+            || d.join("musubi").join("server.py").is_file()
+            || d.join("musubi").join("storage").is_dir()
+        {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+fn resolve_project_root(
+    env: &HashMap<String, String>,
+    cwd: &Path,
+    audit_db: Option<&musubi_data::ResolvedAuditDb>,
+) -> PathBuf {
+    if let Some(root) = env_path(env, "MUSUBI_ROOT") {
+        return root;
+    }
+    if let Some(config) =
+        env_path(env, "MUSUBI_LLM_CONFIG").and_then(|p| workspace_root_from_musubi_config(&p))
+    {
+        return config;
+    }
+    if let Some(root) = audit_db.and_then(project_root_from_audit_db) {
+        return root;
+    }
+    climb_for_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
 fn scoped_chat_id(project_root: &Path) -> String {
@@ -701,14 +761,16 @@ struct OpenedDb {
 
 fn open_configured_db() -> OpenedDb {
     let env = musubi_data::current_env_map();
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &project_root) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
+        let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
         let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
         let _ = musubi_data::init_schema(&conn);
         eprintln!(
-            "[musubi] reading audit.db at {} ({})",
+            "[musubi] reading audit.db at {} ({}) project_root={}",
             resolved.path.display(),
-            resolved.source
+            resolved.source,
+            project_root.display()
         );
         return OpenedDb {
             conn,
@@ -721,7 +783,7 @@ fn open_configured_db() -> OpenedDb {
     eprintln!("[musubi] no audit.db source found; using empty in-memory state");
     OpenedDb {
         conn,
-        project_root,
+        project_root: resolve_project_root(&env, &cwd, None),
         audit_db: None,
     }
 }
@@ -972,6 +1034,21 @@ mod tests {
             assert!(!program.is_empty());
             assert!(!args.is_empty());
         }
+    }
+
+    #[test]
+    fn project_root_uses_workspace_audit_parent_not_gui_cwd() {
+        let env = HashMap::new();
+        let cwd = Path::new(r"C:\Workspace\Projects\Musubi\gui");
+        let audit = musubi_data::ResolvedAuditDb {
+            path: PathBuf::from(r"C:\Workspace\Projects\Musubi\musubi\storage\audit.db"),
+            source: "workspace".into(),
+        };
+
+        assert_eq!(
+            resolve_project_root(&env, cwd, Some(&audit)),
+            PathBuf::from(r"C:\Workspace\Projects\Musubi")
+        );
     }
 
     #[test]

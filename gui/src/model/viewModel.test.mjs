@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildViewModel } from './viewModel.js'
+import { buildViewModel, formatChatTimestamp } from './viewModel.js'
 
 function baseState(overrides = {}) {
   return {
@@ -109,6 +109,11 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[0].orderLabel, 'R02')
   assert.equal(vm.runs[1].orderLabel, 'R01')
   assert.equal(vm.runs[1].id, 'session-old')
+})
+
+test('formats epoch chat timestamps in the requested local timezone', () => {
+  assert.equal(formatChatTimestamp('epoch:1735689600', 'en-GB', 'Asia/Saigon'), '07:00:00')
+  assert.equal(formatChatTimestamp('16:39:01', 'en-GB', 'Asia/Saigon'), '16:39:01')
 })
 
 test('numbers visible runs instead of using worker count', () => {

@@ -136,6 +136,21 @@ function focusLineForRun(steps, current) {
   return 'Blocked at ' + focus.role
 }
 
+export function formatChatTimestamp(ts, locale = undefined, timeZone = undefined) {
+  const raw = String(ts || '')
+  const match = raw.match(/^epoch:(-?\d+(?:\.\d+)?)$/)
+  if (!match) return raw
+  const millis = Number(match[1]) * 1000
+  if (!Number.isFinite(millis)) return raw
+  return new Intl.DateTimeFormat(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    ...(timeZone ? { timeZone } : {}),
+  }).format(new Date(millis))
+}
+
 export function buildViewModel(s, act) {
   const sm = statusMeta
   const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
@@ -397,7 +412,7 @@ export function buildViewModel(s, act) {
     }
     if (msg.role === 'driver') {
       return {
-        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + (msg.ts || ''),
+        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
         metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
         rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
         bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
