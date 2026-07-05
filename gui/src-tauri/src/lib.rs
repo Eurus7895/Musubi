@@ -338,8 +338,42 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
     }
 }
 
+fn shell_display_path(path: &Path) -> String {
+    let mut display_path = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        if let Some(stripped) = display_path.strip_prefix("\\\\?\\") {
+            display_path = stripped.to_string();
+        }
+    }
+    display_path
+}
+
+fn workspace_path_key(path: &Path) -> String {
+    let mut key = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        key = key.replace('/', "\\");
+        if let Some(stripped) = key.strip_prefix("\\\\?\\") {
+            key = stripped.to_string();
+        }
+        key = key.trim_end_matches('\\').to_ascii_lowercase();
+    } else {
+        key = key.trim_end_matches('/').to_string();
+    }
+    key
+}
+
+fn is_inside_workspace(path: &Path, root: &Path) -> bool {
+    let path_key = workspace_path_key(path);
+    let root_key = workspace_path_key(root);
+    if path_key == root_key {
+        return true;
+    }
+    let separator = if cfg!(windows) { "\\" } else { "/" };
+    path_key.starts_with(&format!("{root_key}{separator}"))
+}
+
 fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
-    let display_path = path.to_string_lossy().to_string();
+    let display_path = shell_display_path(path);
     if cfg!(windows) {
         let _ = is_file;
         (
@@ -365,7 +399,7 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<PathBuf, S
     let root = project_root
         .canonicalize()
         .map_err(|e| format!("cannot resolve project root: {e}"))?;
-    if !canonical.starts_with(&root) {
+    if !is_inside_workspace(&canonical, &root) {
         return Err("refusing to open a path outside the project root".into());
     }
     let (program, args) = open_command_for_path(&canonical, canonical.is_file());
@@ -941,6 +975,28 @@ mod tests {
     }
 
     #[test]
+    fn artifact_open_command_strips_windows_verbatim_prefix() {
+        let file = Path::new(r"\\?\C:\Workspace\Projects\Musubi\america-facts-dashboard.html");
+        let (program, args) = open_command_for_path(file, true);
+
+        if cfg!(windows) {
+            assert_eq!(program, "cmd");
+            assert_eq!(
+                args,
+                vec![
+                    "/C",
+                    "start",
+                    "",
+                    r"C:\Workspace\Projects\Musubi\america-facts-dashboard.html"
+                ]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
+    }
+
+    #[test]
     fn artifact_open_command_opens_folders_on_windows() {
         let folder = Path::new(r"C:\Workspace\Projects\Musubi");
         let (program, args) = open_command_for_path(folder, false);
@@ -955,6 +1011,23 @@ mod tests {
             assert!(!program.is_empty());
             assert!(!args.is_empty());
         }
+    }
+
+    #[test]
+    fn workspace_boundary_allows_windows_verbatim_child_path() {
+        let root = Path::new(r"C:\Workspace\Projects\Musubi");
+        let file = Path::new(r"\\?\C:\Workspace\Projects\Musubi\america-facts-dashboard.html");
+
+        assert!(is_inside_workspace(file, root));
+    }
+
+    #[test]
+    fn workspace_boundary_rejects_windows_sibling_prefix_path() {
+        let root = Path::new(r"C:\Workspace\Projects\Musubi");
+        let file =
+            Path::new(r"\\?\C:\Workspace\Projects\Musubi-other\america-facts-dashboard.html");
+
+        assert!(!is_inside_workspace(file, root));
     }
 
     #[test]
