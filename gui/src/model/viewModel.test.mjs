@@ -187,3 +187,23 @@ test('does not treat a pipeline preset as selected by default', () => {
   assert.match(vm.pipeStatusText, /Choose a pipeline preset/)
   assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
 })
+
+test('shows the latest driver turn instead of old audit sessions', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(190, 'old-session', 'escalated', 'coder'),
+      agent(191, 'older-session', 'abandoned', 'planner'),
+    ],
+    agentTurns: [{
+      id: 7,
+      parentSession: 'latest-direct',
+      modelFamily: 'deepseek',
+      cycles: 1,
+      tokensInEstimate: 12,
+      tokensOutEstimate: 8,
+    }],
+  }), actions())
+
+  assert.equal(vm.activeRunId, 'latest-direct')
+  assert.deepEqual(vm.runs.map((run) => run.id), ['latest-direct'])
+})

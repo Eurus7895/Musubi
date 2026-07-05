@@ -107,17 +107,22 @@ export function buildViewModel(s, act) {
   const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
   const selectedAgent = s.subagents.find((a) => a.handle === s.selected)
   const latestAgent = s.subagents[s.subagents.length - 1]
+  const latestTurn = (s.agentTurns || [])[((s.agentTurns || []).length) - 1]
   const driverStatusForRuns = s.driverStatus || {}
   const runsRaw = groupRuns(s.subagents, s.agentTurns || [], driverStatusForRuns)
   const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
-  const activeSessionId = selectedAgent?.parentSession || runningRun?.id || latestAgent?.parentSession || runsRaw[0]?.id || ''
+  const activeSessionId = selectedAgent?.parentSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || ''
   const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
   const processTextForRuns = [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
-  const runs = runsRaw.map((run) => {
+  const shouldFocusCurrentRun = !!latestTurn || !!driverStatusForRuns.running
+  const visibleRunsRaw = shouldFocusCurrentRun && activeSessionId
+    ? runsRaw.filter((run) => run.id === activeSessionId || statusForRun(run) === 'running')
+    : runsRaw
+  const runs = visibleRunsRaw.map((run) => {
     const status = statusForRun(run)
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]

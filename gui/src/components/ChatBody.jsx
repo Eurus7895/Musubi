@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
-import { parseInlineSegments } from './chatLinks.js'
+import { compactMarkdownTables, parseInlineSegments } from './chatLinks.js'
 
 function InlineText({ text, onOpenArtifact, onOpenLog }) {
   const parts = parseInlineSegments(text)
@@ -71,7 +71,7 @@ function InlineText({ text, onOpenArtifact, onOpenLog }) {
 }
 
 function FormattedMessage({ text, onOpenArtifact, onOpenLog }) {
-  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n')
+  const lines = compactMarkdownTables(text).replace(/\r\n/g, '\n').split('\n')
   const blocks = []
   let list = null
   const flushList = () => {

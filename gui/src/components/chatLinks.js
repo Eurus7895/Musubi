@@ -21,3 +21,44 @@ export function parseInlineSegments(text) {
   }
   return parts
 }
+
+export function compactMarkdownTables(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n')
+  const out = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim()
+    const next = lines[i + 1]?.trim() || ''
+    const isHeader = line.startsWith('|') && line.endsWith('|')
+    const isSeparator = /^\|[\s:-]+\|/.test(next)
+    if (!isHeader || !isSeparator) {
+      out.push(lines[i])
+      continue
+    }
+    const headers = splitTableRow(line)
+    i += 2
+    while (i < lines.length) {
+      const row = lines[i].trim()
+      if (!row.startsWith('|') || !row.endsWith('|')) {
+        i -= 1
+        break
+      }
+      const cells = splitTableRow(row)
+      const title = cells[0] || ''
+      const detail = cells.slice(1)
+        .map((cell, index) => headers[index + 1] ? `${headers[index + 1]}: ${cell}` : cell)
+        .filter(Boolean)
+        .join(' - ')
+      out.push(detail ? `- ${title}: ${detail}` : `- ${title}`)
+      i += 1
+    }
+  }
+  return out.join('\n')
+}
+
+function splitTableRow(line) {
+  return line
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}

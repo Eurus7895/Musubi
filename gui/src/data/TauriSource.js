@@ -27,7 +27,7 @@ export default class TauriSource {
       view: this.props.startView || 'orchestrator',
       selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
       pipeDraft: '',
-      processOpen: false, logWindowOpen: false, clearedSubagentId: 0,
+      processOpen: false, logWindowOpen: false, clearedSubagentId: 0, clearedAgentTurnId: 0,
       subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
@@ -47,6 +47,9 @@ export default class TauriSource {
     for (const k of DOMAIN_KEYS) if (k in dom) patch[k] = dom[k]
     if (Array.isArray(patch.subagents) && this.state.clearedSubagentId > 0) {
       patch.subagents = patch.subagents.filter((a) => Number(a.id || 0) > this.state.clearedSubagentId)
+    }
+    if (Array.isArray(patch.agentTurns) && this.state.clearedAgentTurnId > 0) {
+      patch.agentTurns = patch.agentTurns.filter((t) => Number(t.id || 0) > this.state.clearedAgentTurnId)
     }
     this.state = { ...this.state, ...patch }
     this._notify()
@@ -87,13 +90,16 @@ export default class TauriSource {
       clearDriverChat: () => {
         if (this.state.driverStatus?.running) return
         const cutoff = Math.max(0, ...this.state.subagents.map((a) => Number(a.id || 0)))
+        const turnCutoff = Math.max(0, ...this.state.agentTurns.map((t) => Number(t.id || 0)))
         this._setLocal({
           chat: [],
+          agentTurns: [],
           selected: null,
           draft: '',
           processOpen: false,
           logWindowOpen: false,
           clearedSubagentId: cutoff,
+          clearedAgentTurnId: turnCutoff,
           driverStatus: emptyDriverStatus(),
         })
         this._action('clear_driver_chat')

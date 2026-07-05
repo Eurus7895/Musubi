@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { parseInlineSegments } from './chatLinks.js'
+import { compactMarkdownTables, parseInlineSegments } from './chatLinks.js'
 
 test('parses Musubi process log links as internal links', () => {
   const parts = parseInlineSegments('Done. [Open full process log](musubi-log:last)')
@@ -34,4 +34,22 @@ test('keeps strong text segments separate from plain text', () => {
     { type: 'strong', text: 'done' },
     { type: 'text', text: ' now' },
   ])
+})
+
+test('compacts markdown tables into chat-friendly bullets', () => {
+  const text = [
+    'We have 3 pipelines:',
+    '',
+    '| Pipeline | Stages | Purpose |',
+    '|---|---|---|',
+    '| `dev-lite` | plan -> build -> check | Lightweight build |',
+    '| `feature-dev` | plan -> design -> code -> review | Guided feature dev |',
+  ].join('\n')
+
+  assert.equal(compactMarkdownTables(text), [
+    'We have 3 pipelines:',
+    '',
+    '- `dev-lite`: Stages: plan -> build -> check - Purpose: Lightweight build',
+    '- `feature-dev`: Stages: plan -> design -> code -> review - Purpose: Guided feature dev',
+  ].join('\n'))
 })
