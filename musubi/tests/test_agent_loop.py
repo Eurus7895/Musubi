@@ -1137,6 +1137,50 @@ def test_simple_task_refuses_extra_coder_spawns_in_same_turn() -> None:
     assert "simple task route allows only one coder worker" in fed_back
 
 
+def test_medium_change_refuses_coder_as_first_worker() -> None:
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "spawn-1",
+                    "name": "musubi_spawn_subagent",
+                    "input": {
+                        "role": "coder",
+                        "brief": "plan and implement the dashboard change",
+                    },
+                },
+            ],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "changed route"}],
+        ),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "Improve the dashboard weather display",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    assert answer == "changed route"
+    assert len(router.calls) == 2, "coder should be refused before a child call starts"
+    parent_followup = router.calls[1]["messages"]
+    fed_back = "".join(
+        block["content"]
+        for message in parent_followup
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    )
+    assert '"status": "refused"' in fed_back
+    assert "medium task route requires planner before coder" in fed_back
+
+
 class _ExplodingRouter(LMRouter):
     """A vendor whose call fails like a real network/proxy error would."""
 

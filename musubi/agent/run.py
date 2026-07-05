@@ -69,7 +69,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
-from agent.scope import ScopeHint, classify_task, is_simple_scope
+from agent.scope import ScopeHint, ScopeKind, classify_task, is_simple_scope
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
 
@@ -522,6 +522,7 @@ async def _run_loop(
             compression_db_path=compression_db_path,
             role=role,
             scope_hint=scope_hint,
+            cycle_index=cycle,
             budget=budget,
             stats=stats,
             audit_db_path=audit_db_path,
@@ -1253,6 +1254,7 @@ async def _dispatch(
     compression_db_path: Path | None = None,
     role: str = "agent",
     scope_hint: ScopeHint | None = None,
+    cycle_index: int = 0,
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
@@ -1269,7 +1271,9 @@ async def _dispatch(
     A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
-    refused = _spawn_overflow_reasons(tool_uses, log, role=role, scope_hint=scope_hint)
+    refused = _spawn_overflow_reasons(
+        tool_uses, log, role=role, scope_hint=scope_hint, cycle_index=cycle_index,
+    )
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
         for tu in tool_uses:
@@ -1353,6 +1357,7 @@ def _spawn_overflow_reasons(
     *,
     role: str,
     scope_hint: ScopeHint | None,
+    cycle_index: int = 0,
 ) -> dict[str, str]:
     """tool_use ids of spawn calls that exceed the active route width cap.
 
@@ -1376,6 +1381,23 @@ def _spawn_overflow_reasons(
         if caller_role == "agent" and spawn_role == "coder" and is_simple_scope(scope_hint):
             cap = 1
             reason = "simple task route allows only one coder worker"
+        if (
+            caller_role == "agent"
+            and spawn_role == "coder"
+            and scope_hint is not None
+            and scope_hint.kind is ScopeKind.MEDIUM_CHANGE
+            and cycle_index == 0
+        ):
+            overflow[tu.get("id", "")] = (
+                "medium task route requires planner before coder; spawn planner "
+                "first, then pass the planner summary to coder"
+            )
+            print(
+                "[agent]   x refused worker(role='coder'): "
+                "medium task route requires planner before coder",
+                file=log,
+            )
+            continue
         if seen[spawn_role] > cap:
             overflow[tu.get("id", "")] = reason
             print(

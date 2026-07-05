@@ -32,9 +32,28 @@ def test_large_risky_feature_requires_plan_design_workflow() -> None:
     assert "design" in hint.requires
 
 
+def test_medium_change_routes_through_planner_before_coder() -> None:
+    hint = classify_task("Improve the dashboard weather display")
+
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
+    assert hint.max_workers == 2
+    assert "plan" in hint.requires
+    assert "implementation" in hint.requires
+    assert "verification" in hint.requires
+
+
 def test_vague_request_asks_scope_before_spawning() -> None:
     hint = classify_task("fix this")
 
     assert hint.kind is ScopeKind.UNKNOWN
     assert hint.route == "ask_scope"
+    assert hint.max_workers == 0
+
+
+def test_greeting_routes_to_direct_answer_without_workers() -> None:
+    hint = classify_task("hi")
+
+    assert hint.kind is ScopeKind.UNKNOWN
+    assert hint.route == "direct_answer"
     assert hint.max_workers == 0

@@ -30,6 +30,27 @@ class ScopeHint:
 
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
+        route_guidance = {
+            "single_coder": (
+                "Simple route: use at most one coder worker with a compact, "
+                "implementation-ready brief."
+            ),
+            "planner_then_coder_check": (
+                "Medium route: spawn planner first for scope and acceptance "
+                "criteria, then spawn coder with that plan. Do not ask coder "
+                "to both plan and implement."
+            ),
+            "plan_design_workflow": (
+                "Large route: require explicit plan/design/implementation/"
+                "review structure before mutation."
+            ),
+            "ask_scope": (
+                "Unknown route: ask one clarifying question before spawning."
+            ),
+            "direct_answer": (
+                "Casual route: answer directly in one turn without tools or workers."
+            ),
+        }.get(self.route, "Use the route conservatively.")
         return (
             "[agent-routing-scope]\n"
             f"scope={self.kind.value}\n"
@@ -37,10 +58,11 @@ class ScopeHint:
             f"max_workers={self.max_workers}\n"
             f"requires={requires}\n"
             f"reason={self.reason}\n"
+            f"guidance={route_guidance}\n"
             "[/agent-routing-scope]\n\n"
             "Use this deterministic hint before choosing tools. The root "
             "agent still makes the final routing decision, but must keep "
-            "simple routes bounded and ask for scope when the hint is unknown."
+            "simple routes bounded and ask for scope when route=ask_scope."
         )
 
     def log_line(self) -> str:
@@ -74,11 +96,21 @@ _VAGUE_RE = re.compile(
     r"(?i)^\s*(fix this|refactor it|add tests|write tests|create tests|help|do it|"
     r"improve this|make it better)\s*$"
 )
+_CASUAL_RE = re.compile(
+    r"(?i)^\s*(hi|hello|hey|yo|thanks|thank you|ok|okay)\s*[!.?]*\s*$"
+)
 
 
 def classify_task(task: str) -> ScopeHint:
     text = " ".join((task or "").strip().split())
     low = text.lower()
+    if _CASUAL_RE.match(text):
+        return ScopeHint(
+            kind=ScopeKind.UNKNOWN,
+            route="direct_answer",
+            reason="casual chat does not need tools",
+            max_workers=0,
+        )
     if not text or _VAGUE_RE.match(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
@@ -118,18 +150,18 @@ def classify_task(task: str) -> ScopeHint:
     if risk_hits:
         return ScopeHint(
             kind=ScopeKind.MEDIUM_CHANGE,
-            route="plan_short_then_coder_check",
+            route="planner_then_coder_check",
             reason="concrete change with some risk signals",
             max_workers=2,
-            requires=("short_plan", "verification"),
+            requires=("plan", "implementation", "verification"),
         )
 
     return ScopeHint(
         kind=ScopeKind.MEDIUM_CHANGE,
-        route="plan_short_then_coder_check",
+        route="planner_then_coder_check",
         reason="concrete change but scope is not obviously tiny",
         max_workers=2,
-        requires=("short_plan", "verification"),
+        requires=("plan", "implementation", "verification"),
     )
 
 
