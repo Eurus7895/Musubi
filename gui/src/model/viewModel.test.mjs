@@ -101,8 +101,10 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[0].id, 'session-new')
   assert.equal(vm.runs[0].workerCount, 2)
   assert.equal(vm.runs[0].statusLabel, 'running')
-  assert.equal(vm.runs[0].orderLabel, 'R01')
-  assert.equal(vm.runs[1].orderLabel, 'R02')
+  // Chronological numbering: the newest run gets the highest number, the
+  // oldest is R01 — even though the list is shown newest-first.
+  assert.equal(vm.runs[0].orderLabel, 'R02')
+  assert.equal(vm.runs[1].orderLabel, 'R01')
   assert.equal(vm.runs[1].id, 'session-old')
 })
 
@@ -122,8 +124,11 @@ test('numbers visible runs instead of using worker count', () => {
     },
   }), actions())
 
+  // The running turn is newest (R02) even though only it is shown; the
+  // completed session-a before it is R01. Label is a run ordinal, not the
+  // worker count (3).
   assert.equal(vm.runs[0].id, 'driver-running-99')
-  assert.equal(vm.runs[0].orderLabel, 'R01')
+  assert.equal(vm.runs[0].orderLabel, 'R02')
   assert.equal(vm.runs.length, 1)
 })
 
