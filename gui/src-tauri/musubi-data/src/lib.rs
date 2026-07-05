@@ -129,7 +129,9 @@ pub struct Agent {
     pub parent: String,
     pub parent_session: String,
     pub parent_agent: String,
-    #[serde(skip)]
+    // Spawn time (epoch seconds), serialized as `spawnEpoch`. The Orchestrator
+    // uses it to sort runs by real chronology across worker sessions and
+    // driver-only turns, which live in separate audit tables.
     pub spawn_epoch: Option<i64>,
 }
 
@@ -139,6 +141,9 @@ pub struct AgentTurn {
     pub id: i64,
     pub chat_id: String,
     pub parent_session: String,
+    // Turn start time (epoch seconds), serialized as `startedAt`. Lets the
+    // Orchestrator order driver-only turns against worker sessions by real time.
+    pub started_at: f64,
     pub model_family: String,
     pub cycles: i64,
     pub tokens_in_estimate: i64,
@@ -469,7 +474,7 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     // ── pipeline studio default (authoring surface; not from the audit) ──
     if table_exists(conn, "agent_turns")? {
         let mut tstmt = conn.prepare(
-            "SELECT id, chat_id, parent_session_id, model_family, cycles, \
+            "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
                     tokens_in_estimate, tokens_out_estimate \
              FROM agent_turns ORDER BY id ASC LIMIT 120",
         )?;
@@ -479,10 +484,11 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                     id: r.get(0)?,
                     chat_id: r.get(1)?,
                     parent_session: r.get(2)?,
-                    model_family: r.get(3)?,
-                    cycles: r.get(4)?,
-                    tokens_in_estimate: r.get(5)?,
-                    tokens_out_estimate: r.get(6)?,
+                    started_at: r.get(3)?,
+                    model_family: r.get(4)?,
+                    cycles: r.get(5)?,
+                    tokens_in_estimate: r.get(6)?,
+                    tokens_out_estimate: r.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1071,7 +1077,8 @@ mod tests {
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
         assert!(v.get("runtimeSource").is_some());
-        assert!(v["subagents"][0].get("spawnEpoch").is_none());
+        // spawnEpoch is now serialized so the UI can sort runs chronologically.
+        assert!(v["subagents"][0].get("spawnEpoch").is_some());
         assert!(v["subagents"][0].get("max").is_some());
         assert!(v["pipeSteps"].as_array().unwrap().is_empty());
     }

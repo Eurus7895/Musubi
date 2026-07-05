@@ -44,6 +44,7 @@ function agent(id, parentSession, status, role = 'coder') {
   return {
     id,
     handle: `h${id}`,
+    spawnEpoch: id,
     role,
     brief: `brief ${id}`,
     status,
@@ -170,6 +171,7 @@ test('creates a parent run for a driver turn with no spawned workers', () => {
     agentTurns: [{
       id: 42,
       parentSession: 'direct-session',
+      startedAt: 1042,
       modelFamily: 'deepseek',
       cycles: 1,
       tokensInEstimate: 100,
@@ -242,6 +244,7 @@ test('lists every session but focuses the latest driver turn', () => {
     agentTurns: [{
       id: 7,
       parentSession: 'latest-direct',
+      startedAt: 1000,  // newer than the worker sessions' spawn epochs (190/191)
       modelFamily: 'deepseek',
       cycles: 1,
       tokensInEstimate: 12,
@@ -249,9 +252,11 @@ test('lists every session but focuses the latest driver turn', () => {
     }],
   }), actions())
 
-  // The full run history stays listed (no collapse to the current run)...
-  assert.deepEqual(vm.runs.map((run) => run.id), ['older-session', 'old-session', 'latest-direct'])
-  // ...and the latest driver turn is the focused/active one by default.
+  // The full run history stays listed (no collapse), sorted by REAL time — the
+  // latest driver-only turn sorts newest even though it comes from a different
+  // audit table than the worker sessions...
+  assert.deepEqual(vm.runs.map((run) => run.id), ['latest-direct', 'older-session', 'old-session'])
+  // ...and it is the focused/active one by default.
   assert.equal(vm.activeRunId, 'latest-direct')
 })
 

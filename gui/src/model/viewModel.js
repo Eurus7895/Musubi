@@ -22,37 +22,43 @@ function statusForRun(run) {
 
 function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
   const byId = new Map()
+  // Track each run's real recency (max member epoch) so worker sessions
+  // (subagent_audit) and driver-only turns (agent_turns) — which arrive as two
+  // separate lists — sort by actual time, not by load order. lastIndex is the
+  // stable fallback when epochs are missing/equal.
+  const bump = (run, epoch) => {
+    const n = Number(epoch)
+    if (Number.isFinite(n) && n > run.recency) run.recency = n
+  }
   agentTurns.forEach((turn, index) => {
     const id = turn.parentSession || `driver-turn-${turn.id || index + 1}`
-    byId.set(id, {
-      id,
-      firstIndex: index,
-      lastIndex: index,
-      steps: [],
-      turn,
-    })
+    if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
+    const run = byId.get(id)
+    run.turn = turn
+    run.lastIndex = Math.max(run.lastIndex, index)
+    bump(run, turn.startedAt)
   })
   subagents.forEach((agent, index) => {
     const id = agent.parentSession || agent.parent || 'driver'
-    if (!byId.has(id)) {
-      byId.set(id, { id, firstIndex: index, lastIndex: index, steps: [] })
-    }
+    if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
     const run = byId.get(id)
     run.lastIndex = Math.max(run.lastIndex, agentTurns.length + index)
     run.steps.push(agent)
+    bump(run, agent.spawnEpoch)
   })
   if (driverStatus?.running && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
     const id = `driver-running-${driverStatus.startedAt || 'now'}`
     byId.set(id, {
       id,
-      firstIndex: agentTurns.length + subagents.length,
       lastIndex: agentTurns.length + subagents.length,
       steps: [],
       live: true,
       task: driverStatus.task || 'Running driver turn',
+      // The live run is happening now — always the newest.
+      recency: Number.MAX_SAFE_INTEGER,
     })
   }
-  return Array.from(byId.values()).sort((a, b) => b.lastIndex - a.lastIndex)
+  return Array.from(byId.values()).sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
 }
 
 function stopHintFor(agent, logText) {
