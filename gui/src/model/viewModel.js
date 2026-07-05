@@ -8,20 +8,170 @@ import {
 import { roleChip, navStyle, auditBtn } from './styleHelpers.js'
 import { fmtClock } from './format.js'
 
+function statusForRun(run) {
+  const steps = run.steps || []
+  if (run.live) return 'running'
+  if (steps.some((a) => a.status === 'running')) return 'running'
+  if (steps.some((a) => a.status === 'failed')) return 'failed'
+  if (steps.some((a) => a.status === 'escalated')) return 'escalated'
+  if (steps.length && steps.every((a) => a.status === 'abandoned')) return 'abandoned'
+  if (steps.length && steps.every((a) => a.status === 'done')) return 'done'
+  if (run.turn) return 'done'
+  return steps[steps.length - 1]?.status || 'abandoned'
+}
+
+function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
+  const byId = new Map()
+  agentTurns.forEach((turn, index) => {
+    const id = turn.parentSession || `driver-turn-${turn.id || index + 1}`
+    byId.set(id, {
+      id,
+      firstIndex: index,
+      lastIndex: index,
+      steps: [],
+      turn,
+    })
+  })
+  subagents.forEach((agent, index) => {
+    const id = agent.parentSession || agent.parent || 'driver'
+    if (!byId.has(id)) {
+      byId.set(id, { id, firstIndex: index, lastIndex: index, steps: [] })
+    }
+    const run = byId.get(id)
+    run.lastIndex = Math.max(run.lastIndex, agentTurns.length + index)
+    run.steps.push(agent)
+  })
+  if (driverStatus?.running && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
+    const id = `driver-running-${driverStatus.startedAt || 'now'}`
+    byId.set(id, {
+      id,
+      firstIndex: agentTurns.length + subagents.length,
+      lastIndex: agentTurns.length + subagents.length,
+      steps: [],
+      live: true,
+      task: driverStatus.task || 'Running driver turn',
+    })
+  }
+  return Array.from(byId.values()).sort((a, b) => b.lastIndex - a.lastIndex)
+}
+
+function stopHintFor(agent, logText) {
+  const log = String(logText || '').toLowerCase()
+  if (log.includes('tokenbudgetexhaustederror') || log.includes('token budget halt') || log.includes('token budget exhausted')) {
+    return 'Budget halted before the next model call.'
+  }
+  if (agent?.status === 'escalated' && Number(agent?.turns || 0) >= Number(agent?.max || 0) && Number(agent?.max || 0) > 0) {
+    return 'Turn cap reached before a final answer.'
+  }
+  if (agent?.status === 'failed') return 'Worker failed. Open the process log or audit row for details.'
+  if (agent?.status === 'abandoned') return 'Worker was abandoned before completion.'
+  return ''
+}
+
+function runSummary(status, logText, run) {
+  const log = String(logText || '').toLowerCase()
+  if (log.includes('tokenbudgetexhaustederror') || log.includes('token budget halt') || log.includes('token budget exhausted')) {
+    return 'Budget halted before the next model call.'
+  }
+  if (run?.turn && !(run.steps || []).length) return 'Driver turn completed without spawning workers.'
+  if (status === 'running') return 'A worker in this run is still active.'
+  if (status === 'done') return 'Run completed.'
+  if (status === 'failed') return 'Run failed.'
+  if (status === 'escalated') return 'Run escalated for operator attention.'
+  if (status === 'abandoned') return 'Run is no longer active.'
+  return 'No worker activity for this run yet.'
+}
+
+function statusCountLine(steps) {
+  if (!steps.length) return 'driver-only turn'
+  const counts = steps.reduce((acc, step) => {
+    acc[step.status] = (acc[step.status] || 0) + 1
+    return acc
+  }, {})
+  const parts = ['done', 'running', 'escalated', 'failed', 'abandoned']
+    .filter((status) => counts[status])
+    .map((status) => counts[status] + ' ' + status)
+  return steps.length + ' steps' + (parts.length ? ' - ' + parts.join(' - ') : '')
+}
+
+function prettyRole(role) {
+  const text = String(role || 'worker')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function retryLineForRun(steps) {
+  const byRole = new Map()
+  steps.forEach((step) => {
+    const role = step.role || 'worker'
+    if (!byRole.has(role)) byRole.set(role, [])
+    byRole.get(role).push(step)
+  })
+  for (const [role, attempts] of byRole.entries()) {
+    if (attempts.length < 2) continue
+    const counts = attempts.reduce((acc, step) => {
+      acc[step.status] = (acc[step.status] || 0) + 1
+      return acc
+    }, {})
+    const parts = ['done', 'running', 'escalated', 'failed', 'abandoned']
+      .filter((status) => counts[status])
+      .map((status) => counts[status] + ' ' + status)
+    return prettyRole(role) + ' retried: ' + parts.join(', ')
+  }
+  return ''
+}
+
+function focusLineForRun(steps, current) {
+  if (!steps.length) return 'Driver handled this turn directly'
+  const focus = current || steps[steps.length - 1]
+  if (focus.status === 'running') return 'Current: ' + focus.role + ' - ' + focus.turns + '/' + focus.max + ' turns'
+  const retryLine = retryLineForRun(steps)
+  if (retryLine) return retryLine
+  if (focus.status === 'done' && steps.every((step) => step.status === 'done')) return 'All steps completed'
+  return 'Blocked at ' + focus.role
+}
+
 export function buildViewModel(s, act) {
   const sm = statusMeta
-  const shown = s.subagents.slice(-3)
   const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
   const selectedAgent = s.subagents.find((a) => a.handle === s.selected)
   const latestAgent = s.subagents[s.subagents.length - 1]
-  const activeSessionId = selectedAgent?.parentSession || latestAgent?.parentSession || ''
-  const activeSessionAgents = activeSessionId
-    ? s.subagents.filter((a) => a.parentSession === activeSessionId)
-    : s.subagents
+  const latestTurn = (s.agentTurns || [])[((s.agentTurns || []).length) - 1]
+  const driverStatusForRuns = s.driverStatus || {}
+  const runsRaw = groupRuns(s.subagents, s.agentTurns || [], driverStatusForRuns)
+  const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
+  const activeSessionId = selectedAgent?.parentSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || ''
+  const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
+  const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
+  const processTextForRuns = [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
+  const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
+  const shouldFocusCurrentRun = !!latestTurn || !!driverStatusForRuns.running
+  const visibleRunsRaw = shouldFocusCurrentRun && activeSessionId
+    ? runsRaw.filter((run) => run.id === activeSessionId || statusForRun(run) === 'running')
+    : runsRaw
+  const runs = visibleRunsRaw.map((run, visibleIndex) => {
+    const status = statusForRun(run)
+    const m = sm[status] || sm.abandoned
+    const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
+    const selected = run.id === activeSessionId
+    return {
+      id: run.id,
+      title: 'Session ' + String(run.id || 'driver').slice(0, 12),
+      subtitle: run.steps.length ? run.steps.length + ' workers' : 'driver-only turn',
+      workerCount: run.steps.length,
+      status,
+      statusLabel: m.label,
+      statusColor: m.color,
+      currentBrief: current?.brief || run.task || 'Driver handled this turn without spawning workers.',
+      orderLabel: 'R' + String(visibleIndex + 1).padStart(2, '0'),
+      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
+      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#19212f' : '#111721') + ';border:1px solid ' + (selected ? 'rgba(255,155,61,0.55)' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;' + (selected ? 'box-shadow:0 0 0 1px rgba(255,155,61,0.2);' : ''),
+      onSelect: () => current?.handle && act.selectAgent(current.handle),
+    }
+  })
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
-  const subagents = shown.map((a, i) => {
+  const subagents = s.subagents.slice(-3).map((a, i) => {
     const m = sm[a.status]
     const hue = hueFor(a.role)
     const sel = a.handle === s.selected
@@ -44,11 +194,22 @@ export function buildViewModel(s, act) {
     }
   })
 
+  const roleTotals = activeSessionAgents.reduce((acc, agent) => {
+    const role = agent.role || 'worker'
+    acc.set(role, (acc.get(role) || 0) + 1)
+    return acc
+  }, new Map())
+  const roleSeen = new Map()
   const sessionSteps = activeSessionAgents.map((a, i) => {
     const m = sm[a.status] || sm.abandoned
     const hue = hueFor(a.role)
     const isCurrent = a.handle === currentSessionAgent?.handle
+    const stopHint = stopHintFor(a, processTextForRuns)
     const pct = a.max ? Math.min(100, Math.round(a.turns / a.max * 100)) : 0
+    const role = a.role || 'worker'
+    const totalAttempts = roleTotals.get(role) || 1
+    const attempt = (roleSeen.get(role) || 0) + 1
+    roleSeen.set(role, attempt)
     return {
       handle: a.handle,
       role: a.role,
@@ -56,6 +217,9 @@ export function buildViewModel(s, act) {
       status: a.status,
       statusLabel: m.label,
       statusColor: m.color,
+      isCurrent,
+      stopHint,
+      attemptLabel: totalAttempts > 1 ? 'attempt ' + attempt + '/' + totalAttempts : '',
       orderLabel: 'W' + String(workerOrder.get(a.handle) || i + 1).padStart(2, '0'),
       roleChipStyle: roleChip(a.role, hue),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
@@ -139,6 +303,13 @@ export function buildViewModel(s, act) {
     keyEnv: '',
     fc: '#ff9b3d',
   }
+  const driverSummary = {
+    title: 'Run summary',
+    countLine: statusCountLine(activeSessionAgents),
+    focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
+    alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
+    metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
+  }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
     return {
@@ -195,10 +366,16 @@ export function buildViewModel(s, act) {
   }))
   const pipePresetsVM = pipePresets.map((p) => ({
     name: p.name, countLabel: p.roles.length + ' agents',
+    selected: !!s.pipeName && s.pipeName === p.name,
     btnStyle: 'display:flex;align-items:center;justify-content:space-between;width:100%;font-family:\'IBM Plex Mono\',monospace;font-size:11px;padding:8px 11px;border-radius:8px;cursor:pointer;background:' + (s.pipeName === p.name ? 'rgba(255,155,61,0.1)' : '#19212f') + ';border:1px solid ' + (s.pipeName === p.name ? 'rgba(255,155,61,0.4)' : 'rgba(255,255,255,0.08)') + ';color:' + (s.pipeName === p.name ? '#ff9b3d' : '#9b9ba2'),
     onLoad: () => act.loadPreset(p.name),
   }))
   const pipeStatusText = 'compose the ' + s.pipeName + ' recipe · run it by asking the driver in chat; stage workers appear in the Orchestrator & Audit'
+
+  const pipeNameLabel = s.pipeName || 'choose preset'
+  const pipeStatusTextForDisplay = s.pipeName
+    ? 'compose the ' + s.pipeName + ' recipe - run it by asking the driver in chat; stage workers appear in the Orchestrator & Audit'
+    : 'Choose a pipeline preset before running. Bare "pipeline" opens this picker and does not call the model.'
 
   const chatView = s.chat.map((msg) => {
     if (msg.role === 'you') {
@@ -264,23 +441,34 @@ export function buildViewModel(s, act) {
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStatusText, onClearPipe: () => act.clearPipe(),
+    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStatusText: pipeStatusTextForDisplay, onClearPipe: () => act.clearPipe(),
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
-    runningCount: s.subagents.filter((a) => a.status === 'running').length, totalDone: s.totalDone, totalSpawned: s.totalSpawned, driverCycle: s.t || 0,
+    runningCount: s.subagents.filter((a) => a.status === 'running').length,
+    totalDone: s.subagents.filter((a) => a.status === 'done').length,
+    totalSpawned: s.subagents.length,
+    driverCycle: s.t || 0,
     driverStyle: 'position:absolute;left:500px;top:0;transform:translate(-50%,0);z-index:3;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:14px;padding:16px 24px;min-width:296px;text-align:center;animation:glow 3s ease-in-out infinite;',
     driverDotStyle: 'width:8px;height:8px;border-radius:50%;background:#ff9b3d;animation:pulse 1.6s ease-in-out infinite;',
     subagents: [], webShown: [],
+    runs,
+    activeRunId: activeSessionId,
+    activeRunSteps: sessionSteps,
+    selectedStepDetail: detail,
+    driverSummary,
+    runStatusSummary: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     sessionSteps,
     sessionTitle: activeSessionId ? ('Session ' + activeSessionId.slice(0, 12)) : 'Session history',
     sessionSubtitle: sessionSteps.length
       ? (sessionSteps.length + ' workers · full history for this parent run')
-      : 'no workers in this session yet',
+      : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
     driverBusy: !!driverStatus.running, driverTask: driverStatus.task || '', driverStatusText,
     driverProcessOpen: !!s.processOpen, driverProcessLog, onToggleProcess: act.toggleProcess,
     logWindowOpen: !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
+    onClearDriverChat: act.clearDriverChat,
+    clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
     onSend: driverStatus.running ? act.cancelAgent : act.sendChat,
     sendTitle: driverStatus.running ? 'Cancel running agent' : 'Send',

@@ -82,6 +82,22 @@ fn insert_chat(
     .map_err(|e| e.to_string())
 }
 
+fn clear_driver_chat_log(conn: &Connection, rt: &mut ChatAgentRuntime) -> Result<(), String> {
+    if rt.running {
+        return Err(
+            "Cannot clear chat while the agent is running. Cancel or wait for it to finish.".into(),
+        );
+    }
+    conn.execute("DELETE FROM chat_log", [])
+        .map_err(|e| e.to_string())?;
+    rt.stdout_tail.clear();
+    rt.stderr_tail.clear();
+    rt.task.clear();
+    rt.started_at = None;
+    rt.cancel_requested = false;
+    Ok(())
+}
+
 fn workspace_root_from_musubi_config(path: &std::path::Path) -> Option<PathBuf> {
     let dir = path.parent()?;
     if dir.file_name().and_then(|s| s.to_str()) != Some(".musubi") {
@@ -175,20 +191,98 @@ fn collect_recent_artifacts(root: &Path, since_epoch: i64, limit: usize) -> Vec<
     paths
 }
 
+fn artifact_name_candidates(answer: &str) -> Vec<String> {
+    answer
+        .split_whitespace()
+        .map(|raw| {
+            raw.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ','
+                        | ';' | ':' | '!' | '?'
+                )
+            })
+            .trim_end_matches('.')
+            .to_string()
+        })
+        .filter(|token| {
+            !token.is_empty()
+                && Path::new(token)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|ext| {
+                        ARTIFACT_EXTENSIONS
+                            .iter()
+                            .any(|x| x.eq_ignore_ascii_case(ext))
+                    })
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn collect_mentioned_artifacts(answer: &str, root: &Path, limit: usize) -> Vec<PathBuf> {
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut paths = Vec::new();
+    for token in artifact_name_candidates(answer) {
+        let token_path = PathBuf::from(token.trim_start_matches("./"));
+        let candidate = if token_path.is_absolute() {
+            token_path
+        } else {
+            root.join(token_path)
+        };
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        if canonical.starts_with(&root_canon)
+            && canonical.is_file()
+            && is_artifact_file(&canonical)
+            && !paths.iter().any(|p| p == &canonical)
+        {
+            paths.push(canonical);
+        }
+        if paths.len() >= limit {
+            break;
+        }
+    }
+    paths
+}
+
+fn artifact_label(path: &Path, root: &Path) -> String {
+    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    path.strip_prefix(root)
+        .or_else(|_| path.strip_prefix(&root_canon))
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn append_artifact_links(answer: &str, root: &Path, artifacts: &[PathBuf]) -> String {
-    if artifacts.is_empty() {
+    let mut linked: Vec<PathBuf> = Vec::new();
+    for path in collect_mentioned_artifacts(answer, root, 8)
+        .into_iter()
+        .chain(artifacts.iter().cloned())
+    {
+        if !linked.iter().any(|p| p == &path) {
+            linked.push(path);
+        }
+    }
+
+    let mentioned_artifact = !artifact_name_candidates(answer).is_empty();
+    if linked.is_empty() && !mentioned_artifact {
         return answer.to_string();
     }
     let mut out = answer.trim_end().to_string();
     out.push_str("\n\nArtifacts:");
-    for path in artifacts {
-        let label = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+    for path in &linked {
+        let label = artifact_label(path, root);
         let encoded = percent_encode(&path.to_string_lossy());
         out.push_str(&format!("\n- [{label}](musubi-artifact:{encoded})"));
+    }
+    if linked.is_empty() {
+        let encoded = percent_encode(&root.to_string_lossy());
+        out.push_str(&format!(
+            "\n- [Workspace folder](musubi-artifact:{encoded})"
+        ));
     }
     out
 }
@@ -244,6 +338,28 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
     }
 }
 
+fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
+    let display_path = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        if is_file {
+            (
+                "cmd".into(),
+                vec!["/C".into(), "start".into(), "".into(), display_path],
+            )
+        } else {
+            ("explorer.exe".into(), vec![display_path])
+        }
+    } else if cfg!(target_os = "macos") {
+        if is_file {
+            ("open".into(), vec!["-R".into(), display_path])
+        } else {
+            ("open".into(), vec![display_path])
+        }
+    } else {
+        ("xdg-open".into(), vec![display_path])
+    }
+}
+
 fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String> {
     let path = PathBuf::from(raw_path);
     let canonical = path
@@ -255,19 +371,9 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String
     if !canonical.starts_with(&root) {
         return Err("refusing to open a path outside the project root".into());
     }
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("explorer.exe");
-        c.arg(&canonical);
-        c
-    } else if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg(&canonical);
-        c
-    } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(&canonical);
-        c
-    };
+    let (program, args) = open_command_for_path(&canonical, canonical.is_file());
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to open artifact: {e}"))
@@ -642,6 +748,19 @@ fn action(
                 insert_chat(&conn, "driver", Some("deny"), &e)?;
             }
         }
+        "pipeline_hint" => {
+            let text = str_arg(0);
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            if !text.trim().is_empty() {
+                insert_chat(&conn, "you", None, &text)?;
+            }
+            insert_chat(
+                &conn,
+                "driver",
+                None,
+                "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.",
+            )?;
+        }
         "select_profile" => {
             let name = str_arg(0);
             let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -658,6 +777,11 @@ fn action(
         }
         "cancel_agent" => {
             cancel_chat_agent(&app, state.inner())?;
+        }
+        "clear_driver_chat" => {
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            clear_driver_chat_log(&conn, &mut rt)?;
         }
         "open_artifact" => {
             open_workspace_path(&state.project_root, &str_arg(0))?;
@@ -702,4 +826,94 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Musubi console");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_driver_chat_deletes_chat_and_idle_runtime_tails() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        insert_chat(&conn, "you", None, "hello").unwrap();
+        insert_chat(&conn, "driver", None, "hi").unwrap();
+        let mut rt = ChatAgentRuntime {
+            stdout_tail: "stdout text".into(),
+            stderr_tail: "stderr text".into(),
+            task: "old task".into(),
+            started_at: Some(123),
+            ..ChatAgentRuntime::default()
+        };
+
+        clear_driver_chat_log(&conn, &mut rt).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(rt.stdout_tail, "");
+        assert_eq!(rt.stderr_tail, "");
+        assert_eq!(rt.task, "");
+        assert_eq!(rt.started_at, None);
+    }
+
+    #[test]
+    fn clear_driver_chat_refuses_while_agent_runs() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        insert_chat(&conn, "you", None, "hello").unwrap();
+        let mut rt = ChatAgentRuntime {
+            running: true,
+            ..ChatAgentRuntime::default()
+        };
+
+        let err = clear_driver_chat_log(&conn, &mut rt).unwrap_err();
+
+        assert!(err.contains("running"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn artifact_links_include_existing_mentioned_file() {
+        let root = std::env::temp_dir().join(format!("musubi-artifact-test-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("weather-dashboard.html");
+        std::fs::write(&file, "<html></html>").unwrap();
+
+        let text = append_artifact_links(
+            "Open `weather-dashboard.html` in your browser.",
+            &root,
+            &[],
+        );
+
+        assert!(text.contains("[weather-dashboard.html](musubi-artifact:"));
+        let _ = std::fs::remove_file(file);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn artifact_open_command_reveals_files_on_windows() {
+        let file = Path::new(r"C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html");
+        let (program, args) = open_command_for_path(file, true);
+
+        if cfg!(windows) {
+            assert_eq!(program, "cmd");
+            assert_eq!(
+                args,
+                vec![
+                    "/C",
+                    "start",
+                    "",
+                    r"C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html"
+                ]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
+    }
 }

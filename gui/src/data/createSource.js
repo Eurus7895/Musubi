@@ -18,7 +18,7 @@ class LazyTauri {
       subagents: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
-      pipeSteps: [], pipeName: 'feature-dev', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
+      pipeSteps: [], pipeName: '', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
       driverStatus: { running: false, task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
       setupStatus: {

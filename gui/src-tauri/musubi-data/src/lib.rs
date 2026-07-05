@@ -35,6 +35,7 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub subagents: Vec<Agent>,
+    pub agent_turns: Vec<AgentTurn>,
     pub events: Vec<serde_json::Value>,
     pub policy: Vec<Decision>,
     pub audit: Vec<AuditRow>,
@@ -130,6 +131,18 @@ pub struct Agent {
     pub parent_agent: String,
     #[serde(skip)]
     pub spawn_epoch: Option<i64>,
+}
+
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTurn {
+    pub id: i64,
+    pub chat_id: String,
+    pub parent_session: String,
+    pub model_family: String,
+    pub cycles: i64,
+    pub tokens_in_estimate: i64,
+    pub tokens_out_estimate: i64,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -242,7 +255,7 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     let mut st = State {
         active_profile: read_active_profile(conn),
         profiles: read_llm_profiles(),
-        pipe_name: "feature-dev".into(),
+        pipe_name: String::new(),
         pipe_cur: -1,
         runtime_source: "demo".into(),
         ..Default::default()
@@ -454,16 +467,26 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     }
 
     // ── pipeline studio default (authoring surface; not from the audit) ──
-    st.pipe_steps = ["explorer", "planner", "coder", "reviewer"]
-        .iter()
-        .enumerate()
-        .map(|(i, r)| PipeStep {
-            uid: (i + 1) as i64,
-            role: r.to_string(),
-            status: "idle".into(),
-            handle: None,
-        })
-        .collect();
+    if table_exists(conn, "agent_turns")? {
+        let mut tstmt = conn.prepare(
+            "SELECT id, chat_id, parent_session_id, model_family, cycles, \
+                    tokens_in_estimate, tokens_out_estimate \
+             FROM agent_turns ORDER BY id ASC LIMIT 120",
+        )?;
+        st.agent_turns = tstmt
+            .query_map([], |r| {
+                Ok(AgentTurn {
+                    id: r.get(0)?,
+                    chat_id: r.get(1)?,
+                    parent_session: r.get(2)?,
+                    model_family: r.get(3)?,
+                    cycles: r.get(4)?,
+                    tokens_in_estimate: r.get(5)?,
+                    tokens_out_estimate: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
 
     Ok(st)
 }
@@ -734,6 +757,20 @@ CREATE TABLE IF NOT EXISTS chat_log (
   role TEXT,                                   -- 'you' | 'driver' | 'system'
   tone TEXT,
   text TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_turns (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id              TEXT NOT NULL,
+  parent_session_id    TEXT NOT NULL,
+  started_at           REAL NOT NULL,
+  ended_at             REAL,
+  model_family         TEXT NOT NULL,
+  cycles               INTEGER NOT NULL DEFAULT 0,
+  tokens_in_estimate   INTEGER NOT NULL DEFAULT 0,
+  tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
+  lm_ms                INTEGER NOT NULL DEFAULT 0,
+  total_ms             INTEGER NOT NULL DEFAULT 0,
+  schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -1036,7 +1073,7 @@ mod tests {
         assert!(v.get("runtimeSource").is_some());
         assert!(v["subagents"][0].get("spawnEpoch").is_none());
         assert!(v["subagents"][0].get("max").is_some());
-        assert!(v["pipeSteps"].as_array().unwrap().len() == 4);
+        assert!(v["pipeSteps"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1106,6 +1143,25 @@ mod tests {
         assert_eq!(st.subagents.len(), 0);
         assert_eq!(st.total_spawned, 0);
         assert!(!st.active_profile.is_empty());
+    }
+
+    #[test]
+    fn loads_agent_turns_for_driver_only_runs() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_turns\
+             (id,chat_id,parent_session_id,started_at,model_family,cycles,tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)\
+             VALUES(42,'chat-a','direct-session',1000.0,'deepseek',1,100,20,300,500)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_turns.len(), 1);
+        assert_eq!(st.agent_turns[0].parent_session, "direct-session");
+        assert_eq!(st.agent_turns[0].cycles, 1);
     }
 
     fn temp_dir(name: &str) -> PathBuf {

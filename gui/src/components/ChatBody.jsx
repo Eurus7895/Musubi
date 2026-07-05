@@ -1,19 +1,24 @@
 import { useEffect, useRef } from 'react'
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
+import { compactMarkdownTables, parseInlineSegments } from './chatLinks.js'
 
 function InlineText({ text, onOpenArtifact, onOpenLog }) {
-  const parts = String(text).split(/(\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*)/g)
+  const parts = parseInlineSegments(text)
   return parts.map((part, i) => {
-    const link = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
-    if (link) {
-      const href = link[2]
+    if (part.type === 'link') {
+      const href = part.href
       if (href.startsWith('musubi-artifact:')) {
         const path = decodeURIComponent(href.slice('musubi-artifact:'.length))
         return (
           <button
+            type="button"
             key={i}
-            onClick={() => onOpenArtifact?.(path)}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onOpenArtifact?.(path)
+            }}
             style={{
               display: 'inline',
               padding: 0,
@@ -26,15 +31,20 @@ function InlineText({ text, onOpenArtifact, onOpenLog }) {
               textUnderlineOffset: 2,
             }}
           >
-            {link[1]}
+            {part.label}
           </button>
         )
       }
       if (href.startsWith('musubi-log:')) {
         return (
           <button
+            type="button"
             key={i}
-            onClick={() => onOpenLog?.()}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onOpenLog?.()
+            }}
             style={{
               display: 'inline',
               padding: 0,
@@ -47,21 +57,21 @@ function InlineText({ text, onOpenArtifact, onOpenLog }) {
               textUnderlineOffset: 2,
             }}
           >
-            {link[1]}
+            {part.label}
           </button>
         )
       }
-      return <a key={i} href={href} target="_blank" rel="noreferrer" style={{ color: '#8ab4d8' }}>{link[1]}</a>
+      return <a key={i} href={href} target="_blank" rel="noreferrer" style={{ color: '#8ab4d8' }}>{part.label}</a>
     }
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} style={{ color: '#f4f4f5', fontWeight: 650 }}>{part.slice(2, -2)}</strong>
+    if (part.type === 'strong') {
+      return <strong key={i} style={{ color: '#f4f4f5', fontWeight: 650 }}>{part.text}</strong>
     }
-    return <span key={i}>{part}</span>
+    return <span key={i}>{part.text}</span>
   })
 }
 
 function FormattedMessage({ text, onOpenArtifact, onOpenLog }) {
-  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n')
+  const lines = compactMarkdownTables(text).replace(/\r\n/g, '\n').split('\n')
   const blocks = []
   let list = null
   const flushList = () => {
