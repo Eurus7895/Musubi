@@ -24,7 +24,6 @@ export default class TauriSource {
     this.state = {
       view: this.props.startView || 'orchestrator',
       selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
-      pipeDraft: '',
       processOpen: false, logWindowOpen: false,
       subagents: [], events: [], policy: [], audit: [], chat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
@@ -106,14 +105,6 @@ export default class TauriSource {
         if (p) this._setLocal({ pipeName: n })
         this._action('load_preset', [n])
       },
-      onPipeDraft: (e) => this._setLocal({ pipeDraft: e.target.value }),
-      runPipe: () => {
-        const brief = (this.state.pipeDraft || '').trim()
-        if (!brief || this.state.pipeRunning) return
-        this._action('run_pipe', [brief, this.state.pipeName])
-      },
-      stopPipe: () => this._action('stop_pipe'),
-      resetPipe: () => this._action('reset_pipe'),
     }
     return this._actions
   }

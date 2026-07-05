@@ -1443,78 +1443,6 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_spec_puts_brief_first_then_pipeline_and_surface() {
-        let root = PathBuf::from("/proj");
-        let spec = build_pipeline_launch_spec(
-            "feature-dev",
-            "ship the health endpoint",
-            "",
-            "anthropic.default",
-            None,
-            &root,
-            &std::collections::HashMap::new(),
-        )
-        .unwrap();
-
-        assert_eq!(spec.program, PathBuf::from("agent"));
-        assert_eq!(
-            spec.args,
-            vec![
-                "ship the health endpoint",
-                "--pipeline",
-                "feature-dev",
-                "--tool-surface",
-                "agent",
-            ]
-        );
-        assert_eq!(spec.cwd, root);
-    }
-
-    #[test]
-    fn pipeline_spec_adds_profile_only_when_non_default_and_never_chat_id() {
-        let root = PathBuf::from("/proj");
-        let with = build_pipeline_launch_spec(
-            "dev-lite",
-            "b",
-            "azure.work",
-            "anthropic.default",
-            None,
-            &root,
-            &std::collections::HashMap::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            with.args,
-            vec![
-                "b",
-                "--profile",
-                "azure.work",
-                "--pipeline",
-                "dev-lite",
-                "--tool-surface",
-                "agent"
-            ]
-        );
-        assert!(!with.args.iter().any(|a| a == "--chat-id"));
-    }
-
-    #[test]
-    fn pipeline_spec_rejects_empty_brief_or_name() {
-        let root = PathBuf::from("/proj");
-        let empty = &std::collections::HashMap::new();
-        assert!(
-            build_pipeline_launch_spec("feature-dev", "  ", "", "", None, &root, empty)
-                .unwrap_err()
-                .contains("brief is empty")
-        );
-        assert!(
-            build_pipeline_launch_spec("", "do it", "", "", None, &root, empty)
-                .unwrap_err()
-                .contains("no pipeline")
-        );
-    }
-
-    #[test]
     fn bounded_tail_keeps_newest_content_on_utf8_boundaries() {
         let mut buf = String::new();
         push_bounded_tail(&mut buf, "hello ", 64);
@@ -1830,54 +1758,6 @@ fn forwarded_spec_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
         }
     }
     spec_env
-}
-
-/// Launch spec for a deterministic pipeline run:
-/// `agent "<brief>" [--profile <p>] --pipeline <name> --tool-surface agent`.
-///
-/// No `--chat-id` — a pipeline run is one-shot, not a conversation. `--profile`
-/// is added only when it differs from the file default, mirroring
-/// `build_agent_launch_spec`. The named pipeline is a recipe under
-/// `.github/pipelines/<name>` (e.g. `feature-dev`, `dev-lite`).
-pub fn build_pipeline_launch_spec(
-    pipeline_name: &str,
-    brief: &str,
-    profile: &str,
-    default_profile: &str,
-    agent_cli_path: Option<&Path>,
-    project_root: &Path,
-    env: &HashMap<String, String>,
-) -> Result<AgentLaunchSpec, String> {
-    let brief = brief.trim();
-    if brief.is_empty() {
-        return Err("brief is empty — describe what the pipeline should build".into());
-    }
-    let name = pipeline_name.trim();
-    if name.is_empty() {
-        return Err("no pipeline selected".into());
-    }
-
-    let program = agent_cli_path
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("agent"));
-
-    let mut args = vec![brief.to_string()];
-    let profile = profile.trim();
-    if !profile.is_empty() && profile != default_profile.trim() {
-        args.push("--profile".into());
-        args.push(profile.to_string());
-    }
-    args.push("--pipeline".into());
-    args.push(name.to_string());
-    args.push("--tool-surface".into());
-    args.push("agent".into());
-
-    Ok(AgentLaunchSpec {
-        program,
-        args,
-        cwd: project_root.to_path_buf(),
-        env: forwarded_spec_env(env),
-    })
 }
 
 /// Append `chunk` to `buf`, keeping only the newest `cap` bytes and never

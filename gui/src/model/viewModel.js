@@ -163,9 +163,11 @@ export function buildViewModel(s, act) {
   }))
 
   // ── pipeline studio view-model ──
+  // The studio is a preset composer / inspector; pipelines are launched by
+  // asking the driver in chat (root agent → musubi_spawn_pipeline), reusing the
+  // Orchestrator session input, so there is no in-studio Run control.
   const stColor = { idle: '#6a6a72', queued: '#e3b341', running: '#ff9b3d', done: '#54c79a' }
-  const pipeRun = s.pipeRunning
-  const editable = !pipeRun && !s.pipeDoneFlag
+  const editable = true
   const pipeStepsVM = s.pipeSteps.map((st, i) => {
     const cat = pipeCatalog.find((c) => c.role === st.role) || { tools: [], max: 0, hue: '#8a8a92' }
     const col = stColor[st.status]
@@ -188,24 +190,15 @@ export function buildViewModel(s, act) {
   })
   const pipeCatalogVM = pipeCatalog.map((c) => ({
     role: c.role, desc: c.desc, roleChipStyle: roleChip(c.role, c.hue), toolsLabel: c.tools.length + ' tools',
-    cardStyle: 'text-align:left;width:100%;background:#141b27;border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:11px 13px;cursor:' + (pipeRun ? 'default' : 'pointer') + ';opacity:' + (pipeRun ? '0.45' : '1') + ';transition:border-color .14s',
-    onAdd: pipeRun ? (() => {}) : (() => act.addPipe(c.role)),
+    cardStyle: 'text-align:left;width:100%;background:#141b27;border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:11px 13px;cursor:pointer;transition:border-color .14s',
+    onAdd: () => act.addPipe(c.role),
   }))
   const pipePresetsVM = pipePresets.map((p) => ({
     name: p.name, countLabel: p.roles.length + ' agents',
-    btnStyle: 'display:flex;align-items:center;justify-content:space-between;width:100%;font-family:\'IBM Plex Mono\',monospace;font-size:11px;padding:8px 11px;border-radius:8px;cursor:' + (pipeRun ? 'default' : 'pointer') + ';background:' + (s.pipeName === p.name ? 'rgba(255,155,61,0.1)' : '#19212f') + ';border:1px solid ' + (s.pipeName === p.name ? 'rgba(255,155,61,0.4)' : 'rgba(255,255,255,0.08)') + ';color:' + (s.pipeName === p.name ? '#ff9b3d' : '#9b9ba2') + ';opacity:' + (pipeRun ? '0.5' : '1'),
-    onLoad: pipeRun ? (() => {}) : (() => act.loadPreset(p.name)),
+    btnStyle: 'display:flex;align-items:center;justify-content:space-between;width:100%;font-family:\'IBM Plex Mono\',monospace;font-size:11px;padding:8px 11px;border-radius:8px;cursor:pointer;background:' + (s.pipeName === p.name ? 'rgba(255,155,61,0.1)' : '#19212f') + ';border:1px solid ' + (s.pipeName === p.name ? 'rgba(255,155,61,0.4)' : 'rgba(255,255,255,0.08)') + ';color:' + (s.pipeName === p.name ? '#ff9b3d' : '#9b9ba2'),
+    onLoad: () => act.loadPreset(p.name),
   }))
-  let runLabel, runAction
-  if (pipeRun) { runLabel = '■ Stop'; runAction = () => act.stopPipe() }
-  else if (s.pipeDoneFlag) { runLabel = '↻ Reset'; runAction = () => act.resetPipe() }
-  else { runLabel = '▶ Run pipeline'; runAction = () => act.runPipe() }
-  const runDisabled = !pipeRun && !(s.pipeDraft || '').trim()
-  const runStyle = 'display:inline-flex;align-items:center;gap:8px;font-family:\'IBM Plex Mono\',monospace;font-size:12px;padding:9px 16px;border-radius:9px;cursor:' + (runDisabled ? 'not-allowed' : 'pointer') + ';border:1px solid ' + (pipeRun ? 'rgba(232,106,95,0.5)' : 'rgba(255,155,61,0.5)') + ';background:' + (pipeRun ? 'rgba(232,106,95,0.14)' : 'rgba(255,155,61,0.14)') + ';color:' + (pipeRun ? '#e86a5f' : '#ff9b3d') + ';opacity:' + (runDisabled ? '0.4' : '1')
-  let pipeStatusText
-  if (pipeRun) pipeStatusText = 'running · ' + s.pipeName + ' · stage workers appear in the Orchestrator & Audit'
-  else if (runDisabled) pipeStatusText = 'describe the task, then Run — one governed ' + s.pipeName + ' pipeline process'
-  else pipeStatusText = 'ready · Run spawns agent --pipeline ' + s.pipeName + ', each handoff tied to the audit'
+  const pipeStatusText = 'compose the ' + s.pipeName + ' recipe · run it by asking the driver in chat; stage workers appear in the Orchestrator & Audit'
 
   const chatView = s.chat.map((msg) => {
     if (msg.role === 'you') {
@@ -271,8 +264,7 @@ export function buildViewModel(s, act) {
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, runLabel, runAction, runStyle, runDisabled, pipeStatusText, onClearPipe: () => act.clearPipe(),
-    pipeDraft: s.pipeDraft || '', onPipeDraft: act.onPipeDraft, pipeRunning: pipeRun,
+    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: s.pipeName, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStatusText, onClearPipe: () => act.clearPipe(),
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
