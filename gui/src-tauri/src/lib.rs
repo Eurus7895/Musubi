@@ -341,14 +341,11 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
 fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
     let display_path = path.to_string_lossy().to_string();
     if cfg!(windows) {
-        if is_file {
-            (
-                "cmd".into(),
-                vec!["/C".into(), "start".into(), "".into(), display_path],
-            )
-        } else {
-            ("explorer.exe".into(), vec![display_path])
-        }
+        let _ = is_file;
+        (
+            "cmd".into(),
+            vec!["/C".into(), "start".into(), "".into(), display_path],
+        )
     } else if cfg!(target_os = "macos") {
         if is_file {
             ("open".into(), vec!["-R".into(), display_path])
@@ -908,6 +905,23 @@ mod tests {
                     "",
                     r"C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html"
                 ]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
+    }
+
+    #[test]
+    fn artifact_open_command_opens_folders_on_windows() {
+        let folder = Path::new(r"C:\Workspace\Projects\Musubi");
+        let (program, args) = open_command_for_path(folder, false);
+
+        if cfg!(windows) {
+            assert_eq!(program, "cmd");
+            assert_eq!(
+                args,
+                vec!["/C", "start", "", r"C:\Workspace\Projects\Musubi"]
             );
         } else {
             assert!(!program.is_empty());

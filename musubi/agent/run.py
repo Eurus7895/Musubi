@@ -208,6 +208,33 @@ async def run_agent(
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, max_credits, log)
     scope_hint = classify_task(task)
+    direct_answer = _deterministic_scope_answer(task, scope_hint)
+    if direct_answer is not None:
+        print(f"[agent] {scope_hint.log_line()}", file=log)
+        print(
+            f"[agent] deterministic route={scope_hint.route}; no model call",
+            file=log,
+        )
+        if chat_id:
+            _append_chat_message(
+                chat_id, "user", task,
+                db_path=context_compression_db_path, log=log,
+            )
+            _append_chat_message(
+                chat_id, "assistant", direct_answer,
+                db_path=context_compression_db_path, log=log,
+            )
+            _record_agent_turn(
+                chat_id=chat_id,
+                parent_session_id=None,
+                started_at=turn_started_at,
+                ended_at=time.time(),
+                model_family="deterministic",
+                stats=stats,
+                db_path=context_compression_db_path,
+                log=log,
+            )
+        return direct_answer
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -961,6 +988,22 @@ def _build_token_budget(
         file=log,
     )
     return budget
+
+
+def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
+    if scope_hint.route == "direct_answer":
+        return "Hi! How can I help?"
+    if scope_hint.route == "manual_destructive":
+        return (
+            "I cannot safely delete files from this route because deletion is "
+            "destructive and there is no interactive confirmation step here.\n\n"
+            "To delete them manually from the workspace root, use one of these:\n"
+            "- In VS Code Explorer: select the matching files and press Delete.\n"
+            "- In PowerShell: `Remove-Item -Force *-dashboard.html`\n"
+            "- In cmd: `del /f *-dashboard.html`\n\n"
+            f"Requested pattern/task: `{task}`"
+        )
+    return None
 
 
 def _ensure_core_import_path() -> None:

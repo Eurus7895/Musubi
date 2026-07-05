@@ -1181,6 +1181,41 @@ def test_medium_change_refuses_coder_as_first_worker() -> None:
     assert "medium task route requires planner before coder" in fed_back
 
 
+def test_delete_request_returns_manual_answer_without_llm_calls() -> None:
+    router = FakeRouter([])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "delete all *-dashboard.html files",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert router.calls == []
+    assert "I cannot safely delete files from this route" in answer
+    assert "*-dashboard.html" in answer
+    assert "manual_destructive" in log.getvalue()
+
+
+def test_greeting_returns_direct_answer_without_llm_calls() -> None:
+    router = FakeRouter([])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "hi",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert router.calls == []
+    assert answer.startswith("Hi!")
+    assert "direct_answer" in log.getvalue()
+
+
 class _ExplodingRouter(LMRouter):
     """A vendor whose call fails like a real network/proxy error would."""
 
@@ -1223,7 +1258,10 @@ def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
     with pytest.raises(RuntimeError, match="407 proxy auth") as ei:
         asyncio.run(
             run_agent(
-                "hi", _ExplodingRouter(), _musubi_dir(), log=log,
+                "summarize repository architecture",
+                _ExplodingRouter(),
+                _musubi_dir(),
+                log=log,
                 max_tokens=0,
             )
         )

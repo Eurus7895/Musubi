@@ -50,6 +50,10 @@ class ScopeHint:
             "direct_answer": (
                 "Casual route: answer directly in one turn without tools or workers."
             ),
+            "manual_destructive": (
+                "Destructive route: do not call tools or workers. Warn and give "
+                "manual operator steps instead."
+            ),
         }.get(self.route, "Use the route conservatively.")
         return (
             "[agent-routing-scope]\n"
@@ -99,6 +103,12 @@ _VAGUE_RE = re.compile(
 _CASUAL_RE = re.compile(
     r"(?i)^\s*(hi|hello|hey|yo|thanks|thank you|ok|okay)\s*[!.?]*\s*$"
 )
+_DESTRUCTIVE_FILE_RE = re.compile(
+    r"(?i)\b(delete|remove|rm|erase)\b.*\b("
+    r"file|files|folder|folders|directory|directories|dashboard|dashboards|"
+    r"workspace|\*|[\w.-]+\.(?:html|htm|py|js|jsx|ts|tsx|css|md|json|csv|txt)"
+    r")\b"
+)
 
 
 def classify_task(task: str) -> ScopeHint:
@@ -110,6 +120,14 @@ def classify_task(task: str) -> ScopeHint:
             route="direct_answer",
             reason="casual chat does not need tools",
             max_workers=0,
+        )
+    if _DESTRUCTIVE_FILE_RE.search(text):
+        return ScopeHint(
+            kind=ScopeKind.UNKNOWN,
+            route="manual_destructive",
+            reason="destructive file operation needs explicit operator control",
+            max_workers=0,
+            requires=("manual_confirmation",),
         )
     if not text or _VAGUE_RE.match(text):
         return ScopeHint(

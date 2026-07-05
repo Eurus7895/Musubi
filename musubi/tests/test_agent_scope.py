@@ -57,3 +57,11 @@ def test_greeting_routes_to_direct_answer_without_workers() -> None:
     assert hint.kind is ScopeKind.UNKNOWN
     assert hint.route == "direct_answer"
     assert hint.max_workers == 0
+
+
+def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
+    hint = classify_task("delete all *-dashboard.html files")
+
+    assert hint.kind is ScopeKind.UNKNOWN
+    assert hint.route == "manual_destructive"
+    assert hint.max_workers == 0
