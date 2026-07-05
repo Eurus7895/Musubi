@@ -94,10 +94,38 @@ function statusCountLine(steps) {
   return steps.length + ' steps' + (parts.length ? ' - ' + parts.join(' - ') : '')
 }
 
+function prettyRole(role) {
+  const text = String(role || 'worker')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function retryLineForRun(steps) {
+  const byRole = new Map()
+  steps.forEach((step) => {
+    const role = step.role || 'worker'
+    if (!byRole.has(role)) byRole.set(role, [])
+    byRole.get(role).push(step)
+  })
+  for (const [role, attempts] of byRole.entries()) {
+    if (attempts.length < 2) continue
+    const counts = attempts.reduce((acc, step) => {
+      acc[step.status] = (acc[step.status] || 0) + 1
+      return acc
+    }, {})
+    const parts = ['done', 'running', 'escalated', 'failed', 'abandoned']
+      .filter((status) => counts[status])
+      .map((status) => counts[status] + ' ' + status)
+    return prettyRole(role) + ' retried: ' + parts.join(', ')
+  }
+  return ''
+}
+
 function focusLineForRun(steps, current) {
   if (!steps.length) return 'Driver handled this turn directly'
   const focus = current || steps[steps.length - 1]
   if (focus.status === 'running') return 'Current: ' + focus.role + ' - ' + focus.turns + '/' + focus.max + ' turns'
+  const retryLine = retryLineForRun(steps)
+  if (retryLine) return retryLine
   if (focus.status === 'done' && steps.every((step) => step.status === 'done')) return 'All steps completed'
   return 'Blocked at ' + focus.role
 }
@@ -136,7 +164,7 @@ export function buildViewModel(s, act) {
       statusLabel: m.label,
       statusColor: m.color,
       currentBrief: current?.brief || run.task || 'Driver handled this turn without spawning workers.',
-      orderLabel: 'R' + String(run.lastIndex + 1).padStart(3, '0'),
+      orderLabel: 'R' + String(run.firstIndex + 1).padStart(2, '0'),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#19212f' : '#111721') + ';border:1px solid ' + (selected ? 'rgba(255,155,61,0.55)' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;' + (selected ? 'box-shadow:0 0 0 1px rgba(255,155,61,0.2);' : ''),
       onSelect: () => current?.handle && act.selectAgent(current.handle),
@@ -166,12 +194,22 @@ export function buildViewModel(s, act) {
     }
   })
 
+  const roleTotals = activeSessionAgents.reduce((acc, agent) => {
+    const role = agent.role || 'worker'
+    acc.set(role, (acc.get(role) || 0) + 1)
+    return acc
+  }, new Map())
+  const roleSeen = new Map()
   const sessionSteps = activeSessionAgents.map((a, i) => {
     const m = sm[a.status] || sm.abandoned
     const hue = hueFor(a.role)
     const isCurrent = a.handle === currentSessionAgent?.handle
     const stopHint = stopHintFor(a, processTextForRuns)
     const pct = a.max ? Math.min(100, Math.round(a.turns / a.max * 100)) : 0
+    const role = a.role || 'worker'
+    const totalAttempts = roleTotals.get(role) || 1
+    const attempt = (roleSeen.get(role) || 0) + 1
+    roleSeen.set(role, attempt)
     return {
       handle: a.handle,
       role: a.role,
@@ -181,6 +219,7 @@ export function buildViewModel(s, act) {
       statusColor: m.color,
       isCurrent,
       stopHint,
+      attemptLabel: totalAttempts > 1 ? 'attempt ' + attempt + '/' + totalAttempts : '',
       orderLabel: 'W' + String(workerOrder.get(a.handle) || i + 1).padStart(2, '0'),
       roleChipStyle: roleChip(a.role, hue),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),

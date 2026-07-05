@@ -338,6 +338,28 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
     }
 }
 
+fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
+    let display_path = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        if is_file {
+            (
+                "explorer.exe".into(),
+                vec![format!("/select,{display_path}")],
+            )
+        } else {
+            ("explorer.exe".into(), vec![display_path])
+        }
+    } else if cfg!(target_os = "macos") {
+        if is_file {
+            ("open".into(), vec!["-R".into(), display_path])
+        } else {
+            ("open".into(), vec![display_path])
+        }
+    } else {
+        ("xdg-open".into(), vec![display_path])
+    }
+}
+
 fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String> {
     let path = PathBuf::from(raw_path);
     let canonical = path
@@ -349,19 +371,9 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String
     if !canonical.starts_with(&root) {
         return Err("refusing to open a path outside the project root".into());
     }
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("explorer.exe");
-        c.arg(&canonical);
-        c
-    } else if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
-        c.arg(&canonical);
-        c
-    } else {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(&canonical);
-        c
-    };
+    let (program, args) = open_command_for_path(&canonical, canonical.is_file());
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| format!("failed to open artifact: {e}"))
@@ -881,5 +893,22 @@ mod tests {
         assert!(text.contains("[weather-dashboard.html](musubi-artifact:"));
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn artifact_open_command_reveals_files_on_windows() {
+        let file = Path::new(r"C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html");
+        let (program, args) = open_command_for_path(file, true);
+
+        if cfg!(windows) {
+            assert_eq!(program, "explorer.exe");
+            assert_eq!(
+                args,
+                vec![r"/select,C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html"]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
     }
 }

@@ -101,6 +101,7 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[0].id, 'session-new')
   assert.equal(vm.runs[0].workerCount, 2)
   assert.equal(vm.runs[0].statusLabel, 'running')
+  assert.equal(vm.runs[0].orderLabel, 'R02')
   assert.equal(vm.runs[1].id, 'session-old')
 })
 
@@ -178,6 +179,20 @@ test('summarizes the active run for the driver card', () => {
   assert.equal(vm.driverSummary.focusLine, 'Blocked at reviewer')
   assert.equal(vm.driverSummary.alertLine, 'Budget halted before the next model call.')
   assert.match(vm.driverSummary.metaLine, /deepseek-v4-flash/)
+})
+
+test('explains repeated workers as retry attempts', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(1, 'session-a', 'escalated', 'coder'),
+      agent(2, 'session-a', 'done', 'coder'),
+    ],
+  }), actions())
+
+  assert.equal(vm.driverSummary.countLine, '2 steps - 1 done - 1 escalated')
+  assert.equal(vm.driverSummary.focusLine, 'Coder retried: 1 done, 1 escalated')
+  assert.equal(vm.activeRunSteps[0].attemptLabel, 'attempt 1/2')
+  assert.equal(vm.activeRunSteps[1].attemptLabel, 'attempt 2/2')
 })
 
 test('does not treat a pipeline preset as selected by default', () => {

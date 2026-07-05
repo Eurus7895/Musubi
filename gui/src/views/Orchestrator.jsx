@@ -152,7 +152,7 @@ function StepCard({ step }) {
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>
         <span>{step.toolsLabel}</span>
-        <span>{step.isCurrent ? 'current' : 'step'}</span>
+        <span>{step.attemptLabel || (step.isCurrent ? 'current' : 'step')}</span>
       </div>
     </Box>
   )
