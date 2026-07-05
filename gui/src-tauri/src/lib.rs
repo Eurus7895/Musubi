@@ -357,7 +357,7 @@ fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
     }
 }
 
-fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String> {
+fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw_path);
     let canonical = path
         .canonicalize()
@@ -372,8 +372,21 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.spawn()
-        .map(|_| ())
+        .map(|_| canonical)
         .map_err(|e| format!("failed to open artifact: {e}"))
+}
+
+fn artifact_opened_message(path: &Path) -> String {
+    format!(
+        "Opened artifact in the system file browser:\n\n- `{}`",
+        path.to_string_lossy()
+    )
+}
+
+fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
+    format!(
+        "Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}"
+    )
 }
 
 fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
@@ -781,7 +794,22 @@ fn action(
             clear_driver_chat_log(&conn, &mut rt)?;
         }
         "open_artifact" => {
-            open_workspace_path(&state.project_root, &str_arg(0))?;
+            let raw_path = str_arg(0);
+            match open_workspace_path(&state.project_root, &raw_path) {
+                Ok(opened) => {
+                    let conn = state.db.lock().map_err(|e| e.to_string())?;
+                    insert_chat(&conn, "driver", None, &artifact_opened_message(&opened))?;
+                }
+                Err(e) => {
+                    let conn = state.db.lock().map_err(|err| err.to_string())?;
+                    insert_chat(
+                        &conn,
+                        "driver",
+                        Some("deny"),
+                        &artifact_open_failed_message(&raw_path, &e),
+                    )?;
+                }
+            }
         }
         // Pipelines are launched by asking the driver in chat (the root agent
         // spawns them via musubi_spawn_pipeline), reusing the single agent slot
@@ -927,5 +955,17 @@ mod tests {
             assert!(!program.is_empty());
             assert!(!args.is_empty());
         }
+    }
+
+    #[test]
+    fn artifact_open_messages_are_user_visible() {
+        let opened = artifact_opened_message(Path::new(r"C:\Workspace\Projects\Musubi\a.html"));
+        assert!(opened.contains("Opened artifact"));
+        assert!(opened.contains("a.html"));
+
+        let failed = artifact_open_failed_message("missing.html", "cannot open artifact");
+        assert!(failed.contains("Could not open artifact"));
+        assert!(failed.contains("missing.html"));
+        assert!(failed.contains("cannot open artifact"));
     }
 }
