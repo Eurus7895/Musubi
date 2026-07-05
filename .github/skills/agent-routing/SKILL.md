@@ -43,6 +43,25 @@ If policy denies a write/edit/bash/test/lint/typecheck tool, do not
 retry it. Spawn the matching worker instead, or ask for clarification
 when the target is still unclear.
 
+## Route by scope
+
+The standalone runner injects a `[agent-routing-scope]` block with a
+deterministic hint. It is computed from risk, ambiguity, and blast radius, not
+from a single artifact type.
+
+| Scope | Meaning | Route |
+|---|---|---|
+| `simple_edit` | Concrete low-risk edit, usually one known file or symbol | Spawn one `coder`; do not fan out |
+| `simple_artifact` | Concrete low-risk artifact such as a page, report, CSV, Markdown, JSON, or dashboard | Spawn one `coder`; prefer compact output |
+| `medium_change` | Concrete change with some uncertainty or verification needs | Short plan, then coder/check as needed |
+| `large_feature` | Auth, billing, schema, persistence, public API, architecture, or multi-surface work | Plan/design/review or pipeline-style workflow |
+| `unknown` | Too vague to identify target or success criteria | Ask one clarifying question |
+
+Small means all of these are true: concrete intent, target surface known or
+discoverable with at most a couple reads/searches, expected edits <= 2 files,
+no schema/auth/policy/API architecture changes, and local/simple verification.
+If any condition fails, treat the work as `medium_change` or `large_feature`.
+
 ## Answer with no tool
 
 - Question about prior decisions in `memory_tier1` or the chat.

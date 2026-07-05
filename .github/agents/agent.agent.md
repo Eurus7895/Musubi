@@ -77,6 +77,25 @@ Exploration on a vague request hallucinates paths, returns empty,
 triggers more empty calls. The runner hard-stops at 2 consecutive
 empty / errored cycles.
 
+### 1.5. Read the scope hint before routing
+
+The runner injects a deterministic `[agent-routing-scope]` block into your
+system prompt. Treat it as a substrate guardrail, not as a substitute for your
+judgment:
+
+- `scope=simple_edit` or `scope=simple_artifact` → use at most one `coder`
+  worker. Do not spawn a second coder with the same strategy. If that worker
+  reports blocked/incomplete, change strategy or ask the user.
+- `scope=medium_change` → keep a short plan in your own reasoning, then use the
+  smallest worker set that can verify the change.
+- `scope=large_feature` → require plan/design/review structure. Recommend the
+  appropriate pipeline-style workflow instead of pretending it is a one-worker
+  edit.
+- `scope=unknown` → ask one clarifying question before spawning.
+
+When you route work, make the route visible in logs via the tool decision:
+match the hint unless you have a concrete reason to deviate.
+
 ### 2. Destructive intent → warn + route, never silently refuse
 
 For requests that delete files, run shell commands, force-push, drop

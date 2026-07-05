@@ -1062,6 +1062,81 @@ def test_loop_passes_tool_error_to_model_rather_than_raising(
     assert len(router.calls) == 2, "loop should have completed both cycles"
 
 
+def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "ok"}],
+        )
+    ])
+
+    answer = asyncio.run(run_agent(
+        "Update weather-dashboard.html to refresh every 5 minutes",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    assert answer == "ok"
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "[agent-routing-scope]" in system_text
+    assert "scope=simple_edit" in system_text
+    assert "route=single_coder" in system_text
+    assert "max_workers=1" in system_text
+
+
+def test_simple_task_refuses_extra_coder_spawns_in_same_turn() -> None:
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "spawn-1",
+                    "name": "musubi_spawn_subagent",
+                    "input": {"role": "coder", "brief": "edit the known file"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "spawn-2",
+                    "name": "musubi_spawn_subagent",
+                    "input": {"role": "coder", "brief": "try the same edit again"},
+                },
+            ],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "status: done"}],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "done"}],
+        ),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "Update weather-dashboard.html to refresh every 5 minutes",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    assert answer == "done"
+    assert len(router.calls) == 3, "one parent call, one child call, one parent follow-up"
+    parent_followup = router.calls[2]["messages"]
+    fed_back = "".join(
+        block["content"]
+        for message in parent_followup
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    )
+    assert '"status": "refused"' in fed_back
+    assert "simple task route allows only one coder worker" in fed_back
+
+
 class _ExplodingRouter(LMRouter):
     """A vendor whose call fails like a real network/proxy error would."""
 

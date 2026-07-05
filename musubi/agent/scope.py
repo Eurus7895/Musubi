@@ -1,0 +1,155 @@
+"""Deterministic scope hints for the standalone root agent.
+
+musubi-tier: substrate
+expires-when: never - risk/ambiguity/blast-radius hints are durable routing
+  context even as model quality improves.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class ScopeKind(StrEnum):
+    SIMPLE_EDIT = "simple_edit"
+    SIMPLE_ARTIFACT = "simple_artifact"
+    MEDIUM_CHANGE = "medium_change"
+    LARGE_FEATURE = "large_feature"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ScopeHint:
+    kind: ScopeKind
+    route: str
+    reason: str
+    max_workers: int
+    requires: tuple[str, ...] = field(default_factory=tuple)
+
+    def prompt_block(self) -> str:
+        requires = ",".join(self.requires) if self.requires else "none"
+        return (
+            "[agent-routing-scope]\n"
+            f"scope={self.kind.value}\n"
+            f"route={self.route}\n"
+            f"max_workers={self.max_workers}\n"
+            f"requires={requires}\n"
+            f"reason={self.reason}\n"
+            "[/agent-routing-scope]\n\n"
+            "Use this deterministic hint before choosing tools. The root "
+            "agent still makes the final routing decision, but must keep "
+            "simple routes bounded and ask for scope when the hint is unknown."
+        )
+
+    def log_line(self) -> str:
+        requires = ",".join(self.requires) if self.requires else "none"
+        return (
+            f"scope={self.kind.value} route={self.route} "
+            f"max_workers={self.max_workers} requires={requires} "
+            f'reason="{self.reason}"'
+        )
+
+
+_PATH_RE = re.compile(
+    r"(?i)\b[\w .\-/\\]+\.(?:py|js|jsx|ts|tsx|rs|go|java|html|htm|css|md|json|ya?ml|toml|csv|txt)\b"
+)
+_SIMPLE_EDIT_RE = re.compile(
+    r"(?i)\b(update|change|modify|replace|rename|fix|tweak|adjust|set|add)\b"
+)
+_ARTIFACT_RE = re.compile(
+    r"(?i)\b(create|make|generate|write|build)\b.*\b("
+    r"artifact|file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc"
+    r")\b"
+)
+_LARGE_RISK_RE = re.compile(
+    r"(?i)\b("
+    r"auth|authentication|authorization|billing|payment|database|schema|migration|"
+    r"persistence|public api|api endpoint|architecture|multi[- ]tenant|security|"
+    r"permissions|oauth|login|rbac"
+    r")\b"
+)
+_VAGUE_RE = re.compile(
+    r"(?i)^\s*(fix this|refactor it|add tests|write tests|create tests|help|do it|"
+    r"improve this|make it better)\s*$"
+)
+
+
+def classify_task(task: str) -> ScopeHint:
+    text = " ".join((task or "").strip().split())
+    low = text.lower()
+    if not text or _VAGUE_RE.match(text):
+        return ScopeHint(
+            kind=ScopeKind.UNKNOWN,
+            route="ask_scope",
+            reason="request lacks a concrete target",
+            max_workers=0,
+            requires=("clarification",),
+        )
+
+    risk_hits = sorted(set(match.group(1).lower() for match in _LARGE_RISK_RE.finditer(text)))
+    if len(risk_hits) >= 2 or _mentions_large_workflow(low):
+        return ScopeHint(
+            kind=ScopeKind.LARGE_FEATURE,
+            route="plan_design_workflow",
+            reason="high-risk or multi-surface change",
+            max_workers=0,
+            requires=("plan", "design", "implementation", "review"),
+        )
+
+    has_path = _PATH_RE.search(text) is not None
+    if has_path and _SIMPLE_EDIT_RE.search(text) and not risk_hits:
+        return ScopeHint(
+            kind=ScopeKind.SIMPLE_EDIT,
+            route="single_coder",
+            reason="known file and low-risk edit",
+            max_workers=1,
+        )
+
+    if _ARTIFACT_RE.search(text) and not risk_hits:
+        return ScopeHint(
+            kind=ScopeKind.SIMPLE_ARTIFACT,
+            route="single_coder",
+            reason="concrete low-risk artifact request",
+            max_workers=1,
+        )
+
+    if risk_hits:
+        return ScopeHint(
+            kind=ScopeKind.MEDIUM_CHANGE,
+            route="plan_short_then_coder_check",
+            reason="concrete change with some risk signals",
+            max_workers=2,
+            requires=("short_plan", "verification"),
+        )
+
+    return ScopeHint(
+        kind=ScopeKind.MEDIUM_CHANGE,
+        route="plan_short_then_coder_check",
+        reason="concrete change but scope is not obviously tiny",
+        max_workers=2,
+        requires=("short_plan", "verification"),
+    )
+
+
+def is_simple_scope(hint: ScopeHint | None) -> bool:
+    return hint is not None and hint.kind in {
+        ScopeKind.SIMPLE_EDIT,
+        ScopeKind.SIMPLE_ARTIFACT,
+    }
+
+
+def _mentions_large_workflow(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in (
+            "full feature",
+            "new feature",
+            "end to end",
+            "from scratch",
+            "whole app",
+            "entire app",
+            "multiple services",
+        )
+    )
