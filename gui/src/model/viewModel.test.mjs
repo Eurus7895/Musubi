@@ -101,8 +101,30 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[0].id, 'session-new')
   assert.equal(vm.runs[0].workerCount, 2)
   assert.equal(vm.runs[0].statusLabel, 'running')
-  assert.equal(vm.runs[0].orderLabel, 'R02')
+  assert.equal(vm.runs[0].orderLabel, 'R01')
+  assert.equal(vm.runs[1].orderLabel, 'R02')
   assert.equal(vm.runs[1].id, 'session-old')
+})
+
+test('numbers visible runs instead of using worker count', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(205, 'session-a', 'done', 'planner'),
+      agent(206, 'session-a', 'done', 'coder'),
+      agent(207, 'session-a', 'done', 'reviewer'),
+    ],
+    driverStatus: {
+      running: true,
+      task: 'new request',
+      startedAt: 99,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.runs[0].id, 'driver-running-99')
+  assert.equal(vm.runs[0].orderLabel, 'R01')
+  assert.equal(vm.runs.length, 1)
 })
 
 test('chooses selected step parent session before newest running run', () => {

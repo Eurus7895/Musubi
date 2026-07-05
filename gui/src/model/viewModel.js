@@ -150,7 +150,7 @@ export function buildViewModel(s, act) {
   const visibleRunsRaw = shouldFocusCurrentRun && activeSessionId
     ? runsRaw.filter((run) => run.id === activeSessionId || statusForRun(run) === 'running')
     : runsRaw
-  const runs = visibleRunsRaw.map((run) => {
+  const runs = visibleRunsRaw.map((run, visibleIndex) => {
     const status = statusForRun(run)
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
@@ -164,7 +164,7 @@ export function buildViewModel(s, act) {
       statusLabel: m.label,
       statusColor: m.color,
       currentBrief: current?.brief || run.task || 'Driver handled this turn without spawning workers.',
-      orderLabel: 'R' + String(run.firstIndex + 1).padStart(2, '0'),
+      orderLabel: 'R' + String(visibleIndex + 1).padStart(2, '0'),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#19212f' : '#111721') + ';border:1px solid ' + (selected ? 'rgba(255,155,61,0.55)' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;' + (selected ? 'box-shadow:0 0 0 1px rgba(255,155,61,0.2);' : ''),
       onSelect: () => current?.handle && act.selectAgent(current.handle),

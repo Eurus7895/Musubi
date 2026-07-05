@@ -343,8 +343,8 @@ fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
     if cfg!(windows) {
         if is_file {
             (
-                "explorer.exe".into(),
-                vec![format!("/select,{display_path}")],
+                "cmd".into(),
+                vec!["/C".into(), "start".into(), "".into(), display_path],
             )
         } else {
             ("explorer.exe".into(), vec![display_path])
@@ -901,10 +901,15 @@ mod tests {
         let (program, args) = open_command_for_path(file, true);
 
         if cfg!(windows) {
-            assert_eq!(program, "explorer.exe");
+            assert_eq!(program, "cmd");
             assert_eq!(
                 args,
-                vec![r"/select,C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html"]
+                vec![
+                    "/C",
+                    "start",
+                    "",
+                    r"C:\Workspace\Projects\Musubi\nyc-weather-dashboard.html"
+                ]
             );
         } else {
             assert!(!program.is_empty());
