@@ -86,8 +86,10 @@ judgment:
 - `scope=simple_edit` or `scope=simple_artifact` → use at most one `coder`
   worker. Do not spawn a second coder with the same strategy. If that worker
   reports blocked/incomplete, change strategy or ask the user.
-- `scope=medium_change` → keep a short plan in your own reasoning, then use the
-  smallest worker set that can verify the change.
+- `scope=medium_change` → spawn `planner` first for scope and acceptance
+  criteria, then spawn `coder` with the planner summary. Do not ask `coder` to
+  both plan and implement. If the plan reveals the task is actually tiny, you
+  may stop after answering with the narrowed path instead of spawning coder.
 - `scope=large_feature` → require plan/design/review structure. Recommend the
   appropriate pipeline-style workflow instead of pretending it is a one-worker
   edit.

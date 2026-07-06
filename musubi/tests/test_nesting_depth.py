@@ -69,7 +69,7 @@ class LeafCoderRouter(LMRouter):
 
 def test_direct_coder_worker_is_leaf_by_default() -> None:
     router = LeafCoderRouter()
-    answer = asyncio.run(run_agent("ship a feature", router, _musubi_dir(), log=io.StringIO()))
+    answer = asyncio.run(run_agent("create a report file", router, _musubi_dir(), log=io.StringIO()))
 
     assert answer == "done"
     assert router.coder_had_spawn is False, "direct coder workers must be leaves by default"

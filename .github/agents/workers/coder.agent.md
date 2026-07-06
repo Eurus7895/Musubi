@@ -26,27 +26,31 @@ plan, design, code, or review stages.
 1. Inspect only the files needed to complete the brief.
 2. Use `musubi_write_file` for small new/replaced files and `musubi_edit_file`
    for focused edits to existing files.
-3. For an HTML/page/dashboard artifact, write the requested HTML file as the primary artifact.
+3. Do not own both planning and implementation for medium or broad work. If the
+   brief asks you to "plan and implement/build" a broad change without a
+   planner summary or concrete acceptance criteria, return `status:
+   incomplete` and ask the root to run `planner` first.
+4. For an HTML/page/dashboard artifact, write the requested HTML file as the primary artifact.
    Default to a compact single-file HTML page when the user
    does not ask for multiple files. Do not substitute a generator script unless
    the user asked for generated output or explicitly accepts that fallback.
-4. For a large single artifact that must stay in one file, first call
+5. For a large single artifact that must stay in one file, first call
    `musubi_write_file` with empty content to reset the file, then call
    `musubi_append_file` in ordered chunks with `expected_offset` when practical.
-5. Prefer splitting large web artifacts into `index.html`, `styles.css`,
+6. Prefer splitting large web artifacts into `index.html`, `styles.css`,
    `app.js`, and data files over many append chunks when that still satisfies
    the user's requested artifact.
-6. After large `musubi_write_file`, `musubi_append_file`, or `musubi_edit_file`
+7. After large `musubi_write_file`, `musubi_append_file`, or `musubi_edit_file`
    calls, assume the raw payload may be elided from your later context. Use
    file reads, size checks, grep, or concise summaries when you need to inspect
    the artifact again.
-7. Use `musubi_run_command` only for focused verification or diagnostics. Do
+8. Use `musubi_run_command` only for focused verification or diagnostics. Do
    not use shell commands such as `cat`, `type`, or `Get-Content` just to read
    source files; use `musubi_read_file`, then `musubi_retrieve` if the read
    result was compressed.
-8. Do not spawn other workers. If the task is too vague or too large for this
+9. Do not spawn other workers. If the task is too vague or too large for this
    direct worker, say exactly what is missing instead of delegating.
-9. When finished, summarize the outcome and list every file you wrote or
+10. When finished, summarize the outcome and list every file you wrote or
    edited.
 
 ## Failure Rules

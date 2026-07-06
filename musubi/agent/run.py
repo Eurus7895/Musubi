@@ -69,7 +69,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
-from agent.scope import ScopeHint, classify_task, is_simple_scope
+from agent.scope import ScopeHint, ScopeKind, classify_task, is_simple_scope
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
 
@@ -208,6 +208,33 @@ async def run_agent(
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, max_credits, log)
     scope_hint = classify_task(task)
+    direct_answer = _deterministic_scope_answer(task, scope_hint)
+    if direct_answer is not None:
+        print(f"[agent] {scope_hint.log_line()}", file=log)
+        print(
+            f"[agent] deterministic route={scope_hint.route}; no model call",
+            file=log,
+        )
+        if chat_id:
+            _append_chat_message(
+                chat_id, "user", task,
+                db_path=context_compression_db_path, log=log,
+            )
+            _append_chat_message(
+                chat_id, "assistant", direct_answer,
+                db_path=context_compression_db_path, log=log,
+            )
+            _record_agent_turn(
+                chat_id=chat_id,
+                parent_session_id=None,
+                started_at=turn_started_at,
+                ended_at=time.time(),
+                model_family="deterministic",
+                stats=stats,
+                db_path=context_compression_db_path,
+                log=log,
+            )
+        return direct_answer
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -522,6 +549,7 @@ async def _run_loop(
             compression_db_path=compression_db_path,
             role=role,
             scope_hint=scope_hint,
+            cycle_index=cycle,
             budget=budget,
             stats=stats,
             audit_db_path=audit_db_path,
@@ -962,6 +990,22 @@ def _build_token_budget(
     return budget
 
 
+def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
+    if scope_hint.route == "direct_answer":
+        return "Hi! How can I help?"
+    if scope_hint.route == "manual_destructive":
+        return (
+            "I cannot safely delete files from this route because deletion is "
+            "destructive and there is no interactive confirmation step here.\n\n"
+            "To delete them manually from the workspace root, use one of these:\n"
+            "- In VS Code Explorer: select the matching files and press Delete.\n"
+            "- In PowerShell: `Remove-Item -Force *-dashboard.html`\n"
+            "- In cmd: `del /f *-dashboard.html`\n\n"
+            f"Requested pattern/task: `{task}`"
+        )
+    return None
+
+
 def _ensure_core_import_path() -> None:
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
@@ -1253,6 +1297,7 @@ async def _dispatch(
     compression_db_path: Path | None = None,
     role: str = "agent",
     scope_hint: ScopeHint | None = None,
+    cycle_index: int = 0,
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
@@ -1269,7 +1314,9 @@ async def _dispatch(
     A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
-    refused = _spawn_overflow_reasons(tool_uses, log, role=role, scope_hint=scope_hint)
+    refused = _spawn_overflow_reasons(
+        tool_uses, log, role=role, scope_hint=scope_hint, cycle_index=cycle_index,
+    )
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
         for tu in tool_uses:
@@ -1353,6 +1400,7 @@ def _spawn_overflow_reasons(
     *,
     role: str,
     scope_hint: ScopeHint | None,
+    cycle_index: int = 0,
 ) -> dict[str, str]:
     """tool_use ids of spawn calls that exceed the active route width cap.
 
@@ -1376,6 +1424,23 @@ def _spawn_overflow_reasons(
         if caller_role == "agent" and spawn_role == "coder" and is_simple_scope(scope_hint):
             cap = 1
             reason = "simple task route allows only one coder worker"
+        if (
+            caller_role == "agent"
+            and spawn_role == "coder"
+            and scope_hint is not None
+            and scope_hint.kind is ScopeKind.MEDIUM_CHANGE
+            and cycle_index == 0
+        ):
+            overflow[tu.get("id", "")] = (
+                "medium task route requires planner before coder; spawn planner "
+                "first, then pass the planner summary to coder"
+            )
+            print(
+                "[agent]   x refused worker(role='coder'): "
+                "medium task route requires planner before coder",
+                file=log,
+            )
+            continue
         if seen[spawn_role] > cap:
             overflow[tu.get("id", "")] = reason
             print(

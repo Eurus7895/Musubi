@@ -37,7 +37,7 @@ class AlwaysToolsRouter(LMRouter):
 
 def test_exhaustion_salvages_last_assistant_text() -> None:
     answer = asyncio.run(
-        run_agent("hello", AlwaysToolsRouter(), _musubi_dir(),
+        run_agent("create a report file", AlwaysToolsRouter(), _musubi_dir(),
                   max_cycles=3, log=io.StringIO())
     )
     assert answer == "Hello! Working on it."
@@ -64,7 +64,7 @@ class ForcedAnswerRouter(LMRouter):
 
 def test_exhaustion_forces_a_no_tools_final_answer() -> None:
     answer = asyncio.run(
-        run_agent("hello", ForcedAnswerRouter(), _musubi_dir(),
+        run_agent("create a report file", ForcedAnswerRouter(), _musubi_dir(),
                   max_cycles=2, log=io.StringIO())
     )
     assert answer == "Hi there!"
@@ -85,7 +85,7 @@ class PureToolRouter(LMRouter):
 
 def test_exhaustion_with_no_recoverable_text_returns_incomplete_answer() -> None:
     answer = asyncio.run(
-        run_agent("hello", PureToolRouter(), _musubi_dir(),
+        run_agent("create a report file", PureToolRouter(), _musubi_dir(),
                   max_cycles=2, log=io.StringIO())
     )
 
@@ -96,7 +96,7 @@ def test_exhaustion_with_no_recoverable_text_returns_incomplete_answer() -> None
 def test_token_budget_exhaustion_returns_incomplete_answer() -> None:
     answer = asyncio.run(
         run_agent(
-            "hello",
+            "create a report file",
             PureToolRouter(),
             _musubi_dir(),
             max_cycles=2,
@@ -112,7 +112,7 @@ def test_token_budget_exhaustion_returns_incomplete_answer() -> None:
 def test_token_budget_halt_marks_salvaged_text_incomplete() -> None:
     answer = asyncio.run(
         run_agent(
-            "hello",
+            "create a report file",
             AlwaysToolsRouter(),
             _musubi_dir(),
             max_cycles=3,

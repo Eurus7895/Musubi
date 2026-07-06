@@ -1,11 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildViewModel } from './viewModel.js'
+import { buildViewModel, formatChatTimestamp } from './viewModel.js'
 
 function baseState(overrides = {}) {
   return {
     view: 'orchestrator',
     selected: null,
+    selectedSession: null,
     paused: false,
     t: 3,
     auditFilter: 'all',
@@ -43,6 +44,7 @@ function agent(id, parentSession, status, role = 'coder') {
   return {
     id,
     handle: `h${id}`,
+    spawnEpoch: id,
     role,
     brief: `brief ${id}`,
     status,
@@ -62,6 +64,7 @@ function actions() {
   return {
     setView() {},
     selectAgent() {},
+    selectSession() {},
     clearSelect() {},
     setAuditFilter() {},
     movePipe() {},
@@ -108,6 +111,11 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[1].id, 'session-old')
 })
 
+test('formats epoch chat timestamps in the requested local timezone', () => {
+  assert.equal(formatChatTimestamp('epoch:1735689600', 'en-GB', 'Asia/Saigon'), '07:00:00')
+  assert.equal(formatChatTimestamp('16:39:01', 'en-GB', 'Asia/Saigon'), '16:39:01')
+})
+
 test('numbers visible runs instead of using worker count', () => {
   const vm = buildViewModel(baseState({
     subagents: [
@@ -124,12 +132,13 @@ test('numbers visible runs instead of using worker count', () => {
     },
   }), actions())
 
-  // The running turn is newest (R02) even though only it is shown; the
-  // completed session-a before it is R01. Label is a run ordinal, not the
-  // worker count (3).
+  // Every session is listed. The running turn is newest (R02); the completed
+  // session-a before it is R01. Label is a run ordinal, not the worker count (3).
+  assert.equal(vm.runs.length, 2)
   assert.equal(vm.runs[0].id, 'driver-running-99')
   assert.equal(vm.runs[0].orderLabel, 'R02')
-  assert.equal(vm.runs.length, 1)
+  assert.equal(vm.runs[1].id, 'session-a')
+  assert.equal(vm.runs[1].orderLabel, 'R01')
 })
 
 test('chooses selected step parent session before newest running run', () => {
@@ -167,6 +176,7 @@ test('creates a parent run for a driver turn with no spawned workers', () => {
     agentTurns: [{
       id: 42,
       parentSession: 'direct-session',
+      startedAt: 1042,
       modelFamily: 'deepseek',
       cycles: 1,
       tokensInEstimate: 100,
@@ -230,7 +240,7 @@ test('does not treat a pipeline preset as selected by default', () => {
   assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
 })
 
-test('shows the latest driver turn instead of old audit sessions', () => {
+test('lists every session but focuses the latest driver turn', () => {
   const vm = buildViewModel(baseState({
     subagents: [
       agent(190, 'old-session', 'escalated', 'coder'),
@@ -239,6 +249,7 @@ test('shows the latest driver turn instead of old audit sessions', () => {
     agentTurns: [{
       id: 7,
       parentSession: 'latest-direct',
+      startedAt: 1000,  // newer than the worker sessions' spawn epochs (190/191)
       modelFamily: 'deepseek',
       cycles: 1,
       tokensInEstimate: 12,
@@ -246,6 +257,24 @@ test('shows the latest driver turn instead of old audit sessions', () => {
     }],
   }), actions())
 
+  // The full run history stays listed (no collapse), sorted by REAL time — the
+  // latest driver-only turn sorts newest even though it comes from a different
+  // audit table than the worker sessions...
+  assert.deepEqual(vm.runs.map((run) => run.id), ['latest-direct', 'older-session', 'old-session'])
+  // ...and it is the focused/active one by default.
   assert.equal(vm.activeRunId, 'latest-direct')
-  assert.deepEqual(vm.runs.map((run) => run.id), ['latest-direct'])
+})
+
+test('selecting a session focuses and highlights it', () => {
+  const vm = buildViewModel(baseState({
+    selectedSession: 'old-session',
+    subagents: [
+      agent(190, 'old-session', 'done', 'coder'),
+      agent(191, 'new-session', 'running', 'planner'),
+    ],
+  }), actions())
+
+  assert.equal(vm.activeRunId, 'old-session')
+  const chosen = vm.runs.find((run) => run.id === 'old-session')
+  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
 })

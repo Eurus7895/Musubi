@@ -10,7 +10,7 @@
 //! Data source: the configured Musubi `audit.db`. When no database can be
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -63,9 +63,8 @@ fn epoch_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn clock_label(epoch: i64) -> String {
-    let sod = ((epoch % 86_400) + 86_400) % 86_400;
-    format!("{:02}:{:02}:{:02}", sod / 3600, (sod % 3600) / 60, sod % 60)
+fn chat_timestamp(epoch: i64) -> String {
+    format!("epoch:{epoch}")
 }
 
 fn insert_chat(
@@ -76,7 +75,7 @@ fn insert_chat(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO chat_log(ts,role,tone,text) VALUES(?1,?2,?3,?4)",
-        rusqlite::params![clock_label(epoch_secs()), role, tone, text],
+        rusqlite::params![chat_timestamp(epoch_secs()), role, tone, text],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -104,6 +103,67 @@ fn workspace_root_from_musubi_config(path: &std::path::Path) -> Option<PathBuf> 
         return None;
     }
     dir.parent().map(PathBuf::from)
+}
+
+fn env_path(env: &HashMap<String, String>, key: &str) -> Option<PathBuf> {
+    env.get(key)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn project_root_from_audit_db(resolved: &musubi_data::ResolvedAuditDb) -> Option<PathBuf> {
+    let audit_file = &resolved.path;
+    match resolved.source.as_str() {
+        "workspace" => audit_file
+            .parent()
+            .and_then(|storage| storage.parent())
+            .and_then(|package| {
+                if package.file_name().and_then(|s| s.to_str()) == Some("musubi") {
+                    package.parent().map(PathBuf::from)
+                } else {
+                    None
+                }
+            }),
+        "package" => audit_file
+            .parent()
+            .and_then(|storage| storage.parent())
+            .map(PathBuf::from),
+        _ => None,
+    }
+}
+
+fn climb_for_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        if d.join(".musubi").join("llm.json").is_file()
+            || d.join("musubi").join("server.py").is_file()
+            || d.join("musubi").join("storage").is_dir()
+        {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+fn resolve_project_root(
+    env: &HashMap<String, String>,
+    cwd: &Path,
+    audit_db: Option<&musubi_data::ResolvedAuditDb>,
+) -> PathBuf {
+    if let Some(root) = env_path(env, "MUSUBI_ROOT") {
+        return root;
+    }
+    if let Some(config) =
+        env_path(env, "MUSUBI_LLM_CONFIG").and_then(|p| workspace_root_from_musubi_config(&p))
+    {
+        return config;
+    }
+    if let Some(root) = audit_db.and_then(project_root_from_audit_db) {
+        return root;
+    }
+    climb_for_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
 fn scoped_chat_id(project_root: &Path) -> String {
@@ -338,17 +398,48 @@ fn summarize_agent_failure(code: i32, detail: &str) -> String {
     }
 }
 
-fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
-    let display_path = path.to_string_lossy().to_string();
+fn shell_display_path(path: &Path) -> String {
+    let mut display_path = path.to_string_lossy().to_string();
     if cfg!(windows) {
-        if is_file {
-            (
-                "cmd".into(),
-                vec!["/C".into(), "start".into(), "".into(), display_path],
-            )
-        } else {
-            ("explorer.exe".into(), vec![display_path])
+        if let Some(stripped) = display_path.strip_prefix("\\\\?\\") {
+            display_path = stripped.to_string();
         }
+    }
+    display_path
+}
+
+fn workspace_path_key(path: &Path) -> String {
+    let mut key = path.to_string_lossy().to_string();
+    if cfg!(windows) {
+        key = key.replace('/', "\\");
+        if let Some(stripped) = key.strip_prefix("\\\\?\\") {
+            key = stripped.to_string();
+        }
+        key = key.trim_end_matches('\\').to_ascii_lowercase();
+    } else {
+        key = key.trim_end_matches('/').to_string();
+    }
+    key
+}
+
+fn is_inside_workspace(path: &Path, root: &Path) -> bool {
+    let path_key = workspace_path_key(path);
+    let root_key = workspace_path_key(root);
+    if path_key == root_key {
+        return true;
+    }
+    let separator = if cfg!(windows) { "\\" } else { "/" };
+    path_key.starts_with(&format!("{root_key}{separator}"))
+}
+
+fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
+    let display_path = shell_display_path(path);
+    if cfg!(windows) {
+        let _ = is_file;
+        (
+            "cmd".into(),
+            vec!["/C".into(), "start".into(), "".into(), display_path],
+        )
     } else if cfg!(target_os = "macos") {
         if is_file {
             ("open".into(), vec!["-R".into(), display_path])
@@ -360,7 +451,7 @@ fn open_command_for_path(path: &Path, is_file: bool) -> (String, Vec<String>) {
     }
 }
 
-fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String> {
+fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw_path);
     let canonical = path
         .canonicalize()
@@ -368,15 +459,28 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<(), String
     let root = project_root
         .canonicalize()
         .map_err(|e| format!("cannot resolve project root: {e}"))?;
-    if !canonical.starts_with(&root) {
+    if !is_inside_workspace(&canonical, &root) {
         return Err("refusing to open a path outside the project root".into());
     }
     let (program, args) = open_command_for_path(&canonical, canonical.is_file());
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     cmd.spawn()
-        .map(|_| ())
+        .map(|_| canonical)
         .map_err(|e| format!("failed to open artifact: {e}"))
+}
+
+fn artifact_opened_message(path: &Path) -> String {
+    format!(
+        "Opened artifact in the system file browser:\n\n- `{}`",
+        path.to_string_lossy()
+    )
+}
+
+fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
+    format!(
+        "Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}"
+    )
 }
 
 fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
@@ -657,14 +761,16 @@ struct OpenedDb {
 
 fn open_configured_db() -> OpenedDb {
     let env = musubi_data::current_env_map();
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &project_root) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
+        let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
         let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
         let _ = musubi_data::init_schema(&conn);
         eprintln!(
-            "[musubi] reading audit.db at {} ({})",
+            "[musubi] reading audit.db at {} ({}) project_root={}",
             resolved.path.display(),
-            resolved.source
+            resolved.source,
+            project_root.display()
         );
         return OpenedDb {
             conn,
@@ -677,7 +783,7 @@ fn open_configured_db() -> OpenedDb {
     eprintln!("[musubi] no audit.db source found; using empty in-memory state");
     OpenedDb {
         conn,
-        project_root,
+        project_root: resolve_project_root(&env, &cwd, None),
         audit_db: None,
     }
 }
@@ -784,7 +890,22 @@ fn action(
             clear_driver_chat_log(&conn, &mut rt)?;
         }
         "open_artifact" => {
-            open_workspace_path(&state.project_root, &str_arg(0))?;
+            let raw_path = str_arg(0);
+            match open_workspace_path(&state.project_root, &raw_path) {
+                Ok(opened) => {
+                    let conn = state.db.lock().map_err(|e| e.to_string())?;
+                    insert_chat(&conn, "driver", None, &artifact_opened_message(&opened))?;
+                }
+                Err(e) => {
+                    let conn = state.db.lock().map_err(|err| err.to_string())?;
+                    insert_chat(
+                        &conn,
+                        "driver",
+                        Some("deny"),
+                        &artifact_open_failed_message(&raw_path, &e),
+                    )?;
+                }
+            }
         }
         // Pipelines are launched by asking the driver in chat (the root agent
         // spawns them via musubi_spawn_pipeline), reusing the single agent slot
@@ -913,5 +1034,88 @@ mod tests {
             assert!(!program.is_empty());
             assert!(!args.is_empty());
         }
+    }
+
+    #[test]
+    fn project_root_uses_workspace_audit_parent_not_gui_cwd() {
+        let env = HashMap::new();
+        let cwd = Path::new(r"C:\Workspace\Projects\Musubi\gui");
+        let audit = musubi_data::ResolvedAuditDb {
+            path: PathBuf::from(r"C:\Workspace\Projects\Musubi\musubi\storage\audit.db"),
+            source: "workspace".into(),
+        };
+
+        assert_eq!(
+            resolve_project_root(&env, cwd, Some(&audit)),
+            PathBuf::from(r"C:\Workspace\Projects\Musubi")
+        );
+    }
+
+    #[test]
+    fn artifact_open_command_strips_windows_verbatim_prefix() {
+        let file = Path::new(r"\\?\C:\Workspace\Projects\Musubi\america-facts-dashboard.html");
+        let (program, args) = open_command_for_path(file, true);
+
+        if cfg!(windows) {
+            assert_eq!(program, "cmd");
+            assert_eq!(
+                args,
+                vec![
+                    "/C",
+                    "start",
+                    "",
+                    r"C:\Workspace\Projects\Musubi\america-facts-dashboard.html"
+                ]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
+    }
+
+    #[test]
+    fn artifact_open_command_opens_folders_on_windows() {
+        let folder = Path::new(r"C:\Workspace\Projects\Musubi");
+        let (program, args) = open_command_for_path(folder, false);
+
+        if cfg!(windows) {
+            assert_eq!(program, "cmd");
+            assert_eq!(
+                args,
+                vec!["/C", "start", "", r"C:\Workspace\Projects\Musubi"]
+            );
+        } else {
+            assert!(!program.is_empty());
+            assert!(!args.is_empty());
+        }
+    }
+
+    #[test]
+    fn workspace_boundary_allows_windows_verbatim_child_path() {
+        let root = Path::new(r"C:\Workspace\Projects\Musubi");
+        let file = Path::new(r"\\?\C:\Workspace\Projects\Musubi\america-facts-dashboard.html");
+
+        assert!(is_inside_workspace(file, root));
+    }
+
+    #[test]
+    fn workspace_boundary_rejects_windows_sibling_prefix_path() {
+        let root = Path::new(r"C:\Workspace\Projects\Musubi");
+        let file =
+            Path::new(r"\\?\C:\Workspace\Projects\Musubi-other\america-facts-dashboard.html");
+
+        assert!(!is_inside_workspace(file, root));
+    }
+
+    #[test]
+    fn artifact_open_messages_are_user_visible() {
+        let opened = artifact_opened_message(Path::new(r"C:\Workspace\Projects\Musubi\a.html"));
+        assert!(opened.contains("Opened artifact"));
+        assert!(opened.contains("a.html"));
+
+        let failed = artifact_open_failed_message("missing.html", "cannot open artifact");
+        assert!(failed.contains("Could not open artifact"));
+        assert!(failed.contains("missing.html"));
+        assert!(failed.contains("cannot open artifact"));
     }
 }

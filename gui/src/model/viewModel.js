@@ -22,37 +22,43 @@ function statusForRun(run) {
 
 function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
   const byId = new Map()
+  // Track each run's real recency (max member epoch) so worker sessions
+  // (subagent_audit) and driver-only turns (agent_turns) — which arrive as two
+  // separate lists — sort by actual time, not by load order. lastIndex is the
+  // stable fallback when epochs are missing/equal.
+  const bump = (run, epoch) => {
+    const n = Number(epoch)
+    if (Number.isFinite(n) && n > run.recency) run.recency = n
+  }
   agentTurns.forEach((turn, index) => {
     const id = turn.parentSession || `driver-turn-${turn.id || index + 1}`
-    byId.set(id, {
-      id,
-      firstIndex: index,
-      lastIndex: index,
-      steps: [],
-      turn,
-    })
+    if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
+    const run = byId.get(id)
+    run.turn = turn
+    run.lastIndex = Math.max(run.lastIndex, index)
+    bump(run, turn.startedAt)
   })
   subagents.forEach((agent, index) => {
     const id = agent.parentSession || agent.parent || 'driver'
-    if (!byId.has(id)) {
-      byId.set(id, { id, firstIndex: index, lastIndex: index, steps: [] })
-    }
+    if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
     const run = byId.get(id)
     run.lastIndex = Math.max(run.lastIndex, agentTurns.length + index)
     run.steps.push(agent)
+    bump(run, agent.spawnEpoch)
   })
   if (driverStatus?.running && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
     const id = `driver-running-${driverStatus.startedAt || 'now'}`
     byId.set(id, {
       id,
-      firstIndex: agentTurns.length + subagents.length,
       lastIndex: agentTurns.length + subagents.length,
       steps: [],
       live: true,
       task: driverStatus.task || 'Running driver turn',
+      // The live run is happening now — always the newest.
+      recency: Number.MAX_SAFE_INTEGER,
     })
   }
-  return Array.from(byId.values()).sort((a, b) => b.lastIndex - a.lastIndex)
+  return Array.from(byId.values()).sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
 }
 
 function stopHintFor(agent, logText) {
@@ -130,6 +136,21 @@ function focusLineForRun(steps, current) {
   return 'Blocked at ' + focus.role
 }
 
+export function formatChatTimestamp(ts, locale = undefined, timeZone = undefined) {
+  const raw = String(ts || '')
+  const match = raw.match(/^epoch:(-?\d+(?:\.\d+)?)$/)
+  if (!match) return raw
+  const millis = Number(match[1]) * 1000
+  if (!Number.isFinite(millis)) return raw
+  return new Intl.DateTimeFormat(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    ...(timeZone ? { timeZone } : {}),
+  }).format(new Date(millis))
+}
+
 export function buildViewModel(s, act) {
   const sm = statusMeta
   const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
@@ -139,23 +160,22 @@ export function buildViewModel(s, act) {
   const driverStatusForRuns = s.driverStatus || {}
   const runsRaw = groupRuns(s.subagents, s.agentTurns || [], driverStatusForRuns)
   const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
-  const activeSessionId = selectedAgent?.parentSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || ''
+  // A session the user explicitly clicked (honoured only while it still exists).
+  const chosenSession = s.selectedSession && runsRaw.some((run) => run.id === s.selectedSession)
+    ? s.selectedSession
+    : null
+  const activeSessionId = selectedAgent?.parentSession || chosenSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || ''
   const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
   const processTextForRuns = [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
-  const shouldFocusCurrentRun = !!latestTurn || !!driverStatusForRuns.running
-  const visibleRunsRaw = shouldFocusCurrentRun && activeSessionId
-    ? runsRaw.filter((run) => run.id === activeSessionId || statusForRun(run) === 'running')
-    : runsRaw
-  // Chronological run number: oldest run is R01, the newest gets the highest
-  // number. runsRaw is newest-first, so invert the index. Numbers stay stable
-  // even when the view is filtered to the focused/running run.
+  // Always list EVERY session (newest first); the main panel focuses the
+  // active/chosen one. Chronological run number: oldest is R01, newest highest.
   const runNumberById = new Map()
   runsRaw.forEach((run, i) => runNumberById.set(run.id, runsRaw.length - i))
-  const runs = visibleRunsRaw.map((run, visibleIndex) => {
+  const runs = runsRaw.map((run) => {
     const status = statusForRun(run)
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
@@ -169,10 +189,10 @@ export function buildViewModel(s, act) {
       statusLabel: m.label,
       statusColor: m.color,
       currentBrief: current?.brief || run.task || 'Driver handled this turn without spawning workers.',
-      orderLabel: 'R' + String(runNumberById.get(run.id) || (visibleRunsRaw.length - visibleIndex)).padStart(2, '0'),
+      orderLabel: 'R' + String(runNumberById.get(run.id) || 1).padStart(2, '0'),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#19212f' : '#111721') + ';border:1px solid ' + (selected ? 'rgba(255,155,61,0.55)' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;' + (selected ? 'box-shadow:0 0 0 1px rgba(255,155,61,0.2);' : ''),
-      onSelect: () => current?.handle && act.selectAgent(current.handle),
+      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 18px rgba(255,155,61,0.16);' : ''),
+      onSelect: () => act.selectSession(run.id),
     }
   })
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
@@ -392,7 +412,7 @@ export function buildViewModel(s, act) {
     }
     if (msg.role === 'driver') {
       return {
-        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + (msg.ts || ''),
+        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
         metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
         rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
         bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
