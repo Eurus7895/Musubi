@@ -31,7 +31,11 @@ struct AppState {
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
     chat_agent: Arc<Mutex<ChatAgentRuntime>>,
+    // Orchestrator session id (gui-orchestrator-*).
     chat_id: String,
+    // Pipeline studio session id (gui-pipeline-*). Same single process slot,
+    // but its own conversation history + run scope.
+    pipeline_chat_id: String,
 }
 
 #[derive(Default)]
@@ -43,6 +47,9 @@ struct ChatAgentRuntime {
     started_at: Option<i64>,
     stdout_tail: String,
     stderr_tail: String,
+    // Which surface ('orchestrator' | 'pipeline') the active run belongs to, so
+    // the driver reply is written to the matching chat_log surface.
+    surface: String,
 }
 
 enum TailStream {
@@ -72,22 +79,37 @@ fn insert_chat(
     role: &str,
     tone: Option<&str>,
     text: &str,
+    surface: &str,
 ) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO chat_log(ts,role,tone,text) VALUES(?1,?2,?3,?4)",
-        rusqlite::params![chat_timestamp(epoch_secs()), role, tone, text],
+        "INSERT INTO chat_log(ts,role,tone,text,surface) VALUES(?1,?2,?3,?4,?5)",
+        rusqlite::params![chat_timestamp(epoch_secs()), role, tone, text, surface],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
 }
 
-fn clear_driver_chat_log(conn: &Connection, rt: &mut ChatAgentRuntime) -> Result<(), String> {
+/// Normalize a caller-supplied surface to one of the two known values,
+/// defaulting to the Orchestrator.
+fn surface_arg(raw: &str) -> &'static str {
+    if raw == "pipeline" {
+        "pipeline"
+    } else {
+        "orchestrator"
+    }
+}
+
+fn clear_driver_chat_log(
+    conn: &Connection,
+    rt: &mut ChatAgentRuntime,
+    surface: &str,
+) -> Result<(), String> {
     if rt.running {
         return Err(
             "Cannot clear chat while the agent is running. Cancel or wait for it to finish.".into(),
         );
     }
-    conn.execute("DELETE FROM chat_log", [])
+    conn.execute("DELETE FROM chat_log WHERE surface = ?1", [surface])
         .map_err(|e| e.to_string())?;
     rt.stdout_tail.clear();
     rt.stderr_tail.clear();
@@ -166,7 +188,7 @@ fn resolve_project_root(
     climb_for_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-fn scoped_chat_id(project_root: &Path) -> String {
+fn scoped_chat_id(project_root: &Path, surface: &str) -> String {
     let root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf())
@@ -174,7 +196,9 @@ fn scoped_chat_id(project_root: &Path) -> String {
         .to_lowercase();
     let mut hasher = DefaultHasher::new();
     root.hash(&mut hasher);
-    format!("gui-orchestrator-{:016x}", hasher.finish())
+    // The surface is encoded in the id prefix (gui-orchestrator-* / gui-pipeline-*)
+    // so the UI can scope runs to a session without a separate id table.
+    format!("gui-{surface}-{:016x}", hasher.finish())
 }
 
 fn percent_encode(input: &str) -> String {
@@ -258,8 +282,21 @@ fn artifact_name_candidates(answer: &str) -> Vec<String> {
             raw.trim_matches(|c: char| {
                 matches!(
                     c,
-                    '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ','
-                        | ';' | ':' | '!' | '?'
+                    '`' | '"'
+                        | '\''
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                        | ','
+                        | ';'
+                        | ':'
+                        | '!'
+                        | '?'
                 )
             })
             .trim_end_matches('.')
@@ -478,17 +515,26 @@ fn artifact_opened_message(path: &Path) -> String {
 }
 
 fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
-    format!(
-        "Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}"
-    )
+    format!("Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}")
 }
 
 fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
     let state = app.state::<AppState>();
+    let surface = state
+        .chat_agent
+        .lock()
+        .map(|rt| {
+            if rt.surface.is_empty() {
+                "orchestrator".to_string()
+            } else {
+                rt.surface.clone()
+            }
+        })
+        .unwrap_or_else(|_| "orchestrator".to_string());
     let Ok(conn) = state.db.lock() else {
         return;
     };
-    let _ = insert_chat(&conn, "driver", tone, text);
+    let _ = insert_chat(&conn, "driver", tone, text, &surface);
 }
 
 fn pump_stream(
@@ -525,6 +571,8 @@ fn start_chat_agent(
     app: tauri::AppHandle,
     state: &AppState,
     task_text: String,
+    chat_id: &str,
+    surface: &str,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
     {
@@ -542,6 +590,7 @@ fn start_chat_agent(
         rt.started_at = Some(started_at);
         rt.stdout_tail.clear();
         rt.stderr_tail.clear();
+        rt.surface = surface.to_string();
     }
 
     let mut env = musubi_data::current_env_map();
@@ -583,7 +632,7 @@ fn start_chat_agent(
         agent_path.as_deref(),
         &launch_root,
         &env,
-        Some(&state.chat_id),
+        Some(chat_id),
     )?;
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",
@@ -847,24 +896,43 @@ fn action(
             }
             {
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
-                insert_chat(&conn, "you", None, &text)?;
+                insert_chat(&conn, "you", None, &text, "orchestrator")?;
             }
-            if let Err(e) = start_chat_agent(app, state.inner(), text) {
+            let chat_id = state.chat_id.clone();
+            if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "orchestrator") {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e)?;
+                insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator")?;
+            }
+        }
+        // Pipeline studio session: same single process slot, its own chat_id +
+        // conversation history + run scope.
+        "send_pipe_chat" => {
+            let text = str_arg(0);
+            if text.trim().is_empty() {
+                return Ok(());
+            }
+            {
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                insert_chat(&conn, "you", None, &text, "pipeline")?;
+            }
+            let chat_id = state.pipeline_chat_id.clone();
+            if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "pipeline") {
+                let conn = state.db.lock().map_err(|err| err.to_string())?;
+                insert_chat(&conn, "driver", Some("deny"), &e, "pipeline")?;
             }
         }
         "pipeline_hint" => {
             let text = str_arg(0);
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             if !text.trim().is_empty() {
-                insert_chat(&conn, "you", None, &text)?;
+                insert_chat(&conn, "you", None, &text, "orchestrator")?;
             }
             insert_chat(
                 &conn,
                 "driver",
                 None,
                 "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.",
+                "orchestrator",
             )?;
         }
         "select_profile" => {
@@ -885,16 +953,24 @@ fn action(
             cancel_chat_agent(&app, state.inner())?;
         }
         "clear_driver_chat" => {
+            let surface = surface_arg(&str_arg(0));
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            clear_driver_chat_log(&conn, &mut rt)?;
+            clear_driver_chat_log(&conn, &mut rt, surface)?;
         }
         "open_artifact" => {
             let raw_path = str_arg(0);
+            let surface = surface_arg(&str_arg(1));
             match open_workspace_path(&state.project_root, &raw_path) {
                 Ok(opened) => {
                     let conn = state.db.lock().map_err(|e| e.to_string())?;
-                    insert_chat(&conn, "driver", None, &artifact_opened_message(&opened))?;
+                    insert_chat(
+                        &conn,
+                        "driver",
+                        None,
+                        &artifact_opened_message(&opened),
+                        surface,
+                    )?;
                 }
                 Err(e) => {
                     let conn = state.db.lock().map_err(|err| err.to_string())?;
@@ -903,6 +979,7 @@ fn action(
                         "driver",
                         Some("deny"),
                         &artifact_open_failed_message(&raw_path, &e),
+                        surface,
                     )?;
                 }
             }
@@ -920,7 +997,16 @@ fn action(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let opened = open_configured_db();
-    let chat_id = scoped_chat_id(&opened.project_root);
+    // Existing audit DBs predate chat_log.surface; add it if missing so the
+    // per-surface inserts/reads work. Errors (incl. "duplicate column") ignored.
+    {
+        let _ = opened.conn.execute(
+            "ALTER TABLE chat_log ADD COLUMN surface TEXT NOT NULL DEFAULT 'orchestrator'",
+            [],
+        );
+    }
+    let chat_id = scoped_chat_id(&opened.project_root, "orchestrator");
+    let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline");
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
@@ -929,6 +1015,7 @@ pub fn run() {
             audit_db: opened.audit_db,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id,
+            pipeline_chat_id,
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {
@@ -955,8 +1042,8 @@ mod tests {
     fn clear_driver_chat_deletes_chat_and_idle_runtime_tails() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello").unwrap();
-        insert_chat(&conn, "driver", None, "hi").unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
+        insert_chat(&conn, "driver", None, "hi", "orchestrator").unwrap();
         let mut rt = ChatAgentRuntime {
             stdout_tail: "stdout text".into(),
             stderr_tail: "stderr text".into(),
@@ -965,7 +1052,7 @@ mod tests {
             ..ChatAgentRuntime::default()
         };
 
-        clear_driver_chat_log(&conn, &mut rt).unwrap();
+        clear_driver_chat_log(&conn, &mut rt, "orchestrator").unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
@@ -981,13 +1068,13 @@ mod tests {
     fn clear_driver_chat_refuses_while_agent_runs() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello").unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
         let mut rt = ChatAgentRuntime {
             running: true,
             ..ChatAgentRuntime::default()
         };
 
-        let err = clear_driver_chat_log(&conn, &mut rt).unwrap_err();
+        let err = clear_driver_chat_log(&conn, &mut rt, "orchestrator").unwrap_err();
 
         assert!(err.contains("running"));
         let count: i64 = conn
@@ -1003,11 +1090,8 @@ mod tests {
         let file = root.join("weather-dashboard.html");
         std::fs::write(&file, "<html></html>").unwrap();
 
-        let text = append_artifact_links(
-            "Open `weather-dashboard.html` in your browser.",
-            &root,
-            &[],
-        );
+        let text =
+            append_artifact_links("Open `weather-dashboard.html` in your browser.", &root, &[]);
 
         assert!(text.contains("[weather-dashboard.html](musubi-artifact:"));
         let _ = std::fs::remove_file(file);

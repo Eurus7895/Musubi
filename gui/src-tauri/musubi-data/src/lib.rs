@@ -40,6 +40,9 @@ pub struct State {
     pub policy: Vec<Decision>,
     pub audit: Vec<AuditRow>,
     pub chat: Vec<ChatMsg>,
+    // The Pipeline studio drives its own session; its conversation is scoped
+    // by `chat_log.surface = 'pipeline'` and surfaced separately from `chat`.
+    pub pipe_chat: Vec<ChatMsg>,
     pub total_spawned: i64,
     pub total_done: i64,
     pub allow_count: i64,
@@ -129,6 +132,11 @@ pub struct Agent {
     pub parent: String,
     pub parent_session: String,
     pub parent_agent: String,
+    // Owning GUI session (serialized `chatId`), resolved by joining the run's
+    // parent_session to agent_turns.chat_id. Lets the UI scope runs to the
+    // Orchestrator vs the Pipeline studio surface (chat_id prefix). Empty when
+    // no agent_turns row maps the session — treated as Orchestrator.
+    pub chat_id: String,
     // Spawn time (epoch seconds), serialized as `spawnEpoch`. The Orchestrator
     // uses it to sort runs by real chronology across worker sessions and
     // driver-only turns, which live in separate audit tables.
@@ -329,6 +337,7 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                         parent: fmt_parent(&row.parent_agent, &row.parent_session),
                         parent_session: row.parent_session.clone(),
                         parent_agent: row.parent_agent.clone(),
+                        chat_id: String::new(), // backfilled from agent_turns below
                         spawn_epoch: row.ts_epoch,
                     },
                 );
@@ -455,20 +464,42 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
         st.deny_count = 0;
     }
 
-    // ── driver chat ──
+    // ── driver chat, split by surface (Orchestrator vs Pipeline studio) ──
+    // Backward-compatible: on a pre-migration DB with no `surface` column,
+    // every row is treated as the Orchestrator surface.
     if table_exists(conn, "chat_log")? {
-        let mut cstmt =
-            conn.prepare("SELECT role, ts, text, tone FROM chat_log ORDER BY id ASC LIMIT 60")?;
-        st.chat = cstmt
+        let has_surface = column_exists(conn, "chat_log", "surface")?;
+        let surface_expr = if has_surface {
+            "COALESCE(surface, 'orchestrator')"
+        } else {
+            "'orchestrator'"
+        };
+        let mut cstmt = conn.prepare(&format!(
+            "SELECT role, ts, text, tone, {surface_expr} FROM chat_log ORDER BY id ASC LIMIT 120"
+        ))?;
+        let rows = cstmt
             .query_map([], |r| {
-                Ok(ChatMsg {
-                    role: r.get(0)?,
-                    ts: r.get::<_, Option<String>>(1)?,
-                    text: r.get(2)?,
-                    tone: r.get::<_, Option<String>>(3)?,
-                })
+                Ok((
+                    ChatMsg {
+                        role: r.get(0)?,
+                        ts: r.get::<_, Option<String>>(1)?,
+                        text: r.get(2)?,
+                        tone: r.get::<_, Option<String>>(3)?,
+                    },
+                    r.get::<_, String>(4)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (msg, surface) in rows {
+            if surface == "pipeline" {
+                st.pipe_chat.push(msg);
+            } else {
+                st.chat.push(msg);
+            }
+        }
+        // Each surface still shows its most recent ~60 messages.
+        trim_front(&mut st.chat, 60);
+        trim_front(&mut st.pipe_chat, 60);
     }
 
     // ── pipeline studio default (authoring surface; not from the audit) ──
@@ -492,6 +523,21 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    // ── tag each run with its owning session ──
+    // subagent_audit has no chat_id; agent_turns maps parent_session → chat_id.
+    // The UI scopes runs to a surface by the chat_id prefix (gui-pipeline-*).
+    let session_to_chat: std::collections::HashMap<String, String> = st
+        .agent_turns
+        .iter()
+        .filter(|t| !t.chat_id.is_empty() && !t.parent_session.is_empty())
+        .map(|t| (t.parent_session.clone(), t.chat_id.clone()))
+        .collect();
+    for agent in &mut st.subagents {
+        if let Some(chat_id) = session_to_chat.get(&agent.parent_session) {
+            agent.chat_id = chat_id.clone();
+        }
     }
 
     Ok(st)
@@ -700,6 +746,26 @@ fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     Ok(n > 0)
 }
 
+/// True when `table` has a column named `col`. Used to stay backward-compatible
+/// with audit DBs created before a column was added (e.g. `chat_log.surface`).
+fn column_exists(conn: &Connection, table: &str, col: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == col {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Keep only the newest `cap` items, dropping from the front.
+fn trim_front<T>(v: &mut Vec<T>, cap: usize) {
+    if v.len() > cap {
+        v.drain(0..v.len() - cap);
+    }
+}
+
 fn count(conn: &Connection, sql: &str) -> rusqlite::Result<i64> {
     conn.query_row(sql, [], |r| r.get(0))
 }
@@ -758,11 +824,12 @@ CREATE TABLE IF NOT EXISTS policy_audit (
 );
 -- Console-side tables (the GUI writes these).
 CREATE TABLE IF NOT EXISTS chat_log (
-  id   INTEGER PRIMARY KEY,
-  ts   TEXT,
-  role TEXT,                                   -- 'you' | 'driver' | 'system'
-  tone TEXT,
-  text TEXT
+  id      INTEGER PRIMARY KEY,
+  ts      TEXT,
+  role    TEXT,                                -- 'you' | 'driver' | 'system'
+  tone    TEXT,
+  text    TEXT,
+  surface TEXT NOT NULL DEFAULT 'orchestrator' -- 'orchestrator' | 'pipeline'
 );
 CREATE TABLE IF NOT EXISTS agent_turns (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1169,6 +1236,64 @@ mod tests {
         assert_eq!(st.agent_turns.len(), 1);
         assert_eq!(st.agent_turns[0].parent_session, "direct-session");
         assert_eq!(st.agent_turns[0].cycles, 1);
+    }
+
+    #[test]
+    fn chat_log_splits_by_surface() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,tone,text,surface) \
+             VALUES('t','you',NULL,'orch hi','orchestrator')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,tone,text,surface) \
+             VALUES('t','you',NULL,'pipe hi','pipeline')",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(
+            st.chat.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+            ["orch hi"]
+        );
+        assert_eq!(
+            st.pipe_chat
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            ["pipe hi"]
+        );
+    }
+
+    #[test]
+    fn subagent_chat_id_resolved_from_agent_turns() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // The driver turn maps parent_session 'sess-1' to a pipeline chat_id.
+        conn.execute(
+            "INSERT INTO agent_turns\
+             (id,chat_id,parent_session_id,started_at,model_family,cycles,tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)\
+             VALUES(1,'gui-pipeline-abc','sess-1',1000.0,'deepseek',1,0,0,0,0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','h1','sess-1','agent','coder','do it','[]',10,300)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].chat_id, "gui-pipeline-abc");
     }
 
     fn temp_dir(name: &str) -> PathBuf {
