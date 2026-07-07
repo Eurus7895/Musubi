@@ -7,6 +7,7 @@ function baseState(overrides = {}) {
     view: 'orchestrator',
     selected: null,
     selectedSession: null,
+    selectedPipeSession: null,
     paused: false,
     t: 3,
     auditFilter: 'all',
@@ -67,6 +68,7 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
+    selectPipeSession() {},
     clearSelect() {},
     setAuditFilter() {},
     movePipe() {},
@@ -307,6 +309,38 @@ test('pipeline chat body uses pipe chat and disables while orchestrator owns pro
   assert.match(vm.pipeChatBody.sendTitle, /Orchestrator run is active/)
   assert.equal(vm.driverBusy, true)
   assert.equal(vm.sendMode, 'cancel')
+})
+
+test('pipeline studio exposes scoped run rail and active timeline', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(10, 'orch-session', 'running', 'coder', 'gui-orchestrator-abc'),
+      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
+      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-new', 'pipe-old'])
+  assert.equal(vm.activePipeRunId, 'pipe-new')
+  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h12'])
+  assert.equal(vm.activePipeRunSteps[0].isCurrent, true)
+  assert.match(vm.pipeRunSummary.countLine, /1 steps/)
+  assert.match(vm.pipeSessionSubtitle, /1 workers/)
+})
+
+test('pipeline studio honours selected pipeline session', () => {
+  const vm = buildViewModel(baseState({
+    selectedPipeSession: 'pipe-old',
+    subagents: [
+      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
+      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    ],
+  }), actions())
+
+  assert.equal(vm.activePipeRunId, 'pipe-old')
+  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h11'])
+  const chosen = vm.pipeRuns.find((run) => run.id === 'pipe-old')
+  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
 })
 
 test('lists every session but focuses the latest driver turn', () => {

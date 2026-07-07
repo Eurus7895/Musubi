@@ -96,4 +96,7 @@ prefix, so no id tables are threaded through.
    - complete in `937805d`.
 2. Frontend split chat + surface-scoped run lists + `driverStatus.surface`
    ownership behavior.
+   - complete in `ad2ec26`.
 3. Studio run list UI.
+   - complete in this branch: pipeline-scoped run rail, selected run timeline,
+     active-step highlighting, and local pipeline session selection.

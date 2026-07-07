@@ -55,3 +55,22 @@ test('openArtifact forwards the requested surface', () => {
 
   assert.deepEqual(calls, [{ kind: 'open_artifact', args: ['report.html', 'pipeline'] }])
 })
+
+test('pipeline session selection stays local and clears with pipeline chat', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    selectedPipeSession: 'pipe-old',
+    selectedSession: 'orch-old',
+    pipeChat: [{ role: 'driver', text: 'pipeline answer' }],
+    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+  })
+
+  source.actions.selectPipeSession('pipe-new')
+  assert.equal(source.state.view, 'pipeline')
+  assert.equal(source.state.selectedPipeSession, 'pipe-new')
+  assert.equal(source.state.selectedSession, 'orch-old')
+
+  source.actions.clearPipeDriverChat()
+  assert.equal(source.state.selectedPipeSession, null)
+  assert.deepEqual(source.state.pipeChat, [])
+})

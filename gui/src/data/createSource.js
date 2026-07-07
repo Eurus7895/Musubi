@@ -14,7 +14,7 @@ class LazyTauri {
     this.inner = null
     this.state = {
       view: props.startView || 'orchestrator',
-      selected: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false, processOpen: false, logWindowOpen: false,
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false, processOpen: false, logWindowOpen: false,
       subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],

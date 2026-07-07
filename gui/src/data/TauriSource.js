@@ -29,7 +29,7 @@ export default class TauriSource {
     this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, selectedSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false,
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false,
       processOpen: false, logWindowOpen: false,
       subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
@@ -92,6 +92,7 @@ export default class TauriSource {
       // Choose a whole session from the Parent runs list (works for driver-only
       // runs too). Clears any per-worker selection so the session wins.
       selectSession: (id) => this._setLocal({ view: 'orchestrator', selectedSession: id, selected: null }),
+      selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
       openPipeChat: local({ pipeChatOpen: true }),
@@ -118,6 +119,7 @@ export default class TauriSource {
         this._setLocal({
           pipeChat: [],
           pipeDraft: '',
+          selectedPipeSession: null,
           processOpen: false,
           logWindowOpen: false,
           driverStatus: emptyDriverStatus(),
@@ -158,7 +160,7 @@ export default class TauriSource {
       sendPipeChat: () => {
         const d = (this.state.pipeDraft || '').trim()
         if (!d) return
-        this._setLocal({ pipeDraft: '' })
+        this._setLocal({ pipeDraft: '', selectedPipeSession: null })
         this._action('send_pipe_chat', [d])
       },
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),

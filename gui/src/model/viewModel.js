@@ -206,7 +206,9 @@ export function buildViewModel(s, act) {
   const pipelineOwnsDriver = driverRunning && driverSurface === 'pipeline'
   const runsRaw = groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator')
   const pipeRunsRaw = groupRuns(pipeSubagents, pipeAgentTurns, driverStatusForRuns, 'pipeline')
+  const pipeWorkerOrder = new Map(pipeSubagents.map((a, i) => [a.handle, i + 1]))
   const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
+  const runningPipeRun = pipeRunsRaw.find((run) => statusForRun(run) === 'running')
   // A session the user explicitly clicked (honoured only while it still exists).
   const chosenSession = s.selectedSession && runsRaw.some((run) => run.id === s.selectedSession)
     ? s.selectedSession
@@ -219,7 +221,21 @@ export function buildViewModel(s, act) {
   const processTextForRuns = driverSurface === 'orchestrator'
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
+  const processTextForPipeRuns = driverSurface === 'pipeline'
+    ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
+    : ''
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
+  const chosenPipeSession = s.selectedPipeSession && pipeRunsRaw.some((run) => run.id === s.selectedPipeSession)
+    ? s.selectedPipeSession
+    : null
+  const latestPipeAgent = pipeSubagents[pipeSubagents.length - 1]
+  const latestPipeTurn = pipeAgentTurns[pipeAgentTurns.length - 1]
+  const activePipeSessionId = chosenPipeSession || runningPipeRun?.id || latestPipeTurn?.parentSession || latestPipeAgent?.parentSession || pipeRunsRaw[0]?.id || ''
+  const activePipeRunRaw = pipeRunsRaw.find((run) => run.id === activePipeSessionId)
+  const activePipeSessionAgents = activePipeRunRaw?.steps || []
+  const runningInPipeSession = activePipeSessionAgents.find((a) => a.status === 'running')
+  const currentPipeSessionAgent = runningInPipeSession || activePipeSessionAgents[activePipeSessionAgents.length - 1]
+  const activePipeRunStatus = activePipeRunRaw ? statusForRun(activePipeRunRaw) : 'abandoned'
   // Always list EVERY session (newest first); the main panel focuses the
   // active/chosen one. Chronological run number: oldest is R01, newest highest.
   const runNumberById = new Map()
@@ -250,16 +266,20 @@ export function buildViewModel(s, act) {
     const status = statusForRun(run)
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
+    const selected = run.id === activePipeSessionId
     return {
       id: run.id,
       orderLabel: 'R' + String(pipeRunNumberById.get(run.id) || 1).padStart(2, '0'),
       title: 'Session ' + String(run.id || 'driver').slice(0, 12),
       subtitle: run.steps.length ? run.steps.length + ' workers' : 'driver-only turn',
+      workerCount: run.steps.length,
+      status,
       statusLabel: m.label,
       statusColor: m.color,
       currentBrief: current?.brief || run.task || 'Pipeline driver handled this turn without spawning workers.',
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      cardStyle: 'background:#111721;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 11px;',
+      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:10px 11px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 16px rgba(255,155,61,0.14);' : ''),
+      onSelect: () => act.selectPipeSession(run.id),
     }
   })
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
@@ -321,6 +341,43 @@ export function buildViewModel(s, act) {
       toolsLabel: a.tools.length + ' tools',
       showConnector: i < activeSessionAgents.length - 1,
       onSelect: () => act.selectAgent(a.handle),
+    }
+  })
+
+  const pipeRoleTotals = activePipeSessionAgents.reduce((acc, agent) => {
+    const role = agent.role || 'worker'
+    acc.set(role, (acc.get(role) || 0) + 1)
+    return acc
+  }, new Map())
+  const pipeRoleSeen = new Map()
+  const pipeRunSteps = activePipeSessionAgents.map((a, i) => {
+    const m = sm[a.status] || sm.abandoned
+    const hue = hueFor(a.role)
+    const isCurrent = a.handle === currentPipeSessionAgent?.handle
+    const stopHint = stopHintFor(a, processTextForPipeRuns)
+    const pct = a.max ? Math.min(100, Math.round(a.turns / a.max * 100)) : 0
+    const role = a.role || 'worker'
+    const totalAttempts = pipeRoleTotals.get(role) || 1
+    const attempt = (pipeRoleSeen.get(role) || 0) + 1
+    pipeRoleSeen.set(role, attempt)
+    return {
+      handle: a.handle,
+      role: a.role,
+      brief: a.brief,
+      status: a.status,
+      statusLabel: m.label,
+      statusColor: m.color,
+      isCurrent,
+      stopHint,
+      attemptLabel: totalAttempts > 1 ? 'attempt ' + attempt + '/' + totalAttempts : '',
+      orderLabel: 'W' + String(pipeWorkerOrder.get(a.handle) || i + 1).padStart(2, '0'),
+      roleChipStyle: roleChip(a.role, hue),
+      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
+      barFillStyle: 'height:100%;width:' + pct + '%;background:' + m.color + ';border-radius:3px;transition:width .4s ease',
+      cardStyle: 'position:relative;width:210px;flex-shrink:0;background:#141b27;border:1px solid ' + (isCurrent ? m.color : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:12px 13px;' + (isCurrent ? 'box-shadow:0 0 0 1px ' + m.color + '55,0 0 22px ' + m.color + '22;' : ''),
+      turnsLabel: a.turns + '/' + a.max,
+      toolsLabel: a.tools.length + ' tools',
+      showConnector: i < activePipeSessionAgents.length - 1,
     }
   })
 
@@ -400,6 +457,13 @@ export function buildViewModel(s, act) {
     countLine: statusCountLine(activeSessionAgents),
     focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
     alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
+    metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
+  }
+  const pipeRunSummary = {
+    title: 'Studio run',
+    countLine: statusCountLine(activePipeSessionAgents),
+    focusLine: focusLineForRun(activePipeSessionAgents, currentPipeSessionAgent),
+    alertLine: runSummary(activePipeRunStatus, processTextForPipeRuns, activePipeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
   }
   const profiles = profileList.map((p) => {
@@ -599,6 +663,13 @@ export function buildViewModel(s, act) {
     disabledText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : '',
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     pipeRuns,
+    activePipeRunId: activePipeSessionId,
+    activePipeRunSteps: pipeRunSteps,
+    pipeRunSummary,
+    pipeSessionTitle: activePipeSessionId ? ('Session ' + activePipeSessionId.slice(0, 12)) : 'Pipeline run history',
+    pipeSessionSubtitle: pipeRunSteps.length
+      ? (pipeRunSteps.length + ' workers in this pipeline session')
+      : (activePipeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no pipeline workers in this session yet'),
     pipeChat: pipeChatView,
     pipeChatBody,
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
