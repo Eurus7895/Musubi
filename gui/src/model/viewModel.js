@@ -20,7 +20,16 @@ function statusForRun(run) {
   return steps[steps.length - 1]?.status || 'abandoned'
 }
 
-function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
+function isPipelineChatId(chatId) {
+  return String(chatId || '').startsWith('gui-pipeline-')
+}
+
+function belongsToSurface(item, surface) {
+  const chatId = item?.chatId || item?.chat_id || ''
+  return surface === 'pipeline' ? isPipelineChatId(chatId) : !isPipelineChatId(chatId)
+}
+
+function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orchestrator') {
   const byId = new Map()
   // Track each run's real recency (max member epoch) so worker sessions
   // (subagent_audit) and driver-only turns (agent_turns) — which arrive as two
@@ -30,7 +39,7 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
     const n = Number(epoch)
     if (Number.isFinite(n) && n > run.recency) run.recency = n
   }
-  agentTurns.forEach((turn, index) => {
+  agentTurns.filter((turn) => belongsToSurface(turn, surface)).forEach((turn, index) => {
     const id = turn.parentSession || `driver-turn-${turn.id || index + 1}`
     if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
     const run = byId.get(id)
@@ -38,7 +47,7 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
     run.lastIndex = Math.max(run.lastIndex, index)
     bump(run, turn.startedAt)
   })
-  subagents.forEach((agent, index) => {
+  subagents.filter((agent) => belongsToSurface(agent, surface)).forEach((agent, index) => {
     const id = agent.parentSession || agent.parent || 'driver'
     if (!byId.has(id)) byId.set(id, { id, lastIndex: index, steps: [], recency: 0 })
     const run = byId.get(id)
@@ -46,7 +55,8 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}) {
     run.steps.push(agent)
     bump(run, agent.spawnEpoch)
   })
-  if (driverStatus?.running && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
+  const runningSurface = driverStatus?.surface || 'orchestrator'
+  if (driverStatus?.running && runningSurface === surface && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
     const id = `driver-running-${driverStatus.startedAt || 'now'}`
     byId.set(id, {
       id,
@@ -151,14 +161,51 @@ export function formatChatTimestamp(ts, locale = undefined, timeZone = undefined
   }).format(new Date(millis))
 }
 
+function buildChatView(messages = []) {
+  return messages.map((msg) => {
+    if (msg.role === 'you') {
+      return {
+        text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
+        rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
+        bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
+      }
+    }
+    if (msg.role === 'driver') {
+      return {
+        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
+        metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
+        rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
+        bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
+      }
+    }
+    const red = msg.tone === 'deny'
+    return {
+      text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
+      rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
+      bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
+    }
+  })
+}
+
 export function buildViewModel(s, act) {
   const sm = statusMeta
-  const workerOrder = new Map(s.subagents.map((a, i) => [a.handle, i + 1]))
-  const selectedAgent = s.subagents.find((a) => a.handle === s.selected)
-  const latestAgent = s.subagents[s.subagents.length - 1]
-  const latestTurn = (s.agentTurns || [])[((s.agentTurns || []).length) - 1]
+  const allSubagents = s.subagents || []
+  const allAgentTurns = s.agentTurns || []
+  const orchSubagents = allSubagents.filter((a) => belongsToSurface(a, 'orchestrator'))
+  const orchAgentTurns = allAgentTurns.filter((t) => belongsToSurface(t, 'orchestrator'))
+  const pipeSubagents = allSubagents.filter((a) => belongsToSurface(a, 'pipeline'))
+  const pipeAgentTurns = allAgentTurns.filter((t) => belongsToSurface(t, 'pipeline'))
+  const workerOrder = new Map(orchSubagents.map((a, i) => [a.handle, i + 1]))
+  const selectedAgent = orchSubagents.find((a) => a.handle === s.selected)
+  const latestAgent = orchSubagents[orchSubagents.length - 1]
+  const latestTurn = orchAgentTurns[orchAgentTurns.length - 1]
   const driverStatusForRuns = s.driverStatus || {}
-  const runsRaw = groupRuns(s.subagents, s.agentTurns || [], driverStatusForRuns)
+  const driverSurface = driverStatusForRuns.surface || 'orchestrator'
+  const driverRunning = !!driverStatusForRuns.running
+  const orchestratorOwnsDriver = driverRunning && driverSurface === 'orchestrator'
+  const pipelineOwnsDriver = driverRunning && driverSurface === 'pipeline'
+  const runsRaw = groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator')
+  const pipeRunsRaw = groupRuns(pipeSubagents, pipeAgentTurns, driverStatusForRuns, 'pipeline')
   const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
   // A session the user explicitly clicked (honoured only while it still exists).
   const chosenSession = s.selectedSession && runsRaw.some((run) => run.id === s.selectedSession)
@@ -169,7 +216,9 @@ export function buildViewModel(s, act) {
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
-  const processTextForRuns = [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
+  const processTextForRuns = driverSurface === 'orchestrator'
+    ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
+    : ''
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
   // Always list EVERY session (newest first); the main panel focuses the
   // active/chosen one. Chronological run number: oldest is R01, newest highest.
@@ -195,8 +244,26 @@ export function buildViewModel(s, act) {
       onSelect: () => act.selectSession(run.id),
     }
   })
+  const pipeRunNumberById = new Map()
+  pipeRunsRaw.forEach((run, i) => pipeRunNumberById.set(run.id, pipeRunsRaw.length - i))
+  const pipeRuns = pipeRunsRaw.map((run) => {
+    const status = statusForRun(run)
+    const m = sm[status] || sm.abandoned
+    const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
+    return {
+      id: run.id,
+      orderLabel: 'R' + String(pipeRunNumberById.get(run.id) || 1).padStart(2, '0'),
+      title: 'Session ' + String(run.id || 'driver').slice(0, 12),
+      subtitle: run.steps.length ? run.steps.length + ' workers' : 'driver-only turn',
+      statusLabel: m.label,
+      statusColor: m.color,
+      currentBrief: current?.brief || run.task || 'Pipeline driver handled this turn without spawning workers.',
+      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
+      cardStyle: 'background:#111721;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 11px;',
+    }
+  })
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
-  const subagents = s.subagents.slice(-3).map((a, i) => {
+  const subagents = orchSubagents.slice(-3).map((a, i) => {
     const m = sm[a.status]
     const hue = hueFor(a.role)
     const sel = a.handle === s.selected
@@ -257,7 +324,7 @@ export function buildViewModel(s, act) {
     }
   })
 
-  const selAgent = s.subagents.find((a) => a.handle === s.selected)
+  const selAgent = orchSubagents.find((a) => a.handle === s.selected)
   let detail = null
   if (selAgent) {
     const m = sm[selAgent.status]
@@ -426,6 +493,8 @@ export function buildViewModel(s, act) {
     }
   })
 
+  const pipeChatView = buildChatView(s.pipeChat || [])
+
   const sourceLabels = {
     'musubi-db': 'MUSUBI_DB audit.db',
     'musubi-root': 'MUSUBI_ROOT audit.db',
@@ -459,6 +528,33 @@ export function buildViewModel(s, act) {
     driverStatus.stderrTail ? 'stderr:\n' + driverStatus.stderrTail.trim() : '',
     driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
   ].filter(Boolean).join('\n\n')
+  const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
+  const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
+  const pipelineBlockedByOrchestrator = driverRunning && !pipelineOwnsDriver
+  const pipeChatBody = {
+    chat: pipeChatView,
+    draft: s.pipeDraft || '',
+    onDraft: act.onPipeDraft,
+    onDraftKey: act.onPipeDraftKey,
+    driverBusy: pipelineOwnsDriver,
+    driverTask: pipelineOwnsDriver ? (driverStatus.task || '') : '',
+    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverProcessOpen: pipelineOwnsDriver && !!s.processOpen,
+    driverProcessLog: pipelineOwnsDriver ? driverProcessLog : '',
+    onToggleProcess: act.toggleProcess,
+    logWindowOpen: pipelineOwnsDriver && !!s.logWindowOpen,
+    onOpenLog: act.openProcessLog,
+    onCloseLog: act.closeProcessLog,
+    onClearDriverChat: act.clearPipeDriverChat,
+    clearDriverDisabled: !!driverStatus.running,
+    onSend: pipelineOwnsDriver ? act.cancelAgent : act.sendPipeChat,
+    sendTitle: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active` : (pipelineOwnsDriver ? 'Cancel running pipeline agent' : 'Send'),
+    sendMode: pipelineOwnsDriver ? 'cancel' : 'send',
+    sendDisabled: pipelineBlockedByOrchestrator,
+    inputDisabled: pipelineBlockedByOrchestrator,
+    disabledText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active...` : '',
+    onOpenArtifact: (path) => act.openArtifact(path, 'pipeline'),
+  }
 
   return {
     isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
@@ -470,9 +566,9 @@ export function buildViewModel(s, act) {
     pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
-    runningCount: s.subagents.filter((a) => a.status === 'running').length,
-    totalDone: s.subagents.filter((a) => a.status === 'done').length,
-    totalSpawned: s.subagents.length,
+    runningCount: orchSubagents.filter((a) => a.status === 'running').length,
+    totalDone: orchSubagents.filter((a) => a.status === 'done').length,
+    totalSpawned: orchSubagents.length,
     driverCycle: s.t || 0,
     driverStyle: 'position:absolute;left:500px;top:0;transform:translate(-50%,0);z-index:3;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:14px;padding:16px 24px;min-width:296px;text-align:center;animation:glow 3s ease-in-out infinite;',
     driverDotStyle: 'width:8px;height:8px;border-radius:50%;background:#ff9b3d;animation:pulse 1.6s ease-in-out infinite;',
@@ -489,16 +585,22 @@ export function buildViewModel(s, act) {
       ? (sessionSteps.length + ' workers · full history for this parent run')
       : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
-    driverBusy: !!driverStatus.running, driverTask: driverStatus.task || '', driverStatusText,
-    driverProcessOpen: !!s.processOpen, driverProcessLog, onToggleProcess: act.toggleProcess,
-    logWindowOpen: !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
+    driverBusy: orchestratorOwnsDriver, driverTask: orchestratorOwnsDriver ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorOwnsDriver ? driverProcessLog : '', onToggleProcess: act.toggleProcess,
+    logWindowOpen: orchestratorOwnsDriver && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onClearDriverChat: act.clearDriverChat,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
-    onSend: driverStatus.running ? act.cancelAgent : act.sendChat,
-    sendTitle: driverStatus.running ? 'Cancel running agent' : 'Send',
-    sendMode: driverStatus.running ? 'cancel' : 'send',
-    onOpenArtifact: act.openArtifact,
+    onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,
+    sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : 'Send'),
+    sendMode: orchestratorOwnsDriver ? 'cancel' : 'send',
+    sendDisabled: orchestratorBlockedByPipeline,
+    inputDisabled: orchestratorBlockedByPipeline,
+    disabledText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : '',
+    onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
+    pipeRuns,
+    pipeChat: pipeChatView,
+    pipeChatBody,
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),

@@ -861,6 +861,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     if let Ok(rt) = state.chat_agent.lock() {
         st.driver_status = musubi_data::DriverStatus {
             running: rt.running,
+            surface: surface_arg(&rt.surface).to_string(),
             task: rt.task.clone(),
             started_at: rt.started_at,
             stdout_tail: rt.stdout_tail.clone(),

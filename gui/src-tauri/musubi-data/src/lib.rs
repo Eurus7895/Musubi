@@ -92,6 +92,7 @@ pub struct CliStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
     pub running: bool,
+    pub surface: String,
     pub task: String,
     pub started_at: Option<i64>,
     pub stdout_tail: String,

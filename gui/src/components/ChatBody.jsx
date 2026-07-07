@@ -203,6 +203,8 @@ export default function ChatBody({ vals }) {
   const shouldStickRef = useRef(true)
   const lastMessageCountRef = useRef(0)
   const isCancelling = vals.sendMode === 'cancel'
+  const sendDisabled = !!vals.sendDisabled
+  const inputDisabled = !!vals.inputDisabled
 
   useEffect(() => {
     const el = scrollRef.current
@@ -240,21 +242,26 @@ export default function ChatBody({ vals }) {
           value={vals.draft}
           onChange={vals.onDraft}
           onKeyDown={vals.onDraftKey}
-          placeholder={vals.driverBusy ? 'Agent is still working...' : 'Message the driver...'}
-          style={{ flex: 1, minWidth: 0, background: '#19212f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '9px 12px', color: '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 12.5, outline: 'none' }}
+          disabled={inputDisabled}
+          placeholder={vals.disabledText || (vals.driverBusy ? 'Agent is still working...' : 'Message the driver...')}
+          style={{ flex: 1, minWidth: 0, background: inputDisabled ? 'rgba(25,33,47,0.58)' : '#19212f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '9px 12px', color: inputDisabled ? '#6f7685' : '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 12.5, outline: 'none', cursor: inputDisabled ? 'not-allowed' : 'text' }}
         />
         <Box
           as="button"
-          onClick={vals.onSend}
+          onClick={sendDisabled ? undefined : vals.onSend}
+          disabled={sendDisabled}
           title={vals.sendTitle || 'Send'}
           aria-label={vals.sendTitle || 'Send'}
           css={
-            'display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex-shrink:0;border-radius:9px;cursor:pointer;' +
+            'display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex-shrink:0;border-radius:9px;cursor:' + (sendDisabled ? 'not-allowed' : 'pointer') + ';' +
+            (sendDisabled
+              ? 'border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);color:#5f6673;'
+              :
             (isCancelling
               ? 'border:1px solid rgba(232,106,95,0.5);background:rgba(232,106,95,0.14);color:#e86a5f;'
-              : 'border:1px solid rgba(255,155,61,0.4);background:rgba(255,155,61,0.14);color:#ff9b3d;')
+              : 'border:1px solid rgba(255,155,61,0.4);background:rgba(255,155,61,0.14);color:#ff9b3d;'))
           }
-          hover={isCancelling ? 'background:rgba(232,106,95,0.24)' : 'background:rgba(255,155,61,0.24)'}
+          hover={sendDisabled ? '' : (isCancelling ? 'background:rgba(232,106,95,0.24)' : 'background:rgba(255,155,61,0.24)')}
         >
           {isCancelling ? (
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>

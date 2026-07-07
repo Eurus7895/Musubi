@@ -139,9 +139,12 @@ export default function Pipeline({ vals }) {
               <span style={{ fontSize: 13, fontWeight: 600 }}>Chat · driver</span>
               <span style={{ fontSize: 10, color: '#6a6a72' }}>every reply tied to policy</span>
             </div>
-            <Box as="button" onClick={vals.closePipeChat} title="Close" css="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:#232c3c;color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Box as="button" onClick={vals.pipeChatBody.onClearDriverChat} disabled={vals.pipeChatBody.clearDriverDisabled} title={vals.pipeChatBody.clearDriverDisabled ? 'Wait for the running agent before clearing' : 'Clear pipeline chat'} css={'display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:' + (vals.pipeChatBody.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#232c3c') + ';color:' + (vals.pipeChatBody.clearDriverDisabled ? '#4f5665' : '#9b9ba2') + ';cursor:' + (vals.pipeChatBody.clearDriverDisabled ? 'not-allowed' : 'pointer')} hover={vals.pipeChatBody.clearDriverDisabled ? '' : 'color:#fff'}><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
+              <Box as="button" onClick={vals.closePipeChat} title="Close" css="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:#232c3c;color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
+            </div>
           </div>
-          <ChatBody vals={vals} />
+          <ChatBody vals={vals.pipeChatBody} />
         </div>
       )}
     </div>
