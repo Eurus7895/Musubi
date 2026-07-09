@@ -1189,99 +1189,55 @@ def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
     assert "max_workers=1" in system_text
 
 
-def test_simple_task_refuses_extra_coder_spawns_in_same_turn() -> None:
-    router = FakeRouter([
-        LMResponse(
-            stop_reason="tool_use",
-            content=[
-                {
-                    "type": "tool_use",
-                    "id": "spawn-1",
-                    "name": "musubi_spawn_subagent",
-                    "input": {"role": "coder", "brief": "edit the known file"},
-                },
-                {
-                    "type": "tool_use",
-                    "id": "spawn-2",
-                    "name": "musubi_spawn_subagent",
-                    "input": {"role": "coder", "brief": "try the same edit again"},
-                },
-            ],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "status: done"}],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "done"}],
-        ),
-    ])
+def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:
+    # D2a — classify_task is advisory. A "simple" scope no longer tightens the
+    # coder cap to one; the only enforcement is the flat per-role width cap (3),
+    # so the 4th coder in a batch is the first refused.
+    from agent import run as run_mod
+    from agent.scope import classify_task
 
-    answer = asyncio.run(run_agent(
-        "Update weather-dashboard.html to refresh every 5 minutes",
-        router,
-        _musubi_dir(),
-        log=io.StringIO(),
-        max_tokens=0,
-    ))
+    simple = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
+    tool_uses = [
+        {"id": f"s{i}", "name": "musubi_spawn_subagent", "input": {"role": "coder"}}
+        for i in range(4)
+    ]
 
-    assert answer == "done"
-    assert len(router.calls) == 3, "one parent call, one child call, one parent follow-up"
-    parent_followup = router.calls[2]["messages"]
-    fed_back = "".join(
-        block["content"]
-        for message in parent_followup
-        if isinstance(message.get("content"), list)
-        for block in message["content"]
-        if block.get("type") == "tool_result"
+    overflow = run_mod._spawn_overflow_reasons(
+        tool_uses, io.StringIO(), role="agent", scope_hint=simple, cycle_index=0,
     )
-    assert '"status": "refused"' in fed_back
-    assert "simple task route allows only one coder worker" in fed_back
+
+    assert list(overflow) == ["s3"]
+    assert "per-turn spawn cap (3)" in overflow["s3"]
 
 
-def test_medium_change_refuses_coder_as_first_worker() -> None:
-    router = FakeRouter([
-        LMResponse(
-            stop_reason="tool_use",
-            content=[
-                {
-                    "type": "tool_use",
-                    "id": "spawn-1",
-                    "name": "musubi_spawn_subagent",
-                    "input": {
-                        "role": "coder",
-                        "brief": "plan and implement the dashboard change",
-                    },
-                },
-            ],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "changed route"}],
-        ),
-    ])
+def test_spawn_overflow_no_longer_forces_planner_before_coder() -> None:
+    # D1 — a coder as the first worker of a medium-scope turn is no longer
+    # refused; plan-first is opt-in via --plan, not a keyword guess.
+    from agent import run as run_mod
+    from agent.scope import classify_task
 
-    answer = asyncio.run(run_agent(
-        "Improve the dashboard weather display",
-        router,
-        _musubi_dir(),
-        log=io.StringIO(),
-        max_tokens=0,
-    ))
+    medium = classify_task("Improve the dashboard weather display")
+    tool_uses = [
+        {"id": "c1", "name": "musubi_spawn_subagent",
+         "input": {"role": "coder", "brief": "implement"}},
+    ]
 
-    assert answer == "changed route"
-    assert len(router.calls) == 2, "coder should be refused before a child call starts"
-    parent_followup = router.calls[1]["messages"]
-    fed_back = "".join(
-        block["content"]
-        for message in parent_followup
-        if isinstance(message.get("content"), list)
-        for block in message["content"]
-        if block.get("type") == "tool_result"
+    overflow = run_mod._spawn_overflow_reasons(
+        tool_uses, io.StringIO(), role="agent", scope_hint=medium, cycle_index=0,
     )
-    assert '"status": "refused"' in fed_back
-    assert "medium task route requires planner before coder" in fed_back
+
+    assert overflow == {}
+
+
+def test_plan_first_directive_injected_into_system_prompt() -> None:
+    # D2b — --plan appends an explicit plan-first directive to the root prompt.
+    from agent import run as run_mod
+    from agent.context import build_system_prompt
+
+    assert "planner" in run_mod._PLAN_FIRST_DIRECTIVE.lower()
+    combined = f"{build_system_prompt('scope')}\n\n{run_mod._PLAN_FIRST_DIRECTIVE}"
+    assert "--plan" in combined
+    assert "plan-first" in combined.lower()
 
 
 def test_delete_request_returns_manual_answer_without_llm_calls() -> None:

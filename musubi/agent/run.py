@@ -70,7 +70,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
-from agent.scope import ScopeHint, ScopeKind, classify_task, is_simple_scope
+from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
 
@@ -86,6 +86,15 @@ EFFORT_CEILING = 4096
 #: be spawned in one model turn. Bounds runaway fan-out when workers run in
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
+
+# Injected into the root prompt only when the caller passes --plan. Explicit
+# opt-in replaces the retired regex force (a keyword guess used to refuse the
+# coder and demand a planner at cycle 0); now the user declares plan-first.
+_PLAN_FIRST_DIRECTIVE = (
+    "The user explicitly requested a plan-first workflow (--plan). Before "
+    "spawning any `coder` worker, spawn role `planner` and pass its summary to "
+    "the coder; never let the coder both plan and implement."
+)
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
     "musubi_write_file",
@@ -197,6 +206,7 @@ async def run_agent(
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
+    plan_first: bool = False,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -333,6 +343,9 @@ async def run_agent(
         orchestration = Orchestration(parent_session_id=parent_session_id)
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
+        if plan_first:
+            system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
+            print("[agent] plan-first requested (--plan)", file=log)
         initial_messages: list[dict[str, Any]] | None = None
         if chat_id:
             _append_chat_message(
@@ -841,6 +854,15 @@ def main(argv: list[str] | None = None) -> int:
             "supported by this deterministic runner."
         ),
     )
+    ap.add_argument(
+        "--plan",
+        action="store_true",
+        help=(
+            "Request a plan-first workflow: the root spawns a planner before any "
+            "coder and passes its summary along. Explicit opt-in intent — the "
+            "loop no longer forces a planner by guessing scope from keywords."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -869,6 +891,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
                 pipeline=args.pipeline,
+                plan_first=args.plan,
             )
         )
     except KeyboardInterrupt:
@@ -1448,13 +1471,17 @@ def _spawn_overflow_reasons(
     scope_hint: ScopeHint | None,
     cycle_index: int = 0,
 ) -> dict[str, str]:
-    """tool_use ids of spawn calls that exceed the active route width cap.
+    """tool_use ids of spawn calls that exceed the flat per-role width cap.
 
     Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
-    batch by default. Simple root tasks are tighter: one coder worker per
-    model turn. Non-spawn calls are never capped.
+    batch; non-spawn calls are never capped. This guard is the only spawn
+    enforcement: it bounds fan-out but does NOT route. `classify_task`'s scope
+    is advisory — it steers the model via the prompt block, and no longer gates
+    or forces spawns here (a regex cannot reliably decide a turn is "simple" or
+    "needs a planner"). Explicit plan-first intent comes from `--plan`, not a
+    keyword guess. `scope_hint`/`cycle_index` are accepted for signature
+    stability but no longer consulted.
     """
-    caller_role = role
     seen: dict[str, int] = {}
     overflow: dict[str, str] = {}
     for tu in tool_uses:
@@ -1462,32 +1489,11 @@ def _spawn_overflow_reasons(
             continue
         spawn_role = str((tu.get("input") or {}).get("role", ""))
         seen[spawn_role] = seen.get(spawn_role, 0) + 1
-        cap = DEFAULT_MAX_SPAWNS_PER_ROLE
-        reason = (
-            f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
-            f"for role {spawn_role!r}"
-        )
-        if caller_role == "agent" and spawn_role == "coder" and is_simple_scope(scope_hint):
-            cap = 1
-            reason = "simple task route allows only one coder worker"
-        if (
-            caller_role == "agent"
-            and spawn_role == "coder"
-            and scope_hint is not None
-            and scope_hint.kind is ScopeKind.MEDIUM_CHANGE
-            and cycle_index == 0
-        ):
-            overflow[tu.get("id", "")] = (
-                "medium task route requires planner before coder; spawn planner "
-                "first, then pass the planner summary to coder"
+        if seen[spawn_role] > DEFAULT_MAX_SPAWNS_PER_ROLE:
+            reason = (
+                f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
+                f"for role {spawn_role!r}"
             )
-            print(
-                "[agent]   x refused worker(role='coder'): "
-                "medium task route requires planner before coder",
-                file=log,
-            )
-            continue
-        if seen[spawn_role] > cap:
             overflow[tu.get("id", "")] = reason
             print(
                 f"[agent]   ⨯ refused extra worker(role={spawn_role!r}): "
