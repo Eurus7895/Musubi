@@ -676,6 +676,37 @@ def test_dispatch_does_not_log_skill_used_for_skill_errors() -> None:
     assert "skill used=" not in log.getvalue()
 
 
+def test_dispatch_one_records_touched_file_into_active_sink(tmp_path: Path) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession('{"status": "ok", "bytes_written": 3}')
+    sink: set[str] = set()
+    token = run_mod._worker_touched_files.set(sink)
+    try:
+        result = asyncio.run(
+            run_mod._dispatch_one(
+                {
+                    "id": "c-ok",
+                    "name": "musubi_write_file",
+                    "input": {"path": "app.py", "content": "x = 1"},
+                },
+                session,
+                io.StringIO(),
+                vendor=None,
+                tools=[],
+                orchestration=None,
+                gateway=None,
+                role="coder",
+                audit_db_path=tmp_path / "audit.db",
+            )
+        )
+    finally:
+        run_mod._worker_touched_files.reset(token)
+
+    assert '"ok"' in result
+    assert sink == {"app.py"}
+
+
 def test_log_cycle_includes_human_readable_model_action() -> None:
     from agent import run as run_mod
 

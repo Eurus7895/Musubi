@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -91,6 +92,17 @@ ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
     "musubi_append_file",
     "musubi_edit_file",
 })
+
+# C1 — deterministic record of the files a worker mutated, populated by the
+# dispatch loop and read by `run_subagent` to drive the mechanical gate at the
+# point the parent receives the worker (the root boundary). A ContextVar keeps
+# the loop signatures untouched and isolates nested workers automatically: each
+# `run_subagent` sets its own sink, so a child's writes never leak into the
+# parent's set. `None` (the default) means "not collecting" — inert for the root
+# worker and any non-spawned call.
+_worker_touched_files: contextvars.ContextVar[set[str] | None] = (
+    contextvars.ContextVar("musubi_worker_touched_files", default=None)
+)
 
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
@@ -1655,6 +1667,7 @@ async def _dispatch_one(
                 args=json_args(args), status="ok", db_path=audit_path,
                 result_text=text, log=log,
             )
+        _record_touched_file(name, args, text)
         return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
         result = f"[tool error] {type(exc).__name__}: {exc}"
@@ -1665,6 +1678,31 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+def _tool_wrote_ok(text: str) -> bool:
+    """True when an fs tool's JSON result reports a successful write."""
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(obj, dict) and obj.get("status") == "ok"
+
+
+def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
+    """Record a successful file mutation into the active worker's sink.
+
+    No-op unless a `run_subagent` upstream is collecting (sink is not None) and
+    the call is a file-mutating tool that reported success.
+    """
+    sink = _worker_touched_files.get()
+    if sink is None or name not in ORDER_SENSITIVE_FILE_TOOLS:
+        return
+    if not _tool_wrote_ok(text):
+        return
+    path = args.get("path")
+    if isinstance(path, str) and path:
+        sink.add(path)
 
 
 def _file_tool_argument_error(name: str, args: Any) -> str | None:

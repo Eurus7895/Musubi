@@ -74,7 +74,7 @@ async def run_subagent(
     Otherwise it is a leaf: no spawn tool, no orchestration.
     """
     # Lazy import avoids the run↔subagent module cycle.
-    from agent.run import _call_tool_text, run_unit
+    from agent.run import _call_tool_text, _worker_touched_files, run_unit
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
@@ -131,6 +131,11 @@ async def run_subagent(
     # The firewalled brief is baked into `system_prompt`, so the worker runs
     # through `run_unit` with no extra user turn. A leaf passes no orchestration
     # and a restricted surface; a nesting worker carries the deeper orchestration.
+    # Deterministic record of the files THIS worker mutates, collected by the
+    # dispatch loop via a ContextVar. Set here so nested workers each get their
+    # own sink; drives the mechanical gate after the run.
+    touched: set[str] = set()
+    token = _worker_touched_files.set(touched)
     try:
         answer, turns = await run_unit(
             session, vendor, child_tools,
@@ -155,6 +160,8 @@ async def run_subagent(
                 summary=f"[subagent {role}] budget exhausted: {exc}",
             )
         raise
+    finally:
+        _worker_touched_files.reset(token)
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
@@ -163,14 +170,81 @@ async def run_subagent(
     else:
         summary, status = answer, "done"
 
+    # C1 — mechanical gate at the boundary the parent (root) receives this
+    # worker. When the worker finished cleanly AND actually wrote files, the
+    # harness runs a deterministic validator on exactly those files and hands
+    # the verdict to the parent, so the goal-holding root accepts the mechanical
+    # layer from a trustworthy signal instead of re-deriving it by eye.
+    gate = None
+    if status == "done" and touched:
+        gate = await _run_mechanical_gate(session, touched, log)
+        line = _mechanical_line(gate)
+        summary = f"{line}\n{summary}"
+        print(f"[agent]   {line}", file=log)
+
+    complete_args: dict[str, Any] = {
+        "handle_id": handle_id, "summary": summary, "turns": turns, "status": status,
+    }
+    if gate is not None:
+        complete_args["structured"] = {"mechanical": gate}
     complete_raw = await _call_tool_text(
-        session, "musubi_complete_subagent",
-        {"handle_id": handle_id, "summary": summary, "turns": turns, "status": status},
+        session, "musubi_complete_subagent", complete_args,
     )
     comp = _loads(complete_raw)
     # Prefer the harness-verified summary (firewalled / truncated) when present.
     verified = comp.get("summary") if isinstance(comp, dict) else None
     return verified or summary
+
+
+# ── C1: mechanical validation gate ──────────────────────────────────────────
+
+# Extensions with an applicable deterministic validator. Anything else (an HTML
+# artifact, JSON, markdown) reports exit=None — written, no linter to run.
+_LINTABLE_EXT = (".py",)
+
+
+async def _run_mechanical_gate(
+    session: Any, touched: set[str], log: Any,
+) -> dict[str, Any]:
+    """Deterministic mechanical check over the files a worker wrote.
+
+    Runs the substrate lint tool on touched Python files; `validator_exit` is
+    the tool's own `passed` verdict, never the worker's summary. Files with no
+    applicable validator report exit=None (written, not linted). Returns a
+    JSON-serialisable signal the root reads without re-deriving it.
+    """
+    from agent.run import _call_tool_text
+
+    files = sorted(touched)
+    lintable = [f for f in files if f.endswith(_LINTABLE_EXT)]
+    validator = "ruff" if lintable else "none"
+    validator_exit: int | None = None
+    if lintable:
+        raw = await _call_tool_text(session, "musubi_run_lint", {"files": lintable})
+        res = _loads(raw)
+        passed = bool(res.get("passed")) if isinstance(res, dict) else False
+        validator_exit = 0 if passed else 1
+    artifact = files[0] if len(files) == 1 else next(
+        (f for f in files if not f.endswith(_LINTABLE_EXT)), None
+    )
+    return {
+        "validator": validator,
+        "validator_exit": validator_exit,
+        "files_touched": files,
+        "artifact_path": artifact,
+    }
+
+
+def _mechanical_line(gate: dict[str, Any]) -> str:
+    """Compact one-liner prepended to the summary so the root sees the signal."""
+    exit_val = gate.get("validator_exit")
+    exit_str = "skipped" if exit_val is None else str(exit_val)
+    artifact = gate.get("artifact_path")
+    art = f" artifact={artifact}" if artifact else ""
+    return (
+        f"[mechanical] validator={gate.get('validator')} exit={exit_str} "
+        f"files={len(gate.get('files_touched') or [])}{art}"
+    )
 
 
 # ── prompt + tool surface (ported from subagentRunnerCore.ts) ───────────────
