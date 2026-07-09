@@ -707,6 +707,39 @@ def test_dispatch_one_records_touched_file_into_active_sink(tmp_path: Path) -> N
     assert sink == {"app.py"}
 
 
+def test_system_prompt_states_two_layer_acceptance() -> None:
+    from agent.context import build_system_prompt
+
+    prompt = build_system_prompt()
+    # C2 — the root is told it owns goal-acceptance and trusts the mechanical
+    # verdict rather than re-deriving it.
+    assert "[mechanical]" in prompt
+    assert "goal" in prompt.lower()
+    assert "do not re-run linters" in prompt
+
+
+def test_replay_elides_large_tool_rows() -> None:
+    from agent import run as run_mod
+
+    small = run_mod._elide_replayed_tool_row("short output")
+    assert small == "short output"
+
+    big = "A" * (run_mod.REPLAY_TOOL_ROW_MAX_CHARS + 500)
+    elided = run_mod._elide_replayed_tool_row(big)
+    assert len(elided) < len(big)
+    assert "chars elided on replay" in elided
+
+    history = {"messages": [
+        {"id": 1, "role": "user", "content": "make a dashboard", "ts": "t"},
+        {"id": 2, "role": "tool", "content": big, "ts": "t"},
+    ]}
+    messages = run_mod._messages_from_chat_history("sys", history)
+    tool_msg = messages[-1]["content"]
+    assert tool_msg.startswith("[prior tool result]")
+    assert "chars elided on replay" in tool_msg
+    assert len(tool_msg) < len(big)
+
+
 def test_log_cycle_includes_human_readable_model_action() -> None:
     from agent import run as run_mod
 

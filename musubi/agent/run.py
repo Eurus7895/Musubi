@@ -1101,10 +1101,31 @@ def _messages_from_chat_history(
         if role in {"user", "assistant"}:
             messages.append({"role": role, "content": content})
         elif role == "tool":
-            messages.append({"role": "user", "content": f"[prior tool result]\n{content}"})
+            # C3 — a prior turn's large tool output (an artifact dump, a wide
+            # grep) has no reason to re-enter this turn's seed verbatim; the root
+            # accepts on the worker summary + mechanical signal, not a re-ingest.
+            # Cap it so replay carries the shape, not the whole payload.
+            body = _elide_replayed_tool_row(content)
+            messages.append({"role": "user", "content": f"[prior tool result]\n{body}"})
         elif role == "system":
             messages.append({"role": "user", "content": f"[prior system note]\n{content}"})
     return messages
+
+
+# Cap for a single prior tool result re-injected as replay seed. Large payloads
+# (artifact contents, wide greps) carry no goal-acceptance value on the next
+# turn — the root already got the worker's summary and mechanical verdict.
+REPLAY_TOOL_ROW_MAX_CHARS = 2000
+
+
+def _elide_replayed_tool_row(content: str) -> str:
+    if len(content) <= REPLAY_TOOL_ROW_MAX_CHARS:
+        return content
+    elided = len(content) - REPLAY_TOOL_ROW_MAX_CHARS
+    return (
+        content[:REPLAY_TOOL_ROW_MAX_CHARS]
+        + f"\n…[{elided} chars elided on replay]"
+    )
 
 
 def _record_agent_turn(
