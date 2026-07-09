@@ -31,11 +31,12 @@ struct AppState {
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
     chat_agent: Arc<Mutex<ChatAgentRuntime>>,
-    // Orchestrator session id (gui-orchestrator-*).
-    chat_id: String,
-    // Pipeline studio session id (gui-pipeline-*). Same single process slot,
-    // but its own conversation history + run scope.
-    pipeline_chat_id: String,
+    // Orchestrator session id (gui-orchestrator-*-<nonce>). Interior-mutable so
+    // "New session" can re-mint it at runtime.
+    chat_id: Mutex<String>,
+    // Pipeline studio session id (gui-pipeline-*-<nonce>). Same single process
+    // slot, but its own conversation history + run scope.
+    pipeline_chat_id: Mutex<String>,
 }
 
 #[derive(Default)]
@@ -188,7 +189,7 @@ fn resolve_project_root(
     climb_for_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf())
 }
 
-fn scoped_chat_id(project_root: &Path, surface: &str) -> String {
+fn scoped_chat_id(project_root: &Path, surface: &str, nonce: &str) -> String {
     let root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf())
@@ -197,8 +198,82 @@ fn scoped_chat_id(project_root: &Path, surface: &str) -> String {
     let mut hasher = DefaultHasher::new();
     root.hash(&mut hasher);
     // The surface is encoded in the id prefix (gui-orchestrator-* / gui-pipeline-*)
-    // so the UI can scope runs to a session without a separate id table.
-    format!("gui-{surface}-{:016x}", hasher.finish())
+    // so the UI can scope runs to a session without a separate id table. The
+    // trailing nonce scopes history to a *session*: "New session" mints a fresh
+    // nonce, so the agent's replay (conversation_messages, keyed by chat_id)
+    // starts empty while old turns stay under the old id.
+    format!("gui-{surface}-{:016x}-{nonce}", hasher.finish())
+}
+
+fn session_nonce_key(surface: &str) -> String {
+    format!("session_nonce_{surface}")
+}
+
+/// A short, unique-enough nonce for a GUI session, derived from the current
+/// nanosecond clock so two "New session" clicks do not collide.
+fn mint_session_nonce() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    nanos.hash(&mut hasher);
+    format!("{:012x}", hasher.finish() & 0xffff_ffff_ffff)
+}
+
+fn store_session_nonce(conn: &Connection, surface: &str, nonce: &str) {
+    let _ = conn.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,?2) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![session_nonce_key(surface), nonce],
+    );
+}
+
+/// Load the persisted session nonce for `surface`, minting and storing one on
+/// first use so restarting the app continues the same session (option a).
+fn load_or_mint_session_nonce(conn: &Connection, surface: &str) -> String {
+    let key = session_nonce_key(surface);
+    if let Ok(nonce) = conn.query_row(
+        "SELECT value FROM meta WHERE key=?1",
+        [key.as_str()],
+        |r| r.get::<_, String>(0),
+    ) {
+        return nonce;
+    }
+    let nonce = mint_session_nonce();
+    store_session_nonce(conn, surface, &nonce);
+    nonce
+}
+
+/// Start a fresh session on `surface`: mint a new nonce (so the agent's
+/// chat_id-keyed replay history starts empty next run), persist it, swap the
+/// live chat_id, and clear the display log. Old history is retained under the
+/// old chat_id (append-only) for future browsing.
+fn new_driver_session(
+    conn: &Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    project_root: &Path,
+    surface: &str,
+) -> Result<(), String> {
+    if rt.running {
+        return Err(
+            "Cannot start a new session while the agent is running. Cancel or wait for it to finish."
+                .into(),
+        );
+    }
+    let nonce = mint_session_nonce();
+    store_session_nonce(conn, surface, &nonce);
+    conn.execute("DELETE FROM chat_log WHERE surface = ?1", [surface])
+        .map_err(|e| e.to_string())?;
+    let new_id = scoped_chat_id(project_root, surface, &nonce);
+    *chat_id_slot.lock().map_err(|e| e.to_string())? = new_id;
+    rt.stdout_tail.clear();
+    rt.stderr_tail.clear();
+    rt.task.clear();
+    rt.started_at = None;
+    rt.cancel_requested = false;
+    Ok(())
 }
 
 fn percent_encode(input: &str) -> String {
@@ -899,7 +974,7 @@ fn action(
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 insert_chat(&conn, "you", None, &text, "orchestrator")?;
             }
-            let chat_id = state.chat_id.clone();
+            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "orchestrator") {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
                 insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator")?;
@@ -916,7 +991,7 @@ fn action(
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 insert_chat(&conn, "you", None, &text, "pipeline")?;
             }
-            let chat_id = state.pipeline_chat_id.clone();
+            let chat_id = state.pipeline_chat_id.lock().map_err(|e| e.to_string())?.clone();
             if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "pipeline") {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
                 insert_chat(&conn, "driver", Some("deny"), &e, "pipeline")?;
@@ -958,6 +1033,20 @@ fn action(
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             clear_driver_chat_log(&conn, &mut rt, surface)?;
+        }
+        // Fresh session: re-mint the surface's chat_id so the agent's replay
+        // history starts empty, and clear the display. Old turns stay under the
+        // previous chat_id.
+        "new_session" => {
+            let surface = surface_arg(&str_arg(0));
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            let slot = if surface == "pipeline" {
+                &state.pipeline_chat_id
+            } else {
+                &state.chat_id
+            };
+            new_driver_session(&conn, &mut rt, slot, &state.project_root, surface)?;
         }
         "open_artifact" => {
             let raw_path = str_arg(0);
@@ -1006,8 +1095,12 @@ pub fn run() {
             [],
         );
     }
-    let chat_id = scoped_chat_id(&opened.project_root, "orchestrator");
-    let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline");
+    // Continue the persisted session for each surface (option a: restart resumes
+    // the current session); mint on first use.
+    let chat_nonce = load_or_mint_session_nonce(&opened.conn, "orchestrator");
+    let pipe_nonce = load_or_mint_session_nonce(&opened.conn, "pipeline");
+    let chat_id = scoped_chat_id(&opened.project_root, "orchestrator", &chat_nonce);
+    let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline", &pipe_nonce);
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
@@ -1015,8 +1108,8 @@ pub fn run() {
             project_root: opened.project_root,
             audit_db: opened.audit_db,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
-            chat_id,
-            pipeline_chat_id,
+            chat_id: Mutex::new(chat_id),
+            pipeline_chat_id: Mutex::new(pipeline_chat_id),
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
         .setup(|app| {
@@ -1063,6 +1156,77 @@ mod tests {
         assert_eq!(rt.stderr_tail, "");
         assert_eq!(rt.task, "");
         assert_eq!(rt.started_at, None);
+    }
+
+    #[test]
+    fn new_session_rerolls_chat_id_and_clears_display() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
+        let root = Path::new("/tmp/musubi-new-session-test");
+        let old_nonce = load_or_mint_session_nonce(&conn, "orchestrator");
+        let old_id = scoped_chat_id(root, "orchestrator", &old_nonce);
+        let slot = Mutex::new(old_id.clone());
+        let mut rt = ChatAgentRuntime {
+            stdout_tail: "x".into(),
+            ..ChatAgentRuntime::default()
+        };
+
+        new_driver_session(&conn, &mut rt, &slot, root, "orchestrator").unwrap();
+
+        // The live chat_id changed, so the agent replays no prior history.
+        let new_id = slot.lock().unwrap().clone();
+        assert_ne!(new_id, old_id);
+        assert!(new_id.starts_with("gui-orchestrator-"));
+        // Display log for this surface is cleared and the tail reset.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(rt.stdout_tail, "");
+        // The new nonce is persisted, so a restart continues this new session.
+        let persisted = load_or_mint_session_nonce(&conn, "orchestrator");
+        assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
+    }
+
+    #[test]
+    fn session_nonce_is_stable_across_reloads() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let first = load_or_mint_session_nonce(&conn, "orchestrator");
+        let second = load_or_mint_session_nonce(&conn, "orchestrator");
+        assert_eq!(first, second, "restart must continue the same session");
+        // Surfaces are independent sessions.
+        let pipe = load_or_mint_session_nonce(&conn, "pipeline");
+        assert_ne!(first, pipe);
+    }
+
+    #[test]
+    fn new_session_refuses_while_agent_runs() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
+        let slot = Mutex::new("gui-orchestrator-abc-1".to_string());
+        let mut rt = ChatAgentRuntime {
+            running: true,
+            ..ChatAgentRuntime::default()
+        };
+
+        let err = new_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            Path::new("/tmp/x"),
+            "orchestrator",
+        )
+        .unwrap_err();
+
+        assert!(err.contains("running"));
+        assert_eq!(slot.lock().unwrap().clone(), "gui-orchestrator-abc-1");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

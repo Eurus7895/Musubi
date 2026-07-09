@@ -216,6 +216,25 @@ function FeedPanel({ vals }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button
             type="button"
+            onClick={vals.onNewSession}
+            disabled={vals.clearDriverDisabled}
+            title={vals.clearDriverDisabled ? 'Wait for the running agent before starting a new session' : 'New session — start fresh, drop replayed history'}
+            style={{
+              fontFamily: "'IBM Plex Mono',monospace",
+              fontSize: 11,
+              height: 28,
+              padding: '0 10px',
+              borderRadius: 7,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: vals.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#19212f',
+              color: vals.clearDriverDisabled ? '#4f5665' : '#9b9ba2',
+              cursor: vals.clearDriverDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            new session
+          </button>
+          <button
+            type="button"
             onClick={vals.onClearDriverChat}
             disabled={vals.clearDriverDisabled}
             title={vals.clearDriverDisabled ? 'Wait for the running agent before clearing' : 'Clear chat and session view'}

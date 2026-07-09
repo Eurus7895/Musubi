@@ -48,6 +48,53 @@ test('clearPipeDriverChat clears pipeline chat only', () => {
   assert.deepEqual(calls, [{ kind: 'clear_driver_chat', args: ['pipeline'] }])
 })
 
+test('newSession re-mints the orchestrator session and clears the chat', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    chat: [{ role: 'driver', text: 'old turn' }],
+    pipeChat: [{ role: 'driver', text: 'keep me' }],
+    draft: 'draft',
+    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+  })
+
+  source.actions.newSession()
+
+  assert.deepEqual(source.state.chat, [])
+  assert.deepEqual(source.state.pipeChat.map((m) => m.text), ['keep me'])
+  assert.equal(source.state.draft, '')
+  assert.deepEqual(calls, [{ kind: 'new_session', args: ['orchestrator'] }])
+})
+
+test('newPipeSession re-mints the pipeline session only', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    chat: [{ role: 'driver', text: 'keep me' }],
+    pipeChat: [{ role: 'driver', text: 'old turn' }],
+    pipeDraft: 'draft',
+    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+  })
+
+  source.actions.newPipeSession()
+
+  assert.deepEqual(source.state.chat.map((m) => m.text), ['keep me'])
+  assert.deepEqual(source.state.pipeChat, [])
+  assert.equal(source.state.pipeDraft, '')
+  assert.deepEqual(calls, [{ kind: 'new_session', args: ['pipeline'] }])
+})
+
+test('newSession is a no-op while the agent is running', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    chat: [{ role: 'driver', text: 'busy' }],
+    driverStatus: { running: true, surface: 'orchestrator', task: 't', startedAt: 1, stdoutTail: '', stderrTail: '' },
+  })
+
+  source.actions.newSession()
+
+  assert.deepEqual(source.state.chat.map((m) => m.text), ['busy'])
+  assert.deepEqual(calls, [])
+})
+
 test('openArtifact forwards the requested surface', () => {
   const { source, calls } = sourceWithActionSpy()
 
