@@ -78,6 +78,20 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   and route decisions, skill use, worker spawns, and budget halts should be
   visible in logs and audit. Implementation plan:
   [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md).
+  Direction update: scope no longer *forces* spawns. A regex cannot reliably
+  call a turn "simple" or "needs a planner", so `classify_task` is advisory
+  (steers the prompt only); the sole spawn enforcement is the flat per-role
+  width cap, and plan-first is explicit opt-in via `--plan`. See the 2026-07-09
+  plan below.
+- **GUI/CLI orchestrator token economics.** Close the gap where stateful GUI
+  turns cost far more than the stateless CLI: scope chat history per session
+  with a new-session reset (an immortal per-project `chat_id` was replaying the
+  whole thread every turn), surface tool-name / replay-token / seed-cost
+  observability, add a deterministic mechanical validation gate at the worker
+  boundary so the goal-holding root accepts on a trustworthy signal instead of
+  re-ingesting artifacts, and make scope advisory with explicit `--plan`
+  opt-in. Implementation plan:
+  [`2026-07-09-gui-cli-orchestrator-tokens.md`](./superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md).
 - **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
   and external drivers without removing substrate tools. Implementation plan:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
