@@ -202,6 +202,42 @@ test('creates a parent run for a driver turn with no spawned workers', () => {
   assert.match(vm.runStatusSummary, /Driver turn completed/)
 })
 
+test('driver card surfaces the replayed seed cost of a stateful turn', () => {
+  const vm = buildViewModel(baseState({
+    agentTurns: [{
+      id: 7,
+      parentSession: 'gui-session',
+      startedAt: 1042,
+      modelFamily: 'deepseek',
+      cycles: 3,
+      tokensInEstimate: 76743,
+      tokensOutEstimate: 900,
+      replayMessages: 49,
+      replayTokens: 48120,
+    }],
+  }), actions())
+
+  assert.equal(vm.driverSummary.replayLine, 'replayed 49 msgs · 48k seed tok')
+})
+
+test('driver card shows no replay line for a fresh-session turn', () => {
+  const vm = buildViewModel(baseState({
+    agentTurns: [{
+      id: 8,
+      parentSession: 'gui-session',
+      startedAt: 1043,
+      modelFamily: 'deepseek',
+      cycles: 1,
+      tokensInEstimate: 28333,
+      tokensOutEstimate: 200,
+      replayMessages: 0,
+      replayTokens: 0,
+    }],
+  }), actions())
+
+  assert.equal(vm.driverSummary.replayLine, '')
+})
+
 test('summarizes the active run for the driver card', () => {
   const vm = buildViewModel(baseState({
     subagents: [

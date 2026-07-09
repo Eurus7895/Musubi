@@ -206,6 +206,10 @@ async def run_agent(
     audit_db_path = _server_audit_db_path(musubi_dir, server_env)
     turn_started_at = time.time()
     stats = AgentRunStats()
+    # Replay accounting for this turn's seed; stays 0 for a stateless (no chat_id)
+    # or deterministic turn, set below when chat history is loaded.
+    replay_messages = 0
+    replay_tokens = 0
     budget = _build_token_budget(max_tokens, max_credits, log)
     scope_hint = classify_task(task)
     direct_answer = _deterministic_scope_answer(task, scope_hint)
@@ -327,10 +331,12 @@ async def run_agent(
                 chat_id, db_path=context_compression_db_path, log=log,
             )
             initial_messages = _messages_from_chat_history(system_prompt, history)
+            replay_messages = max(0, len(initial_messages) - 1)
+            replay_tokens = int(history.get("total_tokens", 0))
             print(
                 f"[agent] chat_id={chat_id} "
-                f"replay_messages={max(0, len(initial_messages) - 1)} "
-                f"replay_tokens={history.get('total_tokens', 0)}",
+                f"replay_messages={replay_messages} "
+                f"replay_tokens={replay_tokens}",
                 file=log,
             )
 
@@ -420,6 +426,8 @@ async def run_agent(
             stats=stats,
             db_path=context_compression_db_path,
             log=log,
+            replay_messages=replay_messages,
+            replay_tokens=replay_tokens,
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -1097,6 +1105,8 @@ def _record_agent_turn(
     stats: AgentRunStats,
     db_path: Path,
     log: Any,
+    replay_messages: int = 0,
+    replay_tokens: int = 0,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -1114,6 +1124,8 @@ def _record_agent_turn(
             tokens_out_estimate=stats.tokens_out_estimate,
             lm_ms=stats.lm_ms,
             total_ms=int((ended_at - started_at) * 1000),
+            replay_messages=replay_messages,
+            replay_tokens=replay_tokens,
             db_path=db_path,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
