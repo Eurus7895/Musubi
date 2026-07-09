@@ -7,6 +7,7 @@ function baseState(overrides = {}) {
     view: 'orchestrator',
     selected: null,
     selectedSession: null,
+    selectedPipeSession: null,
     paused: false,
     t: 3,
     auditFilter: 'all',
@@ -20,6 +21,7 @@ function baseState(overrides = {}) {
     policy: [],
     audit: [],
     chat: [],
+    pipeChat: [],
     totalSpawned: 0,
     totalDone: 0,
     allowCount: 0,
@@ -34,13 +36,13 @@ function baseState(overrides = {}) {
     pipeDoneFlag: false,
     runtimeSource: 'workspace',
     setupStatus: {},
-    driverStatus: { running: false, task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
     ...overrides,
   }
 }
 
-function agent(id, parentSession, status, role = 'coder') {
+function agent(id, parentSession, status, role = 'coder', chatId = '') {
   return {
     id,
     handle: `h${id}`,
@@ -57,6 +59,7 @@ function agent(id, parentSession, status, role = 'coder') {
     parent: 'driver',
     parentSession,
     parentAgent: 'agent',
+    chatId,
   }
 }
 
@@ -65,6 +68,7 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
+    selectPipeSession() {},
     clearSelect() {},
     setAuditFilter() {},
     movePipe() {},
@@ -85,9 +89,12 @@ function actions() {
     onDraft() {},
     onDraftKey() {},
     sendChat() {},
+    sendPipeChat() {},
     cancelAgent() {},
     openArtifact() {},
     onPipeDraft() {},
+    onPipeDraftKey() {},
+    clearPipeDriverChat() {},
   }
 }
 
@@ -238,6 +245,102 @@ test('does not treat a pipeline preset as selected by default', () => {
   assert.equal(vm.pipeName, 'choose preset')
   assert.match(vm.pipeStatusText, /Choose a pipeline preset/)
   assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
+})
+
+test('scopes orchestrator and pipeline runs by chat id surface', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(1, 'orch-session', 'done', 'planner', 'gui-orchestrator-abc'),
+      agent(2, 'pipe-session', 'done', 'coder', 'gui-pipeline-abc'),
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'gui-orchestrator-abc', parentSession: 'orch-direct', startedAt: 1000 },
+      { id: 2, chatId: 'gui-pipeline-abc', parentSession: 'pipe-direct', startedAt: 1001 },
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.runs.map((run) => run.id), ['orch-direct', 'orch-session'])
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-direct', 'pipe-session'])
+})
+
+test('live driver run appears only on owning surface', () => {
+  const vm = buildViewModel(baseState({
+    driverStatus: {
+      running: true,
+      surface: 'pipeline',
+      task: 'pipeline task',
+      startedAt: 77,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.runs.length, 0)
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['driver-running-77'])
+  assert.equal(vm.driverBusy, false)
+  assert.equal(vm.sendDisabled, true)
+  assert.equal(vm.sendMode, 'send')
+  assert.match(vm.sendTitle, /Pipeline run is active/)
+  assert.equal(vm.pipeChatBody.driverBusy, true)
+  assert.equal(vm.pipeChatBody.sendDisabled, false)
+  assert.equal(vm.pipeChatBody.sendMode, 'cancel')
+})
+
+test('pipeline chat body uses pipe chat and disables while orchestrator owns process', () => {
+  const vm = buildViewModel(baseState({
+    chat: [{ role: 'driver', ts: '10:00:00', text: 'orchestrator answer', tone: null }],
+    pipeChat: [{ role: 'driver', ts: '10:00:01', text: 'pipeline answer', tone: null }],
+    pipeDraft: 'run pipeline',
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      task: 'orchestrator task',
+      startedAt: 88,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.chat[0].text, 'orchestrator answer')
+  assert.equal(vm.pipeChatBody.chat[0].text, 'pipeline answer')
+  assert.equal(vm.pipeChatBody.draft, 'run pipeline')
+  assert.equal(vm.pipeChatBody.driverBusy, false)
+  assert.equal(vm.pipeChatBody.sendDisabled, true)
+  assert.match(vm.pipeChatBody.sendTitle, /Orchestrator run is active/)
+  assert.equal(vm.driverBusy, true)
+  assert.equal(vm.sendMode, 'cancel')
+})
+
+test('pipeline studio exposes scoped run rail and active timeline', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(10, 'orch-session', 'running', 'coder', 'gui-orchestrator-abc'),
+      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
+      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-new', 'pipe-old'])
+  assert.equal(vm.activePipeRunId, 'pipe-new')
+  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h12'])
+  assert.equal(vm.activePipeRunSteps[0].isCurrent, true)
+  assert.match(vm.pipeRunSummary.countLine, /1 steps/)
+  assert.match(vm.pipeSessionSubtitle, /1 workers/)
+})
+
+test('pipeline studio honours selected pipeline session', () => {
+  const vm = buildViewModel(baseState({
+    selectedPipeSession: 'pipe-old',
+    subagents: [
+      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
+      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    ],
+  }), actions())
+
+  assert.equal(vm.activePipeRunId, 'pipe-old')
+  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h11'])
+  const chosen = vm.pipeRuns.find((run) => run.id === 'pipe-old')
+  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
 })
 
 test('lists every session but focuses the latest driver turn', () => {

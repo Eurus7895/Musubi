@@ -14,7 +14,7 @@ import { classifyChatCommand } from './chatCommands.js'
 // and pipeName are NOT backend-owned — otherwise the snapshot poll would clobber
 // every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
-  'subagents', 'events', 'policy', 'audit', 'chat',
+  'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
   'agentTurns',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'paused', 't',
@@ -29,9 +29,9 @@ export default class TauriSource {
     this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, selectedSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeChatOpen: false,
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false,
       processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [],
+      subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
       pipeName: 'feature-dev', pipeSteps: this._stepsFromPreset('feature-dev'),
@@ -92,6 +92,7 @@ export default class TauriSource {
       // Choose a whole session from the Parent runs list (works for driver-only
       // runs too). Clears any per-worker selection so the session wins.
       selectSession: (id) => this._setLocal({ view: 'orchestrator', selectedSession: id, selected: null }),
+      selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
       openPipeChat: local({ pipeChatOpen: true }),
@@ -111,13 +112,32 @@ export default class TauriSource {
           logWindowOpen: false,
           driverStatus: emptyDriverStatus(),
         })
-        this._action('clear_driver_chat')
+        this._action('clear_driver_chat', ['orchestrator'])
+      },
+      clearPipeDriverChat: () => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({
+          pipeChat: [],
+          pipeDraft: '',
+          selectedPipeSession: null,
+          processOpen: false,
+          logWindowOpen: false,
+          driverStatus: emptyDriverStatus(),
+        })
+        this._action('clear_driver_chat', ['pipeline'])
       },
       onDraft: (e) => this._setLocal({ draft: e.target.value }),
       onDraftKey: (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault()
           if (!this.state.driverStatus?.running) this.actions.sendChat()
+        }
+      },
+      onPipeDraft: (e) => this._setLocal({ pipeDraft: e.target.value }),
+      onPipeDraftKey: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          if (!this.state.driverStatus?.running) this.actions.sendPipeChat()
         }
       },
       // backend-mutating actions
@@ -137,7 +157,13 @@ export default class TauriSource {
         }
         this._action('send_chat', [d])
       },
-      openArtifact: (path) => this._action('open_artifact', [path]),
+      sendPipeChat: () => {
+        const d = (this.state.pipeDraft || '').trim()
+        if (!d) return
+        this._setLocal({ pipeDraft: '', selectedPipeSession: null })
+        this._action('send_pipe_chat', [d])
+      },
+      openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
       // Pipeline studio composer — pure client-side UI state (see DOMAIN_KEYS).
       addPipe: (role) => this._setLocal({
         pipeSteps: [...this.state.pipeSteps, { uid: this._nextPipeUid(), role, status: 'idle', handle: null }],
@@ -177,5 +203,5 @@ function emptySetupStatus() {
 }
 
 function emptyDriverStatus() {
-  return { running: false, task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
+  return { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
 }
