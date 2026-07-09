@@ -328,8 +328,9 @@ async def run_agent(
             )
             initial_messages = _messages_from_chat_history(system_prompt, history)
             print(
-                f"[agent] chat_id={chat_id} replay_messages="
-                f"{max(0, len(initial_messages) - 1)}",
+                f"[agent] chat_id={chat_id} "
+                f"replay_messages={max(0, len(initial_messages) - 1)} "
+                f"replay_tokens={history.get('total_tokens', 0)}",
                 file=log,
             )
 
@@ -1773,11 +1774,58 @@ def _safe_record_tool_audit(
         )
 
 
+# Name-substring hints used to bucket a tool call into a coarse kind, so a
+# cycle that only reads/greps (a verification loop) is visible at a glance
+# versus one that mutates files or spawns a worker.
+_MUTATE_HINTS = ("write", "edit", "patch", "bash", "delete", "create", "move", "mkdir")
+_READ_HINTS = ("read", "grep", "glob", "retrieve", "list", "get", "search", "find")
+
+
+def _short_tool_name(name: str) -> str:
+    """Drop a leading ``musubi_`` prefix for readable logs; leave others intact."""
+    return name[len("musubi_"):] if name.startswith("musubi_") else name
+
+
+def _tool_kind(name: str) -> str:
+    if name in ("musubi_spawn_subagent", "musubi_spawn_pipeline"):
+        return "spawn"
+    low = name.lower()
+    if any(h in low for h in _MUTATE_HINTS):
+        return "mutate"
+    if any(h in low for h in _READ_HINTS):
+        return "read"
+    return "other"
+
+
+def _tool_kind_summary(tool_uses: list[dict[str, Any]]) -> str:
+    kinds = {_tool_kind(str(tu.get("name", ""))) for tu in tool_uses}
+    if len(kinds) == 1:
+        return next(iter(kinds))
+    if "mutate" in kinds:
+        return "mutate"
+    if "spawn" in kinds:
+        return "spawn"
+    return "mixed"
+
+
+def _tool_use_names(tool_uses: list[dict[str, Any]]) -> str:
+    """Compact ``[grep×3, read_file×2]`` breakdown, insertion-ordered."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for tu in tool_uses:
+        name = _short_tool_name(str(tu.get("name", "")) or "?")
+        if name not in counts:
+            order.append(name)
+        counts[name] = counts.get(name, 0) + 1
+    parts = [f"{n}×{counts[n]}" if counts[n] > 1 else n for n in order]
+    return "[" + ", ".join(parts) + "]"
+
+
 def _model_action(stop_reason: str, tool_uses: list[dict[str, Any]]) -> str:
     if stop_reason == "max_tokens":
         return "truncated"
     if tool_uses:
-        return "tool_calls"
+        return f"tool_calls:{_tool_kind_summary(tool_uses)}"
     if stop_reason == "end_turn":
         return "final"
     return "empty"
@@ -1798,6 +1846,8 @@ def _log_cycle(
         f"stop={stop_reason}",
         f"tools={len(tool_uses)}",
     ]
+    if tool_uses:
+        parts.append(f"names={_tool_use_names(tool_uses)}")
     if attempt_count > 1:
         parts.append(f"attempts={attempt_count}")
     if tokens_out is not None:

@@ -691,9 +691,48 @@ def test_log_cycle_includes_human_readable_model_action() -> None:
     )
 
     line = log.getvalue()
-    assert "model_action=tool_calls" in line
+    assert "model_action=tool_calls:read" in line
     assert "stop=tool_use" in line
     assert "tools=1" in line
+    assert "names=[get_skill]" in line
+
+
+def test_log_cycle_names_aggregate_repeated_tools() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    run_mod._log_cycle(
+        log,
+        1,
+        "tool_use",
+        [
+            {"type": "tool_use", "name": "musubi_grep"},
+            {"type": "tool_use", "name": "musubi_grep"},
+            {"type": "tool_use", "name": "musubi_read_file"},
+        ],
+        None,
+    )
+    line = log.getvalue()
+    # A pure read/grep cycle is a verification loop; it should read as one.
+    assert "model_action=tool_calls:read" in line
+    assert "tools=3" in line
+    assert "names=[grep×2, read_file]" in line
+
+
+def test_model_action_flags_mutation_and_spawn() -> None:
+    from agent import run as run_mod
+
+    mutate = run_mod._model_action(
+        "tool_use",
+        [{"type": "tool_use", "name": "musubi_write_file"},
+         {"type": "tool_use", "name": "musubi_grep"}],
+    )
+    assert mutate == "tool_calls:mutate"
+
+    spawn = run_mod._model_action(
+        "tool_use", [{"type": "tool_use", "name": "musubi_spawn_subagent"}],
+    )
+    assert spawn == "tool_calls:spawn"
 
 
 def test_run_loop_elides_large_file_tool_args_before_next_model_call(
