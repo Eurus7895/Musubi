@@ -243,7 +243,7 @@ export default function ChatBody({ vals }) {
           onChange={vals.onDraft}
           onKeyDown={vals.onDraftKey}
           disabled={inputDisabled}
-          placeholder={vals.disabledText || (vals.driverBusy ? 'Agent is still working...' : 'Message the driver...')}
+          placeholder={vals.disabledText || (vals.driverBusy ? 'Agent is still working...' : (vals.placeholder || 'Message the driver...'))}
           style={{ flex: 1, minWidth: 0, background: inputDisabled ? 'rgba(25,33,47,0.58)' : '#19212f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '9px 12px', color: inputDisabled ? '#6f7685' : '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 12.5, outline: 'none', cursor: inputDisabled ? 'not-allowed' : 'text' }}
         />
         <Box
