@@ -123,8 +123,11 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   root agent does NOT auto-summon whole pipelines (`musubi_spawn_pipeline` is
   off the agent tool surface — a pipeline is a user-invoked run via the CLI
   flag, per policy locked decision #4), so a simple task can't be silently
-  routed into a multi-stage pipeline. The Pipeline studio is a preset composer /
-  inspector; stage workers surface through the Orchestrator/Audit views
+  routed into a multi-stage pipeline. Pipeline Studio invokes this entry point
+  directly for registered recipes, owns an exact isolated chat session, and
+  renders pipeline envelopes plus child stages separately from Orchestrator;
+  implementation plan:
+  [`2026-07-10-gui-pipeline-studio-sessions.md`](./superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md).
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
   find files deterministically instead of blind-guessing paths — closing the gap
