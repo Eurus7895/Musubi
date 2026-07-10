@@ -51,6 +51,7 @@ struct ChatAgentRuntime {
     // Which surface ('orchestrator' | 'pipeline') the active run belongs to, so
     // the driver reply is written to the matching chat_log surface.
     surface: String,
+    pipeline_name: String,
 }
 
 enum TailStream {
@@ -233,11 +234,9 @@ fn store_session_nonce(conn: &Connection, surface: &str, nonce: &str) {
 /// first use so restarting the app continues the same session (option a).
 fn load_or_mint_session_nonce(conn: &Connection, surface: &str) -> String {
     let key = session_nonce_key(surface);
-    if let Ok(nonce) = conn.query_row(
-        "SELECT value FROM meta WHERE key=?1",
-        [key.as_str()],
-        |r| r.get::<_, String>(0),
-    ) {
+    if let Ok(nonce) = conn.query_row("SELECT value FROM meta WHERE key=?1", [key.as_str()], |r| {
+        r.get::<_, String>(0)
+    }) {
         return nonce;
     }
     let nonce = mint_session_nonce();
@@ -648,6 +647,7 @@ fn start_chat_agent(
     task_text: String,
     chat_id: &str,
     surface: &str,
+    pipeline_name: Option<&str>,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
     {
@@ -666,6 +666,7 @@ fn start_chat_agent(
         rt.stdout_tail.clear();
         rt.stderr_tail.clear();
         rt.surface = surface.to_string();
+        rt.pipeline_name = pipeline_name.unwrap_or_default().to_string();
     }
 
     let mut env = musubi_data::current_env_map();
@@ -708,7 +709,7 @@ fn start_chat_agent(
         &launch_root,
         &env,
         Some(chat_id),
-        None,
+        pipeline_name,
     )?;
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",
@@ -945,6 +946,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         st.driver_status = musubi_data::DriverStatus {
             running: rt.running,
             surface: surface_arg(&rt.surface).to_string(),
+            pipeline_name: rt.pipeline_name.clone(),
             task: rt.task.clone(),
             started_at: rt.started_at,
             stdout_tail: rt.stdout_tail.clone(),
@@ -983,24 +985,45 @@ fn action(
                 insert_chat(&conn, "you", None, &text, "orchestrator")?;
             }
             let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
-            if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "orchestrator") {
+            if let Err(e) =
+                start_chat_agent(app, state.inner(), text, &chat_id, "orchestrator", None)
+            {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
                 insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator")?;
             }
         }
         // Pipeline studio session: same single process slot, its own chat_id +
         // conversation history + run scope.
-        "send_pipe_chat" => {
-            let text = str_arg(0);
-            if text.trim().is_empty() {
-                return Ok(());
-            }
+        "send_pipeline_task" => {
+            let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
+            let requested_text = str_arg(0);
+            let requested_pipeline = str_arg(1);
+            let (text, pipeline_name) =
+                match prepare_pipeline_launch(&requested_text, &requested_pipeline, &catalog) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let conn = state.db.lock().map_err(|e| e.to_string())?;
+                        insert_chat(&conn, "driver", Some("deny"), &error, "pipeline")?;
+                        return Ok(());
+                    }
+                };
             {
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 insert_chat(&conn, "you", None, &text, "pipeline")?;
             }
-            let chat_id = state.pipeline_chat_id.lock().map_err(|e| e.to_string())?.clone();
-            if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, "pipeline") {
+            let chat_id = state
+                .pipeline_chat_id
+                .lock()
+                .map_err(|e| e.to_string())?
+                .clone();
+            if let Err(e) = start_chat_agent(
+                app,
+                state.inner(),
+                text,
+                &chat_id,
+                "pipeline",
+                Some(&pipeline_name),
+            ) {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
                 insert_chat(&conn, "driver", Some("deny"), &e, "pipeline")?;
             }
@@ -1220,14 +1243,8 @@ mod tests {
             ..ChatAgentRuntime::default()
         };
 
-        let err = new_driver_session(
-            &conn,
-            &mut rt,
-            &slot,
-            Path::new("/tmp/x"),
-            "orchestrator",
-        )
-        .unwrap_err();
+        let err = new_driver_session(&conn, &mut rt, &slot, Path::new("/tmp/x"), "orchestrator")
+            .unwrap_err();
 
         assert!(err.contains("running"));
         assert_eq!(slot.lock().unwrap().clone(), "gui-orchestrator-abc-1");
@@ -1375,4 +1392,57 @@ mod tests {
         assert!(failed.contains("missing.html"));
         assert!(failed.contains("cannot open artifact"));
     }
+
+    #[test]
+    fn pipeline_launch_validates_registered_runnable_recipe() {
+        let catalog = vec![musubi_data::PipelineCatalogEntry {
+            name: "feature-dev".into(),
+            description: "Ship a feature".into(),
+            stages: vec!["planner".into(), "coder".into()],
+            runnable: true,
+            blocked_reason: String::new(),
+        }];
+
+        assert_eq!(
+            prepare_pipeline_launch(" ship it ", "feature-dev", &catalog).unwrap(),
+            ("ship it".to_string(), "feature-dev".to_string())
+        );
+        assert!(prepare_pipeline_launch("", "feature-dev", &catalog)
+            .unwrap_err()
+            .contains("empty"));
+        assert!(prepare_pipeline_launch("ship", "../feature-dev", &catalog)
+            .unwrap_err()
+            .contains("invalid"));
+        assert!(prepare_pipeline_launch("ship", "missing", &catalog)
+            .unwrap_err()
+            .contains("not registered"));
+    }
+}
+
+fn prepare_pipeline_launch(
+    brief: &str,
+    pipeline_name: &str,
+    catalog: &[musubi_data::PipelineCatalogEntry],
+) -> Result<(String, String), String> {
+    let brief = brief.trim();
+    if brief.is_empty() {
+        return Err("Pipeline brief is empty — describe the task to run.".into());
+    }
+    let pipeline_name = pipeline_name.trim();
+    if !musubi_data::valid_pipeline_name(pipeline_name) {
+        return Err(format!("invalid pipeline name: {pipeline_name:?}"));
+    }
+    let Some(entry) = catalog.iter().find(|entry| entry.name == pipeline_name) else {
+        return Err(format!(
+            "Pipeline {pipeline_name:?} is not registered for Studio."
+        ));
+    };
+    if !entry.runnable || entry.stages.len() < 2 {
+        return Err(if entry.blocked_reason.is_empty() {
+            format!("Pipeline {pipeline_name:?} is not runnable in Studio.")
+        } else {
+            entry.blocked_reason.clone()
+        });
+    }
+    Ok((brief.to_string(), pipeline_name.to_string()))
 }
