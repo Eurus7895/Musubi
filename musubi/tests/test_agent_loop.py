@@ -718,6 +718,19 @@ def test_system_prompt_states_two_layer_acceptance() -> None:
     assert "do not re-run linters" in prompt
 
 
+def test_system_prompt_has_root_sizing_ladder_and_write_strategy() -> None:
+    from agent.context import build_system_prompt
+
+    prompt = build_system_prompt().lower()
+    # R1 — the root sizes the request itself (scope is a hint) and bakes the
+    # large-artifact write strategy into the coder brief.
+    assert "hint" in prompt
+    assert "shallowest path" in prompt
+    assert "planner" in prompt and "designer" in prompt
+    assert "append_file" in prompt
+    assert "utf-8" in prompt
+
+
 def test_replay_elides_large_tool_rows() -> None:
     from agent import run as run_mod
 
