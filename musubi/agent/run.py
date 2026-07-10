@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -69,7 +70,7 @@ from agent.mcp_gateway import (
     load_mcp_servers,
     mcp_config_candidates,
 )
-from agent.scope import ScopeHint, ScopeKind, classify_task, is_simple_scope
+from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
 
@@ -86,11 +87,39 @@ EFFORT_CEILING = 4096
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 
+# Injected into the root prompt only when the caller passes --plan. Explicit
+# opt-in replaces the retired regex force (a keyword guess used to refuse the
+# coder and demand a planner at cycle 0); now the user declares plan-first.
+_PLAN_FIRST_DIRECTIVE = (
+    "The user explicitly requested a plan-first workflow (--plan). Before "
+    "spawning any `coder` worker, spawn role `planner` and pass its summary to "
+    "the coder; never let the coder both plan and implement."
+)
+
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
     "musubi_write_file",
     "musubi_append_file",
     "musubi_edit_file",
 })
+
+# C1 — deterministic record of the files a worker mutated, populated by the
+# dispatch loop and read by `run_subagent` to drive the mechanical gate at the
+# point the parent receives the worker (the root boundary). A ContextVar keeps
+# the loop signatures untouched and isolates nested workers automatically: each
+# `run_subagent` sets its own sink, so a child's writes never leak into the
+# parent's set. `None` (the default) means "not collecting" — inert for the root
+# worker and any non-spawned call.
+_worker_touched_files: contextvars.ContextVar[set[str] | None] = (
+    contextvars.ContextVar("musubi_worker_touched_files", default=None)
+)
+
+# O3 — a short label identifying whose cycle a log line belongs to. `run_subagent`
+# sets `<role>#<handle>` for the worker it runs; the root leaves the default. Read
+# by the cycle loggers so several "cycle 0" lines from different workers are
+# distinguishable. Same ContextVar pattern as above — no loop-signature changes.
+_worker_log_label: contextvars.ContextVar[str] = (
+    contextvars.ContextVar("musubi_worker_log_label", default="root")
+)
 
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
@@ -185,6 +214,7 @@ async def run_agent(
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
+    plan_first: bool = False,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -206,6 +236,10 @@ async def run_agent(
     audit_db_path = _server_audit_db_path(musubi_dir, server_env)
     turn_started_at = time.time()
     stats = AgentRunStats()
+    # Replay accounting for this turn's seed; stays 0 for a stateless (no chat_id)
+    # or deterministic turn, set below when chat history is loaded.
+    replay_messages = 0
+    replay_tokens = 0
     budget = _build_token_budget(max_tokens, max_credits, log)
     scope_hint = classify_task(task)
     direct_answer = _deterministic_scope_answer(task, scope_hint)
@@ -317,6 +351,9 @@ async def run_agent(
         orchestration = Orchestration(parent_session_id=parent_session_id)
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
+        if plan_first:
+            system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
+            print("[agent] plan-first requested (--plan)", file=log)
         initial_messages: list[dict[str, Any]] | None = None
         if chat_id:
             _append_chat_message(
@@ -327,9 +364,12 @@ async def run_agent(
                 chat_id, db_path=context_compression_db_path, log=log,
             )
             initial_messages = _messages_from_chat_history(system_prompt, history)
+            replay_messages = max(0, len(initial_messages) - 1)
+            replay_tokens = int(history.get("total_tokens", 0))
             print(
-                f"[agent] chat_id={chat_id} replay_messages="
-                f"{max(0, len(initial_messages) - 1)}",
+                f"[agent] chat_id={chat_id} "
+                f"replay_messages={replay_messages} "
+                f"replay_tokens={replay_tokens}",
                 file=log,
             )
 
@@ -419,6 +459,8 @@ async def run_agent(
             stats=stats,
             db_path=context_compression_db_path,
             log=log,
+            replay_messages=replay_messages,
+            replay_tokens=replay_tokens,
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -534,9 +576,13 @@ async def _run_loop(
             break
 
         if resp.stop_reason == "max_tokens":
+            dropped = ", ".join(
+                _dropped_tool_target(tu) for tu in tool_uses
+            )
             print(
-                "[agent] max_tokens response contained tool calls; "
-                "not dispatching possibly truncated tool arguments",
+                "[agent] max_tokens truncated the response; dropped "
+                f"{dropped} (args may be incomplete). For a large artifact, "
+                "write it in ordered append_file chunks or a compact generator.",
                 file=log,
             )
             final_answer = _truncated_tool_call_answer(tool_uses)
@@ -820,6 +866,15 @@ def main(argv: list[str] | None = None) -> int:
             "supported by this deterministic runner."
         ),
     )
+    ap.add_argument(
+        "--plan",
+        action="store_true",
+        help=(
+            "Request a plan-first workflow: the root spawns a planner before any "
+            "coder and passes its summary along. Explicit opt-in intent — the "
+            "loop no longer forces a planner by guessing scope from keywords."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -848,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
                 pipeline=args.pipeline,
+                plan_first=args.plan,
             )
         )
     except KeyboardInterrupt:
@@ -1080,10 +1136,31 @@ def _messages_from_chat_history(
         if role in {"user", "assistant"}:
             messages.append({"role": role, "content": content})
         elif role == "tool":
-            messages.append({"role": "user", "content": f"[prior tool result]\n{content}"})
+            # C3 — a prior turn's large tool output (an artifact dump, a wide
+            # grep) has no reason to re-enter this turn's seed verbatim; the root
+            # accepts on the worker summary + mechanical signal, not a re-ingest.
+            # Cap it so replay carries the shape, not the whole payload.
+            body = _elide_replayed_tool_row(content)
+            messages.append({"role": "user", "content": f"[prior tool result]\n{body}"})
         elif role == "system":
             messages.append({"role": "user", "content": f"[prior system note]\n{content}"})
     return messages
+
+
+# Cap for a single prior tool result re-injected as replay seed. Large payloads
+# (artifact contents, wide greps) carry no goal-acceptance value on the next
+# turn — the root already got the worker's summary and mechanical verdict.
+REPLAY_TOOL_ROW_MAX_CHARS = 2000
+
+
+def _elide_replayed_tool_row(content: str) -> str:
+    if len(content) <= REPLAY_TOOL_ROW_MAX_CHARS:
+        return content
+    elided = len(content) - REPLAY_TOOL_ROW_MAX_CHARS
+    return (
+        content[:REPLAY_TOOL_ROW_MAX_CHARS]
+        + f"\n…[{elided} chars elided on replay]"
+    )
 
 
 def _record_agent_turn(
@@ -1096,6 +1173,8 @@ def _record_agent_turn(
     stats: AgentRunStats,
     db_path: Path,
     log: Any,
+    replay_messages: int = 0,
+    replay_tokens: int = 0,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -1113,6 +1192,8 @@ def _record_agent_turn(
             tokens_out_estimate=stats.tokens_out_estimate,
             lm_ms=stats.lm_ms,
             total_ms=int((ended_at - started_at) * 1000),
+            replay_messages=replay_messages,
+            replay_tokens=replay_tokens,
             db_path=db_path,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
@@ -1369,6 +1450,13 @@ def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
     return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
 
 
+def _dropped_tool_target(tu: dict[str, Any]) -> str:
+    """`tool(path)` for a truncated call, so the log names what was discarded."""
+    name = _short_tool_name(str(tu.get("name") or "<unknown>"))
+    path = (tu.get("input") or {}).get("path")
+    return f"{name}({path})" if isinstance(path, str) and path else name
+
+
 def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
     names = sorted({str(tu.get("name") or "<unknown>") for tu in tool_uses})
     payload = {
@@ -1402,13 +1490,17 @@ def _spawn_overflow_reasons(
     scope_hint: ScopeHint | None,
     cycle_index: int = 0,
 ) -> dict[str, str]:
-    """tool_use ids of spawn calls that exceed the active route width cap.
+    """tool_use ids of spawn calls that exceed the flat per-role width cap.
 
     Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
-    batch by default. Simple root tasks are tighter: one coder worker per
-    model turn. Non-spawn calls are never capped.
+    batch; non-spawn calls are never capped. This guard is the only spawn
+    enforcement: it bounds fan-out but does NOT route. `classify_task`'s scope
+    is advisory — it steers the model via the prompt block, and no longer gates
+    or forces spawns here (a regex cannot reliably decide a turn is "simple" or
+    "needs a planner"). Explicit plan-first intent comes from `--plan`, not a
+    keyword guess. `scope_hint`/`cycle_index` are accepted for signature
+    stability but no longer consulted.
     """
-    caller_role = role
     seen: dict[str, int] = {}
     overflow: dict[str, str] = {}
     for tu in tool_uses:
@@ -1416,32 +1508,11 @@ def _spawn_overflow_reasons(
             continue
         spawn_role = str((tu.get("input") or {}).get("role", ""))
         seen[spawn_role] = seen.get(spawn_role, 0) + 1
-        cap = DEFAULT_MAX_SPAWNS_PER_ROLE
-        reason = (
-            f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
-            f"for role {spawn_role!r}"
-        )
-        if caller_role == "agent" and spawn_role == "coder" and is_simple_scope(scope_hint):
-            cap = 1
-            reason = "simple task route allows only one coder worker"
-        if (
-            caller_role == "agent"
-            and spawn_role == "coder"
-            and scope_hint is not None
-            and scope_hint.kind is ScopeKind.MEDIUM_CHANGE
-            and cycle_index == 0
-        ):
-            overflow[tu.get("id", "")] = (
-                "medium task route requires planner before coder; spawn planner "
-                "first, then pass the planner summary to coder"
+        if seen[spawn_role] > DEFAULT_MAX_SPAWNS_PER_ROLE:
+            reason = (
+                f"per-turn spawn cap ({DEFAULT_MAX_SPAWNS_PER_ROLE}) reached "
+                f"for role {spawn_role!r}"
             )
-            print(
-                "[agent]   x refused worker(role='coder'): "
-                "medium task route requires planner before coder",
-                file=log,
-            )
-            continue
-        if seen[spawn_role] > cap:
             overflow[tu.get("id", "")] = reason
             print(
                 f"[agent]   ⨯ refused extra worker(role={spawn_role!r}): "
@@ -1642,6 +1713,7 @@ async def _dispatch_one(
                 args=json_args(args), status="ok", db_path=audit_path,
                 result_text=text, log=log,
             )
+        _record_touched_file(name, args, text)
         return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
         result = f"[tool error] {type(exc).__name__}: {exc}"
@@ -1652,6 +1724,31 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+def _tool_wrote_ok(text: str) -> bool:
+    """True when an fs tool's JSON result reports a successful write."""
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(obj, dict) and obj.get("status") == "ok"
+
+
+def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
+    """Record a successful file mutation into the active worker's sink.
+
+    No-op unless a `run_subagent` upstream is collecting (sink is not None) and
+    the call is a file-mutating tool that reported success.
+    """
+    sink = _worker_touched_files.get()
+    if sink is None or name not in ORDER_SENSITIVE_FILE_TOOLS:
+        return
+    if not _tool_wrote_ok(text):
+        return
+    path = args.get("path")
+    if isinstance(path, str) and path:
+        sink.add(path)
 
 
 def _file_tool_argument_error(name: str, args: Any) -> str | None:
@@ -1773,11 +1870,58 @@ def _safe_record_tool_audit(
         )
 
 
+# Name-substring hints used to bucket a tool call into a coarse kind, so a
+# cycle that only reads/greps (a verification loop) is visible at a glance
+# versus one that mutates files or spawns a worker.
+_MUTATE_HINTS = ("write", "edit", "patch", "bash", "delete", "create", "move", "mkdir")
+_READ_HINTS = ("read", "grep", "glob", "retrieve", "list", "get", "search", "find")
+
+
+def _short_tool_name(name: str) -> str:
+    """Drop a leading ``musubi_`` prefix for readable logs; leave others intact."""
+    return name[len("musubi_"):] if name.startswith("musubi_") else name
+
+
+def _tool_kind(name: str) -> str:
+    if name in ("musubi_spawn_subagent", "musubi_spawn_pipeline"):
+        return "spawn"
+    low = name.lower()
+    if any(h in low for h in _MUTATE_HINTS):
+        return "mutate"
+    if any(h in low for h in _READ_HINTS):
+        return "read"
+    return "other"
+
+
+def _tool_kind_summary(tool_uses: list[dict[str, Any]]) -> str:
+    kinds = {_tool_kind(str(tu.get("name", ""))) for tu in tool_uses}
+    if len(kinds) == 1:
+        return next(iter(kinds))
+    if "mutate" in kinds:
+        return "mutate"
+    if "spawn" in kinds:
+        return "spawn"
+    return "mixed"
+
+
+def _tool_use_names(tool_uses: list[dict[str, Any]]) -> str:
+    """Compact ``[grep×3, read_file×2]`` breakdown, insertion-ordered."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for tu in tool_uses:
+        name = _short_tool_name(str(tu.get("name", "")) or "?")
+        if name not in counts:
+            order.append(name)
+        counts[name] = counts.get(name, 0) + 1
+    parts = [f"{n}×{counts[n]}" if counts[n] > 1 else n for n in order]
+    return "[" + ", ".join(parts) + "]"
+
+
 def _model_action(stop_reason: str, tool_uses: list[dict[str, Any]]) -> str:
     if stop_reason == "max_tokens":
         return "truncated"
     if tool_uses:
-        return "tool_calls"
+        return f"tool_calls:{_tool_kind_summary(tool_uses)}"
     if stop_reason == "end_turn":
         return "final"
     return "empty"
@@ -1794,10 +1938,13 @@ def _log_cycle(
     attempt_count: int = 1,
 ) -> None:
     parts = [
-        f"[agent] cycle {cycle}: model_action={_model_action(stop_reason, tool_uses)}",
+        f"[agent] [{_worker_log_label.get()}] cycle {cycle}: "
+        f"model_action={_model_action(stop_reason, tool_uses)}",
         f"stop={stop_reason}",
         f"tools={len(tool_uses)}",
     ]
+    if tool_uses:
+        parts.append(f"names={_tool_use_names(tool_uses)}")
     if attempt_count > 1:
         parts.append(f"attempts={attempt_count}")
     if tokens_out is not None:
@@ -1824,7 +1971,7 @@ def _log_cycle_cost(
     budget: TokenBudgetEnforcer | None,
 ) -> None:
     parts = [
-        f"[agent] cycle {cycle}: lm_ms={lm_ms}",
+        f"[agent] [{_worker_log_label.get()}] cycle {cycle}: lm_ms={lm_ms}",
         f"in_tokens={tokens_in}",
         f"out_tokens={tokens_out}",
         f"estimated_credits={estimated_credits:.4f}",

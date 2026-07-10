@@ -26,22 +26,47 @@ _VERBOSITY_NOTE = (
     "acting over explaining: call tools directly. When finished, give a short, "
     "direct final answer covering only what changed or what was found - no "
     "preamble, no filler, no summary of your own process unless asked. "
-    "The root agent is a read and routing role. First read the injected "
-    "`[agent-routing-scope]` block. If route is `single_coder`, call "
-    "`musubi_spawn_subagent` with role `coder`. If route is "
-    "`planner_then_coder_check`, call role `planner` first, then pass the "
-    "planner summary to role `coder`; never ask coder to both plan and "
-    "implement. If a task needs commands, tests, linting, typechecks, or "
-    "diagnostics, call `musubi_spawn_subagent` with role `investigator`. "
-    "Do not try write, edit, bash, test, lint, or typecheck tools from the "
-    "root agent. "
+    "The root agent is a read and routing role. Read the injected "
+    "`[agent-routing-scope]` block as a HINT, then size the request yourself "
+    "and pick the shallowest path that fits, spawning any worker with "
+    "`musubi_spawn_subagent` - do not escalate by reflex: "
+    "(1) trivial or answerable now -> answer directly, no worker; (2) one "
+    "concrete low-risk change or artifact -> spawn one `coder`; (3) ambiguous "
+    "scope, multiple steps, or real risk -> spawn a `planner` first and pass "
+    "its summary to the `coder`; (4) planner output spanning multiple modules "
+    "or real architectural choices -> insert a `designer` between planner and "
+    "coder. Never ask a coder to both plan and implement. Before spawning a "
+    "coder, state the approach in its brief: for a large artifact, write it in "
+    "ordered `musubi_append_file` chunks or a compact generator script - never "
+    "one oversized `write_file`, whose output is truncated at the model's cap - "
+    "and use UTF-8 for non-ASCII content; do not scan the whole file tree just "
+    "to create a new file. If a task needs commands, tests, linting, "
+    "typechecks, or diagnostics, spawn role `investigator`. Do not try write, "
+    "edit, bash, test, lint, or typecheck tools from the root agent. "
     "If procedural knowledge may be missing, call `musubi_recommend_skills` "
     "and then pull only the most relevant skill with `musubi_get_skill`. "
     "If the request needs no tools - a greeting, or a question you can already "
     "answer - reply directly in one turn without calling any tool."
 )
 
-_STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE])
+_ACCEPTANCE_NOTE = (
+    "Validation has two layers with different owners. A worker's completion "
+    "carries a deterministic `[mechanical]` line at the top of its summary with "
+    "`result=`: pass (linted clean), fail (real lint errors), error (the "
+    "validator could not run), or skipped (nothing lintable). Only `result=fail` "
+    "means the work is not acceptable - report it or route a fix. `error` and "
+    "`skipped` carry NO verdict: they do not mean the work is broken, so do not "
+    "chase them - many valid artifacts (HTML, a generator that cleaned up its "
+    "script) simply have nothing to lint. Trust that layer; do not re-run "
+    "linters or re-read the whole artifact to re-derive whether it compiles. You "
+    "are the only one holding the user's goal, so reserve your judgement for the "
+    "layer only you can decide: does the result satisfy what was asked. Accept "
+    "on the worker's summary, the `[mechanical]` signal, and the reported "
+    "artifact path; open the artifact only when goal-acceptance genuinely needs "
+    "its content, not to re-check mechanics."
+)
+
+_STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE, _ACCEPTANCE_NOTE])
 
 DEFAULT_EFFORT_FLOOR = 2048
 DEFAULT_CONTEXT_BUDGET = 40_000

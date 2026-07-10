@@ -98,6 +98,19 @@ function runSummary(status, logText, run) {
   return 'No worker activity for this run yet.'
 }
 
+// Seed-cost line for a run's driver turn: how much prior conversation was
+// replayed. Empty for a stateless/fresh-session turn (replayTokens 0).
+function replayLineForRun(run) {
+  const turn = run?.turn
+  const tokens = Number(turn?.replayTokens || 0)
+  if (!turn || tokens <= 0) return ''
+  const msgs = Number(turn.replayMessages || 0)
+  const k = tokens >= 1000
+    ? (tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1) + 'k'
+    : String(tokens)
+  return `replayed ${msgs} msg${msgs === 1 ? '' : 's'} · ${k} seed tok`
+}
+
 function statusCountLine(steps) {
   if (!steps.length) return 'driver-only turn'
   const counts = steps.reduce((acc, step) => {
@@ -458,6 +471,7 @@ export function buildViewModel(s, act) {
     focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
     alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
+    replayLine: replayLineForRun(activeRunRaw),
   }
   const pipeRunSummary = {
     title: 'Studio run',
@@ -465,6 +479,7 @@ export function buildViewModel(s, act) {
     focusLine: focusLineForRun(activePipeSessionAgents, currentPipeSessionAgent),
     alertLine: runSummary(activePipeRunStatus, processTextForPipeRuns, activePipeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
+    replayLine: replayLineForRun(activePipeRunRaw),
   }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
@@ -610,6 +625,7 @@ export function buildViewModel(s, act) {
     onOpenLog: act.openProcessLog,
     onCloseLog: act.closeProcessLog,
     onClearDriverChat: act.clearPipeDriverChat,
+    onNewSession: act.newPipeSession,
     clearDriverDisabled: !!driverStatus.running,
     onSend: pipelineOwnsDriver ? act.cancelAgent : act.sendPipeChat,
     sendTitle: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active` : (pipelineOwnsDriver ? 'Cancel running pipeline agent' : 'Send'),
@@ -653,6 +669,7 @@ export function buildViewModel(s, act) {
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorOwnsDriver ? driverProcessLog : '', onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorOwnsDriver && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onClearDriverChat: act.clearDriverChat,
+    onNewSession: act.newSession,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
     onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,

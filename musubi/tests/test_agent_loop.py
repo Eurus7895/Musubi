@@ -676,6 +676,83 @@ def test_dispatch_does_not_log_skill_used_for_skill_errors() -> None:
     assert "skill used=" not in log.getvalue()
 
 
+def test_dispatch_one_records_touched_file_into_active_sink(tmp_path: Path) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession('{"status": "ok", "bytes_written": 3}')
+    sink: set[str] = set()
+    token = run_mod._worker_touched_files.set(sink)
+    try:
+        result = asyncio.run(
+            run_mod._dispatch_one(
+                {
+                    "id": "c-ok",
+                    "name": "musubi_write_file",
+                    "input": {"path": "app.py", "content": "x = 1"},
+                },
+                session,
+                io.StringIO(),
+                vendor=None,
+                tools=[],
+                orchestration=None,
+                gateway=None,
+                role="coder",
+                audit_db_path=tmp_path / "audit.db",
+            )
+        )
+    finally:
+        run_mod._worker_touched_files.reset(token)
+
+    assert '"ok"' in result
+    assert sink == {"app.py"}
+
+
+def test_system_prompt_states_two_layer_acceptance() -> None:
+    from agent.context import build_system_prompt
+
+    prompt = build_system_prompt()
+    # C2 — the root is told it owns goal-acceptance and trusts the mechanical
+    # verdict rather than re-deriving it.
+    assert "[mechanical]" in prompt
+    assert "goal" in prompt.lower()
+    assert "do not re-run linters" in prompt
+
+
+def test_system_prompt_has_root_sizing_ladder_and_write_strategy() -> None:
+    from agent.context import build_system_prompt
+
+    prompt = build_system_prompt().lower()
+    # R1 — the root sizes the request itself (scope is a hint) and bakes the
+    # large-artifact write strategy into the coder brief.
+    assert "hint" in prompt
+    assert "shallowest path" in prompt
+    assert "planner" in prompt and "designer" in prompt
+    assert "append_file" in prompt
+    assert "utf-8" in prompt
+
+
+def test_replay_elides_large_tool_rows() -> None:
+    from agent import run as run_mod
+
+    small = run_mod._elide_replayed_tool_row("short output")
+    assert small == "short output"
+
+    big = "A" * (run_mod.REPLAY_TOOL_ROW_MAX_CHARS + 500)
+    elided = run_mod._elide_replayed_tool_row(big)
+    assert len(elided) < len(big)
+    assert "chars elided on replay" in elided
+
+    history = {"messages": [
+        {"id": 1, "role": "user", "content": "make a dashboard", "ts": "t"},
+        {"id": 2, "role": "tool", "content": big, "ts": "t"},
+    ]}
+    messages = run_mod._messages_from_chat_history("sys", history)
+    tool_msg = messages[-1]["content"]
+    assert tool_msg.startswith("[prior tool result]")
+    assert "chars elided on replay" in tool_msg
+    assert len(tool_msg) < len(big)
+
+
 def test_log_cycle_includes_human_readable_model_action() -> None:
     from agent import run as run_mod
 
@@ -691,9 +768,78 @@ def test_log_cycle_includes_human_readable_model_action() -> None:
     )
 
     line = log.getvalue()
-    assert "model_action=tool_calls" in line
+    assert "model_action=tool_calls:read" in line
     assert "stop=tool_use" in line
     assert "tools=1" in line
+    assert "names=[get_skill]" in line
+
+
+def test_log_cycle_names_aggregate_repeated_tools() -> None:
+    from agent import run as run_mod
+
+    log = io.StringIO()
+    run_mod._log_cycle(
+        log,
+        1,
+        "tool_use",
+        [
+            {"type": "tool_use", "name": "musubi_grep"},
+            {"type": "tool_use", "name": "musubi_grep"},
+            {"type": "tool_use", "name": "musubi_read_file"},
+        ],
+        None,
+    )
+    line = log.getvalue()
+    # A pure read/grep cycle is a verification loop; it should read as one.
+    assert "model_action=tool_calls:read" in line
+    assert "tools=3" in line
+    assert "names=[grep×2, read_file]" in line
+
+
+def test_model_action_flags_mutation_and_spawn() -> None:
+    from agent import run as run_mod
+
+    mutate = run_mod._model_action(
+        "tool_use",
+        [{"type": "tool_use", "name": "musubi_write_file"},
+         {"type": "tool_use", "name": "musubi_grep"}],
+    )
+    assert mutate == "tool_calls:mutate"
+
+    spawn = run_mod._model_action(
+        "tool_use", [{"type": "tool_use", "name": "musubi_spawn_subagent"}],
+    )
+    assert spawn == "tool_calls:spawn"
+
+
+def test_log_cycle_is_tagged_with_the_active_worker_label() -> None:
+    # O3 — a worker's cycle lines carry its label so multiple "cycle 0" lines
+    # from different workers are distinguishable; the root uses the default.
+    from agent import run as run_mod
+
+    root_log = io.StringIO()
+    run_mod._log_cycle(root_log, 0, "end_turn", [], None)
+    assert "[root] cycle 0" in root_log.getvalue()
+
+    worker_log = io.StringIO()
+    token = run_mod._worker_log_label.set("coder#483b27c2")
+    try:
+        run_mod._log_cycle(worker_log, 0, "end_turn", [], None)
+    finally:
+        run_mod._worker_log_label.reset(token)
+    assert "[coder#483b27c2] cycle 0" in worker_log.getvalue()
+
+
+def test_dropped_tool_target_names_the_discarded_write() -> None:
+    # O2 — a truncated write is logged with its target so the drop is traceable.
+    from agent import run as run_mod
+
+    named = run_mod._dropped_tool_target(
+        {"name": "musubi_write_file", "input": {"path": "dash.html"}}
+    )
+    assert named == "write_file(dash.html)"
+    bare = run_mod._dropped_tool_target({"name": "musubi_spawn_subagent", "input": {}})
+    assert bare == "spawn_subagent"
 
 
 def test_run_loop_elides_large_file_tool_args_before_next_model_call(
@@ -1086,99 +1232,55 @@ def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
     assert "max_workers=1" in system_text
 
 
-def test_simple_task_refuses_extra_coder_spawns_in_same_turn() -> None:
-    router = FakeRouter([
-        LMResponse(
-            stop_reason="tool_use",
-            content=[
-                {
-                    "type": "tool_use",
-                    "id": "spawn-1",
-                    "name": "musubi_spawn_subagent",
-                    "input": {"role": "coder", "brief": "edit the known file"},
-                },
-                {
-                    "type": "tool_use",
-                    "id": "spawn-2",
-                    "name": "musubi_spawn_subagent",
-                    "input": {"role": "coder", "brief": "try the same edit again"},
-                },
-            ],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "status: done"}],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "done"}],
-        ),
-    ])
+def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:
+    # D2a — classify_task is advisory. A "simple" scope no longer tightens the
+    # coder cap to one; the only enforcement is the flat per-role width cap (3),
+    # so the 4th coder in a batch is the first refused.
+    from agent import run as run_mod
+    from agent.scope import classify_task
 
-    answer = asyncio.run(run_agent(
-        "Update weather-dashboard.html to refresh every 5 minutes",
-        router,
-        _musubi_dir(),
-        log=io.StringIO(),
-        max_tokens=0,
-    ))
+    simple = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
+    tool_uses = [
+        {"id": f"s{i}", "name": "musubi_spawn_subagent", "input": {"role": "coder"}}
+        for i in range(4)
+    ]
 
-    assert answer == "done"
-    assert len(router.calls) == 3, "one parent call, one child call, one parent follow-up"
-    parent_followup = router.calls[2]["messages"]
-    fed_back = "".join(
-        block["content"]
-        for message in parent_followup
-        if isinstance(message.get("content"), list)
-        for block in message["content"]
-        if block.get("type") == "tool_result"
+    overflow = run_mod._spawn_overflow_reasons(
+        tool_uses, io.StringIO(), role="agent", scope_hint=simple, cycle_index=0,
     )
-    assert '"status": "refused"' in fed_back
-    assert "simple task route allows only one coder worker" in fed_back
+
+    assert list(overflow) == ["s3"]
+    assert "per-turn spawn cap (3)" in overflow["s3"]
 
 
-def test_medium_change_refuses_coder_as_first_worker() -> None:
-    router = FakeRouter([
-        LMResponse(
-            stop_reason="tool_use",
-            content=[
-                {
-                    "type": "tool_use",
-                    "id": "spawn-1",
-                    "name": "musubi_spawn_subagent",
-                    "input": {
-                        "role": "coder",
-                        "brief": "plan and implement the dashboard change",
-                    },
-                },
-            ],
-        ),
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "changed route"}],
-        ),
-    ])
+def test_spawn_overflow_no_longer_forces_planner_before_coder() -> None:
+    # D1 — a coder as the first worker of a medium-scope turn is no longer
+    # refused; plan-first is opt-in via --plan, not a keyword guess.
+    from agent import run as run_mod
+    from agent.scope import classify_task
 
-    answer = asyncio.run(run_agent(
-        "Improve the dashboard weather display",
-        router,
-        _musubi_dir(),
-        log=io.StringIO(),
-        max_tokens=0,
-    ))
+    medium = classify_task("Improve the dashboard weather display")
+    tool_uses = [
+        {"id": "c1", "name": "musubi_spawn_subagent",
+         "input": {"role": "coder", "brief": "implement"}},
+    ]
 
-    assert answer == "changed route"
-    assert len(router.calls) == 2, "coder should be refused before a child call starts"
-    parent_followup = router.calls[1]["messages"]
-    fed_back = "".join(
-        block["content"]
-        for message in parent_followup
-        if isinstance(message.get("content"), list)
-        for block in message["content"]
-        if block.get("type") == "tool_result"
+    overflow = run_mod._spawn_overflow_reasons(
+        tool_uses, io.StringIO(), role="agent", scope_hint=medium, cycle_index=0,
     )
-    assert '"status": "refused"' in fed_back
-    assert "medium task route requires planner before coder" in fed_back
+
+    assert overflow == {}
+
+
+def test_plan_first_directive_injected_into_system_prompt() -> None:
+    # D2b — --plan appends an explicit plan-first directive to the root prompt.
+    from agent import run as run_mod
+    from agent.context import build_system_prompt
+
+    assert "planner" in run_mod._PLAN_FIRST_DIRECTIVE.lower()
+    combined = f"{build_system_prompt('scope')}\n\n{run_mod._PLAN_FIRST_DIRECTIVE}"
+    assert "--plan" in combined
+    assert "plan-first" in combined.lower()
 
 
 def test_delete_request_returns_manual_answer_without_llm_calls() -> None:

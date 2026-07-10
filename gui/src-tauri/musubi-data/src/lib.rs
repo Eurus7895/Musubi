@@ -157,6 +157,10 @@ pub struct AgentTurn {
     pub cycles: i64,
     pub tokens_in_estimate: i64,
     pub tokens_out_estimate: i64,
+    // How much prior conversation this turn replayed as its seed. 0 for a
+    // stateless turn; large replay is the dominant cost of long GUI sessions.
+    pub replay_messages: i64,
+    pub replay_tokens: i64,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -505,11 +509,20 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
 
     // ── pipeline studio default (authoring surface; not from the audit) ──
     if table_exists(conn, "agent_turns")? {
-        let mut tstmt = conn.prepare(
+        // Replay columns are recent; older audit DBs lack them. Select constant
+        // zeros in that case so the reader tolerates a pre-migration DB.
+        let has_replay = column_exists(conn, "agent_turns", "replay_tokens")?;
+        let sql = if has_replay {
             "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
-                    tokens_in_estimate, tokens_out_estimate \
-             FROM agent_turns ORDER BY id ASC LIMIT 120",
-        )?;
+                    tokens_in_estimate, tokens_out_estimate, replay_messages, replay_tokens \
+             FROM agent_turns ORDER BY id ASC LIMIT 120"
+        } else {
+            "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
+                    tokens_in_estimate, tokens_out_estimate, 0 AS replay_messages, \
+                    0 AS replay_tokens \
+             FROM agent_turns ORDER BY id ASC LIMIT 120"
+        };
+        let mut tstmt = conn.prepare(sql)?;
         st.agent_turns = tstmt
             .query_map([], |r| {
                 Ok(AgentTurn {
@@ -521,6 +534,8 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                     cycles: r.get(5)?,
                     tokens_in_estimate: r.get(6)?,
                     tokens_out_estimate: r.get(7)?,
+                    replay_messages: r.get(8)?,
+                    replay_tokens: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -844,6 +859,8 @@ CREATE TABLE IF NOT EXISTS agent_turns (
   tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
   lm_ms                INTEGER NOT NULL DEFAULT 0,
   total_ms             INTEGER NOT NULL DEFAULT 0,
+  replay_messages      INTEGER NOT NULL DEFAULT 0,
+  replay_tokens        INTEGER NOT NULL DEFAULT 0,
   schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE TABLE IF NOT EXISTS meta (
@@ -1237,6 +1254,29 @@ mod tests {
         assert_eq!(st.agent_turns.len(), 1);
         assert_eq!(st.agent_turns[0].parent_session, "direct-session");
         assert_eq!(st.agent_turns[0].cycles, 1);
+        // A row inserted without the replay columns reads back as 0.
+        assert_eq!(st.agent_turns[0].replay_messages, 0);
+        assert_eq!(st.agent_turns[0].replay_tokens, 0);
+    }
+
+    #[test]
+    fn agent_turns_surface_replay_seed_cost() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_turns\
+             (id,chat_id,parent_session_id,started_at,model_family,cycles,\
+              tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms,\
+              replay_messages,replay_tokens)\
+             VALUES(7,'gui-orchestrator-abc-1','s',1.0,'deepseek',3,900,80,10,20,49,48120)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_turns[0].replay_messages, 49);
+        assert_eq!(st.agent_turns[0].replay_tokens, 48120);
     }
 
     #[test]

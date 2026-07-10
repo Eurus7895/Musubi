@@ -116,7 +116,10 @@ def test_token_budget_halt_marks_salvaged_text_incomplete() -> None:
             AlwaysToolsRouter(),
             _musubi_dir(),
             max_cycles=3,
-            max_tokens=5_000,
+            # Enough headroom for one cycle to run (so there is salvageable
+            # text) before the next preflight halts. Sized above one call's
+            # input estimate rather than to a fixed prompt length.
+            max_tokens=7_000,
             log=io.StringIO(),
         )
     )

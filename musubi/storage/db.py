@@ -248,6 +248,13 @@ _STAGE_METRICS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_family",  "TEXT"),
 )
 
+# Replay accounting — how much prior conversation the turn replayed as its
+# seed. Surfaces the seed cost that dominates stateful (GUI) turns.
+_AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("replay_messages", "INTEGER NOT NULL DEFAULT 0"),
+    ("replay_tokens",   "INTEGER NOT NULL DEFAULT 0"),
+)
+
 
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -275,6 +282,7 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "sessions", _PAUSE_RESUME_COLUMNS)
         _migrate_columns(conn, "stage_outputs", _STAGE_OUTPUT_COLUMNS)
         _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
+        _migrate_columns(conn, "agent_turns", _AGENT_TURNS_COLUMNS)
 
 
 @contextmanager
@@ -1233,25 +1241,29 @@ def insert_agent_turn(
     tokens_out_estimate: int,
     lm_ms: int,
     total_ms: int,
+    replay_messages: int = 0,
+    replay_tokens: int = 0,
     db_path: Path | None = None,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
     Caller (TS runner via the musubi_record_agent_turn MCP
     tool) passes the pre-measured wall-clock + token estimates
-    collected over all sendRequest cycles of the turn."""
+    collected over all sendRequest cycles of the turn.
+    `replay_messages` / `replay_tokens` record how much prior
+    conversation the turn replayed as its seed (0 for a stateless turn)."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO agent_turns"
             " (chat_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate,"
-            "  lm_ms, total_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  lm_ms, total_ms, replay_messages, replay_tokens)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
                 tokens_in_estimate, tokens_out_estimate,
-                lm_ms, total_ms,
+                lm_ms, total_ms, replay_messages, replay_tokens,
             ),
         )
 

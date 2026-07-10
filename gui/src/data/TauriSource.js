@@ -126,6 +126,33 @@ export default class TauriSource {
         })
         this._action('clear_driver_chat', ['pipeline'])
       },
+      // New session: re-mint the surface's chat_id so the agent replays no
+      // prior history (unlike clear, which only wipes the visible chat). Old
+      // turns stay under the previous id.
+      newSession: () => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({
+          chat: [],
+          selected: null,
+          draft: '',
+          processOpen: false,
+          logWindowOpen: false,
+          driverStatus: emptyDriverStatus(),
+        })
+        this._action('new_session', ['orchestrator'])
+      },
+      newPipeSession: () => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({
+          pipeChat: [],
+          pipeDraft: '',
+          selectedPipeSession: null,
+          processOpen: false,
+          logWindowOpen: false,
+          driverStatus: emptyDriverStatus(),
+        })
+        this._action('new_session', ['pipeline'])
+      },
       onDraft: (e) => this._setLocal({ draft: e.target.value }),
       onDraftKey: (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {

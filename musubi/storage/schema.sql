@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
     lm_ms                INTEGER NOT NULL DEFAULT 0,
     total_ms             INTEGER NOT NULL DEFAULT 0,
+    replay_messages      INTEGER NOT NULL DEFAULT 0,
+    replay_tokens        INTEGER NOT NULL DEFAULT 0,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_chat

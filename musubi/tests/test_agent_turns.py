@@ -37,6 +37,7 @@ def test_init_db_creates_agent_turns_table(fresh_db: Path) -> None:
         "model_family", "cycles",
         "tokens_in_estimate", "tokens_out_estimate",
         "lm_ms", "total_ms", "schema_version",
+        "replay_messages", "replay_tokens",
     }
     assert expected.issubset(cols)
 
@@ -78,6 +79,68 @@ def test_insert_agent_turn_persists_row(fresh_db: Path) -> None:
     assert r["tokens_out_estimate"] == 300
     assert r["lm_ms"] == 4500
     assert r["total_ms"] == 10500
+
+
+def test_insert_agent_turn_persists_replay_seed(fresh_db: Path) -> None:
+    db.insert_agent_turn(
+        chat_id="chat-r",
+        parent_session_id="psess-r",
+        started_at=1000.0,
+        ended_at=1010.0,
+        model_family="deepseek-v4-flash",
+        cycles=3,
+        tokens_in_estimate=76743,
+        tokens_out_estimate=900,
+        lm_ms=4000,
+        total_ms=9000,
+        replay_messages=49,
+        replay_tokens=48120,
+    )
+    r = db.query_agent_turns("chat-r")[0]
+    assert r["replay_messages"] == 49
+    assert r["replay_tokens"] == 48120
+
+
+def test_insert_agent_turn_defaults_replay_to_zero(fresh_db: Path) -> None:
+    # A stateless (CLI) turn passes no replay values.
+    db.insert_agent_turn(
+        chat_id="chat-cli",
+        parent_session_id="psess-cli",
+        started_at=1.0,
+        ended_at=2.0,
+        model_family="deepseek-v4-flash",
+        cycles=1,
+        tokens_in_estimate=28333,
+        tokens_out_estimate=200,
+        lm_ms=1000,
+        total_ms=1200,
+    )
+    r = db.query_agent_turns("chat-cli")[0]
+    assert r["replay_messages"] == 0
+    assert r["replay_tokens"] == 0
+
+
+def test_init_db_migrates_replay_columns_on_old_db(tmp_path: Path) -> None:
+    # A pre-existing agent_turns without the replay columns gets them added
+    # in place, without dropping rows.
+    p = tmp_path / "old.db"
+    with sqlite3.connect(p) as conn:
+        conn.execute(
+            "CREATE TABLE agent_turns ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " chat_id TEXT NOT NULL, parent_session_id TEXT NOT NULL,"
+            " started_at REAL NOT NULL, model_family TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO agent_turns(chat_id,parent_session_id,started_at,model_family)"
+            " VALUES('c','s',1.0,'m')"
+        )
+    db.init_db(p)
+    with sqlite3.connect(p) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
+        count = conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0]
+    assert {"replay_messages", "replay_tokens"}.issubset(cols)
+    assert count == 1
 
 
 def test_query_agent_turns_returns_newest_first(fresh_db: Path) -> None:

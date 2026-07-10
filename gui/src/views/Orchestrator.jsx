@@ -98,6 +98,7 @@ function DriverCard({ vals }) {
       <div style={{ textAlign: 'center', marginTop: 7, fontSize: 12.5, color: '#f4f4f5', lineHeight: 1.4 }}>{summary.focusLine}</div>
       {summary.alertLine && <div style={{ margin: '11px auto 0', width: 'fit-content', maxWidth: '100%', fontSize: 11.5, color: '#ffcc77', lineHeight: 1.35, background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '6px 9px' }}>{summary.alertLine}</div>}
       <div style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#7a7a82', marginTop: 10 }}>{summary.metaLine}</div>
+      {summary.replayLine && <div title="Prior conversation replayed as this turn's seed. Start a new session to reset." style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#8ab4d8', marginTop: 4 }}>{summary.replayLine}</div>}
     </div>
   )
 }
@@ -214,6 +215,25 @@ function FeedPanel({ vals }) {
           <span style={{ fontSize: 10, color: '#6a6a72' }}>final result and process summaries</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            type="button"
+            onClick={vals.onNewSession}
+            disabled={vals.clearDriverDisabled}
+            title={vals.clearDriverDisabled ? 'Wait for the running agent before starting a new session' : 'New session — start fresh, drop replayed history'}
+            style={{
+              fontFamily: "'IBM Plex Mono',monospace",
+              fontSize: 11,
+              height: 28,
+              padding: '0 10px',
+              borderRadius: 7,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: vals.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#19212f',
+              color: vals.clearDriverDisabled ? '#4f5665' : '#9b9ba2',
+              cursor: vals.clearDriverDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            new session
+          </button>
           <button
             type="button"
             onClick={vals.onClearDriverChat}
