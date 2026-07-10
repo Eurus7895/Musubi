@@ -716,6 +716,8 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                 for stage in &mut stages {
                     stage.chat_id = chat_id.clone();
                 }
+                let recorded_status = r.get::<_, Option<String>>(4)?;
+                let status = recorded_status.unwrap_or_else(|| derive_pipeline_status(&stages));
                 Ok(PipelineRun {
                     session_id,
                     chat_id,
@@ -723,9 +725,7 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
                     brief: envelope.map(|env| env.brief.clone()).unwrap_or_default(),
                     started_at: r.get(2)?,
                     ended_at: r.get(3)?,
-                    status: r
-                        .get::<_, Option<String>>(4)?
-                        .unwrap_or_else(|| "running".into()),
+                    status,
                     stages,
                 })
             })?
@@ -764,6 +764,19 @@ struct RawAudit {
 struct PipelineEnvelope {
     parent_session: String,
     brief: String,
+}
+
+fn derive_pipeline_status(stages: &[Agent]) -> String {
+    if stages.is_empty() || stages.iter().any(|stage| stage.status == "running") {
+        return "running".into();
+    }
+    if stages.iter().all(|stage| stage.status == "done") {
+        return "success".into();
+    }
+    if stages.iter().any(|stage| stage.status == "escalated") {
+        return "escalated".into();
+    }
+    "aborted".into()
 }
 
 /// Active LMRouter profile: an explicit console choice wins, else the
@@ -1554,7 +1567,7 @@ mod tests {
         conn.execute(
             "INSERT INTO pipeline_runs\
              (session_id,pipeline_name,started_at,ended_at,final_status)\
-             VALUES ('pipeline-session','feature-dev',101,109,'success')",
+             VALUES ('pipeline-session','feature-dev',101,109,NULL)",
             [],
         )
         .unwrap();
