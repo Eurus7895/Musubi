@@ -8,9 +8,8 @@
 import { classifyChatCommand } from './chatCommands.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
-// auditFilter, pipeChatOpen, and the whole pipe* composer) is local UI state.
-// The Pipeline studio is a client-side preset composer/inspector, so pipeSteps
-// and pipeName are NOT backend-owned — otherwise the snapshot poll would clobber
+// auditFilter and the whole pipe* composer) is local UI state. The Pipeline
+// studio keeps draft pipeSteps/pipeName client-side so snapshot polling cannot clobber
 // every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
@@ -29,7 +28,7 @@ export default class TauriSource {
     this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false,
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
       processOpen: false, logWindowOpen: false,
       subagents: [], agentTurns: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
@@ -105,8 +104,6 @@ export default class TauriSource {
       selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
-      openPipeChat: local({ pipeChatOpen: true }),
-      closePipeChat: local({ pipeChatOpen: false }),
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
       openProcessLog: () => this._setLocal({ logWindowOpen: true }),
       closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
@@ -190,7 +187,7 @@ export default class TauriSource {
         this._setLocal({ draft: '', selectedSession: null, selected: null })
         const command = classifyChatCommand(d)
         if (command.kind === 'openPipelinePicker') {
-          this._setLocal({ view: 'pipeline', pipeChatOpen: false })
+          this._setLocal({ view: 'pipeline' })
           this._action('pipeline_hint', [d])
           return
         }

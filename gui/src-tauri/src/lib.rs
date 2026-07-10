@@ -1105,11 +1105,9 @@ fn action(
                 }
             }
         }
-        // Pipelines are launched by asking the driver in chat (the root agent
-        // spawns them via musubi_spawn_pipeline), reusing the single agent slot
-        // and the Orchestrator session input — there is no separate run action.
-        // The Pipeline studio composer (add/remove/move/clear/preset) is pure
-        // client-side UI state and never reaches the backend.
+        // Pipeline Studio launches registered recipes through
+        // `send_pipeline_task`; edited client-only compositions remain drafts
+        // and never reach this backend.
         other => eprintln!("[musubi] unknown action: {other}"),
     }
     Ok(())

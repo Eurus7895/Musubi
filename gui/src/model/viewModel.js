@@ -534,9 +534,8 @@ export function buildViewModel(s, act) {
   }))
 
   // ── pipeline studio view-model ──
-  // The studio is a preset composer / inspector; pipelines are launched by
-  // asking the driver in chat (root agent → musubi_spawn_pipeline), reusing the
-  // Orchestrator session input, so there is no in-studio Run control.
+  // Registered recipes run deterministically from Studio. Editing the visual
+  // composition makes it a draft until saved as a workspace pipeline.
   const stColor = { idle: '#6a6a72', queued: '#e3b341', running: '#ff9b3d', done: '#54c79a' }
   const editable = true
   const pipeStepsVM = s.pipeSteps.map((st, i) => {
@@ -658,7 +657,6 @@ export function buildViewModel(s, act) {
     logWindowOpen: pipelineOwnsDriver && !!s.logWindowOpen,
     onOpenLog: act.openProcessLog,
     onCloseLog: act.closeProcessLog,
-    onClearDriverChat: act.clearPipeDriverChat,
     onNewSession: act.newPipeSession,
     clearDriverDisabled: !!driverStatus.running,
     onSend: pipelineOwnsDriver ? act.cancelAgent : act.sendPipelineTask,
@@ -678,8 +676,7 @@ export function buildViewModel(s, act) {
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStatusText: pipeStatusTextForDisplay, onClearPipe: () => act.clearPipe(),
-    pipeChatOpen: s.pipeChatOpen, openPipeChat: () => act.openPipeChat(), closePipeChat: () => act.closePipeChat(),
-    pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid ' + (s.pipeChatOpen ? '#ff9b3d' : 'rgba(255,155,61,0.4)') + ';border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:border-color .15s;' + (s.pipeChatOpen ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 22px rgba(255,155,61,0.14);' : ''),
+    pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:12px;padding:14px;text-align:center;',
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
     totalDone: orchSubagents.filter((a) => a.status === 'done').length,
@@ -703,7 +700,6 @@ export function buildViewModel(s, act) {
     driverBusy: orchestratorOwnsDriver, driverTask: orchestratorOwnsDriver ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : driverStatusText,
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorOwnsDriver ? driverProcessLog : '', onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorOwnsDriver && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
-    onClearDriverChat: act.clearDriverChat,
     onNewSession: act.newSession,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
