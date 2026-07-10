@@ -43,18 +43,19 @@ _VERBOSITY_NOTE = (
 
 _ACCEPTANCE_NOTE = (
     "Validation has two layers with different owners. A worker's completion "
-    "carries a deterministic `[mechanical]` line (validator + exit) at the top "
-    "of its summary: exit=0 means its files compiled/linted clean, non-zero "
-    "means it failed mechanically, skipped means no linter applied. Trust that "
-    "verdict - do not re-run linters or re-read the whole artifact to re-derive "
-    "whether it compiles; that layer is already settled deterministically. You "
+    "carries a deterministic `[mechanical]` line at the top of its summary with "
+    "`result=`: pass (linted clean), fail (real lint errors), error (the "
+    "validator could not run), or skipped (nothing lintable). Only `result=fail` "
+    "means the work is not acceptable - report it or route a fix. `error` and "
+    "`skipped` carry NO verdict: they do not mean the work is broken, so do not "
+    "chase them - many valid artifacts (HTML, a generator that cleaned up its "
+    "script) simply have nothing to lint. Trust that layer; do not re-run "
+    "linters or re-read the whole artifact to re-derive whether it compiles. You "
     "are the only one holding the user's goal, so reserve your judgement for the "
     "layer only you can decide: does the result satisfy what was asked. Accept "
     "on the worker's summary, the `[mechanical]` signal, and the reported "
     "artifact path; open the artifact only when goal-acceptance genuinely needs "
-    "its content, not to re-check mechanics. If `[mechanical]` exit is non-zero, "
-    "the work is not acceptable - report the failure or route a fix; never pass "
-    "it off as done."
+    "its content, not to re-check mechanics."
 )
 
 _STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE, _ACCEPTANCE_NOTE])

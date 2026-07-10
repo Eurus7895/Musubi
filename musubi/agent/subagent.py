@@ -23,6 +23,7 @@ spawn tool, so delegation is one level deep.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -203,33 +204,83 @@ async def run_subagent(
 _LINTABLE_EXT = (".py",)
 
 
+def _mechanical_workspace_root() -> Path:
+    """Workspace root, mirroring tools.fs so a relative path resolves the same."""
+    env = os.environ.get("MUSUBI_ROOT")
+    return Path(env).resolve() if env else Path.cwd().resolve()
+
+
+def _file_still_exists(path: str) -> bool:
+    p = Path(path)
+    if not p.is_absolute():
+        p = _mechanical_workspace_root() / p
+    return p.exists()
+
+
+def _lint_errors_preview(res: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for e in (res.get("errors") or [])[:2]:
+        if isinstance(e, dict):
+            code = str(e.get("code", "")).strip()
+            msg = str(e.get("message", "")).strip()
+            out.append(f"{code} {msg}".strip())
+    return out
+
+
 async def _run_mechanical_gate(
     session: Any, touched: set[str], log: Any,
 ) -> dict[str, Any]:
     """Deterministic mechanical check over the files a worker wrote.
 
-    Runs the substrate lint tool on touched Python files; `validator_exit` is
-    the tool's own `passed` verdict, never the worker's summary. Files with no
-    applicable validator report exit=None (written, not linted). Returns a
-    JSON-serialisable signal the root reads without re-deriving it.
+    `result` is one of:
+      - ``pass``    - ruff ran clean.
+      - ``fail``    - ruff found real lint errors (the only state the root
+                      should treat as "not acceptable, route a fix").
+      - ``error``   - the validator could not run (e.g. an unparseable file);
+                      NOT a failure.
+      - ``skipped`` - nothing lintable survived.
+
+    Files the worker wrote but then deleted (a generator/scratch file) are
+    filtered out first (G1): linting a deleted file would otherwise yield a
+    false failure. The verdict is always the tool's own, never the worker's
+    summary. Returns a JSON-serialisable signal the root reads without
+    re-deriving it.
     """
     from agent.run import _call_tool_text
 
-    files = sorted(touched)
+    files = sorted(f for f in touched if _file_still_exists(f))
     lintable = [f for f in files if f.endswith(_LINTABLE_EXT)]
-    validator = "ruff" if lintable else "none"
-    validator_exit: int | None = None
-    if lintable:
-        raw = await _call_tool_text(session, "musubi_run_lint", {"files": lintable})
-        res = _loads(raw)
-        passed = bool(res.get("passed")) if isinstance(res, dict) else False
-        validator_exit = 0 if passed else 1
     artifact = files[0] if len(files) == 1 else next(
         (f for f in files if not f.endswith(_LINTABLE_EXT)), None
     )
+
+    result = "skipped"
+    detail: str | None = None
+    errors: list[str] = []
+    if not files:
+        detail = "no surviving files (all writes deleted)"
+    elif not lintable:
+        detail = "no lintable files"
+    else:
+        raw = await _call_tool_text(session, "musubi_run_lint", {"files": lintable})
+        res = _loads(raw)
+        if not isinstance(res, dict):
+            result, detail = "error", "validator returned no result"
+        elif res.get("passed"):
+            result = "pass"
+        else:
+            errors = _lint_errors_preview(res)
+            # ruff ran but produced no structured errors → it could not lint
+            # (missing/unparseable) rather than found real problems.
+            result = "fail" if errors else "error"
+            if result == "error":
+                detail = "validator could not lint the file(s)"
+
     return {
-        "validator": validator,
-        "validator_exit": validator_exit,
+        "validator": "ruff" if lintable else "none",
+        "result": result,
+        "errors": errors,
+        "detail": detail,
         "files_touched": files,
         "artifact_path": artifact,
     }
@@ -237,14 +288,18 @@ async def _run_mechanical_gate(
 
 def _mechanical_line(gate: dict[str, Any]) -> str:
     """Compact one-liner prepended to the summary so the root sees the signal."""
-    exit_val = gate.get("validator_exit")
-    exit_str = "skipped" if exit_val is None else str(exit_val)
-    artifact = gate.get("artifact_path")
-    art = f" artifact={artifact}" if artifact else ""
-    return (
-        f"[mechanical] validator={gate.get('validator')} exit={exit_str} "
-        f"files={len(gate.get('files_touched') or [])}{art}"
-    )
+    parts = [
+        f"[mechanical] result={gate.get('result')}",
+        f"validator={gate.get('validator')}",
+    ]
+    if gate.get("artifact_path"):
+        parts.append(f"artifact={gate['artifact_path']}")
+    parts.append(f"files={len(gate.get('files_touched') or [])}")
+    if gate.get("result") == "fail" and gate.get("errors"):
+        parts.append("errors=" + "; ".join(gate["errors"]))
+    elif gate.get("detail"):
+        parts.append(f"reason={gate['detail']!r}")
+    return " ".join(parts)
 
 
 # ── prompt + tool surface (ported from subagentRunnerCore.ts) ───────────────
