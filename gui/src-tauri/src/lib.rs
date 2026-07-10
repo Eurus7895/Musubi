@@ -916,6 +916,13 @@ fn open_configured_db() -> OpenedDb {
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
+    st.orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
+    st.pipeline_chat_id = state
+        .pipeline_chat_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    st.pipeline_catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
     st.paused = state.paused.load(Ordering::Relaxed);
     st.runtime_source = state
         .audit_db

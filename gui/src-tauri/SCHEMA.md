@@ -129,7 +129,8 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 | Models active profile | `meta.active_profile` → `.musubi/llm.json` `default` |
 | Settings first-run status | runtime discovery of Python, `musubi`, `agent`, `.musubi/llm.json`, and audit DB |
 | Driver chat | `chat_log` |
-| Pipeline studio | authoring surface — default `feature-dev`, not from the DB |
+| Pipeline studio catalog | registered deterministic recipes under `.github/pipelines/` |
+| Pipeline studio runs | `pipeline_runs` joined through the `pipeline:<name>` envelope to `agent_turns.chat_id`; child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id` |
 
 ## State shape (Rust → JSON → `buildViewModel`)
 
@@ -138,3 +139,7 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 `allowCount`, `denyCount`, `activeProfile`, `pipeSteps[]`, … The frontend derives
 all presentation (colours, chips) from `role`/`status`, so the backend only
 supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
+
+The snapshot also exposes `orchestratorChatId` and `pipelineChatId`. Current
+surface run lists compare these complete IDs; the `gui-orchestrator-` and
+`gui-pipeline-` prefixes are classification fallbacks for legacy rows only.

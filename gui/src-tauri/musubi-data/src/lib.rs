@@ -36,6 +36,10 @@ use serde::Serialize;
 pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
+    pub pipeline_runs: Vec<PipelineRun>,
+    pub pipeline_catalog: Vec<PipelineCatalogEntry>,
+    pub orchestrator_chat_id: String,
+    pub pipeline_chat_id: String,
     pub events: Vec<serde_json::Value>,
     pub policy: Vec<Decision>,
     pub audit: Vec<AuditRow>,
@@ -272,6 +276,19 @@ pub struct AgentTurn {
     pub replay_tokens: i64,
 }
 
+#[derive(Serialize, Default, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRun {
+    pub session_id: String,
+    pub chat_id: String,
+    pub pipeline_name: String,
+    pub brief: String,
+    pub started_at: f64,
+    pub ended_at: Option<f64>,
+    pub status: String,
+    pub stages: Vec<Agent>,
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
@@ -399,6 +416,8 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
     )?;
     let mut order: Vec<String> = Vec::new();
     let mut agents: std::collections::HashMap<String, Agent> = std::collections::HashMap::new();
+    let mut pipeline_envelopes: std::collections::HashMap<String, PipelineEnvelope> =
+        std::collections::HashMap::new();
     let mut audit: Vec<AuditRow> = Vec::new();
 
     let rows = stmt.query_map([], |r| {
@@ -426,6 +445,15 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
         let row = row?;
         let is_pipeline_marker = row.role.starts_with("pipeline:");
         if row.event == "spawned" {
+            if is_pipeline_marker {
+                pipeline_envelopes.insert(
+                    row.handle.clone(),
+                    PipelineEnvelope {
+                        parent_session: row.parent_session.clone(),
+                        brief: row.brief.clone(),
+                    },
+                );
+            }
             if !is_pipeline_marker {
                 st.total_spawned += 1;
                 let tools = parse_tools(&row.allowed_tools);
@@ -665,6 +693,52 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
         }
     }
 
+    if table_exists(conn, "pipeline_runs")? {
+        let mut pstmt = conn.prepare(
+            "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
+             FROM pipeline_runs ORDER BY started_at ASC",
+        )?;
+        st.pipeline_runs = pstmt
+            .query_map([], |r| {
+                let session_id: String = r.get(0)?;
+                let envelope = pipeline_envelopes.get(&session_id);
+                let chat_id = envelope
+                    .and_then(|env| session_to_chat.get(&env.parent_session))
+                    .cloned()
+                    .unwrap_or_default();
+                let mut stages = st
+                    .subagents
+                    .iter()
+                    .filter(|agent| agent.parent_session == session_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for stage in &mut stages {
+                    stage.chat_id = chat_id.clone();
+                }
+                Ok(PipelineRun {
+                    session_id,
+                    chat_id,
+                    pipeline_name: r.get(1)?,
+                    brief: envelope.map(|env| env.brief.clone()).unwrap_or_default(),
+                    started_at: r.get(2)?,
+                    ended_at: r.get(3)?,
+                    status: r
+                        .get::<_, Option<String>>(4)?
+                        .unwrap_or_else(|| "running".into()),
+                    stages,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    let pipeline_sessions = st
+        .pipeline_runs
+        .iter()
+        .map(|run| run.session_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    st.subagents
+        .retain(|agent| !pipeline_sessions.contains(agent.parent_session.as_str()));
+
     Ok(st)
 }
 
@@ -684,6 +758,11 @@ struct RawAudit {
     final_status: Option<String>,
     turns: i64,
     tools_used: String,
+}
+
+struct PipelineEnvelope {
+    parent_session: String,
+    brief: String,
 }
 
 /// Active LMRouter profile: an explicit console choice wins, else the
@@ -971,6 +1050,19 @@ CREATE TABLE IF NOT EXISTS agent_turns (
   replay_messages      INTEGER NOT NULL DEFAULT 0,
   replay_tokens        INTEGER NOT NULL DEFAULT 0,
   schema_version       TEXT NOT NULL DEFAULT 'v1'
+);
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  session_id              TEXT PRIMARY KEY,
+  pipeline_name           TEXT NOT NULL,
+  started_at              REAL NOT NULL,
+  ended_at                REAL,
+  final_status            TEXT,
+  total_tokens_estimate   INTEGER NOT NULL DEFAULT 0,
+  correction_attempts     INTEGER NOT NULL DEFAULT 0,
+  escalated               INTEGER NOT NULL DEFAULT 0,
+  chunked                 INTEGER NOT NULL DEFAULT 0,
+  chunk_count             INTEGER NOT NULL DEFAULT 0,
+  schema_version          TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -1444,6 +1536,77 @@ mod tests {
 
         assert_eq!(st.subagents.len(), 1);
         assert_eq!(st.subagents[0].chat_id, "gui-pipeline-abc");
+    }
+
+    #[test]
+    fn pipeline_run_ancestry_resolves_exact_chat_and_child_stages() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_turns\
+             (chat_id,parent_session_id,started_at,ended_at,model_family,cycles,\
+              tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)\
+             VALUES ('gui-pipeline-current','outer-session',100,110,'test',1,1,1,1,10)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pipeline_runs\
+             (session_id,pipeline_name,started_at,ended_at,final_status)\
+             VALUES ('pipeline-session','feature-dev',101,109,'success')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+              allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES (101,'spawned','pipeline-session','outer-session','agent',\
+                     'pipeline:feature-dev','ship it','[]',2,0)",
+            [],
+        )
+        .unwrap();
+        for (id, role, ts) in [("stage-plan", "planner", 102), ("stage-code", "coder", 104)] {
+            conn.execute(
+                "INSERT INTO subagent_audit\
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+                  allowed_tools,max_turns,wall_clock_timeout_s)\
+                 VALUES (?1,'spawned',?2,'pipeline-session','pipeline:feature-dev',?3,\
+                         'stage brief','[]',8,60)",
+                rusqlite::params![ts, id, role],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO subagent_audit\
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+                  final_status,turns,tools_used)\
+                 VALUES (?1,'completed',?2,'pipeline-session','pipeline:feature-dev',?3,\
+                         'stage brief','done',2,'[]')",
+                rusqlite::params![ts + 1, id, role],
+            )
+            .unwrap();
+        }
+
+        let st = load_state_at(&conn, 120).unwrap();
+
+        assert_eq!(st.pipeline_runs.len(), 1);
+        let run = &st.pipeline_runs[0];
+        assert_eq!(run.session_id, "pipeline-session");
+        assert_eq!(run.chat_id, "gui-pipeline-current");
+        assert_eq!(run.pipeline_name, "feature-dev");
+        assert_eq!(run.brief, "ship it");
+        assert_eq!(run.status, "success");
+        assert_eq!(
+            run.stages
+                .iter()
+                .map(|stage| stage.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["planner", "coder"]
+        );
+        assert!(
+            st.subagents.is_empty(),
+            "pipeline descendants stay out of Orchestrator"
+        );
     }
 
     fn temp_dir(name: &str) -> PathBuf {
