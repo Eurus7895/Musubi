@@ -20,7 +20,7 @@ import pytest
 
 import server
 from session import state
-from storage import db
+from storage import db, subagent_audit
 from validation import observability
 
 
@@ -29,6 +29,7 @@ def fresh_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     p = tmp_path / "harness.db"
     db.init_db(p)
     monkeypatch.setattr(db, "DEFAULT_DB_PATH", p)
+    monkeypatch.setattr(subagent_audit, "_DEFAULT_AUDIT_DB", p)
     return p
 
 
@@ -484,6 +485,30 @@ def test_musubi_finalize_derives_tokens_and_corrections(fresh_db: Path) -> None:
     assert payload["status"] == "ok"
     assert payload["total_tokens_estimate"] == 150
     assert payload["correction_attempts"] == 1
+
+
+def test_musubi_finalize_appends_pipeline_envelope_completion_once(
+    fresh_db: Path,
+) -> None:
+    outer = state.create_session("outer", fresh_db)
+    spawned = json.loads(server.musubi_spawn_pipeline(
+        parent_session_id=outer,
+        parent_agent_name="agent",
+        pipeline_name="feature-dev",
+        brief="ship it",
+    ))
+    assert spawned["status"] == "spawned"
+    pipeline_session = spawned["pipeline_session_id"]
+
+    server.musubi_finalize_pipeline_run(pipeline_session, "success")
+    server.musubi_finalize_pipeline_run(pipeline_session, "success")
+
+    events = subagent_audit.query_events(
+        handle_id=pipeline_session,
+        db_path=fresh_db,
+    )
+    assert [event["event"] for event in events] == ["spawned", "completed"]
+    assert events[-1]["final_status"] == "done"
 
 
 def test_musubi_query_pipeline_runs_filters_by_pipeline_name(

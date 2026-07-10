@@ -80,6 +80,7 @@ async def run_pipeline(
     print(f"[agent]   ⇶ pipeline {pname} ({len(plan)} stages)", file=log)
 
     summaries: list[str] = []
+    pipeline_escalated = False
     for i, step in enumerate(plan):
         stage = str(step.get("stage", ""))
         role = str(step.get("role", ""))
@@ -92,6 +93,7 @@ async def run_pipeline(
         st = _loads(stage_raw)
         if st.get("status") != "spawned":
             msg = f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
+            await _finalize_pipeline(session, psid, "aborted", False)
             if strict:
                 raise RuntimeError(msg)
             return msg
@@ -118,19 +120,26 @@ async def run_pipeline(
                 audit_db_path=audit_db_path,
             )
         except Exception as exc:
-            if type(exc).__name__ in {
+            is_budget = type(exc).__name__ in {
                 "BudgetExhaustedError",
                 "TokenBudgetExhaustedError",
-            }:
+            }
+            if is_budget:
                 await _call_tool_text(session, "musubi_complete_subagent", {
                     "handle_id": handle_id,
                     "summary": f"[stage {stage}] budget exhausted: {exc}",
                     "turns": 0,
                     "status": "escalated",
                 })
+            await _finalize_pipeline(
+                session, psid,
+                "escalated" if is_budget else "aborted",
+                is_budget,
+            )
             raise
         status = "done" if answer is not None else "escalated"
         if answer is None:
+            pipeline_escalated = True
             answer = f"[stage {stage}] exceeded {DEFAULT_STAGE_MAX_CYCLES} cycles"
 
         await _call_tool_text(session, "musubi_complete_subagent", {
@@ -138,7 +147,27 @@ async def run_pipeline(
         })
         summaries.append(f"### {stage}\n{answer}")
 
+    await _finalize_pipeline(
+        session, psid,
+        "escalated" if pipeline_escalated else "success",
+        pipeline_escalated,
+    )
     return summaries[-1] if summaries else f"[pipeline {pname}] produced no output"
+
+
+async def _finalize_pipeline(
+    session: Any,
+    session_id: str,
+    final_status: str,
+    escalated: bool,
+) -> None:
+    from agent.run import _call_tool_text
+
+    await _call_tool_text(session, "musubi_finalize_pipeline_run", {
+        "session_id": session_id,
+        "final_status": final_status,
+        "escalated": escalated,
+    })
 
 
 def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> str:
