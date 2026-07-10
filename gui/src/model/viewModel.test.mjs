@@ -38,6 +38,11 @@ function baseState(overrides = {}) {
     setupStatus: {},
     driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
+    pipelineRuns: [],
+    pipelineCatalog: [],
+    orchestratorChatId: '',
+    pipelineChatId: '',
+    pipeModified: false,
     ...overrides,
   }
 }
@@ -90,6 +95,7 @@ function actions() {
     onDraftKey() {},
     sendChat() {},
     sendPipeChat() {},
+    sendPipelineTask() {},
     cancelAgent() {},
     openArtifact() {},
     onPipeDraft() {},
@@ -279,7 +285,7 @@ test('does not treat a pipeline preset as selected by default', () => {
   const vm = buildViewModel(baseState(), actions())
 
   assert.equal(vm.pipeName, 'choose preset')
-  assert.match(vm.pipeStatusText, /Choose a pipeline preset/)
+  assert.match(vm.pipeStatusText, /Choose a registered pipeline/)
   assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
 })
 
@@ -287,16 +293,50 @@ test('scopes orchestrator and pipeline runs by chat id surface', () => {
   const vm = buildViewModel(baseState({
     subagents: [
       agent(1, 'orch-session', 'done', 'planner', 'gui-orchestrator-abc'),
-      agent(2, 'pipe-session', 'done', 'coder', 'gui-pipeline-abc'),
     ],
     agentTurns: [
       { id: 1, chatId: 'gui-orchestrator-abc', parentSession: 'orch-direct', startedAt: 1000 },
-      { id: 2, chatId: 'gui-pipeline-abc', parentSession: 'pipe-direct', startedAt: 1001 },
+    ],
+    pipelineRuns: [
+      {
+        sessionId: 'pipe-session', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev',
+        brief: 'ship it', startedAt: 1001, status: 'success',
+        stages: [agent(2, 'pipe-session', 'done', 'coder')],
+      },
     ],
   }), actions())
 
   assert.deepEqual(vm.runs.map((run) => run.id), ['orch-direct', 'orch-session'])
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-direct', 'pipe-session'])
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-session'])
+})
+
+test('scopes real pipeline runs to the exact current studio session', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-current',
+    pipelineChatId: 'gui-pipeline-current',
+    agentTurns: [
+      { id: 1, chatId: 'gui-orchestrator-old', parentSession: 'orch-old', startedAt: 1 },
+      { id: 2, chatId: 'gui-orchestrator-current', parentSession: 'orch-current', startedAt: 2 },
+    ],
+    pipelineRuns: [
+      {
+        sessionId: 'pipe-old', chatId: 'gui-pipeline-old', pipelineName: 'feature-dev',
+        brief: 'old brief', startedAt: 10, status: 'success', stages: [agent(10, 'pipe-old', 'done', 'planner')],
+      },
+      {
+        sessionId: 'pipe-current', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev',
+        brief: 'ship it', startedAt: 20, status: 'success',
+        stages: [agent(11, 'pipe-current', 'done', 'planner'), agent(12, 'pipe-current', 'done', 'coder')],
+      },
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.runs.map((run) => run.id), ['orch-current'])
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-current'])
+  assert.equal(vm.pipeRuns[0].title, 'feature-dev')
+  assert.equal(vm.pipeRuns[0].subtitle, '2 stages')
+  assert.equal(vm.pipeRuns[0].currentBrief, 'ship it')
+  assert.doesNotMatch(JSON.stringify(vm.pipeRuns), /driver-only turn/)
 })
 
 test('live driver run appears only on owning surface', () => {
@@ -349,10 +389,9 @@ test('pipeline chat body uses pipe chat and disables while orchestrator owns pro
 
 test('pipeline studio exposes scoped run rail and active timeline', () => {
   const vm = buildViewModel(baseState({
-    subagents: [
-      agent(10, 'orch-session', 'running', 'coder', 'gui-orchestrator-abc'),
-      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
-      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    pipelineRuns: [
+      { sessionId: 'pipe-old', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev', brief: 'old', startedAt: 1, status: 'success', stages: [agent(11, 'pipe-old', 'done', 'planner')] },
+      { sessionId: 'pipe-new', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev', brief: 'new', startedAt: 2, status: 'running', stages: [agent(12, 'pipe-new', 'running', 'coder')] },
     ],
   }), actions())
 
@@ -367,9 +406,9 @@ test('pipeline studio exposes scoped run rail and active timeline', () => {
 test('pipeline studio honours selected pipeline session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',
-    subagents: [
-      agent(11, 'pipe-old', 'done', 'planner', 'gui-pipeline-abc'),
-      agent(12, 'pipe-new', 'running', 'coder', 'gui-pipeline-abc'),
+    pipelineRuns: [
+      { sessionId: 'pipe-old', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev', brief: 'old', startedAt: 1, status: 'success', stages: [agent(11, 'pipe-old', 'done', 'planner')] },
+      { sessionId: 'pipe-new', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev', brief: 'new', startedAt: 2, status: 'running', stages: [agent(12, 'pipe-new', 'running', 'coder')] },
     ],
   }), actions())
 

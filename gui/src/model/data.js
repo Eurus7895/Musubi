@@ -57,12 +57,6 @@ export const pipeCatalog = [
   { role: 'tester', hue: '#86c7c0', desc: 'Cover the changed surface with pytest / node:test cases.', tools: ['musubi_read_file', 'musubi_run_command'], max: 6 },
 ]
 
-export const pipePresets = [
-  { name: 'feature-dev', roles: ['explorer', 'planner', 'coder', 'reviewer'] },
-  { name: 'bugfix', roles: ['investigator', 'coder', 'tester', 'reviewer'] },
-  { name: 'explore', roles: ['explorer'] },
-]
-
 export const policyRoleDefs = [
   { role: 'driver', hue: '#ff9b3d', scope: 'full catalog', tools: 'musubi_* — all tools' },
   { role: 'explorer', hue: '#8ab4d8', scope: 'read + run', tools: 'read_file · run_command · retrieve' },

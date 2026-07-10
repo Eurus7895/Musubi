@@ -21,14 +21,47 @@ test('merges pipeline chat from backend snapshots', () => {
   assert.equal(source.state.pipeChat[0].text, 'pipeline')
 })
 
-test('sendPipeChat calls pipeline backend action', () => {
+test('sendPipelineTask passes brief and selected registered pipeline', () => {
   const { source, calls } = sourceWithActionSpy()
-  source._setLocal({ pipeDraft: '  run feature-dev  ' })
+  source._setLocal({
+    pipeDraft: '  ship it  ',
+    pipeName: 'feature-dev',
+    pipeModified: false,
+    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
+  })
 
-  source.actions.sendPipeChat()
+  source.actions.sendPipelineTask()
 
-  assert.deepEqual(calls, [{ kind: 'send_pipe_chat', args: ['run feature-dev'] }])
+  assert.deepEqual(calls, [{ kind: 'send_pipeline_task', args: ['ship it', 'feature-dev'] }])
   assert.equal(source.state.pipeDraft, '')
+})
+
+test('repeated backend snapshots preserve an unchanged studio composition', () => {
+  const { source } = sourceWithActionSpy()
+  const snapshot = {
+    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
+  }
+
+  source._mergeDomain(snapshot)
+  const firstUids = source.state.pipeSteps.map((step) => step.uid)
+  source._mergeDomain(snapshot)
+
+  assert.deepEqual(source.state.pipeSteps.map((step) => step.uid), firstUids)
+})
+
+test('sendPipelineTask refuses a modified client-only composition', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    pipeDraft: 'ship it',
+    pipeName: 'feature-dev',
+    pipeModified: true,
+    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
+  })
+
+  source.actions.sendPipelineTask()
+
+  assert.deepEqual(calls, [])
+  assert.equal(source.state.pipeDraft, 'ship it')
 })
 
 test('clearPipeDriverChat clears pipeline chat only', () => {
