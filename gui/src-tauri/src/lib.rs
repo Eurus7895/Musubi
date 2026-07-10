@@ -708,6 +708,7 @@ fn start_chat_agent(
         &launch_root,
         &env,
         Some(chat_id),
+        None,
     )?;
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",

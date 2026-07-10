@@ -110,6 +110,115 @@ pub struct LmProfile {
     pub key_env: String,
 }
 
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineCatalogEntry {
+    pub name: String,
+    pub description: String,
+    pub stages: Vec<String>,
+    pub runnable: bool,
+    pub blocked_reason: String,
+}
+
+const STUDIO_PIPELINES: [&str; 2] = ["feature-dev", "dev-lite"];
+
+/// Load the deterministic pipelines the standalone linear runner supports.
+/// This intentionally avoids a second YAML dependency: Studio needs only the
+/// stable name/description/stage fields from the two supported recipe shapes.
+pub fn read_studio_pipeline_catalog(project_root: &Path) -> Vec<PipelineCatalogEntry> {
+    STUDIO_PIPELINES
+        .iter()
+        .filter_map(|name| {
+            let path = project_root
+                .join(".github")
+                .join("pipelines")
+                .join(name)
+                .join("pipeline.yaml");
+            let raw = std::fs::read_to_string(path).ok()?;
+            parse_studio_pipeline(&raw).filter(|entry| entry.name == *name && entry.runnable)
+        })
+        .collect()
+}
+
+fn parse_studio_pipeline(raw: &str) -> Option<PipelineCatalogEntry> {
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut stages = Vec::new();
+    let mut section = "";
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        if indent == 0 {
+            if let Some(value) = trimmed.strip_prefix("name:") {
+                name = value.trim().to_string();
+                continue;
+            }
+            if let Some(value) = trimmed.strip_prefix("description:") {
+                description = value.trim().to_string();
+                continue;
+            }
+            section = match trimmed {
+                "stages:" => "stages",
+                "generator:" => "generator",
+                "evaluator:" => "evaluator",
+                _ => "",
+            };
+            continue;
+        }
+        match section {
+            "stages" => {
+                if let Some(value) = trimmed.strip_prefix("- preset:") {
+                    stages.push(value.trim().to_string());
+                }
+            }
+            "generator" => {
+                if let Some(value) = trimmed.strip_prefix("- name:") {
+                    stages.push(value.trim().to_string());
+                }
+            }
+            "evaluator" => {
+                if let Some(value) = trimmed.strip_prefix("stage:") {
+                    stages.push(value.trim().to_string());
+                    section = "";
+                } else if let Some(value) = trimmed.strip_prefix("name:") {
+                    stages.push(value.trim().to_string());
+                    section = "";
+                } else if let Some(value) = trimmed.strip_prefix("agent:") {
+                    let file = Path::new(value.trim()).file_name()?.to_str()?;
+                    let role = file.strip_suffix(".agent.md").unwrap_or(file);
+                    stages.push(role.to_string());
+                    section = "";
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let runnable = valid_pipeline_name(&name) && stages.len() >= 2;
+    Some(PipelineCatalogEntry {
+        name,
+        description,
+        stages,
+        runnable,
+        blocked_reason: if runnable {
+            String::new()
+        } else {
+            "Pipeline must resolve to at least two safe stages.".into()
+        },
+    })
+}
+
+pub fn valid_pipeline_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAuditDb {
     pub path: PathBuf,
@@ -1547,6 +1656,7 @@ mod tests {
             &root,
             &std::collections::HashMap::new(),
             None,
+            None,
         )
         .unwrap();
 
@@ -1570,6 +1680,7 @@ mod tests {
             &root,
             &std::collections::HashMap::new(),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1584,6 +1695,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
+            None,
             None,
         )
         .unwrap();
@@ -1601,6 +1713,7 @@ mod tests {
             &root,
             &std::collections::HashMap::new(),
             Some("gui-orchestrator"),
+            None,
         )
         .unwrap();
 
@@ -1614,6 +1727,73 @@ mod tests {
                 "agent"
             ]
         );
+    }
+
+    #[test]
+    fn launch_spec_adds_pipeline_for_deterministic_studio_run() {
+        let root = PathBuf::from("/proj");
+        let spec = build_agent_launch_spec(
+            "ship it",
+            "",
+            "",
+            None,
+            &root,
+            &std::collections::HashMap::new(),
+            Some("gui-pipeline-abc"),
+            Some("feature-dev"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.args,
+            vec![
+                "ship it",
+                "--chat-id",
+                "gui-pipeline-abc",
+                "--pipeline",
+                "feature-dev",
+                "--tool-surface",
+                "agent"
+            ]
+        );
+    }
+
+    #[test]
+    fn studio_pipeline_catalog_reads_only_supported_registered_recipes() {
+        let root = temp_dir("studio-pipeline-catalog");
+        let pipeline_root = root.join(".github").join("pipelines");
+        let feature = pipeline_root.join("feature-dev");
+        let lite = pipeline_root.join("dev-lite");
+        let review = pipeline_root.join("code-review");
+        std::fs::create_dir_all(&feature).unwrap();
+        std::fs::create_dir_all(&lite).unwrap();
+        std::fs::create_dir_all(&review).unwrap();
+        std::fs::write(
+            feature.join("pipeline.yaml"),
+            "name: feature-dev\ndescription: Ship a feature\ngenerator:\n  agents:\n    - name: planner\n    - name: coder\nevaluator:\n  name: reviewer\n",
+        )
+        .unwrap();
+        std::fs::write(
+            lite.join("pipeline.yaml"),
+            "name: dev-lite\ndescription: Lightweight delivery\nstages:\n  - preset: plan\n  - preset: build\n  - preset: check\n",
+        )
+        .unwrap();
+        std::fs::write(
+            review.join("pipeline.yaml"),
+            "name: code-review\ndescription: Unsupported fan-out\nstages:\n  - preset: scope\n  - preset: findings\n  - preset: synthesis\n",
+        )
+        .unwrap();
+
+        let catalog = read_studio_pipeline_catalog(&root);
+
+        assert_eq!(
+            catalog.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["feature-dev", "dev-lite"]
+        );
+        assert_eq!(catalog[0].description, "Ship a feature");
+        assert_eq!(catalog[0].stages, vec!["planner", "coder", "reviewer"]);
+        assert_eq!(catalog[1].stages, vec!["plan", "build", "check"]);
+        assert!(catalog.iter().all(|p| p.runnable));
     }
 
     #[test]
@@ -1633,7 +1813,8 @@ mod tests {
         );
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-…".to_string());
 
-        let spec = build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None).unwrap();
+        let spec =
+            build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None, None).unwrap();
 
         assert_eq!(spec.program, cli);
         let mut forwarded = spec.env.clone();
@@ -1665,6 +1846,7 @@ mod tests {
             None,
             Path::new("/proj"),
             &std::collections::HashMap::new(),
+            None,
             None,
         )
         .unwrap_err();
@@ -1940,6 +2122,7 @@ pub fn build_agent_launch_spec(
     project_root: &Path,
     env: &HashMap<String, String>,
     chat_id: Option<&str>,
+    pipeline_name: Option<&str>,
 ) -> Result<AgentLaunchSpec, String> {
     let task = task.trim();
     if task.is_empty() {
@@ -1959,6 +2142,13 @@ pub fn build_agent_launch_spec(
     if let Some(chat_id) = chat_id.map(str::trim).filter(|s| !s.is_empty()) {
         args.push("--chat-id".into());
         args.push(chat_id.to_string());
+    }
+    if let Some(pipeline_name) = pipeline_name.map(str::trim).filter(|s| !s.is_empty()) {
+        if !valid_pipeline_name(pipeline_name) {
+            return Err(format!("invalid pipeline name: {pipeline_name:?}"));
+        }
+        args.push("--pipeline".into());
+        args.push(pipeline_name.to_string());
     }
     args.push("--tool-surface".into());
     args.push("agent".into());
