@@ -113,6 +113,14 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
     contextvars.ContextVar("musubi_worker_touched_files", default=None)
 )
 
+# O3 — a short label identifying whose cycle a log line belongs to. `run_subagent`
+# sets `<role>#<handle>` for the worker it runs; the root leaves the default. Read
+# by the cycle loggers so several "cycle 0" lines from different workers are
+# distinguishable. Same ContextVar pattern as above — no loop-signature changes.
+_worker_log_label: contextvars.ContextVar[str] = (
+    contextvars.ContextVar("musubi_worker_log_label", default="root")
+)
+
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
 #: that is itself allowed to spawn may summon workers one level down. With the
@@ -568,9 +576,13 @@ async def _run_loop(
             break
 
         if resp.stop_reason == "max_tokens":
+            dropped = ", ".join(
+                _dropped_tool_target(tu) for tu in tool_uses
+            )
             print(
-                "[agent] max_tokens response contained tool calls; "
-                "not dispatching possibly truncated tool arguments",
+                "[agent] max_tokens truncated the response; dropped "
+                f"{dropped} (args may be incomplete). For a large artifact, "
+                "write it in ordered append_file chunks or a compact generator.",
                 file=log,
             )
             final_answer = _truncated_tool_call_answer(tool_uses)
@@ -1438,6 +1450,13 @@ def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
     return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
 
 
+def _dropped_tool_target(tu: dict[str, Any]) -> str:
+    """`tool(path)` for a truncated call, so the log names what was discarded."""
+    name = _short_tool_name(str(tu.get("name") or "<unknown>"))
+    path = (tu.get("input") or {}).get("path")
+    return f"{name}({path})" if isinstance(path, str) and path else name
+
+
 def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
     names = sorted({str(tu.get("name") or "<unknown>") for tu in tool_uses})
     payload = {
@@ -1919,7 +1938,8 @@ def _log_cycle(
     attempt_count: int = 1,
 ) -> None:
     parts = [
-        f"[agent] cycle {cycle}: model_action={_model_action(stop_reason, tool_uses)}",
+        f"[agent] [{_worker_log_label.get()}] cycle {cycle}: "
+        f"model_action={_model_action(stop_reason, tool_uses)}",
         f"stop={stop_reason}",
         f"tools={len(tool_uses)}",
     ]
@@ -1951,7 +1971,7 @@ def _log_cycle_cost(
     budget: TokenBudgetEnforcer | None,
 ) -> None:
     parts = [
-        f"[agent] cycle {cycle}: lm_ms={lm_ms}",
+        f"[agent] [{_worker_log_label.get()}] cycle {cycle}: lm_ms={lm_ms}",
         f"in_tokens={tokens_in}",
         f"out_tokens={tokens_out}",
         f"estimated_credits={estimated_credits:.4f}",

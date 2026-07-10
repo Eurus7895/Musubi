@@ -75,7 +75,12 @@ async def run_subagent(
     Otherwise it is a leaf: no spawn tool, no orchestration.
     """
     # Lazy import avoids the run↔subagent module cycle.
-    from agent.run import _call_tool_text, _worker_touched_files, run_unit
+    from agent.run import (
+        _call_tool_text,
+        _worker_log_label,
+        _worker_touched_files,
+        run_unit,
+    )
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
@@ -137,6 +142,7 @@ async def run_subagent(
     # own sink; drives the mechanical gate after the run.
     touched: set[str] = set()
     token = _worker_touched_files.set(touched)
+    label_token = _worker_log_label.set(f"{role}#{handle_id[:8]}")
     try:
         answer, turns = await run_unit(
             session, vendor, child_tools,
@@ -163,6 +169,7 @@ async def run_subagent(
         raise
     finally:
         _worker_touched_files.reset(token)
+        _worker_log_label.reset(label_token)
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"

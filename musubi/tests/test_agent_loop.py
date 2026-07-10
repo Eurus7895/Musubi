@@ -799,6 +799,36 @@ def test_model_action_flags_mutation_and_spawn() -> None:
     assert spawn == "tool_calls:spawn"
 
 
+def test_log_cycle_is_tagged_with_the_active_worker_label() -> None:
+    # O3 — a worker's cycle lines carry its label so multiple "cycle 0" lines
+    # from different workers are distinguishable; the root uses the default.
+    from agent import run as run_mod
+
+    root_log = io.StringIO()
+    run_mod._log_cycle(root_log, 0, "end_turn", [], None)
+    assert "[root] cycle 0" in root_log.getvalue()
+
+    worker_log = io.StringIO()
+    token = run_mod._worker_log_label.set("coder#483b27c2")
+    try:
+        run_mod._log_cycle(worker_log, 0, "end_turn", [], None)
+    finally:
+        run_mod._worker_log_label.reset(token)
+    assert "[coder#483b27c2] cycle 0" in worker_log.getvalue()
+
+
+def test_dropped_tool_target_names_the_discarded_write() -> None:
+    # O2 — a truncated write is logged with its target so the drop is traceable.
+    from agent import run as run_mod
+
+    named = run_mod._dropped_tool_target(
+        {"name": "musubi_write_file", "input": {"path": "dash.html"}}
+    )
+    assert named == "write_file(dash.html)"
+    bare = run_mod._dropped_tool_target({"name": "musubi_spawn_subagent", "input": {}})
+    assert bare == "spawn_subagent"
+
+
 def test_run_loop_elides_large_file_tool_args_before_next_model_call(
     tmp_path: Path,
 ) -> None:
