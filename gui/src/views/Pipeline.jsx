@@ -61,6 +61,11 @@ export default function Pipeline({ vals }) {
           {vals.pipeHasSteps && (
             <>
               <div style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, padding: '20px 18px', overflowX: 'auto' }}>
+                {vals.pipeStageOverflowLabel && (
+                  <div style={{ display: 'inline-flex', marginBottom: 12, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8ab4d8', background: 'rgba(138,180,216,0.1)', border: '1px solid rgba(138,180,216,0.25)', borderRadius: 6, padding: '4px 7px' }}>
+                    {vals.pipeStageOverflowLabel} scroll to view the full flow
+                  </div>
+                )}
                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, minWidth: 'min-content' }}>
 
                   {/* driver origin */}

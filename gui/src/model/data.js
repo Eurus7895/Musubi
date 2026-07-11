@@ -52,6 +52,7 @@ export const roleOrder = ['explorer', 'investigator', 'reviewer-aux']
 export const pipeCatalog = [
   { role: 'explorer', hue: '#8ab4d8', desc: 'Map & scope the codebase; surface entry points and callers.', tools: ['musubi_read_file', 'musubi_run_command', 'musubi_retrieve'], max: 6 },
   { role: 'planner', hue: '#c8a8e0', desc: 'Break the work into ordered, reviewable steps with a clear contract.', tools: ['musubi_read_file', 'musubi_retrieve'], max: 5 },
+  { role: 'designer', hue: '#a78bfa', desc: 'Turn the approved plan into a concrete design before implementation.', tools: ['musubi_read_file', 'musubi_grep', 'musubi_glob'], max: 12 },
   { role: 'coder', hue: '#e0a878', desc: 'Implement the change across code, tests and wiring.', tools: ['musubi_read_file', 'musubi_write_file', 'musubi_run_command'], max: 10 },
   { role: 'reviewer', hue: '#9ed8b4', desc: 'Code-only firewall review — verdict tied to policy (HI #3).', tools: ['musubi_read_file'], max: 4 },
   { role: 'investigator', hue: '#d8b48a', desc: 'Reproduce a failure and trace it to its root cause.', tools: ['musubi_read_file', 'musubi_run_command', 'musubi_query_subagent_events'], max: 8 },

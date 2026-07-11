@@ -589,6 +589,9 @@ export function buildViewModel(s, act) {
     onLoad: () => act.loadPreset(p.name),
   }))
   const pipeNameLabel = s.pipeName || 'choose preset'
+  const pipeStageOverflowLabel = s.pipeSteps.length > 3
+    ? `${s.pipeSteps.length - 3} more stage${s.pipeSteps.length - 3 === 1 ? '' : 's'} →`
+    : ''
   const pipeStatusTextForDisplay = s.pipeName
     ? (s.pipeModified
         ? 'Draft composition - save it as a registered pipeline before running.'
@@ -694,7 +697,7 @@ export function buildViewModel(s, act) {
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStatusText: pipeStatusTextForDisplay, onClearPipe: () => act.clearPipe(),
+    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStageOverflowLabel, pipeStatusText: pipeStatusTextForDisplay, onClearPipe: () => act.clearPipe(),
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:12px;padding:14px;text-align:center;',
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
@@ -733,7 +736,9 @@ export function buildViewModel(s, act) {
     activePipeRunId: activePipeSessionId,
     activePipeRunSteps: pipeRunSteps,
     pipeRunSummary,
-    pipeSessionTitle: activePipeSessionId ? ('Session ' + activePipeSessionId.slice(0, 12)) : 'Pipeline run history',
+    pipeSessionTitle: activePipeRunRaw
+      ? `${activePipeRunRaw.pipelineName || 'pipeline'} · run ${String(activePipeSessionId).slice(0, 12)}`
+      : 'Pipeline run history',
     pipeSessionSubtitle: pipeRunSteps.length
       ? (pipeRunSteps.length + ' workers in this pipeline session')
       : (activePipeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no pipeline workers in this session yet'),

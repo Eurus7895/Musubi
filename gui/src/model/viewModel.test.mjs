@@ -428,6 +428,28 @@ test('pipeline run uses the exited driver budget status instead of active-worker
   assert.match(vm.pipeRunSummary.alertLine, /Budget halted/)
 })
 
+test('pipeline flow exposes every configured stage and designer metadata', () => {
+  const vm = buildViewModel(baseState({
+    pipeName: 'feature-dev',
+    pipelineChatId: 'gui-pipeline-current',
+    pipeSteps: [
+      { uid: 1, role: 'planner', status: 'idle' },
+      { uid: 2, role: 'designer', status: 'idle' },
+      { uid: 3, role: 'coder', status: 'idle' },
+      { uid: 4, role: 'reviewer', status: 'idle' },
+    ],
+    pipelineRuns: [
+      { sessionId: 'run-abcdef', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev', brief: 'ship it', startedAt: 1, status: 'success', stages: [] },
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.pipeStepsView.map((step) => step.role), ['planner', 'designer', 'coder', 'reviewer'])
+  assert.equal(vm.pipeStepsView[1].toolsLabel, '3 tools')
+  assert.equal(vm.pipeStepsView[1].maxLabel, 'max 12 turns')
+  assert.equal(vm.pipeStageOverflowLabel, '1 more stage →')
+  assert.equal(vm.pipeSessionTitle, 'feature-dev · run run-abcdef')
+})
+
 test('pipeline studio honours selected pipeline session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',
