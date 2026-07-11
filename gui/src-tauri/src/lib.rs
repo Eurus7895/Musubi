@@ -22,11 +22,14 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use tauri::{Emitter, Manager};
 
 struct AppState {
     db: Mutex<Connection>,
+    // `pipeline_runs` is state-store data, intentionally kept separate from
+    // the append-only audit ledger. The GUI never writes to this connection.
+    state_db: Option<Mutex<Connection>>,
     paused: AtomicBool,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
@@ -881,6 +884,7 @@ fn open_db() -> Connection {
 
 struct OpenedDb {
     conn: Connection,
+    state_db: Option<Connection>,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
 }
@@ -892,6 +896,7 @@ fn open_configured_db() -> OpenedDb {
         let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
         let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
         let _ = musubi_data::init_schema(&conn);
+        let state_db = open_state_db(&resolved);
         eprintln!(
             "[musubi] reading audit.db at {} ({}) project_root={}",
             resolved.path.display(),
@@ -900,6 +905,7 @@ fn open_configured_db() -> OpenedDb {
         );
         return OpenedDb {
             conn,
+            state_db,
             project_root,
             audit_db: Some(resolved),
         };
@@ -909,14 +915,26 @@ fn open_configured_db() -> OpenedDb {
     eprintln!("[musubi] no audit.db source found; using empty in-memory state");
     OpenedDb {
         conn,
+        state_db: None,
         project_root: resolve_project_root(&env, &cwd, None),
         audit_db: None,
     }
 }
 
+fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> {
+    let state_db = musubi_data::resolve_state_db_path(audit_db)?;
+    Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+}
+
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut st = musubi_data::load_state(&conn).map_err(|e| e.to_string())?;
+    let state_conn = state
+        .state_db
+        .as_ref()
+        .map(|db| db.lock().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut st = musubi_data::load_state_with_pipeline_runs(&conn, state_conn.as_deref())
+        .map_err(|e| e.to_string())?;
     st.orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
     st.pipeline_chat_id = state
         .pipeline_chat_id
@@ -1133,6 +1151,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
+            state_db: opened.state_db.map(Mutex::new),
             paused: AtomicBool::new(false),
             project_root: opened.project_root,
             audit_db: opened.audit_db,
@@ -1321,6 +1340,27 @@ mod tests {
             resolve_project_root(&env, cwd, Some(&audit)),
             PathBuf::from(r"C:\Workspace\Projects\Musubi")
         );
+    }
+
+    #[test]
+    fn state_connection_uses_read_only_sibling_database() {
+        let root = std::env::temp_dir().join(format!("musubi-state-db-{}", epoch_secs()));
+        let storage = root.join("storage");
+        std::fs::create_dir_all(&storage).unwrap();
+        let state_path = storage.join("musubi.db");
+        Connection::open(&state_path).unwrap();
+        let audit = musubi_data::ResolvedAuditDb {
+            path: storage.join("audit.db"),
+            source: "workspace".into(),
+        };
+
+        let state = open_state_db(&audit).expect("state connection");
+        assert!(state
+            .execute_batch("CREATE TABLE must_fail (id INTEGER)")
+            .is_err());
+
+        let _ = std::fs::remove_file(state_path);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

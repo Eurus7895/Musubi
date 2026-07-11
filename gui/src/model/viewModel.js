@@ -236,7 +236,10 @@ export function buildViewModel(s, act) {
       brief: run.brief || '',
     }))
     .sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
-  if (pipelineOwnsDriver && !pipeRunsRaw.some((run) => statusForRun(run) === 'running')) {
+  // The process overlay bridges only the short interval before the runner has
+  // appended its audited envelope. Once a real run exists, preserve its ID and
+  // terminal status instead of manufacturing a second history card.
+  if (pipelineOwnsDriver && pipeRunsRaw.length === 0) {
     pipeRunsRaw.unshift({
       id: `driver-running-${driverStatusForRuns.startedAt || 'now'}`,
       steps: [],

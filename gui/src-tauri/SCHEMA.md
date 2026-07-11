@@ -130,7 +130,7 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 | Settings first-run status | runtime discovery of Python, `musubi`, `agent`, `.musubi/llm.json`, and audit DB |
 | Driver chat | `chat_log` |
 | Pipeline studio catalog | registered deterministic recipes under `.github/pipelines/` |
-| Pipeline studio runs | `pipeline_runs` joined through the `pipeline:<name>` envelope to `agent_turns.chat_id`; child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id` |
+| Pipeline studio runs | finalized/live `pipeline_runs` from the read-only sibling `musubi.db`, joined through the `pipeline:<name>` audit envelope to `agent_turns.chat_id`; child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id`. Only an envelope handle is a displayed run; the outer driver session row is excluded. |
 
 ## State shape (Rust → JSON → `buildViewModel`)
 
@@ -143,3 +143,5 @@ supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
 The snapshot also exposes `orchestratorChatId` and `pipelineChatId`. Current
 surface run lists compare these complete IDs; the `gui-orchestrator-` and
 `gui-pipeline-` prefixes are classification fallbacks for legacy rows only.
+When the sibling state database is absent, the audit snapshot remains usable
+and `pipelineRuns` is empty rather than synthesizing historical pipeline cards.

@@ -230,6 +230,11 @@ pub struct ResolvedAuditDb {
     pub source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedStateDb {
+    pub path: PathBuf,
+}
+
 #[derive(Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
@@ -393,10 +398,43 @@ fn fmt_parent(agent: &str, session: &str) -> String {
 
 /// Read the full console state from an open connection to a Musubi `audit.db`.
 pub fn load_state(conn: &Connection) -> rusqlite::Result<State> {
-    load_state_at(conn, current_epoch_secs())
+    // Keep the standalone reader backwards-compatible for fixtures that keep
+    // the observability tables together. The desktop shell explicitly calls
+    // `load_state_with_pipeline_runs` with the sibling state DB instead.
+    load_state_at_with_pipeline_runs(conn, Some(conn), current_epoch_secs())
 }
 
+/// Read console state from the append-only audit ledger and, when available,
+/// join pipeline lifecycle rows from Musubi's sibling state database.
+///
+/// `pipeline_runs` belongs to `musubi.db`, not the audit ledger. A missing
+/// state connection is valid (for first run or an older workspace) and yields
+/// no pipeline run cards rather than guessing from audit rows.
+pub fn load_state_with_pipeline_runs(
+    audit_conn: &Connection,
+    state_conn: Option<&Connection>,
+) -> rusqlite::Result<State> {
+    load_state_at_with_pipeline_runs(audit_conn, state_conn, current_epoch_secs())
+}
+
+/// Return only real pipeline runs joined to their audit-envelope ancestry.
+pub fn load_pipeline_runs(
+    audit_conn: &Connection,
+    state_conn: Option<&Connection>,
+) -> rusqlite::Result<Vec<PipelineRun>> {
+    Ok(load_state_with_pipeline_runs(audit_conn, state_conn)?.pipeline_runs)
+}
+
+#[cfg(test)]
 fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
+    load_state_at_with_pipeline_runs(conn, Some(conn), now_epoch)
+}
+
+fn load_state_at_with_pipeline_runs(
+    conn: &Connection,
+    pipeline_state_conn: Option<&Connection>,
+    now_epoch: i64,
+) -> rusqlite::Result<State> {
     let mut st = State {
         active_profile: read_active_profile(conn),
         profiles: read_llm_profiles(),
@@ -694,42 +732,52 @@ fn load_state_at(conn: &Connection, now_epoch: i64) -> rusqlite::Result<State> {
         }
     }
 
-    if table_exists(conn, "pipeline_runs")? {
-        let mut pstmt = conn.prepare(
-            "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
+    if let Some(state_conn) = pipeline_state_conn {
+        if table_exists(state_conn, "pipeline_runs")? {
+            let mut pstmt = state_conn.prepare(
+                "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
              FROM pipeline_runs ORDER BY started_at ASC",
-        )?;
-        st.pipeline_runs = pstmt
-            .query_map([], |r| {
-                let session_id: String = r.get(0)?;
-                let envelope = pipeline_envelopes.get(&session_id);
-                let chat_id = envelope
-                    .and_then(|env| session_to_chat.get(&env.parent_session))
-                    .cloned()
-                    .unwrap_or_default();
-                let mut stages = st
-                    .subagents
-                    .iter()
-                    .filter(|agent| agent.parent_session == session_id)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for stage in &mut stages {
-                    stage.chat_id = chat_id.clone();
-                }
-                let recorded_status = r.get::<_, Option<String>>(4)?;
-                let status = recorded_status.unwrap_or_else(|| derive_pipeline_status(&stages));
-                Ok(PipelineRun {
-                    session_id,
-                    chat_id,
-                    pipeline_name: r.get(1)?,
-                    brief: envelope.map(|env| env.brief.clone()).unwrap_or_default(),
-                    started_at: r.get(2)?,
-                    ended_at: r.get(3)?,
-                    status,
-                    stages,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            )?;
+            st.pipeline_runs = pstmt
+                .query_map([], |r| {
+                    let session_id: String = r.get(0)?;
+                    // `state.create_session()` also records the outer driver
+                    // session. Only the child whose ID is an audited
+                    // `pipeline:<name>` envelope represents a runnable pipeline.
+                    let Some(envelope) = pipeline_envelopes.get(&session_id) else {
+                        return Ok(None);
+                    };
+                    let chat_id = session_to_chat
+                        .get(&envelope.parent_session)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut stages = st
+                        .subagents
+                        .iter()
+                        .filter(|agent| agent.parent_session == session_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for stage in &mut stages {
+                        stage.chat_id = chat_id.clone();
+                    }
+                    let recorded_status = r.get::<_, Option<String>>(4)?;
+                    let status = recorded_status.unwrap_or_else(|| derive_pipeline_status(&stages));
+                    Ok(Some(PipelineRun {
+                        session_id,
+                        chat_id,
+                        pipeline_name: r.get(1)?,
+                        brief: envelope.brief.clone(),
+                        started_at: r.get(2)?,
+                        ended_at: r.get(3)?,
+                        status,
+                        stages,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<Option<_>>>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+        }
     }
 
     let pipeline_sessions = st
@@ -1623,6 +1671,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pipeline_runs_join_state_db_to_audit_ancestry() {
+        let root = temp_dir("pipeline-runs-two-dbs");
+        let audit_path = root.join("audit.db");
+        let state_path = root.join("musubi.db");
+        let audit = Connection::open(&audit_path).unwrap();
+        let state = Connection::open(&state_path).unwrap();
+        init_schema(&audit).unwrap();
+        init_schema(&state).unwrap();
+
+        audit
+            .execute(
+                "INSERT INTO agent_turns\
+             (chat_id,parent_session_id,started_at,ended_at,model_family,cycles,\
+              tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)\
+             VALUES ('gui-pipeline-current','outer-session',100,110,'test',1,1,1,1,10)",
+                [],
+            )
+            .unwrap();
+        audit
+            .execute(
+                "INSERT INTO subagent_audit\
+             (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+              allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES (101,'spawned','pipeline-session','outer-session','agent',\
+                     'pipeline:feature-dev','ship it','[]',2,0)",
+                [],
+            )
+            .unwrap();
+        for (handle, role, ts) in [("stage-plan", "planner", 102), ("stage-code", "coder", 104)] {
+            audit
+                .execute(
+                    "INSERT INTO subagent_audit\
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+                  allowed_tools,max_turns,wall_clock_timeout_s)\
+                 VALUES (?1,'spawned',?2,'pipeline-session','pipeline:feature-dev',?3,\
+                         'stage brief','[\\\"musubi_read_file\\\"]',8,60)",
+                    rusqlite::params![ts, handle, role],
+                )
+                .unwrap();
+            audit
+                .execute(
+                    "INSERT INTO subagent_audit\
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+                  final_status,turns,tools_used)\
+                 VALUES (?1,'completed',?2,'pipeline-session','pipeline:feature-dev',?3,\
+                         'stage brief','done',2,'[\\\"musubi_read_file\\\"]')",
+                    rusqlite::params![ts + 1, handle, role],
+                )
+                .unwrap();
+        }
+        state
+            .execute(
+                "INSERT INTO pipeline_runs\
+             (session_id,pipeline_name,started_at,ended_at,final_status)\
+             VALUES ('pipeline-session','feature-dev',101,109,'success')",
+                [],
+            )
+            .unwrap();
+        // The root driver's own state session must not become a second card.
+        state
+            .execute(
+                "INSERT INTO pipeline_runs\
+             (session_id,pipeline_name,started_at,ended_at,final_status)\
+             VALUES ('outer-session','feature-dev',100,110,'success')",
+                [],
+            )
+            .unwrap();
+
+        let joined = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+        assert_eq!(joined.pipeline_runs.len(), 1);
+        let run = &joined.pipeline_runs[0];
+        assert_eq!(run.session_id, "pipeline-session");
+        assert_eq!(run.chat_id, "gui-pipeline-current");
+        assert_eq!(run.status, "success");
+        assert_eq!(run.brief, "ship it");
+        assert_eq!(run.stages.len(), 2);
+        assert!(joined.subagents.is_empty());
+
+        let without_state = load_state_with_pipeline_runs(&audit, None).unwrap();
+        assert!(without_state.pipeline_runs.is_empty());
+        assert_eq!(without_state.subagents.len(), 2);
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1676,6 +1808,23 @@ mod tests {
 
         assert_eq!(resolved.path, storage.join("audit.db"));
         assert_eq!(resolved.source, "workspace");
+    }
+
+    #[test]
+    fn resolve_state_db_uses_existing_sibling_of_audit_ledger() {
+        let root = temp_dir("state-db");
+        let storage = root.join("storage");
+        std::fs::create_dir_all(&storage).unwrap();
+        let audit = ResolvedAuditDb {
+            path: storage.join("audit.db"),
+            source: "workspace".into(),
+        };
+
+        assert!(resolve_state_db_path(&audit).is_none());
+        std::fs::write(storage.join("musubi.db"), "").unwrap();
+
+        let state = resolve_state_db_path(&audit).expect("sibling state DB");
+        assert_eq!(state.path, storage.join("musubi.db"));
     }
 
     #[test]
@@ -2091,6 +2240,14 @@ pub fn resolve_audit_db_path(env: &HashMap<String, String>, cwd: &Path) -> Optio
         dir = d.parent();
     }
     None
+}
+
+/// Resolve the state store paired with an audit ledger. The state database is
+/// optional because fresh and pre-observability workspaces have no
+/// `pipeline_runs` table to join yet.
+pub fn resolve_state_db_path(audit_db: &ResolvedAuditDb) -> Option<ResolvedStateDb> {
+    let path = audit_db.path.parent()?.join("musubi.db");
+    path.is_file().then_some(ResolvedStateDb { path })
 }
 
 pub fn detect_setup_status(

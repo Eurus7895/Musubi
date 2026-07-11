@@ -399,6 +399,18 @@ test('pipeline studio exposes scoped run rail and active timeline', () => {
   assert.match(vm.pipeSessionSubtitle, /1 workers/)
 })
 
+test('pipeline studio does not synthesize history after an audited run exists', () => {
+  const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-current',
+    pipelineRuns: [
+      { sessionId: 'real-run', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev', brief: 'retry', startedAt: 2, status: 'success', stages: [agent(12, 'real-run', 'done', 'planner')] },
+    ],
+    driverStatus: { running: true, surface: 'pipeline', task: 'retry', startedAt: 77, stdoutTail: '', stderrTail: '' },
+  }), actions())
+
+  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['real-run'])
+})
+
 test('pipeline studio honours selected pipeline session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',
