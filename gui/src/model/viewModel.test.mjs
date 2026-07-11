@@ -450,6 +450,22 @@ test('pipeline flow exposes every configured stage and designer metadata', () =>
   assert.equal(vm.pipeSessionTitle, 'feature-dev · run run-abcdef')
 })
 
+test('completed process logs stay available only on their owning surface', () => {
+  const vm = buildViewModel(baseState({
+    logWindowOpen: true,
+    driverStatus: {
+      running: false, surface: 'pipeline', terminalStatus: 'failed', task: 'ship it',
+      startedAt: 9, stdoutTail: '', stderrTail: 'failure details',
+    },
+  }), actions())
+
+  assert.equal(vm.pipeChatBody.driverBusy, false)
+  assert.match(vm.pipeChatBody.driverProcessLog, /failure details/)
+  assert.equal(vm.pipeChatBody.hasDriverLog, true)
+  assert.equal(vm.pipeChatBody.logWindowOpen, true)
+  assert.equal(vm.driverProcessLog, '')
+})
+
 test('pipeline studio honours selected pipeline session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',

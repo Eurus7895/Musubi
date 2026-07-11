@@ -657,6 +657,9 @@ export function buildViewModel(s, act) {
     driverStatus.stderrTail ? 'stderr:\n' + driverStatus.stderrTail.trim() : '',
     driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
   ].filter(Boolean).join('\n\n')
+  const hasDriverLog = !!driverProcessLog
+  const pipelineHasDriverLog = driverSurface === 'pipeline' && hasDriverLog
+  const orchestratorHasDriverLog = driverSurface === 'orchestrator' && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
   const pipelineBlockedByOrchestrator = driverRunning && !pipelineOwnsDriver
@@ -671,12 +674,13 @@ export function buildViewModel(s, act) {
     onDraft: act.onPipeDraft,
     onDraftKey: act.onPipeDraftKey,
     driverBusy: pipelineOwnsDriver,
-    driverTask: pipelineOwnsDriver ? (driverStatus.task || '') : '',
+    driverTask: (pipelineOwnsDriver || pipelineHasDriverLog) ? (driverStatus.task || '') : '',
     driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : driverStatusText,
     driverProcessOpen: pipelineOwnsDriver && !!s.processOpen,
-    driverProcessLog: pipelineOwnsDriver ? driverProcessLog : '',
+    driverProcessLog: pipelineHasDriverLog ? driverProcessLog : '',
+    hasDriverLog: pipelineHasDriverLog,
     onToggleProcess: act.toggleProcess,
-    logWindowOpen: pipelineOwnsDriver && !!s.logWindowOpen,
+    logWindowOpen: pipelineHasDriverLog && !!s.logWindowOpen,
     onOpenLog: act.openProcessLog,
     onCloseLog: act.closeProcessLog,
     onNewSession: act.newPipeSession,
@@ -720,8 +724,8 @@ export function buildViewModel(s, act) {
       : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
     driverBusy: orchestratorOwnsDriver, driverTask: orchestratorOwnsDriver ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : driverStatusText,
-    driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorOwnsDriver ? driverProcessLog : '', onToggleProcess: act.toggleProcess,
-    logWindowOpen: orchestratorOwnsDriver && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
+    driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,
+    logWindowOpen: orchestratorHasDriverLog && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onNewSession: act.newSession,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,

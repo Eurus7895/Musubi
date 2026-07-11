@@ -275,7 +275,7 @@ export default function ChatBody({ vals }) {
           )}
         </Box>
       </div>
-      {vals.logWindowOpen && <LogWindow vals={vals} />}
+      {vals.logWindowOpen && vals.hasDriverLog && <LogWindow vals={vals} />}
     </div>
   )
 }

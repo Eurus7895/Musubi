@@ -496,7 +496,7 @@ fn append_process_log_link(summary: &str, log: &str) -> String {
     if log.trim().is_empty() {
         summary.to_string()
     } else {
-        format!("{summary}\n\n[Open full process log](musubi-log:last)")
+        format!("{summary}\n\n[Open process log](musubi-log:last)")
     }
 }
 
@@ -1400,6 +1400,13 @@ mod tests {
         assert_eq!(terminal_status(false, 0, ""), "success");
         assert_eq!(terminal_status(true, 1, ""), "aborted");
         assert_eq!(terminal_status(false, 1, "other failure"), "failed");
+    }
+
+    #[test]
+    fn process_log_link_describes_the_retained_log_scope() {
+        let message = append_process_log_link("failed", "stderr: detail");
+        assert!(message.contains("[Open process log](musubi-log:last)"));
+        assert!(!message.contains("Open full process log"));
     }
 
     #[test]
