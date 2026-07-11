@@ -329,7 +329,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "docs(r
 
 Visual review and the captured runner log exposed a split observability store,
 ambiguous run attempts, incomplete pipeline progress, and ambiguous Studio
-controls. Complete Tasks 8–14 before merge.
+controls. Complete Tasks 8–15 before merge.
 
 ### Task 8: Join Pipeline Observability Across the Two Authoritative Databases
 
@@ -545,7 +545,40 @@ git add gui/src/model/viewModel.js gui/src/model/viewModel.test.mjs gui/src/comp
 git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gui): keep completed process logs accessible"
 ```
 
-### Task 14: Corrective Regression Suite and Manual Acceptance
+### Task 14: Remove Successful Artifact-Open Chat Noise
+
+**Files:**
+- Modify: `gui/src-tauri/src/lib.rs`
+- Modify: tests in `gui/src-tauri/src/lib.rs`
+
+**Evidence:** The artifact link invokes `action('open_artifact', [path,
+surface])`. On success the backend starts the platform file-browser command,
+then inserts `artifact_opened_message()` into the same driver chat. The message
+only repeats an action the user just initiated and leaks a platform-normalized
+`\\?\` path into the conversation.
+
+**Contract:** A successful artifact open is silent in chat. Failed opens remain
+visible as a deny/error message with the requested path and actionable error.
+The workspace-boundary validation and platform launch behavior do not change.
+
+- [ ] **Step 1: Add failing backend tests** — replace the current success-copy
+  assertion with a test that the success path has no driver-chat insertion
+  payload. Retain a failure-copy test that checks `Could not open artifact`,
+  the requested path, and the underlying error are preserved.
+- [ ] **Step 2: Remove only the success chat write** — delete
+  `artifact_opened_message()` and the successful `insert_chat()` branch in
+  `action("open_artifact")`; ignore the returned canonical path after launch.
+  Keep `artifact_open_failed_message()` and its deny chat insertion unchanged.
+- [ ] **Step 3: Verify and commit**
+
+```powershell
+cargo test --manifest-path gui/src-tauri/Cargo.toml artifact_open
+npm run build --workspace musubi-gui
+git add gui/src-tauri/src/lib.rs
+git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gui): silence successful artifact opens"
+```
+
+### Task 15: Corrective Regression Suite and Manual Acceptance
 
 **Files:** `docs/roadmap.md` and this plan.
 
@@ -558,5 +591,8 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gu
   write is visibly terminal rather than reported as a completed stage. After
   each process exits, click `Open process log` and verify the retained log opens
   on the owning surface, then verify New session clears that retained log.
+- [ ] Open an in-workspace artifact successfully and verify no driver message is
+  appended. Then try an unavailable or out-of-workspace artifact and verify the
+  deny message remains visible with the failure reason.
 - [ ] Update the roadmap only after acceptance passes; commit
   `docs(roadmap): record studio corrective pass`.
