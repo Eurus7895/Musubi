@@ -42,7 +42,7 @@ def test_init_db_creates_pipeline_runs_table(fresh_db: Path) -> None:
     expected = {
         "session_id", "pipeline_name", "started_at", "ended_at",
         "final_status", "total_tokens_estimate", "correction_attempts",
-        "escalated", "chunked", "chunk_count", "schema_version",
+        "escalated", "chunked", "chunk_count", "chat_id", "schema_version",
     }
     assert expected.issubset(cols)
 
@@ -109,6 +109,19 @@ def test_create_session_with_explicit_pipeline_name(fresh_db: Path) -> None:
     row = db.get_pipeline_run(sid, fresh_db)
     assert row is not None
     assert row["pipeline_name"] == "code-review"
+
+
+def test_create_session_persists_gui_chat_id_before_the_driver_finishes(
+    fresh_db: Path,
+) -> None:
+    sid = state.create_session(
+        "ship it", fresh_db, chat_id="gui-pipeline-current",
+    )
+
+    row = db.get_pipeline_run(sid, fresh_db)
+
+    assert row is not None
+    assert row["chat_id"] == "gui-pipeline-current"
 
 
 def test_finalize_pipeline_run_sets_terminal_fields(fresh_db: Path) -> None:

@@ -149,7 +149,11 @@ def musubi_get_active_session() -> str:
 
 
 @mcp.tool()
-def musubi_new_session(request: str, pipeline_name: str = "feature-dev") -> str:
+def musubi_new_session(
+    request: str,
+    pipeline_name: str = "feature-dev",
+    chat_id: str | None = None,
+) -> str:
     """Create a new pipeline session and lock agent versions.
 
     Call this once at the start of every pipeline run.
@@ -159,7 +163,9 @@ def musubi_new_session(request: str, pipeline_name: str = "feature-dev") -> str:
     row so per-pipeline aggregates stay separable. Default 'feature-dev'
     keeps pre-G.3 callers working unchanged.
     """
-    session_id = state.create_session(request, pipeline_name=pipeline_name)
+    session_id = state.create_session(
+        request, pipeline_name=pipeline_name, chat_id=chat_id,
+    )
     versions = state.lock_agent_versions(session_id)
     return json.dumps({
         "session_id": session_id,

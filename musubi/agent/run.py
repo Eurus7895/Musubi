@@ -347,7 +347,7 @@ async def run_agent(
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        parent_session_id = await _open_parent_session(session, task, log)
+        parent_session_id = await _open_parent_session(session, task, log, chat_id)
         orchestration = Orchestration(parent_session_id=parent_session_id)
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
@@ -760,10 +760,18 @@ async def run_unit(
     )
 
 
-async def _open_parent_session(session: ClientSession, task: str, log: Any) -> str | None:
+async def _open_parent_session(
+    session: ClientSession,
+    task: str,
+    log: Any,
+    chat_id: str | None = None,
+) -> str | None:
     """Create the agent's owning session; None if it can't (spawns disabled)."""
     try:
-        raw = await _call_tool_text(session, "musubi_new_session", {"request": task[:500]})
+        args = {"request": task[:500]}
+        if chat_id:
+            args["chat_id"] = chat_id
+        raw = await _call_tool_text(session, "musubi_new_session", args)
         sid = json.loads(raw).get("session_id")
         print(f"[agent] parent session={sid}", file=log)
         return sid if isinstance(sid, str) else None

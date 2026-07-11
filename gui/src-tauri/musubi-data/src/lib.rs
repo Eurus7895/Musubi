@@ -685,10 +685,13 @@ fn load_state_at_with_pipeline_runs(
     }
 
     // ── pipeline studio default (authoring surface; not from the audit) ──
-    if table_exists(conn, "agent_turns")? {
+    // Driver turn metadata is operational state, just like pipeline_runs. In
+    // production it lives in the sibling musubi.db rather than audit.db.
+    let agent_turn_conn = pipeline_state_conn.unwrap_or(conn);
+    if table_exists(agent_turn_conn, "agent_turns")? {
         // Replay columns are recent; older audit DBs lack them. Select constant
         // zeros in that case so the reader tolerates a pre-migration DB.
-        let has_replay = column_exists(conn, "agent_turns", "replay_tokens")?;
+        let has_replay = column_exists(agent_turn_conn, "agent_turns", "replay_tokens")?;
         let sql = if has_replay {
             "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
                     tokens_in_estimate, tokens_out_estimate, replay_messages, replay_tokens \
@@ -699,7 +702,7 @@ fn load_state_at_with_pipeline_runs(
                     0 AS replay_tokens \
              FROM agent_turns ORDER BY id ASC LIMIT 120"
         };
-        let mut tstmt = conn.prepare(sql)?;
+        let mut tstmt = agent_turn_conn.prepare(sql)?;
         st.agent_turns = tstmt
             .query_map([], |r| {
                 Ok(AgentTurn {
@@ -735,6 +738,15 @@ fn load_state_at_with_pipeline_runs(
 
     if let Some(state_conn) = pipeline_state_conn {
         if table_exists(state_conn, "pipeline_runs")? {
+            let mut pipeline_session_to_chat = std::collections::HashMap::new();
+            if column_exists(state_conn, "pipeline_runs", "chat_id")? {
+                let mut chat_stmt = state_conn.prepare(
+                    "SELECT session_id, COALESCE(chat_id, '') FROM pipeline_runs",
+                )?;
+                pipeline_session_to_chat = chat_stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+            }
             let mut pstmt = state_conn.prepare(
                 "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
              FROM pipeline_runs ORDER BY started_at ASC",
@@ -750,6 +762,7 @@ fn load_state_at_with_pipeline_runs(
                     };
                     let chat_id = session_to_chat
                         .get(&envelope.parent_session)
+                        .or_else(|| pipeline_session_to_chat.get(&envelope.parent_session))
                         .cloned()
                         .unwrap_or_default();
                     let mut stages = st
@@ -1117,6 +1130,7 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   session_id              TEXT PRIMARY KEY,
   pipeline_name           TEXT NOT NULL,
+  chat_id                 TEXT,
   started_at              REAL NOT NULL,
   ended_at                REAL,
   final_status            TEXT,
@@ -1682,7 +1696,7 @@ mod tests {
         init_schema(&audit).unwrap();
         init_schema(&state).unwrap();
 
-        audit
+        state
             .execute(
                 "INSERT INTO agent_turns\
              (chat_id,parent_session_id,started_at,ended_at,model_family,cycles,\
@@ -1754,6 +1768,43 @@ mod tests {
         let without_state = load_state_with_pipeline_runs(&audit, None).unwrap();
         assert!(without_state.pipeline_runs.is_empty());
         assert_eq!(without_state.subagents.len(), 2);
+    }
+
+    #[test]
+    fn pipeline_run_keeps_chat_scope_when_driver_never_finishes() {
+        let root = temp_dir("pipeline-run-live-chat-scope");
+        let audit = Connection::open(root.join("audit.db")).unwrap();
+        let state = Connection::open(root.join("musubi.db")).unwrap();
+        init_schema(&audit).unwrap();
+        init_schema(&state).unwrap();
+        audit
+            .execute(
+                "INSERT INTO subagent_audit\
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,\
+                  allowed_tools,max_turns,wall_clock_timeout_s)\
+                 VALUES (101,'spawned','pipeline-session','outer-session','agent',\
+                         'pipeline:feature-dev','ship it','[]',2,0)",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO pipeline_runs (session_id,pipeline_name,started_at,chat_id)\
+                 VALUES ('outer-session','feature-dev',100,'gui-pipeline-current')",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO pipeline_runs (session_id,pipeline_name,started_at)\
+                 VALUES ('pipeline-session','feature-dev',101)",
+                [],
+            )
+            .unwrap();
+
+        let joined = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+        assert_eq!(joined.pipeline_runs.len(), 1);
+        assert_eq!(joined.pipeline_runs[0].chat_id, "gui-pipeline-current");
     }
 
     fn temp_dir(name: &str) -> PathBuf {

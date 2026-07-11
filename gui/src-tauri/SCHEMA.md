@@ -130,7 +130,7 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 | Settings first-run status | runtime discovery of Python, `musubi`, `agent`, `.musubi/llm.json`, and audit DB |
 | Driver chat | `chat_log` |
 | Pipeline studio catalog | registered deterministic recipes under `.github/pipelines/` |
-| Pipeline studio runs | finalized/live `pipeline_runs` from the read-only sibling `musubi.db`, joined through the `pipeline:<name>` audit envelope to `agent_turns.chat_id`; child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id`. Only an envelope handle is a displayed run; the outer driver session row is excluded. |
+| Pipeline studio runs | finalized/live `pipeline_runs` from the read-only sibling `musubi.db`, joined through the `pipeline:<name>` audit envelope. The outer driver's durable `pipeline_runs.chat_id` scopes an active or halted run before `agent_turns` exists; completed turns use `agent_turns.chat_id` as a compatible fallback. Child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id`. Only an envelope handle is a displayed run; the outer driver session row is excluded. |
 
 ## State shape (Rust → JSON → `buildViewModel`)
 
