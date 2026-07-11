@@ -411,6 +411,23 @@ test('pipeline studio does not synthesize history after an audited run exists', 
   assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['real-run'])
 })
 
+test('pipeline run uses the exited driver budget status instead of active-worker copy', () => {
+  const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-current',
+    pipelineRuns: [
+      { sessionId: 'budget-run', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev', brief: 'retry', startedAt: 2, status: 'escalated', stages: [agent(12, 'budget-run', 'escalated', 'coder')] },
+    ],
+    driverStatus: {
+      running: false, surface: 'pipeline', task: 'retry', startedAt: 2,
+      terminalStatus: 'budget_halted', stdoutTail: '', stderrTail: 'TokenBudgetExhaustedError',
+    },
+  }), actions())
+
+  assert.equal(vm.pipeRuns[0].status, 'budget_halted')
+  assert.equal(vm.pipeChatBody.driverBusy, false)
+  assert.match(vm.pipeRunSummary.alertLine, /Budget halted/)
+})
+
 test('pipeline studio honours selected pipeline session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',

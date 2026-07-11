@@ -43,6 +43,7 @@ export const statusMeta = {
   done: { label: 'done', color: '#54c79a' },
   failed: { label: 'failed', color: '#e86a5f' },
   escalated: { label: 'escalated', color: '#e3b341' },
+  budget_halted: { label: 'budget halted', color: '#e3b341' },
   abandoned: { label: 'abandoned', color: '#6a6a72' },
 }
 

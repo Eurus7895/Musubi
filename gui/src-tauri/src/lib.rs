@@ -55,6 +55,7 @@ struct ChatAgentRuntime {
     // the driver reply is written to the matching chat_log surface.
     surface: String,
     pipeline_name: String,
+    terminal_status: String,
 }
 
 enum TailStream {
@@ -104,6 +105,24 @@ fn surface_arg(raw: &str) -> &'static str {
     }
 }
 
+fn terminal_status(cancelled: bool, exit_code: i32, output: &str) -> &'static str {
+    if cancelled {
+        return "aborted";
+    }
+    let output = output.to_ascii_lowercase();
+    if output.contains("tokenbudgetexhaustederror")
+        || output.contains("token budget halt")
+        || output.contains("token budget exhausted")
+    {
+        return "budget_halted";
+    }
+    if exit_code == 0 {
+        "success"
+    } else {
+        "failed"
+    }
+}
+
 fn clear_driver_chat_log(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
@@ -121,6 +140,7 @@ fn clear_driver_chat_log(
     rt.task.clear();
     rt.started_at = None;
     rt.cancel_requested = false;
+    rt.terminal_status.clear();
     Ok(())
 }
 
@@ -670,6 +690,7 @@ fn start_chat_agent(
         rt.stderr_tail.clear();
         rt.surface = surface.to_string();
         rt.pipeline_name = pipeline_name.unwrap_or_default().to_string();
+        rt.terminal_status.clear();
     }
 
     let mut env = musubi_data::current_env_map();
@@ -767,6 +788,7 @@ fn start_chat_agent(
                 if let Some(handle) = stderr_pump {
                     let _ = handle.join();
                 }
+                let code = status.code().unwrap_or(-1);
                 let (stdout_tail, stderr_tail, cancelled) = match shared.lock() {
                     Ok(mut rt) => {
                         let cancelled = rt.cancel_requested;
@@ -777,6 +799,11 @@ fn start_chat_agent(
                     }
                     Err(_) => (String::new(), String::new(), false),
                 };
+                let terminal =
+                    terminal_status(cancelled, code, &format!("{stderr_tail}\n{stdout_tail}"));
+                if let Ok(mut rt) = shared.lock() {
+                    rt.terminal_status = terminal.to_string();
+                }
                 let log = process_log(&stdout_tail, &stderr_tail);
                 if cancelled {
                     append_driver_chat(
@@ -786,7 +813,6 @@ fn start_chat_agent(
                     );
                     break;
                 }
-                let code = status.code().unwrap_or(-1);
                 if code == 0 {
                     let answer = stdout_tail.trim();
                     let artifacts = collect_recent_artifacts(&artifact_root, started_at, 8);
@@ -816,6 +842,7 @@ fn start_chat_agent(
                 if let Ok(mut rt) = shared.lock() {
                     rt.running = false;
                     rt.child = None;
+                    rt.terminal_status = "failed".into();
                 }
                 append_driver_chat(&app, Some("deny"), &format!("Agent wait failed: {e}"));
                 break;
@@ -965,6 +992,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
             running: rt.running,
             surface: surface_arg(&rt.surface).to_string(),
             pipeline_name: rt.pipeline_name.clone(),
+            terminal_status: rt.terminal_status.clone(),
             task: rt.task.clone(),
             started_at: rt.started_at,
             stdout_tail: rt.stdout_tail.clone(),
@@ -1361,6 +1389,17 @@ mod tests {
 
         let _ = std::fs::remove_file(state_path);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_status_marks_budget_halts_without_claiming_liveness() {
+        assert_eq!(
+            terminal_status(false, 1, "TokenBudgetExhaustedError"),
+            "budget_halted"
+        );
+        assert_eq!(terminal_status(false, 0, ""), "success");
+        assert_eq!(terminal_status(true, 1, ""), "aborted");
+        assert_eq!(terminal_status(false, 1, "other failure"), "failed");
     }
 
     #[test]

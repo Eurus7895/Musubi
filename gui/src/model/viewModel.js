@@ -14,6 +14,7 @@ function statusForRun(run) {
   if (run.status === 'success') return 'done'
   if (run.status === 'aborted') return 'failed'
   if (run.status === 'escalated') return 'escalated'
+  if (run.status === 'budget_halted') return 'budget_halted'
   if (run.status === 'running') return 'running'
   if (steps.some((a) => a.status === 'running')) return 'running'
   if (steps.some((a) => a.status === 'failed')) return 'failed'
@@ -32,6 +33,10 @@ function belongsToSurface(item, surface, currentChatId = '') {
   const chatId = item?.chatId || item?.chat_id || ''
   if (currentChatId) return chatId === currentChatId
   return surface === 'pipeline' ? isPipelineChatId(chatId) : !isPipelineChatId(chatId)
+}
+
+function isTerminalStatus(status) {
+  return ['success', 'aborted', 'escalated', 'budget_halted', 'failed'].includes(status)
 }
 
 function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orchestrator', currentChatId = '') {
@@ -236,6 +241,17 @@ export function buildViewModel(s, act) {
       brief: run.brief || '',
     }))
     .sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
+  // A pipeline's durable lifecycle row wins once finalized. The one exception
+  // is the precise budget-halt reason: it is emitted by the exited driver and
+  // refines the state store's broader `escalated` outcome for the same run.
+  const exitedPipelineStatus = !driverRunning && driverSurface === 'pipeline'
+    ? driverStatusForRuns.terminalStatus
+    : ''
+  if (isTerminalStatus(exitedPipelineStatus)) {
+    const pendingOrEscalated = pipeRunsRaw.find((run) => run.status === 'running'
+      || (run.status === 'escalated' && exitedPipelineStatus === 'budget_halted'))
+    if (pendingOrEscalated) pendingOrEscalated.status = exitedPipelineStatus
+  }
   // The process overlay bridges only the short interval before the runner has
   // appended its audited envelope. Once a real run exists, preserve its ID and
   // terminal status instead of manufacturing a second history card.

@@ -98,6 +98,7 @@ pub struct DriverStatus {
     pub running: bool,
     pub surface: String,
     pub pipeline_name: String,
+    pub terminal_status: String,
     pub task: String,
     pub started_at: Option<i64>,
     pub stdout_tail: String,
