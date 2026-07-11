@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
 import { compactMarkdownTables, parseInlineSegments } from './chatLinks.js'
@@ -185,7 +185,6 @@ function ProcessMessage({ vals }) {
           <span style={{ marginLeft: 'auto', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#9b9ba2' }}>{vals.driverProcessOpen ? 'hide details' : 'show details'}</span>
         </div>
         <div style={{ fontSize: 12.5, lineHeight: 1.45, color: '#f4f4f5', marginBottom: 6, overflowWrap: 'anywhere' }}>{vals.driverStatusText || 'Working on the current request...'}</div>
-        {vals.driverTask && <div style={{ fontSize: 11, lineHeight: 1.4, color: '#9b9ba2', overflowWrap: 'anywhere' }}>{vals.driverTask}</div>}
         {vals.driverProcessOpen && (
           <pre style={{ margin: '10px 0 0', maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, lineHeight: 1.45, color: '#cfcfd4', background: 'rgba(13,17,23,0.62)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 10 }}>
             {vals.driverProcessLog || 'No process output yet.'}
@@ -205,6 +204,10 @@ export default function ChatBody({ vals }) {
   const isCancelling = vals.sendMode === 'cancel'
   const sendDisabled = !!vals.sendDisabled
   const inputDisabled = !!vals.inputDisabled
+  const latestUserMessageIndex = vals.chat.reduce(
+    (latest, message, index) => (message.role === 'you' ? index : latest),
+    -1,
+  )
 
   useEffect(() => {
     const el = scrollRef.current
@@ -228,14 +231,16 @@ export default function ChatBody({ vals }) {
     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: 'auto', padding: '12px 0', display: 'flex', flexDirection: 'column', gap: 2 }}>
         {vals.chat.map((c, i) => (
-          <div key={i} style={cssToObj(c.rowStyle)}>
-            {c.showMeta && <div style={cssToObj(c.metaStyle)}>{c.meta}</div>}
-            <div style={cssToObj(c.bubbleStyle)}>
-              {c.formatted ? <FormattedMessage text={c.text} onOpenArtifact={vals.onOpenArtifact} onOpenLog={vals.onOpenLog} /> : c.text}
+          <Fragment key={i}>
+            <div style={cssToObj(c.rowStyle)}>
+              {c.showMeta && <div style={cssToObj(c.metaStyle)}>{c.meta}</div>}
+              <div style={cssToObj(c.bubbleStyle)}>
+                {c.formatted ? <FormattedMessage text={c.text} onOpenArtifact={vals.onOpenArtifact} onOpenLog={vals.onOpenLog} /> : c.text}
+              </div>
             </div>
-          </div>
+            {vals.driverBusy && i === latestUserMessageIndex && <ProcessMessage vals={vals} />}
+          </Fragment>
         ))}
-        {vals.driverBusy && <ProcessMessage vals={vals} />}
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '11px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
         <input

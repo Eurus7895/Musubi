@@ -1,9 +1,10 @@
-export default function NewSessionButton({ disabled, onClick }) {
+export default function NewSessionButton({ disabled, label = 'New session', onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-label={label}
       title={disabled ? 'Wait for the active run before starting a new session' : 'Start a fresh isolated session'}
       style={{
         display: 'inline-flex',
@@ -24,7 +25,7 @@ export default function NewSessionButton({ disabled, onClick }) {
       }}
     >
       <span aria-hidden="true" style={{ fontSize: 17, lineHeight: 1 }}>＋</span>
-      <span>New session</span>
+      <span>{label}</span>
     </button>
   )
 }

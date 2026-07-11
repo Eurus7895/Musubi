@@ -44,9 +44,6 @@ export default function Pipeline({ vals }) {
             </div>
             <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 4, fontFamily: "'IBM Plex Mono',monospace" }}>{vals.pipeStatusText}</div>
           </div>
-          <div style={{ display: 'flex', gap: 9, flexShrink: 0 }}>
-            <Box as="button" onClick={vals.onClearPipe} css="font-family:'IBM Plex Mono',monospace;font-size:12px;padding:9px 14px;border-radius:9px;cursor:pointer;background:#19212f;border:1px solid rgba(255,255,255,0.1);color:#9b9ba2" hover="color:#e9e9ea">clear</Box>
-          </div>
         </div>
 
         <div style={{ flex: 1, minHeight: 0, padding: '6px 26px 26px' }}>
@@ -147,6 +144,7 @@ export default function Pipeline({ vals }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <NewSessionButton
+                label="New pipeline session"
                 onClick={vals.pipeChatBody.onNewSession}
                 disabled={vals.pipeChatBody.clearDriverDisabled}
               />

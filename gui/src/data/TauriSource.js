@@ -220,7 +220,6 @@ export default class TauriSource {
         steps.splice(j, 0, moved)
         this._setLocal({ pipeSteps: steps, pipeModified: true })
       },
-      clearPipe: () => this._setLocal({ pipeSteps: [], pipeModified: true }),
       loadPreset: (name) => {
         const entry = (this.state.pipelineCatalog || []).find((item) => item.name === name)
         if (!entry) return
