@@ -322,3 +322,91 @@ Verify both headers use the accent pill; Studio has no clear/close controls; New
 git add docs/roadmap.md docs/superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md
 git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "docs(roadmap): record runnable pipeline studio"
 ```
+
+---
+
+## Post-implementation corrective work (2026-07-11)
+
+Visual review exposed contradictory status, incomplete pipeline progress, and
+ambiguous Studio controls. Complete Tasks 8–11 before merge.
+
+### Task 8: Reconcile Driver and Pipeline Terminal State
+
+**Files:** `gui/src-tauri/src/lib.rs`, `gui/src-tauri/musubi-data/src/lib.rs`,
+`gui/src/data/TauriSource.js`, `gui/src/model/viewModel.js`, and focused tests.
+
+**Problem:** The chat can say `Budget halted before the next model call.` while
+the process card says `agent running` and the Studio card says `running`.
+
+**Contract:** Normalize every run to one state: `running | success | aborted |
+escalated | budget_halted | failed`. Prefer finalized `pipeline_runs` data;
+until it arrives use exited process data. An exited child must set
+`driverStatus.running = false`.
+
+- [ ] Add a failing test for a budget-halted child exit followed by a finalized
+  pipeline row; assert chat, process card, Studio card, and detail all report
+  `budget_halted`, with no active-worker copy. Cover success and non-budget
+  failure separately.
+- [ ] Implement one named terminal-state mapper and route all status badges,
+  messages, and summaries through it. Do not infer liveness from a stale flag.
+- [ ] Verify: `node --test gui/src/data/TauriSource.test.mjs gui/src/model/viewModel.test.mjs`,
+  plus both Rust crate test suites; then commit `fix(gui): reconcile pipeline terminal status`.
+
+### Task 9: Make Pipeline Progress and Empty Stages Legible
+
+**Files:** `gui/src/model/viewModel.js`, `gui/src/model/viewModel.test.mjs`,
+`gui/src/views/Pipeline.jsx`, and `gui/src/model/data.js` only if stage
+metadata must change.
+
+**Problem:** `feature-dev` advertises four stages while only three are readily
+discoverable; `designer` shows `0 tools / max 0 turns`; and the detail heading
+truncates as `Session driver-runni`.
+
+**Contract:** Every configured stage is discoverable with an explicit overflow
+affordance. Render `handoff-only` only for explicit metadata; otherwise show
+an actionable configuration error. Use `<pipeline name> · run <short id>` for
+the detail title.
+
+- [ ] Test four visible/discoverable stage labels, a flow overflow indication,
+  no misleading zero-tool worker card, and a semantic detail title.
+- [ ] Model handoff-only intent explicitly rather than silently accepting a
+  malformed worker; render the complete flow and stable title.
+- [ ] Verify `node --test gui/src/model/viewModel.test.mjs gui/src/components/*.test.mjs`
+  and `npm run build --workspace musubi-gui`; commit `fix(gui): clarify pipeline stage progress`.
+
+### Task 10: Remove Ambiguous Studio Controls and Duplicate Task Events
+
+**Files:** `gui/src/views/Pipeline.jsx`, `gui/src/components/ChatBody.jsx`,
+`gui/src/data/TauriSource.js`, `gui/src/data/TauriSource.test.mjs`,
+`gui/src/components/NewSessionButton.jsx`, and its test.
+
+**Problem:** Header `clear` actually clears editable composition, not chat
+history, while sitting beside New session. The same task appears in a user
+bubble and again as an isolated driver-process card.
+
+**Contract:** `New pipeline session` is the only Studio header reset action;
+it creates a fresh Studio chat/session without deleting audit history or
+changing completed runs. Remove header `clear`. If reset is retained, make it
+an editor-only, explicitly named, confirmation-protected action. Attach
+process progress to the originating run/message rather than add a duplicate
+user-like event.
+
+- [ ] Test absence of a header `onClearPipe` button, the accessible `New pipeline
+  session` label, a single task brief with attached progress, and disabled New
+  session only while the shared child process is active.
+- [ ] Remove obsolete clear actions without UI callers; preserve the draft
+  through New session; make any retained editor reset explicit and confirmed.
+- [ ] Verify `node --test gui/src/data/TauriSource.test.mjs gui/src/components/NewSessionButton.test.mjs gui/src/components/chatLinks.test.mjs`
+  and production build; commit `fix(gui): simplify studio session controls`.
+
+### Task 11: Corrective Regression Suite and Manual Acceptance
+
+**Files:** `docs/roadmap.md` and this plan.
+
+- [ ] Run Node, both Rust suites, focused Python pipeline tests, production
+  build, and `git diff --check`.
+- [ ] Manually run one completed and one budget-halted pipeline. For both,
+  verify all four status surfaces agree, stage count matches the flow, every
+  stage is discoverable, and no header clear action or duplicate brief remains.
+- [ ] Update the roadmap only after acceptance passes; commit
+  `docs(roadmap): record studio corrective pass`.
