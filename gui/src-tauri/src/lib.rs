@@ -604,13 +604,6 @@ fn open_workspace_path(project_root: &Path, raw_path: &str) -> Result<PathBuf, S
         .map_err(|e| format!("failed to open artifact: {e}"))
 }
 
-fn artifact_opened_message(path: &Path) -> String {
-    format!(
-        "Opened artifact in the system file browser:\n\n- `{}`",
-        path.to_string_lossy()
-    )
-}
-
 fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
     format!("Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}")
 }
@@ -1129,16 +1122,7 @@ fn action(
             let raw_path = str_arg(0);
             let surface = surface_arg(&str_arg(1));
             match open_workspace_path(&state.project_root, &raw_path) {
-                Ok(opened) => {
-                    let conn = state.db.lock().map_err(|e| e.to_string())?;
-                    insert_chat(
-                        &conn,
-                        "driver",
-                        None,
-                        &artifact_opened_message(&opened),
-                        surface,
-                    )?;
-                }
+                Ok(_) => {}
                 Err(e) => {
                     let conn = state.db.lock().map_err(|err| err.to_string())?;
                     insert_chat(
@@ -1466,11 +1450,10 @@ mod tests {
     }
 
     #[test]
-    fn artifact_open_messages_are_user_visible() {
-        let opened = artifact_opened_message(Path::new(r"C:\Workspace\Projects\Musubi\a.html"));
-        assert!(opened.contains("Opened artifact"));
-        assert!(opened.contains("a.html"));
-
+    fn artifact_open_failures_are_visible_but_successes_are_silent() {
+        let source = include_str!("lib.rs");
+        let removed_success_helper = ["fn ", "artifact_opened_message"].concat();
+        assert!(!source.contains(&removed_success_helper));
         let failed = artifact_open_failed_message("missing.html", "cannot open artifact");
         assert!(failed.contains("Could not open artifact"));
         assert!(failed.contains("missing.html"));
