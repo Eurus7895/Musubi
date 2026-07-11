@@ -327,16 +327,71 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "docs(r
 
 ## Post-implementation corrective work (2026-07-11)
 
-Visual review exposed contradictory status, incomplete pipeline progress, and
-ambiguous Studio controls. Complete Tasks 8–11 before merge.
+Visual review and the captured runner log exposed a split observability store,
+ambiguous run attempts, incomplete pipeline progress, and ambiguous Studio
+controls. Complete Tasks 8–13 before merge.
 
-### Task 8: Reconcile Driver and Pipeline Terminal State
+### Task 8: Join Pipeline Observability Across the Two Authoritative Databases
+
+**Files:**
+- Modify: `gui/src-tauri/src/lib.rs`
+- Modify: `gui/src-tauri/musubi-data/src/lib.rs`
+- Modify: `gui/src-tauri/musubi-data/src/lib.rs` tests
+- Modify: `gui/src-tauri/SCHEMA.md`
+
+**Evidence:** The GUI opens only `musubi/storage/audit.db`, where the append-only
+pipeline envelope and stage audit rows live. `state.create_session()` writes
+the matching `pipeline_runs` records to sibling `musubi/storage/musubi.db`.
+Consequently, `State.pipeline_runs` is empty in a real GUI snapshot and the
+frontend manufactures the `driver-running-*` run seen as `Session driver-runni`.
+
+**Interface:**
+- `AppState` keeps its existing audit connection for chat writes and owns one
+  optional read-only state connection. Resolve sibling `musubi.db` from a
+  workspace `audit.db`; if it does not exist, return an empty pipeline-run
+  collection without failing the console.
+- Add `load_pipeline_runs(audit_conn, state_conn) -> Result<Vec<PipelineRun>>`.
+  It reads status from `pipeline_runs` in `musubi.db`, joins a child session to
+  the `pipeline:<name>` audit-envelope handle, then joins the envelope parent
+  session to `agent_turns.chat_id` in audit.
+- Expose only child sessions whose ID equals an envelope handle; never show the
+  outer driver `state.create_session()` record as a duplicate pipeline run.
+
+- [ ] **Step 1: Write failing two-database tests** — create isolated `audit.db`
+  and `musubi.db` fixtures. Insert an outer `agent_turn`, a `pipeline:feature-dev`
+  envelope plus two stage rows in audit, and a finalized child `pipeline_runs`
+  row in state. Assert the joined snapshot has exactly one run with its exact
+  `gui-pipeline-*` chat ID, final status, brief, and two stages. Assert a
+  missing state DB preserves the audit snapshot with `pipelineRuns: []`.
+- [ ] **Step 2: Add database resolution and snapshot wiring** — add a
+  `ResolvedStateDb` helper derived from `ResolvedAuditDb`, store an optional
+  state connection in `AppState`, and combine both reads in `snapshot()`. The
+  state connection is read-only; do not duplicate state rows into the
+  append-only ledger.
+- [ ] **Step 3: Remove synthetic history as data fallback** — keep a short-lived
+  process overlay only before an envelope reaches audit. Once the joined run
+  exists, use its real ID, stages, and status. Identical briefs must still make
+  distinct run cards.
+- [ ] **Step 4: Update contract, verify, and commit**
+
+```powershell
+cargo test --manifest-path gui/src-tauri/musubi-data/Cargo.toml pipeline
+cargo test --manifest-path gui/src-tauri/Cargo.toml
+node --test gui/src/data/TauriSource.test.mjs gui/src/model/viewModel.test.mjs
+git add gui/src-tauri/src/lib.rs gui/src-tauri/musubi-data/src/lib.rs gui/src-tauri/SCHEMA.md gui/src/model/viewModel.test.mjs
+git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gui): join pipeline state with audit runs"
+```
+
+### Task 9: Reconcile Driver and Pipeline Terminal State
 
 **Files:** `gui/src-tauri/src/lib.rs`, `gui/src-tauri/musubi-data/src/lib.rs`,
 `gui/src/data/TauriSource.js`, `gui/src/model/viewModel.js`, and focused tests.
 
 **Problem:** The chat can say `Budget halted before the next model call.` while
 the process card says `agent running` and the Studio card says `running`.
+The log shows these may be two distinct submissions with the same brief: a
+completed budget-halted run followed by a newer live retry. Task 8 must provide
+their real IDs before this task assigns terminal copy.
 
 **Contract:** Normalize every run to one state: `running | success | aborted |
 escalated | budget_halted | failed`. Prefer finalized `pipeline_runs` data;
@@ -352,29 +407,32 @@ until it arrives use exited process data. An exited child must set
 - [ ] Verify: `node --test gui/src/data/TauriSource.test.mjs gui/src/model/viewModel.test.mjs`,
   plus both Rust crate test suites; then commit `fix(gui): reconcile pipeline terminal status`.
 
-### Task 9: Make Pipeline Progress and Empty Stages Legible
+### Task 10: Make Pipeline Progress and Empty Stages Legible
 
 **Files:** `gui/src/model/viewModel.js`, `gui/src/model/viewModel.test.mjs`,
 `gui/src/views/Pipeline.jsx`, and `gui/src/model/data.js` only if stage
 metadata must change.
 
 **Problem:** `feature-dev` advertises four stages while only three are readily
-discoverable; `designer` shows `0 tools / max 0 turns`; and the detail heading
-truncates as `Session driver-runni`.
+discoverable; `designer` shows `0 tools / max 0 turns` even though the runner
+records three allowed tools; and the detail heading truncates as `Session
+driver-runni`.
 
 **Contract:** Every configured stage is discoverable with an explicit overflow
-affordance. Render `handoff-only` only for explicit metadata; otherwise show
+affordance. Use audited allowed tools for observed runs and include every
+registered role, including `designer`, in draft metadata; otherwise show
 an actionable configuration error. Use `<pipeline name> · run <short id>` for
 the detail title.
 
 - [ ] Test four visible/discoverable stage labels, a flow overflow indication,
-  no misleading zero-tool worker card, and a semantic detail title.
-- [ ] Model handoff-only intent explicitly rather than silently accepting a
-  malformed worker; render the complete flow and stable title.
+  `designer` metadata matching its allowed tools, no static zero-tool fallback,
+  and a semantic detail title.
+- [ ] Add the missing draft role metadata and render run tools from audit;
+  render the complete flow and stable title.
 - [ ] Verify `node --test gui/src/model/viewModel.test.mjs gui/src/components/*.test.mjs`
   and `npm run build --workspace musubi-gui`; commit `fix(gui): clarify pipeline stage progress`.
 
-### Task 10: Remove Ambiguous Studio Controls and Duplicate Task Events
+### Task 11: Remove Ambiguous Studio Controls and Duplicate Task Events
 
 **Files:** `gui/src/views/Pipeline.jsx`, `gui/src/components/ChatBody.jsx`,
 `gui/src/data/TauriSource.js`, `gui/src/data/TauriSource.test.mjs`,
@@ -399,14 +457,59 @@ user-like event.
 - [ ] Verify `node --test gui/src/data/TauriSource.test.mjs gui/src/components/NewSessionButton.test.mjs gui/src/components/chatLinks.test.mjs`
   and production build; commit `fix(gui): simplify studio session controls`.
 
-### Task 11: Corrective Regression Suite and Manual Acceptance
+### Task 12: Bound Pipeline Context and Fail Truncated Artifact Writes Loudly
+
+**Files:**
+- Modify: `musubi/agent/context.py`
+- Modify: `musubi/agent/run.py`
+- Modify: `musubi/agent/pipeline_runner.py`
+- Modify: `musubi/tests/test_agent_loop.py`
+- Modify: `musubi/tests/test_spawn_pipeline.py`
+
+**Evidence:** The four-stage run exhausted 200k tokens before review. Broad
+`glob`/`grep` results and repeated whole-file reads kept entering later model
+calls; a 6144-token `write_file` response stopped at `max_tokens`, so the
+runner dropped its arguments and no complete artifact write occurred.
+
+**Contract:** Pipeline workers receive a bounded working context that is lower
+than the root-agent default but retains the latest user goal, system prompt,
+and most recent relevant tool result. A response whose truncated tool call
+would mutate a file is a terminal incomplete stage result, never `done`; the
+pipeline finalizes as `aborted` or `escalated` with an explicit reason.
+
+- [ ] **Step 1: Add failing context-budget tests** — construct a pipeline-worker
+  conversation with broad glob/grep and full-file tool results. Assert fitting
+  to the pipeline limit retains the latest goal and tool-result pairing while
+  eliding older oversized results. Assert the root-agent default remains
+  unchanged.
+- [ ] **Step 2: Add a failing truncated-write pipeline test** — make a fake
+  model return `stop_reason=max_tokens` with `musubi_write_file` content.
+  Assert the write is not dispatched, its stage completion is non-success, and
+  `musubi_finalize_pipeline_run` receives a terminal non-success status.
+- [ ] **Step 3: Implement bounded pipeline context and structured truncation**
+  — pass an explicit pipeline-worker context cap into `run_unit`/`fit_context`
+  without changing the root default. Replace the free-form truncated-write
+  fallback with a typed incomplete outcome that `pipeline_runner` catches,
+  audits, and finalizes exactly once. Keep append-file chunking available for
+  deliberately large artifacts.
+- [ ] **Step 4: Verify and commit**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest musubi/tests/test_agent_loop.py musubi/tests/test_spawn_pipeline.py -q
+git add musubi/agent/context.py musubi/agent/run.py musubi/agent/pipeline_runner.py musubi/tests/test_agent_loop.py musubi/tests/test_spawn_pipeline.py
+git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(agent): bound pipeline worker context"
+```
+
+### Task 13: Corrective Regression Suite and Manual Acceptance
 
 **Files:** `docs/roadmap.md` and this plan.
 
 - [ ] Run Node, both Rust suites, focused Python pipeline tests, production
   build, and `git diff --check`.
-- [ ] Manually run one completed and one budget-halted pipeline. For both,
-  verify all four status surfaces agree, stage count matches the flow, every
-  stage is discoverable, and no header clear action or duplicate brief remains.
+- [ ] Manually run one completed and one budget-halted pipeline, then retry the
+  same brief once. Verify each attempt has its own run ID/card; all four status
+  surfaces agree; stage count matches the flow; `designer` shows its real tools;
+  no header clear action or duplicate brief remains; and a truncated artifact
+  write is visibly terminal rather than reported as a completed stage.
 - [ ] Update the roadmap only after acceptance passes; commit
   `docs(roadmap): record studio corrective pass`.
