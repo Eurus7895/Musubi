@@ -973,6 +973,29 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert session.calls == []
 
 
+def test_pipeline_context_budget_is_lower_and_keeps_recent_tool_pair() -> None:
+    from agent.context import DEFAULT_CONTEXT_BUDGET, fit_context
+    from agent.pipeline_runner import PIPELINE_CONTEXT_BUDGET
+
+    older_result = "old glob result\n" + ("a" * (PIPELINE_CONTEXT_BUDGET + 2_000))
+    recent_result = "recent grep result\n" + ("b" * 300)
+    messages = [
+        {"role": "system", "content": "worker system"},
+        {"role": "user", "content": "latest user goal: build dashboard"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "old", "name": "musubi_glob", "input": {"pattern": "**/*"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "old", "content": older_result}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "recent", "name": "musubi_grep", "input": {"pattern": "TODO"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "recent", "content": recent_result}]},
+    ]
+
+    fitted = fit_context(messages, budget_chars=PIPELINE_CONTEXT_BUDGET, keep_last_turns=2)
+
+    assert PIPELINE_CONTEXT_BUDGET < DEFAULT_CONTEXT_BUDGET
+    assert "latest user goal" in str(fitted[1]["content"])
+    assert fitted[-1]["content"][0]["content"] == recent_result
+    assert "[context-trimmed:" in str(fitted[3]["content"])
+
+
 def test_cycle_token_counts_sum_effort_retry_attempts() -> None:
     from agent import run as run_mod
 

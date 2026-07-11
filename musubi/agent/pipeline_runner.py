@@ -34,6 +34,11 @@ from typing import Any
 #: cycles for discovery on top of the stage's real output.
 DEFAULT_STAGE_MAX_CYCLES = 12
 
+# Pipeline stages are deliberately narrower than a root-agent turn. Keeping
+# their context below the root default limits repeated glob/grep/file reads
+# from consuming the shared run budget before later stages can execute.
+PIPELINE_CONTEXT_BUDGET = 16_000
+
 
 async def run_pipeline(
     session: Any,
@@ -114,6 +119,7 @@ async def run_pipeline(
                 system_prompt=system_prompt, user_message=None,
                 max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
                 compression_db_path=compression_db_path,
+                context_budget_chars=PIPELINE_CONTEXT_BUDGET,
                 role=role,
                 stats=stats,
                 budget=budget,
@@ -137,6 +143,19 @@ async def run_pipeline(
                 is_budget,
             )
             raise
+        if _is_incomplete_tool_outcome(answer):
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": answer,
+                "turns": turns,
+                "status": "failed",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            if strict:
+                raise RuntimeError(
+                    f"pipeline stage {stage!r} ended with an incomplete tool call"
+                )
+            return answer
         status = "done" if answer is not None else "escalated"
         if answer is None:
             pipeline_escalated = True
@@ -191,3 +210,11 @@ def _loads(raw: str) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _is_incomplete_tool_outcome(answer: str | None) -> bool:
+    """Recognize the typed max-token guard returned by the worker loop."""
+    if not isinstance(answer, str) or not answer.startswith("[blocked] "):
+        return False
+    payload = _loads(answer.removeprefix("[blocked] "))
+    return payload.get("reason") == "output_too_large_for_single_tool_call"
