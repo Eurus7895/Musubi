@@ -329,7 +329,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "docs(r
 
 Visual review and the captured runner log exposed a split observability store,
 ambiguous run attempts, incomplete pipeline progress, and ambiguous Studio
-controls. Complete Tasks 8–13 before merge.
+controls. Complete Tasks 8–14 before merge.
 
 ### Task 8: Join Pipeline Observability Across the Two Authoritative Databases
 
@@ -500,7 +500,52 @@ git add musubi/agent/context.py musubi/agent/run.py musubi/agent/pipeline_runner
 git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(agent): bound pipeline worker context"
 ```
 
-### Task 13: Corrective Regression Suite and Manual Acceptance
+### Task 13: Keep the Latest Process Log Openable After Process Exit
+
+**Files:**
+- Modify: `gui/src/model/viewModel.js`
+- Modify: `gui/src/model/viewModel.test.mjs`
+- Modify: `gui/src/components/ChatBody.jsx`
+- Modify: `gui/src/components/chatLinks.test.mjs`
+- Modify: `gui/src/data/TauriSource.test.mjs`
+
+**Evidence:** `openProcessLog()` correctly sets local `logWindowOpen: true`, and
+the backend retains the completed process's stdout/stderr tail. However, the
+view model exposes both `driverProcessLog` and `logWindowOpen` only through
+`pipelineOwnsDriver`/`orchestratorOwnsDriver`, which require
+`driverStatus.running === true`. The link therefore changes local state after
+exit but cannot render `LogWindow`.
+
+**Contract:** Running state controls only the live process card and cancel
+action. The latest retained log remains viewable on its owning surface after
+exit, until a new session or a new launch clears it. The link must describe the
+actual retained scope as `Open process log` rather than claim unbounded full
+history; the current launcher retains the newest 64 KiB per stream.
+
+- [ ] **Step 1: Add failing post-exit view-model tests** — supply an idle
+  pipeline `driverStatus` with a non-empty stderr tail and `logWindowOpen=true`.
+  Assert `driverBusy` is false while the pipeline chat receives the log and
+  renders the window. Repeat for Orchestrator. Assert the other surface cannot
+  open the active owner's retained log, and a new session with empty tails has
+  no modal.
+- [ ] **Step 2: Add failing link/source tests** — assert an `musubi-log:last`
+  formatted message calls `onOpenLog`, the label is `Open process log`, and
+  `openProcessLog`/`closeProcessLog` only change the local modal flag.
+- [ ] **Step 3: Decouple log availability from liveness** — derive an owning
+  `hasDriverLog` from the tail and recorded surface, pass it to `ChatBody`
+  independently of `driverBusy`, and gate `LogWindow` on `logWindowOpen &&
+  hasDriverLog`. Keep New session and next launch responsible for clearing the
+  retained tails and closing the modal.
+- [ ] **Step 4: Verify and commit**
+
+```powershell
+node --test gui/src/data/TauriSource.test.mjs gui/src/model/viewModel.test.mjs gui/src/components/chatLinks.test.mjs
+npm run build --workspace musubi-gui
+git add gui/src/model/viewModel.js gui/src/model/viewModel.test.mjs gui/src/components/ChatBody.jsx gui/src/components/chatLinks.test.mjs gui/src/data/TauriSource.test.mjs
+git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gui): keep completed process logs accessible"
+```
+
+### Task 14: Corrective Regression Suite and Manual Acceptance
 
 **Files:** `docs/roadmap.md` and this plan.
 
@@ -510,6 +555,8 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(ag
   same brief once. Verify each attempt has its own run ID/card; all four status
   surfaces agree; stage count matches the flow; `designer` shows its real tools;
   no header clear action or duplicate brief remains; and a truncated artifact
-  write is visibly terminal rather than reported as a completed stage.
+  write is visibly terminal rather than reported as a completed stage. After
+  each process exits, click `Open process log` and verify the retained log opens
+  on the owning surface, then verify New session clears that retained log.
 - [ ] Update the roadmap only after acceptance passes; commit
   `docs(roadmap): record studio corrective pass`.
