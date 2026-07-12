@@ -507,18 +507,19 @@ fn load_orchestrator_sessions(conn: &Connection) -> rusqlite::Result<Vec<Orchest
          GROUP BY c.chat_id
          ORDER BY MAX(c.id) DESC",
     )?;
-    let sessions = stmt.query_map([], |r| {
-        Ok(OrchestratorSession {
-            chat_id: r.get(0)?,
-            created_at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            updated_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-            title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            last_request: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            root_turns: 0,
-            workers: 0,
-        })
-    })?
-    .collect();
+    let sessions = stmt
+        .query_map([], |r| {
+            Ok(OrchestratorSession {
+                chat_id: r.get(0)?,
+                created_at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                updated_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                last_request: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                root_turns: 0,
+                workers: 0,
+            })
+        })?
+        .collect();
     sessions
 }
 
