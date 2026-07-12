@@ -309,4 +309,3 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(ag
 - [ ] **Step 5:** Verify reviewer input contains only coder output, then record
   the acceptance result in the roadmap and commit with
   `docs(roadmap): record bounded pipeline runtime`.
-

@@ -165,4 +165,3 @@ session directory is introduced.
 - Durable process-log history or a session-history browser.
 - Model-driven pipeline selection.
 - Replacing the standalone worker model with the VS Code stage protocol.
-

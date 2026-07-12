@@ -257,4 +257,3 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "test(g
   container was created.
 - [ ] **Step 5:** Record the acceptance result in the roadmap and commit with
   `docs(roadmap): record project-scoped sessions`.
-
