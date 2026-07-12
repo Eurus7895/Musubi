@@ -278,11 +278,17 @@ returns only a compact summary, so the orchestrator's context stays small.
   per-role width cap so a turn can't fan out without bound.
 - **Nesting.** A worker whose prompt declares a `spawn_allowlist` may summon its
   own workers, up to a depth cap (default 2). Direct worker prompts are leaves
-  by default; pipeline-stage prompts keep nesting only where explicitly declared.
+  by default.
 - **Pipelines.** A worker can summon a whole **pipeline** —
   `musubi_spawn_pipeline(pipeline_name, brief)` — an ordered recipe of workers
   where each stage's summary feeds the next and the evaluator (last stage) sees
-  only the prior stage (the firewall, generalised).
+  only the prior stage (the firewall, generalised). Each stage receives its
+  role skill through the spawn context (HI #2, same push path as a direct
+  worker) and resolves its prompt from `workers/<role>.agent.md`, falling back
+  to `pipeline-stages/<pipeline>/<role>.agent.md`; a role with **no prompt in
+  either place fails the stage** — a stage never runs on an empty prompt.
+  Standalone pipeline stages are strict leaves: the `spawns:` a pipeline.yaml
+  declares applies to the embedded host only.
 
 The spawn firewall (which role may summon which) lives in each agent's
 `spawn_allowlist:` frontmatter, fail-closed (an unknown role is denied).

@@ -10,8 +10,12 @@ A pipeline is an ordered chain of workers (composer reads the chain from
 
     spawn_pipeline (open child session + plan)
       → for each stage in order:
-          spawn_pipeline_stage (authorise by membership, get role + tools)
-          → build the stage worker prompt from its brief
+          spawn_pipeline_stage (authorise by membership)
+          → get_subagent_context (firewalled brief + role skill + tools — the
+            same HI #2 push path every direct worker takes)
+          → resolve the role prompt (workers/ first, then
+            pipeline-stages/<pipeline>/; NO prompt → the stage fails closed,
+            it never runs on an empty prompt)
           → run a turn-capped worker loop (run_unit)
           → complete_subagent (audit the worker)
       → return the final stage's summary to the summoning agent
@@ -19,6 +23,10 @@ A pipeline is an ordered chain of workers (composer reads the chain from
 The brief threads forward: generator stages see the request plus the prior
 summaries; the evaluator (last stage) sees ONLY the immediately prior stage's
 output — the HI #3 firewall, generalised to any pipeline.
+
+Standalone stages are strict leaves: the `spawns:` a pipeline.yaml declares
+for a stage applies to the embedded host only; this runner hands no spawn
+tool to a stage.
 """
 
 from __future__ import annotations
@@ -66,7 +74,6 @@ async def run_pipeline(
     """
     from agent.run import _call_tool_text, run_unit
     from agent.subagent import (
-        _read_agent_md,
         build_subagent_system_prompt,
         select_child_tools,
     )
@@ -103,10 +110,50 @@ async def run_pipeline(
                 raise RuntimeError(msg)
             return msg
         handle_id = str(st.get("handle_id", ""))
-        allowed = st.get("allowed_tools") or []
 
-        agent_md = _read_agent_md(role, agents_dir)
-        system_prompt = build_subagent_system_prompt(agent_md, None, brief)
+        # Same context path as a direct worker (agent/subagent.py): the
+        # spawn context carries the firewalled brief, the role's pushed
+        # skill (HI #2), and the effective tool allowlist.
+        ctx_raw = await _call_tool_text(session, "musubi_get_subagent_context", {
+            "handle_id": handle_id,
+        })
+        ctx = _loads(ctx_raw)
+        if ctx.get("status") != "ok":
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": f"[stage {stage}] context fetch failed: {ctx_raw[:200]}",
+                "turns": 0,
+                "status": "failed",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = f"[pipeline {pname}] stage {stage!r} context fetch failed: {ctx_raw}"
+            if strict:
+                raise RuntimeError(msg)
+            return msg
+        allowed = ctx.get("allowed_tools") or st.get("allowed_tools") or []
+        role_skill = ctx.get("role_skill")
+
+        agent_md = _read_stage_agent_md(role, pname, agents_dir)
+        if not agent_md.strip():
+            # Fail closed: a stage never runs on an empty role prompt. A
+            # silent brief-only worker looks like a working pipeline while
+            # quietly dropping the role's contract.
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": f"[stage {stage}] no role prompt found for {role!r}",
+                "turns": 0,
+                "status": "failed",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = (
+                f"[pipeline {pname}] stage {stage!r} has no role prompt: "
+                f"expected .github/agents/workers/{role}.agent.md or "
+                f".github/agents/pipeline-stages/{pname}/{role}.agent.md"
+            )
+            if strict:
+                raise RuntimeError(msg)
+            return msg
+        system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
         child_tools = select_child_tools(tools, allowed)
         print(
             f"[agent]     ⮑ stage {stage} (role={role}, tools={len(child_tools)})",
@@ -187,6 +234,33 @@ async def _finalize_pipeline(
         "final_status": final_status,
         "escalated": escalated,
     })
+
+
+def _read_stage_agent_md(
+    role: str, pipeline_name: str, agents_dir: Path | None,
+) -> str:
+    """Role prompt for one standalone pipeline stage.
+
+    `workers/<role>.agent.md` first — a standalone stage is a worker acting
+    on a brief, and the pipeline-stages/ variants keep the embedded host's
+    JSON-manifest ceremony. `pipeline-stages/<pipeline>/<role>.agent.md`
+    second, for roles that exist only as stage prompts (e.g. code-review's
+    scoper/finder/synthesizer). Empty string when neither resolves — the
+    caller fails the stage closed.
+    """
+    from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
+    from agent.subagent import _default_agents_dir
+
+    base = agents_dir or _default_agents_dir()
+    root = base.parent.parent if base.name == "agents" else base
+    text = read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
+    if text.strip():
+        return text
+    return read_agent_prompt(
+        [root], role,
+        purpose=AgentPromptPurpose.PIPELINE_STAGE,
+        pipeline_name=pipeline_name,
+    )
 
 
 def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> str:
