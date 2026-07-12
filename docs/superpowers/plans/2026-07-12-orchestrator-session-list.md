@@ -266,7 +266,7 @@ git diff --check
 
 Expected: every command exits 0.
 
-- [ ] **Step 3: Rebase on current origin/dev**
+- [x] **Step 3: Rebase on current origin/dev**
 
 Run:
 
@@ -277,7 +277,7 @@ git rebase origin/dev
 
 Expected: branch is up to date or rebases without unresolved conflicts.
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 Stage only the files named by this plan and commit:
 
@@ -285,7 +285,7 @@ Stage only the files named by this plan and commit:
 git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gui): preserve orchestrator session history"
 ```
 
-- [ ] **Step 5: Push branch**
+- [x] **Step 5: Push branch**
 
 Run:
 
