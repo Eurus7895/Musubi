@@ -85,6 +85,13 @@ resolve.
 
 ## Session Model
 
+Isolation here is logical, not filesystem-level. All sessions belonging to the
+same canonical project root share one workspace, dependency environment,
+`musubi.db`, and `audit.db`. Musubi never creates a per-session directory,
+worktree, repository clone, virtualenv, or container. The project retains one
+shared child-process/writer slot; exact session IDs isolate conversation,
+runtime ownership, budget, logs, and pipeline ancestry.
+
 The backend state includes the exact current session identifiers:
 
 ```text
@@ -290,3 +297,10 @@ shown as a failed system message rather than a fabricated pipeline run.
 - Policy stays fail-closed.
 - Stage and worker audit remains append-only.
 - Every pipeline and stage spawn remains visible in Audit.
+
+## 2026-07-12 Runtime Follow-up
+
+The approved follow-up design is
+[`2026-07-12-project-session-and-pipeline-runtime-design.md`](./2026-07-12-project-session-and-pipeline-runtime-design.md).
+It makes exact process ownership part of the session contract and bounds each
+standalone pipeline stage without introducing per-session filesystem state.
