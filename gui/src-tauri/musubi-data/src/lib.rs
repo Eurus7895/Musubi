@@ -740,9 +740,8 @@ fn load_state_at_with_pipeline_runs(
         if table_exists(state_conn, "pipeline_runs")? {
             let mut pipeline_session_to_chat = std::collections::HashMap::new();
             if column_exists(state_conn, "pipeline_runs", "chat_id")? {
-                let mut chat_stmt = state_conn.prepare(
-                    "SELECT session_id, COALESCE(chat_id, '') FROM pipeline_runs",
-                )?;
+                let mut chat_stmt = state_conn
+                    .prepare("SELECT session_id, COALESCE(chat_id, '') FROM pipeline_runs")?;
                 pipeline_session_to_chat = chat_stmt
                     .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                     .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
