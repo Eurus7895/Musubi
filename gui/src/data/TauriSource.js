@@ -5,13 +5,11 @@
 //   get_state            invoke → initial domain snapshot
 //   state://update       event  → domain snapshot on every change (Rust poller)
 //   action               invoke({ kind, args }) → backend mutating actions (chat, profile)
-import { pipePresets } from '../model/data.js'
 import { classifyChatCommand } from './chatCommands.js'
 
 // Domain keys owned by the backend; everything else (view, selected, draft,
-// auditFilter, pipeChatOpen, and the whole pipe* composer) is local UI state.
-// The Pipeline studio is a client-side preset composer/inspector, so pipeSteps
-// and pipeName are NOT backend-owned — otherwise the snapshot poll would clobber
+// auditFilter and the whole pipe* composer) is local UI state. The Pipeline
+// studio keeps draft pipeSteps/pipeName client-side so snapshot polling cannot clobber
 // every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
@@ -19,6 +17,7 @@ const DOMAIN_KEYS = [
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
+  'orchestratorChatId', 'pipelineChatId', 'pipelineCatalog', 'pipelineRuns',
 ]
 
 export default class TauriSource {
@@ -29,12 +28,13 @@ export default class TauriSource {
     this._pipeUid = 0
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false,
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
       processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      subagents: [], agentTurns: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      orchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
-      pipeName: 'feature-dev', pipeSteps: this._stepsFromPreset('feature-dev'),
+      pipeName: '', pipeSteps: [], pipeModified: false,
       pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
       driverStatus: emptyDriverStatus(),
@@ -48,15 +48,24 @@ export default class TauriSource {
   _nextPipeUid() { this._pipeUid += 1; return this._pipeUid }
   // Build studio stage rows from a preset's role list. The composer is purely
   // client-side; roles carry their display metadata from `pipeCatalog`.
-  _stepsFromPreset(name) {
-    const preset = pipePresets.find((p) => p.name === name)
-    const roles = preset ? preset.roles : []
-    return roles.map((role) => ({ uid: this._nextPipeUid(), role, status: 'idle', handle: null }))
+  _stepsFromRoles(roles) {
+    return (roles || []).map((role) => ({ uid: this._nextPipeUid(), role, status: 'idle', handle: null }))
   }
   _mergeDomain(dom) {
     if (!dom || typeof dom !== 'object') return
     const patch = {}
     for (const k of DOMAIN_KEYS) if (k in dom) patch[k] = dom[k]
+    const catalogChanged = Array.isArray(dom.pipelineCatalog)
+      && JSON.stringify(dom.pipelineCatalog) !== JSON.stringify(this.state.pipelineCatalog)
+    if (Array.isArray(dom.pipelineCatalog) && !this.state.pipeModified && (catalogChanged || !this.state.pipeName)) {
+      const selected = dom.pipelineCatalog.find((entry) => entry.name === this.state.pipeName)
+        || dom.pipelineCatalog[0]
+      if (selected) {
+        patch.pipeName = selected.name
+        patch.pipeSteps = this._stepsFromRoles(selected.stages)
+        patch.pipeModified = false
+      }
+    }
     // The Orchestrator's "Parent runs" mirror the append-only audit (HI #8);
     // clearing the driver chat clears the conversation only, never the run
     // history, so subagents/agentTurns are always shown straight from the DB.
@@ -95,8 +104,6 @@ export default class TauriSource {
       selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
-      openPipeChat: local({ pipeChatOpen: true }),
-      closePipeChat: local({ pipeChatOpen: false }),
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
       openProcessLog: () => this._setLocal({ logWindowOpen: true }),
       closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
@@ -133,6 +140,7 @@ export default class TauriSource {
         if (this.state.driverStatus?.running) return
         this._setLocal({
           chat: [],
+          orchestratorChatId: '__pending_orchestrator_session__',
           selected: null,
           draft: '',
           processOpen: false,
@@ -145,6 +153,7 @@ export default class TauriSource {
         if (this.state.driverStatus?.running) return
         this._setLocal({
           pipeChat: [],
+          pipelineChatId: '__pending_pipeline_session__',
           pipeDraft: '',
           selectedPipeSession: null,
           processOpen: false,
@@ -164,7 +173,7 @@ export default class TauriSource {
       onPipeDraftKey: (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault()
-          if (!this.state.driverStatus?.running) this.actions.sendPipeChat()
+          if (!this.state.driverStatus?.running) this.actions.sendPipelineTask()
         }
       },
       // backend-mutating actions
@@ -178,25 +187,29 @@ export default class TauriSource {
         this._setLocal({ draft: '', selectedSession: null, selected: null })
         const command = classifyChatCommand(d)
         if (command.kind === 'openPipelinePicker') {
-          this._setLocal({ view: 'pipeline', pipeChatOpen: false })
+          this._setLocal({ view: 'pipeline' })
           this._action('pipeline_hint', [d])
           return
         }
         this._action('send_chat', [d])
       },
-      sendPipeChat: () => {
+      sendPipelineTask: () => {
         const d = (this.state.pipeDraft || '').trim()
         if (!d) return
+        const entry = (this.state.pipelineCatalog || []).find((item) => item.name === this.state.pipeName)
+        if (this.state.pipeModified || !entry?.runnable) return
         this._setLocal({ pipeDraft: '', selectedPipeSession: null })
-        this._action('send_pipe_chat', [d])
+        this._action('send_pipeline_task', [d, this.state.pipeName])
       },
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
       // Pipeline studio composer — pure client-side UI state (see DOMAIN_KEYS).
       addPipe: (role) => this._setLocal({
         pipeSteps: [...this.state.pipeSteps, { uid: this._nextPipeUid(), role, status: 'idle', handle: null }],
+        pipeModified: true,
       }),
       removePipe: (uid) => this._setLocal({
         pipeSteps: this.state.pipeSteps.filter((st) => st.uid !== uid),
+        pipeModified: true,
       }),
       movePipe: (uid, dir) => {
         const steps = [...this.state.pipeSteps]
@@ -205,10 +218,13 @@ export default class TauriSource {
         if (i < 0 || j < 0 || j >= steps.length) return
         const moved = steps.splice(i, 1)[0]
         steps.splice(j, 0, moved)
-        this._setLocal({ pipeSteps: steps })
+        this._setLocal({ pipeSteps: steps, pipeModified: true })
       },
-      clearPipe: () => this._setLocal({ pipeSteps: [] }),
-      loadPreset: (name) => this._setLocal({ pipeName: name, pipeSteps: this._stepsFromPreset(name) }),
+      loadPreset: (name) => {
+        const entry = (this.state.pipelineCatalog || []).find((item) => item.name === name)
+        if (!entry) return
+        this._setLocal({ pipeName: name, pipeSteps: this._stepsFromRoles(entry.stages), pipeModified: false })
+      },
     }
     return this._actions
   }
@@ -230,5 +246,5 @@ function emptySetupStatus() {
 }
 
 function emptyDriverStatus() {
-  return { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
+  return { running: false, surface: 'orchestrator', pipelineName: '', terminalStatus: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
 }

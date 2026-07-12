@@ -149,7 +149,11 @@ def musubi_get_active_session() -> str:
 
 
 @mcp.tool()
-def musubi_new_session(request: str, pipeline_name: str = "feature-dev") -> str:
+def musubi_new_session(
+    request: str,
+    pipeline_name: str = "feature-dev",
+    chat_id: str | None = None,
+) -> str:
     """Create a new pipeline session and lock agent versions.
 
     Call this once at the start of every pipeline run.
@@ -159,7 +163,9 @@ def musubi_new_session(request: str, pipeline_name: str = "feature-dev") -> str:
     row so per-pipeline aggregates stay separable. Default 'feature-dev'
     keeps pre-G.3 callers working unchanged.
     """
-    session_id = state.create_session(request, pipeline_name=pipeline_name)
+    session_id = state.create_session(
+        request, pipeline_name=pipeline_name, chat_id=chat_id,
+    )
     versions = state.lock_agent_versions(session_id)
     return json.dumps({
         "session_id": session_id,
@@ -873,6 +879,37 @@ def musubi_finalize_pipeline_run(
             chunked=chunked,
             chunk_count=chunk_count,
         )
+        envelope_events = subagent_audit.query_events(handle_id=session_id)
+        envelope_spawn = next(
+            (
+                event for event in envelope_events
+                if event.get("event") == "spawned"
+                and str(event.get("role", "")).startswith("pipeline:")
+            ),
+            None,
+        )
+        envelope_completed = any(
+            event.get("event") == "completed" for event in envelope_events
+        )
+        if envelope_spawn is not None and not envelope_completed:
+            audit_status = {
+                "success": "done",
+                "escalated": "escalated",
+                "aborted": "abandoned",
+            }[final_status]
+            subagent_audit.record_complete(
+                handle_id=session_id,
+                parent_session_id=str(envelope_spawn.get("parent_session_id", "")),
+                parent_agent_name=str(envelope_spawn.get("parent_agent_name", "agent")),
+                role=str(envelope_spawn.get("role", "pipeline")),
+                brief=str(envelope_spawn.get("brief", "")),
+                final_status=audit_status,
+                escalated=escalated or final_status == "escalated",
+                turns=int(envelope_spawn.get("max_turns") or 0),
+                tools_used=[],
+                summary_truncated=False,
+                verification_errors=[],
+            )
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({

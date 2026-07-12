@@ -347,7 +347,7 @@ async def run_agent(
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        parent_session_id = await _open_parent_session(session, task, log)
+        parent_session_id = await _open_parent_session(session, task, log, chat_id)
         orchestration = Orchestration(parent_session_id=parent_session_id)
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
@@ -479,6 +479,7 @@ async def _run_loop(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    context_budget_chars: int | None = None,
     role: str = "agent",
     scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
@@ -508,7 +509,14 @@ async def _run_loop(
         cycles_used = cycle + 1
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
-        messages = fit_context(messages, compression_db_path=compression_db_path)
+        if context_budget_chars is None:
+            messages = fit_context(messages, compression_db_path=compression_db_path)
+        else:
+            messages = fit_context(
+                messages,
+                budget_chars=context_budget_chars,
+                compression_db_path=compression_db_path,
+            )
         input_tokens_est = _estimate_input_tokens(messages, tools)
         try:
             _check_budget_preflight(budget, input_tokens_est, log)
@@ -623,9 +631,16 @@ async def _run_loop(
                 file=log,
             )
             try:
-                final_messages = fit_context(
-                    messages, compression_db_path=compression_db_path,
-                )
+                if context_budget_chars is None:
+                    final_messages = fit_context(
+                        messages, compression_db_path=compression_db_path,
+                    )
+                else:
+                    final_messages = fit_context(
+                        messages,
+                        budget_chars=context_budget_chars,
+                        compression_db_path=compression_db_path,
+                    )
                 input_tokens_est = _estimate_input_tokens(final_messages, [])
                 try:
                     _check_budget_preflight(budget, input_tokens_est, log)
@@ -691,6 +706,7 @@ async def run_unit(
     spawn_catalog: list[dict[str, Any]] | None = None,
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
+    context_budget_chars: int | None = None,
     initial_messages: list[dict[str, Any]] | None = None,
     role: str = "agent",
     scope_hint: ScopeHint | None = None,
@@ -735,6 +751,7 @@ async def run_unit(
         spawn_catalog=spawn_catalog,
         salvage_on_exhaust=salvage_on_exhaust,
         compression_db_path=compression_db_path,
+        context_budget_chars=context_budget_chars,
         role=role,
         scope_hint=scope_hint,
         stats=stats,
@@ -743,10 +760,18 @@ async def run_unit(
     )
 
 
-async def _open_parent_session(session: ClientSession, task: str, log: Any) -> str | None:
+async def _open_parent_session(
+    session: ClientSession,
+    task: str,
+    log: Any,
+    chat_id: str | None = None,
+) -> str | None:
     """Create the agent's owning session; None if it can't (spawns disabled)."""
     try:
-        raw = await _call_tool_text(session, "musubi_new_session", {"request": task[:500]})
+        args = {"request": task[:500]}
+        if chat_id:
+            args["chat_id"] = chat_id
+        raw = await _call_tool_text(session, "musubi_new_session", args)
         sid = json.loads(raw).get("session_id")
         print(f"[agent] parent session={sid}", file=log)
         return sid if isinstance(sid, str) else None

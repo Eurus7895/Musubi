@@ -1,6 +1,7 @@
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
 import ChatBody from '../components/ChatBody.jsx'
+import NewSessionButton from '../components/NewSessionButton.jsx'
 
 export default function Pipeline({ vals }) {
   return (
@@ -43,9 +44,6 @@ export default function Pipeline({ vals }) {
             </div>
             <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 4, fontFamily: "'IBM Plex Mono',monospace" }}>{vals.pipeStatusText}</div>
           </div>
-          <div style={{ display: 'flex', gap: 9, flexShrink: 0 }}>
-            <Box as="button" onClick={vals.onClearPipe} css="font-family:'IBM Plex Mono',monospace;font-size:12px;padding:9px 14px;border-radius:9px;cursor:pointer;background:#19212f;border:1px solid rgba(255,255,255,0.1);color:#9b9ba2" hover="color:#e9e9ea">clear</Box>
-          </div>
         </div>
 
         <div style={{ flex: 1, minHeight: 0, padding: '6px 26px 26px' }}>
@@ -60,15 +58,19 @@ export default function Pipeline({ vals }) {
           {vals.pipeHasSteps && (
             <>
               <div style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, padding: '20px 18px', overflowX: 'auto' }}>
+                {vals.pipeStageOverflowLabel && (
+                  <div style={{ display: 'inline-flex', marginBottom: 12, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8ab4d8', background: 'rgba(138,180,216,0.1)', border: '1px solid rgba(138,180,216,0.25)', borderRadius: 6, padding: '4px 7px' }}>
+                    {vals.pipeStageOverflowLabel} scroll to view the full flow
+                  </div>
+                )}
                 <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, minWidth: 'min-content' }}>
 
-                  {/* driver origin · click to chat */}
-                  <Box onClick={vals.openPipeChat} css={vals.pipeDriverStyle} hover="border-color:rgba(255,155,61,0.75)">
+                  {/* driver origin */}
+                  <div style={cssToObj(vals.pipeDriverStyle)}>
                     <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#ff9b3d', fontWeight: 600, marginBottom: 7 }}>driver</div>
                     <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: '#e9e9ea' }}>the knot</div>
                     <div style={{ fontSize: 10, color: '#6a6a72', marginTop: 6, lineHeight: 1.4 }}>spawns each agent in order</div>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: '#ff9b3d', background: 'rgba(255,155,61,0.1)', border: '1px solid rgba(255,155,61,0.28)', padding: '3px 9px', borderRadius: 20 }}><svg viewBox="0 0 24 24" width="11" height="11" fill="none"><path d="M5 6 H19 V15 H11 L7 18 V15 H5 Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>chat</div>
-                  </Box>
+                  </div>
                   <div style={{ width: 42, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', color: '#ff9b3d' }}><svg viewBox="0 0 40 24" width="36" height="18" fill="none"><path d="M2 12 H32 M27 7 L32 12 L27 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" opacity="0.7" /></svg></div>
 
                   {/* the ordered chain */}
@@ -134,22 +136,22 @@ export default function Pipeline({ vals }) {
       </div>
 
       {/* ░ chat · driver (opens on driver click) ░ */}
-      {vals.pipeChatOpen && (
-        <div style={{ width: 322, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ width: 322, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Chat · driver</span>
-              <span style={{ fontSize: 10, color: '#6a6a72' }}>every reply tied to policy</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Chat · pipeline</span>
+              <span style={{ fontSize: 10, color: '#6a6a72' }}>{vals.pipeName} · isolated session</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Box as="button" onClick={vals.pipeChatBody.onNewSession} disabled={vals.pipeChatBody.clearDriverDisabled} title={vals.pipeChatBody.clearDriverDisabled ? 'Wait for the running agent before starting a new session' : 'New session — start fresh, drop replayed history'} css={"font-family:'IBM Plex Mono',monospace;font-size:11px;height:26px;padding:0 9px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:" + (vals.pipeChatBody.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#232c3c') + ';color:' + (vals.pipeChatBody.clearDriverDisabled ? '#4f5665' : '#9b9ba2') + ';cursor:' + (vals.pipeChatBody.clearDriverDisabled ? 'not-allowed' : 'pointer')} hover={vals.pipeChatBody.clearDriverDisabled ? '' : 'color:#fff'}>new session</Box>
-              <Box as="button" onClick={vals.pipeChatBody.onClearDriverChat} disabled={vals.pipeChatBody.clearDriverDisabled} title={vals.pipeChatBody.clearDriverDisabled ? 'Wait for the running agent before clearing' : 'Clear pipeline chat'} css={'display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:' + (vals.pipeChatBody.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#232c3c') + ';color:' + (vals.pipeChatBody.clearDriverDisabled ? '#4f5665' : '#9b9ba2') + ';cursor:' + (vals.pipeChatBody.clearDriverDisabled ? 'not-allowed' : 'pointer')} hover={vals.pipeChatBody.clearDriverDisabled ? '' : 'color:#fff'}><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
-              <Box as="button" onClick={vals.closePipeChat} title="Close" css="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:#232c3c;color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
+              <NewSessionButton
+                label="New pipeline session"
+                onClick={vals.pipeChatBody.onNewSession}
+                disabled={vals.pipeChatBody.clearDriverDisabled}
+              />
             </div>
           </div>
           <ChatBody vals={vals.pipeChatBody} />
-        </div>
-      )}
+      </div>
     </div>
   )
 }

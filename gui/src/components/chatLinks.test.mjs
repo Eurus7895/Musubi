@@ -3,12 +3,12 @@ import { test } from 'node:test'
 
 import { compactMarkdownTables, parseInlineSegments } from './chatLinks.js'
 
-test('parses Musubi process log links as internal links', () => {
-  const parts = parseInlineSegments('Done. [Open full process log](musubi-log:last)')
+test('parses retained Musubi process log links as internal links', () => {
+  const parts = parseInlineSegments('Done. [Open process log](musubi-log:last)')
 
   assert.deepEqual(parts, [
     { type: 'text', text: 'Done. ' },
-    { type: 'link', label: 'Open full process log', href: 'musubi-log:last' },
+    { type: 'link', label: 'Open process log', href: 'musubi-log:last' },
   ])
 })
 

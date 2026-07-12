@@ -171,6 +171,7 @@ CREATE INDEX IF NOT EXISTS idx_schema_migrations_ts
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     session_id              TEXT PRIMARY KEY,
     pipeline_name           TEXT NOT NULL,
+    chat_id                 TEXT,
     started_at              REAL NOT NULL,
     ended_at                REAL,
     final_status            TEXT,

@@ -117,6 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_chat_ts
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     session_id              TEXT PRIMARY KEY,
     pipeline_name           TEXT NOT NULL,
+    chat_id                 TEXT,
     started_at              REAL NOT NULL,
     ended_at                REAL,
     final_status            TEXT,
@@ -255,6 +256,10 @@ _AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("replay_tokens",   "INTEGER NOT NULL DEFAULT 0"),
 )
 
+_PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("chat_id", "TEXT"),
+)
+
 
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -283,6 +288,7 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "stage_outputs", _STAGE_OUTPUT_COLUMNS)
         _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
         _migrate_columns(conn, "agent_turns", _AGENT_TURNS_COLUMNS)
+        _migrate_columns(conn, "pipeline_runs", _PIPELINE_RUNS_COLUMNS)
 
 
 @contextmanager
@@ -1003,15 +1009,17 @@ def insert_pipeline_run(
     pipeline_name: str,
     started_at: float,
     db_path: Path | None = None,
+    *,
+    chat_id: str | None = None,
 ) -> None:
     """Open a `pipeline_runs` row at session creation. ended_at and
     final_status stay NULL until `finalize_pipeline_run` is called."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO pipeline_runs"
-            " (session_id, pipeline_name, started_at)"
-            " VALUES (?, ?, ?)",
-            (session_id, pipeline_name, started_at),
+            " (session_id, pipeline_name, chat_id, started_at)"
+            " VALUES (?, ?, ?, ?)",
+            (session_id, pipeline_name, chat_id, started_at),
         )
 
 

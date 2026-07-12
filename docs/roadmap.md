@@ -32,7 +32,9 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ---
 
-## Current Focus
+## Current Work
+
+### Active
 
 1. **Fix the VS Code extension rename.** Update the extension's hardcoded
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
@@ -51,20 +53,20 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 4. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
----
+5. **Project-scoped sessions.** Bind process ownership, retained logs, budget,
+   cancellation, and pipeline ancestry to exact sessions while all sessions in
+   one project share the canonical workspace, dependencies, and databases.
+   Keep one writer process and never create per-session directories,
+   worktrees, clones, virtualenvs, or containers. Plan:
+   [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
 
-## Postponed
+6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
+   runtime/state/audit, enforce a hard 16k-character model-input cap including
+   tool definitions, and reserve token capacity so planner/designer cannot
+   consume coder/reviewer shares. Plan:
+   [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
 
-- **Pipeline parity eval suite.** A dual-mode eval suite comparing the VS Code
-  pipeline and standalone host is deferred until we are ready to revisit
-  pipeline dissolution.
-- **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
-  supported for now. If revisited, re-home its boundary primitives onto
-  sub-agent and tool-call boundaries before removing the shape.
-
----
-
-## Live Substrate Work
+### Backlog
 
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
@@ -104,6 +106,17 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ---
 
+## Postponed
+
+- **Pipeline parity eval suite.** A dual-mode eval suite comparing the VS Code
+  pipeline and standalone host is deferred until we are ready to revisit
+  pipeline dissolution.
+- **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
+  supported for now. If revisited, re-home its boundary primitives onto
+  sub-agent and tool-call boundaries before removing the shape.
+
+---
+
 ## Completed Tracks
 
 - Standalone worker model
@@ -123,8 +136,11 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   root agent does NOT auto-summon whole pipelines (`musubi_spawn_pipeline` is
   off the agent tool surface — a pipeline is a user-invoked run via the CLI
   flag, per policy locked decision #4), so a simple task can't be silently
-  routed into a multi-stage pipeline. The Pipeline studio is a preset composer /
-  inspector; stage workers surface through the Orchestrator/Audit views
+  routed into a multi-stage pipeline. Pipeline Studio invokes this entry point
+  directly for registered recipes, owns an exact isolated chat session, and
+  renders pipeline envelopes plus child stages separately from Orchestrator;
+  implementation plan:
+  [`2026-07-10-gui-pipeline-studio-sessions.md`](./superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md).
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
   find files deterministically instead of blind-guessing paths — closing the gap

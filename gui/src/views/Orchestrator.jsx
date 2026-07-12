@@ -1,6 +1,7 @@
 import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
 import ChatBody from '../components/ChatBody.jsx'
+import NewSessionButton from '../components/NewSessionButton.jsx'
 
 export default function Orchestrator({ vals }) {
   return (
@@ -215,45 +216,7 @@ function FeedPanel({ vals }) {
           <span style={{ fontSize: 10, color: '#6a6a72' }}>final result and process summaries</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button
-            type="button"
-            onClick={vals.onNewSession}
-            disabled={vals.clearDriverDisabled}
-            title={vals.clearDriverDisabled ? 'Wait for the running agent before starting a new session' : 'New session — start fresh, drop replayed history'}
-            style={{
-              fontFamily: "'IBM Plex Mono',monospace",
-              fontSize: 11,
-              height: 28,
-              padding: '0 10px',
-              borderRadius: 7,
-              border: '1px solid rgba(255,255,255,0.1)',
-              background: vals.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#19212f',
-              color: vals.clearDriverDisabled ? '#4f5665' : '#9b9ba2',
-              cursor: vals.clearDriverDisabled ? 'not-allowed' : 'pointer',
-            }}
-          >
-            new session
-          </button>
-          <button
-            type="button"
-            onClick={vals.onClearDriverChat}
-            disabled={vals.clearDriverDisabled}
-            title={vals.clearDriverDisabled ? 'Wait for the running agent before clearing' : 'Clear chat and session view'}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 30,
-              height: 28,
-              borderRadius: 7,
-              border: '1px solid rgba(255,255,255,0.1)',
-              background: vals.clearDriverDisabled ? 'rgba(255,255,255,0.03)' : '#19212f',
-              color: vals.clearDriverDisabled ? '#4f5665' : '#9b9ba2',
-              cursor: vals.clearDriverDisabled ? 'not-allowed' : 'pointer',
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
-          </button>
+          <NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} />
           <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#ff9b3d', display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ff9b3d', animation: 'pulse 1.6s ease-in-out infinite' }} />driver</span>
         </div>
       </div>

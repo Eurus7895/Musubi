@@ -14,13 +14,14 @@ class LazyTauri {
     this.inner = null
     this.state = {
       view: props.startView || 'orchestrator',
-      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', pipeChatOpen: false, processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '', processOpen: false, logWindowOpen: false,
+      subagents: [], agentTurns: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      orchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
-      pipeSteps: [], pipeName: '', pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
+      pipeSteps: [], pipeName: '', pipeModified: false, pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
       runtimeSource: 'none',
-      driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+      driverStatus: { running: false, surface: 'orchestrator', pipelineName: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
       setupStatus: {
         projectRoot: '',
         auditDbPath: '',

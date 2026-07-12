@@ -155,3 +155,159 @@ def test_run_pipeline_strict_raises_on_spawn_rejection(
 
     result = asyncio.run(_lenient())
     assert "no such pipeline" in result
+
+
+def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import pipeline_runner
+
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned",
+                "pipeline_session_id": "pipe-1",
+                "pipeline_name": "feature-dev",
+                "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned",
+                "handle_id": f"h-{args['stage']}",
+                "role": "planner" if args["stage"] == "plan" else "reviewer",
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {
+            "parent_session_id": "outer",
+            "parent_agent_name": "agent",
+            "pipeline_name": "feature-dev",
+            "brief": "ship it",
+        },
+        PipelineRouter(),
+        [],
+        io.StringIO(),
+        strict=True,
+    ))
+
+    assert "review: PASS" in result
+    assert finalizations == [{
+        "session_id": "pipe-1",
+        "final_status": "success",
+        "escalated": False,
+    }]
+
+
+def test_run_pipeline_finalizes_aborted_stage_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned",
+                "pipeline_session_id": "pipe-2",
+                "pipeline_name": "feature-dev",
+                "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({"status": "error", "error": "policy denied"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        asyncio.run(pipeline_runner.run_pipeline(
+            None,
+            {
+                "parent_session_id": "outer",
+                "parent_agent_name": "agent",
+                "pipeline_name": "feature-dev",
+                "brief": "ship it",
+            },
+            PipelineRouter(),
+            [],
+            io.StringIO(),
+            strict=True,
+        ))
+
+    assert finalizations == [{
+        "session_id": "pipe-2",
+        "final_status": "aborted",
+        "escalated": False,
+    }]
+
+
+def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A max-token write call is incomplete, never a successful stage."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    finalizations: list[dict[str, Any]] = []
+
+    class TruncatedWriteRouter(LMRouter):
+        name = "truncated"
+        model = "truncated-1"
+
+        def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+            return LMResponse(stop_reason="max_tokens", content=[{
+                "type": "tool_use", "id": "partial-write",
+                "name": "musubi_write_file",
+                "input": {"path": "dashboard.html", "content": "<html>"},
+            }])
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-truncated",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent", "pipeline_name": "feature-dev", "brief": "make dashboard"},
+        TruncatedWriteRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "[blocked] " in result
+    assert completions[0]["status"] == "failed"
+    assert finalizations == [{
+        "session_id": "pipe-truncated", "final_status": "aborted", "escalated": False,
+    }]
