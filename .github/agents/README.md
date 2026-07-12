@@ -1,8 +1,7 @@
 # .github/agents/ - Agent Catalog
 
 Agent prompts are organized by runtime purpose. The purpose directories are
-canonical; the handful of flat files that remain exist only because the
-feature-frozen VS Code extension reads them by hardcoded/fallback path.
+canonical; there are no flat files.
 
 ## Layout
 
@@ -14,59 +13,40 @@ feature-frozen VS Code extension reads them by hardcoded/fallback path.
 │   ├── planner.agent.md
 │   ├── designer.agent.md
 │   ├── coder.agent.md
-│   └── reviewer.agent.md
-├── pipeline-stages/
-│   ├── feature-dev/
-│   │   ├── planner.agent.md
-│   │   ├── designer.agent.md
-│   │   ├── coder.agent.md
-│   │   └── reviewer.agent.md
-│   └── code-review/
-│       ├── scoper.agent.md
-│       ├── finder.agent.md
-│       └── synthesizer.agent.md
+│   ├── reviewer.agent.md
+│   ├── explorer.agent.md
+│   ├── investigator.agent.md
+│   ├── reviewer-aux.agent.md
+│   ├── summarizer.agent.md
+│   ├── scoper.agent.md
+│   ├── finder.agent.md
+│   └── synthesizer.agent.md
 ├── meta/
 │   ├── pipeline-builder.agent.md
 │   └── skill-builder.agent.md
-└── *.agent.md          (extension-only leftovers — see below)
+└── proposed/            (skill-builder writes proposals here)
 ```
-
-## Remaining flat files (extension-only, expire with the extension)
-
-The frozen extension bypasses the purpose-dir resolver in a few places, so
-these flat files must stay until the extension is retired:
-
-- `agent.agent.md` — hardcoded by `agentCore.ts::loadAgentPrompts`. Must stay
-  **byte-identical** with `root/agent.agent.md` (pinned by
-  `test_flat_legacy_copies_stay_in_sync`).
-- `pipeline-builder.agent.md` / `skill-builder.agent.md` — reached through the
-  pipeline-stage fallback chain, which never consults `meta/`. Must stay
-  byte-identical with their `meta/` copies (same test).
-- `explorer.agent.md`, `investigator.agent.md`, `reviewer-aux.agent.md`,
-  `summarizer.agent.md` — hardcoded in `subagentRunnerCore.ts` /
-  `summarizerRunner.ts`; these four have no purpose-dir copy yet.
-
-New runtime behavior never goes into a flat file.
 
 ## Prompt Purposes
 
-- **`root/`** is the top-level standalone chat/router prompt.
-- **`workers/`** is for direct standalone workers spawned by the root agent.
-  These prompts act on a firewalled brief and should not read pipeline stages.
-- **`pipeline-stages/<pipeline>/`** preserves pipeline ceremony and JSON output
-  contracts for supported slash-command pipelines.
+- **`root/`** documents the top-level agent contract (spawn allowlist, budget,
+  sees). The standalone CLI's root prompt itself is built in
+  `musubi/agent/context.py`; the frontmatter here is what the policy engine
+  reads for the root's `spawn_allowlist`.
+- **`workers/`** is for workers spawned on a firewalled brief — directly by the
+  root agent, or as a pipeline stage. One prompt per role, shared by both
+  paths. Workers do not read pipeline stages; the brief is the task.
 - **`meta/`** is for agents that operate on Musubi's catalog or pipeline
   definitions rather than product code.
-- **Flat files** are fallback only. New runtime-specific behavior belongs in a
-  purpose directory first.
+- **`pipeline-stages/<pipeline>/`** (optional, ships empty) may hold a
+  pipeline-specific variant of a role. The standalone runner prefers
+  `workers/<role>.agent.md` and falls back to
+  `pipeline-stages/<pipeline>/<role>.agent.md`; authoring a variant requires
+  3+ documented failures of the canonical worker prompt (Decision Rules).
 
 ## Resolver Behavior
 
-Python standalone workers use `musubi/agent/prompt_resolver.py`.
-The VS Code extension mirrors that precedence in
-`copilot-harness-extension/src/agentPromptResolver.ts`.
-
-Resolution order by purpose:
+`musubi/agent/prompt_resolver.py` resolves by purpose:
 
 - Root: `root/<role>.agent.md` -> `<role>.agent.md`
 - Worker: `workers/<role>.agent.md` -> `<role>.agent.md`
@@ -75,7 +55,10 @@ Resolution order by purpose:
   `<pipeline>-<role>.agent.md` -> `<role>.agent.md`
 - Meta: `meta/<role>.agent.md` -> `<role>.agent.md`
 
-Invalid role or pipeline names containing path separators or `..` are rejected.
+Pipeline stages in the standalone runner resolve Worker-first, then Pipeline
+stage (`agent/pipeline_runner.py::_read_stage_agent_md`); a role with no
+prompt in either place fails the stage closed. Invalid role or pipeline names
+containing path separators or `..` are rejected.
 
 ## Tool Surface Notes
 
@@ -86,5 +69,6 @@ That means a direct `coder` can receive `musubi_write_file`,
 see those mutating tools.
 
 Direct workers are leaves unless their prompt declares `spawn_allowlist`.
-Pipeline-stage prompts may keep their existing nesting behavior when the
-pipeline and policy allow it.
+Pipeline stages nest only when the server's `spawn_roles` (pipeline.yaml
+`spawns:` ∩ the role's firewall) is non-empty and the caller still has depth
+budget.

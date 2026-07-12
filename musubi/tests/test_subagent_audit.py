@@ -404,7 +404,7 @@ def test_query_tool_returns_empty_for_unknown_parent(
 def test_role_agent_md_files_exist() -> None:
     repo_root = Path(__file__).resolve().parent.parent.parent
     for role in ("explorer", "investigator", "reviewer-aux"):
-        path = repo_root / ".github" / "agents" / f"{role}.agent.md"
+        path = repo_root / ".github" / "agents" / "workers" / f"{role}.agent.md"
         assert path.exists(), f"missing role file: {path}"
         text = path.read_text(encoding="utf-8")
         # Frontmatter check — the harness's lock_agent_versions parses

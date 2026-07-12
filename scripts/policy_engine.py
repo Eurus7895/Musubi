@@ -52,7 +52,7 @@ PIPELINE_POLICIES: dict[str, dict[str, list[str]]] = {
 # ── Sub-agent policies (Phase A) ───────────────────────────────────────────
 #
 # SUBAGENT_POLICIES — per-role tool allow-list. The role files live under
-# `.github/agents/{explorer,investigator,reviewer-aux}.agent.md` (Phase A.3).
+# `.github/agents/workers/<role>.agent.md`.
 # Defining the policy here ahead of the role files is intentional: the
 # spawn path must fail closed even if the .agent.md file is missing.
 SUBAGENT_POLICIES: dict[str, list[str]] = {
@@ -73,6 +73,15 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     # No tools: the brief already carries the older conversation window
     # serialized as text, and the output is plain markdown.
     "summarizer":   [],
+    # code-review stage roles, runnable as standalone pipeline stage
+    # workers (`agent --pipeline code-review`). Tool sets must equal
+    # PIPELINE_POLICIES["code-review"] — the boot-time sync check in
+    # validate_policy_table enforces it. They are NOT in
+    # MAIN_SUBAGENT_ALLOWLIST["agent"]: pipeline-internal roles, never
+    # ad-hoc spawnable by the root (locked decision #4).
+    "scoper":       ["Read", "View", "Grep", "Glob"],
+    "finder":       ["Read", "View", "Grep", "Glob"],
+    "synthesizer":  ["Read", "View", "Grep", "Glob"],
 }
 
 # MAIN_SUBAGENT_ALLOWLIST — firewall: the maximum set of sub-agent roles

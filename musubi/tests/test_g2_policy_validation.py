@@ -198,19 +198,24 @@ def test_subagent_role_exceeding_pipeline_grant_fails(
     assert any("out of sync" in e and "'reviewer'" in e for e in errors), errors
 
 
-def test_roles_missing_from_either_table_are_not_sync_checked() -> None:
-    """The sync rule only binds roles present in BOTH tables: pure
-    sub-agent roles (explorer) and pipeline-only agents (scoper) are
-    exempt — pinned here so the check can't silently widen."""
+def test_roles_missing_from_either_table_are_not_sync_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync rule only binds roles present in BOTH tables: a pure
+    sub-agent role (explorer) and a pipeline-only role are exempt —
+    pinned here so the check can't silently widen. (The shipped
+    code-review roles now live in both tables, so the pipeline-only
+    case is simulated by dropping scoper from SUBAGENT_POLICIES.)"""
     from policy_engine import PIPELINE_POLICIES
 
     assert "explorer" in SUBAGENT_POLICIES
     assert all(
         "explorer" not in agents for agents in PIPELINE_POLICIES.values()
     )
-    assert "scoper" in PIPELINE_POLICIES["code-review"]
-    assert "scoper" not in SUBAGENT_POLICIES
-    assert validate_policy_table() == []
+    trimmed = {k: v for k, v in SUBAGENT_POLICIES.items() if k != "scoper"}
+    monkeypatch.setattr(policy_engine, "SUBAGENT_POLICIES", trimmed)
+    errors = validate_policy_table()
+    assert not any("out of sync" in e for e in errors), errors
 
 
 # ── MAIN_SUBAGENT_ALLOWLIST misconfigurations ─────────────────────────

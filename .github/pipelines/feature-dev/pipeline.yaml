@@ -21,15 +21,15 @@ baseline_checks:
 generator:
   agents:
     - name: planner
-      agent: agents/pipeline-stages/feature-dev/planner.agent.md
+      agent: agents/workers/planner.agent.md
       skill: null
       # no spawns: planner has no sub-agents
     - name: designer
-      agent: agents/pipeline-stages/feature-dev/designer.agent.md
+      agent: agents/workers/designer.agent.md
       skill: skills/api-design/SKILL.md
       # no spawns: designer has no sub-agents
     - name: coder
-      agent: agents/pipeline-stages/feature-dev/coder.agent.md
+      agent: agents/workers/coder.agent.md
       skill: skills/python/SKILL.md
       # Phase G.1.6 — coder may pre-spawn an explorer (existing-callers
       # scan) and an investigator (diagnostics). The runtime allow-list is
@@ -37,7 +37,7 @@ generator:
       spawns: [explorer, investigator]
 
 evaluator:
-  agent: agents/pipeline-stages/feature-dev/reviewer.agent.md
+  agent: agents/workers/reviewer.agent.md
   skill: skills/code-review/SKILL.md
   # Phase G.1.6 — reviewer may pre-spawn reviewer-aux for per-file checklists.
   spawns: [reviewer-aux]

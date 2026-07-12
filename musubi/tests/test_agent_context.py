@@ -259,10 +259,6 @@ def test_reviewer_subagent_is_read_only() -> None:
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
 _AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
-# The flat legacy copy the feature-frozen extension still reads
-# (agentCore.ts::loadAgentPrompts hardcodes the flat path). Must stay
-# byte-identical with the canonical root/ copy until the extension goes.
-_AGENT_FILE_LEGACY = _REPO_ROOT / ".github" / "agents" / "agent.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )
@@ -275,25 +271,13 @@ def test_agent_agent_file_exists() -> None:
     assert _AGENT_FILE.is_file()
 
 
-def test_flat_legacy_copies_stay_in_sync() -> None:
-    """The remaining flat agent files exist only for the feature-frozen
-    extension's hardcoded/fallback read paths. Each must stay
-    byte-identical with its canonical purpose-dir copy so the two hosts
-    see one contract. Delete the flat copy (and this pair) when the
-    extension is retired."""
+def test_catalog_has_no_flat_agent_files() -> None:
+    """The catalog is fully purpose-organised (root/, workers/, meta/):
+    a flat .agent.md would be dead weight no resolver prefers — the last
+    host that read flat paths was the removed extension."""
     agents = _REPO_ROOT / ".github" / "agents"
-    pairs = [
-        ("root/agent.agent.md", "agent.agent.md"),
-        ("meta/pipeline-builder.agent.md", "pipeline-builder.agent.md"),
-        ("meta/skill-builder.agent.md", "skill-builder.agent.md"),
-    ]
-    for canonical, legacy in pairs:
-        c, l = agents / canonical, agents / legacy
-        assert c.is_file(), canonical
-        assert l.is_file(), legacy
-        assert c.read_bytes() == l.read_bytes(), (
-            f"{legacy} drifted from {canonical}"
-        )
+    flat = sorted(p.name for p in agents.glob("*.agent.md"))
+    assert flat == [], f"unexpected flat agent files: {flat}"
 
 
 def test_agent_agent_frontmatter_declares_contract() -> None:
@@ -419,7 +403,7 @@ def test_summarizer_role_has_skill() -> None:
 
 
 def test_summarizer_agent_file_exists() -> None:
-    p = Path(_REPO_ROOT) / ".github" / "agents" / "summarizer.agent.md"
+    p = Path(_REPO_ROOT) / ".github" / "agents" / "workers" / "summarizer.agent.md"
     assert p.exists()
     body = p.read_text(encoding="utf-8")
     assert "name: Summarizer" in body
