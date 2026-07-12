@@ -257,3 +257,17 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "test(g
   container was created.
 - [ ] **Step 5:** Record the acceptance result in the roadmap and commit with
   `docs(roadmap): record project-scoped sessions`.
+
+## Implementation Result
+
+Implemented on `fix/gui-pipeline-studio-sessions` with automated acceptance:
+
+- `DriverStatus.chatId` identifies the exact live or retained runtime owner.
+- Orchestrator and Pipeline views render process state only for their current
+  full chat ID; surface-prefix matching is not used for process ownership.
+- New-session and clear-chat operations leave another session's retained
+  runtime state untouched.
+- Launch specs for two sessions share the same canonical project root, and the
+  project writer lease rejects a second run without replacing the first owner.
+- Node tests, both Rust suites, Clippy, the production GUI build, formatter
+  checks, and `git diff --check` form the repeatable acceptance contract.

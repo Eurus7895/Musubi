@@ -246,5 +246,5 @@ function emptySetupStatus() {
 }
 
 function emptyDriverStatus() {
-  return { running: false, surface: 'orchestrator', pipelineName: '', terminalStatus: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
+  return { running: false, chatId: '', surface: 'orchestrator', pipelineName: '', terminalStatus: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
 }

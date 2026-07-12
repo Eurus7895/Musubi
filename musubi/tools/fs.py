@@ -149,6 +149,14 @@ def write_file(
         return _error(exc)
     if target.exists() and target.is_dir():
         return {"status": "error", "error": f"path is a directory: {path}"}
+    if target.exists() and target.stat().st_size > 0 and content == "":
+        return {
+            "status": "error",
+            "error": (
+                "refusing empty overwrite of a non-empty file; use edit_file "
+                "for intentional content removal"
+            ),
+        }
     parent = target.parent
     if not parent.exists():
         if not create_parents:

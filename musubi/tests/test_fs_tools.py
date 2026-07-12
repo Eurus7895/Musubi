@@ -113,6 +113,24 @@ def test_write_file_overwrites_existing(workspace: Path) -> None:
     assert (workspace / "f").read_text(encoding="utf-8") == "new"
 
 
+def test_write_file_refuses_empty_overwrite_of_nonempty_file(workspace: Path) -> None:
+    target = workspace / "dashboard.html"
+    target.write_text("<main>keep me</main>", encoding="utf-8")
+
+    result = fs.write_file("dashboard.html", "")
+
+    assert result["status"] == "error"
+    assert "empty overwrite" in result["error"]
+    assert target.read_text(encoding="utf-8") == "<main>keep me</main>"
+
+
+def test_write_file_still_allows_creating_an_empty_file(workspace: Path) -> None:
+    result = fs.write_file("placeholder.txt", "")
+
+    assert result == {"status": "ok", "bytes_written": 0}
+    assert (workspace / "placeholder.txt").read_bytes() == b""
+
+
 def test_write_file_creates_parents_by_default(workspace: Path) -> None:
     result = fs.write_file("a/b/c/file.txt", "x")
     assert result["status"] == "ok"

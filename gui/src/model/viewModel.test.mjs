@@ -35,7 +35,7 @@ function baseState(overrides = {}) {
     pipeDoneFlag: false,
     runtimeSource: 'workspace',
     setupStatus: {},
-    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+    driverStatus: { running: false, chatId: '', surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
     pipelineRuns: [],
     pipelineCatalog: [],
@@ -127,13 +127,16 @@ test('formats epoch chat timestamps in the requested local timezone', () => {
 
 test('numbers visible runs instead of using worker count', () => {
   const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-current',
     subagents: [
-      agent(205, 'session-a', 'done', 'planner'),
-      agent(206, 'session-a', 'done', 'coder'),
-      agent(207, 'session-a', 'done', 'reviewer'),
+      agent(205, 'session-a', 'done', 'planner', 'gui-orchestrator-current'),
+      agent(206, 'session-a', 'done', 'coder', 'gui-orchestrator-current'),
+      agent(207, 'session-a', 'done', 'reviewer', 'gui-orchestrator-current'),
     ],
     driverStatus: {
       running: true,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-current',
       task: 'new request',
       startedAt: 99,
       stdoutTail: '',
@@ -165,9 +168,12 @@ test('chooses selected step parent session before newest running run', () => {
 
 test('marks the running step as current and explains budget halts', () => {
   const vm = buildViewModel(baseState({
-    subagents: [agent(1, 'session-a', 'running', 'coder')],
+    orchestratorChatId: 'gui-orchestrator-current',
+    subagents: [agent(1, 'session-a', 'running', 'coder', 'gui-orchestrator-current')],
     driverStatus: {
       running: false,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-current',
       task: '',
       startedAt: null,
       stdoutTail: '',
@@ -242,13 +248,16 @@ test('driver card shows no replay line for a fresh-session turn', () => {
 
 test('summarizes the active run for the driver card', () => {
   const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-current',
     subagents: [
-      agent(1, 'session-a', 'done', 'planner'),
-      agent(2, 'session-a', 'escalated', 'coder'),
-      agent(3, 'session-a', 'escalated', 'reviewer'),
+      agent(1, 'session-a', 'done', 'planner', 'gui-orchestrator-current'),
+      agent(2, 'session-a', 'escalated', 'coder', 'gui-orchestrator-current'),
+      agent(3, 'session-a', 'escalated', 'reviewer', 'gui-orchestrator-current'),
     ],
     driverStatus: {
       running: false,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-current',
       task: '',
       startedAt: null,
       stdoutTail: '',
@@ -337,9 +346,11 @@ test('scopes real pipeline runs to the exact current studio session', () => {
 
 test('live driver run appears only on owning surface', () => {
   const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-current',
     driverStatus: {
       running: true,
       surface: 'pipeline',
+      chatId: 'gui-pipeline-current',
       task: 'pipeline task',
       startedAt: 77,
       stdoutTail: '',
@@ -358,14 +369,38 @@ test('live driver run appears only on owning surface', () => {
   assert.equal(vm.pipeChatBody.sendMode, 'cancel')
 })
 
+test('chat view preserves message roles so a live process can anchor to the latest request', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-current',
+    chat: [{ role: 'you', ts: '10:00:00', text: 'build it', tone: null }],
+    pipeChat: [{ role: 'you', ts: '10:00:01', text: 'run it', tone: null }],
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-current',
+      task: 'build it',
+      startedAt: 88,
+      stdoutTail: '[agent] working',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.driverBusy, true)
+  assert.equal(vm.chat[0].role, 'you')
+  assert.equal(vm.pipeChatBody.chat[0].role, 'you')
+  assert.match(vm.driverProcessLog, /working/)
+})
+
 test('pipeline chat body uses pipe chat and disables while orchestrator owns process', () => {
   const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-current',
     chat: [{ role: 'driver', ts: '10:00:00', text: 'orchestrator answer', tone: null }],
     pipeChat: [{ role: 'driver', ts: '10:00:01', text: 'pipeline answer', tone: null }],
     pipeDraft: 'run pipeline',
     driverStatus: {
       running: true,
       surface: 'orchestrator',
+      chatId: 'gui-orchestrator-current',
       task: 'orchestrator task',
       startedAt: 88,
       stdoutTail: '',
@@ -405,7 +440,7 @@ test('pipeline studio does not synthesize history after an audited run exists', 
     pipelineRuns: [
       { sessionId: 'real-run', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev', brief: 'retry', startedAt: 2, status: 'success', stages: [agent(12, 'real-run', 'done', 'planner')] },
     ],
-    driverStatus: { running: true, surface: 'pipeline', task: 'retry', startedAt: 77, stdoutTail: '', stderrTail: '' },
+    driverStatus: { running: true, surface: 'pipeline', chatId: 'gui-pipeline-current', task: 'retry', startedAt: 77, stdoutTail: '', stderrTail: '' },
   }), actions())
 
   assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['real-run'])
@@ -418,7 +453,7 @@ test('pipeline run uses the exited driver budget status instead of active-worker
       { sessionId: 'budget-run', chatId: 'gui-pipeline-current', pipelineName: 'feature-dev', brief: 'retry', startedAt: 2, status: 'escalated', stages: [agent(12, 'budget-run', 'escalated', 'coder')] },
     ],
     driverStatus: {
-      running: false, surface: 'pipeline', task: 'retry', startedAt: 2,
+      running: false, surface: 'pipeline', chatId: 'gui-pipeline-current', task: 'retry', startedAt: 2,
       terminalStatus: 'budget_halted', stdoutTail: '', stderrTail: 'TokenBudgetExhaustedError',
     },
   }), actions())
@@ -452,9 +487,10 @@ test('pipeline flow exposes every configured stage and designer metadata', () =>
 
 test('completed process logs stay available only on their owning surface', () => {
   const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-current',
     logWindowOpen: true,
     driverStatus: {
-      running: false, surface: 'pipeline', terminalStatus: 'failed', task: 'ship it',
+      running: false, surface: 'pipeline', chatId: 'gui-pipeline-current', terminalStatus: 'failed', task: 'ship it',
       startedAt: 9, stdoutTail: '', stderrTail: 'failure details',
     },
   }), actions())
@@ -464,6 +500,55 @@ test('completed process logs stay available only on their owning surface', () =>
   assert.equal(vm.pipeChatBody.hasDriverLog, true)
   assert.equal(vm.pipeChatBody.logWindowOpen, true)
   assert.equal(vm.driverProcessLog, '')
+})
+
+test('retained pipeline log belongs only to its exact session', () => {
+  const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-new',
+    logWindowOpen: true,
+    driverStatus: {
+      running: false, surface: 'pipeline', chatId: 'gui-pipeline-old',
+      terminalStatus: 'failed', task: 'old task', startedAt: 9,
+      stdoutTail: '', stderrTail: 'old failure',
+    },
+  }), actions())
+
+  assert.equal(vm.pipeChatBody.hasDriverLog, false)
+  assert.equal(vm.pipeChatBody.logWindowOpen, false)
+  assert.equal(vm.pipeChatBody.driverTask, '')
+})
+
+test('retained pipeline log remains visible to its exact session', () => {
+  const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-current',
+    logWindowOpen: true,
+    driverStatus: {
+      running: false, surface: 'pipeline', chatId: 'gui-pipeline-current',
+      terminalStatus: 'failed', task: 'current task', startedAt: 9,
+      stdoutTail: '', stderrTail: 'current failure',
+    },
+  }), actions())
+
+  assert.equal(vm.pipeChatBody.hasDriverLog, true)
+  assert.equal(vm.pipeChatBody.logWindowOpen, true)
+  assert.equal(vm.pipeChatBody.driverTask, 'current task')
+})
+
+test('retained orchestrator process belongs only to its exact session', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-new',
+    processOpen: true,
+    logWindowOpen: true,
+    driverStatus: {
+      running: false, surface: 'orchestrator', chatId: 'gui-orchestrator-old',
+      terminalStatus: 'failed', task: 'old task', startedAt: 9,
+      stdoutTail: 'old output', stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.hasDriverLog, false)
+  assert.equal(vm.logWindowOpen, false)
+  assert.equal(vm.driverTask, '')
 })
 
 test('pipeline studio honours selected pipeline session', () => {

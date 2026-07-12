@@ -19,7 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from agent.run import run_agent
+from agent.run import Orchestration, _spawn_overflow_reasons, run_agent
+from agent.scope import ScopeHint, ScopeKind
 from agent.vendors.base import LMResponse, LMRouter
 
 
@@ -80,7 +81,7 @@ class BarrierRouter(LMRouter):
 
 
 def test_parallel_workers_run_concurrently_and_results_are_ordered() -> None:
-    n = 3
+    n = 2
     router = BarrierRouter(n)
     answer = asyncio.run(run_agent("delegate a scan", router, _musubi_dir(), log=io.StringIO()))
 
@@ -118,33 +119,97 @@ def _capturing_call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
 BarrierRouter.call = _capturing_call  # type: ignore[method-assign]
 
 
-class CountingRouter(LMRouter):
-    """No barrier — counts how many children actually ran, for the width cap."""
+def test_per_role_width_cap_refuses_overflow_spawns() -> None:
+    # Nested workers have no root scope cap. The flat per-role width still
+    # refuses the fourth and fifth same-role calls in one batch.
+    calls = _spawns(5, role="explorer").content
+    refused = _spawn_overflow_reasons(
+        calls,
+        io.StringIO(),
+        role="coder",
+        scope_hint=None,
+        orchestration=Orchestration(
+            parent_session_id="root-session",
+            parent_agent_name="coder",
+            depth=1,
+        ),
+    )
 
-    name = "counting"
-    model = "counting-1"
+    assert set(refused) == {"spawn-3", "spawn-4"}
 
-    def __init__(self, n: int, role: str) -> None:
-        self.n = n
-        self.role = role
-        self._lock = threading.Lock()
+
+def test_scope_worker_cap_is_cumulative_across_model_cycles() -> None:
+    orchestration = Orchestration(parent_session_id="root-session")
+    scope = ScopeHint(
+        kind=ScopeKind.SIMPLE_ARTIFACT,
+        route="single_coder",
+        reason="one artifact",
+        max_workers=1,
+    )
+    first = [{
+        "type": "tool_use",
+        "id": "spawn-first",
+        "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "build it"},
+    }]
+    second = [{
+        "type": "tool_use",
+        "id": "spawn-second",
+        "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "retry it"},
+    }]
+
+    assert _spawn_overflow_reasons(
+        first,
+        io.StringIO(),
+        role="agent",
+        scope_hint=scope,
+        orchestration=orchestration,
+    ) == {}
+    refused = _spawn_overflow_reasons(
+        second,
+        io.StringIO(),
+        role="agent",
+        scope_hint=scope,
+        orchestration=orchestration,
+    )
+
+    assert "spawn-second" in refused
+    assert "run worker cap (1)" in refused["spawn-second"]
+
+
+class SequentialRetryRouter(LMRouter):
+    name = "sequential-retry"
+    model = "sequential-retry-1"
+
+    def __init__(self) -> None:
         self.children = 0
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
-        if _is_parent_followup(messages):
-            return _text("done")
         idx = _child_index(messages)
         if idx is not None:
-            with self._lock:
-                self.children += 1
-            return _text(f"explored worker {idx}")
-        return _spawns(self.n, role=self.role)
+            self.children += 1
+            return _text("worker finished")
+        results = sum(
+            1
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        )
+        if results < 2:
+            return _spawns(1, role="coder")
+        return _text("done")
 
 
-def test_per_role_width_cap_refuses_overflow_spawns() -> None:
-    # 5 spawns of the same role in one turn; cap is 3 → only 3 children run,
-    # 2 are refused without running a loop.
-    router = CountingRouter(5, role="explorer")
-    answer = asyncio.run(run_agent("fan out wide", router, _musubi_dir(), log=io.StringIO()))
+def test_single_coder_route_refuses_sequential_replacement_worker() -> None:
+    router = SequentialRetryRouter()
+    log = io.StringIO()
+
+    answer = asyncio.run(
+        run_agent("create a dashboard.html", router, _musubi_dir(), log=log)
+    )
+
     assert answer == "done"
-    assert router.children == 3, f"expected 3 workers to run, got {router.children}"
+    assert router.children == 1
+    assert "run worker cap (1) reached" in log.getvalue()

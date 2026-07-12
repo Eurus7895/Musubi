@@ -35,6 +35,12 @@ function belongsToSurface(item, surface, currentChatId = '') {
   return surface === 'pipeline' ? isPipelineChatId(chatId) : !isPipelineChatId(chatId)
 }
 
+function driverBelongsToSession(status, surface, currentChatId) {
+  return status?.surface === surface
+    && !!currentChatId
+    && status?.chatId === currentChatId
+}
+
 function isTerminalStatus(status) {
   return ['success', 'aborted', 'escalated', 'budget_halted', 'failed'].includes(status)
 }
@@ -65,8 +71,7 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orc
     run.steps.push(agent)
     bump(run, agent.spawnEpoch)
   })
-  const runningSurface = driverStatus?.surface || 'orchestrator'
-  if (driverStatus?.running && runningSurface === surface && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
+  if (driverStatus?.running && driverBelongsToSession(driverStatus, surface, currentChatId) && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
     const id = `driver-running-${driverStatus.startedAt || 'now'}`
     byId.set(id, {
       id,
@@ -188,6 +193,7 @@ function buildChatView(messages = []) {
   return messages.map((msg) => {
     if (msg.role === 'you') {
       return {
+        role: msg.role,
         text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
         rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
         bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
@@ -195,6 +201,7 @@ function buildChatView(messages = []) {
     }
     if (msg.role === 'driver') {
       return {
+        role: msg.role,
         text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
         metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
         rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
@@ -203,6 +210,7 @@ function buildChatView(messages = []) {
     }
     const red = msg.tone === 'deny'
     return {
+      role: msg.role,
       text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
       rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
       bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
@@ -226,8 +234,10 @@ export function buildViewModel(s, act) {
   const driverStatusForRuns = s.driverStatus || {}
   const driverSurface = driverStatusForRuns.surface || 'orchestrator'
   const driverRunning = !!driverStatusForRuns.running
-  const orchestratorOwnsDriver = driverRunning && driverSurface === 'orchestrator'
-  const pipelineOwnsDriver = driverRunning && driverSurface === 'pipeline'
+  const driverBelongsToOrchestrator = driverBelongsToSession(driverStatusForRuns, 'orchestrator', orchestratorChatId)
+  const driverBelongsToPipeline = driverBelongsToSession(driverStatusForRuns, 'pipeline', pipelineChatId)
+  const orchestratorOwnsDriver = driverRunning && driverBelongsToOrchestrator
+  const pipelineOwnsDriver = driverRunning && driverBelongsToPipeline
   const runsRaw = groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
   const pipeRunsRaw = (s.pipelineRuns || [])
     .filter((run) => belongsToSurface(run, 'pipeline', pipelineChatId))
@@ -244,7 +254,7 @@ export function buildViewModel(s, act) {
   // A pipeline's durable lifecycle row wins once finalized. The one exception
   // is the precise budget-halt reason: it is emitted by the exited driver and
   // refines the state store's broader `escalated` outcome for the same run.
-  const exitedPipelineStatus = !driverRunning && driverSurface === 'pipeline'
+  const exitedPipelineStatus = !driverRunning && driverBelongsToPipeline
     ? driverStatusForRuns.terminalStatus
     : ''
   if (isTerminalStatus(exitedPipelineStatus)) {
@@ -280,10 +290,10 @@ export function buildViewModel(s, act) {
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
-  const processTextForRuns = driverSurface === 'orchestrator'
+  const processTextForRuns = driverBelongsToOrchestrator
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
-  const processTextForPipeRuns = driverSurface === 'pipeline'
+  const processTextForPipeRuns = driverBelongsToPipeline
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
@@ -598,30 +608,7 @@ export function buildViewModel(s, act) {
         : 'Every Studio message runs ' + s.pipeName + ' directly in this isolated session.')
     : 'Choose a registered pipeline before running.'
 
-  const chatView = s.chat.map((msg) => {
-    if (msg.role === 'you') {
-      return {
-        text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
-        rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
-        bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
-      }
-    }
-    if (msg.role === 'driver') {
-      return {
-        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
-        metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
-        rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
-        bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
-      }
-    }
-    const red = msg.tone === 'deny'
-    return {
-      text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
-      rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
-      bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
-    }
-  })
-
+  const chatView = buildChatView(s.chat || [])
   const pipeChatView = buildChatView(s.pipeChat || [])
 
   const sourceLabels = {
@@ -658,8 +645,8 @@ export function buildViewModel(s, act) {
     driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
   ].filter(Boolean).join('\n\n')
   const hasDriverLog = !!driverProcessLog
-  const pipelineHasDriverLog = driverSurface === 'pipeline' && hasDriverLog
-  const orchestratorHasDriverLog = driverSurface === 'orchestrator' && hasDriverLog
+  const pipelineHasDriverLog = driverBelongsToPipeline && hasDriverLog
+  const orchestratorHasDriverLog = driverBelongsToOrchestrator && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
   const pipelineBlockedByOrchestrator = driverRunning && !pipelineOwnsDriver
@@ -675,7 +662,7 @@ export function buildViewModel(s, act) {
     onDraftKey: act.onPipeDraftKey,
     driverBusy: pipelineOwnsDriver,
     driverTask: (pipelineOwnsDriver || pipelineHasDriverLog) ? (driverStatus.task || '') : '',
-    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : (driverBelongsToPipeline ? driverStatusText : ''),
     driverProcessOpen: pipelineOwnsDriver && !!s.processOpen,
     driverProcessLog: pipelineHasDriverLog ? driverProcessLog : '',
     hasDriverLog: pipelineHasDriverLog,
@@ -723,7 +710,7 @@ export function buildViewModel(s, act) {
       ? (sessionSteps.length + ' workers · full history for this parent run')
       : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
-    driverBusy: orchestratorOwnsDriver, driverTask: orchestratorOwnsDriver ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverBusy: orchestratorOwnsDriver, driverTask: (orchestratorOwnsDriver || orchestratorHasDriverLog) ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : (driverBelongsToOrchestrator ? driverStatusText : ''),
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorHasDriverLog && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onNewSession: act.newSession,

@@ -143,6 +143,7 @@ class Orchestration:
     parent_agent_name: str = "agent"
     depth: int = 0
     max_depth: int = DEFAULT_MAX_DEPTH
+    spawned_workers: int = 0
 
     @property
     def enabled(self) -> bool:
@@ -593,8 +594,22 @@ async def _run_loop(
                 "write it in ordered append_file chunks or a compact generator.",
                 file=log,
             )
-            final_answer = _truncated_tool_call_answer(tool_uses)
-            break
+            blocked = _truncated_tool_call_answer(tool_uses)
+            if cycle + 1 >= max_cycles:
+                final_answer = blocked
+                break
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tu.get("id", ""),
+                        "content": blocked,
+                    }
+                    for tu in tool_uses
+                ],
+            })
+            continue
 
         tool_results = await _dispatch(
             session, tool_uses, log,
@@ -1421,7 +1436,12 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound.
     """
     refused = _spawn_overflow_reasons(
-        tool_uses, log, role=role, scope_hint=scope_hint, cycle_index=cycle_index,
+        tool_uses,
+        log,
+        role=role,
+        scope_hint=scope_hint,
+        cycle_index=cycle_index,
+        orchestration=orchestration,
     )
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
@@ -1514,17 +1534,15 @@ def _spawn_overflow_reasons(
     role: str,
     scope_hint: ScopeHint | None,
     cycle_index: int = 0,
+    orchestration: Orchestration | None = None,
 ) -> dict[str, str]:
     """tool_use ids of spawn calls that exceed the flat per-role width cap.
 
-    Keeps the first `DEFAULT_MAX_SPAWNS_PER_ROLE` spawns of each role in the
-    batch; non-spawn calls are never capped. This guard is the only spawn
-    enforcement: it bounds fan-out but does NOT route. `classify_task`'s scope
-    is advisory — it steers the model via the prompt block, and no longer gates
-    or forces spawns here (a regex cannot reliably decide a turn is "simple" or
-    "needs a planner"). Explicit plan-first intent comes from `--plan`, not a
-    keyword guess. `scope_hint`/`cycle_index` are accepted for signature
-    stability but no longer consulted.
+    The flat per-role cap bounds one batch for every worker. At root depth, the
+    deterministic `scope_hint.max_workers` is also a cumulative run cap, so
+    sequential cycles cannot evade a `single_coder` route with retries. The
+    hint does not force a role or a planner-first sequence; explicit plan-first
+    intent still comes from `--plan`. `cycle_index` remains for log context.
     """
     seen: dict[str, int] = {}
     overflow: dict[str, str] = {}
@@ -1544,6 +1562,23 @@ def _spawn_overflow_reasons(
                 f"{reason}",
                 file=log,
             )
+            continue
+        if (
+            role == "agent"
+            and scope_hint is not None
+            and orchestration is not None
+            and orchestration.depth == 0
+            and orchestration.spawned_workers >= scope_hint.max_workers
+        ):
+            reason = f"run worker cap ({scope_hint.max_workers}) reached"
+            overflow[tu.get("id", "")] = reason
+            print(
+                f"[agent] refused extra worker(role={spawn_role!r}): {reason}",
+                file=log,
+            )
+            continue
+        if orchestration is not None and role == "agent" and orchestration.depth == 0:
+            orchestration.spawned_workers += 1
     return overflow
 
 

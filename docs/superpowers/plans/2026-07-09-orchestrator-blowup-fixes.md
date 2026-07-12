@@ -100,3 +100,26 @@ Follow-up PR: P3 (E1,E2,E3)
 
 G1 alone removes the false signal that caused ~76k of the blowup, so P0 lands
 first.
+
+## 2026-07-12 Artifact-run safety follow-up
+
+A later Carl Jung dashboard trace exposed a second failure chain: a coder
+successfully wrote an artifact and then issued an empty `write_file`, the root
+spawned sequential replacement coders despite `max_workers=1`, and a truncated
+append call ended its worker instead of teaching that same worker to retry in
+chunks. The run consumed 191k of its 200k token budget before halting.
+
+The corrective contract is:
+
+- `write_file(path, "")` may create an empty file, but fails closed when it
+  would replace an existing non-empty file.
+- Root `ScopeHint.max_workers` is a cumulative run ceiling. Route and role
+  selection remain advisory; the ceiling does not force a planner or coder.
+- A max-token response containing tool calls is never dispatched. When cycles
+  remain, its structured blocked result is fed back to the same worker so it
+  can switch to ordered `append_file` chunks.
+- Worker guidance requires platform-native commands and bounded validation
+  output; Windows workers must not use `wc`/`tail` or print the whole artifact.
+
+Regression coverage lives in `test_fs_tools.py`, `test_parallel_dispatch.py`,
+`test_agent_loop.py`, and `test_context.py`.

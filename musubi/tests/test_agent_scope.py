@@ -12,6 +12,7 @@ def test_classifies_known_file_edit_as_simple_edit() -> None:
     assert hint.route == "single_coder"
     assert hint.max_workers == 1
     assert "known file" in hint.reason
+    assert "hard cumulative root-run ceiling" in hint.prompt_block()
 
 
 def test_classifies_small_artifact_as_simple_artifact_without_html_special_case() -> None:
