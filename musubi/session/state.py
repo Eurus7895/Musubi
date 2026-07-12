@@ -121,11 +121,15 @@ def lock_agent_versions(
     for base in bases:
         if not base.exists():
             continue
-        for agent_file in sorted(base.glob("*.agent.md")):
+        # rglob: the agent catalog is organised by purpose directory
+        # (root/, workers/, meta/, pipeline-stages/*/) with only a few
+        # extension-only flat leftovers kept in sync with their canonical
+        # copies, so first-occurrence-wins stays deterministic.
+        for agent_file in sorted(base.rglob("*.agent.md")):
             # stem is e.g. "planner.agent"; strip the ".agent" suffix
             name = agent_file.stem.replace(".agent", "")
             if name in versions:
-                continue  # earlier base (pipeline dir) wins
+                continue  # earlier base / earlier path wins
             version = _parse_version(agent_file)
             versions[name] = version
             db.upsert_agent_version(session_id, name, version, db_path)

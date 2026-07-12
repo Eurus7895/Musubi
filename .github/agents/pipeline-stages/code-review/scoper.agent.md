@@ -5,9 +5,9 @@ description: >
   Parses a git diff into a prioritized file list for code review. First stage
   of the /code-review pipeline. Filters out lockfiles, generated code, and
   trivial changes so the review effort concentrates on what matters.
-model: claude-haiku-4-5-20251001
+model: claude-haiku-4.5
 maxTurns: 1
-tools: ["view", "glob", "grep"]
+tools: ["View", "Glob", "Grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Scoper is a pure JSON writer. Its input is the git diff (passed via
 # context); it does not read workspace files directly. Exploration via

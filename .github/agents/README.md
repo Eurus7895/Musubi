@@ -1,7 +1,8 @@
 # .github/agents/ - Agent Catalog
 
-Agent prompts are organized by runtime purpose. Legacy flat files remain during
-the migration so older workspaces and packaged bundles keep working.
+Agent prompts are organized by runtime purpose. The purpose directories are
+canonical; the handful of flat files that remain exist only because the
+feature-frozen VS Code extension reads them by hardcoded/fallback path.
 
 ## Layout
 
@@ -27,8 +28,25 @@ the migration so older workspaces and packaged bundles keep working.
 ├── meta/
 │   ├── pipeline-builder.agent.md
 │   └── skill-builder.agent.md
-└── *.agent.md                         (legacy fallback during migration)
+└── *.agent.md          (extension-only leftovers — see below)
 ```
+
+## Remaining flat files (extension-only, expire with the extension)
+
+The frozen extension bypasses the purpose-dir resolver in a few places, so
+these flat files must stay until the extension is retired:
+
+- `agent.agent.md` — hardcoded by `agentCore.ts::loadAgentPrompts`. Must stay
+  **byte-identical** with `root/agent.agent.md` (pinned by
+  `test_flat_legacy_copies_stay_in_sync`).
+- `pipeline-builder.agent.md` / `skill-builder.agent.md` — reached through the
+  pipeline-stage fallback chain, which never consults `meta/`. Must stay
+  byte-identical with their `meta/` copies (same test).
+- `explorer.agent.md`, `investigator.agent.md`, `reviewer-aux.agent.md`,
+  `summarizer.agent.md` — hardcoded in `subagentRunnerCore.ts` /
+  `summarizerRunner.ts`; these four have no purpose-dir copy yet.
+
+New runtime behavior never goes into a flat file.
 
 ## Prompt Purposes
 

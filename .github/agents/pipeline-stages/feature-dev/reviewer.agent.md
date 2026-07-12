@@ -8,7 +8,7 @@ description: >
   execution.
 model: claude-sonnet-4.5
 maxTurns: 1
-tools: ["view", "glob"]
+tools: ["View", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Workers this agent may summon (the spawn firewall; constant fallback in
 # scripts/policy_engine.py for installed wheels without .github/).

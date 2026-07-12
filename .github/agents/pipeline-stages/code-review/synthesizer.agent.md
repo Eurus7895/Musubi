@@ -5,9 +5,9 @@ description: >
   Aggregates the finder's cross-cutting findings with N reviewer-aux per-file
   outputs into a single ranked code review report. Final stage of /code-review.
   Evaluator under the standard firewall — sees only the prior stage outputs.
-model: claude-sonnet-4-6
+model: claude-sonnet-4.6
 maxTurns: 1
-tools: ["view", "glob", "grep"]
+tools: ["View", "Glob", "Grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Synthesizer is a pure JSON aggregator. Its inputs are the finder's
 # cross-cutting findings + reviewer-aux per-file verdicts (all in

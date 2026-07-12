@@ -386,8 +386,12 @@ def validate_catalog() -> list[str]:
     agents_root = _pipelines_root().parent / "agents"
     known_agents: set[str] = set()
     if agents_root.is_dir():
+        # The purpose-dir catalog is canonical (root/, workers/, meta/,
+        # pipeline-stages/*/); the remaining flat files are extension-only
+        # legacy copies. Both count as "known".
         known_agents = {
-            f.name[: -len(".agent.md")] for f in agents_root.glob("*.agent.md")
+            f.name[: -len(".agent.md")]
+            for f in agents_root.rglob("*.agent.md")
         }
 
     presets = _load_presets()

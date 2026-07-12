@@ -8,7 +8,7 @@ description: >
   and implementation is needed.
 model: claude-sonnet-4.5
 maxTurns: 1
-tools: ["view", "edit", "bash"]
+tools: ["View", "Edit", "Bash"]
 disallowedTools: []
 # Workers this agent may summon (the spawn firewall, formerly only in
 # scripts/policy_engine.py::MAIN_SUBAGENT_ALLOWLIST). Authoritative when

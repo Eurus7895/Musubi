@@ -8,7 +8,7 @@ description: >
   .github/agents/proposed/ only — never modifies active agent files directly.
 model: claude-sonnet-4.5
 maxTurns: 5
-tools: ["view", "edit"]
+tools: ["View", "Edit"]
 # Concrete VS Code LM tool names. Skill-Builder reads existing skills
 # and writes proposals to .github/agents/proposed/. Read + edit + create.
 lm_tools:

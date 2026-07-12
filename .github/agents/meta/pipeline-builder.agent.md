@@ -9,7 +9,7 @@ description: >
   constraints does the job.
 model: claude-sonnet-4.5
 maxTurns: 5
-tools: ["view", "glob"]
+tools: ["View", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Concrete VS Code LM tool names. PipelineBuilder reads the existing
 # tree to model conventions, then writes new pipeline files. Read +

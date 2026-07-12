@@ -40,10 +40,14 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
    against the renamed server.
 
-2. **Root prompt catalog cleanup.** Finish the post-worker-modes migration by
-   keeping the canonical root prompt under the purpose-specific catalog path,
-   removing the temporary flat legacy root prompt from this repo, and keeping
-   artifact routing skill-first instead of task-template-specific.
+2. **Root prompt catalog cleanup.** Mostly done: the purpose-dir catalog is
+   canonical, the flat duplicates of the pipeline-role prompts were removed,
+   spawn-allowlist resolution follows the purpose dirs, and the root agent may
+   now spawn the `designer` direct worker. What remains is extension-bound:
+   `agent.agent.md`, the two meta prompts, and the four sub-agent prompts stay
+   flat (byte-identical, test-pinned) because the feature-frozen extension
+   reads those paths directly — they leave with the extension. Keep artifact
+   routing skill-first instead of task-template-specific.
 
 3. **Installer runtime reduction.** Prefer a bundled or locally repairable
    Python core payload so first run does not depend on global `pip install` or

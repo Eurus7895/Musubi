@@ -5,9 +5,9 @@ description: >
   Pass over the full diff looking for cross-cutting findings — architecture,
   contracts, intent — that per-file reviews miss. Second stage of /code-review.
   Per-file detail comes from the reviewer-aux fan-out at the synthesis stage.
-model: claude-sonnet-4-6
+model: claude-sonnet-4.6
 maxTurns: 1
-tools: ["view", "glob", "grep"]
+tools: ["View", "Glob", "Grep"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Finder is a pure JSON writer. It scans the full diff (passed via
 # context from the scoper) for cross-cutting findings. Per-file detail

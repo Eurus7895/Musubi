@@ -181,11 +181,12 @@ def test_agent_spawn_allowlist_includes_pipeline_roles() -> None:
     assert {"planner", "coder", "reviewer"}.issubset(roles)
 
 
-def test_agent_cannot_spawn_designer() -> None:
-    """Designer is a pipeline-internal stage. Spawning it ad-hoc is
-    not in scope for B.1; if the agent needs design work it
-    should ask the user for /feature-dev."""
-    assert check_subagent_allowed("agent", "designer") is False
+def test_agent_can_spawn_designer() -> None:
+    """Designer became an ad-hoc-spawnable direct worker when the
+    standalone catalog shipped `workers/designer.agent.md`. The old B.1
+    rule ("ask the user for /feature-dev instead") was an embedded-host
+    workaround; the CLI/GUI hosts delegate design work directly."""
+    assert check_subagent_allowed("agent", "designer") is True
 
 
 def test_agent_cannot_spawn_unknown_role() -> None:
@@ -257,7 +258,11 @@ def test_reviewer_subagent_is_read_only() -> None:
 
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
-_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "agent.agent.md"
+_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
+# The flat legacy copy the feature-frozen extension still reads
+# (agentCore.ts::loadAgentPrompts hardcodes the flat path). Must stay
+# byte-identical with the canonical root/ copy until the extension goes.
+_AGENT_FILE_LEGACY = _REPO_ROOT / ".github" / "agents" / "agent.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )
@@ -268,6 +273,27 @@ _SKILL_FILE = (
 
 def test_agent_agent_file_exists() -> None:
     assert _AGENT_FILE.is_file()
+
+
+def test_flat_legacy_copies_stay_in_sync() -> None:
+    """The remaining flat agent files exist only for the feature-frozen
+    extension's hardcoded/fallback read paths. Each must stay
+    byte-identical with its canonical purpose-dir copy so the two hosts
+    see one contract. Delete the flat copy (and this pair) when the
+    extension is retired."""
+    agents = _REPO_ROOT / ".github" / "agents"
+    pairs = [
+        ("root/agent.agent.md", "agent.agent.md"),
+        ("meta/pipeline-builder.agent.md", "pipeline-builder.agent.md"),
+        ("meta/skill-builder.agent.md", "skill-builder.agent.md"),
+    ]
+    for canonical, legacy in pairs:
+        c, l = agents / canonical, agents / legacy
+        assert c.is_file(), canonical
+        assert l.is_file(), legacy
+        assert c.read_bytes() == l.read_bytes(), (
+            f"{legacy} drifted from {canonical}"
+        )
 
 
 def test_agent_agent_frontmatter_declares_contract() -> None:
@@ -292,11 +318,11 @@ def test_agent_agent_declares_three_per_role_spawn_cap() -> None:
     assert "max_spawns_per_role_per_turn: 3" in text
 
 
-def test_agent_agent_lists_six_spawn_roles() -> None:
+def test_agent_agent_lists_direct_worker_spawn_roles() -> None:
     text = _AGENT_FILE.read_text(encoding="utf-8")
     for role in (
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "planner", "designer", "coder", "reviewer",
     ):
         assert f"- {role}" in text, f"spawn_allowlist missing {role!r}"
 

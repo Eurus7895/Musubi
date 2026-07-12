@@ -34,13 +34,13 @@ generator:
   agents:
     - name: scoper
       stage: scope
-      agent: agents/code-review-scoper.agent.md
+      agent: agents/pipeline-stages/code-review/scoper.agent.md
       skill: skills/pr-scope-detection/SKILL.md
       # scoper has no sub-agents — diff parsing is deterministic enough that
       # spawning a lookup wouldn't add value.
     - name: finder
       stage: findings
-      agent: agents/code-review-finder.agent.md
+      agent: agents/pipeline-stages/code-review/finder.agent.md
       skill: skills/per-file-review/SKILL.md
       # finder reads the diff itself; reviewer-aux fan-out happens at the
       # synthesizer stage so the synthesizer can aggregate per-file output.
@@ -48,7 +48,7 @@ generator:
 evaluator:
   name: synthesizer
   stage: synthesis
-  agent: agents/code-review-synthesizer.agent.md
+  agent: agents/pipeline-stages/code-review/synthesizer.agent.md
   skill: skills/code-review/SKILL.md
   # Per-file fan-out: the runner walks scope.files and spawns one
   # reviewer-aux per high/medium-priority file, then the synthesizer

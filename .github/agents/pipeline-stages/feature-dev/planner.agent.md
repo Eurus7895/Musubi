@@ -8,7 +8,7 @@ description: >
   to be scoped before implementation begins.
 model: claude-sonnet-4.5
 maxTurns: 1
-tools: ["view", "glob"]
+tools: ["View", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 # Planner is a pure JSON writer in the sub-agent-for-exploration model.
 # It does NOT call read tools directly — exploration happens via cheap-

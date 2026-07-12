@@ -117,7 +117,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
 
 def test_disallowed_role_surfaces_error_without_running_child() -> None:
     router = FakeRouter([
-        _spawn("designer", "do something"),  # 'designer' is not a spawnable role
+        _spawn("saboteur", "do something"),  # unknown role → fail-closed deny
         _text("acknowledged"),
     ])
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
@@ -129,7 +129,7 @@ def test_disallowed_role_surfaces_error_without_running_child() -> None:
         if isinstance(m.get("content"), list)
         for b in m["content"] if b.get("type") == "tool_result"
     )
-    assert '"status": "error"' in fed_back and "designer" in fed_back
+    assert '"status": "error"' in fed_back and "saboteur" in fed_back
 
 
 # ── escalation: child that won't stop is killed, parent still completes ─────

@@ -30,6 +30,7 @@ spawn_allowlist:
   - investigator
   - reviewer-aux
   - planner
+  - designer
   - coder
   - reviewer
   - summarizer

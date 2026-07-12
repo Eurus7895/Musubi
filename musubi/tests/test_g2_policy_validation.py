@@ -116,6 +116,59 @@ def test_subagent_policies_unknown_tool_fails(
     assert any("Telepathy" in e for e in errors), errors
 
 
+# ── Frontmatter spawn_allowlist: purpose-dir resolution ───────────────
+
+
+def test_spawn_allowlist_resolves_from_purpose_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Frontmatter authority follows the purpose-dir catalog: `root/`
+    beats the flat legacy copy, and a pipeline-stage variant is found
+    with no flat file present at all."""
+    agents = tmp_path / ".github" / "agents"
+    (agents / "root").mkdir(parents=True)
+    (agents / "root" / "agent.agent.md").write_text(
+        "---\nspawn_allowlist:\n  - explorer\n---\n", encoding="utf-8"
+    )
+    (agents / "agent.agent.md").write_text(
+        "---\nspawn_allowlist:\n  - explorer\n  - coder\n---\n", encoding="utf-8"
+    )
+    stage = agents / "pipeline-stages" / "feature-dev"
+    stage.mkdir(parents=True)
+    (stage / "coder.agent.md").write_text(
+        "---\nspawn_allowlist:\n  - investigator\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_agent_spawns_cache()
+    try:
+        assert policy_engine.main_subagent_allowlist("agent") == ["explorer"]
+        assert policy_engine.main_subagent_allowlist("coder") == ["investigator"]
+    finally:
+        policy_engine._reset_agent_spawns_cache()
+
+
+def test_validate_catches_bad_spawn_role_in_purpose_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_policy_table walks the whole purpose-dir catalog — a
+    spawn_allowlist referencing an unknown role fails validation even
+    when the file lives under `workers/`, not flat."""
+    agents = tmp_path / ".github" / "agents"
+    (agents / "workers").mkdir(parents=True)
+    (agents / "workers" / "coder.agent.md").write_text(
+        "---\nspawn_allowlist:\n  - ghost-runner\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_agent_spawns_cache()
+    try:
+        errors = validate_policy_table()
+        assert any(
+            "ghost-runner" in e and "coder.agent.md" in e for e in errors
+        ), errors
+    finally:
+        policy_engine._reset_agent_spawns_cache()
+
+
 # ── PIPELINE_POLICIES ↔ SUBAGENT_POLICIES sync ────────────────────────
 
 
