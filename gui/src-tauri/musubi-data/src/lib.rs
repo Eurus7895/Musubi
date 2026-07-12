@@ -2542,11 +2542,7 @@ pub fn build_agent_launch_spec(
         args.push("--chat-id".into());
         args.push(chat_id.to_string());
     }
-    if let Some(pipeline_name) = scope
-        .pipeline_name
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(pipeline_name) = scope.pipeline_name.map(str::trim).filter(|s| !s.is_empty()) {
         if !valid_pipeline_name(pipeline_name) {
             return Err(format!("invalid pipeline name: {pipeline_name:?}"));
         }
