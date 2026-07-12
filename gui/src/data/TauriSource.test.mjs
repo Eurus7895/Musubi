@@ -21,6 +21,36 @@ test('merges pipeline chat from backend snapshots', () => {
   assert.equal(source.state.pipeChat[0].text, 'pipeline')
 })
 
+test('merges durable orchestrator session summaries from backend snapshots', () => {
+  const { source } = sourceWithActionSpy()
+
+  source._mergeDomain({
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-project-old', title: 'old request' }],
+  })
+
+  assert.equal(source.state.orchestratorSessions[0].title, 'old request')
+})
+
+test('selectSession switches the active backend session without deleting history', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-project-old', title: 'old request' }],
+    chat: [{ role: 'driver', text: 'current answer' }],
+    driverStatus: { running: false },
+  })
+
+  source.actions.selectSession('gui-orchestrator-project-old')
+
+  assert.equal(source.state.selectedSession, 'gui-orchestrator-project-old')
+  assert.deepEqual(source.state.orchestratorSessions.map((session) => session.chatId), [
+    'gui-orchestrator-project-old',
+  ])
+  assert.deepEqual(calls, [{
+    kind: 'select_session',
+    args: ['gui-orchestrator-project-old'],
+  }])
+})
+
 test('sendPipelineTask passes brief and selected registered pipeline', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({

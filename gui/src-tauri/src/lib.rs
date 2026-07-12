@@ -356,6 +356,46 @@ fn new_driver_session(
     Ok(())
 }
 
+fn select_driver_session(
+    conn: &Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    surface: &str,
+    requested_chat_id: &str,
+) -> Result<(), String> {
+    if rt.running {
+        return Err(
+            "Cannot switch sessions while the agent is running. Cancel or wait for it to finish."
+                .into(),
+        );
+    }
+    let surface = surface_arg(surface);
+    let current_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
+    let (current_scope, _) = current_id
+        .rsplit_once('-')
+        .ok_or_else(|| "Current project session ID is invalid.".to_string())?;
+    let (requested_scope, requested_nonce) = requested_chat_id
+        .rsplit_once('-')
+        .ok_or_else(|| "Requested project session ID is invalid.".to_string())?;
+    if requested_chat_id.is_empty() || current_scope != requested_scope {
+        return Err("Requested session does not belong to this project and surface.".into());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chat_log WHERE surface=?1 AND chat_id=?2",
+            rusqlite::params![surface, requested_chat_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists == 0 {
+        return Err("Requested session was not found in this project.".into());
+    }
+
+    *chat_id_slot.lock().map_err(|e| e.to_string())? = requested_chat_id.to_string();
+    store_session_nonce(conn, surface, requested_nonce);
+    Ok(())
+}
+
 fn percent_encode(input: &str) -> String {
     let mut out = String::new();
     for b in input.as_bytes() {
@@ -1158,6 +1198,18 @@ fn action(
         "cancel_agent" => {
             cancel_chat_agent(&app, state.inner())?;
         }
+        "select_session" => {
+            let requested_chat_id = str_arg(0);
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            select_driver_session(
+                &conn,
+                &mut rt,
+                &state.chat_id,
+                "orchestrator",
+                &requested_chat_id,
+            )?;
+        }
         "clear_driver_chat" => {
             let surface = surface_arg(&str_arg(0));
             let chat_id = if surface == "pipeline" {
@@ -1445,6 +1497,84 @@ mod tests {
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator");
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
+    }
+
+    #[test]
+    fn select_driver_session_switches_to_existing_project_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+        let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let mut rt = ChatAgentRuntime::default();
+
+        select_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            "orchestrator",
+            "gui-orchestrator-project-old",
+        )
+        .unwrap();
+
+        assert_eq!(
+            slot.lock().unwrap().as_str(),
+            "gui-orchestrator-project-old"
+        );
+        assert_eq!(load_or_mint_session_nonce(&conn, "orchestrator"), "old");
+    }
+
+    #[test]
+    fn select_driver_session_rejects_unknown_cross_scope_and_busy_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('other','you','other request','orchestrator','gui-orchestrator-other-old')",
+            [],
+        )
+        .unwrap();
+        let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let mut rt = ChatAgentRuntime::default();
+
+        let cross_scope = select_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            "orchestrator",
+            "gui-orchestrator-other-old",
+        )
+        .unwrap_err();
+        assert!(cross_scope.contains("project"));
+
+        let unknown = select_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            "orchestrator",
+            "gui-orchestrator-project-missing",
+        )
+        .unwrap_err();
+        assert!(unknown.contains("not found"));
+
+        rt.running = true;
+        let busy = select_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            "orchestrator",
+            "gui-orchestrator-project-current",
+        )
+        .unwrap_err();
+        assert!(busy.contains("running"));
+        assert_eq!(
+            slot.lock().unwrap().as_str(),
+            "gui-orchestrator-project-current"
+        );
     }
 
     #[test]

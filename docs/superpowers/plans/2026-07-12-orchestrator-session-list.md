@@ -30,7 +30,7 @@
 - Produces: `AgentTurn.request: String` serialized as `request`.
 - Consumes: existing `chat_log`, audit `sessions`, `agent_turns`, and resolved subagent `chat_id` data.
 
-- [ ] **Step 1: Write failing Rust data tests**
+- [x] **Step 1: Write failing Rust data tests**
 
 Add tests that insert two Orchestrator `chat_id` values plus one empty minted ID,
 then assert only IDs with chat rows appear newest first. Add a `sessions` request
@@ -43,7 +43,7 @@ assert_eq!(st.orchestrator_sessions[0].last_request, "new request");
 assert_eq!(st.agent_turns[0].request, "build the dashboard");
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -54,7 +54,7 @@ cargo test --manifest-path gui/src-tauri/musubi-data/Cargo.toml agent_turn_root_
 
 Expected: compilation or assertion failure because the fields and loader do not exist.
 
-- [ ] **Step 3: Implement minimal data contracts**
+- [x] **Step 3: Implement minimal data contracts**
 
 Add:
 
@@ -76,7 +76,7 @@ Load non-empty `surface='orchestrator'` chat IDs, derive first/latest user text,
 then count `agent_turns` and resolved subagents by `chat_id`. Join audit
 `sessions.request` into `AgentTurn.request` by `parent_session_id`.
 
-- [ ] **Step 4: Run Rust data tests and verify GREEN**
+- [x] **Step 4: Run Rust data tests and verify GREEN**
 
 Run:
 
@@ -86,7 +86,7 @@ cargo test --manifest-path gui/src-tauri/musubi-data/Cargo.toml
 
 Expected: all `musubi-data` tests pass.
 
-- [ ] **Step 5: Document the serialized fields**
+- [x] **Step 5: Document the serialized fields**
 
 Add `orchestratorSessions` and `AgentTurn.request` to `gui/src-tauri/SCHEMA.md`,
 including the rule that an ID is listed only after its first chat row.
@@ -105,7 +105,7 @@ including the rule that an ID is listed only after its first chat row.
 - Produces: `TauriSource.actions.selectSession(chatId)` that updates selection and invokes the backend switch.
 - Consumes: `State.orchestrator_sessions` from Task 1.
 
-- [ ] **Step 1: Write failing selection and history tests**
+- [x] **Step 1: Write failing selection and history tests**
 
 Rust tests must assert an existing same-project Orchestrator ID replaces the
 active slot and persists its nonce, while unknown/cross-scope IDs and busy
@@ -121,7 +121,7 @@ assert.deepEqual(calls, [{
 
 and `newSession()` leaves `orchestratorSessions` unchanged.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -132,7 +132,7 @@ node --test gui/src/data/TauriSource.test.mjs
 
 Expected: Rust helper/action missing and JavaScript call list missing.
 
-- [ ] **Step 3: Implement guarded selection**
+- [x] **Step 3: Implement guarded selection**
 
 Validate all of the following before swapping the slot:
 
@@ -146,14 +146,14 @@ chat_log contains at least one orchestrator row for the requested ID
 After validation, set the active slot and persist the selected ID's nonce so a
 restart reopens the same session. Do not delete chat or audit rows.
 
-- [ ] **Step 4: Wire the frontend action**
+- [x] **Step 4: Wire the frontend action**
 
 Add `orchestratorSessions` to `DOMAIN_KEYS`. Make `selectSession` retain the
 chosen chat ID locally and invoke `select_session`. Keep `newSession` limited to
 clearing the current chat/editor/process view; it must not clear the session
 index.
 
-- [ ] **Step 5: Run shell and source tests and verify GREEN**
+- [x] **Step 5: Run shell and source tests and verify GREEN**
 
 Run:
 
@@ -177,7 +177,7 @@ Expected: all selected suites pass.
 - Produces: `vals.runs` as chat-session cards and `vals.activeRunSteps` beginning with a root presentation node.
 - Produces: approved rail and empty-state copy.
 
-- [ ] **Step 1: Write failing view-model tests**
+- [x] **Step 1: Write failing view-model tests**
 
 Cover two chat IDs after New session and assert both remain listed, newest first;
 select the old ID and assert the active flow is:
@@ -192,7 +192,7 @@ Add a driver-only turn assertion that `activeRunSteps` contains exactly one
 root node. Add source assertions for `Sessions`, `agent flow`, and absence of
 `Parent runs` / `Session unavailable`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -202,7 +202,7 @@ node --test gui/src/model/viewModel.test.mjs gui/src/components/NewSessionButton
 
 Expected: old sessions are filtered out and no root step exists.
 
-- [ ] **Step 3: Implement session grouping and root node**
+- [x] **Step 3: Implement session grouping and root node**
 
 Build rail cards from `orchestratorSessions`, aggregate their root/worker counts
 from exact `chatId`, and use the selected/current session's latest `AgentTurn` as
@@ -211,7 +211,7 @@ append only workers matching that parent session. When the exact runtime owner
 is active, synthesize the root from `driverStatus.task` until the aggregate turn
 is written.
 
-- [ ] **Step 4: Update Orchestrator copy**
+- [x] **Step 4: Update Orchestrator copy**
 
 Render:
 
@@ -225,7 +225,7 @@ agent flow
 Keep the existing card and horizontal flow visual language; root uses a distinct
 `root` role chip and the same status semantics as workers.
 
-- [ ] **Step 5: Run JavaScript tests and build**
+- [x] **Step 5: Run JavaScript tests and build**
 
 Run:
 
@@ -246,13 +246,13 @@ Expected: all JavaScript tests pass and Vite exits 0.
 - Consumes: completed Tasks 1-3.
 - Produces: roadmap status and reproducible verification evidence.
 
-- [ ] **Step 1: Update roadmap**
+- [x] **Step 1: Update roadmap**
 
 Record session browsing, history preservation, and root-first flow under the
 existing Project-scoped sessions item. Link this plan rather than adding
 implementation detail to the roadmap.
 
-- [ ] **Step 2: Run full relevant verification**
+- [x] **Step 2: Run full relevant verification**
 
 Run:
 
@@ -294,4 +294,3 @@ git push origin fix/gui-pipeline-studio-sessions
 ```
 
 Expected: the remote branch advances without touching `dev`.
-

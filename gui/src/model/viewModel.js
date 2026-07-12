@@ -86,6 +86,50 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orc
   return Array.from(byId.values()).sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
 }
 
+function groupOrchestratorSessions(sessions, subagents, agentTurns, driverStatus) {
+  return sessions.map((session, index) => {
+    const chatId = session.chatId || ''
+    const turns = agentTurns
+      .filter((turn) => turn.chatId === chatId)
+      .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
+    const live = !!driverStatus?.running
+      && driverStatus.surface === 'orchestrator'
+      && driverStatus.chatId === chatId
+    const sessionWorkers = subagents.filter((agent) => agent.chatId === chatId)
+    const latestTurn = turns[turns.length - 1]
+    const liveParent = live
+      ? sessionWorkers.find((agent) => agent.status === 'running')?.parentSession
+        || sessionWorkers[sessionWorkers.length - 1]?.parentSession
+        || `live-${driverStatus.startedAt || 'root'}`
+      : ''
+    const rootTurn = live
+      ? {
+          parentSession: liveParent,
+          request: driverStatus.task || session.lastRequest || session.title || 'Running root task',
+          startedAt: driverStatus.startedAt,
+          cycles: 0,
+          tokensInEstimate: 0,
+          tokensOutEstimate: 0,
+          live: true,
+        }
+      : latestTurn
+    const steps = rootTurn?.parentSession
+      ? sessionWorkers.filter((agent) => agent.parentSession === rootTurn.parentSession)
+      : []
+    return {
+      id: chatId,
+      session,
+      turn: rootTurn,
+      rootTurn,
+      steps,
+      live,
+      task: rootTurn?.request || session.lastRequest || session.title || '',
+      recency: live ? Number.MAX_SAFE_INTEGER : Number(rootTurn?.startedAt || 0),
+      lastIndex: sessions.length - index,
+    }
+  })
+}
+
 function stopHintFor(agent, logText) {
   const log = String(logText || '').toLowerCase()
   if (log.includes('tokenbudgetexhaustederror') || log.includes('token budget halt') || log.includes('token budget exhausted')) {
@@ -224,8 +268,10 @@ export function buildViewModel(s, act) {
   const allAgentTurns = s.agentTurns || []
   const orchestratorChatId = s.orchestratorChatId || ''
   const pipelineChatId = s.pipelineChatId || ''
-  const orchSubagents = allSubagents.filter((a) => belongsToSurface(a, 'orchestrator', orchestratorChatId))
-  const orchAgentTurns = allAgentTurns.filter((t) => belongsToSurface(t, 'orchestrator', orchestratorChatId))
+  const orchestratorSessions = s.orchestratorSessions || []
+  const hasSessionIndex = orchestratorSessions.length > 0
+  const orchSubagents = allSubagents.filter((a) => belongsToSurface(a, 'orchestrator', hasSessionIndex ? '' : orchestratorChatId))
+  const orchAgentTurns = allAgentTurns.filter((t) => belongsToSurface(t, 'orchestrator', hasSessionIndex ? '' : orchestratorChatId))
   const pipeSubagents = allSubagents.filter((a) => belongsToSurface(a, 'pipeline', pipelineChatId))
   const workerOrder = new Map(orchSubagents.map((a, i) => [a.handle, i + 1]))
   const selectedAgent = orchSubagents.find((a) => a.handle === s.selected)
@@ -238,7 +284,9 @@ export function buildViewModel(s, act) {
   const driverBelongsToPipeline = driverBelongsToSession(driverStatusForRuns, 'pipeline', pipelineChatId)
   const orchestratorOwnsDriver = driverRunning && driverBelongsToOrchestrator
   const pipelineOwnsDriver = driverRunning && driverBelongsToPipeline
-  const runsRaw = groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
+  const runsRaw = hasSessionIndex
+    ? groupOrchestratorSessions(orchestratorSessions, orchSubagents, orchAgentTurns, driverStatusForRuns)
+    : groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
   const pipeRunsRaw = (s.pipelineRuns || [])
     .filter((run) => belongsToSurface(run, 'pipeline', pipelineChatId))
     .map((run, index) => ({
@@ -285,7 +333,10 @@ export function buildViewModel(s, act) {
   const chosenSession = s.selectedSession && runsRaw.some((run) => run.id === s.selectedSession)
     ? s.selectedSession
     : null
-  const activeSessionId = selectedAgent?.parentSession || chosenSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || ''
+  const activeSessionId = hasSessionIndex
+    ? ((runsRaw.some((run) => run.id === orchestratorChatId) ? orchestratorChatId : '')
+      || (!orchestratorChatId ? (chosenSession || runningRun?.id || runsRaw[0]?.id || '') : ''))
+    : (selectedAgent?.parentSession || chosenSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || '')
   const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
@@ -316,16 +367,23 @@ export function buildViewModel(s, act) {
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
     const selected = run.id === activeSessionId
+    const session = run.session
     return {
       id: run.id,
-      title: 'Session ' + String(run.id || 'driver').slice(0, 12),
-      subtitle: run.steps.length ? run.steps.length + ' workers' : 'driver-only turn',
-      workerCount: run.steps.length,
+      title: hasSessionIndex
+        ? (session?.title || ('Session ' + String(run.id).slice(-8)))
+        : ('Session ' + String(run.id || 'driver').slice(0, 12)),
+      subtitle: hasSessionIndex
+        ? `${Number(session?.rootTurns || 0)} root turns Â· ${Number(session?.workers || 0)} workers`
+        : (run.steps.length ? run.steps.length + ' workers' : 'driver-only turn'),
+      workerCount: hasSessionIndex ? Number(session?.workers || 0) : run.steps.length,
       status,
       statusLabel: m.label,
       statusColor: m.color,
-      currentBrief: current?.brief || run.task || 'Driver handled this turn without spawning workers.',
-      orderLabel: 'R' + String(runNumberById.get(run.id) || 1).padStart(2, '0'),
+      currentBrief: hasSessionIndex
+        ? (session?.lastRequest || run.task || current?.brief || '')
+        : (current?.brief || run.task || 'Driver handled this turn without spawning workers.'),
+      orderLabel: (hasSessionIndex ? 'S' : 'R') + String(runNumberById.get(run.id) || 1).padStart(2, '0'),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 18px rgba(255,155,61,0.16);' : ''),
       onSelect: () => act.selectSession(run.id),
@@ -383,7 +441,7 @@ export function buildViewModel(s, act) {
     return acc
   }, new Map())
   const roleSeen = new Map()
-  const sessionSteps = activeSessionAgents.map((a, i) => {
+  const workerSessionSteps = activeSessionAgents.map((a, i) => {
     const m = sm[a.status] || sm.abandoned
     const hue = hueFor(a.role)
     const isCurrent = a.handle === currentSessionAgent?.handle
@@ -403,7 +461,7 @@ export function buildViewModel(s, act) {
       isCurrent,
       stopHint,
       attemptLabel: totalAttempts > 1 ? 'attempt ' + attempt + '/' + totalAttempts : '',
-      orderLabel: 'W' + String(workerOrder.get(a.handle) || i + 1).padStart(2, '0'),
+      orderLabel: (hasSessionIndex ? 'A' : 'W') + String(hasSessionIndex ? i + 2 : (workerOrder.get(a.handle) || i + 1)).padStart(2, '0'),
       roleChipStyle: roleChip(a.role, hue),
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       barFillStyle: 'height:100%;width:' + pct + '%;background:' + m.color + ';border-radius:3px;transition:width .4s ease',
@@ -414,6 +472,34 @@ export function buildViewModel(s, act) {
       onSelect: () => act.selectAgent(a.handle),
     }
   })
+  const rootTurn = hasSessionIndex ? activeRunRaw?.rootTurn : null
+  const rootStatus = activeRunRaw?.live ? 'running' : (activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned')
+  const rootMeta = sm[rootStatus] || sm.abandoned
+  const rootBrief = rootTurn?.request || activeRunRaw?.session?.lastRequest || activeRunRaw?.task || ''
+  const rootTokens = Number(rootTurn?.tokensInEstimate || 0) + Number(rootTurn?.tokensOutEstimate || 0)
+  const rootStep = rootTurn
+    ? {
+        handle: 'root:' + String(rootTurn.parentSession || activeSessionId).slice(-12),
+        role: 'root',
+        brief: rootBrief,
+        status: rootStatus,
+        statusLabel: rootMeta.label,
+        statusColor: rootMeta.color,
+        isCurrent: !!activeRunRaw?.live,
+        stopHint: '',
+        attemptLabel: '',
+        orderLabel: 'A01',
+        roleChipStyle: roleChip('root', hueFor('root')),
+        dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + rootMeta.color + ';' + (rootStatus === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
+        barFillStyle: 'height:100%;width:' + (rootStatus === 'running' ? '55' : '100') + '%;background:' + rootMeta.color + ';border-radius:3px;transition:width .4s ease',
+        cardStyle: 'position:relative;width:218px;flex-shrink:0;background:#182130;border:1px solid ' + (activeRunRaw?.live ? rootMeta.color : 'rgba(255,155,61,0.35)') + ';border-radius:10px;padding:13px 14px;' + (activeRunRaw?.live ? 'box-shadow:0 0 0 1px ' + rootMeta.color + '55,0 0 24px ' + rootMeta.color + '22;' : ''),
+        turnsLabel: Number(rootTurn.cycles || 0) + ' cycles',
+        toolsLabel: rootTokens + ' tokens',
+        showConnector: workerSessionSteps.length > 0,
+        onSelect: () => act.clearSelect(),
+      }
+    : null
+  const sessionSteps = rootStep ? [rootStep, ...workerSessionSteps] : workerSessionSteps
 
   const pipeRoleTotals = activePipeSessionAgents.reduce((acc, agent) => {
     const role = agent.role || 'worker'
@@ -705,10 +791,16 @@ export function buildViewModel(s, act) {
     driverSummary,
     runStatusSummary: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     sessionSteps,
-    sessionTitle: activeSessionId ? ('Session ' + activeSessionId.slice(0, 12)) : 'Session history',
-    sessionSubtitle: sessionSteps.length
-      ? (sessionSteps.length + ' workers · full history for this parent run')
-      : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
+    sessionTitle: activeSessionId
+      ? ('Session ' + (hasSessionIndex ? activeSessionId.slice(-8) : activeSessionId.slice(0, 12)))
+      : 'Session history',
+    sessionSubtitle: hasSessionIndex
+      ? (activeRunRaw?.rootTurn
+        ? `latest root turn · ${activeSessionAgents.length} summoned workers`
+        : 'no agent activity yet')
+      : (sessionSteps.length
+        ? (sessionSteps.length + ' workers · full history for this parent run')
+        : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet')),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
     driverBusy: orchestratorOwnsDriver, driverTask: (orchestratorOwnsDriver || orchestratorHasDriverLog) ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : (driverBelongsToOrchestrator ? driverStatusText : ''),
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,

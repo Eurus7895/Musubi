@@ -37,6 +37,7 @@ function baseState(overrides = {}) {
     setupStatus: {},
     driverStatus: { running: false, chatId: '', surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
+    orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
     orchestratorChatId: '',
@@ -118,6 +119,94 @@ test('groups workers into parent runs newest first', () => {
   assert.equal(vm.runs[0].orderLabel, 'R02')
   assert.equal(vm.runs[1].orderLabel, 'R01')
   assert.equal(vm.runs[1].id, 'session-old')
+})
+
+test('keeps prior chat sessions listed after New session changes the active id', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-new',
+    orchestratorSessions: [
+      {
+        chatId: 'gui-orchestrator-project-new', title: 'new request', lastRequest: 'new request',
+        createdAt: '200', updatedAt: '201', rootTurns: 1, workers: 0,
+      },
+      {
+        chatId: 'gui-orchestrator-project-old', title: 'old request', lastRequest: 'old request',
+        createdAt: '100', updatedAt: '101', rootTurns: 1, workers: 1,
+      },
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'gui-orchestrator-project-old', parentSession: 'root-old', request: 'old request', startedAt: 100 },
+      { id: 2, chatId: 'gui-orchestrator-project-new', parentSession: 'root-new', request: 'new request', startedAt: 200 },
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.runs.map((session) => session.id), [
+    'gui-orchestrator-project-new',
+    'gui-orchestrator-project-old',
+  ])
+  assert.equal(vm.runs[0].orderLabel, 'S02')
+  assert.equal(vm.runs[1].orderLabel, 'S01')
+})
+
+test('fresh empty session leaves retained history unselected until its first message', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-empty',
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-project-old', title: 'old request', lastRequest: 'old request',
+      createdAt: '100', updatedAt: '101', rootTurns: 1, workers: 0,
+    }],
+    agentTurns: [{
+      id: 1, chatId: 'gui-orchestrator-project-old', parentSession: 'root-old',
+      request: 'old request', startedAt: 100,
+    }],
+  }), actions())
+
+  assert.deepEqual(vm.runs.map((session) => session.id), ['gui-orchestrator-project-old'])
+  assert.equal(vm.activeRunId, '')
+  assert.deepEqual(vm.activeRunSteps, [])
+})
+
+test('selected session agent flow starts at root then shows summoned workers', () => {
+  const worker = agent(10, 'root-old', 'done', 'coder', 'gui-orchestrator-project-old')
+  worker.brief = 'implement the page'
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-old',
+    selectedSession: 'gui-orchestrator-project-old',
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-project-old', title: 'build the dashboard',
+      lastRequest: 'build the dashboard', createdAt: '100', updatedAt: '101',
+      rootTurns: 1, workers: 1,
+    }],
+    agentTurns: [{
+      id: 1, chatId: 'gui-orchestrator-project-old', parentSession: 'root-old',
+      request: 'build the dashboard', startedAt: 100, modelFamily: 'deepseek', cycles: 2,
+      tokensInEstimate: 100, tokensOutEstimate: 20,
+    }],
+    subagents: [worker],
+  }), actions())
+
+  assert.deepEqual(vm.activeRunSteps.map((step) => step.role), ['root', 'coder'])
+  assert.equal(vm.activeRunSteps[0].brief, 'build the dashboard')
+  assert.equal(vm.activeRunSteps[1].brief, 'implement the page')
+})
+
+test('driver-only session renders a completed root node instead of an empty flow', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-one',
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-project-one', title: 'hello', lastRequest: 'hello',
+      createdAt: '100', updatedAt: '101', rootTurns: 1, workers: 0,
+    }],
+    agentTurns: [{
+      id: 1, chatId: 'gui-orchestrator-project-one', parentSession: 'root-one',
+      request: 'hello', startedAt: 100, modelFamily: 'deepseek', cycles: 1,
+      tokensInEstimate: 20, tokensOutEstimate: 10,
+    }],
+  }), actions())
+
+  assert.deepEqual(vm.activeRunSteps.map((step) => step.role), ['root'])
+  assert.equal(vm.activeRunSteps[0].brief, 'hello')
+  assert.equal(vm.activeRunSteps[0].status, 'done')
 })
 
 test('formats epoch chat timestamps in the requested local timezone', () => {

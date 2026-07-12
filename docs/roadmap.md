@@ -63,7 +63,11 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    retained process state to that ID, preserves other sessions when clearing
    or re-minting one session, and rejects a second run through the shared
    project writer lease. Prior chat rows and live worker ancestry remain
-   session-scoped without changing the shared filesystem root.
+   session-scoped without changing the shared filesystem root. The
+   Orchestrator now indexes non-empty project conversations by exact `chat_id`,
+   retains prior sessions after New session, reopens an idle selected session,
+   and renders the latest turn as a root-first agent flow. Follow-up plan:
+   [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md).
 
 6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including

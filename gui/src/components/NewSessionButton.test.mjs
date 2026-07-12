@@ -24,4 +24,8 @@ test('both chat surfaces use only the approved New session control', () => {
   assert.doesNotMatch(pipeline, /onClearPipe/)
   assert.match(chatBody, /latestUserMessageIndex/)
   assert.doesNotMatch(orchestrator, /onClearDriverChat/)
+  assert.match(orchestrator, />Sessions</)
+  assert.match(orchestrator, /project conversations/)
+  assert.match(orchestrator, />agent flow</)
+  assert.doesNotMatch(orchestrator, /Parent runs|Session unavailable/)
 })
