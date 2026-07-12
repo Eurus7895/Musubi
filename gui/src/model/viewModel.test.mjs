@@ -358,6 +358,26 @@ test('live driver run appears only on owning surface', () => {
   assert.equal(vm.pipeChatBody.sendMode, 'cancel')
 })
 
+test('chat view preserves message roles so a live process can anchor to the latest request', () => {
+  const vm = buildViewModel(baseState({
+    chat: [{ role: 'you', ts: '10:00:00', text: 'build it', tone: null }],
+    pipeChat: [{ role: 'you', ts: '10:00:01', text: 'run it', tone: null }],
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      task: 'build it',
+      startedAt: 88,
+      stdoutTail: '[agent] working',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.driverBusy, true)
+  assert.equal(vm.chat[0].role, 'you')
+  assert.equal(vm.pipeChatBody.chat[0].role, 'you')
+  assert.match(vm.driverProcessLog, /working/)
+})
+
 test('pipeline chat body uses pipe chat and disables while orchestrator owns process', () => {
   const vm = buildViewModel(baseState({
     chat: [{ role: 'driver', ts: '10:00:00', text: 'orchestrator answer', tone: null }],

@@ -418,6 +418,50 @@ pub fn load_state_with_pipeline_runs(
     load_state_at_with_pipeline_runs(audit_conn, state_conn, current_epoch_secs())
 }
 
+/// Load the visible chat feed for one GUI session. Older databases without a
+/// `chat_id` column fall back to their pre-session surface scope.
+pub fn load_chat_for_session(
+    conn: &Connection,
+    surface: &str,
+    chat_id: &str,
+) -> rusqlite::Result<Vec<ChatMsg>> {
+    if !table_exists(conn, "chat_log")? {
+        return Ok(vec![]);
+    }
+    let has_surface = column_exists(conn, "chat_log", "surface")?;
+    let has_chat_id = column_exists(conn, "chat_log", "chat_id")?;
+    let (sql, params): (&str, Vec<&dyn rusqlite::ToSql>) = if has_surface && has_chat_id {
+        (
+            "SELECT role,ts,text,tone FROM chat_log \
+             WHERE surface=?1 AND chat_id=?2 ORDER BY id ASC",
+            vec![&surface, &chat_id],
+        )
+    } else if has_surface {
+        (
+            "SELECT role,ts,text,tone FROM chat_log WHERE surface=?1 ORDER BY id ASC",
+            vec![&surface],
+        )
+    } else {
+        (
+            "SELECT role,ts,text,tone FROM chat_log ORDER BY id ASC",
+            vec![],
+        )
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let mut messages = stmt
+        .query_map(params.as_slice(), |r| {
+            Ok(ChatMsg {
+                role: r.get(0)?,
+                ts: r.get(1)?,
+                text: r.get(2)?,
+                tone: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    trim_front(&mut messages, 60);
+    Ok(messages)
+}
+
 /// Return only real pipeline runs joined to their audit-envelope ancestry.
 pub fn load_pipeline_runs(
     audit_conn: &Connection,
@@ -724,12 +768,30 @@ fn load_state_at_with_pipeline_runs(
     // ── tag each run with its owning session ──
     // subagent_audit has no chat_id; agent_turns maps parent_session → chat_id.
     // The UI scopes runs to a surface by the chat_id prefix (gui-pipeline-*).
-    let session_to_chat: std::collections::HashMap<String, String> = st
+    let mut session_to_chat: std::collections::HashMap<String, String> = st
         .agent_turns
         .iter()
         .filter(|t| !t.chat_id.is_empty() && !t.parent_session.is_empty())
         .map(|t| (t.parent_session.clone(), t.chat_id.clone()))
         .collect();
+    // The parent pipeline_runs row is created at driver start, while the
+    // aggregate agent_turns row is written only at driver completion.
+    if let Some(state_conn) = pipeline_state_conn {
+        if table_exists(state_conn, "pipeline_runs")?
+            && column_exists(state_conn, "pipeline_runs", "chat_id")?
+        {
+            let mut stmt = state_conn.prepare(
+                "SELECT session_id, COALESCE(chat_id, '') FROM pipeline_runs \
+                 WHERE COALESCE(chat_id, '') <> ''",
+            )?;
+            for row in
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            {
+                let (session_id, chat_id) = row?;
+                session_to_chat.entry(session_id).or_insert(chat_id);
+            }
+        }
+    }
     for agent in &mut st.subagents {
         if let Some(chat_id) = session_to_chat.get(&agent.parent_session) {
             agent.chat_id = chat_id.clone();
@@ -738,14 +800,6 @@ fn load_state_at_with_pipeline_runs(
 
     if let Some(state_conn) = pipeline_state_conn {
         if table_exists(state_conn, "pipeline_runs")? {
-            let mut pipeline_session_to_chat = std::collections::HashMap::new();
-            if column_exists(state_conn, "pipeline_runs", "chat_id")? {
-                let mut chat_stmt = state_conn
-                    .prepare("SELECT session_id, COALESCE(chat_id, '') FROM pipeline_runs")?;
-                pipeline_session_to_chat = chat_stmt
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                    .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
-            }
             let mut pstmt = state_conn.prepare(
                 "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
              FROM pipeline_runs ORDER BY started_at ASC",
@@ -761,7 +815,6 @@ fn load_state_at_with_pipeline_runs(
                     };
                     let chat_id = session_to_chat
                         .get(&envelope.parent_session)
-                        .or_else(|| pipeline_session_to_chat.get(&envelope.parent_session))
                         .cloned()
                         .unwrap_or_default();
                     let mut stages = st
@@ -1108,7 +1161,8 @@ CREATE TABLE IF NOT EXISTS chat_log (
   role    TEXT,                                -- 'you' | 'driver' | 'system'
   tone    TEXT,
   text    TEXT,
-  surface TEXT NOT NULL DEFAULT 'orchestrator' -- 'orchestrator' | 'pipeline'
+  surface TEXT NOT NULL DEFAULT 'orchestrator', -- 'orchestrator' | 'pipeline'
+  chat_id TEXT NOT NULL DEFAULT ''              -- owning GUI session
 );
 CREATE TABLE IF NOT EXISTS agent_turns (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1612,6 +1666,33 @@ mod tests {
 
         assert_eq!(st.subagents.len(), 1);
         assert_eq!(st.subagents[0].chat_id, "gui-pipeline-abc");
+    }
+
+    #[test]
+    fn live_subagent_chat_id_resolved_from_parent_pipeline_run() {
+        let audit = Connection::open_in_memory().unwrap();
+        let state = Connection::open_in_memory().unwrap();
+        init_schema(&audit).unwrap();
+        init_schema(&state).unwrap();
+        audit
+            .execute(
+                "INSERT INTO subagent_audit\
+                 (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+                 VALUES(1,1000.0,'spawned','live-worker','parent-run','agent','coder','build it','[]',8,300)",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO pipeline_runs(session_id,pipeline_name,chat_id,started_at)\
+                 VALUES('parent-run','feature-dev','gui-orchestrator-current',1000.0)",
+                [],
+            )
+            .unwrap();
+
+        let st = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+
+        assert_eq!(st.subagents[0].chat_id, "gui-orchestrator-current");
     }
 
     #[test]

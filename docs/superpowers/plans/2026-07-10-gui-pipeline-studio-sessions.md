@@ -598,6 +598,34 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gu
 - [ ] Update the roadmap only after acceptance passes; commit
   `docs(roadmap): record studio corrective pass`.
 
+### Task 16: Preserve Session History and Live Orchestrator Observability
+
+**Files:** `gui/src-tauri/src/lib.rs`,
+`gui/src-tauri/musubi-data/src/lib.rs`, `gui/src/model/viewModel.js`, their
+tests, and `gui/src-tauri/SCHEMA.md`.
+
+**Evidence:** `new_session` deleted every `chat_log` row for a surface because
+the table had no session key. Separately, the chat view model dropped message
+roles, so `ChatBody` could not anchor the live process card to the latest user
+request. Running workers were also filtered out until completion because their
+chat scope was joined only from the terminal `agent_turns` row. The attached
+Nietzsche dashboard run shows three coder workers and continuous process output
+while the Orchestrator rendered neither.
+
+**Contract:** Every chat row belongs to an exact `chat_id`. New session changes
+the active ID without deleting prior rows, and clear affects only the active
+session. Both chat surfaces retain message roles so live process/log UI can be
+anchored. Running workers inherit chat scope from the parent `pipeline_runs`
+row written at driver start; `agent_turns` remains the completed-turn source.
+
+- [x] Add red/green regression tests for retained prior history, active-session
+  chat loading, preserved message roles, and live worker chat mapping.
+- [x] Add backward-compatible `chat_log.chat_id` migration and active-session
+  filtering; keep prior rows durable.
+- [x] Restore process/log anchoring and map workers before driver completion.
+- [x] Verify all GUI Node tests, production build, both Rust test suites,
+  rustfmt, and Clippy.
+
 ---
 
 ## Approved follow-up plans (2026-07-12)

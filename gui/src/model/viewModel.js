@@ -188,6 +188,7 @@ function buildChatView(messages = []) {
   return messages.map((msg) => {
     if (msg.role === 'you') {
       return {
+        role: msg.role,
         text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
         rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
         bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
@@ -195,6 +196,7 @@ function buildChatView(messages = []) {
     }
     if (msg.role === 'driver') {
       return {
+        role: msg.role,
         text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
         metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
         rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
@@ -203,6 +205,7 @@ function buildChatView(messages = []) {
     }
     const red = msg.tone === 'deny'
     return {
+      role: msg.role,
       text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
       rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
       bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
@@ -598,30 +601,7 @@ export function buildViewModel(s, act) {
         : 'Every Studio message runs ' + s.pipeName + ' directly in this isolated session.')
     : 'Choose a registered pipeline before running.'
 
-  const chatView = s.chat.map((msg) => {
-    if (msg.role === 'you') {
-      return {
-        text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
-        rowStyle: 'display:flex;justify-content:flex-end;padding:4px 16px',
-        bubbleStyle: 'max-width:82%;background:rgba(255,155,61,0.14);border:1px solid rgba(255,155,61,0.32);color:#fde9d6;padding:8px 12px;border-radius:13px 13px 4px 13px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
-      }
-    }
-    if (msg.role === 'driver') {
-      return {
-        text: msg.text, formatted: true, showMeta: true, meta: 'driver · the knot · ' + formatChatTimestamp(msg.ts),
-        metaStyle: 'font-size:9.5px;color:#6a6a72;font-family:\'IBM Plex Mono\',monospace;padding-left:3px',
-        rowStyle: 'display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:4px 16px',
-        bubbleStyle: 'max-width:86%;background:#19212f;border:1px solid rgba(255,255,255,0.07);color:#d4d4d8;padding:8px 12px;border-radius:13px 13px 13px 4px;font-size:12.5px;line-height:1.45;overflow-wrap:anywhere',
-      }
-    }
-    const red = msg.tone === 'deny'
-    return {
-      text: msg.text, formatted: false, showMeta: false, meta: '', metaStyle: '',
-      rowStyle: 'display:flex;justify-content:center;padding:5px 16px',
-      bubbleStyle: 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:' + (red ? '#e86a5f' : '#7a7a82') + ';background:' + (red ? 'rgba(232,106,95,0.08)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (red ? 'rgba(232,106,95,0.25)' : 'rgba(255,255,255,0.07)') + ';padding:4px 11px;border-radius:20px;letter-spacing:0.02em;text-align:center',
-    }
-  })
-
+  const chatView = buildChatView(s.chat || [])
   const pipeChatView = buildChatView(s.pipeChat || [])
 
   const sourceLabels = {

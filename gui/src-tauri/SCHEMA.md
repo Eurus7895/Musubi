@@ -103,6 +103,8 @@ HI #3). Empty (the real-DB case) → the Policy view folds from `tool_audit`.
 | `role` | TEXT | `you` \| `driver` \| `system` |
 | `tone` | TEXT | optional: `spawn` \| `deny` (styles system notes) |
 | `text` | TEXT | |
+| `surface` | TEXT | `orchestrator` \| `pipeline` |
+| `chat_id` | TEXT | owning GUI session; new sessions preserve prior rows |
 
 ### `meta` — key/value (GUI-side)
 

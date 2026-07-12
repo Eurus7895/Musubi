@@ -59,6 +59,8 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    Keep one writer process and never create per-session directories,
    worktrees, clones, virtualenvs, or containers. Plan:
    [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
+   The current GUI corrective pass preserves prior chat rows by `chat_id` and
+   joins live workers to their session before the terminal turn row exists.
 
 6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including

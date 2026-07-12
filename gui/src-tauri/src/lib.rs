@@ -86,10 +86,18 @@ fn insert_chat(
     tone: Option<&str>,
     text: &str,
     surface: &str,
+    chat_id: &str,
 ) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO chat_log(ts,role,tone,text,surface) VALUES(?1,?2,?3,?4,?5)",
-        rusqlite::params![chat_timestamp(epoch_secs()), role, tone, text, surface],
+        "INSERT INTO chat_log(ts,role,tone,text,surface,chat_id) VALUES(?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![
+            chat_timestamp(epoch_secs()),
+            role,
+            tone,
+            text,
+            surface,
+            chat_id
+        ],
     )
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -127,14 +135,18 @@ fn clear_driver_chat_log(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
     surface: &str,
+    chat_id: &str,
 ) -> Result<(), String> {
     if rt.running {
         return Err(
             "Cannot clear chat while the agent is running. Cancel or wait for it to finish.".into(),
         );
     }
-    conn.execute("DELETE FROM chat_log WHERE surface = ?1", [surface])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM chat_log WHERE surface = ?1 AND chat_id = ?2",
+        rusqlite::params![surface, chat_id],
+    )
+    .map_err(|e| e.to_string())?;
     rt.stdout_tail.clear();
     rt.stderr_tail.clear();
     rt.task.clear();
@@ -269,8 +281,8 @@ fn load_or_mint_session_nonce(conn: &Connection, surface: &str) -> String {
 
 /// Start a fresh session on `surface`: mint a new nonce (so the agent's
 /// chat_id-keyed replay history starts empty next run), persist it, swap the
-/// live chat_id, and clear the display log. Old history is retained under the
-/// old chat_id (append-only) for future browsing.
+/// live chat_id. Old display and replay history remain under the old chat_id
+/// for future browsing.
 fn new_driver_session(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
@@ -286,8 +298,6 @@ fn new_driver_session(
     }
     let nonce = mint_session_nonce();
     store_session_nonce(conn, surface, &nonce);
-    conn.execute("DELETE FROM chat_log WHERE surface = ?1", [surface])
-        .map_err(|e| e.to_string())?;
     let new_id = scoped_chat_id(project_root, surface, &nonce);
     *chat_id_slot.lock().map_err(|e| e.to_string())? = new_id;
     rt.stdout_tail.clear();
@@ -621,10 +631,18 @@ fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
             }
         })
         .unwrap_or_else(|_| "orchestrator".to_string());
+    let chat_id = if surface == "pipeline" {
+        state.pipeline_chat_id.lock()
+    } else {
+        state.chat_id.lock()
+    };
+    let Ok(chat_id) = chat_id.map(|id| id.clone()) else {
+        return;
+    };
     let Ok(conn) = state.db.lock() else {
         return;
     };
-    let _ = insert_chat(&conn, "driver", tone, text, &surface);
+    let _ = insert_chat(&conn, "driver", tone, text, &surface, &chat_id);
 }
 
 fn pump_stream(
@@ -957,12 +975,18 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         .transpose()?;
     let mut st = musubi_data::load_state_with_pipeline_runs(&conn, state_conn.as_deref())
         .map_err(|e| e.to_string())?;
-    st.orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
-    st.pipeline_chat_id = state
+    let orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let pipeline_chat_id = state
         .pipeline_chat_id
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
+    st.chat = musubi_data::load_chat_for_session(&conn, "orchestrator", &orchestrator_chat_id)
+        .map_err(|e| e.to_string())?;
+    st.pipe_chat = musubi_data::load_chat_for_session(&conn, "pipeline", &pipeline_chat_id)
+        .map_err(|e| e.to_string())?;
+    st.orchestrator_chat_id = orchestrator_chat_id;
+    st.pipeline_chat_id = pipeline_chat_id;
     st.pipeline_catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
     st.paused = state.paused.load(Ordering::Relaxed);
     st.runtime_source = state
@@ -1021,16 +1045,16 @@ fn action(
             if text.trim().is_empty() {
                 return Ok(());
             }
+            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             {
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
-                insert_chat(&conn, "you", None, &text, "orchestrator")?;
+                insert_chat(&conn, "you", None, &text, "orchestrator", &chat_id)?;
             }
-            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             if let Err(e) =
                 start_chat_agent(app, state.inner(), text, &chat_id, "orchestrator", None)
             {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator")?;
+                insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator", &chat_id)?;
             }
         }
         // Pipeline studio session: same single process slot, its own chat_id +
@@ -1039,24 +1063,24 @@ fn action(
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
             let requested_text = str_arg(0);
             let requested_pipeline = str_arg(1);
-            let (text, pipeline_name) =
-                match prepare_pipeline_launch(&requested_text, &requested_pipeline, &catalog) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        let conn = state.db.lock().map_err(|e| e.to_string())?;
-                        insert_chat(&conn, "driver", Some("deny"), &error, "pipeline")?;
-                        return Ok(());
-                    }
-                };
-            {
-                let conn = state.db.lock().map_err(|e| e.to_string())?;
-                insert_chat(&conn, "you", None, &text, "pipeline")?;
-            }
             let chat_id = state
                 .pipeline_chat_id
                 .lock()
                 .map_err(|e| e.to_string())?
                 .clone();
+            let (text, pipeline_name) =
+                match prepare_pipeline_launch(&requested_text, &requested_pipeline, &catalog) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let conn = state.db.lock().map_err(|e| e.to_string())?;
+                        insert_chat(&conn, "driver", Some("deny"), &error, "pipeline", &chat_id)?;
+                        return Ok(());
+                    }
+                };
+            {
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                insert_chat(&conn, "you", None, &text, "pipeline", &chat_id)?;
+            }
             if let Err(e) = start_chat_agent(
                 app,
                 state.inner(),
@@ -1066,14 +1090,15 @@ fn action(
                 Some(&pipeline_name),
             ) {
                 let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e, "pipeline")?;
+                insert_chat(&conn, "driver", Some("deny"), &e, "pipeline", &chat_id)?;
             }
         }
         "pipeline_hint" => {
             let text = str_arg(0);
+            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             if !text.trim().is_empty() {
-                insert_chat(&conn, "you", None, &text, "orchestrator")?;
+                insert_chat(&conn, "you", None, &text, "orchestrator", &chat_id)?;
             }
             insert_chat(
                 &conn,
@@ -1081,6 +1106,7 @@ fn action(
                 None,
                 "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.",
                 "orchestrator",
+                &chat_id,
             )?;
         }
         "select_profile" => {
@@ -1102,13 +1128,19 @@ fn action(
         }
         "clear_driver_chat" => {
             let surface = surface_arg(&str_arg(0));
+            let chat_id = if surface == "pipeline" {
+                state.pipeline_chat_id.lock()
+            } else {
+                state.chat_id.lock()
+            }
+            .map_err(|e| e.to_string())?
+            .clone();
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            clear_driver_chat_log(&conn, &mut rt, surface)?;
+            clear_driver_chat_log(&conn, &mut rt, surface, &chat_id)?;
         }
         // Fresh session: re-mint the surface's chat_id so the agent's replay
-        // history starts empty, and clear the display. Old turns stay under the
-        // previous chat_id.
+        // history starts empty. Old turns stay under the previous chat_id.
         "new_session" => {
             let surface = surface_arg(&str_arg(0));
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
@@ -1126,6 +1158,13 @@ fn action(
             match open_workspace_path(&state.project_root, &raw_path) {
                 Ok(_) => {}
                 Err(e) => {
+                    let chat_id = if surface == "pipeline" {
+                        state.pipeline_chat_id.lock()
+                    } else {
+                        state.chat_id.lock()
+                    }
+                    .map_err(|err| err.to_string())?
+                    .clone();
                     let conn = state.db.lock().map_err(|err| err.to_string())?;
                     insert_chat(
                         &conn,
@@ -1133,6 +1172,7 @@ fn action(
                         Some("deny"),
                         &artifact_open_failed_message(&raw_path, &e),
                         surface,
+                        &chat_id,
                     )?;
                 }
             }
@@ -1148,11 +1188,15 @@ fn action(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let opened = open_configured_db();
-    // Existing audit DBs predate chat_log.surface; add it if missing so the
-    // per-surface inserts/reads work. Errors (incl. "duplicate column") ignored.
+    // Existing audit DBs predate chat_log.surface/chat_id; add either column
+    // when missing. Errors (including "duplicate column") are ignored.
     {
         let _ = opened.conn.execute(
             "ALTER TABLE chat_log ADD COLUMN surface TEXT NOT NULL DEFAULT 'orchestrator'",
+            [],
+        );
+        let _ = opened.conn.execute(
+            "ALTER TABLE chat_log ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''",
             [],
         );
     }
@@ -1162,6 +1206,16 @@ pub fn run() {
     let pipe_nonce = load_or_mint_session_nonce(&opened.conn, "pipeline");
     let chat_id = scoped_chat_id(&opened.project_root, "orchestrator", &chat_nonce);
     let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline", &pipe_nonce);
+    // Pre-session rows can only belong to the session that was active when the
+    // migration ran. Backfill once; future rows are written with their owner.
+    let _ = opened.conn.execute(
+        "UPDATE chat_log SET chat_id=?1 WHERE surface='orchestrator' AND chat_id=''",
+        [&chat_id],
+    );
+    let _ = opened.conn.execute(
+        "UPDATE chat_log SET chat_id=?1 WHERE surface='pipeline' AND chat_id=''",
+        [&pipeline_chat_id],
+    );
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(opened.conn),
@@ -1190,6 +1244,34 @@ pub fn run() {
         .expect("error while running Musubi console");
 }
 
+fn prepare_pipeline_launch(
+    brief: &str,
+    pipeline_name: &str,
+    catalog: &[musubi_data::PipelineCatalogEntry],
+) -> Result<(String, String), String> {
+    let brief = brief.trim();
+    if brief.is_empty() {
+        return Err("Pipeline brief is empty — describe the task to run.".into());
+    }
+    let pipeline_name = pipeline_name.trim();
+    if !musubi_data::valid_pipeline_name(pipeline_name) {
+        return Err(format!("invalid pipeline name: {pipeline_name:?}"));
+    }
+    let Some(entry) = catalog.iter().find(|entry| entry.name == pipeline_name) else {
+        return Err(format!(
+            "Pipeline {pipeline_name:?} is not registered for Studio."
+        ));
+    };
+    if !entry.runnable || entry.stages.len() < 2 {
+        return Err(if entry.blocked_reason.is_empty() {
+            format!("Pipeline {pipeline_name:?} is not runnable in Studio.")
+        } else {
+            entry.blocked_reason.clone()
+        });
+    }
+    Ok((brief.to_string(), pipeline_name.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,8 +1280,8 @@ mod tests {
     fn clear_driver_chat_deletes_chat_and_idle_runtime_tails() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
-        insert_chat(&conn, "driver", None, "hi", "orchestrator").unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator", "chat-1").unwrap();
+        insert_chat(&conn, "driver", None, "hi", "orchestrator", "chat-1").unwrap();
         let mut rt = ChatAgentRuntime {
             stdout_tail: "stdout text".into(),
             stderr_tail: "stderr text".into(),
@@ -1208,7 +1290,7 @@ mod tests {
             ..ChatAgentRuntime::default()
         };
 
-        clear_driver_chat_log(&conn, &mut rt, "orchestrator").unwrap();
+        clear_driver_chat_log(&conn, &mut rt, "orchestrator", "chat-1").unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
@@ -1221,13 +1303,13 @@ mod tests {
     }
 
     #[test]
-    fn new_session_rerolls_chat_id_and_clears_display() {
+    fn new_session_rerolls_chat_id_without_deleting_prior_history() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
         let root = Path::new("/tmp/musubi-new-session-test");
         let old_nonce = load_or_mint_session_nonce(&conn, "orchestrator");
         let old_id = scoped_chat_id(root, "orchestrator", &old_nonce);
+        insert_chat(&conn, "you", None, "hello", "orchestrator", &old_id).unwrap();
         let slot = Mutex::new(old_id.clone());
         let mut rt = ChatAgentRuntime {
             stdout_tail: "x".into(),
@@ -1240,15 +1322,34 @@ mod tests {
         let new_id = slot.lock().unwrap().clone();
         assert_ne!(new_id, old_id);
         assert!(new_id.starts_with("gui-orchestrator-"));
-        // Display log for this surface is cleared and the tail reset.
+        // Prior display history remains durable under the old session.
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM chat_log", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
         assert_eq!(rt.stdout_tail, "");
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator");
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
+    }
+
+    #[test]
+    fn chat_display_loads_only_the_active_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES\
+             ('old','you','old request','orchestrator','old-chat'),\
+             ('new','you','new request','orchestrator','new-chat')",
+            [],
+        )
+        .unwrap();
+
+        let messages =
+            musubi_data::load_chat_for_session(&conn, "orchestrator", "new-chat").unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "new request");
     }
 
     #[test]
@@ -1267,8 +1368,16 @@ mod tests {
     fn new_session_refuses_while_agent_runs() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
         let slot = Mutex::new("gui-orchestrator-abc-1".to_string());
+        insert_chat(
+            &conn,
+            "you",
+            None,
+            "hello",
+            "orchestrator",
+            "gui-orchestrator-abc-1",
+        )
+        .unwrap();
         let mut rt = ChatAgentRuntime {
             running: true,
             ..ChatAgentRuntime::default()
@@ -1289,13 +1398,13 @@ mod tests {
     fn clear_driver_chat_refuses_while_agent_runs() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
-        insert_chat(&conn, "you", None, "hello", "orchestrator").unwrap();
+        insert_chat(&conn, "you", None, "hello", "orchestrator", "chat-1").unwrap();
         let mut rt = ChatAgentRuntime {
             running: true,
             ..ChatAgentRuntime::default()
         };
 
-        let err = clear_driver_chat_log(&conn, &mut rt, "orchestrator").unwrap_err();
+        let err = clear_driver_chat_log(&conn, &mut rt, "orchestrator", "chat-1").unwrap_err();
 
         assert!(err.contains("running"));
         let count: i64 = conn
@@ -1486,32 +1595,4 @@ mod tests {
             .unwrap_err()
             .contains("not registered"));
     }
-}
-
-fn prepare_pipeline_launch(
-    brief: &str,
-    pipeline_name: &str,
-    catalog: &[musubi_data::PipelineCatalogEntry],
-) -> Result<(String, String), String> {
-    let brief = brief.trim();
-    if brief.is_empty() {
-        return Err("Pipeline brief is empty — describe the task to run.".into());
-    }
-    let pipeline_name = pipeline_name.trim();
-    if !musubi_data::valid_pipeline_name(pipeline_name) {
-        return Err(format!("invalid pipeline name: {pipeline_name:?}"));
-    }
-    let Some(entry) = catalog.iter().find(|entry| entry.name == pipeline_name) else {
-        return Err(format!(
-            "Pipeline {pipeline_name:?} is not registered for Studio."
-        ));
-    };
-    if !entry.runnable || entry.stages.len() < 2 {
-        return Err(if entry.blocked_reason.is_empty() {
-            format!("Pipeline {pipeline_name:?} is not runnable in Studio.")
-        } else {
-            entry.blocked_reason.clone()
-        });
-    }
-    Ok((brief.to_string(), pipeline_name.to_string()))
 }
