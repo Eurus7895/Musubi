@@ -116,6 +116,50 @@ def test_subagent_policies_unknown_tool_fails(
     assert any("Telepathy" in e for e in errors), errors
 
 
+# ── PIPELINE_POLICIES ↔ SUBAGENT_POLICIES sync ────────────────────────
+
+
+def test_subagent_role_lagging_pipeline_grant_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role present in both tables with FEWER ad-hoc tools than its
+    pipeline grant is drift (the manual-sync failure the old comment
+    warned about) and must fail validation."""
+    bad = dict(SUBAGENT_POLICIES)
+    bad["coder"] = ["Read", "View", "Grep", "Glob", "Write", "Edit"]  # Bash dropped
+    monkeypatch.setattr(policy_engine, "SUBAGENT_POLICIES", bad)
+    errors = validate_policy_table()
+    assert any("out of sync" in e and "'coder'" in e for e in errors), errors
+
+
+def test_subagent_role_exceeding_pipeline_grant_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role whose ad-hoc tool set EXCEEDS its pipeline grant would let
+    an ad-hoc spawn do more than the same role inside a pipeline —
+    the safety direction of the sync rule."""
+    bad = dict(SUBAGENT_POLICIES)
+    bad["reviewer"] = ["Read", "View", "Grep", "Glob", "Bash"]  # Bash added
+    monkeypatch.setattr(policy_engine, "SUBAGENT_POLICIES", bad)
+    errors = validate_policy_table()
+    assert any("out of sync" in e and "'reviewer'" in e for e in errors), errors
+
+
+def test_roles_missing_from_either_table_are_not_sync_checked() -> None:
+    """The sync rule only binds roles present in BOTH tables: pure
+    sub-agent roles (explorer) and pipeline-only agents (scoper) are
+    exempt — pinned here so the check can't silently widen."""
+    from policy_engine import PIPELINE_POLICIES
+
+    assert "explorer" in SUBAGENT_POLICIES
+    assert all(
+        "explorer" not in agents for agents in PIPELINE_POLICIES.values()
+    )
+    assert "scoper" in PIPELINE_POLICIES["code-review"]
+    assert "scoper" not in SUBAGENT_POLICIES
+    assert validate_policy_table() == []
+
+
 # ── MAIN_SUBAGENT_ALLOWLIST misconfigurations ─────────────────────────
 
 

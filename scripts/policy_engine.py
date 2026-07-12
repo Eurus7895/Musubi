@@ -62,8 +62,9 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     # Phase B.1 — pipeline roles spawnable as ad-hoc sub-agents by the
     # agent. Tool sets mirror PIPELINE_POLICIES["feature-dev"] so
     # an ad-hoc spawn cannot exceed what the same role gets inside a
-    # pipeline. Kept in sync manually; if PIPELINE_POLICIES changes,
-    # update here too.
+    # pipeline. Sync is enforced by validate_policy_table(): a role
+    # present in both tables must carry identical tool sets, or boot
+    # aborts. Intentional divergence is a design discussion first.
     "planner":      ["Read", "View", "Grep", "Glob"],
     "designer":     ["Read", "View", "Grep", "Glob"],
     "coder":        ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"],
@@ -477,6 +478,29 @@ def validate_policy_table() -> list[str]:
                 errors.append(
                     f"SUBAGENT_POLICIES[{role!r}] references unknown "
                     f"tool {tool!r}"
+                )
+
+    # PIPELINE_POLICIES ↔ SUBAGENT_POLICIES sync: a role that exists in
+    # both tables must carry the same tool set, so an ad-hoc spawn can
+    # never exceed — or silently lag — what the same role gets inside a
+    # pipeline. Divergence is legal only after the tables (and this
+    # check) are changed together in an explicit design discussion.
+    for pipeline, agents in PIPELINE_POLICIES.items():
+        if not isinstance(agents, dict):
+            continue  # shape error already reported above
+        for agent, tools in agents.items():
+            if agent not in SUBAGENT_POLICIES or not isinstance(tools, list):
+                continue
+            role_tools = SUBAGENT_POLICIES[agent]
+            if not isinstance(role_tools, list):
+                continue  # shape error already reported above
+            if set(role_tools) != set(tools):
+                errors.append(
+                    f"SUBAGENT_POLICIES[{agent!r}] is out of sync with "
+                    f"PIPELINE_POLICIES[{pipeline!r}][{agent!r}]: "
+                    f"ad-hoc {sorted(role_tools)} vs pipeline "
+                    f"{sorted(tools)}. A role in both tables must carry "
+                    "identical tool sets."
                 )
 
     # MAIN_SUBAGENT_ALLOWLIST checks: roles must be in SUBAGENT_POLICIES.
