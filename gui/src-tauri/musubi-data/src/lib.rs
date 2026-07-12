@@ -2032,8 +2032,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
-            None,
-            None,
+            AgentLaunchScope::default(),
         )
         .unwrap();
 
@@ -2056,8 +2055,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
-            None,
-            None,
+            AgentLaunchScope::default(),
         )
         .unwrap();
         assert_eq!(
@@ -2072,8 +2070,7 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
-            None,
-            None,
+            AgentLaunchScope::default(),
         )
         .unwrap();
         assert_eq!(same.args, vec!["task", "--tool-surface", "agent"]);
@@ -2089,8 +2086,10 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
-            Some("gui-orchestrator"),
-            None,
+            AgentLaunchScope {
+                chat_id: Some("gui-orchestrator"),
+                ..AgentLaunchScope::default()
+            },
         )
         .unwrap();
 
@@ -2116,8 +2115,10 @@ mod tests {
             None,
             &root,
             &std::collections::HashMap::new(),
-            Some("gui-pipeline-abc"),
-            Some("feature-dev"),
+            AgentLaunchScope {
+                chat_id: Some("gui-pipeline-abc"),
+                pipeline_name: Some("feature-dev"),
+            },
         )
         .unwrap();
 
@@ -2190,8 +2191,16 @@ mod tests {
         );
         env.insert("ANTHROPIC_API_KEY".to_string(), "sk-…".to_string());
 
-        let spec =
-            build_agent_launch_spec("task", "", "", Some(&cli), &root, &env, None, None).unwrap();
+        let spec = build_agent_launch_spec(
+            "task",
+            "",
+            "",
+            Some(&cli),
+            &root,
+            &env,
+            AgentLaunchScope::default(),
+        )
+        .unwrap();
 
         assert_eq!(spec.program, cli);
         let mut forwarded = spec.env.clone();
@@ -2223,8 +2232,7 @@ mod tests {
             None,
             Path::new("/proj"),
             &std::collections::HashMap::new(),
-            None,
-            None,
+            AgentLaunchScope::default(),
         )
         .unwrap_err();
         assert!(err.contains("empty"));
@@ -2489,6 +2497,13 @@ pub struct AgentLaunchSpec {
     pub env: Vec<(String, String)>,
 }
 
+/// Optional identity that scopes one agent launch to a chat and/or pipeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentLaunchScope<'a> {
+    pub chat_id: Option<&'a str>,
+    pub pipeline_name: Option<&'a str>,
+}
+
 /// Build the launch spec for the on-demand task launcher.
 ///
 /// - `program`: the detected `agent` CLI when setup found one, else `"agent"`
@@ -2506,8 +2521,7 @@ pub fn build_agent_launch_spec(
     agent_cli_path: Option<&Path>,
     project_root: &Path,
     env: &HashMap<String, String>,
-    chat_id: Option<&str>,
-    pipeline_name: Option<&str>,
+    scope: AgentLaunchScope<'_>,
 ) -> Result<AgentLaunchSpec, String> {
     let task = task.trim();
     if task.is_empty() {
@@ -2524,11 +2538,15 @@ pub fn build_agent_launch_spec(
         args.push("--profile".into());
         args.push(profile.to_string());
     }
-    if let Some(chat_id) = chat_id.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(chat_id) = scope.chat_id.map(str::trim).filter(|s| !s.is_empty()) {
         args.push("--chat-id".into());
         args.push(chat_id.to_string());
     }
-    if let Some(pipeline_name) = pipeline_name.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(pipeline_name) = scope
+        .pipeline_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if !valid_pipeline_name(pipeline_name) {
             return Err(format!("invalid pipeline name: {pipeline_name:?}"));
         }

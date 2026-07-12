@@ -725,8 +725,10 @@ fn start_chat_agent(
         agent_path.as_deref(),
         &launch_root,
         &env,
-        Some(chat_id),
-        pipeline_name,
+        musubi_data::AgentLaunchScope {
+            chat_id: Some(chat_id),
+            pipeline_name,
+        },
     )?;
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",
