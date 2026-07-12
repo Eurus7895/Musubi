@@ -1661,7 +1661,11 @@ def musubi_spawn_pipeline_stage(
     The stage must be declared in `pipeline_name`; its role and tools come from
     the pipeline (PIPELINE_POLICIES, falling back to the role's sub-agent tools
     for user-defined pipelines). Returns { status, handle_id, role,
-    allowed_tools, brief } — the driver then runs and completes the worker.
+    allowed_tools, spawn_roles, brief } — the driver then runs and completes
+    the worker. `spawn_roles` is the stage's effective spawn allowlist
+    (pipeline.yaml `spawns:` ∩ the role's firewall, fail-closed to []): the
+    driver hands the stage the spawn tool only when it is non-empty. The
+    server re-validates every actual spawn regardless.
     """
     if stage not in composer.active_stages(pipeline_name):
         return json.dumps({
@@ -1714,6 +1718,9 @@ def musubi_spawn_pipeline_stage(
         "handle_id": handle_id,
         "role": role,
         "allowed_tools": tools,
+        # Effective stage spawn allowlist: pipeline.yaml `spawns:` ∩ the
+        # role's firewall (fail-closed [] when the yaml declares none).
+        "spawn_roles": _policy.list_subagent_roles(role, pipeline_name),
         "brief": brief,
     })
 

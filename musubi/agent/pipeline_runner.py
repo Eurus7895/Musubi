@@ -24,9 +24,12 @@ The brief threads forward: generator stages see the request plus the prior
 summaries; the evaluator (last stage) sees ONLY the immediately prior stage's
 output — the HI #3 firewall, generalised to any pipeline.
 
-Standalone stages are strict leaves: the `spawns:` a pipeline.yaml declares
-for a stage applies to the embedded host only; this runner hands no spawn
-tool to a stage.
+Stage nesting: when the caller passes its `Orchestration` and the server's
+stage response carries a non-empty `spawn_roles` (pipeline.yaml `spawns:` ∩
+the role's firewall), the stage worker is handed the spawn tool one level
+deeper — context offloading within a stage (coder → explorer, synthesizer →
+reviewer-aux per file). No orchestration, an empty/missing `spawn_roles`, or
+an exhausted depth budget all degrade to a strict leaf, fail-closed.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ async def run_pipeline(
     stats: Any = None,
     audit_db_path: Path | None = None,
     strict: bool = False,
+    orchestration: Any = None,
 ) -> str:
     """Summon and run one pipeline. Returns the final stage's summary text.
 
@@ -71,6 +75,10 @@ async def run_pipeline(
     `RuntimeError`. Callers with no model loop to react (e.g. the deterministic
     `agent --pipeline` CLI) pass `strict=True` so a failure is a nonzero exit,
     not a "successful" answer.
+
+    `orchestration` is the caller's `Orchestration`; when provided and the
+    depth budget allows, stages whose server response declares `spawn_roles`
+    may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
     from agent.run import _call_tool_text, run_unit
     from agent.subagent import (
@@ -155,8 +163,33 @@ async def run_pipeline(
             return msg
         system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
         child_tools = select_child_tools(tools, allowed)
+
+        # Stage nesting (mirrors agent/subagent.py's worker nesting): the
+        # server's `spawn_roles` (pipeline.yaml spawns ∩ firewall) is the
+        # gate — not frontmatter, which worker prompts don't declare. The
+        # stage's orchestration parents on the PIPELINE session so the
+        # server narrows its spawns per pipeline (HI #5); the server still
+        # re-validates every spawn.
+        stage_orch = None
+        stage_spawn_catalog = None
+        spawn_roles = st.get("spawn_roles") or []
+        if (
+            spawn_roles
+            and psid
+            and orchestration is not None
+            and getattr(orchestration, "can_spawn_deeper", False)
+        ):
+            spawn_tool = [
+                t for t in tools if t.get("name") == "musubi_spawn_subagent"
+            ]
+            if spawn_tool:
+                child_tools = child_tools + spawn_tool
+                stage_orch = orchestration.stage_child(role, psid)
+                stage_spawn_catalog = tools
+
         print(
-            f"[agent]     ⮑ stage {stage} (role={role}, tools={len(child_tools)})",
+            f"[agent]     ⮑ stage {stage} (role={role}, "
+            f"tools={len(child_tools)}, nests={stage_orch is not None})",
             file=log,
         )
 
@@ -171,6 +204,8 @@ async def run_pipeline(
                 stats=stats,
                 budget=budget,
                 audit_db_path=audit_db_path,
+                orchestration=stage_orch,
+                spawn_catalog=stage_spawn_catalog,
             )
         except Exception as exc:
             is_budget = type(exc).__name__ in {

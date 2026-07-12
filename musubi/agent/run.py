@@ -159,6 +159,21 @@ class Orchestration:
             max_depth=self.max_depth,
         )
 
+    def stage_child(self, role: str, pipeline_session_id: str) -> "Orchestration":
+        """Orchestration for one pipeline stage worker. Unlike `child`, the
+        parentage moves to the PIPELINE session: the server resolves the
+        pipeline from `parent_session_id` and narrows the stage's spawnable
+        roles to pipeline.yaml `spawns:` ∩ firewall (HI #5). Handing a stage
+        the root session instead would skip that narrowing. The pipeline
+        envelope itself is a sequencer, not a worker — a stage sits one level
+        below the worker that summoned the pipeline."""
+        return Orchestration(
+            parent_session_id=pipeline_session_id,
+            parent_agent_name=role,
+            depth=self.depth + 1,
+            max_depth=self.max_depth,
+        )
+
     @property
     def can_spawn_deeper(self) -> bool:
         """True if a worker at this depth is still allowed to nest."""
@@ -415,6 +430,7 @@ async def run_agent(
                     compression_db_path=context_compression_db_path,
                     budget=budget, stats=stats, audit_db_path=audit_db_path,
                     strict=True,
+                    orchestration=orchestration,
                 )
             else:
                 final_answer, _ = await run_unit(
@@ -1682,6 +1698,7 @@ async def _dispatch_one(
                 session, injected, vendor, tools, log,
                 compression_db_path=compression_db_path,
                 budget=budget, stats=stats, audit_db_path=audit_db_path,
+                orchestration=orchestration,
             )
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
