@@ -8,7 +8,7 @@ The agent runner replays prior chat turns on every user message
 (locked decision: replay-on-each-turn). This module is the storage seam:
 the runner appends `user` / `assistant` / `tool` rows as they happen and
 fetches a token-budgeted, chronological history before the next
-`vscode.lm.sendRequest`.
+LM call.
 
 Truncation is **newest-first**: when a budget is set, older messages are
 dropped first so the model always sees the most recent context. The

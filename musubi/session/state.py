@@ -22,10 +22,10 @@ STAGES: list[str] = ["plan", "design", "code", "review"]
 def _root() -> Path:
     """Where the harness's .github/ tree lives.
 
-    MUSUBI_ROOT (set by the VS Code extension to its installed bundle path)
-    wins so the harness finds shipped pipelines/agents when invoked from a
-    workspace that has none of its own. Falls back to the source-tree parent
-    when running tests or `python -m musubi`.
+    MUSUBI_ROOT (set by an installed bundle to its own path) wins so the
+    harness finds shipped pipelines/agents when invoked from a workspace
+    that has none of its own. Falls back to the source-tree parent when
+    running tests or `python -m musubi`.
     """
     env = os.environ.get("MUSUBI_ROOT")
     if env:
@@ -35,11 +35,9 @@ def _root() -> Path:
 
 
 # Resolved as a function so MUSUBI_ROOT changes during tests still take effect.
-# Every agent file lives flat under .github/agents/. lock_agent_versions
-# parses each *.agent.md it finds and locks one version per agent. Filename
-# stem (minus the `.agent` suffix) IS the agent name — so canonical roles
-# are bare (planner.agent.md) and pipeline variants are prefixed
-# (pipeline-builder-planner.agent.md).
+# Agent files live under the purpose-dir catalog (.github/agents/root|workers|
+# meta). lock_agent_versions walks it recursively and locks one version per
+# agent; the filename stem (minus the `.agent` suffix) IS the agent name.
 def _agents_dirs() -> list[Path]:
     return [_root() / ".github" / "agents"]
 
@@ -107,9 +105,9 @@ def lock_agent_versions(
     """Read version from every *.agent.md frontmatter and persist to DB.
 
     agents_dir accepts either a single Path (back-compat for tests) or a list
-    of Paths. None → use the module-level AGENTS_DIRS (pipeline dir + legacy
-    .github/agents/). When the same agent name appears in more than one dir,
-    the first occurrence wins (pipeline dir takes precedence over legacy).
+    of Paths. None → use the module-level AGENTS_DIRS (the purpose-dir
+    catalog at .github/agents/). When the same agent name appears in more
+    than one place, the first occurrence wins.
     """
     if agents_dir is None:
         bases: list[Path] = _agents_dirs()
@@ -122,9 +120,7 @@ def lock_agent_versions(
         if not base.exists():
             continue
         # rglob: the agent catalog is organised by purpose directory
-        # (root/, workers/, meta/, pipeline-stages/*/) with only a few
-        # extension-only flat leftovers kept in sync with their canonical
-        # copies, so first-occurrence-wins stays deterministic.
+        # (root/, workers/, meta/); first occurrence of a name wins.
         for agent_file in sorted(base.rglob("*.agent.md")):
             # stem is e.g. "planner.agent"; strip the ".agent" suffix
             name = agent_file.stem.replace(".agent", "")
@@ -181,7 +177,7 @@ def get_active_session(db_path: Path | None = None) -> dict | None:
     resume_stage = resume(session_id, db_path)
     if resume_stage is None:
         # All stages have written output — pipeline is done.
-        # Clear the pointer so the next @harness call starts fresh.
+        # Clear the pointer so the next driver call starts fresh.
         db.set_active_session_id(None, _now(), db_path)
         return None
     attempt = get_attempt(session_id, resume_stage, db_path)

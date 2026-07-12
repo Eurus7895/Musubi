@@ -96,10 +96,10 @@ def test_empty_workspace_is_unknown(tmp_path: Path) -> None:
 
 def test_monorepo_python_plus_typescript(tmp_path: Path) -> None:
     """Mirrors this very project's structure (musubi +
-    copilot-harness-extension). Both languages should surface; the one
+    ts-frontend). Both languages should surface; the one
     with more manifests wins primary."""
     py_sub = tmp_path / "musubi"
-    ts_sub = tmp_path / "copilot-harness-extension"
+    ts_sub = tmp_path / "ts-frontend"
     py_sub.mkdir()
     ts_sub.mkdir()
     (py_sub / "pyproject.toml").write_text(

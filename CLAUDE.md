@@ -11,11 +11,11 @@
 ## One Sentence
 
 Musubi is a **governance layer** for agentic software-engineering
-work in VS Code — firewall, audit, validator, budget, skill injection.
+work — firewall, audit, validator, budget, skill injection.
 It is the environment the model acts within; it is not a wrapper around
 the model's intelligence.
 
-**Copilot Chat reasons. Musubi controls the environment.**
+**The driver reasons. Musubi controls the environment.**
 Zero LLM calls inside the harness.
 
 ---
@@ -24,15 +24,15 @@ Zero LLM calls inside the harness.
 
 | Substrate (invest) | Ephemeral (label + schedule for removal) |
 |---|---|
-| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) — in the standalone host superseded by **pipelines as recipes of workers** (`agent/pipeline_runner.py`, composer-driven, user-definable from presets); the rigid TS shape stays only in the feature-frozen extension |
-| `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) — in the standalone host this is dissolving into the unified **worker model** (`agent/run.py::run_unit`): no main-vs-sub distinction, only workers at a depth, run in parallel |
+| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) — superseded by **pipelines as recipes of workers** (`agent/pipeline_runner.py`, composer-driven, user-definable from presets); kept only as a shipped recipe |
+| `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) — dissolving into the unified **worker model** (`agent/run.py::run_unit`): no main-vs-sub distinction, only workers at a depth, run in parallel |
 | 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
 | Hard Invariants (#1, #2, #3, #5, #7, #8, #9) | Path-rules / empty-project / workspace-root preamble blocks |
-| Policy engine (`scripts/policy_engine.py`) | `materializeCoderFiles` + JSON manifest contract |
-| `BudgetEnforcer` + per-call credit accounting | Pre-spawn fanout (`preSpawnAndSplice`) |
-| Firewall via `_STAGE_PERMISSIONS` (HI #3) | `runStageReviewGate` 4-button UX |
-| MCP tool catalog (`musubi_*`) | Per-stage `musubi-tier`-tagged scaffolds |
+| Policy engine (`scripts/policy_engine.py`) | Per-stage `musubi-tier`-tagged scaffolds |
+| `BudgetEnforcer` + per-call credit accounting | Worker prompt scaffolding (`.github/agents/workers/`) |
+| Firewall via `_STAGE_PERMISSIONS` (HI #3) | |
+| MCP tool catalog (`musubi_*`) | |
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration
 trigger fires.** Full per-component analysis with removability cost and
@@ -46,16 +46,16 @@ These cannot be broken without an explicit design discussion. If a
 change would violate one, stop and ask.
 
 **Numbers are stable identifiers, not positions** — they are cited across
-code, tests, CI, and the extension, so survivors keep their number even
+code, tests, and CI, so survivors keep their number even
 when one is retired. **#4** (zero-cost routing) and **#6** (flat agent
 catalog) were retired: routing is a trivial property of a single-agent
 host, and the flat-catalog rule moved to **Decision Rules** (a code-org
 convention, not a load-bearing safety property). Gaps at #4/#6 are
 intentional.
 
-1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `musubi_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: Copilot via `vscode.lm.sendRequest` (embedded host), or the vendor-agnostic `LMRouter` in `agent/vendors/base.py` (standalone host). The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Shipped routers: `anthropic`, `openai`, `deepseek`, `ollama` (local), and `azure`/on-prem OpenAI-compatible gateways (the curl transport in `agent/vendors/curl_router.py`, no SDK import — still driver-side). On-prem endpoints (base URL, family, api-key) are data in `.musubi/llm.json`, resolved by `agent/config.py`. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
-2. **Skills are pushed to pipeline agents; pulled on demand by the Agent.** Push has one mechanism per host, and the stage cannot opt out of either: embedded pipeline stages get skills injected by `musubi_read_stage` per `inject_skills` frontmatter; standalone workers and pipeline stages get the role skill injected into the spawn system prompt (`musubi_get_subagent_context` returns `role_skill`; `agent/subagent.py::build_subagent_system_prompt` embeds it). Agent-side: `musubi_get_skill` LM tool, model decides when to load.
-3. **Evaluator firewall.** The evaluator sees only the artifact it judges — no request, plan, design, or memory. Enforced in three places: `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (`validation/context_builder.py`), its mirror in the feature-frozen `pipeline.ts`, and — generalised to any pipeline, including user-defined preset pipelines — the standalone runner's last-stage brief (`agent/pipeline_runner.py::_stage_brief`: the final stage receives only the immediately prior stage's output; `composer.py` locks the evaluator to the chain's last entry).
+1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `musubi_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: the vendor-agnostic `LMRouter` in `agent/vendors/base.py`. The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Shipped routers: `anthropic`, `openai`, `deepseek`, `ollama` (local), and `azure`/on-prem OpenAI-compatible gateways (the curl transport in `agent/vendors/curl_router.py`, no SDK import — still driver-side). On-prem endpoints (base URL, family, api-key) are data in `.musubi/llm.json`, resolved by `agent/config.py`. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
+2. **Skills are pushed to workers and pipeline stages; pulled on demand by the Agent.** Push has one mechanism, and the worker cannot opt out: the role skill is injected into the spawn system prompt (`SUBAGENT_ROLE_SKILLS` → `musubi_get_subagent_context` returns `role_skill`; `agent/subagent.py::build_subagent_system_prompt` embeds it — same path for direct workers and pipeline stages). Agent-side: `musubi_get_skill` LM tool, model decides when to load.
+3. **Evaluator firewall.** The evaluator sees only the artifact it judges — no request, plan, design, or memory. Enforced in two places: `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (`validation/context_builder.py`, gating `musubi_read_stage`), and — generalised to any pipeline, including user-defined preset pipelines — the runner's last-stage brief (`agent/pipeline_runner.py::_stage_brief`: the final stage receives only the immediately prior stage's output; `composer.py` locks the evaluator to the chain's last entry).
 5. **Fail-closed policy engine.** Two deny-by-default layers (`scripts/policy_engine.py`): (a) *membership* — a stage runs only if declared in its pipeline: the composer validates the catalog fail-closed at server boot, and `musubi_spawn_pipeline_stage` re-checks membership per spawn; (b) *tools* — explicit allowlists only: `PIPELINE_POLICIES[pipeline][agent]` where declared, else the role's own `SUBAGENT_POLICIES` cap for user-defined preset pipelines. An unknown role, agent, or stage gets nothing. Never relax either layer to fail-open.
 7. **Append-only stage store.** Retries write `<stage>.attemptN.md`. Never overwrite a prior attempt.
 8. **No silent sub-agents.** Every spawn + completion writes a row to `subagent_audit`, visible via `musubi_query_subagent_events`.

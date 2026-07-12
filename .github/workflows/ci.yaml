@@ -1,8 +1,7 @@
-# CI — Python + TypeScript + Rust test suites.
+# CI — Python + Rust test suites.
 #
-# Runs on every PR + push to dev / main. Three parallel jobs:
-#   - python: pytest (745 tests) + ruff (lint, non-blocking)
-#   - typescript: tsc --noEmit + npm test (236 tests)
+# Runs on every PR + push to dev / main. Two parallel jobs:
+#   - python: pytest + ruff (lint, non-blocking)
 #   - rust: cargo test on the console's webkit-free audit.db reader
 #     (gui/src-tauri/musubi-data). Headless — no Tauri/webview deps, so
 #     it needs no system libs. The full desktop bundle is built separately
@@ -17,7 +16,6 @@
 # Not in scope here:
 #   - Building the PyInstaller binary (slow; a release workflow can
 #     handle that separately).
-#   - Packaging the .vsix via vsce (same — release-only).
 #   - Branch protection rules. Set those in the GitHub UI under
 #     Settings → Branches if you want CI required for merge.
 
@@ -96,38 +94,6 @@ jobs:
         # viewer; `-x` stops on first failure so the relevant traceback
         # isn't buried under hundreds of dots.
         run: pytest tests/ -v --tb=short -x --deselect tests/test_executor.py::test_run_tests_passing_suite
-
-  # ────────────────────────────────────────────────────────────────────
-  # TypeScript extension — copilot-harness-extension/
-  # ────────────────────────────────────────────────────────────────────
-  typescript:
-    name: TypeScript extension
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: copilot-harness-extension
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          # Node 22+ is required: `node --test 'src/**/*.test.ts'` uses
-          # built-in glob expansion, which arrived in 22.0.0. Node 20
-          # treats the pattern as a literal filename and exits with
-          # "no such file" before any test runs.
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: copilot-harness-extension/package-lock.json
-
-      - name: Install
-        run: npm ci
-
-      - name: Typecheck — tsc --noEmit
-        run: npx tsc --noEmit
-
-      - name: Test — node:test via tsx
-        run: npm test
 
   # ────────────────────────────────────────────────────────────────────
   # Rust console core — gui/src-tauri/musubi-data/

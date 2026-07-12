@@ -1111,7 +1111,7 @@ def insert_stage_metric(
 ) -> None:
     """One row per stage attempt (chunked or not). Caller passes the
     pre-measured wall-clock + token estimates collected at the
-    `vscode.lm.sendRequest` call site.
+    LM call site.
 
     Stage 1 (MVP A.4): `credits` (the estimateCallCredits result) and
     `model_family` (model.family) are stored per row so paused / historic

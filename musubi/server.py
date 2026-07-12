@@ -489,7 +489,7 @@ def musubi_pause_session(
 
     Called by the pipeline runner when a review gate fires (after a stage
     completes) or when a sub-agent budget is exhausted mid-stage. The
-    pause survives a VS Code restart — `@harness continue` resumes from
+    pause survives a driver restart — a continue call resumes from
     `paused_at_stage`.
 
     `reason` must be one of: 'stage_review' | 'budget_exhausted'.
@@ -787,10 +787,9 @@ def musubi_record_stage_metric(
 ) -> str:
     """Append one row to `stage_metrics` after a stage's LM round-trip.
 
-    Called by the TS runner immediately after `vscode.lm.sendRequest`
-    completes — the wall-clock ms + token estimates are already on hand
-    there. Token counts are estimates (chars/4 heuristic from
-    `runners/agentCore.estimateTokens`), not billed amounts.
+    Called by the driver immediately after a stage's LM call completes —
+    the wall-clock ms + token estimates are already on hand there. Token
+    counts are estimates (chars/4 heuristic), not billed amounts.
 
     Stage 1 (MVP A.4): `credits` is the `estimateCallCredits` result the
     runner already computes for the per-call chat display, and
