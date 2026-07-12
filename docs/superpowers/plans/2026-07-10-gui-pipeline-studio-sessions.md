@@ -17,6 +17,7 @@
 - Do not make edited client-only compositions executable.
 - Do not add a YAML dependency; read only the supported registered pipelines needed by Studio.
 - Use exact current chat IDs for current-session views; prefix matching is fallback-only for legacy rows.
+- All sessions for one project share its canonical workspace and databases; never create per-session directories or worktrees.
 
 ---
 
@@ -596,3 +597,17 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(gu
   deny message remains visible with the failure reason.
 - [ ] Update the roadmap only after acceptance passes; commit
   `docs(roadmap): record studio corrective pass`.
+
+---
+
+## Approved follow-up plans (2026-07-12)
+
+The session filesystem boundary and standalone pipeline resource controls are
+split into independently reviewable plans:
+
+- [`2026-07-12-project-scoped-session-runtime.md`](./2026-07-12-project-scoped-session-runtime.md)
+  binds runtime/log ownership to exact sessions while every session shares the
+  project workspace and one writer slot.
+- [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./2026-07-12-bounded-standalone-pipeline-runtime.md)
+  unifies worker turn caps, makes context limits hard, and reserves tokens for
+  later stages.

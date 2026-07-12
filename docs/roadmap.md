@@ -128,6 +128,19 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   renders pipeline envelopes plus child stages separately from Orchestrator;
   implementation plan:
   [`2026-07-10-gui-pipeline-studio-sessions.md`](./superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md).
+- **Project-scoped sessions (planned follow-up).** Sessions in one project
+  share the canonical workspace, dependency environment, `musubi.db`, and
+  `audit.db`; isolation applies only to exact chat/runtime ownership, budget,
+  logs, cancellation, and pipeline ancestry. The project keeps one active
+  writer process, and Musubi never creates per-session directories, worktrees,
+  clones, virtualenvs, or containers. Plan:
+  [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
+- **Bounded standalone pipeline runtime (planned follow-up).** Make the
+  standalone worker contract explicit, use one turn cap across runtime/state/
+  audit, include tool definitions in a hard 16k-character context cap, and
+  give each stage a child token allowance so planner/designer cannot consume
+  coder/reviewer capacity. Plan:
+  [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
   find files deterministically instead of blind-guessing paths — closing the gap
