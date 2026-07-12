@@ -973,6 +973,52 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert session.calls == []
 
 
+def test_run_loop_returns_truncated_tool_call_to_same_worker_for_chunk_retry() -> None:
+    from agent import run as run_mod
+
+    partial_append = {
+        "type": "tool_use",
+        "id": "partial-append",
+        "name": "musubi_append_file",
+        "input": {"path": "dashboard.html"},
+    }
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[partial_append]),
+        LMResponse(stop_reason="max_tokens", content=[partial_append]),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "continued with safe chunks"}],
+        ),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_append_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "create html dashboard"}],
+            max_cycles=2,
+            log=io.StringIO(),
+            role="coder",
+        )
+    )
+
+    assert answer == "continued with safe chunks"
+    assert cycles == 2
+    assert session.calls == []
+    retry_messages = router.calls[-1]["messages"]
+    blocked = next(
+        block
+        for message in retry_messages
+        if message.get("role") == "user" and isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+    )
+    assert blocked["tool_use_id"] == "partial-append"
+    assert "output_too_large_for_single_tool_call" in blocked["content"]
+
+
 def test_pipeline_context_budget_is_lower_and_keeps_recent_tool_pair() -> None:
     from agent.context import DEFAULT_CONTEXT_BUDGET, fit_context
     from agent.pipeline_runner import PIPELINE_CONTEXT_BUDGET

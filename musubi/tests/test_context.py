@@ -43,6 +43,17 @@ def test_system_prompt_routes_mutating_work_to_workers() -> None:
     assert "write" in prompt.lower()
 
 
+def test_system_prompt_requires_platform_native_validation_commands() -> None:
+    prompt = build_system_prompt().lower()
+
+    assert "platform-native" in prompt
+    assert "windows" in prompt
+    assert "powershell" in prompt
+    assert "wc" in prompt
+    assert "tail" in prompt
+    assert "printing an entire artifact" in prompt
+
+
 def test_system_prompt_appends_extra_after_steering() -> None:
     prompt = build_system_prompt("task-specific note")
     assert prompt.endswith("task-specific note")

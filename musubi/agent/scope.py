@@ -65,7 +65,8 @@ class ScopeHint:
             f"guidance={route_guidance}\n"
             "[/agent-routing-scope]\n\n"
             "Use this deterministic hint before choosing tools. The root "
-            "agent still makes the final routing decision, but must keep "
+            "agent still makes the final role and routing decision. The "
+            "max_workers value is a hard cumulative root-run ceiling; keep "
             "simple routes bounded and ask for scope when route=ask_scope."
         )
 
