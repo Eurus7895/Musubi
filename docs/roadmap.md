@@ -32,7 +32,9 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ---
 
-## Current Focus
+## Current Work
+
+### Active
 
 1. **Fix the VS Code extension rename.** Update the extension's hardcoded
    `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
@@ -51,20 +53,20 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 4. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
----
+5. **Project-scoped sessions.** Bind process ownership, retained logs, budget,
+   cancellation, and pipeline ancestry to exact sessions while all sessions in
+   one project share the canonical workspace, dependencies, and databases.
+   Keep one writer process and never create per-session directories,
+   worktrees, clones, virtualenvs, or containers. Plan:
+   [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
 
-## Postponed
+6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
+   runtime/state/audit, enforce a hard 16k-character model-input cap including
+   tool definitions, and reserve token capacity so planner/designer cannot
+   consume coder/reviewer shares. Plan:
+   [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
 
-- **Pipeline parity eval suite.** A dual-mode eval suite comparing the VS Code
-  pipeline and standalone host is deferred until we are ready to revisit
-  pipeline dissolution.
-- **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
-  supported for now. If revisited, re-home its boundary primitives onto
-  sub-agent and tool-call boundaries before removing the shape.
-
----
-
-## Live Substrate Work
+### Backlog
 
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
@@ -104,6 +106,17 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ---
 
+## Postponed
+
+- **Pipeline parity eval suite.** A dual-mode eval suite comparing the VS Code
+  pipeline and standalone host is deferred until we are ready to revisit
+  pipeline dissolution.
+- **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
+  supported for now. If revisited, re-home its boundary primitives onto
+  sub-agent and tool-call boundaries before removing the shape.
+
+---
+
 ## Completed Tracks
 
 - Standalone worker model
@@ -128,19 +141,6 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   renders pipeline envelopes plus child stages separately from Orchestrator;
   implementation plan:
   [`2026-07-10-gui-pipeline-studio-sessions.md`](./superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md).
-- **Project-scoped sessions (planned follow-up).** Sessions in one project
-  share the canonical workspace, dependency environment, `musubi.db`, and
-  `audit.db`; isolation applies only to exact chat/runtime ownership, budget,
-  logs, cancellation, and pipeline ancestry. The project keeps one active
-  writer process, and Musubi never creates per-session directories, worktrees,
-  clones, virtualenvs, or containers. Plan:
-  [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
-- **Bounded standalone pipeline runtime (planned follow-up).** Make the
-  standalone worker contract explicit, use one turn cap across runtime/state/
-  audit, include tool definitions in a hard 16k-character context cap, and
-  give each stage a child token allowance so planner/designer cannot consume
-  coder/reviewer capacity. Plan:
-  [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
   find files deterministically instead of blind-guessing paths — closing the gap
