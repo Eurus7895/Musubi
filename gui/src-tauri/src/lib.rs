@@ -47,6 +47,8 @@ struct ChatAgentRuntime {
     running: bool,
     child: Option<Arc<Mutex<Child>>>,
     cancel_requested: bool,
+    // Exact conversation session that owns this process and its retained log.
+    chat_id: String,
     task: String,
     started_at: Option<i64>,
     stdout_tail: String,
@@ -131,6 +133,46 @@ fn terminal_status(cancelled: bool, exit_code: i32, output: &str) -> &'static st
     }
 }
 
+fn set_runtime_owner(
+    runtime: &mut ChatAgentRuntime,
+    chat_id: &str,
+    surface: &str,
+    pipeline_name: &str,
+    task: &str,
+    started_at: i64,
+) {
+    runtime.chat_id = chat_id.to_string();
+    runtime.surface = surface_arg(surface).to_string();
+    runtime.pipeline_name = pipeline_name.to_string();
+    runtime.task = task.to_string();
+    runtime.started_at = Some(started_at);
+}
+
+fn claim_runtime_owner(
+    runtime: &mut ChatAgentRuntime,
+    chat_id: &str,
+    surface: &str,
+    pipeline_name: &str,
+    task: &str,
+    started_at: i64,
+) -> Result<(), String> {
+    if runtime.running {
+        let owner_surface = surface_arg(&runtime.surface);
+        return Err(format!(
+            "This project already has an active {owner_surface} run in session {}. Cancel it or wait for it to finish.",
+            runtime.chat_id
+        ));
+    }
+    runtime.running = true;
+    runtime.child = None;
+    runtime.cancel_requested = false;
+    runtime.stdout_tail.clear();
+    runtime.stderr_tail.clear();
+    runtime.terminal_status.clear();
+    set_runtime_owner(runtime, chat_id, surface, pipeline_name, task, started_at);
+    Ok(())
+}
+
 fn clear_driver_chat_log(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
@@ -147,12 +189,14 @@ fn clear_driver_chat_log(
         rusqlite::params![surface, chat_id],
     )
     .map_err(|e| e.to_string())?;
-    rt.stdout_tail.clear();
-    rt.stderr_tail.clear();
-    rt.task.clear();
-    rt.started_at = None;
-    rt.cancel_requested = false;
-    rt.terminal_status.clear();
+    if rt.chat_id == chat_id {
+        rt.stdout_tail.clear();
+        rt.stderr_tail.clear();
+        rt.task.clear();
+        rt.started_at = None;
+        rt.cancel_requested = false;
+        rt.terminal_status.clear();
+    }
     Ok(())
 }
 
@@ -296,15 +340,19 @@ fn new_driver_session(
                 .into(),
         );
     }
+    let old_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
     let nonce = mint_session_nonce();
     store_session_nonce(conn, surface, &nonce);
     let new_id = scoped_chat_id(project_root, surface, &nonce);
     *chat_id_slot.lock().map_err(|e| e.to_string())? = new_id;
-    rt.stdout_tail.clear();
-    rt.stderr_tail.clear();
-    rt.task.clear();
-    rt.started_at = None;
-    rt.cancel_requested = false;
+    if rt.chat_id == old_id {
+        rt.stdout_tail.clear();
+        rt.stderr_tail.clear();
+        rt.task.clear();
+        rt.started_at = None;
+        rt.cancel_requested = false;
+        rt.terminal_status.clear();
+    }
     Ok(())
 }
 
@@ -620,25 +668,16 @@ fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
 
 fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
     let state = app.state::<AppState>();
-    let surface = state
+    let Ok((surface, chat_id)) = state
         .chat_agent
         .lock()
-        .map(|rt| {
-            if rt.surface.is_empty() {
-                "orchestrator".to_string()
-            } else {
-                rt.surface.clone()
-            }
-        })
-        .unwrap_or_else(|_| "orchestrator".to_string());
-    let chat_id = if surface == "pipeline" {
-        state.pipeline_chat_id.lock()
-    } else {
-        state.chat_id.lock()
-    };
-    let Ok(chat_id) = chat_id.map(|id| id.clone()) else {
+        .map(|rt| (surface_arg(&rt.surface).to_string(), rt.chat_id.clone()))
+    else {
         return;
     };
+    if chat_id.is_empty() {
+        return;
+    }
     let Ok(conn) = state.db.lock() else {
         return;
     };
@@ -686,22 +725,14 @@ fn start_chat_agent(
     let started_at = epoch_secs();
     {
         let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-        if rt.running {
-            return Err(
-                "Agent is already running. Wait for it to finish before starting another run."
-                    .into(),
-            );
-        }
-        rt.running = true;
-        rt.child = None;
-        rt.cancel_requested = false;
-        rt.task = task_text.clone();
-        rt.started_at = Some(started_at);
-        rt.stdout_tail.clear();
-        rt.stderr_tail.clear();
-        rt.surface = surface.to_string();
-        rt.pipeline_name = pipeline_name.unwrap_or_default().to_string();
-        rt.terminal_status.clear();
+        claim_runtime_owner(
+            &mut rt,
+            chat_id,
+            surface,
+            pipeline_name.unwrap_or_default(),
+            &task_text,
+            started_at,
+        )?;
     }
 
     let mut env = musubi_data::current_env_map();
@@ -1009,6 +1040,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     if let Ok(rt) = state.chat_agent.lock() {
         st.driver_status = musubi_data::DriverStatus {
             running: rt.running,
+            chat_id: rt.chat_id.clone(),
             surface: surface_arg(&rt.surface).to_string(),
             pipeline_name: rt.pipeline_name.clone(),
             terminal_status: rt.terminal_status.clone(),
@@ -1277,12 +1309,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runtime_owner_uses_the_exact_session_id() {
+        let mut runtime = ChatAgentRuntime::default();
+
+        set_runtime_owner(
+            &mut runtime,
+            "gui-pipeline-project-session",
+            "pipeline",
+            "feature-dev",
+            "ship it",
+            100,
+        );
+
+        assert_eq!(runtime.chat_id, "gui-pipeline-project-session");
+        assert_eq!(runtime.surface, "pipeline");
+    }
+
+    #[test]
+    fn project_writer_lease_preserves_the_existing_owner_when_busy() {
+        let mut runtime = ChatAgentRuntime::default();
+        claim_runtime_owner(
+            &mut runtime,
+            "gui-pipeline-first",
+            "pipeline",
+            "feature-dev",
+            "first task",
+            100,
+        )
+        .unwrap();
+
+        let error = claim_runtime_owner(
+            &mut runtime,
+            "gui-orchestrator-second",
+            "orchestrator",
+            "",
+            "second task",
+            101,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("project"));
+        assert_eq!(runtime.chat_id, "gui-pipeline-first");
+        assert_eq!(runtime.surface, "pipeline");
+        assert_eq!(runtime.pipeline_name, "feature-dev");
+        assert_eq!(runtime.task, "first task");
+        assert_eq!(runtime.started_at, Some(100));
+    }
+
+    #[test]
     fn clear_driver_chat_deletes_chat_and_idle_runtime_tails() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
         insert_chat(&conn, "you", None, "hello", "orchestrator", "chat-1").unwrap();
         insert_chat(&conn, "driver", None, "hi", "orchestrator", "chat-1").unwrap();
         let mut rt = ChatAgentRuntime {
+            chat_id: "chat-1".into(),
             stdout_tail: "stdout text".into(),
             stderr_tail: "stderr text".into(),
             task: "old task".into(),
@@ -1303,6 +1384,38 @@ mod tests {
     }
 
     #[test]
+    fn clearing_one_session_does_not_clear_another_sessions_retained_log() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        insert_chat(
+            &conn,
+            "you",
+            None,
+            "hello",
+            "orchestrator",
+            "gui-orchestrator-current",
+        )
+        .unwrap();
+        let mut rt = ChatAgentRuntime {
+            chat_id: "gui-pipeline-retained".into(),
+            surface: "pipeline".into(),
+            stdout_tail: "pipeline output".into(),
+            stderr_tail: "pipeline error".into(),
+            task: "pipeline task".into(),
+            terminal_status: "failed".into(),
+            ..ChatAgentRuntime::default()
+        };
+
+        clear_driver_chat_log(&conn, &mut rt, "orchestrator", "gui-orchestrator-current").unwrap();
+
+        assert_eq!(rt.chat_id, "gui-pipeline-retained");
+        assert_eq!(rt.stdout_tail, "pipeline output");
+        assert_eq!(rt.stderr_tail, "pipeline error");
+        assert_eq!(rt.task, "pipeline task");
+        assert_eq!(rt.terminal_status, "failed");
+    }
+
+    #[test]
     fn new_session_rerolls_chat_id_without_deleting_prior_history() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
@@ -1312,6 +1425,7 @@ mod tests {
         insert_chat(&conn, "you", None, "hello", "orchestrator", &old_id).unwrap();
         let slot = Mutex::new(old_id.clone());
         let mut rt = ChatAgentRuntime {
+            chat_id: old_id.clone(),
             stdout_tail: "x".into(),
             ..ChatAgentRuntime::default()
         };

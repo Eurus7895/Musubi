@@ -35,6 +35,12 @@ function belongsToSurface(item, surface, currentChatId = '') {
   return surface === 'pipeline' ? isPipelineChatId(chatId) : !isPipelineChatId(chatId)
 }
 
+function driverBelongsToSession(status, surface, currentChatId) {
+  return status?.surface === surface
+    && !!currentChatId
+    && status?.chatId === currentChatId
+}
+
 function isTerminalStatus(status) {
   return ['success', 'aborted', 'escalated', 'budget_halted', 'failed'].includes(status)
 }
@@ -65,8 +71,7 @@ function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orc
     run.steps.push(agent)
     bump(run, agent.spawnEpoch)
   })
-  const runningSurface = driverStatus?.surface || 'orchestrator'
-  if (driverStatus?.running && runningSurface === surface && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
+  if (driverStatus?.running && driverBelongsToSession(driverStatus, surface, currentChatId) && !Array.from(byId.values()).some((run) => statusForRun(run) === 'running')) {
     const id = `driver-running-${driverStatus.startedAt || 'now'}`
     byId.set(id, {
       id,
@@ -229,8 +234,10 @@ export function buildViewModel(s, act) {
   const driverStatusForRuns = s.driverStatus || {}
   const driverSurface = driverStatusForRuns.surface || 'orchestrator'
   const driverRunning = !!driverStatusForRuns.running
-  const orchestratorOwnsDriver = driverRunning && driverSurface === 'orchestrator'
-  const pipelineOwnsDriver = driverRunning && driverSurface === 'pipeline'
+  const driverBelongsToOrchestrator = driverBelongsToSession(driverStatusForRuns, 'orchestrator', orchestratorChatId)
+  const driverBelongsToPipeline = driverBelongsToSession(driverStatusForRuns, 'pipeline', pipelineChatId)
+  const orchestratorOwnsDriver = driverRunning && driverBelongsToOrchestrator
+  const pipelineOwnsDriver = driverRunning && driverBelongsToPipeline
   const runsRaw = groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
   const pipeRunsRaw = (s.pipelineRuns || [])
     .filter((run) => belongsToSurface(run, 'pipeline', pipelineChatId))
@@ -247,7 +254,7 @@ export function buildViewModel(s, act) {
   // A pipeline's durable lifecycle row wins once finalized. The one exception
   // is the precise budget-halt reason: it is emitted by the exited driver and
   // refines the state store's broader `escalated` outcome for the same run.
-  const exitedPipelineStatus = !driverRunning && driverSurface === 'pipeline'
+  const exitedPipelineStatus = !driverRunning && driverBelongsToPipeline
     ? driverStatusForRuns.terminalStatus
     : ''
   if (isTerminalStatus(exitedPipelineStatus)) {
@@ -283,10 +290,10 @@ export function buildViewModel(s, act) {
   const activeSessionAgents = activeRunRaw?.steps || []
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
-  const processTextForRuns = driverSurface === 'orchestrator'
+  const processTextForRuns = driverBelongsToOrchestrator
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
-  const processTextForPipeRuns = driverSurface === 'pipeline'
+  const processTextForPipeRuns = driverBelongsToPipeline
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
@@ -638,8 +645,8 @@ export function buildViewModel(s, act) {
     driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
   ].filter(Boolean).join('\n\n')
   const hasDriverLog = !!driverProcessLog
-  const pipelineHasDriverLog = driverSurface === 'pipeline' && hasDriverLog
-  const orchestratorHasDriverLog = driverSurface === 'orchestrator' && hasDriverLog
+  const pipelineHasDriverLog = driverBelongsToPipeline && hasDriverLog
+  const orchestratorHasDriverLog = driverBelongsToOrchestrator && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
   const pipelineBlockedByOrchestrator = driverRunning && !pipelineOwnsDriver
@@ -655,7 +662,7 @@ export function buildViewModel(s, act) {
     onDraftKey: act.onPipeDraftKey,
     driverBusy: pipelineOwnsDriver,
     driverTask: (pipelineOwnsDriver || pipelineHasDriverLog) ? (driverStatus.task || '') : '',
-    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : (driverBelongsToPipeline ? driverStatusText : ''),
     driverProcessOpen: pipelineOwnsDriver && !!s.processOpen,
     driverProcessLog: pipelineHasDriverLog ? driverProcessLog : '',
     hasDriverLog: pipelineHasDriverLog,
@@ -703,7 +710,7 @@ export function buildViewModel(s, act) {
       ? (sessionSteps.length + ' workers · full history for this parent run')
       : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet'),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
-    driverBusy: orchestratorOwnsDriver, driverTask: orchestratorOwnsDriver ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : driverStatusText,
+    driverBusy: orchestratorOwnsDriver, driverTask: (orchestratorOwnsDriver || orchestratorHasDriverLog) ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : (driverBelongsToOrchestrator ? driverStatusText : ''),
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorHasDriverLog && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onNewSession: act.newSession,

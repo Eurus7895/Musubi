@@ -96,6 +96,7 @@ pub struct CliStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
     pub running: bool,
+    pub chat_id: String,
     pub surface: String,
     pub pipeline_name: String,
     pub terminal_status: String,
@@ -2104,6 +2105,18 @@ mod tests {
     }
 
     #[test]
+    fn driver_status_serializes_exact_chat_id() {
+        let status = DriverStatus {
+            chat_id: "gui-pipeline-project-session".into(),
+            ..DriverStatus::default()
+        };
+
+        let value = serde_json::to_value(status).unwrap();
+
+        assert_eq!(value["chatId"], "gui-pipeline-project-session");
+    }
+
+    #[test]
     fn launch_spec_places_task_first_with_stable_tool_surface() {
         let root = PathBuf::from("/proj");
         let spec = build_agent_launch_spec(
@@ -2184,6 +2197,44 @@ mod tests {
                 "agent"
             ]
         );
+    }
+
+    #[test]
+    fn launch_specs_for_project_sessions_share_the_project_root() {
+        let root = PathBuf::from("/proj");
+        let env = std::collections::HashMap::new();
+        let first = build_agent_launch_spec(
+            "first",
+            "",
+            "",
+            None,
+            &root,
+            &env,
+            AgentLaunchScope {
+                chat_id: Some("gui-pipeline-project-a"),
+                pipeline_name: Some("feature-dev"),
+            },
+        )
+        .unwrap();
+        let second = build_agent_launch_spec(
+            "second",
+            "",
+            "",
+            None,
+            &root,
+            &env,
+            AgentLaunchScope {
+                chat_id: Some("gui-pipeline-project-b"),
+                pipeline_name: Some("feature-dev"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(first.cwd, root);
+        assert_eq!(second.cwd, root);
+        assert_ne!(first.args, second.args);
+        assert!(!first.cwd.to_string_lossy().contains("project-a"));
+        assert!(!second.cwd.to_string_lossy().contains("project-b"));
     }
 
     #[test]

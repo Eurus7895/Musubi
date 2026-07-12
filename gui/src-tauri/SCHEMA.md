@@ -147,3 +147,15 @@ surface run lists compare these complete IDs; the `gui-orchestrator-` and
 `gui-pipeline-` prefixes are classification fallbacks for legacy rows only.
 When the sibling state database is absent, the audit snapshot remains usable
 and `pipelineRuns` is empty rather than synthesizing historical pipeline cards.
+
+## Project and session boundary
+
+The canonical project root owns the shared workspace, dependencies, databases,
+and one mutating writer slot. Exact chat IDs own conversation replay, process
+status, cancellation, task metadata, and retained process logs. Every session
+for a project launches with the same project root as its working directory; a
+session never owns a filesystem root, worktree, clone, virtualenv, or container.
+
+`driverStatus.chatId` is the exact owner of the live or retained runtime state.
+The frontend renders that state only when it matches the current surface's full
+chat ID. Surface names remain useful labels but are not ownership boundaries.

@@ -59,8 +59,11 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    Keep one writer process and never create per-session directories,
    worktrees, clones, virtualenvs, or containers. Plan:
    [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
-   The current GUI corrective pass preserves prior chat rows by `chat_id` and
-   joins live workers to their session before the terminal turn row exists.
+   The GUI now serializes the exact runtime-owner `chat_id`, scopes live and
+   retained process state to that ID, preserves other sessions when clearing
+   or re-minting one session, and rejects a second run through the shared
+   project writer lease. Prior chat rows and live worker ancestry remain
+   session-scoped without changing the shared filesystem root.
 
 6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including
