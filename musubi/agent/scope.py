@@ -25,15 +25,15 @@ class ScopeHint:
     kind: ScopeKind
     route: str
     reason: str
-    max_workers: int
     requires: tuple[str, ...] = field(default_factory=tuple)
 
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
             "single_coder": (
-                "Simple route: use at most one coder worker with a compact, "
-                "implementation-ready brief."
+                "Simple route: start with one coder worker using a compact, "
+                "implementation-ready brief. This is an initial routing "
+                "recommendation, not a lifetime worker cap."
             ),
             "planner_then_coder_check": (
                 "Medium route: spawn planner first for scope and acceptance "
@@ -59,23 +59,21 @@ class ScopeHint:
             "[agent-routing-scope]\n"
             f"scope={self.kind.value}\n"
             f"route={self.route}\n"
-            f"max_workers={self.max_workers}\n"
             f"requires={requires}\n"
             f"reason={self.reason}\n"
             f"guidance={route_guidance}\n"
             "[/agent-routing-scope]\n\n"
             "Use this deterministic hint before choosing tools. The root "
-            "agent still makes the final role and routing decision. The "
-            "max_workers value is a hard cumulative root-run ceiling; keep "
-            "simple routes bounded and ask for scope when route=ask_scope."
+            "agent still makes the final role and routing decision. Scope is "
+            "an initial routing recommendation; generic orchestration budgets "
+            "bound workers independently. Ask for scope when route=ask_scope."
         )
 
     def log_line(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         return (
             f"scope={self.kind.value} route={self.route} "
-            f"max_workers={self.max_workers} requires={requires} "
-            f'reason="{self.reason}"'
+            f"requires={requires} reason=\"{self.reason}\""
         )
 
 
@@ -120,14 +118,12 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.UNKNOWN,
             route="direct_answer",
             reason="casual chat does not need tools",
-            max_workers=0,
         )
     if _DESTRUCTIVE_FILE_RE.search(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
             route="manual_destructive",
             reason="destructive file operation needs explicit operator control",
-            max_workers=0,
             requires=("manual_confirmation",),
         )
     if not text or _VAGUE_RE.match(text):
@@ -135,7 +131,6 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.UNKNOWN,
             route="ask_scope",
             reason="request lacks a concrete target",
-            max_workers=0,
             requires=("clarification",),
         )
 
@@ -145,7 +140,6 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.LARGE_FEATURE,
             route="plan_design_workflow",
             reason="high-risk or multi-surface change",
-            max_workers=0,
             requires=("plan", "design", "implementation", "review"),
         )
 
@@ -155,7 +149,6 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.SIMPLE_EDIT,
             route="single_coder",
             reason="known file and low-risk edit",
-            max_workers=1,
         )
 
     if _ARTIFACT_RE.search(text) and not risk_hits:
@@ -163,7 +156,6 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.SIMPLE_ARTIFACT,
             route="single_coder",
             reason="concrete low-risk artifact request",
-            max_workers=1,
         )
 
     if risk_hits:
@@ -171,7 +163,6 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.MEDIUM_CHANGE,
             route="planner_then_coder_check",
             reason="concrete change with some risk signals",
-            max_workers=2,
             requires=("plan", "implementation", "verification"),
         )
 
@@ -179,7 +170,6 @@ def classify_task(task: str) -> ScopeHint:
         kind=ScopeKind.MEDIUM_CHANGE,
         route="planner_then_coder_check",
         reason="concrete change but scope is not obviously tiny",
-        max_workers=2,
         requires=("plan", "implementation", "verification"),
     )
 

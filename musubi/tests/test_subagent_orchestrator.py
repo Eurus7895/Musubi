@@ -14,7 +14,7 @@ import io
 from pathlib import Path
 from typing import Any
 
-from agent.run import run_agent
+from agent.run import Orchestration, run_agent
 from agent.subagent import (
     _frontmatter_max_output_tokens,
     build_subagent_system_prompt,
@@ -41,6 +41,65 @@ class FakeRouter(LMRouter):
 
 def _musubi_dir() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def test_run_subagent_records_terminal_outcome_for_parent_recovery(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"h-recovery",'
+                    '"role":"coder","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"finish it",'
+                    '"role_skill":null,"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"recorded","final_status":"failed",'
+                    '"summary":"[incomplete] verified partial"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        run_mod._worker_touched_files.get().add("dashboard.html")
+        return "[incomplete] partial", 3
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "finish it", "parent_session_id": "parent"},
+        FakeRouter([]),
+        [],
+        io.StringIO(),
+        agents_dir=tmp_path,
+        orchestration=orchestration,
+    ))
+
+    assert result == "[incomplete] verified partial"
+    assert orchestration.latest_failed_outcome("coder") == run_mod.WorkerOutcome(
+        role="coder",
+        status="failed",
+        summary="[incomplete] verified partial",
+        touched_files=("dashboard.html",),
+    )
 
 
 def _text(s: str) -> LMResponse:
@@ -140,7 +199,7 @@ def test_disallowed_role_surfaces_error_without_running_child() -> None:
 # ── escalation: child that won't stop is killed, parent still completes ─────
 
 
-def test_child_max_turns_escalates_not_hangs() -> None:
+def test_child_max_turns_requires_recovery_before_root_success() -> None:
     router = FakeRouter([
         _spawn("explorer", "loop", max_turns=1),
         # child cycle 0: keeps asking for a tool → exhausts max_turns=1
@@ -152,7 +211,9 @@ def test_child_max_turns_escalates_not_hangs() -> None:
         _text("done"),  # parent final
     ])
     answer = asyncio.run(run_agent("loopy", router, _musubi_dir(), log=io.StringIO()))
-    assert answer == "done"
+    assert answer.startswith("[incomplete]")
+    assert "explorer (escalated)" in answer
+    assert "reached the turn limit" in answer
     assert router.calls[2]["tools"] == []
     fed_back = "".join(
         b["content"] for m in router.calls[3]["messages"]
@@ -163,7 +224,7 @@ def test_child_max_turns_escalates_not_hangs() -> None:
     assert "max_turns=1 reached" in fed_back
 
 
-def test_child_blocked_reason_escalates_to_parent() -> None:
+def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     blocked = (
         '[blocked] {"status":"blocked",'
         '"reason":"output_too_large_for_single_tool_call",'
@@ -182,7 +243,9 @@ def test_child_blocked_reason_escalates_to_parent() -> None:
         log=io.StringIO(),
     ))
 
-    assert answer == "done"
+    assert answer.startswith("[incomplete]")
+    assert "coder (escalated)" in answer
+    assert "output_too_large_for_single_tool_call" in answer
     fed_back = "".join(
         b["content"] for m in router.calls[2]["messages"]
         if isinstance(m.get("content"), list)

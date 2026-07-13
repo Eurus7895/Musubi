@@ -31,19 +31,23 @@ plan, design, code, or review stages.
    planner summary or concrete acceptance criteria, return `status:
    incomplete` and ask the root to run `planner` first.
 4. For an HTML/page/dashboard artifact, write the requested HTML file as the primary artifact.
-   Default to a compact single-file HTML page when the user
-   does not ask for multiple files. Do not substitute a generator script unless
-   the user asked for generated output or explicitly accepts that fallback.
-5. For a large single artifact that must stay in one file, first call
-   `musubi_write_file` with empty content to reset the file, then call
-   `musubi_append_file` in ordered chunks with `expected_offset` when practical.
+   The first successful mutation must create a complete valid HTML document
+   containing every requested section at
+   minimal fidelity, including closing tags and required JavaScript
+   initialization. Default to a compact single-file HTML page when the user
+   does not ask for multiple files, and enhance it only after that complete
+   baseline exists. Do not substitute a generator script unless the user asked
+   for generated output or explicitly accepts that fallback.
+5. Never reset a file with an empty write; Musubi rejects empty content. For a
+   genuinely large non-HTML artifact, start with a non-empty chunk and use
+   ordered `musubi_append_file` calls with `expected_offset` when practical.
 6. Prefer splitting large web artifacts into `index.html`, `styles.css`,
    `app.js`, and data files over many append chunks when that still satisfies
    the user's requested artifact.
-7. After large `musubi_write_file`, `musubi_append_file`, or `musubi_edit_file`
-   calls, assume the raw payload may be elided from your later context. Use
-   file reads, size checks, grep, or concise summaries when you need to inspect
-   the artifact again.
+7. After a successful artifact mutation, use at most one verification round
+   unless that verification returns a concrete failure. Assume a large raw
+   payload may be elided from later context; use one focused file read, size
+   check, grep, or concise summary when verification requires inspection.
 8. Use `musubi_run_command` only for focused verification or diagnostics. Do
    not use shell commands such as `cat`, `type`, or `Get-Content` just to read
    source files; use `musubi_read_file`, then `musubi_retrieve` if the read

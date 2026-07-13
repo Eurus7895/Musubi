@@ -327,6 +327,21 @@ def test_agent_prompt_has_artifact_task_fast_path() -> None:
     assert "compact single-file HTML" in text
 
 
+def test_coder_prompt_never_requests_empty_write() -> None:
+    text = _CODER_WORKER_FILE.read_text(encoding="utf-8").lower()
+
+    assert "write_file` with empty content" not in text
+    assert "never reset a file with an empty write" in text
+
+
+def test_coder_prompt_requires_complete_first_html() -> None:
+    text = _CODER_WORKER_FILE.read_text(encoding="utf-8").lower()
+
+    assert "complete valid html" in text
+    assert "closing tags" in text
+    assert "at most one verification round" in text
+
+
 def test_agent_prompt_has_blocked_retry_guard() -> None:
     text = _AGENT_FILE.read_text(encoding="utf-8")
 

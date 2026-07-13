@@ -84,9 +84,10 @@ The runner injects a deterministic `[agent-routing-scope]` block into your
 system prompt. Treat it as a substrate guardrail, not as a substitute for your
 judgment:
 
-- `scope=simple_edit` or `scope=simple_artifact` → use at most one `coder`
-  worker. Do not spawn a second coder with the same strategy. If that worker
-  reports blocked/incomplete, change strategy or ask the user.
+- `scope=simple_edit` or `scope=simple_artifact` → start with one `coder`
+  worker. This is an initial routing recommendation, not a lifetime cap. If
+  that worker fails or escalates, inspect the concrete failure and summon a
+  replacement that continues the existing files instead of restarting them.
 - `scope=medium_change` → spawn `planner` first for scope and acceptance
   criteria, then spawn `coder` with the planner summary. Do not ask `coder` to
   both plan and implement. If the plan reveals the task is actually tiny, you

@@ -38,7 +38,7 @@ import re
 import sys
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,8 @@ DEFAULT_AGENT_MAX_TOKENS = 200_000
 #: be spawned in one model turn. Bounds runaway fan-out when workers run in
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
+DEFAULT_MAX_ROOT_WORKERS = 3
+DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
 # Injected into the root prompt only when the caller passes --plan. Explicit
 # opt-in replaces the retired regex force (a keyword guess used to refuse the
@@ -128,6 +130,16 @@ _worker_log_label: contextvars.ContextVar[str] = (
 DEFAULT_MAX_DEPTH = 2
 
 
+@dataclass(frozen=True)
+class WorkerOutcome:
+    """Terminal state retained by the parent for a possible replacement."""
+
+    role: str
+    status: str
+    summary: str
+    touched_files: tuple[str, ...] = ()
+
+
 @dataclass
 class Orchestration:
     """Context that lets a worker loop spawn further workers.
@@ -144,6 +156,9 @@ class Orchestration:
     depth: int = 0
     max_depth: int = DEFAULT_MAX_DEPTH
     spawned_workers: int = 0
+    max_root_workers: int = DEFAULT_MAX_ROOT_WORKERS
+    root_recovery_analysis_cycles: int = 0
+    worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
 
     @property
     def enabled(self) -> bool:
@@ -178,6 +193,71 @@ class Orchestration:
     def can_spawn_deeper(self) -> bool:
         """True if a worker at this depth is still allowed to nest."""
         return self.enabled and self.depth < self.max_depth
+
+    def record_worker_outcome(
+        self,
+        *,
+        role: str,
+        status: str,
+        summary: str,
+        touched_files: set[str] | tuple[str, ...] | list[str],
+    ) -> WorkerOutcome:
+        """Retain a compact terminal record for parent-side recovery."""
+        outcome = WorkerOutcome(
+            role=role,
+            status=status,
+            summary=summary,
+            touched_files=tuple(sorted(set(touched_files))),
+        )
+        self.worker_outcomes.append(outcome)
+        return outcome
+
+    def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
+        """Return the latest same-role failure, unless a later run recovered."""
+        for outcome in reversed(self.worker_outcomes):
+            if outcome.role == role:
+                if outcome.status in {"failed", "escalated"}:
+                    return outcome
+                return None
+        return None
+
+    def latest_unrecovered_failure(self) -> WorkerOutcome | None:
+        """Return the newest failure not superseded by a same-role success."""
+        seen_roles: set[str] = set()
+        for outcome in reversed(self.worker_outcomes):
+            if outcome.role in seen_roles:
+                continue
+            seen_roles.add(outcome.role)
+            if outcome.status in {"failed", "escalated"}:
+                return outcome
+        return None
+
+
+def _replacement_brief(original_brief: str, outcome: WorkerOutcome) -> str:
+    """Give a replacement worker the prior terminal state without parent history."""
+    files = ", ".join(outcome.touched_files) or "none recorded"
+    return (
+        f"{original_brief}\n\n"
+        "[worker-replacement]\n"
+        "Continue the existing artifact from its current state; do not restart it.\n"
+        f"Prior role: {outcome.role}\n"
+        f"Prior status: {outcome.status}\n"
+        f"Touched files: {files}\n"
+        f"Prior summary: {outcome.summary}\n"
+        "Complete missing acceptance criteria before optional enhancement.\n"
+        "[/worker-replacement]"
+    )
+
+
+def _recovery_incomplete(outcome: WorkerOutcome, reason: str) -> str:
+    """Deterministic root result when no bounded mutation recovery remains."""
+    files = ", ".join(outcome.touched_files) or "none recorded"
+    return (
+        f"[incomplete] {reason}\n"
+        f"Last failed worker: {outcome.role} ({outcome.status}).\n"
+        f"Files touched: {files}.\n"
+        f"Worker summary: {outcome.summary}"
+    )
 
 
 @dataclass
@@ -540,6 +620,25 @@ async def _run_loop(
     effort_escalated = False
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
+        recovery_outcome = (
+            orchestration.latest_unrecovered_failure()
+            if role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            else None
+        )
+        recovery_decision_only = bool(
+            recovery_outcome is not None
+            and orchestration is not None
+            and orchestration.root_recovery_analysis_cycles
+            >= DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
+        )
+        cycle_tools = tools
+        if recovery_decision_only:
+            cycle_tools = [
+                tool for tool in tools
+                if tool.get("name") == "musubi_spawn_subagent"
+            ]
         # IntelligentContext: trim an over-budget conversation deterministically
         # before the call (oldest/largest tool results elided, pairing intact).
         if context_budget_chars is None:
@@ -550,7 +649,7 @@ async def _run_loop(
                 budget_chars=context_budget_chars,
                 compression_db_path=compression_db_path,
             )
-        input_tokens_est = _estimate_input_tokens(messages, tools)
+        input_tokens_est = _estimate_input_tokens(messages, cycle_tools)
         try:
             _check_budget_preflight(budget, input_tokens_est, log)
         except TokenBudgetExhaustedError as exc:
@@ -584,7 +683,7 @@ async def _run_loop(
             _call_with_effort,
             vendor,
             messages,
-            tools,
+            cycle_tools,
             floor=ceiling if effort_escalated else base_floor,
             ceiling=ceiling,
         )
@@ -639,6 +738,28 @@ async def _run_loop(
                 log=log,
             )
             raise
+
+        if not tool_uses and recovery_outcome is not None:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="recovery_halt",
+                log=log,
+            )
+            final_answer = _recovery_incomplete(
+                recovery_outcome,
+                "root ended recovery without a successful replacement worker",
+            )
+            break
 
         if not tool_uses:
             _safe_record_agent_cycle(
@@ -701,6 +822,31 @@ async def _run_loop(
             })
             continue
 
+        if recovery_decision_only and any(
+            tu.get("name") != "musubi_spawn_subagent" for tu in tool_uses
+        ):
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="recovery_halt",
+                log=log,
+            )
+            final_answer = _recovery_incomplete(
+                recovery_outcome,
+                "root used its two recovery-analysis cycles without "
+                "starting a replacement worker",
+            )
+            break
+
         tool_results = await _dispatch(
             session, tool_uses, log,
             vendor=vendor, tools=(spawn_catalog or tools),
@@ -713,6 +859,44 @@ async def _run_loop(
             stats=stats,
             audit_db_path=audit_db_path,
         )
+        recovery_halt: str | None = None
+        if role == "agent" and orchestration is not None and orchestration.depth == 0:
+            requested_replacement = any(
+                tu.get("name") == "musubi_spawn_subagent" for tu in tool_uses
+            )
+            pending_failure = orchestration.latest_unrecovered_failure()
+            if requested_replacement or pending_failure is None:
+                orchestration.root_recovery_analysis_cycles = 0
+            else:
+                orchestration.root_recovery_analysis_cycles += 1
+                if (
+                    orchestration.root_recovery_analysis_cycles
+                    == DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
+                ):
+                    tool_results.append({
+                        "type": "text",
+                        "text": (
+                            "[recovery decision required] The bounded analysis "
+                            "window is exhausted. On the next cycle, either "
+                            "spawn a replacement worker or return a final "
+                            "incomplete status; analysis tools are unavailable."
+                        ),
+                    })
+
+            last_outcome = (
+                orchestration.worker_outcomes[-1]
+                if orchestration.worker_outcomes else None
+            )
+            if (
+                last_outcome is not None
+                and last_outcome.status in {"failed", "escalated"}
+                and orchestration.spawned_workers >= orchestration.max_root_workers
+            ):
+                recovery_halt = _recovery_incomplete(
+                    last_outcome,
+                    f"root worker ceiling ({orchestration.max_root_workers}) "
+                    "was exhausted before the artifact could be completed",
+                )
         _safe_record_agent_cycle(
             db_path=compression_db_path,
             session_id=audit_session_id,
@@ -725,10 +909,13 @@ async def _run_loop(
             usage=usage,
             tool_names=[str(tu.get("name", "")) for tu in tool_uses],
             text_chars=len(text),
-            cycle_status="ok",
+            cycle_status="recovery_halt" if recovery_halt else "ok",
             log=log,
         )
         messages.append({"role": "user", "content": tool_results})
+        if recovery_halt is not None:
+            final_answer = recovery_halt
+            break
 
     # Salvage (root only — sub-agents signal exhaustion via None → escalate).
     # A model that calls a tool on EVERY cycle never hits the break path, so
@@ -1633,7 +1820,8 @@ async def _dispatch(
     matter which worker finishes first.
 
     A per-role width guard (`DEFAULT_MAX_SPAWNS_PER_ROLE`) refuses overflow
-    spawns BEFORE launch so a single turn cannot fan out without bound.
+    spawns BEFORE launch so a single turn cannot fan out without bound. Direct
+    root runs also share a classifier-independent cumulative worker ceiling.
     """
     refused = _spawn_overflow_reasons(
         tool_uses,
@@ -1738,10 +1926,9 @@ def _spawn_overflow_reasons(
 ) -> dict[str, str]:
     """tool_use ids of spawn calls that exceed the flat per-role width cap.
 
-    The flat per-role cap bounds one batch for every worker. At root depth, the
-    deterministic `scope_hint.max_workers` is also a cumulative run cap, so
-    sequential cycles cannot evade a `single_coder` route with retries. The
-    hint does not force a role or a planner-first sequence; explicit plan-first
+    The flat per-role cap bounds one batch for every worker. At root depth, a
+    generic cumulative ceiling bounds the whole direct run independently of
+    task classification. Scope hints remain advisory; explicit plan-first
     intent still comes from `--plan`. `cycle_index` remains for log context.
     """
     seen: dict[str, int] = {}
@@ -1765,12 +1952,13 @@ def _spawn_overflow_reasons(
             continue
         if (
             role == "agent"
-            and scope_hint is not None
             and orchestration is not None
             and orchestration.depth == 0
-            and orchestration.spawned_workers >= scope_hint.max_workers
+            and orchestration.spawned_workers >= orchestration.max_root_workers
         ):
-            reason = f"run worker cap ({scope_hint.max_workers}) reached"
+            reason = (
+                f"root worker ceiling ({orchestration.max_root_workers}) reached"
+            )
             overflow[tu.get("id", "")] = reason
             print(
                 f"[agent] refused extra worker(role={spawn_role!r}): {reason}",
@@ -1917,8 +2105,18 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        worker_args = args
+        spawn_role = str(args.get("role", ""))
+        prior_outcome = orchestration.latest_failed_outcome(spawn_role)
+        if prior_outcome is not None:
+            worker_args = {
+                **args,
+                "brief": _replacement_brief(
+                    str(args.get("brief", "")), prior_outcome,
+                ),
+            }
         injected = {
-            **args,
+            **worker_args,
             "parent_session_id": orchestration.parent_session_id,
             "parent_agent_name": orchestration.parent_agent_name,
         }

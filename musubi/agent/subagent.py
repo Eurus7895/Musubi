@@ -95,10 +95,18 @@ async def run_subagent(
     )
     ctx = _loads(ctx_raw)
     if ctx.get("status") != "ok":
+        failure_summary = f"sub-agent context fetch failed: {ctx_raw[:200]}"
         await _safe_complete(
             session, handle_id, status="failed",
-            summary=f"sub-agent context fetch failed: {ctx_raw[:200]}",
+            summary=failure_summary,
         )
+        if orchestration is not None:
+            orchestration.record_worker_outcome(
+                role=role,
+                status="failed",
+                summary=failure_summary,
+                touched_files=(),
+            )
         return ctx_raw
 
     brief = str(ctx.get("brief", ""))
@@ -209,7 +217,22 @@ async def run_subagent(
     comp = _loads(complete_raw)
     # Prefer the harness-verified summary (firewalled / truncated) when present.
     verified = comp.get("summary") if isinstance(comp, dict) else None
-    return verified or summary
+    returned_summary = verified or summary
+    recorded_status = (
+        comp.get("final_status")
+        if isinstance(comp, dict)
+        and comp.get("final_status")
+        in {"done", "failed", "escalated", "abandoned"}
+        else status
+    )
+    if orchestration is not None:
+        orchestration.record_worker_outcome(
+            role=role,
+            status=recorded_status,
+            summary=returned_summary,
+            touched_files=touched,
+        )
+    return returned_summary
 
 
 # ── C1: mechanical validation gate ──────────────────────────────────────────

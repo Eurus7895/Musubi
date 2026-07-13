@@ -138,13 +138,12 @@ def test_per_role_width_cap_refuses_overflow_spawns() -> None:
     assert set(refused) == {"spawn-3", "spawn-4"}
 
 
-def test_scope_worker_cap_is_cumulative_across_model_cycles() -> None:
+def test_scope_does_not_cap_workers_across_model_cycles() -> None:
     orchestration = Orchestration(parent_session_id="root-session")
     scope = ScopeHint(
         kind=ScopeKind.SIMPLE_ARTIFACT,
         route="single_coder",
         reason="one artifact",
-        max_workers=1,
     )
     first = [{
         "type": "tool_use",
@@ -174,8 +173,46 @@ def test_scope_worker_cap_is_cumulative_across_model_cycles() -> None:
         orchestration=orchestration,
     )
 
-    assert "spawn-second" in refused
-    assert "run worker cap (1)" in refused["spawn-second"]
+    assert refused == {}
+
+
+def test_generic_root_worker_ceiling_is_cumulative() -> None:
+    orchestration = Orchestration(parent_session_id="root-session")
+    scope = ScopeHint(
+        kind=ScopeKind.SIMPLE_ARTIFACT,
+        route="single_coder",
+        reason="one artifact",
+    )
+
+    for index in range(3):
+        refused = _spawn_overflow_reasons(
+            [{
+                "type": "tool_use",
+                "id": f"spawn-{index}",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "build it"},
+            }],
+            io.StringIO(),
+            role="agent",
+            scope_hint=scope,
+            orchestration=orchestration,
+        )
+        assert refused == {}
+
+    refused = _spawn_overflow_reasons(
+        [{
+            "type": "tool_use",
+            "id": "spawn-fourth",
+            "name": "musubi_spawn_subagent",
+            "input": {"role": "coder", "brief": "retry it"},
+        }],
+        io.StringIO(),
+        role="agent",
+        scope_hint=scope,
+        orchestration=orchestration,
+    )
+
+    assert refused == {"spawn-fourth": "root worker ceiling (3) reached"}
 
 
 class SequentialRetryRouter(LMRouter):
@@ -184,11 +221,19 @@ class SequentialRetryRouter(LMRouter):
 
     def __init__(self) -> None:
         self.children = 0
+        self.replacement_context_seen = False
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         idx = _child_index(messages)
         if idx is not None:
             self.children += 1
+            self.replacement_context_seen = any(
+                isinstance(message.get("content"), str)
+                and "[worker-replacement]" in message["content"]
+                for message in messages
+            )
+            if self.children == 1:
+                return _text("[incomplete] first worker could not finish")
             return _text("worker finished")
         results = sum(
             1
@@ -202,7 +247,7 @@ class SequentialRetryRouter(LMRouter):
         return _text("done")
 
 
-def test_single_coder_route_refuses_sequential_replacement_worker() -> None:
+def test_single_coder_route_allows_sequential_replacement_worker() -> None:
     router = SequentialRetryRouter()
     log = io.StringIO()
 
@@ -211,5 +256,6 @@ def test_single_coder_route_refuses_sequential_replacement_worker() -> None:
     )
 
     assert answer == "done"
-    assert router.children == 1
-    assert "run worker cap (1) reached" in log.getvalue()
+    assert router.children == 2
+    assert router.replacement_context_seen is True
+    assert "root worker ceiling" not in log.getvalue()
