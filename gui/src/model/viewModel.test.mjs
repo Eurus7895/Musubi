@@ -693,3 +693,85 @@ test('selecting a session focuses and highlights it', () => {
   const chosen = vm.runs.find((run) => run.id === 'old-session')
   assert.ok(chosen.cardStyle.includes('#ff9b3d'))
 })
+
+test('historical session is read-only while another session owns the driver', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'live-session',
+    selectedSession: 'old-session',
+    orchestratorSessions: [
+      {
+        chatId: 'live-session', title: 'live', lastRequest: 'working',
+        createdAt: '200', updatedAt: '201', rootTurns: 1, workers: 0,
+      },
+      {
+        chatId: 'old-session', title: 'old', lastRequest: 'old request',
+        createdAt: '100', updatedAt: '101', rootTurns: 1, workers: 0,
+      },
+    ],
+    chat: [{ role: 'driver', text: 'old answer' }],
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'live-session',
+      task: 'working',
+      startedAt: 1,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.activeRunId, 'old-session')
+  assert.equal(vm.chat[0].text, 'old answer')
+  assert.equal(vm.viewingHistoricalSession, true)
+  assert.equal(vm.sendDisabled, true)
+  assert.equal(vm.inputDisabled, true)
+  assert.match(vm.disabledText, /read-only/i)
+})
+
+test('historical session stays read-only after the other run finishes', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'live-session',
+    selectedSession: 'old-session',
+    orchestratorSessions: [{
+      chatId: 'old-session', title: 'old', lastRequest: 'old request',
+      createdAt: '100', updatedAt: '101', rootTurns: 1, workers: 0,
+    }],
+    driverStatus: {
+      running: false,
+      surface: 'orchestrator',
+      chatId: 'live-session',
+      task: 'finished',
+      startedAt: 1,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.viewingHistoricalSession, true)
+  assert.equal(vm.sendDisabled, true)
+  assert.match(vm.disabledText, /select it again/i)
+})
+
+test('active running session keeps cancel available', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'live-session',
+    selectedSession: 'live-session',
+    orchestratorSessions: [{
+      chatId: 'live-session', title: 'live', lastRequest: 'working',
+      createdAt: '200', updatedAt: '201', rootTurns: 1, workers: 0,
+    }],
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'live-session',
+      task: 'working',
+      startedAt: 1,
+      stdoutTail: '',
+      stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.viewingHistoricalSession, false)
+  assert.equal(vm.sendDisabled, false)
+  assert.equal(vm.sendMode, 'cancel')
+})

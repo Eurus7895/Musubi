@@ -349,7 +349,9 @@ fn new_driver_session(
     store_session_nonce(conn, surface, &nonce);
     let new_id = scoped_chat_id(project_root, surface, &nonce);
     *chat_id_slot.lock().map_err(|e| e.to_string())? = new_id;
-    *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
+    if surface == "orchestrator" {
+        *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
+    }
     if rt.chat_id == old_id {
         rt.stdout_tail.clear();
         rt.stderr_tail.clear();
@@ -1525,6 +1527,23 @@ mod tests {
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator");
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
+    }
+
+    #[test]
+    fn new_pipeline_session_preserves_viewed_orchestrator_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("/tmp/musubi-new-pipeline-session-test");
+        let slot = Mutex::new("gui-pipeline-project-old".to_string());
+        let viewed = Mutex::new(Some("gui-orchestrator-project-history".to_string()));
+        let mut rt = ChatAgentRuntime::default();
+
+        new_driver_session(&conn, &mut rt, &slot, &viewed, root, "pipeline").unwrap();
+
+        assert_eq!(
+            viewed.lock().unwrap().as_deref(),
+            Some("gui-orchestrator-project-history")
+        );
     }
 
     #[test]

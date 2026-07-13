@@ -284,6 +284,14 @@ export function buildViewModel(s, act) {
   const driverBelongsToPipeline = driverBelongsToSession(driverStatusForRuns, 'pipeline', pipelineChatId)
   const orchestratorOwnsDriver = driverRunning && driverBelongsToOrchestrator
   const pipelineOwnsDriver = driverRunning && driverBelongsToPipeline
+  const viewingHistoricalSession = Boolean(
+    s.selectedSession
+    && orchestratorChatId
+    && s.selectedSession !== orchestratorChatId
+  )
+  const historicalDisabledText = viewingHistoricalSession
+    ? 'Viewing historical session (read-only). Select it again after the active run finishes to resume.'
+    : ''
   const runsRaw = hasSessionIndex
     ? groupOrchestratorSessions(orchestratorSessions, orchSubagents, orchAgentTurns, driverStatusForRuns)
     : groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
@@ -334,7 +342,8 @@ export function buildViewModel(s, act) {
     ? s.selectedSession
     : null
   const activeSessionId = hasSessionIndex
-    ? ((runsRaw.some((run) => run.id === orchestratorChatId) ? orchestratorChatId : '')
+    ? (chosenSession
+      || (runsRaw.some((run) => run.id === orchestratorChatId) ? orchestratorChatId : '')
       || (!orchestratorChatId ? (chosenSession || runningRun?.id || runsRaw[0]?.id || '') : ''))
     : (selectedAgent?.parentSession || chosenSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || '')
   const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
@@ -786,6 +795,7 @@ export function buildViewModel(s, act) {
     subagents: [], webShown: [],
     runs,
     activeRunId: activeSessionId,
+    viewingHistoricalSession,
     activeRunSteps: sessionSteps,
     selectedStepDetail: detail,
     driverSummary,
@@ -811,9 +821,9 @@ export function buildViewModel(s, act) {
     onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,
     sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : 'Send'),
     sendMode: orchestratorOwnsDriver ? 'cancel' : 'send',
-    sendDisabled: orchestratorBlockedByPipeline,
-    inputDisabled: orchestratorBlockedByPipeline,
-    disabledText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : '',
+    sendDisabled: orchestratorBlockedByPipeline || viewingHistoricalSession,
+    inputDisabled: orchestratorBlockedByPipeline || viewingHistoricalSession,
+    disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : ''),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     pipeRuns,
     activePipeRunId: activePipeSessionId,
