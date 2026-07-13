@@ -153,6 +153,7 @@ async def run_pipeline(
     depth budget allows, stages whose server response declares `spawn_roles`
     may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
+    from agent.budget import ChildTokenBudget, pipeline_stage_allowance
     from agent.run import _call_tool_text, run_unit
     from agent.subagent import build_subagent_system_prompt, select_child_tools
 
@@ -273,9 +274,19 @@ async def run_pipeline(
                 stage_orch = orchestration.stage_child(role, psid)
                 stage_spawn_catalog = tools
 
+        # Each stage runs against its own fair-share allowance of the shared run
+        # budget (charged straight through to the parent). An early planner or
+        # designer loop is capped at its slice and cannot spend coder/reviewer's
+        # reserve; a stage that underspends hands the slack to later stages.
+        stage_budget = budget
+        if budget is not None:
+            allowance = pipeline_stage_allowance(budget, len(plan) - i)
+            stage_budget = ChildTokenBudget(budget, allowance)
+
         print(
             f"[agent]     ⮑ stage {stage} (role={role}, "
-            f"tools={len(child_tools)}, nests={stage_orch is not None})",
+            f"tools={len(child_tools)}, nests={stage_orch is not None}, "
+            f"allowance={getattr(stage_budget, 'max_tokens', None)})",
             file=log,
         )
 
@@ -288,7 +299,7 @@ async def run_pipeline(
                 context_budget_chars=spec.context_budget_chars,
                 role=role,
                 stats=stats,
-                budget=budget,
+                budget=stage_budget,
                 audit_db_path=audit_db_path,
                 orchestration=stage_orch,
                 spawn_catalog=stage_spawn_catalog,
@@ -303,6 +314,13 @@ async def run_pipeline(
                 "TokenBudgetExhaustedError",
             }
             if is_budget:
+                print(
+                    f"[agent]     ⚠ stage {stage} halted: token allowance "
+                    f"exhausted (used {getattr(stage_budget, 'tokens_used', '?')}"
+                    f"/{getattr(stage_budget, 'max_tokens', '?')}, run remaining "
+                    f"{getattr(budget, 'remaining', '?')})",
+                    file=log,
+                )
                 await _call_tool_text(session, "musubi_complete_subagent", {
                     "handle_id": handle_id,
                     "summary": f"[stage {stage}] budget exhausted: {exc}",

@@ -708,6 +708,73 @@ def test_resolve_pipeline_worker_spec_reads_pipeline_stage_variant(tmp_path: Pat
     assert "Scope the diff" in spec.prompt
 
 
+def test_pipeline_stage_budget_exhaustion_finalizes_escalated_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stage whose fair-share allowance is exhausted completes as escalated
+    and finalizes the run once as escalated — later stages never run."""
+    from agent import pipeline_runner
+    from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
+
+    completions: list[dict[str, Any]] = []
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-broke",
+                "pipeline_name": "feature-dev",
+                "plan": [
+                    {"stage": "code", "role": "coder"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": "coder" if args["stage"] == "code" else "reviewer",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr(
+        pipeline_runner, "_read_stage_agent_md",
+        lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
+    )
+
+    # A 1-token run budget: the first stage's preflight halts before any model
+    # call, so run_unit raises TokenBudgetExhaustedError.
+    parent = TokenBudgetEnforcer(1)
+
+    with pytest.raises(TokenBudgetExhaustedError):
+        asyncio.run(pipeline_runner.run_pipeline(
+            None,
+            {"parent_session_id": "outer", "parent_agent_name": "agent",
+             "pipeline_name": "feature-dev", "brief": "ship it"},
+            PipelineRouter(), [], io.StringIO(), strict=True, budget=parent,
+        ))
+
+    # Only the first stage was reached; it escalated and the run finalized once.
+    assert len(completions) == 1
+    assert completions[0]["handle_id"] == "h-code"
+    assert completions[0]["status"] == "escalated"
+    assert finalizations == [{
+        "session_id": "pipe-broke", "final_status": "escalated", "escalated": True,
+    }]
+
+
 # ── Feature A: stage nesting — spawn_roles gates the spawn tool ─────────────
 
 
