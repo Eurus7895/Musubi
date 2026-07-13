@@ -236,6 +236,35 @@ Four zero-LLM token controls apply at the LM-call boundary:
 | **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 | **TokenBudgetEnforcer** | Preflights projected total tokens and charges measured/estimated token usage after each LM call. | `--max-tokens <n>` or `MUSUBI_AGENT_MAX_TOKENS=<n>` |
 
+Effort bounds resolve once when a worker loop starts:
+
+1. Use the worker's optional `maxOutputTokens` frontmatter value, otherwise
+   the shared `16384` ceiling.
+2. Clamp that ceiling with the selected profile's optional
+   `max_output_tokens`.
+3. Open mutation-capable workers at the resolved ceiling. Open read-only
+   workers at `min(MUSUBI_EFFORT_TOKENS, ceiling)`.
+4. If a response truncates, retry once at the ceiling and keep later cycles
+   at that ceiling.
+
+For example, an operator can deliberately cap one profile without changing
+worker definitions:
+
+```json
+{
+  "default": "deepseek.cloud",
+  "deepseek": {
+    "cloud": {
+      "model": "deepseek-v4-flash",
+      "max_output_tokens": 8192
+    }
+  }
+}
+```
+
+`max_output_tokens` is a response cap, not reserved or pre-billed usage. Direct
+workers and deterministic pipeline stages use the same resolution path.
+
 Run the deterministic compression eval gate with:
 
 ```powershell

@@ -147,6 +147,14 @@ model, to keep the substrate LLM-free):
 | **Effort routing** | Read-only workers start at a low cap and retry at the ceiling on truncation; workers with file-mutation tools start at the ceiling so whole-artifact writes are not predictably cut off. After one escalation, later cycles stay at the ceiling. | Read-only floor: `MUSUBI_EFFORT_TOKENS=<n>` (default 2048). Worker ceiling: `.agent.md` `maxOutputTokens` (default 16384). Profile `max_output_tokens` optionally clamps that ceiling. |
 | **IntelligentContext** | When the conversation exceeds a budget, deterministically protects system/task/recent turns, compresses old tool results first, and only then trims the largest remaining blocks. Pairing and `musubi_retrieve` markers are preserved. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 
+Output effort resolves once per worker loop: optional worker
+`maxOutputTokens`, otherwise the shared `16384` ceiling, then an optional
+profile `max_output_tokens` clamp. Mutation-capable workers open at the
+resolved ceiling; read-only workers open at the smaller effort floor. The
+value is a maximum response size, not reserved or pre-billed usage, and the
+same resolution path applies to direct workers and deterministic pipeline
+stages.
+
 ## Standalone host controls
 
 The standalone `agent` host now carries the same operational controls that

@@ -7,6 +7,19 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Per-worker effort and output budgets
+
+- Mutation-capable workers now open at the shared 16,384-token response
+  ceiling instead of predictably truncating whole-artifact writes at the
+  2,048-token read-only floor. Once a worker escalates, later cycles remain at
+  the ceiling.
+- Worker frontmatter may declare `maxOutputTokens`; a selected LM profile may
+  declare `max_output_tokens` as an operator clamp. Direct workers and
+  deterministic pipeline stages share the same resolution path.
+- Empty create/append content is rejected before filesystem dispatch, replay
+  elision markers require regeneration, and worker prompts identify the host
+  shell. Root worker-count and continuation-spawn policy are unchanged.
+
 ### VS Code extension removed — one driver host
 
 - **Breaking: the embedded Copilot surface is gone.**
