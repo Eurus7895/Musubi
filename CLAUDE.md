@@ -20,6 +20,30 @@ Zero LLM calls inside the harness.
 
 ---
 
+## Response Style — how to answer Eurus
+
+Applies to **every** conversation in this repo — analysis, explanation,
+Q&A, review — not just code tasks. Benchmark: the level of a full
+run-trace post-mortem, never a summary.
+
+- **Depth is the default.** Every claim about behavior carries its
+  causal chain: what triggered what, in which code path, with exact
+  `file:line` references, constant values, and the log/DB evidence
+  that proves it.
+- **Name the design assumption.** When a mechanism misbehaves, state
+  the assumption it was built on and show where it broke — distinguish
+  "the model failed" from "the design guaranteed the failure" (e.g. an
+  effort floor of 2048 tokens *guarantees* truncation for a worker
+  whose whole job is emitting a 3–5k-token file).
+- **Quantify.** Cite tokens, credits, cycles, milliseconds whenever the
+  data exists; make each mistake's cost attributable.
+- **Judge, don't just describe.** Analysis ends with prioritized,
+  concrete recommendations, each tied to the evidence above it.
+- **Mirror language.** Reply in Vietnamese when addressed in
+  Vietnamese; keep technical terms in English.
+
+---
+
 ## Substrate vs ephemeral
 
 | Substrate (invest) | Ephemeral (label + schedule for removal) |
