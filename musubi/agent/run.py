@@ -51,9 +51,9 @@ from mcp.client.stdio import stdio_client
 
 from agent.context import (
     build_system_prompt,
-    effort_floor,
     fit_context,
     is_elided_tool_arg_marker,
+    resolve_effort_bounds,
 )
 from agent.budget import (
     TokenBudgetEnforcer,
@@ -82,10 +82,6 @@ from tool_surface import filter_tool_catalog, tool_names_for_surface
 DEFAULT_MAX_CYCLES = 16
 
 DEFAULT_AGENT_MAX_TOKENS = 200_000
-
-#: Ceiling for output tokens; effort routing starts below this and escalates
-#: to it only when a cycle actually stops on `max_tokens`.
-EFFORT_CEILING = 4096
 
 #: Per-cycle fan-out width guard: at most this many workers of the SAME role may
 #: be spawned in one model turn. Bounds runaway fan-out when workers run in
@@ -507,6 +503,8 @@ async def _run_loop(
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
+    worker_max_output: int | None = None,
+    model_output_override: int | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -527,6 +525,18 @@ async def _run_loop(
     final_answer: str | None = None
     last_text = ""  # most recent non-empty assistant text, for salvage
     cycles_used = 0
+    base_floor, ceiling = resolve_effort_bounds(
+        can_mutate=any(
+            tool.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tool in tools
+        ),
+        worker_max_output=worker_max_output,
+        model_output_override=(
+            model_output_override
+            if model_output_override is not None
+            else getattr(vendor, "max_output_tokens", None)
+        ),
+    )
+    effort_escalated = False
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
         # IntelligentContext: trim an over-budget conversation deterministically
@@ -568,9 +578,18 @@ async def _run_loop(
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
         # round-trip instead of serializing. Single-loop cost is one thread hop.
         lm_started = time.perf_counter()
-        effort = await asyncio.to_thread(_call_with_effort, vendor, messages, tools)
+        effort = await asyncio.to_thread(
+            _call_with_effort,
+            vendor,
+            messages,
+            tools,
+            floor=ceiling if effort_escalated else base_floor,
+            ceiling=ceiling,
+        )
         lm_ms = int((time.perf_counter() - lm_started) * 1000)
         resp = effort.response
+        if resp.stop_reason == "max_tokens" or len(effort.attempts) > 1:
+            effort_escalated = True
         tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
             effort.attempts, input_tokens_est,
         )
@@ -689,7 +708,12 @@ async def _run_loop(
                     raise
                 lm_started = time.perf_counter()
                 effort = await asyncio.to_thread(
-                    _call_with_effort, vendor, final_messages, []
+                    _call_with_effort,
+                    vendor,
+                    final_messages,
+                    [],
+                    floor=ceiling if effort_escalated else base_floor,
+                    ceiling=ceiling,
                 )
                 lm_ms = int((time.perf_counter() - lm_started) * 1000)
                 resp = effort.response
@@ -749,6 +773,8 @@ async def run_unit(
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
     audit_db_path: Path | None = None,
+    worker_max_output: int | None = None,
+    model_output_override: int | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -793,6 +819,8 @@ async def run_unit(
         stats=stats,
         budget=budget,
         audit_db_path=audit_db_path,
+        worker_max_output=worker_max_output,
+        model_output_override=model_output_override,
     )
 
 
@@ -990,17 +1018,26 @@ def _resolve_vendor(profile: str | None) -> tuple[LMRouter, str]:
     `.musubi/llm.json`. The label (e.g. `genai_farm.default (llm.json default)`)
     is logged at startup so the active profile is visible.
     """
-    from agent.config import find_config_path, load_profile
+    from agent.config import (
+        find_config_path,
+        load_profile,
+        resolve_model_output_override,
+    )
+
+    def from_profile(prof: dict[str, Any]) -> LMRouter:
+        resolved = build_from_profile(prof)
+        resolved.max_output_tokens = resolve_model_output_override(prof)
+        return resolved
 
     if profile:
         prof = load_profile(profile)
         label = f"{prof['family']}.{prof['profile']} (--profile)"
-        return build_from_profile(prof), label
+        return from_profile(prof), label
 
     if find_config_path() is not None:
         prof = load_profile(None)  # the file's `default`
         label = f"{prof['family']}.{prof['profile']} (llm.json default)"
-        return build_from_profile(prof), label
+        return from_profile(prof), label
 
     return build_vendor(None), "env-key auto-detect"
 
@@ -1292,6 +1329,9 @@ def _call_with_effort(
     vendor: LMRouter,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
+    *,
+    floor: int,
+    ceiling: int,
 ) -> EffortCallResult:
     """Effort routing: start at a low output-token cap, escalate only on need.
 
@@ -1299,11 +1339,10 @@ def _call_with_effort(
     they needed. If a call truncates (`stop_reason == "max_tokens"`), re-issue
     the same request once at the ceiling so a real answer is never cut off.
     """
-    floor = min(effort_floor(), EFFORT_CEILING)
     resp = vendor.call(messages, tools, max_tokens=floor)
     attempts = [resp]
-    if resp.stop_reason == "max_tokens" and floor < EFFORT_CEILING:
-        resp = vendor.call(messages, tools, max_tokens=EFFORT_CEILING)
+    if resp.stop_reason == "max_tokens" and floor < ceiling:
+        resp = vendor.call(messages, tools, max_tokens=ceiling)
         attempts.append(resp)
     return EffortCallResult(response=resp, attempts=attempts)
 
@@ -1843,6 +1882,11 @@ def _file_tool_argument_error(name: str, args: Any) -> str | None:
     _require_string(args, "path", errors)
     if name in {"musubi_write_file", "musubi_append_file"}:
         _require_string(args, "content", errors)
+        if isinstance(args.get("content"), str) and not args["content"].strip():
+            errors.append(
+                "content is empty; regenerate the full file content "
+                "(an empty write is almost always a truncation artifact)"
+            )
         _reject_elided_marker(args, "content", errors)
         _optional_bool(args, "create_parents", errors)
     elif name == "musubi_edit_file":

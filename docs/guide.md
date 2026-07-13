@@ -232,7 +232,7 @@ Four zero-LLM token controls apply at the LM-call boundary:
 |---|---|---|
 | **Verbosity steering** | System prompt steers the model to be concise. | always on |
 | **CacheAligner** | Marks the static prefix (system + tools) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native caching. | `MUSUBI_PROMPT_CACHE=0` |
-| **Effort routing** | Starts each cycle at a low output-token cap, escalates only on truncation. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
+| **Effort routing** | Read-only workers start at a low cap and retry at the ceiling on truncation; workers with file-mutation tools start at the ceiling so whole-artifact writes are not predictably cut off. After one escalation, later cycles stay at the ceiling. | Read-only floor: `MUSUBI_EFFORT_TOKENS=<n>` (default 2048). Worker ceiling: `.agent.md` `maxOutputTokens` (default 16384). Profile `max_output_tokens` optionally clamps that ceiling. |
 | **IntelligentContext** | Over budget, protects system/task/recent turns, compresses old tool results first, then trims only the largest remaining blocks. Pairing + retrieve markers stay intact. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 | **TokenBudgetEnforcer** | Preflights projected total tokens and charges measured/estimated token usage after each LM call. | `--max-tokens <n>` or `MUSUBI_AGENT_MAX_TOKENS=<n>` |
 

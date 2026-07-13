@@ -73,6 +73,7 @@ _ACCEPTANCE_NOTE = (
 _STABLE_SYSTEM_PROMPT = "\n\n".join([_BASE_SYSTEM, _VERBOSITY_NOTE, _ACCEPTANCE_NOTE])
 
 DEFAULT_EFFORT_FLOOR = 2048
+DEFAULT_EFFORT_CEILING = 16_384
 DEFAULT_CONTEXT_BUDGET = 40_000
 FILE_TOOL_ARG_ELISION_MIN_CHARS = 800
 _FILE_TOOL_ARG_FIELDS = {
@@ -84,7 +85,9 @@ _ELIDED_TOOL_ARG_MARKER_RE = re.compile(
     r"\[musubi:elided-tool-arg "
     r"tool=[^\s\]]+ field=[^\s\]]+ "
     r"chars=\d+ bytes=\d+ sha256=[0-9a-f]{16}; "
-    r"argument was already sent to the MCP tool\]"
+    r"argument was already sent to the MCP tool"
+    r"(?:; DO NOT copy this marker as content; "
+    r"regenerate the original text from scratch)?\]"
 )
 _CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
@@ -114,6 +117,30 @@ def effort_floor() -> int:
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
     return DEFAULT_EFFORT_FLOOR
+
+
+def resolve_effort_bounds(
+    *,
+    can_mutate: bool,
+    worker_max_output: int | None,
+    model_output_override: int | None,
+) -> tuple[int, int]:
+    """Resolve the initial and maximum output-token caps for one worker."""
+    ceiling = (
+        worker_max_output
+        if isinstance(worker_max_output, int)
+        and not isinstance(worker_max_output, bool)
+        and worker_max_output > 0
+        else DEFAULT_EFFORT_CEILING
+    )
+    if (
+        isinstance(model_output_override, int)
+        and not isinstance(model_output_override, bool)
+        and model_output_override > 0
+    ):
+        ceiling = min(ceiling, model_output_override)
+    floor = ceiling if can_mutate else min(effort_floor(), ceiling)
+    return floor, ceiling
 
 
 def context_budget() -> int:
@@ -209,7 +236,8 @@ def _elided_tool_arg_stub(tool_name: str, field: str, value: str) -> str:
     return (
         f"[musubi:elided-tool-arg tool={tool_name} field={field} "
         f"chars={len(value)} bytes={len(encoded)} sha256={digest}; "
-        "argument was already sent to the MCP tool]"
+        "argument was already sent to the MCP tool; DO NOT copy this marker "
+        "as content; regenerate the original text from scratch]"
     )
 
 

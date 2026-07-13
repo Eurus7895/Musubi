@@ -144,7 +144,7 @@ model, to keep the substrate LLM-free):
 |---|---|---|
 | **Verbosity steering** | The system prompt tells the model to be concise and not restate context — cuts output tokens. | always on |
 | **CacheAligner** | Marks the static prefix (system prompt + tool catalog) with Anthropic `cache_control`; OpenAI-compatible vendors use provider-native automatic prompt caching when available. Cache reads/writes show in the cycle log through shared keys. | `MUSUBI_PROMPT_CACHE=0` to disable Anthropic `cache_control` |
-| **Effort routing** | Starts each cycle at a low output-token cap and escalates to the ceiling only if a call truncates — bounds runaway turns without cutting real answers. | `MUSUBI_EFFORT_TOKENS=<n>` (default 2048) |
+| **Effort routing** | Read-only workers start at a low cap and retry at the ceiling on truncation; workers with file-mutation tools start at the ceiling so whole-artifact writes are not predictably cut off. After one escalation, later cycles stay at the ceiling. | Read-only floor: `MUSUBI_EFFORT_TOKENS=<n>` (default 2048). Worker ceiling: `.agent.md` `maxOutputTokens` (default 16384). Profile `max_output_tokens` optionally clamps that ceiling. |
 | **IntelligentContext** | When the conversation exceeds a budget, deterministically protects system/task/recent turns, compresses old tool results first, and only then trims the largest remaining blocks. Pairing and `musubi_retrieve` markers are preserved. | `MUSUBI_CONTEXT_BUDGET=<chars>` (default 40000; `0` disables) |
 
 ## Standalone host controls

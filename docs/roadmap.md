@@ -37,15 +37,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Installer runtime reduction.** Prefer a bundled or locally repairable
-   Python core payload so first run does not depend on global `pip install` or
-   manual `PATH` edits. Keep network install as a fallback for development
-   builds.
-
-2. **Signing and release hardening.** Sign the Windows installer and document
-   the expected Defender / SmartScreen path for non-developer installs.
-
-3. **Bounded standalone pipeline runtime.** Use one stage turn cap across
+1. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including
    tool definitions, and reserve token capacity so planner/designer cannot
    consume coder/reviewer shares. Plan:
@@ -59,6 +51,12 @@ for the same dimension.
 
 ### Backlog
 
+- **Installer runtime reduction.** Prefer a bundled or locally repairable
+  Python core payload so first run does not depend on global `pip install` or
+  manual `PATH` edits. Keep network install as a fallback for development
+  builds.
+- **Signing and release hardening.** Sign the Windows installer and document
+  the expected Defender / SmartScreen path for non-developer installs.
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
   and relevant tools.
@@ -72,24 +70,6 @@ for the same dimension.
   completed dependencies rather than work owned by this track. Implementation
   plan:
   [`2026-07-09-gui-cli-orchestrator-tokens.md`](./superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md).
-- **Per-worker effort ceiling & output budget.** The effort-routing floor
-  (2048) opens every cycle low on a distributional bet that a coder emitting a
-  whole file loses with probability 1.0, guaranteeing a truncated first mutate
-  call, a double-billed retry, and — because the 4096 ceiling sits below a
-  one-shot dashboard's natural size — an empty write. Key the floor to the
-  worker's actual tool surface (mutate workers open at the ceiling), let each
-  worker optionally declare `maxOutputTokens:` in `.agent.md` frontmatter, and
-  size the ceiling from a single shared default (`16384`) rather than a
-  mutate/read-only split or a per-model physical-limit table — `max_tokens` is a
-  cap not a price, so read-only workers (tiny outputs) cost nothing under a high
-  ceiling, and the true cap is undefined for ollama/on-prem and uniform-and-high
-  where discoverable, so the vendor enforces it at call time. 16384 stays an
-  order of magnitude below the physical maxes so it is still a real per-call
-  runaway brake, backstopped by the 200K run budget. An optional per-model
-  `max_output_tokens` in `.musubi/llm.json` remains for deliberate operator
-  cost-capping only. Effort-economics follow-up to the 2026-07-09
-  orchestrator-tokens work. Implementation plan:
-  [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md).
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this
@@ -117,6 +97,15 @@ for the same dimension.
 
 ## Completed Tracks
 
+- Per-worker effort ceiling and output budget — mutate workers open at the
+  shared 16,384-token per-call brake while read-only workers retain the cheap
+  2,048-token floor and sticky escalation. Worker frontmatter may declare
+  `maxOutputTokens`; an optional profile `max_output_tokens` clamps it. Empty
+  create/append content is rejected before dispatch, replay elision markers
+  instruct regeneration, and worker prompts identify the host shell. The
+  cumulative root worker ceiling is unchanged; continuation spawning remains a
+  separate design-gated backlog item. Plan:
+  [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md)
 - Project-scoped GUI sessions — exact runtime ownership, retained logs,
   cancellation, pipeline ancestry, shared project writer lease, durable session
   selection, and read-only browsing while another session runs. Plans:

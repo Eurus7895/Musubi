@@ -82,6 +82,7 @@ async def run_pipeline(
     """
     from agent.run import _call_tool_text, run_unit
     from agent.subagent import (
+        _frontmatter_max_output_tokens,
         build_subagent_system_prompt,
         select_child_tools,
     )
@@ -161,6 +162,7 @@ async def run_pipeline(
             if strict:
                 raise RuntimeError(msg)
             return msg
+        worker_max_output = _frontmatter_max_output_tokens(agent_md)
         system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
         child_tools = select_child_tools(tools, allowed)
 
@@ -206,6 +208,7 @@ async def run_pipeline(
                 audit_db_path=audit_db_path,
                 orchestration=stage_orch,
                 spawn_catalog=stage_spawn_catalog,
+                worker_max_output=worker_max_output,
             )
         except Exception as exc:
             is_budget = type(exc).__name__ in {

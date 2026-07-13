@@ -375,6 +375,72 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
         assert "## Skill (pushed by harness)" in prompt
 
 
+def test_pipeline_stage_threads_frontmatter_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pipeline stages honor the same per-worker output cap as direct spawns."""
+    from agent import pipeline_runner
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned",
+                "pipeline_session_id": "pipe-budget",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned",
+                "handle_id": "h-code",
+                "role": "coder",
+                "allowed_tools": [],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok",
+                "brief": "write it",
+                "role": "coder",
+                "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name in ("musubi_complete_subagent", "musubi_finalize_pipeline_run"):
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        seen.update(kwargs)
+        return "stage done", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_read_stage_agent_md",
+        lambda role, pipeline_name, agents_dir: (
+            "---\nname: coder\nmaxOutputTokens: 32768\n---\n# Coder"
+        ),
+    )
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {
+            "parent_session_id": "outer",
+            "parent_agent_name": "agent",
+            "pipeline_name": "feature-dev",
+            "brief": "ship it",
+        },
+        PipelineRouter(),
+        [],
+        io.StringIO(),
+        strict=True,
+    ))
+
+    assert seen["worker_max_output"] == 32768
+
+
 def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

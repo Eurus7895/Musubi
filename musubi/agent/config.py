@@ -159,6 +159,14 @@ def resolve_api_key(profile: dict[str, Any]) -> str | None:
     return profile.get("api_key")
 
 
+def resolve_model_output_override(profile: dict[str, Any]) -> int | None:
+    """Return an optional positive operator-set output-token cap."""
+    value = profile.get("max_output_tokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def resolve_proxy_user(profile: dict[str, Any]) -> str | None:
     """Resolve the `user:password` for an authenticated curl proxy.
 
