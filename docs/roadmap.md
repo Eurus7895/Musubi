@@ -106,6 +106,17 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 - **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
   and external drivers without removing substrate tools. Implementation plan:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
+- **Per-worker effort ceiling & output budget.** The effort-routing floor
+  (2048) opens every cycle low on a distributional bet that a coder emitting a
+  whole file loses with probability 1.0, guaranteeing a truncated first mutate
+  call, a double-billed retry, and — because the 4096 ceiling sits below a
+  one-shot dashboard's natural size — an empty write. Key the floor to the
+  worker's actual tool surface (mutate workers open at their ceiling), let each
+  worker declare `maxOutputTokens:` in `.agent.md` frontmatter, and clamp to a
+  per-model `max_output_tokens` in `.musubi/llm.json`; keep `EFFORT_CEILING` as
+  the per-call runaway brake. Effort-economics follow-up to the 2026-07-09
+  orchestrator-tokens work. Implementation plan:
+  [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md).
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.
