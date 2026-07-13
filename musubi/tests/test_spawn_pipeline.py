@@ -180,6 +180,14 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
                 "role": "planner" if args["stage"] == "plan" else "reviewer",
                 "allowed_tools": [],
             })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok",
+                "brief": "b",
+                "role": "planner",
+                "role_skill": None,
+                "allowed_tools": [],
+            })
         if name == "musubi_complete_subagent":
             return json.dumps({"status": "ok"})
         if name == "musubi_finalize_pipeline_run":
@@ -259,6 +267,114 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
     }]
 
 
+def test_stage_without_role_prompt_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stage whose role has no prompt in workers/ or
+    pipeline-stages/<pipeline>/ must fail the pipeline, not run silently
+    on an empty prompt. The stage is audited as failed and the run
+    finalised as aborted."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-ghost",
+                "pipeline_name": "ghost-pipe",
+                "plan": [{"stage": "scan", "role": "phantom"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-scan", "role": "phantom",
+                "allowed_tools": [],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "phantom",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+
+    with pytest.raises(RuntimeError, match="no role prompt"):
+        asyncio.run(pipeline_runner.run_pipeline(
+            None,
+            {"parent_session_id": "outer", "parent_agent_name": "agent",
+             "pipeline_name": "ghost-pipe", "brief": "scan it"},
+            PipelineRouter(), [], io.StringIO(), strict=True,
+        ))
+
+    assert completions and completions[0]["status"] == "failed"
+    assert finalizations == [{
+        "session_id": "pipe-ghost", "final_status": "aborted", "escalated": False,
+    }]
+
+
+def test_stage_gets_role_skill_pushed_into_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HI #2: the spawn context's role_skill is embedded into the stage
+    worker's system prompt — the same push path a direct worker takes."""
+    from agent import pipeline_runner
+
+    captured_prompts: list[str] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-skill",
+                "pipeline_name": "feature-dev",
+                "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": "planner" if args["stage"] == "plan" else "reviewer",
+                "allowed_tools": [],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "planner",
+                "role_skill": "---\nname: x\n---\nSKILL-CONTENT-XYZ",
+                "allowed_tools": [],
+            })
+        if name in ("musubi_complete_subagent", "musubi_finalize_pipeline_run"):
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        captured_prompts.append(kwargs["system_prompt"])
+        return "stage done", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "ship it"},
+        PipelineRouter(), [], io.StringIO(), strict=True,
+    ))
+
+    assert len(captured_prompts) == 2
+    for prompt in captured_prompts:
+        assert "SKILL-CONTENT-XYZ" in prompt, "role_skill not pushed into stage prompt"
+        assert "## Skill (pushed by harness)" in prompt
+
+
 def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -291,6 +407,11 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
                 "status": "spawned", "handle_id": "h-code", "role": "coder",
                 "allowed_tools": [],
             })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
         if name == "musubi_complete_subagent":
             completions.append(args)
             return json.dumps({"status": "ok"})
@@ -311,3 +432,247 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
     assert finalizations == [{
         "session_id": "pipe-truncated", "final_status": "aborted", "escalated": False,
     }]
+
+
+# ── Feature A: stage nesting — spawn_roles gates the spawn tool ─────────────
+
+
+def _nesting_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    spawn_roles_by_stage: dict[str, list[str] | None],
+) -> list[dict[str, Any]]:
+    """Fake the MCP calls for a 2-stage feature-dev run and capture every
+    run_unit invocation (args + kwargs). `spawn_roles_by_stage` maps stage →
+    spawn_roles value (None = field absent, as an older server would return)."""
+    captured: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-nest",
+                "pipeline_name": "feature-dev",
+                "plan": [
+                    {"stage": "code", "role": "coder"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            stage = args["stage"]
+            resp: dict[str, Any] = {
+                "status": "spawned", "handle_id": f"h-{stage}",
+                "role": "coder" if stage == "code" else "reviewer",
+                "allowed_tools": [],
+            }
+            roles = spawn_roles_by_stage.get(stage)
+            if roles is not None:
+                resp["spawn_roles"] = roles
+            return json.dumps(resp)
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name in ("musubi_complete_subagent", "musubi_finalize_pipeline_run"):
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        captured.append({"tools": args[2], **kwargs})
+        return "stage done", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+    return captured
+
+
+_CATALOG = [
+    {"name": "musubi_read_file"},
+    {"name": "musubi_spawn_subagent"},
+    {"name": "musubi_write_file"},
+]
+
+
+def _run(orchestration: Any, captured_via: list[dict[str, Any]]) -> None:
+    from agent import pipeline_runner
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "ship it"},
+        PipelineRouter(), _CATALOG, io.StringIO(), strict=True,
+        orchestration=orchestration,
+    ))
+
+
+def test_stage_with_spawn_roles_gets_spawn_tool_and_stage_orchestration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stage whose server response declares spawn_roles is handed the spawn
+    tool and an orchestration parented on the PIPELINE session (so the server
+    narrows its spawns per pipeline — HI #5), one level deeper than the
+    caller."""
+    from agent.run import Orchestration
+
+    captured = _nesting_fakes(monkeypatch, {"code": ["explorer"], "check": []})
+    _run(Orchestration(parent_session_id="root-sid"), captured)
+
+    coder, reviewer = captured
+    coder_orch = coder["orchestration"]
+    assert coder_orch is not None
+    assert coder_orch.parent_session_id == "pipe-nest"   # NOT root-sid
+    assert coder_orch.parent_agent_name == "coder"
+    assert coder_orch.depth == 1                          # caller depth 0 + 1
+    assert any(t["name"] == "musubi_spawn_subagent" for t in coder["tools"])
+    assert coder["spawn_catalog"] == _CATALOG
+
+    # check stage declared [] → leaf.
+    assert reviewer["orchestration"] is None
+    assert not any(
+        t["name"] == "musubi_spawn_subagent" for t in reviewer["tools"]
+    )
+
+
+def test_stage_without_spawn_roles_field_stays_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older server that returns no spawn_roles field degrades to today's
+    strict leaves — fail-closed compatibility."""
+    from agent.run import Orchestration
+
+    captured = _nesting_fakes(monkeypatch, {"code": None, "check": None})
+    _run(Orchestration(parent_session_id="root-sid"), captured)
+
+    for stage in captured:
+        assert stage["orchestration"] is None
+        assert stage["spawn_catalog"] is None
+        assert not any(
+            t["name"] == "musubi_spawn_subagent" for t in stage["tools"]
+        )
+
+
+def test_stage_leaf_when_caller_out_of_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller already at max depth cannot grant stages a deeper level, even
+    when the server declares spawn_roles."""
+    from agent.run import Orchestration
+
+    captured = _nesting_fakes(
+        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+    )
+    _run(
+        Orchestration(parent_session_id="root-sid", depth=2, max_depth=2),
+        captured,
+    )
+
+    for stage in captured:
+        assert stage["orchestration"] is None
+
+
+def test_run_pipeline_without_orchestration_keeps_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default orchestration=None keeps every stage a strict leaf even when
+    the server advertises spawn_roles — existing callers are unaffected."""
+    captured = _nesting_fakes(
+        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+    )
+    _run(None, captured)
+
+    for stage in captured:
+        assert stage["orchestration"] is None
+        assert not any(
+            t["name"] == "musubi_spawn_subagent" for t in stage["tools"]
+        )
+
+
+# ── Feature A: end-to-end through the real server ───────────────────────────
+
+
+class NestingRouter(LMRouter):
+    """Canned responses in execution order; records each call's tool names."""
+
+    name = "nesting"
+    model = "nesting-1"
+
+    def __init__(self, responses: list[LMResponse]) -> None:
+        self._responses = list(responses)
+        self.tool_surfaces: list[set[str]] = []
+
+    def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        self.tool_surfaces.append({t["name"] for t in tools})
+        if not self._responses:
+            raise AssertionError("NestingRouter ran out of canned responses")
+        return self._responses.pop(0)
+
+
+def _spawn_worker(role: str, brief: str) -> LMResponse:
+    return LMResponse(stop_reason="tool_use", content=[{
+        "type": "tool_use", "id": "sp-1", "name": "musubi_spawn_subagent",
+        "input": {"role": role, "brief": brief},
+    }])
+
+
+def test_pipeline_stage_spawns_declared_worker_end_to_end() -> None:
+    """feature-dev's evaluator declares spawns: [reviewer-aux]. Through the
+    real server: the reviewer stage carries the spawn tool, its reviewer-aux
+    child runs as a leaf (no spawn tool), and the aux verdict is fed back
+    before the stage's final answer."""
+    router = NestingRouter([
+        _text("plan: step1"),                       # planner stage
+        _text("design: moduleX"),                   # designer stage
+        _text("code: wrote moduleX"),               # coder stage
+        _spawn_worker("reviewer-aux", "check moduleX"),  # reviewer stage c0
+        _text("aux: file verdict OK"),              # reviewer-aux child
+        _text("review: PASS"),                      # reviewer stage c1
+    ])
+    answer = asyncio.run(run_agent(
+        "ship it", router, _musubi_dir(), log=io.StringIO(),
+        pipeline="feature-dev",
+    ))
+
+    assert "review: PASS" in answer
+    assert len(router.tool_surfaces) == 6
+    # planner/designer declare no spawns → leaves; coder declares
+    # [explorer, investigator] and the evaluator [reviewer-aux] → both nest.
+    for i in (0, 1):
+        assert "musubi_spawn_subagent" not in router.tool_surfaces[i], i
+    assert "musubi_spawn_subagent" in router.tool_surfaces[2]  # coder
+    assert "musubi_spawn_subagent" in router.tool_surfaces[3]  # reviewer
+    # The reviewer-aux child (call 4) sits at max depth → leaf.
+    assert "musubi_spawn_subagent" not in router.tool_surfaces[4]
+
+
+def test_spawn_pipeline_stage_returns_effective_spawn_roles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Server-level: spawn_roles = pipeline.yaml spawns ∩ firewall,
+    fail-closed [] for stages that declare nothing."""
+    import server
+    from session import state
+    from storage import db, subagent_audit
+
+    p = tmp_path / "harness.db"
+    db.init_db(p)
+    monkeypatch.setattr(db, "DEFAULT_DB_PATH", p)
+    monkeypatch.setattr(subagent_audit, "_DEFAULT_AUDIT_DB", p)
+
+    outer = state.create_session("outer", p)
+    spawned = json.loads(server.musubi_spawn_pipeline(
+        parent_session_id=outer, parent_agent_name="agent",
+        pipeline_name="feature-dev", brief="ship it",
+    ))
+    assert spawned["status"] == "spawned"
+    psid = spawned["pipeline_session_id"]
+
+    code = json.loads(server.musubi_spawn_pipeline_stage(
+        pipeline_session_id=psid, pipeline_name="feature-dev",
+        stage="code", brief="b",
+    ))
+    assert code["spawn_roles"] == ["explorer", "investigator"]
+
+    plan = json.loads(server.musubi_spawn_pipeline_stage(
+        pipeline_session_id=psid, pipeline_name="feature-dev",
+        stage="plan", brief="b",
+    ))
+    assert plan["spawn_roles"] == []

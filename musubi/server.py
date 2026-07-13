@@ -489,7 +489,7 @@ def musubi_pause_session(
 
     Called by the pipeline runner when a review gate fires (after a stage
     completes) or when a sub-agent budget is exhausted mid-stage. The
-    pause survives a VS Code restart — `@harness continue` resumes from
+    pause survives a driver restart — a continue call resumes from
     `paused_at_stage`.
 
     `reason` must be one of: 'stage_review' | 'budget_exhausted'.
@@ -787,10 +787,9 @@ def musubi_record_stage_metric(
 ) -> str:
     """Append one row to `stage_metrics` after a stage's LM round-trip.
 
-    Called by the TS runner immediately after `vscode.lm.sendRequest`
-    completes — the wall-clock ms + token estimates are already on hand
-    there. Token counts are estimates (chars/4 heuristic from
-    `runners/agentCore.estimateTokens`), not billed amounts.
+    Called by the driver immediately after a stage's LM call completes —
+    the wall-clock ms + token estimates are already on hand there. Token
+    counts are estimates (chars/4 heuristic), not billed amounts.
 
     Stage 1 (MVP A.4): `credits` is the `estimateCallCredits` result the
     runner already computes for the per-call chat display, and
@@ -1661,7 +1660,11 @@ def musubi_spawn_pipeline_stage(
     The stage must be declared in `pipeline_name`; its role and tools come from
     the pipeline (PIPELINE_POLICIES, falling back to the role's sub-agent tools
     for user-defined pipelines). Returns { status, handle_id, role,
-    allowed_tools, brief } — the driver then runs and completes the worker.
+    allowed_tools, spawn_roles, brief } — the driver then runs and completes
+    the worker. `spawn_roles` is the stage's effective spawn allowlist
+    (pipeline.yaml `spawns:` ∩ the role's firewall, fail-closed to []): the
+    driver hands the stage the spawn tool only when it is non-empty. The
+    server re-validates every actual spawn regardless.
     """
     if stage not in composer.active_stages(pipeline_name):
         return json.dumps({
@@ -1714,6 +1717,9 @@ def musubi_spawn_pipeline_stage(
         "handle_id": handle_id,
         "role": role,
         "allowed_tools": tools,
+        # Effective stage spawn allowlist: pipeline.yaml `spawns:` ∩ the
+        # role's firewall (fail-closed [] when the yaml declares none).
+        "spawn_roles": _policy.list_subagent_roles(role, pipeline_name),
         "brief": brief,
     })
 

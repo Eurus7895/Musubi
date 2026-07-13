@@ -10,7 +10,7 @@ Full-onboarding flow, invoked as `musubi setup`:
     1. doctor      — Python / core deps / curl checklist
     2. LLM endpoint — interactively build a `.musubi/llm.json` profile
     3. connection  — optional live ping of the chosen endpoint
-    4. mcp.json    — generate/merge `.vscode/mcp.json` for the extension
+    4. mcp.json    — generate/merge `.vscode/mcp.json` for VS Code MCP clients
     5. summary     — next steps
 
 The interactive shell points Windows users to the prebuilt Musubi installer
@@ -523,7 +523,7 @@ def run_interactive(
     _write(cfg_path, render_llm_json(raw))
     out(f"  wrote {cfg_path}")
 
-    if _ask_yes_no(prompt, "Generate .vscode/mcp.json for the VS Code extension?", default=True):
+    if _ask_yes_no(prompt, "Generate .vscode/mcp.json for VS Code MCP clients?", default=True):
         mcp_path = root / ".vscode" / "mcp.json"
         existing = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else None
         merged = merge_mcp_json(existing, detect_server_arg(root))

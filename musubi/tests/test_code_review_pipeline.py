@@ -3,7 +3,7 @@ shape, composer derivation, firewall entries, and the evaluator-name fix
 in policy_engine that PR 2b needed for synthesizer spawns to resolve.
 
 The TS runner that actually executes the pipeline ships in PR 2c; tests
-for that live in copilot-harness-extension/src/.
+for that lived in the removed VS Code extension; the standalone runner covers it now.
 """
 
 from __future__ import annotations
@@ -213,11 +213,6 @@ def test_scoper_reads_nothing() -> None:
     assert _STAGE_PERMISSIONS["scoper"] == set()
 
 
-# ── slash command ────────────────────────────────────────────────────────────
-
-def test_slash_command_file_exists_and_routes_to_pipeline() -> None:
-    cmd_path = _REPO_ROOT / ".github" / "commands" / "code-review.md"
-    assert cmd_path.is_file()
-    body = cmd_path.read_text(encoding="utf-8")
-    assert "action: pipeline" in body
-    assert "pipeline: code-review" in body
+# (The /code-review slash-command definition left with the VS Code
+# extension; the standalone entry point is `agent "<diff>" --pipeline
+# code-review`, covered by test_code_review_standalone.py.)

@@ -26,9 +26,10 @@ deleted when the limit dissolves.
 Musubi is a governed orchestration substrate: deterministic, zero-LLM
 validation at every agent-agent and agent-tool boundary.
 
-The standalone `agent` host is the primary driver surface. The VS Code
-extension remains a supported Copilot surface. Both drive the same substrate:
-policy, audit, skill catalog, compression, memory, and boundary controls.
+The standalone `agent` host is the driver surface; the desktop Console
+observes and operates the same substrate through `audit.db`: policy, audit,
+skill catalog, compression, memory, and boundary controls. The VS Code
+extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ---
 
@@ -36,24 +37,15 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ### Active
 
-1. **Fix the VS Code extension rename.** Update the extension's hardcoded
-   `harness_*` tool calls to `musubi_*` so the supported Copilot surface works
-   against the renamed server.
-
-2. **Root prompt catalog cleanup.** Finish the post-worker-modes migration by
-   keeping the canonical root prompt under the purpose-specific catalog path,
-   removing the temporary flat legacy root prompt from this repo, and keeping
-   artifact routing skill-first instead of task-template-specific.
-
-3. **Installer runtime reduction.** Prefer a bundled or locally repairable
+1. **Installer runtime reduction.** Prefer a bundled or locally repairable
    Python core payload so first run does not depend on global `pip install` or
    manual `PATH` edits. Keep network install as a fallback for development
    builds.
 
-4. **Signing and release hardening.** Sign the Windows installer and document
+2. **Signing and release hardening.** Sign the Windows installer and document
    the expected Defender / SmartScreen path for non-developer installs.
 
-5. **Project-scoped sessions.** Bind process ownership, retained logs, budget,
+3. **Project-scoped sessions.** Bind process ownership, retained logs, budget,
    cancellation, and pipeline ancestry to exact sessions while all sessions in
    one project share the canonical workspace, dependencies, and databases.
    Keep one writer process and never create per-session directories,
@@ -69,7 +61,7 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
    and renders the latest turn as a root-first agent flow. Follow-up plan:
    [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md).
 
-6. **Bounded standalone pipeline runtime.** Use one stage turn cap across
+4. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including
    tool definitions, and reserve token capacity so planner/designer cannot
    consume coder/reviewer shares. Plan:
@@ -113,16 +105,13 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.
 - **Relocate substrate out of `.github/`.** Move skills, memory, agents, and
-  pipeline definitions to a platform-neutral root when the standalone host and
-  extension split makes the migration cheap enough.
+  pipeline definitions to a platform-neutral root now that the extension is
+  gone and nothing pins the `.github/` location.
 
 ---
 
 ## Postponed
 
-- **Pipeline parity eval suite.** A dual-mode eval suite comparing the VS Code
-  pipeline and standalone host is deferred until we are ready to revisit
-  pipeline dissolution.
 - **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
   supported for now. If revisited, re-home its boundary primitives onto
   sub-agent and tool-call boundaries before removing the shape.
@@ -131,6 +120,16 @@ policy, audit, skill catalog, compression, memory, and boundary controls.
 
 ## Completed Tracks
 
+- VS Code extension removal — one driver host. The embedded Copilot surface
+  (`copilot-harness-extension/`, its slash commands, CI job, and ceremony
+  prompts) was deleted; the CLI + Console are the surfaces. With it landed
+  stage-nesting parity (pipeline stages spawn their declared helpers via
+  `spawn_roles` = pipeline.yaml `spawns:` ∩ firewall) and full worker-prompt
+  unification (code-review runs standalone: `agent "<diff>" --pipeline
+  code-review`). Plan:
+  [`2026-07-12-stage-nesting-worker-unification-extension-removal.md`](./superpowers/plans/2026-07-12-stage-nesting-worker-unification-extension-removal.md)
+- Root prompt catalog cleanup — the purpose-dir catalog (root/, workers/,
+  meta/) is canonical; no flat agent files remain
 - Standalone worker model
 - Model-agnostic `LMRouter` vendors
 - Boundary policy and audit controls

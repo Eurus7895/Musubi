@@ -66,6 +66,12 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     # Phase C.2 — summarizer drives the 90% reactive-compaction branch.
     # The procedure lives in `.github/skills/summarizer/SKILL.md`.
     "summarizer":   "summarizer",
+    # code-review stage roles (standalone pipeline workers). Each pushes
+    # the skill its stage applies: scope triage, cross-cutting per-file
+    # review, and the severity rubric the evaluator ranks by (HI #2).
+    "scoper":       "pr-scope-detection",
+    "finder":       "per-file-review",
+    "synthesizer":  "code-review",
 }
 
 

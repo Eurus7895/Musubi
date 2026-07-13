@@ -10,11 +10,10 @@ tools — exposed as an MCP server.
 
 **The driver reasons. The substrate controls the environment.** The
 substrate makes zero LLM calls (Hard Invariant #1); only the driver — the
-agent loop — reaches a model, through one inject point. The target host is
-the standalone `agent` CLI over the vendor-agnostic `LMRouter`
-(model-agnostic, no `vscode.lm` quota). The VS Code extension is a second
-supported surface — it brings the substrate (governance **and** input
-compression) to GitHub Copilot Chat.
+agent loop — reaches a model, through one inject point: the vendor-agnostic
+`LMRouter` behind the standalone `agent` CLI (model-agnostic — anthropic /
+openai / deepseek / azure-on-prem / ollama). The desktop Console (GUI)
+observes and operates the same substrate through `audit.db`.
 
 > Same model + same task + changed environment = better outcomes.
 > (Princeton SWE-agent paper: 64% improvement from harness design alone.)
@@ -34,12 +33,12 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic, no Copilot quota. Configure with `musubi setup`. |
-| `@harness /feature-dev <task>` (VS Code) | inside Copilot Chat | the 4-stage governed pipeline + substrate features, driven by Copilot's model |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic. Configure with `musubi setup`. |
+| `agent "<brief>" --pipeline <name>` | deterministic staged runs | the governed pipeline recipes (`feature-dev`, `code-review`, `dev-lite`, or your own presets) with the evaluator firewall and stage audit |
+| Console (GUI) | observe & operate | the orchestrator cohort, policy stream, and append-only ledger, read straight from `audit.db` — zero LLM calls |
 
-Both surfaces drive the **same** substrate (audit, firewall, policy,
-compression). The extension's tool calls need updating from `harness_*`
-to `musubi_*` after the rename — see `docs/roadmap.md`.
+Every surface drives the **same** substrate (audit, firewall, policy,
+compression).
 
 ## Input compression (substrate, reversible)
 
@@ -209,8 +208,8 @@ musubi setup
 
 `musubi setup` is the fastest path: it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud, DeepSeek, local Ollama, or on-prem
-Azure), optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points Windows users to the prebuilt Musubi installer bootstrap.
+Azure), optionally tests the connection, generates `.vscode/mcp.json` for VS
+Code MCP clients, and points Windows users to the prebuilt Musubi installer bootstrap.
 On Windows, if you opt into local GUI development, it can also install npm
 dependencies and verify that `cargo` and the MSVC linker are on `PATH`. macOS
 and Linux setup skip GUI installation.
@@ -350,22 +349,13 @@ DB. Full walkthrough: [`docs/guide.md`](./docs/guide.md), Console section.
 Static first-run artifact:
 [`artifacts/gui/setup_first_run_report.html`](./artifacts/gui/setup_first_run_report.html).
 
-## VS Code extension (Copilot surface)
-
-`copilot-harness-extension/` is the `@harness` Copilot-Chat surface — it
-spawns the substrate and lets Copilot's model drive the `musubi_*` tools.
-It is a **supported surface** kept alongside the standalone CLI. Build
-scripts live in that directory. **Pending fix:** its hardcoded tool calls
-must be updated from `harness_*` to `musubi_*` (broken by the rename);
-tracked in `docs/roadmap.md`.
-
 ## Documentation
 
 | File | For |
 |---|---|
 | [`docs/roadmap.md`](./docs/roadmap.md) | **Read first** — direction, discipline, numbered steps, dissolution candidates |
 | [`CLAUDE.md`](./CLAUDE.md) | Rules · Hard Invariants · conventions · commands |
-| [`docs/guide.md`](./docs/guide.md) | **How to use Musubi** — install, CLI, profiles, compression, sub-agents, the console (GUI), and the VS Code extension, end to end |
+| [`docs/guide.md`](./docs/guide.md) | **How to use Musubi** — install, CLI, profiles, compression, workers, pipelines, and the console (GUI), end to end |
 | [`docs/compression.md`](./docs/compression.md) | Compression capability — native compressor strategies, artifact links, and latest benchmark numbers |
 | [`AGENTS.md`](./AGENTS.md) | Session-start orientation map |
 | [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) | MCP tool reference + DB schema (source of truth) |

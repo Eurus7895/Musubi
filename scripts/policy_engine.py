@@ -52,7 +52,7 @@ PIPELINE_POLICIES: dict[str, dict[str, list[str]]] = {
 # ── Sub-agent policies (Phase A) ───────────────────────────────────────────
 #
 # SUBAGENT_POLICIES — per-role tool allow-list. The role files live under
-# `.github/agents/{explorer,investigator,reviewer-aux}.agent.md` (Phase A.3).
+# `.github/agents/workers/<role>.agent.md`.
 # Defining the policy here ahead of the role files is intentional: the
 # spawn path must fail closed even if the .agent.md file is missing.
 SUBAGENT_POLICIES: dict[str, list[str]] = {
@@ -73,6 +73,15 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
     # No tools: the brief already carries the older conversation window
     # serialized as text, and the output is plain markdown.
     "summarizer":   [],
+    # code-review stage roles, runnable as standalone pipeline stage
+    # workers (`agent --pipeline code-review`). Tool sets must equal
+    # PIPELINE_POLICIES["code-review"] — the boot-time sync check in
+    # validate_policy_table enforces it. They are NOT in
+    # MAIN_SUBAGENT_ALLOWLIST["agent"]: pipeline-internal roles, never
+    # ad-hoc spawnable by the root (locked decision #4).
+    "scoper":       ["Read", "View", "Grep", "Glob"],
+    "finder":       ["Read", "View", "Grep", "Glob"],
+    "synthesizer":  ["Read", "View", "Grep", "Glob"],
 }
 
 # MAIN_SUBAGENT_ALLOWLIST — firewall: the maximum set of sub-agent roles
@@ -91,12 +100,15 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 #   For feature-dev these values are now declared in
 #   `.github/pipelines/feature-dev/pipeline.yaml`; the firewall here is
 #   sized to match so the intersection is identical.
-# - planner / designer stay empty in the firewall: even a future pipeline
-#   that declares spawns for them gets dropped to [].
+# - planner / designer stay empty in the firewall AS MAINS (they spawn
+#   nothing): even a future pipeline that declares spawns for them gets
+#   dropped to []. As a SPAWNEE, designer joined the agent's list when the
+#   standalone worker catalog shipped `workers/designer.agent.md` — the
+#   old "ask for /feature-dev instead" rationale was embedded-host-only.
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "agent": [
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "planner", "designer", "coder", "reviewer",
         "summarizer",
     ],
     "planner":  [],
@@ -209,16 +221,30 @@ def _agents_root() -> Path:
     return Path(__file__).resolve().parent.parent / ".github" / "agents"
 
 
-def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
-    """`spawn_allowlist` from `<role>.agent.md` frontmatter.
+#: Purpose subdirectories scanned for a role's `.agent.md`, in precedence
+#: order. Mirrors `musubi/agent/prompt_resolver.py`; the flat file stays the
+#: last candidate for the legacy copies the feature-frozen extension reads.
+_AGENT_MD_PURPOSE_DIRS = ("root", "workers", "meta")
 
-    None when the file is missing/malformed or omits the field — the caller
-    then falls back to the MAIN_SUBAGENT_ALLOWLIST constant. Cached by mtime.
+
+def _agent_md_candidates(role: str) -> list[Path]:
+    """Candidate `.agent.md` paths for `role` across the purpose-dir catalog."""
+    base = _agents_root()
+    filename = f"{role}.agent.md"
+    out = [base / d / filename for d in _AGENT_MD_PURPOSE_DIRS]
+    stages = base / "pipeline-stages"
+    if stages.is_dir():
+        out.extend(sorted(stages.glob(f"*/{filename}")))
+    out.append(base / filename)
+    return out
+
+
+def _parse_spawn_allowlist_file(path: Path) -> list[str] | None:
+    """`spawn_allowlist` from one `.agent.md` file's frontmatter.
+
+    None when the file is missing/malformed or omits the field.
+    Cached by mtime.
     """
-    safe = (role or "").strip().lower()
-    if not safe or "/" in safe or ".." in safe:
-        return None
-    path = _agents_root() / f"{safe}.agent.md"
     if not path.is_file():
         return None
     try:
@@ -242,6 +268,24 @@ def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
         out = None
     _AGENT_SPAWNS_CACHE[str(path)] = (mtime, out)
     return out
+
+
+def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
+    """`spawn_allowlist` from the role's `.agent.md` frontmatter.
+
+    Scans the purpose-dir catalog (`root/`, `workers/`, `meta/`,
+    `pipeline-stages/*/`, then the flat legacy file); the first file that
+    declares the field wins. None when no candidate declares it — the
+    caller then falls back to the MAIN_SUBAGENT_ALLOWLIST constant.
+    """
+    safe = (role or "").strip().lower()
+    if not safe or "/" in safe or ".." in safe:
+        return None
+    for path in _agent_md_candidates(safe):
+        out = _parse_spawn_allowlist_file(path)
+        if out is not None:
+            return out
+    return None
 
 
 def _reset_agent_spawns_cache() -> None:
@@ -519,18 +563,19 @@ def validate_policy_table() -> list[str]:
 
     # Frontmatter spawn_allowlist checks (authoritative-when-present). Only runs
     # when `.github/agents/` is on disk — installed wheels skip this and the
-    # constant governs. Every declared spawn role must be a known sub-agent role.
+    # constant governs. Every `.agent.md` anywhere in the purpose-dir catalog
+    # is validated: each declared spawn role must be a known sub-agent role.
     agents_dir = _agents_root()
     if agents_dir.is_dir():
-        for md in sorted(agents_dir.glob("*.agent.md")):
-            role = md.name[: -len(".agent.md")]
-            allow = _frontmatter_spawn_allowlist(role)
+        for md in sorted(agents_dir.rglob("*.agent.md")):
+            allow = _parse_spawn_allowlist_file(md)
             if allow is None:
                 continue
+            rel = md.relative_to(agents_dir)
             for r in allow:
                 if r not in SUBAGENT_POLICIES:
                     errors.append(
-                        f"{md.name} spawn_allowlist references role {r!r} "
+                        f"{rel} spawn_allowlist references role {r!r} "
                         f"not declared in SUBAGENT_POLICIES"
                     )
 

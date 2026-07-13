@@ -181,11 +181,12 @@ def test_agent_spawn_allowlist_includes_pipeline_roles() -> None:
     assert {"planner", "coder", "reviewer"}.issubset(roles)
 
 
-def test_agent_cannot_spawn_designer() -> None:
-    """Designer is a pipeline-internal stage. Spawning it ad-hoc is
-    not in scope for B.1; if the agent needs design work it
-    should ask the user for /feature-dev."""
-    assert check_subagent_allowed("agent", "designer") is False
+def test_agent_can_spawn_designer() -> None:
+    """Designer became an ad-hoc-spawnable direct worker when the
+    standalone catalog shipped `workers/designer.agent.md`. The old B.1
+    rule ("ask the user for /feature-dev instead") was an embedded-host
+    workaround; the CLI/GUI hosts delegate design work directly."""
+    assert check_subagent_allowed("agent", "designer") is True
 
 
 def test_agent_cannot_spawn_unknown_role() -> None:
@@ -257,7 +258,7 @@ def test_reviewer_subagent_is_read_only() -> None:
 
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
-_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "agent.agent.md"
+_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )
@@ -268,6 +269,15 @@ _SKILL_FILE = (
 
 def test_agent_agent_file_exists() -> None:
     assert _AGENT_FILE.is_file()
+
+
+def test_catalog_has_no_flat_agent_files() -> None:
+    """The catalog is fully purpose-organised (root/, workers/, meta/):
+    a flat .agent.md would be dead weight no resolver prefers — the last
+    host that read flat paths was the removed extension."""
+    agents = _REPO_ROOT / ".github" / "agents"
+    flat = sorted(p.name for p in agents.glob("*.agent.md"))
+    assert flat == [], f"unexpected flat agent files: {flat}"
 
 
 def test_agent_agent_frontmatter_declares_contract() -> None:
@@ -292,11 +302,11 @@ def test_agent_agent_declares_three_per_role_spawn_cap() -> None:
     assert "max_spawns_per_role_per_turn: 3" in text
 
 
-def test_agent_agent_lists_six_spawn_roles() -> None:
+def test_agent_agent_lists_direct_worker_spawn_roles() -> None:
     text = _AGENT_FILE.read_text(encoding="utf-8")
     for role in (
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "planner", "designer", "coder", "reviewer",
     ):
         assert f"- {role}" in text, f"spawn_allowlist missing {role!r}"
 
@@ -393,7 +403,7 @@ def test_summarizer_role_has_skill() -> None:
 
 
 def test_summarizer_agent_file_exists() -> None:
-    p = Path(_REPO_ROOT) / ".github" / "agents" / "summarizer.agent.md"
+    p = Path(_REPO_ROOT) / ".github" / "agents" / "workers" / "summarizer.agent.md"
     assert p.exists()
     body = p.read_text(encoding="utf-8")
     assert "name: Summarizer" in body

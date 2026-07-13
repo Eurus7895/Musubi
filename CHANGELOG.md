@@ -1,13 +1,28 @@
 # Changelog
 
 All notable changes to Musubi. The Python harness version tracks
-the repo as a whole; the VS Code extension version is tracked separately
-in `copilot-harness-extension/package.json` and ships out of this repo
-as a `.vsix`.
+the repo as a whole.
 
 The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+### VS Code extension removed — one driver host
+
+- **Breaking: the embedded Copilot surface is gone.**
+  `copilot-harness-extension/`, its slash-command definitions
+  (`.github/commands/`), and its CI job were deleted. The `agent` CLI
+  (over `LMRouter`) is the driver; the desktop Console observes. Hard
+  Invariants #1/#2/#3 wording narrowed accordingly (single inject point,
+  single skill-push path, two firewall enforcement points).
+- **Pipeline stages nest.** `musubi_spawn_pipeline_stage` returns
+  `spawn_roles` (pipeline.yaml `spawns:` ∩ firewall) and the standalone
+  runner hands nesting stages the spawn tool one level deeper — coder can
+  offload to explorer/investigator, evaluators fan out reviewer-aux.
+- **One worker prompt per role.** `pipeline-stages/` ceremony prompts and
+  all flat agent files are gone; `workers/` gained scoper / finder /
+  synthesizer, making code-review a standalone pipeline:
+  `agent "<diff>" --pipeline code-review`.
 
 ### Renamed to Musubi + standalone single-agent pivot
 

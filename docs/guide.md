@@ -2,8 +2,7 @@
 
 > One place that walks you through **actually using Musubi** end to end:
 > install, run your first task, pick a model, control tokens, delegate to
-> parallel workers (and whole pipelines), watch it all in the console, and
-> drive it from VS Code.
+> parallel workers (and whole pipelines), and watch it all in the console.
 >
 > This is the *how-to-use* guide. For **why** (direction, the substrate/ephemeral
 > discipline) read [`docs/roadmap.md`](./roadmap.md); for the **rules &
@@ -18,13 +17,11 @@
 **The driver reasons. The substrate controls the environment.** Musubi is an
 MCP server that makes **zero LLM calls** — firewall, audit, fail-closed policy,
 validator, reversible compression, skill injection. Only the *driver* (the agent
-loop) reaches a model, through one inject point. You use Musubi through one of
-two driver surfaces, both driving the same substrate:
+loop) reaches a model, through one inject point:
 
 | Surface | Use when | Section |
 |---|---|---|
-| **Standalone `agent` CLI** | any task, any LLM, no Copilot quota | [§2](#2-your-first-task-cli) |
-| **VS Code extension** (`@harness`) | inside GitHub Copilot Chat | [§7](#7-vs-code-extension-copilot-surface) |
+| **Standalone `agent` CLI** | any task, any LLM | [§2](#2-your-first-task-cli) |
 | **Console (GUI)** | *observe & operate* a session — not a driver | [§6](#6-console-gui--operator-view) |
 
 ---
@@ -52,8 +49,8 @@ musubi setup
 `musubi setup` is the fastest path - it runs an environment doctor, builds a
 `.musubi/llm.json` endpoint profile (cloud / DeepSeek / local Ollama /
 on-prem Azure),
-optionally tests the connection, generates `.vscode/mcp.json` for the
-extension, and points Windows users to the prebuilt Musubi installer bootstrap.
+optionally tests the connection, generates `.vscode/mcp.json` for VS Code MCP
+clients, and points Windows users to the prebuilt Musubi installer bootstrap.
 On Windows, if you opt into local GUI development, it can also install npm
 dependencies, verify `cargo` and the MSVC linker (via `vswhere`, so an
 installed-but-not-on-`PATH` toolchain is still detected), and generate the
@@ -278,11 +275,17 @@ returns only a compact summary, so the orchestrator's context stays small.
   per-role width cap so a turn can't fan out without bound.
 - **Nesting.** A worker whose prompt declares a `spawn_allowlist` may summon its
   own workers, up to a depth cap (default 2). Direct worker prompts are leaves
-  by default; pipeline-stage prompts keep nesting only where explicitly declared.
+  by default.
 - **Pipelines.** A worker can summon a whole **pipeline** —
   `musubi_spawn_pipeline(pipeline_name, brief)` — an ordered recipe of workers
   where each stage's summary feeds the next and the evaluator (last stage) sees
-  only the prior stage (the firewall, generalised).
+  only the prior stage (the firewall, generalised). Each stage receives its
+  role skill through the spawn context (HI #2, same push path as a direct
+  worker) and resolves its prompt from `workers/<role>.agent.md`, falling back
+  to `pipeline-stages/<pipeline>/<role>.agent.md`; a role with **no prompt in
+  either place fails the stage** — a stage never runs on an empty prompt.
+  Standalone pipeline stages are strict leaves: the `spawns:` a pipeline.yaml
+  declares applies to the embedded host only.
 
 The spawn firewall (which role may summon which) lives in each agent's
 `spawn_allowlist:` frontmatter, fail-closed (an unknown role is denied).
@@ -397,18 +400,7 @@ with machine-readable data in
 
 ---
 
-## 7. VS Code extension (Copilot surface)
-
-`copilot-harness-extension/` is the `@harness` Copilot-Chat surface — it spawns
-the substrate and lets Copilot's model drive the `musubi_*` tools, running the
-4-stage governed pipeline (`@harness /feature-dev <task>`). A **supported
-surface** kept alongside the CLI. Build scripts live in that directory.
-**Pending fix:** its hardcoded tool calls must be updated from `harness_*` to
-`musubi_*` (broken by the rename) — tracked in [`docs/roadmap.md`](./roadmap.md).
-
----
-
-## 8. Where to go next
+## 7. Where to go next
 
 | File | For |
 |---|---|

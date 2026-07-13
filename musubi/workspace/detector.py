@@ -52,7 +52,7 @@ def detect_profile(workspace_root: Path) -> dict[str, Any]:
     """Return a project profile describing the workspace's stack.
 
     Looks at `workspace_root` AND one level of immediate subdirectories
-    so monorepos (Python harness + TS extension is the canonical example)
+    so monorepos (a Python core + TS frontend is the canonical example)
     surface both languages.
 
     Shape of the returned dict:
@@ -73,7 +73,7 @@ def detect_profile(workspace_root: Path) -> dict[str, Any]:
             },
             "signals": [
                 "pyproject.toml at musubi/ → python (requires-python >=3.11)",
-                "package.json at copilot-harness-extension/ → typescript",
+                "package.json at frontend/ → typescript",
                 ...
             ],
         }
