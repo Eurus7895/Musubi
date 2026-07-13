@@ -36,6 +36,7 @@ use serde::Serialize;
 pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
+    pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
     pub orchestrator_chat_id: String,
@@ -271,6 +272,9 @@ pub struct AgentTurn {
     pub id: i64,
     pub chat_id: String,
     pub parent_session: String,
+    // Root task text from the audit `sessions` row. This lets the console show
+    // what the root worker did without parsing process logs.
+    pub request: String,
     // Turn start time (epoch seconds), serialized as `startedAt`. Lets the
     // Orchestrator order driver-only turns against worker sessions by real time.
     pub started_at: f64,
@@ -282,6 +286,18 @@ pub struct AgentTurn {
     // stateless turn; large replay is the dominant cost of long GUI sessions.
     pub replay_messages: i64,
     pub replay_tokens: i64,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrchestratorSession {
+    pub chat_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub title: String,
+    pub last_request: String,
+    pub root_turns: i64,
+    pub workers: i64,
 }
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -461,6 +477,50 @@ pub fn load_chat_for_session(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     trim_front(&mut messages, 60);
     Ok(messages)
+}
+
+fn load_orchestrator_sessions(conn: &Connection) -> rusqlite::Result<Vec<OrchestratorSession>> {
+    if !table_exists(conn, "chat_log")?
+        || !column_exists(conn, "chat_log", "surface")?
+        || !column_exists(conn, "chat_log", "chat_id")?
+    {
+        return Ok(vec![]);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT c.chat_id,
+                COALESCE((SELECT x.ts FROM chat_log x
+                          WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
+                          ORDER BY x.id ASC LIMIT 1), ''),
+                COALESCE((SELECT x.ts FROM chat_log x
+                          WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
+                          ORDER BY x.id DESC LIMIT 1), ''),
+                COALESCE((SELECT x.text FROM chat_log x
+                          WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
+                            AND x.role='you'
+                          ORDER BY x.id ASC LIMIT 1), ''),
+                COALESCE((SELECT x.text FROM chat_log x
+                          WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
+                            AND x.role='you'
+                          ORDER BY x.id DESC LIMIT 1), '')
+         FROM chat_log c
+         WHERE c.surface='orchestrator' AND COALESCE(c.chat_id, '') <> ''
+         GROUP BY c.chat_id
+         ORDER BY MAX(c.id) DESC",
+    )?;
+    let sessions = stmt
+        .query_map([], |r| {
+            Ok(OrchestratorSession {
+                chat_id: r.get(0)?,
+                created_at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                updated_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                last_request: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                root_turns: 0,
+                workers: 0,
+            })
+        })?
+        .collect();
+    sessions
 }
 
 /// Return only real pipeline runs joined to their audit-envelope ancestry.
@@ -754,6 +814,7 @@ fn load_state_at_with_pipeline_runs(
                     id: r.get(0)?,
                     chat_id: r.get(1)?,
                     parent_session: r.get(2)?,
+                    request: String::new(),
                     started_at: r.get(3)?,
                     model_family: r.get(4)?,
                     cycles: r.get(5)?,
@@ -764,6 +825,22 @@ fn load_state_at_with_pipeline_runs(
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    if table_exists(conn, "sessions")?
+        && column_exists(conn, "sessions", "session_id")?
+        && column_exists(conn, "sessions", "request")?
+    {
+        let mut request_stmt = conn.prepare("SELECT session_id, request FROM sessions")?;
+        let requests = request_stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        for turn in &mut st.agent_turns {
+            turn.request = requests
+                .get(&turn.parent_session)
+                .cloned()
+                .unwrap_or_default();
+        }
     }
 
     // ── tag each run with its owning session ──
@@ -854,6 +931,20 @@ fn load_state_at_with_pipeline_runs(
         .collect::<std::collections::HashSet<_>>();
     st.subagents
         .retain(|agent| !pipeline_sessions.contains(agent.parent_session.as_str()));
+
+    st.orchestrator_sessions = load_orchestrator_sessions(conn)?;
+    for session in &mut st.orchestrator_sessions {
+        session.root_turns = st
+            .agent_turns
+            .iter()
+            .filter(|turn| turn.chat_id == session.chat_id)
+            .count() as i64;
+        session.workers = st
+            .subagents
+            .iter()
+            .filter(|agent| agent.chat_id == session.chat_id)
+            .count() as i64;
+    }
 
     Ok(st)
 }
@@ -1589,6 +1680,58 @@ mod tests {
         // A row inserted without the replay columns reads back as 0.
         assert_eq!(st.agent_turns[0].replay_messages, 0);
         assert_eq!(st.agent_turns[0].replay_tokens, 0);
+    }
+
+    #[test]
+    fn orchestrator_sessions_list_only_non_empty_chat_ids_newest_first() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id) VALUES
+             (1,'100','you','old request','orchestrator','gui-orchestrator-project-old'),
+             (2,'101','driver','old answer','orchestrator','gui-orchestrator-project-old'),
+             (3,'200','you','new request','orchestrator','gui-orchestrator-project-new'),
+             (4,'201','driver','new answer','orchestrator','gui-orchestrator-project-new'),
+             (5,'300','you','pipeline request','pipeline','gui-pipeline-project-one');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.orchestrator_sessions.len(), 2);
+        assert_eq!(
+            st.orchestrator_sessions[0].chat_id,
+            "gui-orchestrator-project-new"
+        );
+        assert_eq!(st.orchestrator_sessions[0].last_request, "new request");
+        assert_eq!(st.orchestrator_sessions[1].title, "old request");
+    }
+
+    #[test]
+    fn agent_turn_root_request_comes_from_audit_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+               session_id TEXT PRIMARY KEY,
+               request TEXT NOT NULL,
+               status TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             INSERT INTO sessions(session_id,request,status,created_at,updated_at)
+             VALUES('root-session','build the dashboard','complete','100','101');
+             INSERT INTO agent_turns
+             (id,chat_id,parent_session_id,started_at,model_family,cycles,
+              tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)
+             VALUES(1,'gui-orchestrator-project-one','root-session',100.0,
+                    'deepseek',1,100,20,300,500);",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_turns[0].request, "build the dashboard");
     }
 
     #[test]

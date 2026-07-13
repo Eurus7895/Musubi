@@ -17,7 +17,7 @@ const DOMAIN_KEYS = [
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
-  'orchestratorChatId', 'pipelineChatId', 'pipelineCatalog', 'pipelineRuns',
+  'orchestratorChatId', 'pipelineChatId', 'orchestratorSessions', 'pipelineCatalog', 'pipelineRuns',
 ]
 
 export default class TauriSource {
@@ -30,7 +30,7 @@ export default class TauriSource {
       view: this.props.startView || 'orchestrator',
       selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
       processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      subagents: [], agentTurns: [], orchestratorSessions: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
@@ -66,9 +66,9 @@ export default class TauriSource {
         patch.pipeModified = false
       }
     }
-    // The Orchestrator's "Parent runs" mirror the append-only audit (HI #8);
-    // clearing the driver chat clears the conversation only, never the run
-    // history, so subagents/agentTurns are always shown straight from the DB.
+    // The Orchestrator session index mirrors durable chat plus append-only
+    // worker audit (HI #8). Clearing one visible chat never clears another
+    // session's summaries, agent turns, or subagent ancestry.
     this.state = { ...this.state, ...patch }
     this._notify()
   }
@@ -98,9 +98,21 @@ export default class TauriSource {
       // client-side navigation / UI
       setView: (v) => this._setLocal({ view: v }),
       selectAgent: (h) => this._setLocal({ view: 'orchestrator', selected: h, selectedSession: null }),
-      // Choose a whole session from the Parent runs list (works for driver-only
-      // runs too). Clears any per-worker selection so the session wins.
-      selectSession: (id) => this._setLocal({ view: 'orchestrator', selectedSession: id, selected: null }),
+      // Choose a durable chat session (including driver-only sessions). Clear
+      // any per-worker selection and let the backend swap the exact chat ID.
+      selectSession: (id) => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({
+          view: 'orchestrator',
+          selectedSession: id,
+          selected: null,
+          chat: [],
+          draft: '',
+          processOpen: false,
+          logWindowOpen: false,
+        })
+        this._action('select_session', [id])
+      },
       selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (f) => this._setLocal({ auditFilter: f }),

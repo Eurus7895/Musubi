@@ -24,7 +24,7 @@ function Header({ vals }) {
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, padding: '22px 26px 8px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 18, fontWeight: 650 }}>Orchestrator</div>
-        <div style={{ fontSize: 12, color: '#7a7a82', marginTop: 3 }}>Runs are grouped by parent session. Each step is ordered, turn-capped, tool-restricted, and tied back to the audit.</div>
+        <div style={{ fontSize: 12, color: '#7a7a82', marginTop: 3 }}>Project conversations retain their chat history and expose the latest governed agent flow.</div>
       </div>
       <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexShrink: 0 }}>
         <Metric value={vals.runningCount} label="running" color="#e9e9ea" />
@@ -47,8 +47,8 @@ function RunRail({ vals }) {
   return (
     <aside style={{ width: 250, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,0.06)', background: '#0f151f', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '18px 16px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 650 }}>Parent runs</div>
-        <div style={{ marginTop: 3, fontSize: 10.5, color: '#6a6a72', lineHeight: 1.4 }}>newest first · one governed run per session</div>
+        <div style={{ fontSize: 13, fontWeight: 650 }}>Sessions</div>
+        <div style={{ marginTop: 3, fontSize: 10.5, color: '#6a6a72', lineHeight: 1.4 }}>newest first · project conversations</div>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 9 }}>
         {vals.runs.length ? vals.runs.map((run) => (
@@ -63,7 +63,7 @@ function RunRail({ vals }) {
           </Box>
         )) : (
           <div style={{ border: '1px dashed rgba(255,255,255,0.12)', borderRadius: 10, padding: 14, color: '#7a7a82', fontSize: 12, lineHeight: 1.45 }}>
-            No session runs yet. Send a request to the driver to start one.
+            No sessions yet. Send a message to start one.
           </div>
         )}
       </div>
@@ -113,7 +113,7 @@ function Timeline({ vals }) {
           <span style={{ fontSize: 13, fontWeight: 650 }}>{vals.sessionTitle}</span>
           <span style={{ marginLeft: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#7a7a82' }}>{vals.sessionSubtitle}</span>
         </div>
-        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ff9b3d', whiteSpace: 'nowrap' }}>spawn order</span>
+        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ff9b3d', whiteSpace: 'nowrap' }}>agent flow</span>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 18 }}>
         {steps.length ? (
@@ -127,7 +127,7 @@ function Timeline({ vals }) {
           </div>
         ) : (
           <div style={{ height: '100%', minHeight: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7a7a82', fontSize: 12 }}>
-            No workers have been spawned for this session yet.
+            No agent activity has been recorded for this session yet.
           </div>
         )}
       </div>

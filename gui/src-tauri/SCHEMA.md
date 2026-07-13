@@ -106,6 +106,12 @@ HI #3). Empty (the real-DB case) → the Policy view folds from `tool_audit`.
 | `surface` | TEXT | `orchestrator` \| `pipeline` |
 | `chat_id` | TEXT | owning GUI session; new sessions preserve prior rows |
 
+The console groups non-empty Orchestrator `chat_id` values into the serialized
+`orchestratorSessions[]` index. A freshly minted ID does not appear until its
+first `chat_log` row exists. Each summary carries the first and latest user
+request, first/latest row timestamps, and root/worker counts; selecting a
+summary changes the active exact ID without deleting any rows.
+
 ### `meta` — key/value (GUI-side)
 
 | key | meaning |
@@ -142,7 +148,11 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 all presentation (colours, chips) from `role`/`status`, so the backend only
 supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
 
-The snapshot also exposes `orchestratorChatId` and `pipelineChatId`. Current
+The snapshot also exposes `orchestratorChatId` and `pipelineChatId`, plus an
+`orchestratorSessions[]` summary index. Each `agentTurns[]` item includes a
+`request` joined from `sessions.request` through `parent_session_id`; this is
+presentation metadata for the root worker and does not alter its lifecycle.
+Current
 surface run lists compare these complete IDs; the `gui-orchestrator-` and
 `gui-pipeline-` prefixes are classification fallbacks for legacy rows only.
 When the sibling state database is absent, the audit snapshot remains usable
