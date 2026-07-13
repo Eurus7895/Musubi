@@ -143,16 +143,19 @@ def test_child_max_turns_escalates_not_hangs() -> None:
             "type": "tool_use", "id": "r1", "name": "musubi_read_file",
             "input": {"path": "README.md"},
         }]),
+        _text("[incomplete] reached the turn limit after reading README.md"),
         _text("done"),  # parent final
     ])
     answer = asyncio.run(run_agent("loopy", router, _musubi_dir(), log=io.StringIO()))
     assert answer == "done"
+    assert router.calls[2]["tools"] == []
     fed_back = "".join(
-        b["content"] for m in router.calls[2]["messages"]
+        b["content"] for m in router.calls[3]["messages"]
         if isinstance(m.get("content"), list)
         for b in m["content"] if b.get("type") == "tool_result"
     )
-    assert "exceeded 1 cycles" in fed_back or "escalat" in fed_back.lower()
+    assert "reached the turn limit" in fed_back
+    assert "max_turns=1 reached" in fed_back
 
 
 def test_child_blocked_reason_escalates_to_parent() -> None:

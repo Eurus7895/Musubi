@@ -511,6 +511,105 @@ def test_dispatch_rejects_invalid_append_args_before_mcp_call(
     ]
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("musubi_write_file", {"path": "x.py", "content": "MARKER"}),
+        (
+            "musubi_append_file",
+            {"path": "x.py", "content": "MARKER", "expected_offset": 0},
+        ),
+        (
+            "musubi_edit_file",
+            {"path": "x.py", "old_string": "MARKER", "new_string": "safe"},
+        ),
+        (
+            "musubi_edit_file",
+            {"path": "x.py", "old_string": "safe", "new_string": "MARKER"},
+        ),
+    ],
+)
+def test_dispatch_rejects_elided_tool_arg_marker_before_mcp_call(
+    tmp_path: Path,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    from agent import run as run_mod
+
+    marker = (
+        "[musubi:elided-tool-arg tool=musubi_append_file field=content "
+        "chars=786 bytes=814 sha256=d9ed21b71f59b45b; "
+        "argument was already sent to the MCP tool]"
+    )
+    args = {
+        key: marker if value == "MARKER" else value
+        for key, value in arguments.items()
+    }
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / f"{tool_name}.db"
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {"id": "call-elided", "name": tool_name, "input": args},
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(
+                parent_session_id="parent", parent_agent_name="coder"
+            ),
+            gateway=None,
+            compression_db_path=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    assert "[tool error] invalid arguments" in result
+    assert "elided tool argument marker" in result
+    assert "regenerate the original content" in result
+    assert session.calls == []
+    assert _read_tool_rows(audit_db) == [("coder", tool_name, "error")]
+
+
+def test_dispatch_allows_documentation_that_mentions_elision_marker(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    content = (
+        "The prefix [musubi:elided-tool-arg is internal and must not be copied."
+    )
+    session = _FakeToolSession("stored")
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-doc",
+                "name": "musubi_write_file",
+                "input": {"path": "docs/elision.md", "content": content},
+            },
+            session,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(
+                parent_session_id="parent", parent_agent_name="coder"
+            ),
+            gateway=None,
+            compression_db_path=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert result == "stored"
+    assert session.calls == [
+        (
+            "musubi_write_file",
+            {"path": "docs/elision.md", "content": content},
+        )
+    ]
+
+
 def test_dispatch_runs_file_mutations_sequentially_in_model_order(
     tmp_path: Path,
 ) -> None:
@@ -971,6 +1070,42 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert "max_tokens" in payload["message"]
     assert cycles == 1
     assert session.calls == []
+
+
+def test_run_loop_returns_incomplete_when_forced_final_call_fails() -> None:
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use",
+                "id": "read-1",
+                "name": "musubi_read_file",
+                "input": {"path": "README.md"},
+            }],
+        ),
+    ])
+    session = _FakeToolSession("read")
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "inspect README"}],
+            max_cycles=1,
+            log=io.StringIO(),
+            salvage_on_exhaust=True,
+            role="explorer",
+        )
+    )
+
+    assert answer is not None
+    assert answer.startswith("[incomplete] agent reached 1 cycles")
+    assert cycles == 1
+    assert len(router.calls) == 2
+    assert router.calls[1]["tools"] == []
 
 
 def test_run_loop_returns_truncated_tool_call_to_same_worker_for_chunk_retry() -> None:

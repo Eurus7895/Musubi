@@ -51,6 +51,46 @@ test('selectSession switches the active backend session without deleting history
   }])
 })
 
+test('selectSession browses history while the active session keeps running', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-live',
+    selectedSession: null,
+    chat: [{ role: 'driver', text: 'live output' }],
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-project-live',
+    },
+  })
+
+  source.actions.selectSession('gui-orchestrator-project-old')
+
+  assert.equal(source.state.selectedSession, 'gui-orchestrator-project-old')
+  assert.deepEqual(source.state.chat, [])
+  assert.deepEqual(calls, [{
+    kind: 'select_session',
+    args: ['gui-orchestrator-project-old'],
+  }])
+})
+
+test('backend history snapshots preserve the locally selected session', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({ selectedSession: 'gui-orchestrator-project-old' })
+
+  source._mergeDomain({
+    viewedOrchestratorChatId: 'gui-orchestrator-project-old',
+    chat: [{ role: 'driver', text: 'old answer' }],
+  })
+
+  assert.equal(source.state.selectedSession, 'gui-orchestrator-project-old')
+  assert.equal(
+    source.state.viewedOrchestratorChatId,
+    'gui-orchestrator-project-old',
+  )
+  assert.equal(source.state.chat[0].text, 'old answer')
+})
+
 test('sendPipelineTask passes brief and selected registered pipeline', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({

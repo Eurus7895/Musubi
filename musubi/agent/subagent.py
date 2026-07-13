@@ -149,6 +149,7 @@ async def run_subagent(
             system_prompt=system_prompt,
             user_message=None,
             max_cycles=max_turns, log=log,
+            salvage_on_exhaust=True,
             orchestration=child_orch,
             spawn_catalog=spawn_catalog,
             compression_db_path=compression_db_path,
@@ -173,6 +174,8 @@ async def run_subagent(
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
+    elif turns >= max_turns:
+        summary, status = answer, "escalated"
     elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
         summary, status = answer, "escalated"
     else:

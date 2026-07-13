@@ -58,7 +58,12 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    session-scoped without changing the shared filesystem root. The
    Orchestrator now indexes non-empty project conversations by exact `chat_id`,
    retains prior sessions after New session, reopens an idle selected session,
-   and renders the latest turn as a root-first agent flow. Follow-up plan:
+   and renders the latest turn as a root-first agent flow. Operators can browse
+   prior chat and worker history read-only while another session keeps its
+   driver ownership; design and implementation plan:
+   [`2026-07-13-read-only-session-browsing-design.md`](./superpowers/specs/2026-07-13-read-only-session-browsing-design.md) and
+   [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md).
+   Earlier session-list follow-up plan:
    [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md).
 
 4. **Bounded standalone pipeline runtime.** Use one stage turn cap across

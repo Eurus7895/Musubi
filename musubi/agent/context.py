@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -79,6 +80,12 @@ _FILE_TOOL_ARG_FIELDS = {
     "musubi_append_file": ("content",),
     "musubi_edit_file": ("old_string", "new_string"),
 }
+_ELIDED_TOOL_ARG_MARKER_RE = re.compile(
+    r"\[musubi:elided-tool-arg "
+    r"tool=[^\s\]]+ field=[^\s\]]+ "
+    r"chars=\d+ bytes=\d+ sha256=[0-9a-f]{16}; "
+    r"argument was already sent to the MCP tool\]"
+)
 _CONTEXT_COMPRESSION_MODULE = "_musubi_context_compression"
 
 
@@ -212,6 +219,13 @@ def _should_elide_tool_arg(value: Any, min_chars: int) -> bool:
         and len(value) >= min_chars
         and not value.startswith("[musubi:elided-tool-arg")
     )
+
+
+def is_elided_tool_arg_marker(value: Any) -> bool:
+    """True only for a complete replay-only file argument placeholder."""
+    return isinstance(value, str) and _ELIDED_TOOL_ARG_MARKER_RE.fullmatch(
+        value.strip()
+    ) is not None
 
 
 def _elide_large_file_tool_inputs(

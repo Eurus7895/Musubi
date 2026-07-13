@@ -49,7 +49,12 @@ if str(_MUSUBI_MODULE_ROOT) not in sys.path:
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from agent.context import build_system_prompt, effort_floor, fit_context
+from agent.context import (
+    build_system_prompt,
+    effort_floor,
+    fit_context,
+    is_elided_tool_arg_marker,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -1838,10 +1843,13 @@ def _file_tool_argument_error(name: str, args: Any) -> str | None:
     _require_string(args, "path", errors)
     if name in {"musubi_write_file", "musubi_append_file"}:
         _require_string(args, "content", errors)
+        _reject_elided_marker(args, "content", errors)
         _optional_bool(args, "create_parents", errors)
     elif name == "musubi_edit_file":
         _require_string(args, "old_string", errors)
         _require_string(args, "new_string", errors)
+        _reject_elided_marker(args, "old_string", errors)
+        _reject_elided_marker(args, "new_string", errors)
         _optional_bool(args, "replace_all", errors)
 
     if name == "musubi_append_file" and "expected_offset" in args:
@@ -1858,6 +1866,16 @@ def _file_tool_argument_error(name: str, args: Any) -> str | None:
 def _require_string(args: dict[str, Any], key: str, errors: list[str]) -> None:
     if not isinstance(args.get(key), str):
         errors.append(f"{key} must be a string")
+
+
+def _reject_elided_marker(
+    args: dict[str, Any], key: str, errors: list[str]
+) -> None:
+    if is_elided_tool_arg_marker(args.get(key)):
+        errors.append(
+            f"{key} is an elided tool argument marker; regenerate the original "
+            "content instead of copying replay-only context"
+        )
 
 
 def _optional_bool(args: dict[str, Any], key: str, errors: list[str]) -> None:

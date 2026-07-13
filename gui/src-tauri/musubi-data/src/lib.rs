@@ -40,6 +40,7 @@ pub struct State {
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
     pub orchestrator_chat_id: String,
+    pub viewed_orchestrator_chat_id: String,
     pub pipeline_chat_id: String,
     pub events: Vec<serde_json::Value>,
     pub policy: Vec<Decision>,
