@@ -590,6 +590,7 @@ async def _run_loop(
         )
         lm_ms = int((time.perf_counter() - lm_started) * 1000)
         resp = effort.response
+        cycle_ended_at = time.time()
         if resp.stop_reason == "max_tokens" or len(effort.attempts) > 1:
             effort_escalated = True
         usage = _cycle_token_usage(
@@ -614,32 +615,66 @@ async def _run_loop(
         )
 
         text = _extract_text(resp.content)
-        _safe_record_agent_cycle(
-            db_path=compression_db_path,
-            session_id=audit_session_id,
-            worker_id=audit_worker_id,
-            stage=audit_stage,
-            cycle_idx=cycle,
-            started_at=cycle_started_at,
-            ended_at=time.time(),
-            lm_ms=lm_ms,
-            usage=usage,
-            tool_names=[str(tu.get("name", "")) for tu in tool_uses],
-            text_chars=len(text),
-            cycle_status="ok" if tool_uses else "final",
-            log=log,
-        )
-        _charge_budget_postflight(
-            budget, usage.tokens_in + usage.tokens_out, log,
-        )
         if text:
             last_text = text  # remember even when the model also called a tool
 
+        try:
+            _charge_budget_postflight(
+                budget, usage.tokens_in + usage.tokens_out, log,
+            )
+        except TokenBudgetExhaustedError:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="budget_halt",
+                log=log,
+            )
+            raise
+
         if not tool_uses:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="final",
+                log=log,
+            )
             final_answer = text
             break
 
         if resp.stop_reason == "max_tokens":
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="truncated",
+                log=log,
+            )
             dropped = ", ".join(
                 _dropped_tool_target(tu) for tu in tool_uses
             )
@@ -677,6 +712,21 @@ async def _run_loop(
             budget=budget,
             stats=stats,
             audit_db_path=audit_db_path,
+        )
+        _safe_record_agent_cycle(
+            db_path=compression_db_path,
+            session_id=audit_session_id,
+            worker_id=audit_worker_id,
+            stage=audit_stage,
+            cycle_idx=cycle,
+            started_at=cycle_started_at,
+            ended_at=cycle_ended_at,
+            lm_ms=lm_ms,
+            usage=usage,
+            tool_names=[str(tu.get("name", "")) for tu in tool_uses],
+            text_chars=len(text),
+            cycle_status="ok",
+            log=log,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -747,6 +797,28 @@ async def _run_loop(
                     usage.tokens_in, usage.tokens_out, budget,
                 )
                 final_candidate = _extract_text(resp.content) or None
+                cycle_ended_at = time.time()
+                try:
+                    _charge_budget_postflight(
+                        budget, usage.tokens_in + usage.tokens_out, log,
+                    )
+                except TokenBudgetExhaustedError:
+                    _safe_record_agent_cycle(
+                        db_path=compression_db_path,
+                        session_id=audit_session_id,
+                        worker_id=audit_worker_id,
+                        stage=audit_stage,
+                        cycle_idx=max_cycles,
+                        started_at=cycle_started_at,
+                        ended_at=cycle_ended_at,
+                        lm_ms=lm_ms,
+                        usage=usage,
+                        tool_names=[],
+                        text_chars=len(final_candidate or ""),
+                        cycle_status="budget_halt",
+                        log=log,
+                    )
+                    raise
                 _safe_record_agent_cycle(
                     db_path=compression_db_path,
                     session_id=audit_session_id,
@@ -754,16 +826,13 @@ async def _run_loop(
                     stage=audit_stage,
                     cycle_idx=max_cycles,
                     started_at=cycle_started_at,
-                    ended_at=time.time(),
+                    ended_at=cycle_ended_at,
                     lm_ms=lm_ms,
                     usage=usage,
                     tool_names=[],
                     text_chars=len(final_candidate or ""),
                     cycle_status="final",
                     log=log,
-                )
-                _charge_budget_postflight(
-                    budget, usage.tokens_in + usage.tokens_out, log,
                 )
                 final_answer = final_candidate
             except Exception as exc:  # noqa: BLE001 — fall through to the raise

@@ -1191,6 +1191,40 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert session.calls == []
 
 
+def test_truncated_tool_call_audit_does_not_count_dropped_tool(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("audit truncated call", p)
+    partial_write = {
+        "type": "tool_use",
+        "id": "partial-write",
+        "name": "musubi_write_file",
+        "input": {},
+    }
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+        LMResponse(stop_reason="max_tokens", content=[partial_write]),
+    ])
+
+    asyncio.run(run_mod._run_loop(
+        _FakeToolSession(), router,
+        [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "create html dashboard"}],
+        max_cycles=1, log=io.StringIO(), compression_db_path=p,
+        audit_session_id=sid, audit_worker_id="root", audit_stage="agent",
+    ))
+
+    row = db.query_agent_cycles(sid, db_path=p)[0]
+    assert json.loads(row["tool_calls_json"]) == []
+    assert row["cycle_status"] == "truncated"
+
+
 def test_run_loop_returns_incomplete_when_forced_final_call_fails() -> None:
     from agent import run as run_mod
 
@@ -1457,7 +1491,45 @@ def test_postflight_budget_halt_still_audits_measured_cycle(tmp_path: Path) -> N
     assert rows[0]["tokens_out"] == 30
 
 
-def test_forced_final_postflight_halt_still_audits_final_cycle(tmp_path: Path) -> None:
+def test_postflight_budget_halt_does_not_count_undispatched_tool(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("postflight tool audit", p)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use", "id": "read-1",
+                "name": "musubi_read_file", "input": {"path": "README.md"},
+            }],
+            usage={"input_tokens": 90, "output_tokens": 30},
+        ),
+    ])
+    session = _FakeToolSession("contents")
+
+    with pytest.raises(TokenBudgetExhaustedError, match="postflight"):
+        asyncio.run(run_mod._run_loop(
+            session, router,
+            [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "read"}], max_cycles=1,
+            log=io.StringIO(), compression_db_path=p,
+            audit_session_id=sid, audit_worker_id="root", audit_stage="agent",
+            budget=TokenBudgetEnforcer(100),
+        ))
+
+    row = db.query_agent_cycles(sid, db_path=p)[0]
+    assert session.calls == []
+    assert json.loads(row["tool_calls_json"]) == []
+    assert row["cycle_status"] == "budget_halt"
+
+
+def test_forced_final_postflight_halt_audits_budget_halt_cycle(tmp_path: Path) -> None:
     from agent import run as run_mod
     from session import state
     from storage import db
@@ -1487,7 +1559,7 @@ def test_forced_final_postflight_halt_still_audits_final_cycle(tmp_path: Path) -
     rows = db.query_agent_cycles(sid, db_path=p)
     assert answer.startswith("[incomplete]")
     assert [row["cycle_idx"] for row in rows] == [0, 1]
-    assert rows[1]["cycle_status"] == "final"
+    assert rows[1]["cycle_status"] == "budget_halt"
 
 
 def test_loop_returns_text_when_model_does_not_use_tools(

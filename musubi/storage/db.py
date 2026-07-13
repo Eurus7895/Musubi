@@ -1183,16 +1183,17 @@ def insert_agent_cycle(
     queryable (path-rules preamble, empty-project fallback, the
     bail-out counter) so dissolution decisions can be data-driven.
 
-    `cycle_status` is one of {'ok', 'final'}:
+    `cycle_status` is one of {'ok', 'final', 'truncated', 'budget_halt'}:
       - 'final' = cycle emitted zero tool calls and broke out
         (model is done; finalText == this cycle's text)
       - 'ok'    = cycle dispatched ≥ 1 tool call (intermediate)
-    Other states ('interrupted', 'budget_halt') don't get rows
-    because both throw before recording reaches us.
+      - 'truncated' = requested tool calls were dropped because the response
+        hit its output limit and arguments may be incomplete
+      - 'budget_halt' = usage was measured, but postflight enforcement stopped
+        the run before any requested tool was dispatched
 
-    `tool_calls_json` is a JSON-encoded array of `{name, ok}` objects
-    (one per tool call dispatched in this cycle). Empty / null for
-    `cycle_status='final'` cycles.
+    `tool_calls_json` is a JSON-encoded array of tool names (one per tool call
+    dispatched in this cycle). Empty / null unless `cycle_status='ok'`.
 
     Best-effort: caller wraps in a fire-and-forget catch so a row
     write failure never aborts the run.

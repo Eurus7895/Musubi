@@ -858,9 +858,37 @@ fn load_state_at_with_pipeline_runs(
                 fallback.to_string()
             })
         };
+        let mut session_sources = Vec::new();
+        if table_exists(agent_turn_conn, "agent_turns")?
+            && column_exists(agent_turn_conn, "agent_turns", "parent_session_id")?
+        {
+            session_sources.push(
+                "SELECT parent_session_id AS session_id FROM agent_turns \
+                 WHERE COALESCE(parent_session_id, '') <> ''",
+            );
+        }
+        if table_exists(agent_turn_conn, "pipeline_runs")?
+            && column_exists(agent_turn_conn, "pipeline_runs", "session_id")?
+        {
+            session_sources.push(
+                "SELECT session_id FROM pipeline_runs \
+                 WHERE COALESCE(session_id, '') <> ''",
+            );
+        }
+        let session_scope = session_sources.join(" UNION ");
+        let has_surfaced_sessions = !session_scope.is_empty()
+            && count(
+                agent_turn_conn,
+                &format!("SELECT COUNT(*) FROM ({session_scope})"),
+            )? > 0;
+        let cycle_scope = if has_surfaced_sessions {
+            format!("WHERE session_id IN ({session_scope}) ORDER BY id ASC")
+        } else {
+            "ORDER BY id DESC LIMIT 1000".to_string()
+        };
         let sql = format!(
             "SELECT session_id, stage, {}, cycle_idx, {}, {}, {}, {}, {}, {}, {} \
-             FROM agent_cycles ORDER BY id DESC LIMIT 1000",
+             FROM agent_cycles {cycle_scope}",
             expr("worker_id", "'root'")?,
             expr("lm_ms", "0")?,
             expr("tokens_in", "0")?,
@@ -889,7 +917,9 @@ fn load_state_at_with_pipeline_runs(
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        cycles.reverse();
+        if !has_surfaced_sessions {
+            cycles.reverse();
+        }
         st.agent_cycles = cycles;
     }
 
@@ -1891,6 +1921,42 @@ mod tests {
         assert_eq!(st.agent_cycles.len(), 1000);
         assert_eq!(st.agent_cycles.first().unwrap().session_id, "session-2");
         assert_eq!(st.agent_cycles.last().unwrap().session_id, "session-1001");
+    }
+
+    #[test]
+    fn agent_cycles_reader_keeps_cycles_for_older_surfaced_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_turns
+             (chat_id,parent_session_id,started_at,model_family)
+             VALUES('old-chat','visible-old',1.0,'openai')",
+            [],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO agent_cycles
+             (id,session_id,stage,attempt,cycle_idx,started_at)
+             VALUES(1,'visible-old','agent',1,0,1.0)",
+            [],
+        )
+        .unwrap();
+        for id in 2..=1002 {
+            tx.execute(
+                "INSERT INTO agent_cycles
+                 (id,session_id,stage,attempt,cycle_idx,started_at)
+                 VALUES(?1,?2,'agent',1,0,1.0)",
+                rusqlite::params![id, format!("noise-{id}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_cycles.len(), 1);
+        assert_eq!(st.agent_cycles[0].session_id, "visible-old");
     }
 
     #[test]
