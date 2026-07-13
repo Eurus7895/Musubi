@@ -3,9 +3,9 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop the effort-routing floor from *guaranteeing* truncation for
-workers whose job is emitting files, and give every worker an explicit,
-per-role output-token budget clamped to the model's real limit — so a
-one-shot artifact no longer dies at a hardcoded 4096-token ceiling.
+workers whose job is emitting files, and raise the runaway-brake ceiling to a
+single generous default (`16384`, optionally overridable per worker) — so a
+one-shot artifact no longer dies at the hardcoded 4096-token ceiling.
 
 **Motivation (observed run):** `agent "create a dashboard about vietnam"`
 (deepseek-v4-flash, `single_coder` route) burned ~30.36 credits and 124k of a
@@ -47,11 +47,20 @@ fix keys off the worker's *actual* tool surface, not a distributional guess.
 - **Floor keyed to tool surface.** A worker whose runtime `tools` intersect
   `ORDER_SENSITIVE_FILE_TOOLS` (`agent/run.py:99-103` — the concrete
   `musubi_write_file` / `musubi_append_file` / `musubi_edit_file` set) starts at
-  its ceiling, not the floor. Read-only workers and the root keep 2048.
-- **Per-worker output budget.** Each worker `.agent.md` declares
+  the ceiling, not the floor. Read-only workers and the root keep the 2048
+  floor. The tool-surface signal drives the FLOOR; the ceiling is one shared
+  value for every worker (see below).
+- **One default ceiling: `16384`.** Not a mutate/read-only split. `max_tokens`
+  is a cap, not a price, and read-only workers emit tiny outputs that never
+  reach a ceiling anyway, so a separate lower read-only tier buys nothing.
+  16384 sits above any legitimate one-shot artifact yet an order of magnitude
+  below the models' physical maxes, so it still works as the per-call runaway
+  brake (full reasoning in Task 1 Step 2 "Why one ceiling").
+- **Per-worker output budget.** Each worker `.agent.md` MAY declare
   `maxOutputTokens:` in frontmatter (sibling to the existing `maxTurns:`),
   resolved at spawn in `run_subagent` where `agent_md` is already parsed
-  (`agent/subagent.py:108`). This is the *intent* ceiling.
+  (`agent/subagent.py:108`) — for the rare worker that needs more than 16384 or
+  should be capped tighter. Absent → the shared default.
 - **Optional per-model override (operator intent, NOT a discovered physical
   limit).** `.musubi/llm.json` MAY carry an optional `max_output_tokens` per
   model (resolved via `agent/config.py`) for the two cases that earn it:
@@ -69,7 +78,7 @@ bounded by the operator's local `num_predict`/context config. And where it IS
 discoverable (Anthropic), the values are uniform and far above any brake need:
 128K for the current frontier (Fable 5, Opus 4.8/4.7/4.6, Sonnet 5/4.6), 64K
 for Haiku 4.5 — per-model precision buys nothing for a runaway brake. So the
-ceiling is sized as a safety brake from universal tier defaults, not from a
+ceiling is sized as a safety brake from a single shared default, not from a
 per-model max table; the vendor enforces the real hard limit at call time (a
 request above the model's cap errors/clamps — authoritative, surfaced when it
 matters, nothing to pre-tabulate). This keeps model knowledge out of the
@@ -77,7 +86,7 @@ substrate (HI #1) — the router/vendor owns it.
 
 **Resolution order (highest priority first):**
 1. Worker `.agent.md` `maxOutputTokens:` (explicit per-role intent).
-2. Tool-surface tier default — mutate `8192`, read-only/root `4096`.
+2. Shared `DEFAULT_CEILING = 16384` when a worker declares nothing.
 3. Optional per-model `max_output_tokens` from `.musubi/llm.json`, IF the
    operator set one, clamps the result down. Absent → no clamp; the vendor
    rejects an over-cap request at call time.
@@ -98,7 +107,7 @@ worker frontmatter under `.github/agents/workers/`, pytest.
 - Preserve `_call_with_effort`'s single-retry escalation contract for the
   read-only path (floor → ceiling on `max_tokens`).
 - Fail closed: an unknown worker, a missing frontmatter field, or a missing
-  per-model config entry resolves to the conservative tier default, never to
+  per-model config entry resolves to the shared 16384 default, never to
   "unlimited".
 - Keep `.vscode/mcp.json` unstaged.
 
@@ -123,9 +132,10 @@ worker frontmatter under `.github/agents/workers/`, pytest.
   valid deletion).
 - Modify `musubi/agent/context.py::_elided_tool_arg_stub` (`~199`): add an
   imperative "regenerate; do not copy this marker" clause to the stub text.
-- Modify `.github/agents/workers/coder.agent.md` (and other mutate workers):
-  add `maxOutputTokens:` frontmatter; the read-only workers may set a small
-  value or omit it.
+- `.github/agents/workers/*.agent.md`: usually NO change — most workers take the
+  shared 16384 default. Add `maxOutputTokens:` frontmatter only for a worker
+  with an atypical output profile (routinely one-shots very large files → raise;
+  deliberately bounded → lower).
 - Modify `musubi/tests/test_agent_loop.py`, `musubi/tests/test_context.py`:
   unit + integration coverage.
 - Modify `docs/roadmap.md`: link this plan from the Backlog.
@@ -156,11 +166,10 @@ note in the Architecture section).
 
 - [ ] **Step 2: Add the effort-bounds resolver**
 
-In `agent/context.py`, add tier defaults and the resolver:
+In `agent/context.py`, add the shared default and the resolver:
 
 ```python
-MUTATE_TIER_CEILING = 8192
-READONLY_TIER_CEILING = 4096
+DEFAULT_CEILING = 16384  # one ceiling for all workers; see "Why one ceiling" below
 
 def resolve_effort_bounds(
     *,
@@ -168,20 +177,38 @@ def resolve_effort_bounds(
     worker_max_output: int | None,
     model_output_override: int | None,
 ) -> tuple[int, int]:
-    tier_default = MUTATE_TIER_CEILING if can_mutate else READONLY_TIER_CEILING
-    ceiling = worker_max_output if worker_max_output else tier_default
+    ceiling = worker_max_output if worker_max_output else DEFAULT_CEILING
     if model_output_override:            # operator opt-in only; None = no clamp
         ceiling = min(ceiling, model_output_override)
+    # The mutate/read-only distinction lives on the FLOOR, not the ceiling:
+    # a mutate worker opens at the ceiling (its first cycle emits a whole file);
+    # a read-only worker opens at the cheap 2048 floor and escalates only if it
+    # truncates — which, emitting tiny outputs, it almost never does.
     floor = ceiling if can_mutate else min(effort_floor(), ceiling)
     return floor, ceiling
 ```
 
+**Why one ceiling (not a mutate/read-only split).** `max_tokens` is a cap, not
+a price — a read-only worker emitting ~650 tokens (root's observed per-cycle
+output) pays for ~650 regardless of whether the ceiling is 4096 or 16384, and
+it essentially never *reaches* its ceiling. A separate lower read-only tier
+therefore buys almost nothing while adding a truncation risk for the occasional
+large read-only report; drop it. `16384` sits comfortably above any legitimate
+one-shot artifact (a full dashboard is ~6k tokens; a large single file ~13-14k)
+so truncation of real work basically disappears, yet stays an order of
+magnitude below the models' physical maxes (128K frontier / 64K Haiku) so it is
+still a real per-call runaway brake — a degenerate cycle is bounded at ~29
+credits (flash rate), caught by the 200K `TokenBudgetEnforcer` at the next
+preflight. It is deliberately NOT set to the model's physical max: that would
+let a single degenerate cycle burn ~115 credits before the between-call budget
+check can see it.
+
 - [ ] **Step 3: Unit tests**
 
-Cover: mutate worker → floor == ceiling; read-only → floor stays 2048; a
-missing worker value falls back to the tier default; a `None` override leaves
-the tier default untouched (no clamp); an operator override below the default
-clamps the ceiling down.
+Cover: mutate worker → floor == ceiling == 16384; read-only → floor stays 2048,
+ceiling 16384; a per-worker `maxOutputTokens` overrides the default both ways; a
+`None` override leaves the default untouched (no clamp); an operator override
+below the default clamps the ceiling down.
 
 ---
 
@@ -268,25 +295,30 @@ it for the new field (and could later carry `maxTurns` too, out of scope here).
 In `run_subagent`, after `agent_md = _read_agent_md(role, agents_dir)`
 (`subagent.py:108`), parse the frontmatter for `maxOutputTokens` (reuse the
 existing frontmatter parser; fall back to `None` when absent or malformed —
-fail closed to the tier default).
+fail closed to the shared default).
 
 - [ ] **Step 2: Thread it into the loop**
 
 Pass `worker_max_output` through `run_unit` into `_run_loop` as a new
 keyword-only param (default `None`, so the root and existing callers are
-unaffected and resolve via tier default).
+unaffected and resolve via the shared default).
 
-- [ ] **Step 3: Declare it on mutate workers**
+- [ ] **Step 3: Declare it only where the default doesn't fit**
 
-In `coder.agent.md` frontmatter add e.g. `maxOutputTokens: 8192`. Leave
-read-only workers (`explorer`, `reviewer-aux`, `finder`) omitting it or setting
-a small value. Keep the `musubi-tier`/`expires-when`/`cost-lever` tags intact.
+Most workers should OMIT `maxOutputTokens:` and take the shared 16384 default —
+including the standard `coder`, whose one-shot artifacts fit comfortably under
+16384. Add the field only for a worker with an atypical output profile: e.g. a
+worker that routinely one-shots very large single files might set
+`maxOutputTokens: 32768`, or a deliberately-bounded worker might cap lower.
+Keep the `musubi-tier`/`expires-when`/`cost-lever` tags intact on any worker
+you touch.
 
 - [ ] **Step 4: Test**
 
-Assert a coder spawn resolves its ceiling from frontmatter (mock a worker
-declaring `maxOutputTokens: 8192`, assert the first call uses 8192 clamped to
-the model cap); a worker with no field falls back to the mutate tier default.
+Assert a worker declaring `maxOutputTokens: 32768` resolves its ceiling from
+frontmatter (mock the spawn, assert the first call uses 32768, or the operator
+override if lower); a worker with no field falls back to the shared 16384
+default.
 
 ---
 
@@ -425,19 +457,21 @@ Commit with the identity flags per CLAUDE.md; Conventional Commit
 - **HI #1 held:** every floor/ceiling decision is a pure function of `tools`,
   frontmatter, and `.musubi/llm.json` — no LLM call enters the substrate.
 - **Fail-closed:** missing frontmatter, missing config, or unknown worker all
-  resolve to conservative tier defaults (mutate 8192 / read-only 4096);
-  nothing resolves to "unlimited". The model's true hard limit is enforced by
-  the vendor at call time, not guessed from a per-model table (see the
-  Architecture "Why NOT a required per-model physical-limit table" note — the
-  ceiling is undefined for ollama/on-prem and uniform-and-high where it IS
-  discoverable, so a per-model table would be drift-prone dead weight).
+  resolve to the shared `DEFAULT_CEILING = 16384`; nothing resolves to
+  "unlimited". The model's true hard limit is enforced by the vendor at call
+  time, not guessed from a per-model table (see the Architecture "Why NOT a
+  required per-model physical-limit table" note — the ceiling is undefined for
+  ollama/on-prem and uniform-and-high where it IS discoverable, so a per-model
+  table would be drift-prone dead weight).
 - **Ceiling preserved:** the per-call runaway brake stays — Task 2's rationale
   documents why removing it would open the one enforcement gap
   `TokenBudgetEnforcer` cannot cover.
-- **Cost framing:** raising the mutate ceiling 4096 → 8192 adds ~7.5 credits of
-  worst-case per-cycle exposure (only on a rare pathological cycle) versus the
-  ~15-20 credits of deterministic truncation waste plus a failed run observed
-  here.
+- **Cost framing:** raising the ceiling 4096 → 16384 adds ~22 credits of
+  worst-case per-cycle exposure (only on a rare pathological cycle, and caught
+  by the 200K run budget at the next preflight) versus the ~15-20 credits of
+  deterministic truncation waste plus a failed run observed here — and it makes
+  truncation of legitimate one-shot artifacts essentially disappear, which is
+  the actual goal.
 - **Invariant touch isolated:** the only change that brushes a load-bearing
   rule (the cumulative worker cap, Task 5) is gated behind a roadmap design
   note and a single sanctioned exception, per the repo's "design discussion

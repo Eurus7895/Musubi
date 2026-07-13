@@ -111,14 +111,17 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
   whole file loses with probability 1.0, guaranteeing a truncated first mutate
   call, a double-billed retry, and — because the 4096 ceiling sits below a
   one-shot dashboard's natural size — an empty write. Key the floor to the
-  worker's actual tool surface (mutate workers open at their ceiling), let each
-  worker declare `maxOutputTokens:` in `.agent.md` frontmatter, and size the
-  ceiling from universal tier defaults (mutate 8192 / read-only 4096) rather
-  than a per-model physical-limit table — the true cap is undefined for
-  ollama/on-prem and uniform-and-high where discoverable, so the vendor enforces
-  it at call time; an optional per-model `max_output_tokens` in `.musubi/llm.json`
-  remains for deliberate operator cost-capping only. Keep `EFFORT_CEILING` as
-  the per-call runaway brake. Effort-economics follow-up to the 2026-07-09
+  worker's actual tool surface (mutate workers open at the ceiling), let each
+  worker optionally declare `maxOutputTokens:` in `.agent.md` frontmatter, and
+  size the ceiling from a single shared default (`16384`) rather than a
+  mutate/read-only split or a per-model physical-limit table — `max_tokens` is a
+  cap not a price, so read-only workers (tiny outputs) cost nothing under a high
+  ceiling, and the true cap is undefined for ollama/on-prem and uniform-and-high
+  where discoverable, so the vendor enforces it at call time. 16384 stays an
+  order of magnitude below the physical maxes so it is still a real per-call
+  runaway brake, backstopped by the 200K run budget. An optional per-model
+  `max_output_tokens` in `.musubi/llm.json` remains for deliberate operator
+  cost-capping only. Effort-economics follow-up to the 2026-07-09
   orchestrator-tokens work. Implementation plan:
   [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md).
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
