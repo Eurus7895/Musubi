@@ -310,6 +310,151 @@ def _elide_large_file_tool_inputs(
     return out
 
 
+class ContextBudgetExceededError(RuntimeError):
+    """A model input cannot be fit under a hard serialized-char budget.
+
+    Raised only after reversible compression AND non-reversible tool-result
+    stubbing have both failed to bring the input under the cap — i.e. the
+    protected minimum (system prompt, first user goal, tool definitions) alone
+    already exceeds it. The caller must not send an over-budget request.
+    """
+
+    def __init__(self, total_chars: int, budget_chars: int) -> None:
+        self.total_chars = total_chars
+        self.budget_chars = budget_chars
+        super().__init__(
+            f"model input {total_chars} chars exceeds the hard "
+            f"{budget_chars}-char cap even after compression and stubbing"
+        )
+
+
+_HARD_STUB_PREFIX = "[context-dropped:"
+
+
+def _serialized_len(obj: Any) -> int:
+    return len(json.dumps(obj, ensure_ascii=False, default=str))
+
+
+def _model_input_chars(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> int:
+    """Serialized size of exactly what crosses the wire: messages + tool defs."""
+    return _serialized_len(messages) + _serialized_len(tools)
+
+
+def _protected_head(messages: list[dict[str, Any]]) -> set[int]:
+    """Indices never stubbed: the leading system prompt and first user goal.
+
+    A root turn seeds [system, user-goal]; a child worker seeds a single user
+    turn whose content IS the firewalled brief. Both leading anchors are kept
+    verbatim so the model never loses the task itself to make room.
+    """
+    if not messages:
+        return set()
+    if messages[0].get("role") == "system":
+        return {0, 1} if len(messages) > 1 else {0}
+    return {0}
+
+
+def _hard_stub_tool_results(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    budget_chars: int,
+    protected: set[int],
+) -> list[dict[str, Any]]:
+    """Replace tool_result contents with short stubs, oldest first, until fit.
+
+    Pairing is preserved — the tool_result block stays, only its content
+    shrinks, so tool_use/tool_result alternation is never broken. Protected
+    head messages are skipped. Stops as soon as the serialized total fits.
+    """
+    out = list(messages)
+
+    def total() -> int:
+        return _model_input_chars(out, tools)
+
+    for index, message in enumerate(out):
+        if total() <= budget_chars:
+            break
+        if index in protected:
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        new_content: list[Any] = []
+        changed = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                original = block.get("content")
+                original_text = (
+                    original if isinstance(original, str)
+                    else json.dumps(original, default=str)
+                )
+                if original_text.startswith(_HARD_STUB_PREFIX):
+                    new_content.append(block)
+                    continue
+                stubbed = dict(block)
+                stubbed["content"] = (
+                    f"{_HARD_STUB_PREFIX} {len(original_text)} chars dropped to fit "
+                    f"the hard {budget_chars}-char model-input cap"
+                    f"{_retrieve_hint(original_text)}]"
+                )
+                new_content.append(stubbed)
+                changed = True
+            else:
+                new_content.append(block)
+        if changed:
+            edited = dict(message)
+            edited["content"] = new_content
+            out[index] = edited
+    return out
+
+
+def fit_model_input(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    budget_chars: int,
+    compression_db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Fit messages + tool definitions under a HARD serialized-char budget.
+
+    Unlike `fit_context` (best-effort, soft), this guarantees the serialized
+    total of the returned messages plus the unchanged `tools` is at or below
+    `budget_chars`, or it raises `ContextBudgetExceededError`. Two passes:
+
+      1. reversible compression (`fit_context`) using the room left after the
+         tool definitions are reserved;
+      2. if still over, non-reversible tool-result stubbing (oldest first),
+         never touching the system prompt or first user goal.
+
+    `budget_chars <= 0` disables fitting (returns the input unchanged), matching
+    `fit_context`'s disabled semantics.
+    """
+    if budget_chars <= 0:
+        return messages
+    tools = tools or []
+    tool_chars = _serialized_len(tools)
+    if tool_chars >= budget_chars:
+        # The tool catalog alone does not leave room for even the task; the
+        # caller must trim its tool surface, not its conversation.
+        raise ContextBudgetExceededError(tool_chars, budget_chars)
+    fitted = fit_context(
+        messages,
+        budget_chars=max(1, budget_chars - tool_chars),
+        compression_db_path=compression_db_path,
+    )
+    if _model_input_chars(fitted, tools) <= budget_chars:
+        return fitted
+    fitted = _hard_stub_tool_results(
+        fitted, tools, budget_chars, _protected_head(fitted)
+    )
+    total = _model_input_chars(fitted, tools)
+    if total > budget_chars:
+        raise ContextBudgetExceededError(total, budget_chars)
+    return fitted
+
+
 def fit_context(
     messages: list[dict[str, Any]],
     *,

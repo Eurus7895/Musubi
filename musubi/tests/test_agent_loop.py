@@ -267,6 +267,82 @@ def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
     )
 
 
+def test_fit_model_input_enforces_hard_cap_including_tools() -> None:
+    from agent.context import fit_model_input
+
+    tools = [
+        {"name": f"tool_{i}", "description": "x" * 300, "input_schema": {"y": "z" * 300}}
+        for i in range(3)
+    ]
+    big = "GLOB RESULT " + ("path/to/file.py\n" * 800)
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "you are the agent"},
+        {"role": "user", "content": "the user goal is to build a dashboard"},
+    ]
+    for i in range(6):
+        messages.append({
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": f"t{i}", "name": "musubi_glob",
+                         "input": {"pattern": "**/*"}}],
+        })
+        messages.append({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": big}],
+        })
+
+    fitted = fit_model_input(messages, tools, budget_chars=16_000)
+    size = len(json.dumps(fitted, ensure_ascii=False, default=str))
+    size += len(json.dumps(tools, ensure_ascii=False, default=str))
+    assert size <= 16_000
+    # The system prompt and first user goal are never sacrificed.
+    assert fitted[0] == messages[0]
+    assert "user goal" in json.dumps(fitted[1])
+
+
+def test_fit_model_input_raises_when_tools_alone_exceed_budget() -> None:
+    from agent.context import ContextBudgetExceededError, fit_model_input
+
+    tools = [{"name": "huge", "schema": "z" * 5_000}]
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "goal"},
+    ]
+    with pytest.raises(ContextBudgetExceededError):
+        fit_model_input(messages, tools, budget_chars=2_000)
+
+
+def test_fit_model_input_disabled_when_budget_nonpositive() -> None:
+    from agent.context import fit_model_input
+
+    messages: list[dict[str, Any]] = [{"role": "user", "content": "x" * 10_000}]
+    assert fit_model_input(messages, [], budget_chars=0) is messages
+
+
+def test_run_loop_raises_context_budget_exceeded_before_vendor_call() -> None:
+    """An explicit-budget worker whose protected input cannot fit raises before
+    ever calling the model."""
+    from agent import run as run_mod
+    from agent.context import ContextBudgetExceededError
+
+    class ExplodingRouter(LMRouter):
+        name = "boom"
+        model = "boom-1"
+
+        def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+            raise AssertionError("vendor.call must not run over a hard cap")
+
+    tools = [{"name": "huge", "schema": "z" * 40_000}]
+    with pytest.raises(ContextBudgetExceededError):
+        asyncio.run(
+            run_mod._run_loop(
+                object(), ExplodingRouter(), tools,
+                [{"role": "user", "content": "brief"}],
+                max_cycles=1, log=io.StringIO(),
+                context_budget_chars=16_000,
+            )
+        )
+
+
 def test_run_loop_passes_context_compression_db_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
