@@ -42,6 +42,17 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    tool definitions, and reserve token capacity so planner/designer cannot
    consume coder/reviewer shares. Plan:
    [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
+   Landed: a validated `PipelineWorkerSpec` resolves each stage's contract
+   before spawn, so its declared `maxTurns` (clamped to [1, 12]) is the single
+   cap flowing through the spawn row, `run_unit`, and the completion audit — the
+   stage tool echoes `max_turns` and the driver fails closed on divergence.
+   `fit_model_input` gives every explicit-budget worker (each pipeline stage) a
+   hard input cap that counts tool definitions and raises before the model call
+   rather than sending an over-budget request; the root keeps soft best-effort
+   fitting. `ChildTokenBudget` + `pipeline_stage_allowance` give each stage a
+   fair-share slice of the run budget charged through to the parent, so an early
+   stage cannot spend a later stage's reserve, and allowance exhaustion
+   finalizes the run once as `escalated`.
 
 Runtime limits have one owner per dimension: this track owns pipeline-stage
 turn caps, model-input characters, and total stage allowances; per-worker

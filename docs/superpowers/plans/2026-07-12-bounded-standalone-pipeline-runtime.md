@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Implemented. `PipelineWorkerSpec` + `resolve_pipeline_worker_spec`
+validate each stage contract before spawn; one `maxTurns`-derived cap threads
+through spawn row / `run_unit` / completion audit; `fit_model_input` enforces a
+hard 16k model-input cap (tool defs counted) for every explicit-budget worker;
+`ChildTokenBudget` + `pipeline_stage_allowance` reserve later-stage token share.
+Full Python suite green (1387 passed, 1 skipped). Some plan specifics were
+adapted to the code as it stands (the effort-ceiling and orchestrator-token
+work had already landed adjacent plumbing): the hard input cap applies to
+explicit-budget workers only (the root keeps soft fitting), the missing-prompt
+case now fails before a stage handle is opened, and the budget test module is
+`test_agent_budget.py`.
+
 **Goal:** Prevent planner/designer loops from exhausting a pipeline run before coder/reviewer by making worker metadata, turn caps, context size, and stage token allowances explicit and enforceable.
 
 **Architecture:** The standalone pipeline remains a recipe of ordinary standalone workers; it does not adopt the incompatible VS Code stage-store protocol. A validated `PipelineWorkerSpec` controls prompt, max cycles, and hard context size. Every stage receives a child token allowance that charges the shared run budget while reserving capacity for later stages.

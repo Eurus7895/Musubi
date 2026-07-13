@@ -99,7 +99,7 @@ class ChildTokenBudget:
 
     def __init__(
         self,
-        parent: "TokenBudgetEnforcer | ChildTokenBudget",
+        parent: TokenBudgetEnforcer | ChildTokenBudget,
         max_tokens: int,
         warn_at_ratio: float = 0.8,
     ) -> None:
@@ -141,7 +141,7 @@ class ChildTokenBudget:
 
 
 def pipeline_stage_allowance(
-    parent: "TokenBudgetEnforcer | ChildTokenBudget",
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
     stages_remaining: int,
 ) -> int:
     """Fair-share token allowance for the next stage, reserving the rest.
