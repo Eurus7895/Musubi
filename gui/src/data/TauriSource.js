@@ -17,7 +17,7 @@ const DOMAIN_KEYS = [
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
-  'orchestratorChatId', 'pipelineChatId', 'orchestratorSessions', 'pipelineCatalog', 'pipelineRuns',
+  'orchestratorChatId', 'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions', 'pipelineCatalog', 'pipelineRuns',
 ]
 
 export default class TauriSource {
@@ -31,7 +31,7 @@ export default class TauriSource {
       selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
       processOpen: false, logWindowOpen: false,
       subagents: [], agentTurns: [], orchestratorSessions: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
-      orchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
+      orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],
       pipeName: '', pipeSteps: [], pipeModified: false,
@@ -101,7 +101,6 @@ export default class TauriSource {
       // Choose a durable chat session (including driver-only sessions). Clear
       // any per-worker selection and let the backend swap the exact chat ID.
       selectSession: (id) => {
-        if (this.state.driverStatus?.running) return
         this._setLocal({
           view: 'orchestrator',
           selectedSession: id,
