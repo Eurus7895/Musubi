@@ -36,6 +36,7 @@ use serde::Serialize;
 pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
+    pub agent_cycles: Vec<AgentCycle>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
@@ -283,10 +284,22 @@ pub struct AgentTurn {
     pub cycles: i64,
     pub tokens_in_estimate: i64,
     pub tokens_out_estimate: i64,
-    // How much prior conversation this turn replayed as its seed. 0 for a
-    // stateless turn; large replay is the dominant cost of long GUI sessions.
-    pub replay_messages: i64,
-    pub replay_tokens: i64,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCycle {
+    pub session_id: String,
+    pub stage: String,
+    pub worker_id: String,
+    pub cycle_idx: i64,
+    pub lm_ms: i64,
+    pub tokens_in: i64,
+    pub cached_input_tokens: i64,
+    pub tokens_out: i64,
+    pub token_source: String,
+    pub tool_names: Vec<String>,
+    pub cycle_status: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -369,6 +382,26 @@ fn parse_tools(raw: &str) -> Vec<String> {
     s.split(',')
         .map(|x| x.trim().to_string())
         .filter(|x| !x.is_empty())
+        .collect()
+}
+
+fn parse_cycle_tools(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return vec![];
+    };
+    let Some(items) = value.as_array() else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            item.as_str().map(str::to_string).or_else(|| {
+                item.as_object()
+                    .and_then(|obj| obj.get("name"))
+                    .and_then(|name| name.as_str())
+                    .map(str::to_string)
+            })
+        })
         .collect()
 }
 
@@ -795,20 +828,11 @@ fn load_state_at_with_pipeline_runs(
     // production it lives in the sibling musubi.db rather than audit.db.
     let agent_turn_conn = pipeline_state_conn.unwrap_or(conn);
     if table_exists(agent_turn_conn, "agent_turns")? {
-        // Replay columns are recent; older audit DBs lack them. Select constant
-        // zeros in that case so the reader tolerates a pre-migration DB.
-        let has_replay = column_exists(agent_turn_conn, "agent_turns", "replay_tokens")?;
-        let sql = if has_replay {
+        let mut tstmt = agent_turn_conn.prepare(
             "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
-                    tokens_in_estimate, tokens_out_estimate, replay_messages, replay_tokens \
-             FROM agent_turns ORDER BY id ASC LIMIT 120"
-        } else {
-            "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
-                    tokens_in_estimate, tokens_out_estimate, 0 AS replay_messages, \
-                    0 AS replay_tokens \
-             FROM agent_turns ORDER BY id ASC LIMIT 120"
-        };
-        let mut tstmt = agent_turn_conn.prepare(sql)?;
+                    tokens_in_estimate, tokens_out_estimate \
+             FROM agent_turns ORDER BY id ASC LIMIT 120",
+        )?;
         st.agent_turns = tstmt
             .query_map([], |r| {
                 Ok(AgentTurn {
@@ -821,11 +845,52 @@ fn load_state_at_with_pipeline_runs(
                     cycles: r.get(5)?,
                     tokens_in_estimate: r.get(6)?,
                     tokens_out_estimate: r.get(7)?,
-                    replay_messages: r.get(8)?,
-                    replay_tokens: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    if table_exists(agent_turn_conn, "agent_cycles")? {
+        let expr = |column: &str, fallback: &str| -> rusqlite::Result<String> {
+            Ok(if column_exists(agent_turn_conn, "agent_cycles", column)? {
+                format!("COALESCE({column}, {fallback})")
+            } else {
+                fallback.to_string()
+            })
+        };
+        let sql = format!(
+            "SELECT session_id, stage, {}, cycle_idx, {}, {}, {}, {}, {}, {}, {} \
+             FROM agent_cycles ORDER BY id DESC LIMIT 1000",
+            expr("worker_id", "'root'")?,
+            expr("lm_ms", "0")?,
+            expr("tokens_in", "0")?,
+            expr("cached_input_tokens", "0")?,
+            expr("tokens_out", "0")?,
+            expr("token_source", "'estimated'")?,
+            expr("tool_calls_json", "''")?,
+            expr("cycle_status", "'ok'")?,
+        );
+        let mut cycle_stmt = agent_turn_conn.prepare(&sql)?;
+        let mut cycles = cycle_stmt
+            .query_map([], |r| {
+                let tool_json = r.get::<_, String>(9)?;
+                Ok(AgentCycle {
+                    session_id: r.get(0)?,
+                    stage: r.get(1)?,
+                    worker_id: r.get(2)?,
+                    cycle_idx: r.get(3)?,
+                    lm_ms: r.get(4)?,
+                    tokens_in: r.get(5)?,
+                    cached_input_tokens: r.get(6)?,
+                    tokens_out: r.get(7)?,
+                    token_source: r.get(8)?,
+                    tool_names: parse_cycle_tools(&tool_json),
+                    cycle_status: r.get(10)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        cycles.reverse();
+        st.agent_cycles = cycles;
     }
 
     if table_exists(conn, "sessions")?
@@ -1269,8 +1334,26 @@ CREATE TABLE IF NOT EXISTS agent_turns (
   tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
   lm_ms                INTEGER NOT NULL DEFAULT 0,
   total_ms             INTEGER NOT NULL DEFAULT 0,
-  replay_messages      INTEGER NOT NULL DEFAULT 0,
-  replay_tokens        INTEGER NOT NULL DEFAULT 0,
+  schema_version       TEXT NOT NULL DEFAULT 'v1'
+);
+CREATE TABLE IF NOT EXISTS agent_cycles (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id           TEXT NOT NULL,
+  stage                TEXT NOT NULL,
+  attempt              INTEGER NOT NULL,
+  chunk_id             TEXT,
+  cycle_idx            INTEGER NOT NULL,
+  started_at           REAL NOT NULL,
+  ended_at             REAL,
+  lm_ms                INTEGER NOT NULL DEFAULT 0,
+  tool_calls_json      TEXT,
+  text_chars           INTEGER NOT NULL DEFAULT 0,
+  worker_id            TEXT NOT NULL DEFAULT 'root',
+  tokens_in            INTEGER NOT NULL DEFAULT 0,
+  cached_input_tokens  INTEGER NOT NULL DEFAULT 0,
+  tokens_out           INTEGER NOT NULL DEFAULT 0,
+  token_source         TEXT NOT NULL DEFAULT 'estimated',
+  cycle_status         TEXT NOT NULL DEFAULT 'ok',
   schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -1678,9 +1761,6 @@ mod tests {
         assert_eq!(st.agent_turns.len(), 1);
         assert_eq!(st.agent_turns[0].parent_session, "direct-session");
         assert_eq!(st.agent_turns[0].cycles, 1);
-        // A row inserted without the replay columns reads back as 0.
-        assert_eq!(st.agent_turns[0].replay_messages, 0);
-        assert_eq!(st.agent_turns[0].replay_tokens, 0);
     }
 
     #[test]
@@ -1736,23 +1816,81 @@ mod tests {
     }
 
     #[test]
-    fn agent_turns_surface_replay_seed_cost() {
+    fn loads_current_agent_cycle_economics() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO agent_turns\
-             (id,chat_id,parent_session_id,started_at,model_family,cycles,\
-              tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms,\
-              replay_messages,replay_tokens)\
-             VALUES(7,'gui-orchestrator-abc-1','s',1.0,'deepseek',3,900,80,10,20,49,48120)",
+            "INSERT INTO agent_cycles\
+             (session_id,stage,attempt,cycle_idx,started_at,worker_id,lm_ms,\
+              tokens_in,cached_input_tokens,tokens_out,token_source,\
+              tool_calls_json,cycle_status)\
+             VALUES('s','code',1,2,1.0,'worker-7',150,1200,800,90,\
+                    'provider','[\"musubi_read_file\",\"musubi_grep\"]','final')",
             [],
         )
         .unwrap();
 
         let st = load_state(&conn).unwrap();
 
-        assert_eq!(st.agent_turns[0].replay_messages, 49);
-        assert_eq!(st.agent_turns[0].replay_tokens, 48120);
+        assert_eq!(st.agent_cycles.len(), 1);
+        let cycle = &st.agent_cycles[0];
+        assert_eq!(cycle.session_id, "s");
+        assert_eq!(cycle.worker_id, "worker-7");
+        assert_eq!(cycle.tokens_in, 1200);
+        assert_eq!(cycle.cached_input_tokens, 800);
+        assert_eq!(cycle.tokens_out, 90);
+        assert_eq!(cycle.token_source, "provider");
+        assert_eq!(cycle.tool_names, vec!["musubi_read_file", "musubi_grep"]);
+    }
+
+    #[test]
+    fn loads_legacy_agent_cycles_with_safe_defaults() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE agent_cycles;
+             CREATE TABLE agent_cycles (
+               id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
+               stage TEXT NOT NULL, cycle_idx INTEGER NOT NULL,
+               tool_calls_json TEXT
+             );
+             INSERT INTO agent_cycles VALUES
+               (1,'s','plan',0,'[{\"name\":\"old_tool\",\"ok\":true}]'),
+               (2,'s','plan',1,'not-json');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_cycles.len(), 2);
+        assert_eq!(st.agent_cycles[0].worker_id, "root");
+        assert_eq!(st.agent_cycles[0].tokens_in, 0);
+        assert_eq!(st.agent_cycles[0].token_source, "estimated");
+        assert_eq!(st.agent_cycles[0].tool_names, vec!["old_tool"]);
+        assert!(st.agent_cycles[1].tool_names.is_empty());
+    }
+
+    #[test]
+    fn agent_cycles_reader_keeps_the_newest_thousand_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        for id in 1..=1001 {
+            tx.execute(
+                "INSERT INTO agent_cycles
+                 (id,session_id,stage,attempt,cycle_idx,started_at)
+                 VALUES(?1,?2,'agent',1,0,1.0)",
+                rusqlite::params![id, format!("session-{id}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_cycles.len(), 1000);
+        assert_eq!(st.agent_cycles.first().unwrap().session_id, "session-2");
+        assert_eq!(st.agent_cycles.last().unwrap().session_id, "session-1001");
     }
 
     #[test]

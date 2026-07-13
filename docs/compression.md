@@ -88,8 +88,7 @@ Markdown notes, plus one synthetic conversation packing scenario. In the
 context scenario, one old tool result is compressed, one raw block is
 trimmed, and the recent turn is preserved. `model_visible_chars`
 includes retrieval marker overhead. Token counts and character savings
-are stable evaluation metrics; price tables and estimated credits are
-log-only and are not budget enforcement inputs.
+are stable evaluation metrics and budget inputs remain token-only.
 
 ## Verification
 

@@ -439,6 +439,9 @@ def test_pipeline_stage_threads_frontmatter_output_budget(
     ))
 
     assert seen["worker_max_output"] == 32768
+    assert seen["audit_session_id"] == "pipe-budget"
+    assert seen["audit_worker_id"] == "h-code"
+    assert seen["audit_stage"] == "code"
 
 
 def test_run_pipeline_aborts_truncated_write_without_dispatching_it(

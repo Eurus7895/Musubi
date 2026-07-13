@@ -159,6 +159,9 @@ async def run_subagent(
             budget=budget,
             audit_db_path=audit_db_path,
             worker_max_output=worker_max_output,
+            audit_session_id=spawn_args.get("parent_session_id"),
+            audit_worker_id=handle_id,
+            audit_stage=role,
         )
     except Exception as exc:
         if type(exc).__name__ in {

@@ -19,7 +19,7 @@
     },
     {
       "name": "TokenBudgetEnforcer in the standalone host",
-      "evidence": "--max-tokens and MUSUBI_AGENT_MAX_TOKENS gate LM calls with token counts as the source of truth; estimated credits are log-only."
+      "evidence": "--max-tokens and MUSUBI_AGENT_MAX_TOKENS gate LM calls; each logical cycle records normalized provider or estimated token usage."
     },
     {
       "name": "Shared worker path",
@@ -35,5 +35,5 @@
     }
   ],
   "external_mcp_boundary": "Federated external MCP tools remain outside Musubi governance in this slice; they are driver-routed convenience tools, not substrate-controlled tools.",
-  "verification_note": "Local Python was unavailable on this workstation, so the new pytest coverage was written but could not be executed locally."
+  "verification_note": "Focused Python, Rust, JavaScript, and GUI build checks cover the token-only boundary contract."
 }

@@ -167,10 +167,11 @@ were previously only visible in narrower paths:
   boundary. The default cap is `200000` total tokens, `--max-tokens <n>`
   overrides it, and `--max-tokens 0` or `MUSUBI_AGENT_MAX_TOKENS=0` disables
   the cap.
-- **Usage telemetry:** every LM cycle logs estimated input/output tokens,
-  elapsed LM milliseconds, and optional estimated credits. Persisted chat turns
-  also write `agent_turns` rows. Token counts are the source of truth; credits
-  are only a price-table-dependent estimate.
+- **Usage telemetry:** every logical LM cycle persists input tokens, the cached
+  input subset, output tokens, elapsed LM milliseconds, usage source, worker
+  identity, and tool names. Effort retries are aggregated into that cycle;
+  persisted chat turns also write `agent_turns` rows. The Console projects
+  selected-session totals without pricing them.
 - **Tool boundary audit:** model-requested `musubi_*` tool calls pass a
   deterministic PreToolUse policy check before dispatch and append PostToolUse
   rows after success, denial, or error. Policy verdicts are stored in

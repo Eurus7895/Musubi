@@ -300,7 +300,10 @@ def test_run_subagent_threads_frontmatter_output_budget(
 
     result = asyncio.run(run_subagent(
         Session(),
-        {"role": "coder", "brief": "write it"},
+        {
+            "role": "coder", "brief": "write it",
+            "parent_session_id": "parent-1",
+        },
         FakeRouter([]),
         [],
         io.StringIO(),
@@ -309,3 +312,6 @@ def test_run_subagent_threads_frontmatter_output_budget(
 
     assert result == "done"
     assert seen["worker_max_output"] == 32768
+    assert seen["audit_session_id"] == "parent-1"
+    assert seen["audit_worker_id"] == "h1"
+    assert seen["audit_stage"] == "coder"
