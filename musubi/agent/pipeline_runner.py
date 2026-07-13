@@ -154,11 +154,7 @@ async def run_pipeline(
     may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
     from agent.run import _call_tool_text, run_unit
-    from agent.subagent import (
-        _frontmatter_max_output_tokens,
-        build_subagent_system_prompt,
-        select_child_tools,
-    )
+    from agent.subagent import build_subagent_system_prompt, select_child_tools
 
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
     spawned = _loads(raw)
@@ -180,9 +176,23 @@ async def run_pipeline(
         role = str(step.get("role", ""))
         brief = _stage_brief(request, summaries, i, len(plan))
 
+        # Resolve + validate the worker contract BEFORE spawning: a missing
+        # role prompt or a bad `maxTurns` fails the pipeline closed without ever
+        # opening a stage handle. `spec.max_cycles` is the ONE cap that flows
+        # into the spawn row, the runtime loop, and the completion audit — no
+        # more runner-hard-codes-12 while the server defaults to eight.
+        try:
+            spec = resolve_pipeline_worker_spec(role, pname, agents_dir)
+        except RuntimeError as exc:
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = f"[pipeline {pname}] stage {stage!r} {exc}"
+            if strict:
+                raise RuntimeError(msg) from exc
+            return msg
+
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
-            "stage": stage, "brief": brief,
+            "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
         })
         st = _loads(stage_raw)
         if st.get("status") != "spawned":
@@ -192,6 +202,28 @@ async def run_pipeline(
                 raise RuntimeError(msg)
             return msg
         handle_id = str(st.get("handle_id", ""))
+        # The server echoes the cap it recorded in the spawn row + audit. If it
+        # ever diverges from the requested spec, the run would silently audit a
+        # different cap than it enforces — fail the stage closed instead.
+        recorded_cap = st.get("max_turns")
+        if recorded_cap is not None and int(recorded_cap) != spec.max_cycles:
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": (
+                    f"[stage {stage}] recorded cap {recorded_cap} != "
+                    f"requested {spec.max_cycles}"
+                ),
+                "turns": 0,
+                "status": "failed",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = (
+                f"[pipeline {pname}] stage {stage!r} cap mismatch: "
+                f"server recorded {recorded_cap}, spec requested {spec.max_cycles}"
+            )
+            if strict:
+                raise RuntimeError(msg)
+            return msg
 
         # Same context path as a direct worker (agent/subagent.py): the
         # spawn context carries the firewalled brief, the role's pushed
@@ -215,28 +247,7 @@ async def run_pipeline(
         allowed = ctx.get("allowed_tools") or st.get("allowed_tools") or []
         role_skill = ctx.get("role_skill")
 
-        agent_md = _read_stage_agent_md(role, pname, agents_dir)
-        if not agent_md.strip():
-            # Fail closed: a stage never runs on an empty role prompt. A
-            # silent brief-only worker looks like a working pipeline while
-            # quietly dropping the role's contract.
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": f"[stage {stage}] no role prompt found for {role!r}",
-                "turns": 0,
-                "status": "failed",
-            })
-            await _finalize_pipeline(session, psid, "aborted", False)
-            msg = (
-                f"[pipeline {pname}] stage {stage!r} has no role prompt: "
-                f"expected .github/agents/workers/{role}.agent.md or "
-                f".github/agents/pipeline-stages/{pname}/{role}.agent.md"
-            )
-            if strict:
-                raise RuntimeError(msg)
-            return msg
-        worker_max_output = _frontmatter_max_output_tokens(agent_md)
-        system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
+        system_prompt = build_subagent_system_prompt(spec.prompt, role_skill, brief)
         child_tools = select_child_tools(tools, allowed)
 
         # Stage nesting (mirrors agent/subagent.py's worker nesting): the
@@ -272,16 +283,16 @@ async def run_pipeline(
             answer, turns = await run_unit(
                 session, vendor, child_tools,
                 system_prompt=system_prompt, user_message=None,
-                max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
+                max_cycles=spec.max_cycles, log=log,
                 compression_db_path=compression_db_path,
-                context_budget_chars=PIPELINE_CONTEXT_BUDGET,
+                context_budget_chars=spec.context_budget_chars,
                 role=role,
                 stats=stats,
                 budget=budget,
                 audit_db_path=audit_db_path,
                 orchestration=stage_orch,
                 spawn_catalog=stage_spawn_catalog,
-                worker_max_output=worker_max_output,
+                worker_max_output=spec.worker_max_output,
                 audit_session_id=psid,
                 audit_worker_id=handle_id,
                 audit_stage=stage,
@@ -320,7 +331,7 @@ async def run_pipeline(
         status = "done" if answer is not None else "escalated"
         if answer is None:
             pipeline_escalated = True
-            answer = f"[stage {stage}] exceeded {DEFAULT_STAGE_MAX_CYCLES} cycles"
+            answer = f"[stage {stage}] exceeded {spec.max_cycles} cycles"
 
         await _call_tool_text(session, "musubi_complete_subagent", {
             "handle_id": handle_id, "summary": answer, "turns": turns, "status": status,

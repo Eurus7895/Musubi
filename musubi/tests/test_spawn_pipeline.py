@@ -272,11 +272,11 @@ def test_stage_without_role_prompt_fails_closed(
 ) -> None:
     """A stage whose role has no prompt in workers/ or
     pipeline-stages/<pipeline>/ must fail the pipeline, not run silently
-    on an empty prompt. The stage is audited as failed and the run
-    finalised as aborted."""
+    on an empty prompt. The contract is now resolved BEFORE the stage is
+    spawned, so a doomed stage never opens a handle — the run is finalised
+    as aborted without a stage spawn or completion."""
     from agent import pipeline_runner
 
-    completions: list[dict[str, Any]] = []
     finalizations: list[dict[str, Any]] = []
 
     async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
@@ -286,23 +286,11 @@ def test_stage_without_role_prompt_fails_closed(
                 "pipeline_name": "ghost-pipe",
                 "plan": [{"stage": "scan", "role": "phantom"}],
             })
-        if name == "musubi_spawn_pipeline_stage":
-            return json.dumps({
-                "status": "spawned", "handle_id": "h-scan", "role": "phantom",
-                "allowed_tools": [],
-            })
-        if name == "musubi_get_subagent_context":
-            return json.dumps({
-                "status": "ok", "brief": "b", "role": "phantom",
-                "role_skill": None, "allowed_tools": [],
-            })
-        if name == "musubi_complete_subagent":
-            completions.append(args)
-            return json.dumps({"status": "ok"})
         if name == "musubi_finalize_pipeline_run":
             finalizations.append(args)
             return json.dumps({"status": "ok"})
-        raise AssertionError(name)
+        # A stage is never spawned for an unresolvable role.
+        raise AssertionError(f"unexpected call before resolution: {name}")
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
 
@@ -314,7 +302,6 @@ def test_stage_without_role_prompt_fails_closed(
             PipelineRouter(), [], io.StringIO(), strict=True,
         ))
 
-    assert completions and completions[0]["status"] == "failed"
     assert finalizations == [{
         "session_id": "pipe-ghost", "final_status": "aborted", "escalated": False,
     }]
@@ -442,6 +429,119 @@ def test_pipeline_stage_threads_frontmatter_output_budget(
     assert seen["audit_session_id"] == "pipe-budget"
     assert seen["audit_worker_id"] == "h-code"
     assert seen["audit_stage"] == "code"
+
+
+def test_pipeline_stage_cap_is_consistent_across_spawn_run_and_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One cap governs the stage: the spawn row, run_unit(max_cycles=...), and
+    the completion all see the frontmatter `maxTurns`, not a runner default."""
+    from agent import pipeline_runner
+
+    spawn_calls: list[dict[str, Any]] = []
+    completions: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-cap",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            spawn_calls.append(args)
+            # A conformant server echoes the cap it was handed.
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    run_unit_kwargs: dict[str, Any] = {}
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        run_unit_kwargs.update(kwargs)
+        return "stage done", 3
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+    monkeypatch.setattr(
+        pipeline_runner, "_read_stage_agent_md",
+        lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
+    )
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "ship it"},
+        PipelineRouter(), [], io.StringIO(), strict=True,
+    ))
+
+    assert spawn_calls[0]["max_turns"] == 4
+    assert run_unit_kwargs["max_cycles"] == 4
+    assert completions and completions[0]["turns"] <= 4
+
+
+def test_pipeline_stage_cap_mismatch_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that records a different cap than requested fails the stage —
+    the audit must never disagree with the enforced cap."""
+    from agent import pipeline_runner
+
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-mismatch",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": 99,  # diverges from requested 4
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr(
+        pipeline_runner, "_read_stage_agent_md",
+        lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
+    )
+
+    with pytest.raises(RuntimeError, match="cap mismatch"):
+        asyncio.run(pipeline_runner.run_pipeline(
+            None,
+            {"parent_session_id": "outer", "parent_agent_name": "agent",
+             "pipeline_name": "feature-dev", "brief": "ship it"},
+            PipelineRouter(), [], io.StringIO(), strict=True,
+        ))
+
+    assert finalizations == [{
+        "session_id": "pipe-mismatch", "final_status": "aborted", "escalated": False,
+    }]
 
 
 def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
