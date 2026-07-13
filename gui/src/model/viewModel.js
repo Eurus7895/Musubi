@@ -157,17 +157,32 @@ function runSummary(status, logText, run) {
   return 'No worker activity for this run yet.'
 }
 
-// Seed-cost line for a run's driver turn: how much prior conversation was
-// replayed. Empty for a stateless/fresh-session turn (replayTokens 0).
-function replayLineForRun(run) {
-  const turn = run?.turn
-  const tokens = Number(turn?.replayTokens || 0)
-  if (!turn || tokens <= 0) return ''
-  const msgs = Number(turn.replayMessages || 0)
-  const k = tokens >= 1000
-    ? (tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1) + 'k'
-    : String(tokens)
-  return `replayed ${msgs} msg${msgs === 1 ? '' : 's'} · ${k} seed tok`
+function economicsForSession(agentCycles, sessionId) {
+  const rows = (agentCycles || []).filter((row) => row.sessionId === sessionId)
+  const tools = new Map()
+  const summary = {
+    cycles: rows.length,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    lmMs: 0,
+    tokenSource: rows.length && rows.every((row) => row.tokenSource === 'provider')
+      ? 'provider'
+      : 'estimated',
+    tools: [],
+  }
+  rows.forEach((row) => {
+    const input = Math.max(0, Number(row.tokensIn) || 0)
+    summary.inputTokens += input
+    summary.cachedInputTokens += Math.max(0, Math.min(input, Number(row.cachedInputTokens) || 0))
+    summary.outputTokens += Math.max(0, Number(row.tokensOut) || 0)
+    summary.lmMs += Math.max(0, Number(row.lmMs) || 0)
+    ;(row.toolNames || []).forEach((name) => {
+      if (name) tools.set(name, (tools.get(name) || 0) + 1)
+    })
+  })
+  summary.tools = Array.from(tools, ([name, count]) => ({ name, count }))
+  return summary
 }
 
 function statusCountLine(steps) {
@@ -618,13 +633,16 @@ export function buildViewModel(s, act) {
     keyEnv: '',
     fc: '#ff9b3d',
   }
+  const activeEconomicsSessionId = activeRunRaw?.rootTurn?.parentSession
+    || activeRunRaw?.turn?.parentSession
+    || activeSessionId
   const driverSummary = {
     title: 'Run summary',
     countLine: statusCountLine(activeSessionAgents),
     focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
     alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
-    replayLine: replayLineForRun(activeRunRaw),
+    economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionId),
   }
   const pipeRunSummary = {
     title: 'Studio run',
@@ -632,7 +650,7 @@ export function buildViewModel(s, act) {
     focusLine: focusLineForRun(activePipeSessionAgents, currentPipeSessionAgent),
     alertLine: runSummary(activePipeRunStatus, processTextForPipeRuns, activePipeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
-    replayLine: replayLineForRun(activePipeRunRaw),
+    economics: economicsForSession(s.agentCycles || [], activePipeSessionId),
   }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile

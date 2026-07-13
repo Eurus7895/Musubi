@@ -60,16 +60,6 @@ for the same dimension.
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
   and relevant tools.
-- **GUI/CLI orchestrator token economics.** Enrich the existing per-cycle audit
-  with tool-name, replay-token, and seed-cost fields and project those fields in
-  the Console. Add a deterministic mechanical validation gate at the worker
-  boundary so the goal-holding root can accept a compact validator signal,
-  diff/summary, and artifact path instead of re-ingesting whole artifacts.
-  Session isolation, advisory routing with explicit `--plan`, cumulative
-  worker-count enforcement, empty-write protection, and chunked retry are
-  completed dependencies rather than work owned by this track. Implementation
-  plan:
-  [`2026-07-09-gui-cli-orchestrator-tokens.md`](./superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md).
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this
@@ -97,6 +87,14 @@ for the same dimension.
 
 ## Completed Tracks
 
+- GUI/CLI orchestrator token economics — every logical root, child, pipeline,
+  retry, and forced-final LM cycle records input, cached-input subset, output,
+  LM time, usage source, worker identity, and tool names. Both Console surfaces
+  project selected-session totals from the same rows. The live contract is
+  token-only; obsolete pricing and history-attribution fields are ignored in
+  existing databases rather than destructively dropped. Design and plan:
+  [`2026-07-13-orchestrator-token-economics-design.md`](./superpowers/specs/2026-07-13-orchestrator-token-economics-design.md) and
+  [`2026-07-13-orchestrator-token-economics.md`](./superpowers/plans/2026-07-13-orchestrator-token-economics.md)
 - Per-worker effort ceiling and output budget — mutate workers open at the
   shared 16,384-token per-call brake while read-only workers retain the cheap
   2,048-token floor and sticky escalation. Worker frontmatter may declare

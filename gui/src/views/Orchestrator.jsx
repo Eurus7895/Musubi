@@ -2,6 +2,7 @@ import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
 import ChatBody from '../components/ChatBody.jsx'
 import NewSessionButton from '../components/NewSessionButton.jsx'
+import TokenEconomics from '../components/TokenEconomics.jsx'
 
 export default function Orchestrator({ vals }) {
   return (
@@ -99,7 +100,7 @@ function DriverCard({ vals }) {
       <div style={{ textAlign: 'center', marginTop: 7, fontSize: 12.5, color: '#f4f4f5', lineHeight: 1.4 }}>{summary.focusLine}</div>
       {summary.alertLine && <div style={{ margin: '11px auto 0', width: 'fit-content', maxWidth: '100%', fontSize: 11.5, color: '#ffcc77', lineHeight: 1.35, background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '6px 9px' }}>{summary.alertLine}</div>}
       <div style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#7a7a82', marginTop: 10 }}>{summary.metaLine}</div>
-      {summary.replayLine && <div title="Prior conversation replayed as this turn's seed. Start a new session to reset." style={{ textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#8ab4d8', marginTop: 4 }}>{summary.replayLine}</div>}
+      <TokenEconomics economics={summary.economics} />
     </div>
   )
 }

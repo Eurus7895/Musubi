@@ -2,6 +2,7 @@ import Box from '../lib/Box.jsx'
 import { cssToObj } from '../lib/css.js'
 import ChatBody from '../components/ChatBody.jsx'
 import NewSessionButton from '../components/NewSessionButton.jsx'
+import TokenEconomics from '../components/TokenEconomics.jsx'
 
 export default function Pipeline({ vals }) {
   return (
@@ -202,6 +203,7 @@ function PipelineRunHistory({ vals }) {
         {summary.alertLine && (
           <div style={{ margin: '11px 15px 0', width: 'fit-content', maxWidth: 'calc(100% - 30px)', fontSize: 11.5, color: '#ffcc77', lineHeight: 1.35, background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '6px 9px' }}>{summary.alertLine}</div>
         )}
+        <div style={{ margin: '0 15px' }}><TokenEconomics economics={summary.economics} /></div>
         <div style={{ flex: 1, overflow: 'auto', padding: 15 }}>
           {steps.length ? (
             <div style={{ display: 'flex', alignItems: 'stretch', gap: 14, minHeight: 178 }}>

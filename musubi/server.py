@@ -782,7 +782,6 @@ def musubi_record_stage_metric(
     chunk_id: str | None = None,
     tool_count: int = 0,
     tool_failures: int = 0,
-    credits: float = 0.0,
     model_family: str | None = None,
 ) -> str:
     """Append one row to `stage_metrics` after a stage's LM round-trip.
@@ -791,11 +790,7 @@ def musubi_record_stage_metric(
     the wall-clock ms + token estimates are already on hand there. Token
     counts are estimates (chars/4 heuristic), not billed amounts.
 
-    Stage 1 (MVP A.4): `credits` is the `estimateCallCredits` result the
-    runner already computes for the per-call chat display, and
-    `model_family` records which family produced the call. Persisted so
-    paused / historic sessions can sum their cumulative spend without a
-    live `BudgetEnforcer`. Defaults keep older callers backward-compat.
+    `model_family` records which provider model produced the call.
 
     Failures are non-fatal — observability writes must never abort a
     pipeline run.
@@ -805,38 +800,11 @@ def musubi_record_stage_metric(
             session_id, stage, attempt, started_at, ended_at,
             tokens_in_estimate, tokens_out_estimate, lm_ms,
             chunk_id=chunk_id, tool_count=tool_count, tool_failures=tool_failures,
-            credits=credits, model_family=model_family,
+            model_family=model_family,
         )
     except Exception as exc:
         return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
     return json.dumps({"status": "ok"})
-
-
-@mcp.tool()
-def musubi_session_credits(session_id: str) -> str:
-    """Stage 1 (MVP A.4) — return cumulative credits for a session, summed
-    from `stage_metrics.credits`.
-
-    Used by `/status`, the Tasks sidebar's per-session header, and the
-    `/credits` command's per-session breakdowns. Returns 0.0 when the
-    session has no rows OR rows pre-date the credits column."""
-    try:
-        total = _db.total_credits_for_session(session_id)
-    except Exception as exc:
-        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
-    return json.dumps({"status": "ok", "session_id": session_id, "credits": total})
-
-
-@mcp.tool()
-def musubi_credits_since(cutoff_ts: float) -> str:
-    """Stage 1 (MVP A.4) — sum credits across ALL sessions whose
-    `started_at >= cutoff_ts`. Drives the `/credits` command's today /
-    week / month roll-ups."""
-    try:
-        total = _db.total_credits_since(cutoff_ts)
-    except Exception as exc:
-        return json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
-    return json.dumps({"status": "ok", "cutoff_ts": cutoff_ts, "credits": total})
 
 
 @mcp.tool()
@@ -964,15 +932,19 @@ def musubi_record_agent_cycle(
     lm_ms: int = 0,
     tool_calls_json: str | None = None,
     text_chars: int = 0,
-    credits: float = 0.0,
+    worker_id: str = "root",
+    tokens_in: int = 0,
+    cached_input_tokens: int = 0,
+    tokens_out: int = 0,
+    token_source: str = "estimated",
     cycle_status: str = "ok",
 ) -> str:
     """Stage 2 (MVP A.2) — append one row to `agent_cycles` after each
     `sendRequest` cycle inside `runAgentLM`.
 
-    Called by the TS runner once per cycle (fire-and-forget). The
-    per-call `stage_metrics` row stays — this is the finer granularity
-    that makes the ephemeral-guard fire rates queryable.
+    Called by an orchestrator driver once per logical cycle. The per-call
+    `stage_metrics` row stays — this is the finer granularity that makes
+    worker activity and token usage queryable.
 
     `cycle_status` ∈ {'ok', 'final'}. `tool_calls_json` is a JSON-
     encoded `[{name, ok}]` array of dispatched tool calls (null/empty
@@ -992,7 +964,11 @@ def musubi_record_agent_cycle(
             lm_ms=lm_ms,
             tool_calls_json=tool_calls_json,
             text_chars=text_chars,
-            credits=credits,
+            worker_id=worker_id,
+            tokens_in=tokens_in,
+            cached_input_tokens=cached_input_tokens,
+            tokens_out=tokens_out,
+            token_source=token_source,
             cycle_status=cycle_status,
         )
     except Exception as exc:
@@ -1011,7 +987,7 @@ def musubi_query_agent_cycles(
     Optional filters: narrow by `stage` (e.g. 'plan') and/or `attempt`
     so consumers can drill into specific stages. Returns
     `{rows: [{stage, attempt, chunk_id, cycle_idx, lm_ms,
-    tool_calls_json, text_chars, credits, cycle_status, ...}]}`
+    tool_calls_json, text_chars, cycle_status, ...}]}`
     ordered chronologically.
 
     Consumers: dissolution-candidates SQL (cost-lever measurement),

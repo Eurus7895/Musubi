@@ -51,6 +51,11 @@ def test_agent_surface_excludes_driver_and_pipeline_internals() -> None:
     assert "musubi_complete_subagent" not in ROOT_AGENT_TOOL_NAMES
 
 
+def test_agent_surface_excludes_removed_credit_tools() -> None:
+    assert "musubi_session_credits" not in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_credits_since" not in ROOT_AGENT_TOOL_NAMES
+
+
 def test_full_surface_returns_none_meaning_unfiltered() -> None:
     assert tool_names_for_surface("full") is None
 

@@ -207,9 +207,33 @@ CREATE TABLE IF NOT EXISTS stage_metrics (
 CREATE INDEX IF NOT EXISTS idx_stage_metrics_session
     ON stage_metrics (session_id);
 
+CREATE TABLE IF NOT EXISTS agent_cycles (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL,
+    stage               TEXT NOT NULL,
+    attempt             INTEGER NOT NULL,
+    chunk_id            TEXT,
+    cycle_idx           INTEGER NOT NULL,
+    started_at          REAL NOT NULL,
+    ended_at            REAL,
+    lm_ms               INTEGER NOT NULL DEFAULT 0,
+    tool_calls_json     TEXT,
+    text_chars          INTEGER NOT NULL DEFAULT 0,
+    worker_id           TEXT NOT NULL DEFAULT 'root',
+    tokens_in           INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    tokens_out          INTEGER NOT NULL DEFAULT 0,
+    token_source        TEXT NOT NULL DEFAULT 'estimated',
+    cycle_status        TEXT NOT NULL DEFAULT 'ok',
+    schema_version      TEXT NOT NULL DEFAULT 'v1',
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_cycles_session
+    ON agent_cycles (session_id);
+
 -- Phase J follow-up — agent-turn observability. Parallel to
 -- `stage_metrics` (which is pipeline-only) so the Tasks view and any
--- future cross-session credit dashboard can show agent usage
+-- current cross-session token dashboard can show agent usage
 -- alongside pipeline usage instead of having to load
 -- `conversation_messages` (raw chat log without metrics).
 -- One row per agent turn. parent_session_id is the
@@ -227,8 +251,6 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
     lm_ms                INTEGER NOT NULL DEFAULT 0,
     total_ms             INTEGER NOT NULL DEFAULT 0,
-    replay_messages      INTEGER NOT NULL DEFAULT 0,
-    replay_tokens        INTEGER NOT NULL DEFAULT 0,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_chat

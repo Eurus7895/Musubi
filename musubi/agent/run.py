@@ -58,7 +58,6 @@ from agent.context import (
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
-    estimate_call_credits,
     estimate_tokens_from_chars,
 )
 from agent.boundary import (
@@ -189,7 +188,6 @@ class AgentRunStats:
     lm_ms: int = 0
     tokens_in_estimate: int = 0
     tokens_out_estimate: int = 0
-    estimated_credits: float = 0.0
 
     def record_cycle(
         self,
@@ -197,13 +195,11 @@ class AgentRunStats:
         lm_ms: int,
         tokens_in: int,
         tokens_out: int,
-        estimated_credits: float,
     ) -> None:
         self.cycles += 1
         self.lm_ms += lm_ms
         self.tokens_in_estimate += tokens_in
         self.tokens_out_estimate += tokens_out
-        self.estimated_credits += estimated_credits
 
 
 @dataclass
@@ -212,6 +208,16 @@ class EffortCallResult:
 
     response: LMResponse
     attempts: list[LMResponse]
+
+
+@dataclass(frozen=True)
+class CycleTokenUsage:
+    """Normalized provider usage for one logical loop cycle."""
+
+    tokens_in: int
+    cached_input_tokens: int
+    tokens_out: int
+    source: str
 
 
 # ── Public entry ────────────────────────────────────────────────────────────
@@ -227,7 +233,6 @@ async def run_agent(
     mcp_config: str | os.PathLike[str] | None = None,
     vendor_source: str | None = None,
     chat_id: str | None = None,
-    max_credits: float | None = None,
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
@@ -253,11 +258,7 @@ async def run_agent(
     audit_db_path = _server_audit_db_path(musubi_dir, server_env)
     turn_started_at = time.time()
     stats = AgentRunStats()
-    # Replay accounting for this turn's seed; stays 0 for a stateless (no chat_id)
-    # or deterministic turn, set below when chat history is loaded.
-    replay_messages = 0
-    replay_tokens = 0
-    budget = _build_token_budget(max_tokens, max_credits, log)
+    budget = _build_token_budget(max_tokens, log)
     scope_hint = classify_task(task)
     direct_answer = _deterministic_scope_answer(task, scope_hint)
     if direct_answer is not None:
@@ -381,12 +382,8 @@ async def run_agent(
                 chat_id, db_path=context_compression_db_path, log=log,
             )
             initial_messages = _messages_from_chat_history(system_prompt, history)
-            replay_messages = max(0, len(initial_messages) - 1)
-            replay_tokens = int(history.get("total_tokens", 0))
             print(
-                f"[agent] chat_id={chat_id} "
-                f"replay_messages={replay_messages} "
-                f"replay_tokens={replay_tokens}",
+                f"[agent] chat_id={chat_id} history loaded",
                 file=log,
             )
 
@@ -449,6 +446,9 @@ async def run_agent(
                     stats=stats,
                     budget=budget,
                     audit_db_path=audit_db_path,
+                    audit_session_id=parent_session_id,
+                    audit_worker_id="root",
+                    audit_stage="agent",
                 )
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
@@ -477,8 +477,6 @@ async def run_agent(
             stats=stats,
             db_path=context_compression_db_path,
             log=log,
-            replay_messages=replay_messages,
-            replay_tokens=replay_tokens,
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -505,6 +503,9 @@ async def _run_loop(
     audit_db_path: Path | None = None,
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
+    audit_session_id: str | None = None,
+    audit_worker_id: str = "root",
+    audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
 
@@ -577,6 +578,7 @@ async def _run_loop(
         # event loop so that when several worker loops run concurrently (parent
         # `_dispatch` gathers their spawns), siblings actually overlap on the LM
         # round-trip instead of serializing. Single-loop cost is one thread hop.
+        cycle_started_at = time.time()
         lm_started = time.perf_counter()
         effort = await asyncio.to_thread(
             _call_with_effort,
@@ -588,43 +590,91 @@ async def _run_loop(
         )
         lm_ms = int((time.perf_counter() - lm_started) * 1000)
         resp = effort.response
+        cycle_ended_at = time.time()
         if resp.stop_reason == "max_tokens" or len(effort.attempts) > 1:
             effort_escalated = True
-        tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+        usage = _cycle_token_usage(
             effort.attempts, input_tokens_est,
-        )
-        estimated_credits = estimate_call_credits(
-            vendor.model, tokens_in, tokens_out, cached_tokens,
         )
         if stats is not None:
             stats.record_cycle(
                 lm_ms=lm_ms,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                estimated_credits=estimated_credits,
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
             )
-        _charge_budget_postflight(budget, tokens_in + tokens_out, log)
         messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(
             log, cycle, resp.stop_reason, tool_uses, resp.usage,
-            tokens_out=tokens_out,
+            tokens_out=usage.tokens_out,
             attempt_count=len(effort.attempts),
         )
         _log_cycle_cost(
-            log, cycle, lm_ms, tokens_in, tokens_out, estimated_credits, budget,
+            log, cycle, lm_ms, usage.tokens_in, usage.tokens_out, budget,
         )
 
         text = _extract_text(resp.content)
         if text:
             last_text = text  # remember even when the model also called a tool
 
+        try:
+            _charge_budget_postflight(
+                budget, usage.tokens_in + usage.tokens_out, log,
+            )
+        except TokenBudgetExhaustedError:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="budget_halt",
+                log=log,
+            )
+            raise
+
         if not tool_uses:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="final",
+                log=log,
+            )
             final_answer = text
             break
 
         if resp.stop_reason == "max_tokens":
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="truncated",
+                log=log,
+            )
             dropped = ", ".join(
                 _dropped_tool_target(tu) for tu in tool_uses
             )
@@ -662,6 +712,21 @@ async def _run_loop(
             budget=budget,
             stats=stats,
             audit_db_path=audit_db_path,
+        )
+        _safe_record_agent_cycle(
+            db_path=compression_db_path,
+            session_id=audit_session_id,
+            worker_id=audit_worker_id,
+            stage=audit_stage,
+            cycle_idx=cycle,
+            started_at=cycle_started_at,
+            ended_at=cycle_ended_at,
+            lm_ms=lm_ms,
+            usage=usage,
+            tool_names=[str(tu.get("name", "")) for tu in tool_uses],
+            text_chars=len(text),
+            cycle_status="ok",
+            log=log,
         )
         messages.append({"role": "user", "content": tool_results})
 
@@ -706,6 +771,7 @@ async def _run_loop(
                     )
                     print(final_answer, file=log)
                     raise
+                cycle_started_at = time.time()
                 lm_started = time.perf_counter()
                 effort = await asyncio.to_thread(
                     _call_with_effort,
@@ -717,25 +783,58 @@ async def _run_loop(
                 )
                 lm_ms = int((time.perf_counter() - lm_started) * 1000)
                 resp = effort.response
-                tokens_in, tokens_out, cached_tokens = _cycle_token_counts(
+                usage = _cycle_token_usage(
                     effort.attempts, input_tokens_est,
-                )
-                estimated_credits = estimate_call_credits(
-                    vendor.model, tokens_in, tokens_out, cached_tokens,
                 )
                 if stats is not None:
                     stats.record_cycle(
                         lm_ms=lm_ms,
-                        tokens_in=tokens_in,
-                        tokens_out=tokens_out,
-                        estimated_credits=estimated_credits,
+                        tokens_in=usage.tokens_in,
+                        tokens_out=usage.tokens_out,
                     )
-                _charge_budget_postflight(budget, tokens_in + tokens_out, log)
                 _log_cycle_cost(
-                    log, max_cycles, lm_ms, tokens_in, tokens_out,
-                    estimated_credits, budget,
+                    log, max_cycles, lm_ms,
+                    usage.tokens_in, usage.tokens_out, budget,
                 )
-                final_answer = _extract_text(resp.content) or None
+                final_candidate = _extract_text(resp.content) or None
+                cycle_ended_at = time.time()
+                try:
+                    _charge_budget_postflight(
+                        budget, usage.tokens_in + usage.tokens_out, log,
+                    )
+                except TokenBudgetExhaustedError:
+                    _safe_record_agent_cycle(
+                        db_path=compression_db_path,
+                        session_id=audit_session_id,
+                        worker_id=audit_worker_id,
+                        stage=audit_stage,
+                        cycle_idx=max_cycles,
+                        started_at=cycle_started_at,
+                        ended_at=cycle_ended_at,
+                        lm_ms=lm_ms,
+                        usage=usage,
+                        tool_names=[],
+                        text_chars=len(final_candidate or ""),
+                        cycle_status="budget_halt",
+                        log=log,
+                    )
+                    raise
+                _safe_record_agent_cycle(
+                    db_path=compression_db_path,
+                    session_id=audit_session_id,
+                    worker_id=audit_worker_id,
+                    stage=audit_stage,
+                    cycle_idx=max_cycles,
+                    started_at=cycle_started_at,
+                    ended_at=cycle_ended_at,
+                    lm_ms=lm_ms,
+                    usage=usage,
+                    tool_names=[],
+                    text_chars=len(final_candidate or ""),
+                    cycle_status="final",
+                    log=log,
+                )
+                final_answer = final_candidate
             except Exception as exc:  # noqa: BLE001 — fall through to the raise
                 print(
                     f"[agent] forced final call failed: "
@@ -775,6 +874,9 @@ async def run_unit(
     audit_db_path: Path | None = None,
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
+    audit_session_id: str | None = None,
+    audit_worker_id: str = "root",
+    audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
 
@@ -821,6 +923,9 @@ async def run_unit(
         audit_db_path=audit_db_path,
         worker_max_output=worker_max_output,
         model_output_override=model_output_override,
+        audit_session_id=audit_session_id,
+        audit_worker_id=audit_worker_id,
+        audit_stage=audit_stage,
     )
 
 
@@ -928,16 +1033,6 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
-        "--max-credits",
-        type=float,
-        default=None,
-        help=(
-            "Deprecated compatibility flag. Credits are no longer used for "
-            "budget enforcement; use --max-tokens instead. A value of 0 "
-            "still disables the token cap for older scripts."
-        ),
-    )
-    ap.add_argument(
         "--tool-surface",
         choices=["agent", "operator", "full"],
         default=None,
@@ -988,7 +1083,6 @@ def main(argv: list[str] | None = None) -> int:
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
                 vendor_source=vendor_source,
                 chat_id=args.chat_id,
-                max_credits=args.max_credits,
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
                 pipeline=args.pipeline,
@@ -1106,7 +1200,6 @@ def _default_musubi_dir() -> Path:
 
 def _build_token_budget(
     max_tokens: int | None,
-    max_credits: float | None,
     log: Any,
 ) -> TokenBudgetEnforcer | None:
     cap = max_tokens
@@ -1121,16 +1214,6 @@ def _build_token_budget(
                 ) from exc
         else:
             cap = DEFAULT_AGENT_MAX_TOKENS
-
-    if max_credits is not None:
-        if max_credits <= 0 and max_tokens is None:
-            cap = 0
-        else:
-            print(
-                "[agent] --max-credits is deprecated and ignored for budget "
-                "enforcement; use --max-tokens",
-                file=log,
-            )
 
     if cap <= 0:
         print("[agent] token budget: disabled", file=log)
@@ -1271,8 +1354,6 @@ def _record_agent_turn(
     stats: AgentRunStats,
     db_path: Path,
     log: Any,
-    replay_messages: int = 0,
-    replay_tokens: int = 0,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -1290,8 +1371,6 @@ def _record_agent_turn(
             tokens_out_estimate=stats.tokens_out_estimate,
             lm_ms=stats.lm_ms,
             total_ms=int((ended_at - started_at) * 1000),
-            replay_messages=replay_messages,
-            replay_tokens=replay_tokens,
             db_path=db_path,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
@@ -1356,41 +1435,102 @@ def _estimate_input_tokens(
     return estimate_tokens_from_chars(chars)
 
 
-def _cycle_token_counts(
+def _cycle_token_usage(
     responses: LMResponse | list[LMResponse],
     input_estimate: int,
-) -> tuple[int, int, int]:
+) -> CycleTokenUsage:
     attempts = responses if isinstance(responses, list) else [responses]
     totals = [
-        _single_response_token_counts(resp, input_estimate)
+        _single_response_token_usage(resp, input_estimate)
         for resp in attempts
     ]
-    return (
-        sum(t[0] for t in totals),
-        sum(t[1] for t in totals),
-        sum(t[2] for t in totals),
+    return CycleTokenUsage(
+        tokens_in=sum(item.tokens_in for item in totals),
+        cached_input_tokens=sum(item.cached_input_tokens for item in totals),
+        tokens_out=sum(item.tokens_out for item in totals),
+        source=(
+            "provider"
+            if all(item.source == "provider" for item in totals)
+            else "estimated"
+        ),
     )
 
 
-def _single_response_token_counts(
+def _single_response_token_usage(
     resp: LMResponse,
     input_estimate: int,
-) -> tuple[int, int, int]:
+) -> CycleTokenUsage:
     usage = resp.usage or {}
-    tokens_in = _usage_int(usage, "input_tokens", "prompt_tokens") or input_estimate
+    provider_input = _usage_int(usage, "input_tokens", "prompt_tokens")
+    tokens_in = provider_input if provider_input is not None else input_estimate
     output_estimate = estimate_tokens_from_chars(
         len(json.dumps(resp.content, default=str, ensure_ascii=False))
     )
-    tokens_out = (
-        _usage_int(usage, "output_tokens", "completion_tokens")
-        or output_estimate
-    )
+    provider_output = _usage_int(usage, "output_tokens", "completion_tokens")
+    tokens_out = provider_output if provider_output is not None else output_estimate
     cached = (
         _usage_int(usage, "cache_read_input_tokens", "cached_input_tokens")
         or _nested_usage_int(usage, ("prompt_tokens_details", "cached_tokens"))
         or 0
     )
-    return tokens_in, tokens_out, min(cached, tokens_in)
+    return CycleTokenUsage(
+        tokens_in=max(0, tokens_in),
+        cached_input_tokens=max(0, min(cached, tokens_in)),
+        tokens_out=max(0, tokens_out),
+        source=(
+            "provider"
+            if provider_input is not None and provider_output is not None
+            else "estimated"
+        ),
+    )
+
+
+def _safe_record_agent_cycle(
+    *,
+    db_path: Path | None,
+    session_id: str | None,
+    worker_id: str,
+    stage: str | None,
+    cycle_idx: int,
+    started_at: float,
+    ended_at: float,
+    lm_ms: int,
+    usage: CycleTokenUsage,
+    tool_names: list[str],
+    text_chars: int,
+    cycle_status: str,
+    log: Any,
+) -> None:
+    if db_path is None or session_id is None or stage is None:
+        return
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        db.insert_agent_cycle(
+            session_id,
+            stage,
+            attempt=1,
+            cycle_idx=cycle_idx,
+            started_at=started_at,
+            ended_at=ended_at,
+            db_path=db_path,
+            worker_id=worker_id,
+            lm_ms=lm_ms,
+            tokens_in=usage.tokens_in,
+            cached_input_tokens=usage.cached_input_tokens,
+            tokens_out=usage.tokens_out,
+            token_source=usage.source,
+            tool_calls_json=json.dumps(tool_names),
+            text_chars=text_chars,
+            cycle_status=cycle_status,
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
+        print(
+            f"[agent] cycle audit write failed: {type(exc).__name__}: {exc}",
+            file=log,
+        )
 
 
 def _usage_int(usage: dict[str, Any], *keys: str) -> int | None:
@@ -2106,14 +2246,12 @@ def _log_cycle_cost(
     lm_ms: int,
     tokens_in: int,
     tokens_out: int,
-    estimated_credits: float,
     budget: TokenBudgetEnforcer | None,
 ) -> None:
     parts = [
         f"[agent] [{_worker_log_label.get()}] cycle {cycle}: lm_ms={lm_ms}",
         f"in_tokens={tokens_in}",
         f"out_tokens={tokens_out}",
-        f"estimated_credits={estimated_credits:.4f}",
     ]
     if budget is not None:
         parts.append(
@@ -2134,7 +2272,6 @@ def _log_turn_usage(
         f"lm_ms={stats.lm_ms}",
         f"in_tokens={stats.tokens_in_estimate}",
         f"out_tokens={stats.tokens_out_estimate}",
-        f"estimated_credits={stats.estimated_credits:.4f}",
     ]
     if budget is not None:
         parts.append(

@@ -35,7 +35,7 @@ run-trace post-mortem, never a summary.
   "the model failed" from "the design guaranteed the failure" (e.g. an
   effort floor of 2048 tokens *guarantees* truncation for a worker
   whose whole job is emitting a 3–5k-token file).
-- **Quantify.** Cite tokens, credits, cycles, milliseconds whenever the
+- **Quantify.** Cite tokens, cycles, milliseconds whenever the
   data exists; make each mistake's cost attributable.
 - **Judge, don't just describe.** Analysis ends with prioritized,
   concrete recommendations, each tied to the evidence above it.
@@ -54,7 +54,7 @@ run-trace post-mortem, never a summary.
 | `.harness/sessions/<sid>/*.md` artefacts | Cycle-loop guards (`CONSECUTIVE_EMPTY_CYCLE_LIMIT`, salvage, intermediate-text fallback) |
 | Hard Invariants (#1, #2, #3, #5, #7, #8, #9) | Path-rules / empty-project / workspace-root preamble blocks |
 | Policy engine (`scripts/policy_engine.py`) | Per-stage `musubi-tier`-tagged scaffolds |
-| `BudgetEnforcer` + per-call credit accounting | Worker prompt scaffolding (`.github/agents/workers/`) |
+| `TokenBudgetEnforcer` + per-call token accounting | Worker prompt scaffolding (`.github/agents/workers/`) |
 | Firewall via `_STAGE_PERMISSIONS` (HI #3) | |
 | MCP tool catalog (`musubi_*`) | |
 

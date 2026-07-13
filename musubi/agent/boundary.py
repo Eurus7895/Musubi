@@ -96,8 +96,6 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_get_correction_rules",
     "musubi_get_injected_skills",
     "musubi_get_pipeline_stages",
-    "musubi_session_credits",
-    "musubi_credits_since",
     "musubi_query_schema_migrations",
     "musubi_list_skills",
     "musubi_recommend_skills",

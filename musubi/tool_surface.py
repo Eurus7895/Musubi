@@ -47,8 +47,6 @@ OPERATOR_TOOL_NAMES: frozenset[str] = ROOT_AGENT_TOOL_NAMES | frozenset({
     "musubi_query_schema_migrations",
     "musubi_query_subagent_events",
     "musubi_list_subagent_spawns",
-    "musubi_session_credits",
-    "musubi_credits_since",
 })
 
 PIPELINE_TOOL_NAMES: frozenset[str] = OPERATOR_TOOL_NAMES | frozenset({

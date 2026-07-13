@@ -32,8 +32,8 @@ class LMResponse:
                       reads the trailing `text` blocks for the final
                       answer.
         usage         Optional dict surfacing vendor-side token counts.
-                      Used for the per-cycle credit log. Shape is
-                      vendor-specific; the loop only prints it.
+                      Used for per-cycle token audit. Shape is
+                      vendor-specific; the loop normalizes it.
     """
 
     stop_reason: str

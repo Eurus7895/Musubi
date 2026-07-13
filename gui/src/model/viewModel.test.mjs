@@ -37,6 +37,7 @@ function baseState(overrides = {}) {
     setupStatus: {},
     driverStatus: { running: false, chatId: '', surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
+    agentCycles: [],
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
@@ -299,25 +300,40 @@ test('creates a parent run for a driver turn with no spawned workers', () => {
   assert.match(vm.runStatusSummary, /Driver turn completed/)
 })
 
-test('driver card surfaces the replayed seed cost of a stateful turn', () => {
+test('driver card aggregates selected-session token economics', () => {
   const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-one',
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-one', title: 'one', lastRequest: 'work',
+    }],
     agentTurns: [{
       id: 7,
+      chatId: 'gui-orchestrator-one',
       parentSession: 'gui-session',
       startedAt: 1042,
       modelFamily: 'deepseek',
       cycles: 3,
       tokensInEstimate: 76743,
       tokensOutEstimate: 900,
-      replayMessages: 49,
-      replayTokens: 48120,
     }],
+    agentCycles: [
+      { sessionId: 'gui-session', tokensIn: 1000, cachedInputTokens: 600, tokensOut: 100, lmMs: 100, tokenSource: 'provider', toolNames: ['musubi_grep', 'musubi_read_file'] },
+      { sessionId: 'gui-session', tokensIn: 500, cachedInputTokens: 100, tokensOut: 20, lmMs: 50, tokenSource: 'provider', toolNames: ['musubi_grep'] },
+      { sessionId: 'other-session', tokensIn: 9999, cachedInputTokens: 9999, tokensOut: 9999, lmMs: 9999, tokenSource: 'provider', toolNames: ['ignored'] },
+    ],
   }), actions())
 
-  assert.equal(vm.driverSummary.replayLine, 'replayed 49 msgs · 48k seed tok')
+  assert.deepEqual(vm.driverSummary.economics, {
+    cycles: 2, inputTokens: 1500, cachedInputTokens: 700,
+    outputTokens: 120, lmMs: 150, tokenSource: 'provider',
+    tools: [
+      { name: 'musubi_grep', count: 2 },
+      { name: 'musubi_read_file', count: 1 },
+    ],
+  })
 })
 
-test('driver card shows no replay line for a fresh-session turn', () => {
+test('driver card marks mixed and clamped cycle usage estimated', () => {
   const vm = buildViewModel(baseState({
     agentTurns: [{
       id: 8,
@@ -327,12 +343,41 @@ test('driver card shows no replay line for a fresh-session turn', () => {
       cycles: 1,
       tokensInEstimate: 28333,
       tokensOutEstimate: 200,
-      replayMessages: 0,
-      replayTokens: 0,
     }],
+    agentCycles: [
+      { sessionId: 'gui-session', tokensIn: 100, cachedInputTokens: 150, tokensOut: -3, lmMs: -1, tokenSource: 'provider', toolNames: [] },
+      { sessionId: 'gui-session', tokensIn: 50, cachedInputTokens: 20, tokensOut: 5, lmMs: 10, tokenSource: 'estimated', toolNames: [] },
+    ],
   }), actions())
 
-  assert.equal(vm.driverSummary.replayLine, '')
+  assert.equal(vm.driverSummary.economics.cachedInputTokens, 120)
+  assert.equal(vm.driverSummary.economics.outputTokens, 5)
+  assert.equal(vm.driverSummary.economics.lmMs, 10)
+  assert.equal(vm.driverSummary.economics.tokenSource, 'estimated')
+})
+
+test('pipeline card scopes token economics to the active pipeline session', () => {
+  const vm = buildViewModel(baseState({
+    pipelineChatId: 'gui-pipeline-one',
+    pipelineRuns: [
+      { sessionId: 'pipe-1', chatId: 'gui-pipeline-one', pipelineName: 'feature-dev', startedAt: 1, status: 'success', stages: [] },
+    ],
+    agentCycles: [
+      { sessionId: 'pipe-1', tokensIn: 300, cachedInputTokens: 100, tokensOut: 40, lmMs: 25, tokenSource: 'provider', toolNames: ['musubi_read_file'] },
+    ],
+  }), actions())
+
+  assert.equal(vm.pipeRunSummary.economics.inputTokens, 300)
+  assert.equal(vm.pipeRunSummary.economics.cachedInputTokens, 100)
+  assert.deepEqual(vm.pipeRunSummary.economics.tools, [{ name: 'musubi_read_file', count: 1 }])
+})
+
+test('empty run economics has zero totals', () => {
+  const vm = buildViewModel(baseState(), actions())
+  assert.deepEqual(vm.driverSummary.economics, {
+    cycles: 0, inputTokens: 0, cachedInputTokens: 0,
+    outputTokens: 0, lmMs: 0, tokenSource: 'estimated', tools: [],
+  })
 })
 
 test('summarizes the active run for the driver card', () => {

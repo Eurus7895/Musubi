@@ -211,80 +211,54 @@ def test_total_tokens_for_session_sums_in_and_out(fresh_db: Path) -> None:
     assert total == 500 + 200 + 800 + 300
 
 
-# ── Stage 1 (MVP A.4) — credits per stage_metrics row ────────────────
+# ── Stage metrics retain model identity, not synthetic credits ──────
 
 
-def test_insert_stage_metric_records_credits_and_family(fresh_db: Path) -> None:
+def test_insert_stage_metric_records_model_family(fresh_db: Path) -> None:
     sid = state.create_session("do x", fresh_db)
     db.insert_stage_metric(
         sid, "plan", 1, 1.0, 2.0,
         tokens_in_estimate=500, tokens_out_estimate=200, lm_ms=100,
-        db_path=fresh_db, credits=2.5, model_family="claude-sonnet-4.5",
+        db_path=fresh_db, model_family="claude-sonnet-4.5",
     )
     rows = db.query_stage_metrics(sid, fresh_db)
     assert len(rows) == 1
-    assert rows[0]["credits"] == 2.5
     assert rows[0]["model_family"] == "claude-sonnet-4.5"
 
 
-def test_stage_metric_credits_defaults_to_zero(fresh_db: Path) -> None:
-    """Backwards-compat: callers that don't pass credits get 0.0 stored,
-    not NULL — which is what total_credits_for_session relies on."""
-    sid = state.create_session("do x", fresh_db)
+def test_new_schema_omits_credit_columns(fresh_db: Path) -> None:
+    with sqlite3.connect(fresh_db) as conn:
+        stage_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(stage_metrics)")
+        }
+        cycle_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(agent_cycles)")
+        }
+    assert "credits" not in stage_cols
+    assert "credits" not in cycle_cols
+
+
+def test_init_db_tolerates_legacy_credit_columns(fresh_db: Path) -> None:
+    with sqlite3.connect(fresh_db) as conn:
+        for table in ("stage_metrics", "agent_cycles"):
+            cols = {
+                row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+            if "credits" not in cols:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN credits "
+                    "REAL NOT NULL DEFAULT 0.0"
+                )
+    db.init_db(fresh_db)
+    sid = state.create_session("legacy columns", fresh_db)
     db.insert_stage_metric(
-        sid, "plan", 1, 1.0, 2.0,
-        tokens_in_estimate=500, tokens_out_estimate=200, lm_ms=100,
-        db_path=fresh_db,
+        sid, "plan", 1, 1.0, 2.0, 10, 5, 1, db_path=fresh_db,
     )
-    rows = db.query_stage_metrics(sid, fresh_db)
-    assert rows[0]["credits"] == 0.0
-    assert rows[0]["model_family"] is None
-
-
-def test_total_credits_for_session_sums_rows(fresh_db: Path) -> None:
-    sid = state.create_session("do x", fresh_db)
-    for stage, credits in (("plan", 1.5), ("design", 3.2), ("code", 7.8)):
-        db.insert_stage_metric(
-            sid, stage, 1, 1.0, 2.0,
-            tokens_in_estimate=100, tokens_out_estimate=50, lm_ms=100,
-            db_path=fresh_db, credits=credits,
-        )
-    assert db.total_credits_for_session(sid, fresh_db) == pytest.approx(12.5)
-
-
-def test_total_credits_for_session_returns_zero_on_no_rows(fresh_db: Path) -> None:
-    sid = state.create_session("do x", fresh_db)
-    assert db.total_credits_for_session(sid, fresh_db) == 0.0
-
-
-def test_total_credits_since_aggregates_across_sessions(fresh_db: Path) -> None:
-    s1 = state.create_session("task one", fresh_db)
-    s2 = state.create_session("task two", fresh_db)
-    db.insert_stage_metric(s1, "plan", 1, 100.0, 101.0, 100, 50, 50,
-                           db_path=fresh_db, credits=1.0)
-    db.insert_stage_metric(s2, "plan", 1, 200.0, 201.0, 100, 50, 50,
-                           db_path=fresh_db, credits=2.0)
-    # cutoff = 150 → only s2 included
-    assert db.total_credits_since(150.0, fresh_db) == pytest.approx(2.0)
-    # cutoff = 50  → both included
-    assert db.total_credits_since(50.0, fresh_db) == pytest.approx(3.0)
-
-
-def test_get_status_includes_total_credits(fresh_db: Path) -> None:
-    sid = state.create_session("do x", fresh_db)
-    db.insert_stage_metric(
-        sid, "plan", 1, 1.0, 2.0,
-        tokens_in_estimate=100, tokens_out_estimate=50, lm_ms=100,
-        db_path=fresh_db, credits=4.2,
+    db.insert_agent_cycle(
+        sid, "plan", 1, 0, 1.0, 2.0, db_path=fresh_db,
     )
-    status = state.get_status(sid, fresh_db)
-    assert status["total_credits"] == pytest.approx(4.2)
-
-
-def test_get_status_total_credits_zero_when_no_metrics(fresh_db: Path) -> None:
-    sid = state.create_session("do x", fresh_db)
-    status = state.get_status(sid, fresh_db)
-    assert status["total_credits"] == 0.0
+    assert "credits" not in db.query_stage_metrics(sid, fresh_db)[0]
+    assert "credits" not in db.query_agent_cycles(sid, db_path=fresh_db)[0]
 
 
 # ── Stage 2 (MVP A.2) — agent_cycles per-cycle audit ─────────────────
@@ -296,7 +270,7 @@ def test_insert_agent_cycle_round_trips(fresh_db: Path) -> None:
         sid, "plan", attempt=1, cycle_idx=0,
         started_at=1.0, ended_at=2.5,
         db_path=fresh_db,
-        lm_ms=1500, text_chars=4000, credits=2.4,
+        lm_ms=1500, text_chars=4000,
         cycle_status="final",
     )
     rows = db.query_agent_cycles(sid, db_path=fresh_db)
@@ -306,8 +280,70 @@ def test_insert_agent_cycle_round_trips(fresh_db: Path) -> None:
     assert r["cycle_idx"] == 0
     assert r["lm_ms"] == 1500
     assert r["text_chars"] == 4000
-    assert r["credits"] == pytest.approx(2.4)
     assert r["cycle_status"] == "final"
+
+
+def test_agent_cycle_provider_usage_round_trips(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    tools = json.dumps(["musubi_read_file", "musubi_grep"])
+    db.insert_agent_cycle(
+        sid, "code", attempt=1, cycle_idx=2,
+        started_at=1.0, ended_at=2.0, db_path=fresh_db,
+        worker_id="worker-7", tokens_in=1200,
+        cached_input_tokens=800, tokens_out=90,
+        token_source="provider", tool_calls_json=tools,
+    )
+    row = db.query_agent_cycles(sid, db_path=fresh_db)[0]
+    assert row["worker_id"] == "worker-7"
+    assert row["tokens_in"] == 1200
+    assert row["cached_input_tokens"] == 800
+    assert row["tokens_out"] == 90
+    assert row["token_source"] == "provider"
+    assert json.loads(row["tool_calls_json"]) == [
+        "musubi_read_file", "musubi_grep",
+    ]
+
+
+def test_agent_cycle_clamps_cached_input_to_input(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    db.insert_agent_cycle(
+        sid, "code", attempt=1, cycle_idx=0,
+        started_at=1.0, ended_at=2.0, db_path=fresh_db,
+        tokens_in=100, cached_input_tokens=150,
+    )
+    row = db.query_agent_cycles(sid, db_path=fresh_db)[0]
+    assert row["cached_input_tokens"] == 100
+
+
+def test_agent_cycle_rejects_unknown_token_source(fresh_db: Path) -> None:
+    sid = state.create_session("do x", fresh_db)
+    with pytest.raises(ValueError, match="token_source"):
+        db.insert_agent_cycle(
+            sid, "code", attempt=1, cycle_idx=0,
+            started_at=1.0, ended_at=2.0, db_path=fresh_db,
+            token_source="invoice",
+        )
+
+
+def test_init_db_adds_agent_cycle_usage_columns_to_legacy_table(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "legacy-cycles.db"
+    with sqlite3.connect(p) as conn:
+        conn.execute(
+            "CREATE TABLE agent_cycles ("
+            "id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, "
+            "stage TEXT NOT NULL, attempt INTEGER NOT NULL, "
+            "cycle_idx INTEGER NOT NULL, started_at REAL NOT NULL)"
+        )
+    db.init_db(p)
+    with sqlite3.connect(p) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_cycles)")}
+    assert {
+        "worker_id", "tokens_in", "cached_input_tokens", "tokens_out",
+        "token_source", "tool_calls_json", "lm_ms", "text_chars",
+        "cycle_status", "schema_version",
+    }.issubset(cols)
 
 
 def test_agent_cycle_defaults_when_kwargs_omitted(fresh_db: Path) -> None:
@@ -321,7 +357,6 @@ def test_agent_cycle_defaults_when_kwargs_omitted(fresh_db: Path) -> None:
     r = rows[0]
     assert r["lm_ms"] == 0
     assert r["text_chars"] == 0
-    assert r["credits"] == 0.0
     assert r["cycle_status"] == "ok"
     assert r["tool_calls_json"] is None
     assert r["chunk_id"] is None
@@ -334,7 +369,7 @@ def test_multi_cycle_stage_has_multiple_rows(fresh_db: Path) -> None:
             sid, "plan", attempt=1, cycle_idx=cycle_idx,
             started_at=1.0 + cycle_idx, ended_at=2.0 + cycle_idx,
             db_path=fresh_db,
-            lm_ms=500, text_chars=100, credits=0.5,
+            lm_ms=500, text_chars=100,
             cycle_status=status,
         )
     rows = db.query_agent_cycles(sid, db_path=fresh_db)
@@ -350,7 +385,7 @@ def test_agent_cycles_chunked_distinguish_by_chunk_id(fresh_db: Path) -> None:
             sid, "code", attempt=1, cycle_idx=0,
             started_at=1.0, ended_at=2.0,
             db_path=fresh_db, chunk_id=chunk_id,
-            lm_ms=200, text_chars=300, credits=1.0,
+            lm_ms=200, text_chars=300,
             cycle_status="final",
         )
     rows = db.query_agent_cycles(sid, db_path=fresh_db)
@@ -410,7 +445,7 @@ def test_musubi_record_agent_cycle_writes_a_row(fresh_db: Path) -> None:
     raw = server.musubi_record_agent_cycle(
         session_id=sid, stage="plan", attempt=1, cycle_idx=0,
         started_at=1.0, ended_at=2.0,
-        lm_ms=1500, text_chars=400, credits=1.2,
+        lm_ms=1500, text_chars=400,
         cycle_status="final",
     )
     assert json.loads(raw) == {"status": "ok"}

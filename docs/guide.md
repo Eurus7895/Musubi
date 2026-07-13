@@ -107,10 +107,10 @@ MUSUBI_AGENT_MAX_TOKENS=0 agent "one uncapped diagnostic pass"
   and replays a bounded history for the next CLI turn.
 - `TokenBudgetEnforcer` guards each LM call. The default cap is `200000`
   total tokens; `--max-tokens <n>` overrides it and `0` disables it.
-- The cycle log prints estimated input/output tokens, LM milliseconds, and
-  optional estimated credits. Persisted chats also write `agent_turns`
-  telemetry. Token counts are the source of truth; credits are only a
-  price-table-dependent estimate.
+- Each logical cycle records input tokens, its cached-input subset, output
+  tokens, LM milliseconds, usage source, worker identity, and tool names.
+  Effort retries are aggregated into the same cycle. Persisted chats also write
+  `agent_turns` telemetry, while the Console shows selected-session totals.
 - Every model-requested `musubi_*` tool call passes deterministic PreToolUse
   policy before dispatch and appends PostToolUse rows after success, denial, or
   error. Verdicts land in `policy_audit`; tool outcomes land in `tool_audit`.
@@ -273,8 +273,7 @@ python -m agent.compression_eval --output artifacts/compression/compression_benc
 
 Add `--real-lm --profile <profile>` only for a manual driver-side probe of
 whether a configured model calls `musubi_retrieve` for exact compressed
-details. Token counts and savings are the stable metrics; estimated credits
-are log-only because price tables drift.
+details. Token counts and character savings are the stable metrics.
 
 ---
 

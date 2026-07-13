@@ -13,7 +13,7 @@ import { classifyChatCommand } from './chatCommands.js'
 // every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
-  'agentTurns',
+  'agentTurns', 'agentCycles',
   'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
   'paused', 't',
   'runtimeSource', 'setupStatus', 'driverStatus',
@@ -30,7 +30,7 @@ export default class TauriSource {
       view: this.props.startView || 'orchestrator',
       selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
       processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], orchestratorSessions: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      subagents: [], agentTurns: [], agentCycles: [], orchestratorSessions: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [],

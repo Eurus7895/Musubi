@@ -209,6 +209,9 @@ async def run_pipeline(
                 orchestration=stage_orch,
                 spawn_catalog=stage_spawn_catalog,
                 worker_max_output=worker_max_output,
+                audit_session_id=psid,
+                audit_worker_id=handle_id,
+                audit_stage=stage,
             )
         except Exception as exc:
             is_budget = type(exc).__name__ in {
