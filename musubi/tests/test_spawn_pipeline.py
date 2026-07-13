@@ -503,6 +503,111 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
     }]
 
 
+# ── PipelineWorkerSpec: validated stage contract resolved before spawn ──────
+
+
+def _write_worker(agents_dir: Path, role: str, body: str) -> None:
+    workers = agents_dir / ".github" / "agents" / "workers"
+    workers.mkdir(parents=True, exist_ok=True)
+    (workers / f"{role}.agent.md").write_text(body, encoding="utf-8")
+
+
+def test_resolve_pipeline_worker_spec_reads_maxturns_and_budget(tmp_path: Path) -> None:
+    from agent.pipeline_runner import PIPELINE_CONTEXT_BUDGET, resolve_pipeline_worker_spec
+
+    _write_worker(
+        tmp_path, "planner",
+        "---\nname: Planner\nmaxTurns: 4\ntools: [Read, View]\n---\n"
+        "Return a compact implementation plan.\n",
+    )
+    agents_dir = tmp_path / ".github" / "agents"
+    spec = resolve_pipeline_worker_spec("planner", "feature-dev", agents_dir)
+    assert spec.role == "planner"
+    assert spec.max_cycles == 4
+    assert spec.context_budget_chars == PIPELINE_CONTEXT_BUDGET == 16_000
+    assert "compact implementation plan" in spec.prompt
+    assert spec.worker_max_output is None
+
+
+def test_resolve_pipeline_worker_spec_defaults_absent_maxturns(tmp_path: Path) -> None:
+    from agent.pipeline_runner import DEFAULT_STAGE_MAX_CYCLES, resolve_pipeline_worker_spec
+
+    _write_worker(tmp_path, "planner", "---\nname: Planner\n---\nPlan it.\n")
+    spec = resolve_pipeline_worker_spec(
+        "planner", "feature-dev", tmp_path / ".github" / "agents",
+    )
+    assert spec.max_cycles == DEFAULT_STAGE_MAX_CYCLES == 12
+
+
+def test_resolve_pipeline_worker_spec_carries_output_cap(tmp_path: Path) -> None:
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    _write_worker(
+        tmp_path, "coder",
+        "---\nname: Coder\nmaxTurns: 6\nmaxOutputTokens: 32768\n---\nWrite it.\n",
+    )
+    spec = resolve_pipeline_worker_spec(
+        "coder", "feature-dev", tmp_path / ".github" / "agents",
+    )
+    assert spec.max_cycles == 6
+    assert spec.worker_max_output == 32768
+
+
+def test_resolve_pipeline_worker_spec_missing_prompt_fails_closed(tmp_path: Path) -> None:
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    with pytest.raises(RuntimeError, match="no role prompt"):
+        resolve_pipeline_worker_spec(
+            "ghost", "feature-dev", tmp_path / ".github" / "agents",
+        )
+
+
+def test_resolve_pipeline_worker_spec_rejects_zero_maxturns(tmp_path: Path) -> None:
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    _write_worker(tmp_path, "planner", "---\nname: Planner\nmaxTurns: 0\n---\nPlan.\n")
+    with pytest.raises(RuntimeError, match="maxTurns"):
+        resolve_pipeline_worker_spec(
+            "planner", "feature-dev", tmp_path / ".github" / "agents",
+        )
+
+
+def test_resolve_pipeline_worker_spec_rejects_noninteger_maxturns(tmp_path: Path) -> None:
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    _write_worker(tmp_path, "planner", "---\nname: Planner\nmaxTurns: many\n---\nPlan.\n")
+    with pytest.raises(RuntimeError, match="maxTurns"):
+        resolve_pipeline_worker_spec(
+            "planner", "feature-dev", tmp_path / ".github" / "agents",
+        )
+
+
+def test_resolve_pipeline_worker_spec_rejects_over_ceiling_maxturns(tmp_path: Path) -> None:
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    _write_worker(tmp_path, "planner", "---\nname: Planner\nmaxTurns: 99\n---\nPlan.\n")
+    with pytest.raises(RuntimeError, match="maxTurns"):
+        resolve_pipeline_worker_spec(
+            "planner", "feature-dev", tmp_path / ".github" / "agents",
+        )
+
+
+def test_resolve_pipeline_worker_spec_reads_pipeline_stage_variant(tmp_path: Path) -> None:
+    """A role that exists only as a pipeline-stage prompt still resolves."""
+    from agent.pipeline_runner import resolve_pipeline_worker_spec
+
+    stages = tmp_path / ".github" / "agents" / "pipeline-stages" / "code-review"
+    stages.mkdir(parents=True, exist_ok=True)
+    (stages / "scoper.agent.md").write_text(
+        "---\nname: Scoper\nmaxTurns: 4\n---\nScope the diff.\n", encoding="utf-8",
+    )
+    spec = resolve_pipeline_worker_spec(
+        "scoper", "code-review", tmp_path / ".github" / "agents",
+    )
+    assert spec.max_cycles == 4
+    assert "Scope the diff" in spec.prompt
+
+
 # ── Feature A: stage nesting — spawn_roles gates the spawn tool ─────────────
 
 

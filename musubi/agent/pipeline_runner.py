@@ -35,6 +35,7 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,13 +43,85 @@ from typing import Any
 #: small budget keeps a runaway stage from burning the whole pipeline. In the
 #: standalone runner a stage self-explores via grep/glob before doing its work
 #: (there is no harness-injected workspace tree), so the cap leaves a few
-#: cycles for discovery on top of the stage's real output.
+#: cycles for discovery on top of the stage's real output. It is also the
+#: upper bound a worker may raise its own cap to via `maxTurns:` frontmatter —
+#: a stage never runs longer than this shared ceiling.
 DEFAULT_STAGE_MAX_CYCLES = 12
+MAX_STAGE_TURNS = DEFAULT_STAGE_MAX_CYCLES
 
 # Pipeline stages are deliberately narrower than a root-agent turn. Keeping
 # their context below the root default limits repeated glob/grep/file reads
 # from consuming the shared run budget before later stages can execute.
 PIPELINE_CONTEXT_BUDGET = 16_000
+
+
+@dataclass(frozen=True)
+class PipelineWorkerSpec:
+    """Validated contract for one pipeline stage worker.
+
+    Resolved once, before the stage is spawned, so a single cap flows through
+    the spawn row, the runtime loop, and the completion audit. `prompt` is the
+    canonical worker prompt (frontmatter intact; the system-prompt builder
+    strips it). `max_cycles` is the declared `maxTurns` clamped to
+    `[1, MAX_STAGE_TURNS]`; `worker_max_output` is the optional per-worker
+    output-token cap.
+    """
+
+    role: str
+    prompt: str
+    max_cycles: int
+    context_budget_chars: int = PIPELINE_CONTEXT_BUDGET
+    worker_max_output: int | None = None
+
+
+def _validated_max_turns(value: Any) -> int:
+    """Clamp a declared `maxTurns` to `[1, MAX_STAGE_TURNS]`, fail-closed.
+
+    Absent → the shared default. Present-but-invalid (non-int, bool, <=0, or
+    above the shared ceiling) raises so a bad contract fails the stage before
+    it ever spawns, rather than silently running an unbounded or zero-turn
+    worker.
+    """
+    if value is None:
+        return DEFAULT_STAGE_MAX_CYCLES
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(
+            f"has invalid maxTurns {value!r}: expected an integer 1..{MAX_STAGE_TURNS}"
+        )
+    if not 1 <= value <= MAX_STAGE_TURNS:
+        raise RuntimeError(
+            f"has out-of-range maxTurns {value}: expected 1..{MAX_STAGE_TURNS}"
+        )
+    return value
+
+
+def resolve_pipeline_worker_spec(
+    role: str,
+    pipeline_name: str,
+    agents_dir: Path | None = None,
+) -> PipelineWorkerSpec:
+    """Resolve + validate one stage worker's contract before spawn.
+
+    Raises `RuntimeError` (fail-closed) when the role has no prompt or declares
+    invalid `maxTurns`. The message is role/prompt-specific so the runner can
+    surface it verbatim and finalize the pipeline aborted.
+    """
+    from agent.subagent import _frontmatter_max_output_tokens, frontmatter_dict
+
+    agent_md = _read_stage_agent_md(role, pipeline_name, agents_dir)
+    if not agent_md.strip():
+        raise RuntimeError(
+            f"has no role prompt: expected .github/agents/workers/{role}.agent.md "
+            f"or .github/agents/pipeline-stages/{pipeline_name}/{role}.agent.md"
+        )
+    max_cycles = _validated_max_turns(frontmatter_dict(agent_md).get("maxTurns"))
+    return PipelineWorkerSpec(
+        role=role,
+        prompt=agent_md,
+        max_cycles=max_cycles,
+        context_budget_chars=PIPELINE_CONTEXT_BUDGET,
+        worker_max_output=_frontmatter_max_output_tokens(agent_md),
+    )
 
 
 async def run_pipeline(

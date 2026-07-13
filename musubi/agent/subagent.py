@@ -415,22 +415,32 @@ def _frontmatter_spawn_allowlist(agent_md: str) -> list[str]:
 
 def _frontmatter_max_output_tokens(agent_md: str) -> int | None:
     """Return a positive per-worker output cap, or the shared-default signal."""
+    value = frontmatter_dict(agent_md).get("maxOutputTokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def frontmatter_dict(agent_md: str) -> dict[str, Any]:
+    """Parse the leading `---`-fenced YAML frontmatter block into a dict.
+
+    Empty dict when there is no frontmatter or it does not parse — every caller
+    treats a missing key as "not declared", so a fail-closed empty result never
+    silently grants anything.
+    """
     text = (agent_md or "").lstrip()
     if not text.startswith("---"):
-        return None
+        return {}
     end = text.find("\n---", 3)
     if end == -1:
-        return None
+        return {}
     try:
         import yaml  # type: ignore[import-untyped]
 
         fm = yaml.safe_load(text[3:end]) or {}
     except Exception:
-        return None
-    value = fm.get("maxOutputTokens") if isinstance(fm, dict) else None
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
+        return {}
+    return fm if isinstance(fm, dict) else {}
 
 
 def _strip_frontmatter(md: str) -> str:
