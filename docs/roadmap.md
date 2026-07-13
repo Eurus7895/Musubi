@@ -112,8 +112,12 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
   call, a double-billed retry, and — because the 4096 ceiling sits below a
   one-shot dashboard's natural size — an empty write. Key the floor to the
   worker's actual tool surface (mutate workers open at their ceiling), let each
-  worker declare `maxOutputTokens:` in `.agent.md` frontmatter, and clamp to a
-  per-model `max_output_tokens` in `.musubi/llm.json`; keep `EFFORT_CEILING` as
+  worker declare `maxOutputTokens:` in `.agent.md` frontmatter, and size the
+  ceiling from universal tier defaults (mutate 8192 / read-only 4096) rather
+  than a per-model physical-limit table — the true cap is undefined for
+  ollama/on-prem and uniform-and-high where discoverable, so the vendor enforces
+  it at call time; an optional per-model `max_output_tokens` in `.musubi/llm.json`
+  remains for deliberate operator cost-capping only. Keep `EFFORT_CEILING` as
   the per-call runaway brake. Effort-economics follow-up to the 2026-07-09
   orchestrator-tokens work. Implementation plan:
   [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md).

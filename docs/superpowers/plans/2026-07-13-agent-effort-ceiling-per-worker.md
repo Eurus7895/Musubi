@@ -52,17 +52,35 @@ fix keys off the worker's *actual* tool surface, not a distributional guess.
   `maxOutputTokens:` in frontmatter (sibling to the existing `maxTurns:`),
   resolved at spawn in `run_subagent` where `agent_md` is already parsed
   (`agent/subagent.py:108`). This is the *intent* ceiling.
-- **Per-model hard clamp.** `.musubi/llm.json` carries `max_output_tokens` per
-  model (resolved via `agent/config.py`), the *physical* limit. Effective
-  ceiling = `min(per_worker_intent, per_model_limit)`, falling back to a
-  tool-surface tier default (mutate 8192 / read-only 4096) when a worker
-  declares nothing.
+- **Optional per-model override (operator intent, NOT a discovered physical
+  limit).** `.musubi/llm.json` MAY carry an optional `max_output_tokens` per
+  model (resolved via `agent/config.py`) for the two cases that earn it:
+  (a) deliberately capping an expensive model *lower* (Opus-tier output is real
+  money per token), (b) raising for a model the operator *knows* supports large
+  artifacts. This is operator intent — absent by default, never a required
+  lookup, so it does not drift. When set, it clamps the resolved ceiling down.
+
+**Why NOT a required per-model physical-limit table.** The model's true output
+ceiling is only cleanly discoverable for one of Musubi's vendors — Anthropic
+(`client.models.retrieve(id).max_tokens`, a real Models-API field, not an LLM
+call). For OpenAI/DeepSeek it is doc-only (transcription drift); for
+`ollama`/on-prem it *does not exist* as a model property at all — output is
+bounded by the operator's local `num_predict`/context config. And where it IS
+discoverable (Anthropic), the values are uniform and far above any brake need:
+128K for the current frontier (Fable 5, Opus 4.8/4.7/4.6, Sonnet 5/4.6), 64K
+for Haiku 4.5 — per-model precision buys nothing for a runaway brake. So the
+ceiling is sized as a safety brake from universal tier defaults, not from a
+per-model max table; the vendor enforces the real hard limit at call time (a
+request above the model's cap errors/clamps — authoritative, surfaced when it
+matters, nothing to pre-tabulate). This keeps model knowledge out of the
+substrate (HI #1) — the router/vendor owns it.
 
 **Resolution order (highest priority first):**
 1. Worker `.agent.md` `maxOutputTokens:` (explicit per-role intent).
 2. Tool-surface tier default — mutate `8192`, read-only/root `4096`.
-3. Clamp the chosen value down to the model's `max_output_tokens` from
-   `.musubi/llm.json` (never request more than the model allows).
+3. Optional per-model `max_output_tokens` from `.musubi/llm.json`, IF the
+   operator set one, clamps the result down. Absent → no clamp; the vendor
+   rejects an over-cap request at call time.
 
 **Tech Stack:** Python 3, existing Musubi agent loop
 (`agent/run.py`, `agent/context.py`, `agent/subagent.py`), `agent/config.py`,
@@ -96,8 +114,9 @@ worker frontmatter under `.github/agents/workers/`, pytest.
   `DEFAULT_EFFORT_FLOOR` for the read-only path.
 - Modify `musubi/agent/subagent.py`: parse `maxOutputTokens` from `agent_md`
   frontmatter and pass it into `run_unit` → `_run_loop`.
-- Modify `musubi/agent/config.py`: resolve per-model `max_output_tokens` from
-  `.musubi/llm.json` with a safe default.
+- Modify `musubi/agent/config.py`: resolve the OPTIONAL per-model
+  `max_output_tokens` from `.musubi/llm.json` — returns `None` when the operator
+  did not set one (no clamp), not a guessed physical limit.
 - Modify `musubi/agent/run.py::_file_tool_argument_error` (`~1831`): reject an
   empty/whitespace-only `content` on `musubi_write_file` / `musubi_append_file`
   with a regenerate hint (NOT on `edit_file`, where empty `new_string` is a
@@ -120,17 +139,20 @@ worker frontmatter under `.github/agents/workers/`, pytest.
 - Modify: `musubi/agent/context.py`
 
 **Interfaces:**
-- Produces: `resolve_model_output_cap(model_family: str, cfg) -> int` in
-  `config.py` — the per-model physical `max_output_tokens`, default when absent.
-- Produces: `resolve_effort_bounds(*, can_mutate: bool, worker_max_output: int | None, model_output_cap: int) -> tuple[int, int]` in `context.py`,
+- Produces: `resolve_model_output_override(model_family: str, cfg) -> int | None`
+  in `config.py` — the OPTIONAL operator-set `max_output_tokens`, or `None` when
+  absent (no clamp).
+- Produces: `resolve_effort_bounds(*, can_mutate: bool, worker_max_output: int | None, model_output_override: int | None) -> tuple[int, int]` in `context.py`,
   returning `(floor, ceiling)` per the resolution order above.
 
-- [ ] **Step 1: Add per-model output cap to config**
+- [ ] **Step 1: Read the optional per-model override from config**
 
-In `.musubi/llm.json`'s per-model shape, read an optional `max_output_tokens`.
-In `agent/config.py`, add `resolve_model_output_cap` returning that value or a
-conservative default (e.g. `4096`) when the key is absent. Do NOT hardcode any
-specific model's true limit in code — it is data in `llm.json`.
+In `.musubi/llm.json`'s per-model shape, read an OPTIONAL `max_output_tokens`.
+In `agent/config.py`, add `resolve_model_output_override` returning that value
+or `None` when the key is absent. Do NOT hardcode any model's true limit and do
+NOT invent a physical default — absent means "no clamp", and the vendor rejects
+an over-cap request at call time (see the "Why NOT a required per-model table"
+note in the Architecture section).
 
 - [ ] **Step 2: Add the effort-bounds resolver**
 
@@ -144,11 +166,12 @@ def resolve_effort_bounds(
     *,
     can_mutate: bool,
     worker_max_output: int | None,
-    model_output_cap: int,
+    model_output_override: int | None,
 ) -> tuple[int, int]:
     tier_default = MUTATE_TIER_CEILING if can_mutate else READONLY_TIER_CEILING
-    intent = worker_max_output if worker_max_output else tier_default
-    ceiling = min(intent, model_output_cap)
+    ceiling = worker_max_output if worker_max_output else tier_default
+    if model_output_override:            # operator opt-in only; None = no clamp
+        ceiling = min(ceiling, model_output_override)
     floor = ceiling if can_mutate else min(effort_floor(), ceiling)
     return floor, ceiling
 ```
@@ -156,8 +179,9 @@ def resolve_effort_bounds(
 - [ ] **Step 3: Unit tests**
 
 Cover: mutate worker → floor == ceiling; read-only → floor stays 2048; a
-worker intent above the model cap is clamped down; a missing worker value
-falls back to the tier default; ceiling never exceeds `model_output_cap`.
+missing worker value falls back to the tier default; a `None` override leaves
+the tier default untouched (no clamp); an operator override below the default
+clamps the ceiling down.
 
 ---
 
@@ -194,11 +218,11 @@ Near the top of `_run_loop` (`run.py:522`), before the cycle loop:
 worker_can_mutate = any(
     t.get("name") in ORDER_SENSITIVE_FILE_TOOLS for t in tools
 )
-model_cap = resolve_model_output_cap(model_family, cfg)
+model_override = resolve_model_output_override(model_family, cfg)  # None unless operator set one
 base_floor, ceiling = resolve_effort_bounds(
     can_mutate=worker_can_mutate,
     worker_max_output=worker_max_output,   # threaded in via Task 3
-    model_output_cap=model_cap,
+    model_output_override=model_override,
 )
 escalated = False
 ```
@@ -401,8 +425,12 @@ Commit with the identity flags per CLAUDE.md; Conventional Commit
 - **HI #1 held:** every floor/ceiling decision is a pure function of `tools`,
   frontmatter, and `.musubi/llm.json` — no LLM call enters the substrate.
 - **Fail-closed:** missing frontmatter, missing config, or unknown worker all
-  resolve to conservative tier defaults, then clamp to the model's physical
-  cap; nothing resolves to "unlimited".
+  resolve to conservative tier defaults (mutate 8192 / read-only 4096);
+  nothing resolves to "unlimited". The model's true hard limit is enforced by
+  the vendor at call time, not guessed from a per-model table (see the
+  Architecture "Why NOT a required per-model physical-limit table" note — the
+  ceiling is undefined for ollama/on-prem and uniform-and-high where it IS
+  discoverable, so a per-model table would be drift-prone dead weight).
 - **Ceiling preserved:** the per-call runaway brake stays — Task 2's rationale
   documents why removing it would open the one enforcement gap
   `TokenBudgetEnforcer` cannot cover.
