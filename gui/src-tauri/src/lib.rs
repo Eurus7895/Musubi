@@ -37,6 +37,9 @@ struct AppState {
     // Orchestrator session id (gui-orchestrator-*-<nonce>). Interior-mutable so
     // "New session" can re-mint it at runtime.
     chat_id: Mutex<String>,
+    // Optional read-only history focus. Never owns a running process or future
+    // messages; it only chooses which orchestrator chat snapshot is displayed.
+    viewed_orchestrator_chat_id: Mutex<Option<String>>,
     // Pipeline studio session id (gui-pipeline-*-<nonce>). Same single process
     // slot, but its own conversation history + run scope.
     pipeline_chat_id: Mutex<String>,
@@ -331,6 +334,7 @@ fn new_driver_session(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
     chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
     project_root: &Path,
     surface: &str,
 ) -> Result<(), String> {
@@ -345,6 +349,7 @@ fn new_driver_session(
     store_session_nonce(conn, surface, &nonce);
     let new_id = scoped_chat_id(project_root, surface, &nonce);
     *chat_id_slot.lock().map_err(|e| e.to_string())? = new_id;
+    *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
     if rt.chat_id == old_id {
         rt.stdout_tail.clear();
         rt.stderr_tail.clear();
@@ -360,15 +365,10 @@ fn select_driver_session(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
     chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
     surface: &str,
     requested_chat_id: &str,
 ) -> Result<(), String> {
-    if rt.running {
-        return Err(
-            "Cannot switch sessions while the agent is running. Cancel or wait for it to finish."
-                .into(),
-        );
-    }
     let surface = surface_arg(surface);
     let current_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
     let (current_scope, _) = current_id
@@ -391,7 +391,14 @@ fn select_driver_session(
         return Err("Requested session was not found in this project.".into());
     }
 
+    if rt.running {
+        *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? =
+            (requested_chat_id != current_id).then(|| requested_chat_id.to_string());
+        return Ok(());
+    }
+
     *chat_id_slot.lock().map_err(|e| e.to_string())? = requested_chat_id.to_string();
+    *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
     store_session_nonce(conn, surface, requested_nonce);
     Ok(())
 }
@@ -1047,16 +1054,26 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     let mut st = musubi_data::load_state_with_pipeline_runs(&conn, state_conn.as_deref())
         .map_err(|e| e.to_string())?;
     let orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let viewed_orchestrator_chat_id = state
+        .viewed_orchestrator_chat_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     let pipeline_chat_id = state
         .pipeline_chat_id
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    st.chat = musubi_data::load_chat_for_session(&conn, "orchestrator", &orchestrator_chat_id)
-        .map_err(|e| e.to_string())?;
+    let displayed_orchestrator_chat_id = viewed_orchestrator_chat_id
+        .as_deref()
+        .unwrap_or(&orchestrator_chat_id);
+    st.chat =
+        musubi_data::load_chat_for_session(&conn, "orchestrator", displayed_orchestrator_chat_id)
+            .map_err(|e| e.to_string())?;
     st.pipe_chat = musubi_data::load_chat_for_session(&conn, "pipeline", &pipeline_chat_id)
         .map_err(|e| e.to_string())?;
     st.orchestrator_chat_id = orchestrator_chat_id;
+    st.viewed_orchestrator_chat_id = viewed_orchestrator_chat_id.unwrap_or_default();
     st.pipeline_chat_id = pipeline_chat_id;
     st.pipeline_catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
     st.paused = state.paused.load(Ordering::Relaxed);
@@ -1206,6 +1223,7 @@ fn action(
                 &conn,
                 &mut rt,
                 &state.chat_id,
+                &state.viewed_orchestrator_chat_id,
                 "orchestrator",
                 &requested_chat_id,
             )?;
@@ -1234,7 +1252,14 @@ fn action(
             } else {
                 &state.chat_id
             };
-            new_driver_session(&conn, &mut rt, slot, &state.project_root, surface)?;
+            new_driver_session(
+                &conn,
+                &mut rt,
+                slot,
+                &state.viewed_orchestrator_chat_id,
+                &state.project_root,
+                surface,
+            )?;
         }
         "open_artifact" => {
             let raw_path = str_arg(0);
@@ -1309,6 +1334,7 @@ pub fn run() {
             audit_db: opened.audit_db,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new(chat_id),
+            viewed_orchestrator_chat_id: Mutex::new(None),
             pipeline_chat_id: Mutex::new(pipeline_chat_id),
         })
         .invoke_handler(tauri::generate_handler![get_state, action])
@@ -1476,13 +1502,14 @@ mod tests {
         let old_id = scoped_chat_id(root, "orchestrator", &old_nonce);
         insert_chat(&conn, "you", None, "hello", "orchestrator", &old_id).unwrap();
         let slot = Mutex::new(old_id.clone());
+        let viewed = Mutex::new(Some("gui-orchestrator-old-view".to_string()));
         let mut rt = ChatAgentRuntime {
             chat_id: old_id.clone(),
             stdout_tail: "x".into(),
             ..ChatAgentRuntime::default()
         };
 
-        new_driver_session(&conn, &mut rt, &slot, root, "orchestrator").unwrap();
+        new_driver_session(&conn, &mut rt, &slot, &viewed, root, "orchestrator").unwrap();
 
         // The live chat_id changed, so the agent replays no prior history.
         let new_id = slot.lock().unwrap().clone();
@@ -1494,6 +1521,7 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         assert_eq!(rt.stdout_tail, "");
+        assert!(viewed.lock().unwrap().is_none());
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator");
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
@@ -1510,12 +1538,14 @@ mod tests {
         )
         .unwrap();
         let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let viewed = Mutex::new(Some("gui-orchestrator-project-stale".to_string()));
         let mut rt = ChatAgentRuntime::default();
 
         select_driver_session(
             &conn,
             &mut rt,
             &slot,
+            &viewed,
             "orchestrator",
             "gui-orchestrator-project-old",
         )
@@ -1525,11 +1555,12 @@ mod tests {
             slot.lock().unwrap().as_str(),
             "gui-orchestrator-project-old"
         );
+        assert!(viewed.lock().unwrap().is_none());
         assert_eq!(load_or_mint_session_nonce(&conn, "orchestrator"), "old");
     }
 
     #[test]
-    fn select_driver_session_rejects_unknown_cross_scope_and_busy_sessions() {
+    fn select_driver_session_rejects_unknown_and_cross_scope_sessions() {
         let conn = Connection::open_in_memory().unwrap();
         musubi_data::init_schema(&conn).unwrap();
         conn.execute(
@@ -1539,12 +1570,14 @@ mod tests {
         )
         .unwrap();
         let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let viewed = Mutex::new(None);
         let mut rt = ChatAgentRuntime::default();
 
         let cross_scope = select_driver_session(
             &conn,
             &mut rt,
             &slot,
+            &viewed,
             "orchestrator",
             "gui-orchestrator-other-old",
         )
@@ -1555,26 +1588,55 @@ mod tests {
             &conn,
             &mut rt,
             &slot,
+            &viewed,
             "orchestrator",
             "gui-orchestrator-project-missing",
         )
         .unwrap_err();
         assert!(unknown.contains("not found"));
 
-        rt.running = true;
-        let busy = select_driver_session(
+        assert!(viewed.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn select_driver_session_browses_history_without_reassigning_busy_runtime() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+        store_session_nonce(&conn, "orchestrator", "current");
+        let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let viewed = Mutex::new(None);
+        let mut rt = ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-current".to_string(),
+            ..ChatAgentRuntime::default()
+        };
+
+        select_driver_session(
             &conn,
             &mut rt,
             &slot,
+            &viewed,
             "orchestrator",
-            "gui-orchestrator-project-current",
+            "gui-orchestrator-project-old",
         )
-        .unwrap_err();
-        assert!(busy.contains("running"));
+        .unwrap();
+
         assert_eq!(
             slot.lock().unwrap().as_str(),
             "gui-orchestrator-project-current"
         );
+        assert_eq!(rt.chat_id, "gui-orchestrator-project-current");
+        assert_eq!(
+            viewed.lock().unwrap().as_deref(),
+            Some("gui-orchestrator-project-old")
+        );
+        assert_eq!(load_or_mint_session_nonce(&conn, "orchestrator"), "current");
     }
 
     #[test]
@@ -1626,9 +1688,17 @@ mod tests {
             running: true,
             ..ChatAgentRuntime::default()
         };
+        let viewed = Mutex::new(None);
 
-        let err = new_driver_session(&conn, &mut rt, &slot, Path::new("/tmp/x"), "orchestrator")
-            .unwrap_err();
+        let err = new_driver_session(
+            &conn,
+            &mut rt,
+            &slot,
+            &viewed,
+            Path::new("/tmp/x"),
+            "orchestrator",
+        )
+        .unwrap_err();
 
         assert!(err.contains("running"));
         assert_eq!(slot.lock().unwrap().clone(), "gui-orchestrator-abc-1");
