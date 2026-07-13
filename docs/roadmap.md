@@ -37,99 +37,53 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Installer runtime reduction.** Prefer a bundled or locally repairable
-   Python core payload so first run does not depend on global `pip install` or
-   manual `PATH` edits. Keep network install as a fallback for development
-   builds.
-
-2. **Signing and release hardening.** Sign the Windows installer and document
-   the expected Defender / SmartScreen path for non-developer installs.
-
-3. **Project-scoped sessions.** Bind process ownership, retained logs, budget,
-   cancellation, and pipeline ancestry to exact sessions while all sessions in
-   one project share the canonical workspace, dependencies, and databases.
-   Keep one writer process and never create per-session directories,
-   worktrees, clones, virtualenvs, or containers. Plan:
-   [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md).
-   The GUI now serializes the exact runtime-owner `chat_id`, scopes live and
-   retained process state to that ID, preserves other sessions when clearing
-   or re-minting one session, and rejects a second run through the shared
-   project writer lease. Prior chat rows and live worker ancestry remain
-   session-scoped without changing the shared filesystem root. The
-   Orchestrator now indexes non-empty project conversations by exact `chat_id`,
-   retains prior sessions after New session, reopens an idle selected session,
-   and renders the latest turn as a root-first agent flow. Operators can browse
-   prior chat and worker history read-only while another session keeps its
-   driver ownership; design and implementation plan:
-   [`2026-07-13-read-only-session-browsing-design.md`](./superpowers/specs/2026-07-13-read-only-session-browsing-design.md) and
-   [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md).
-   Earlier session-list follow-up plan:
-   [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md).
-
-4. **Bounded standalone pipeline runtime.** Use one stage turn cap across
+1. **Bounded standalone pipeline runtime.** Use one stage turn cap across
    runtime/state/audit, enforce a hard 16k-character model-input cap including
    tool definitions, and reserve token capacity so planner/designer cannot
    consume coder/reviewer shares. Plan:
    [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
 
+Runtime limits have one owner per dimension: this track owns pipeline-stage
+turn caps, model-input characters, and total stage allowances; per-worker
+effort owns output tokens for one LM call; root routing owns worker-count and
+continuation-spawn policy. Do not introduce a second parser or enforcement path
+for the same dimension.
+
 ### Backlog
 
+- **Installer runtime reduction.** Prefer a bundled or locally repairable
+  Python core payload so first run does not depend on global `pip install` or
+  manual `PATH` edits. Keep network install as a fallback for development
+  builds.
+- **Signing and release hardening.** Sign the Windows installer and document
+  the expected Defender / SmartScreen path for non-developer installs.
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
   and relevant tools.
-- **Per-cycle audit (`agent_cycles`).** Persist one row per LM call so
-  architecture decisions can be empirical rather than guessed.
-- **Scope-aware root routing / agent gearbox.** Add hybrid scope hints from
-  the substrate while keeping the root agent responsible for the final route:
-  simple edits and artifacts should use bounded single-worker/default-direct
-  flows, larger features should require plan/design/pipeline-style structure,
-  and route decisions, skill use, worker spawns, and budget halts should be
-  visible in logs and audit. Implementation plan:
-  [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md).
-  Direction update: scope no longer forces particular roles or planner-first
-  sequencing. Those route hints stay advisory and plan-first remains explicit
-  opt-in via `--plan`. The deterministic `max_workers` value is now a
-  cumulative root-run ceiling, in addition to the flat per-role batch width,
-  so a `single_coder` turn cannot silently retry with multiple coders.
-- **GUI/CLI orchestrator token economics.** Close the gap where stateful GUI
-  turns cost far more than the stateless CLI: scope chat history per session
-  with a new-session reset (an immortal per-project `chat_id` was replaying the
-  whole thread every turn), surface tool-name / replay-token / seed-cost
-  observability, add a deterministic mechanical validation gate at the worker
-  boundary so the goal-holding root accepts on a trustworthy signal instead of
-  re-ingesting artifacts, keep role selection advisory with explicit `--plan`
-  opt-in, and enforce only the deterministic worker-count ceiling.
-  Empty writes can no longer truncate an existing non-empty artifact; truncated
-  tool calls are returned to the same worker for a chunked retry instead of
-  ending that worker and encouraging a replacement. Implementation plan:
+- **GUI/CLI orchestrator token economics.** Enrich the existing per-cycle audit
+  with tool-name, replay-token, and seed-cost fields and project those fields in
+  the Console. Add a deterministic mechanical validation gate at the worker
+  boundary so the goal-holding root can accept a compact validator signal,
+  diff/summary, and artifact path instead of re-ingesting whole artifacts.
+  Session isolation, advisory routing with explicit `--plan`, cumulative
+  worker-count enforcement, empty-write protection, and chunked retry are
+  completed dependencies rather than work owned by this track. Implementation
+  plan:
   [`2026-07-09-gui-cli-orchestrator-tokens.md`](./superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md).
-- **MCP tool surface profiles.** Trim model-visible tool catalogs for internal
-  and external drivers without removing substrate tools. Implementation plan:
-  [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md).
-- **Per-worker effort ceiling & output budget.** The effort-routing floor
-  (2048) opens every cycle low on a distributional bet that a coder emitting a
-  whole file loses with probability 1.0, guaranteeing a truncated first mutate
-  call, a double-billed retry, and — because the 4096 ceiling sits below a
-  one-shot dashboard's natural size — an empty write. Key the floor to the
-  worker's actual tool surface (mutate workers open at the ceiling), let each
-  worker optionally declare `maxOutputTokens:` in `.agent.md` frontmatter, and
-  size the ceiling from a single shared default (`16384`) rather than a
-  mutate/read-only split or a per-model physical-limit table — `max_tokens` is a
-  cap not a price, so read-only workers (tiny outputs) cost nothing under a high
-  ceiling, and the true cap is undefined for ollama/on-prem and uniform-and-high
-  where discoverable, so the vendor enforces it at call time. 16384 stays an
-  order of magnitude below the physical maxes so it is still a real per-call
-  runaway brake, backstopped by the 200K run budget. An optional per-model
-  `max_output_tokens` in `.musubi/llm.json` remains for deliberate operator
-  cost-capping only. Effort-economics follow-up to the 2026-07-09
-  orchestrator-tokens work. Implementation plan:
-  [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md).
+- **Incomplete-artifact continuation policy.** Decide whether an exhausted
+  mutate worker may receive exactly one audited continuation spawn without
+  weakening the cumulative root-run worker ceiling. Root routing owns this
+  policy; it is design-gated and is not part of per-call output-token sizing.
+  The continuation brief must remain firewalled and bounded to audited artifact
+  state such as path, bytes, and digest.
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.
 - **Relocate substrate out of `.github/`.** Move skills, memory, agents, and
   pipeline definitions to a platform-neutral root now that the extension is
-  gone and nothing pins the `.github/` location.
+  gone and nothing pins the `.github/` location. Coordinate this before a large
+  skill-catalog expansion so new catalog entries do not create avoidable move
+  churn.
 
 ---
 
@@ -143,6 +97,30 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ## Completed Tracks
 
+- Per-worker effort ceiling and output budget — mutate workers open at the
+  shared 16,384-token per-call brake while read-only workers retain the cheap
+  2,048-token floor and sticky escalation. Worker frontmatter may declare
+  `maxOutputTokens`; an optional profile `max_output_tokens` clamps it. Empty
+  create/append content is rejected before dispatch, replay elision markers
+  instruct regeneration, and worker prompts identify the host shell. The
+  cumulative root worker ceiling is unchanged; continuation spawning remains a
+  separate design-gated backlog item. Plan:
+  [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md)
+- Project-scoped GUI sessions — exact runtime ownership, retained logs,
+  cancellation, pipeline ancestry, shared project writer lease, durable session
+  selection, and read-only browsing while another session runs. Plans:
+  [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md),
+  [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md), and
+  [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md)
+- Per-cycle LM audit — `agent_cycles` persistence, query API, tool-surface
+  exposure, and regression coverage
+- Scope-aware root routing / agent gearbox — deterministic scope hints remain
+  advisory, planning is explicit via `--plan`, and `max_workers` is the
+  cumulative root-run ceiling. Plan:
+  [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md)
+- MCP tool surface profiles — model-visible internal and external catalogs are
+  trimmed without removing substrate tools. Plan:
+  [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md)
 - VS Code extension removal — one driver host. The embedded Copilot surface
   (`copilot-harness-extension/`, its slash commands, CI job, and ceremony
   prompts) was deleted; the CLI + Console are the surfaces. With it landed

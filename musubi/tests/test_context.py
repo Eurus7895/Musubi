@@ -11,11 +11,13 @@ import types
 from pathlib import Path
 
 from agent.context import (
+    DEFAULT_EFFORT_CEILING,
     DEFAULT_EFFORT_FLOOR,
     build_system_prompt,
     context_budget,
     effort_floor,
     fit_context,
+    resolve_effort_bounds,
 )
 
 
@@ -73,6 +75,39 @@ def test_effort_floor_env_override(monkeypatch) -> None:  # noqa: ANN001
 def test_effort_floor_ignores_garbage(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("MUSUBI_EFFORT_TOKENS", "lots")
     assert effort_floor() == DEFAULT_EFFORT_FLOOR
+
+
+def test_mutate_effort_opens_at_shared_ceiling() -> None:
+    assert resolve_effort_bounds(
+        can_mutate=True,
+        worker_max_output=None,
+        model_output_override=None,
+    ) == (DEFAULT_EFFORT_CEILING, DEFAULT_EFFORT_CEILING)
+
+
+def test_read_only_effort_keeps_floor_and_shared_ceiling(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.delenv("MUSUBI_EFFORT_TOKENS", raising=False)
+    assert resolve_effort_bounds(
+        can_mutate=False,
+        worker_max_output=None,
+        model_output_override=None,
+    ) == (DEFAULT_EFFORT_FLOOR, DEFAULT_EFFORT_CEILING)
+
+
+def test_worker_output_budget_overrides_shared_ceiling() -> None:
+    assert resolve_effort_bounds(
+        can_mutate=True,
+        worker_max_output=32768,
+        model_output_override=None,
+    ) == (32768, 32768)
+
+
+def test_model_output_override_clamps_worker_ceiling() -> None:
+    assert resolve_effort_bounds(
+        can_mutate=True,
+        worker_max_output=32768,
+        model_output_override=8192,
+    ) == (8192, 8192)
 
 
 def _convo_with_big_results() -> list[dict]:
@@ -172,6 +207,8 @@ def test_fit_context_elides_large_file_tool_use_inputs_even_under_budget() -> No
     assert "chars=" in payload["content"]
     assert "bytes=" in payload["content"]
     assert "sha256=" in payload["content"]
+    assert "DO NOT copy this marker" in payload["content"]
+    assert "regenerate the original text from scratch" in payload["content"]
     assert raw not in json.dumps(out)
     assert msgs[2]["content"][0]["input"]["content"] == raw
 

@@ -55,6 +55,9 @@ class LMRouter(ABC):
     #: the user-supplied / default value.
     model: str = ""
 
+    #: Optional operator-set per-call output cap resolved from llm.json.
+    max_output_tokens: int | None = None
+
     @abstractmethod
     def call(
         self,

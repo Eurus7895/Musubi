@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from agent.run import run_agent
-from agent.subagent import build_subagent_system_prompt, select_child_tools
+from agent.subagent import (
+    _frontmatter_max_output_tokens,
+    build_subagent_system_prompt,
+    run_subagent,
+    select_child_tools,
+)
 from agent.vendors.base import LMResponse, LMRouter
 
 
@@ -214,3 +219,93 @@ def test_build_subagent_prompt_includes_brief_and_strips_frontmatter() -> None:
     assert "# Explorer" in prompt
     assert "## Skill (pushed by harness)" in prompt
     assert "find the bug" in prompt
+
+
+def test_build_subagent_prompt_names_windows_shell_commands() -> None:
+    prompt = build_subagent_system_prompt(
+        "# Coder", None, "clean up", platform_name="nt"
+    )
+    assert "Host: Windows" in prompt
+    assert "use `del`, not `rm`" in prompt
+
+
+def test_build_subagent_prompt_names_posix_shell_commands() -> None:
+    prompt = build_subagent_system_prompt(
+        "# Coder", None, "clean up", platform_name="posix"
+    )
+    assert "Host: POSIX" in prompt
+    assert "use `rm`, not `del`" in prompt
+
+
+def test_frontmatter_max_output_tokens_reads_positive_integer() -> None:
+    agent_md = "---\nname: large-writer\nmaxOutputTokens: 32768\n---\n# Writer"
+    assert _frontmatter_max_output_tokens(agent_md) == 32768
+
+
+def test_frontmatter_max_output_tokens_defaults_when_missing_or_invalid() -> None:
+    assert _frontmatter_max_output_tokens("# Worker") is None
+    assert _frontmatter_max_output_tokens(
+        "---\nmaxOutputTokens: unlimited\n---\n# Worker"
+    ) is None
+    assert _frontmatter_max_output_tokens(
+        "---\nmaxOutputTokens: 0\n---\n# Worker"
+    ) is None
+
+
+def test_run_subagent_threads_frontmatter_output_budget(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"h1",'
+                    '"role":"coder","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"write it",'
+                    '"role_skill":null,"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"complete","summary":"done"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return "done", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(
+        subagent_mod,
+        "_read_agent_md",
+        lambda role, agents_dir: (
+            "---\nname: coder\nmaxOutputTokens: 32768\n---\n# Coder"
+        ),
+    )
+
+    result = asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "write it"},
+        FakeRouter([]),
+        [],
+        io.StringIO(),
+        agents_dir=tmp_path,
+    ))
+
+    assert result == "done"
+    assert seen["worker_max_output"] == 32768

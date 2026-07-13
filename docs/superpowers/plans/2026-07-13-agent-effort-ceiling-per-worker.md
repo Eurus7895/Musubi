@@ -155,7 +155,7 @@ worker frontmatter under `.github/agents/workers/`, pytest.
 - Produces: `resolve_effort_bounds(*, can_mutate: bool, worker_max_output: int | None, model_output_override: int | None) -> tuple[int, int]` in `context.py`,
   returning `(floor, ceiling)` per the resolution order above.
 
-- [ ] **Step 1: Read the optional per-model override from config**
+- [x] **Step 1: Read the optional per-model override from config**
 
 In `.musubi/llm.json`'s per-model shape, read an OPTIONAL `max_output_tokens`.
 In `agent/config.py`, add `resolve_model_output_override` returning that value
@@ -164,7 +164,7 @@ NOT invent a physical default — absent means "no clamp", and the vendor reject
 an over-cap request at call time (see the "Why NOT a required per-model table"
 note in the Architecture section).
 
-- [ ] **Step 2: Add the effort-bounds resolver**
+- [x] **Step 2: Add the effort-bounds resolver**
 
 In `agent/context.py`, add the shared default and the resolver:
 
@@ -203,7 +203,7 @@ preflight. It is deliberately NOT set to the model's physical max: that would
 let a single degenerate cycle burn ~115 credits before the between-call budget
 check can see it.
 
-- [ ] **Step 3: Unit tests**
+- [x] **Step 3: Unit tests**
 
 Cover: mutate worker → floor == ceiling == 16384; read-only → floor stays 2048,
 ceiling 16384; a per-worker `maxOutputTokens` overrides the default both ways; a
@@ -230,14 +230,14 @@ flash-tier failure) could otherwise generate up to the model's hard limit
 ~0.0018 credits/output-token) in one call, discovered only at the next
 preflight. Keep the brake; just size it per model / per worker.
 
-- [ ] **Step 1: Add explicit bounds params to `_call_with_effort`**
+- [x] **Step 1: Add explicit bounds params to `_call_with_effort`**
 
 Replace the internal `floor = min(effort_floor(), EFFORT_CEILING)` with the
 caller-supplied `floor`; use the caller-supplied `ceiling` for the escalation
 call. Preserve the single-retry contract: retry only when
 `stop_reason == "max_tokens" and floor < ceiling`.
 
-- [ ] **Step 2: Compute bounds once at `_run_loop` entry**
+- [x] **Step 2: Compute bounds once at `_run_loop` entry**
 
 Near the top of `_run_loop` (`run.py:522`), before the cycle loop:
 
@@ -258,14 +258,14 @@ Pass `floor=(ceiling if escalated else base_floor)` and `ceiling=ceiling` into
 each `_call_with_effort` call (`run.py:566` and the forced-final at
 `run.py:686`).
 
-- [ ] **Step 3: Sticky escalation**
+- [x] **Step 3: Sticky escalation**
 
 After each cycle's call, if the response hit `max_tokens` (or
 `len(effort.attempts) > 1`), set `escalated = True` so the remaining cycles in
 this loop skip the floor bet. This stops the repeated double-billing seen at
 coder cycles 2 and 3.
 
-- [ ] **Step 4: Integration test**
+- [x] **Step 4: Integration test**
 
 Extend `test_agent_loop.py`: a mutate worker's first call goes out at the
 ceiling (assert `router.calls[0]["max_tokens"] == ceiling`, no `attempts=2`);
@@ -290,20 +290,20 @@ is currently NOT read at spawn — `max_turns` comes from the spawn envelope
 So the per-worker frontmatter→runtime wire does not yet exist; this task opens
 it for the new field (and could later carry `maxTurns` too, out of scope here).
 
-- [ ] **Step 1: Parse the field**
+- [x] **Step 1: Parse the field**
 
 In `run_subagent`, after `agent_md = _read_agent_md(role, agents_dir)`
 (`subagent.py:108`), parse the frontmatter for `maxOutputTokens` (reuse the
 existing frontmatter parser; fall back to `None` when absent or malformed —
 fail closed to the shared default).
 
-- [ ] **Step 2: Thread it into the loop**
+- [x] **Step 2: Thread it into the loop**
 
 Pass `worker_max_output` through `run_unit` into `_run_loop` as a new
 keyword-only param (default `None`, so the root and existing callers are
 unaffected and resolve via the shared default).
 
-- [ ] **Step 3: Declare it only where the default doesn't fit**
+- [x] **Step 3: Declare it only where the default doesn't fit**
 
 Most workers should OMIT `maxOutputTokens:` and take the shared 16384 default —
 including the standard `coder`, whose one-shot artifacts fit comfortably under
@@ -313,7 +313,7 @@ worker that routinely one-shots very large single files might set
 Keep the `musubi-tier`/`expires-when`/`cost-lever` tags intact on any worker
 you touch.
 
-- [ ] **Step 4: Test**
+- [x] **Step 4: Test**
 
 Assert a worker declaring `maxOutputTokens: 32768` resolves its ceiling from
 frontmatter (mock the spawn, assert the first call uses 32768, or the operator
@@ -334,7 +334,7 @@ regenerate". The elision-copyback (coder cycle 8) is the failure the
 2026-07-02 elision plan predicted; putting the instruction *in the stub* lands
 it where a confused flash-tier model is actually looking.
 
-- [ ] **Step 1: Reject empty create/append content**
+- [x] **Step 1: Reject empty create/append content**
 
 In `_file_tool_argument_error`, after the type checks pass, for
 `musubi_write_file` / `musubi_append_file` only: if `content` is empty or
@@ -342,7 +342,7 @@ whitespace-only, append an error like `"content is empty; regenerate the full
 file content (an empty write is almost always a truncation artifact)"`. Do NOT
 apply this to `musubi_edit_file` — an empty `new_string` is a valid deletion.
 
-- [ ] **Step 2: Make the stub imperative**
+- [x] **Step 2: Make the stub imperative**
 
 In `_elided_tool_arg_stub`, extend the message from "argument was already sent
 to the MCP tool" to also say "DO NOT copy this marker as content; regenerate
@@ -350,7 +350,7 @@ the original text from scratch." Keep the deterministic `chars=`/`bytes=`/
 `sha256=` fields so existing tests and the `_should_elide_tool_arg` guard
 (`context.py:209`) still match on the `[musubi:elided-tool-arg` prefix.
 
-- [ ] **Step 3: Tests**
+- [x] **Step 3: Tests**
 
 `test_agent_loop.py`: `write_file(content="")` returns the guard error, not a
 dispatch. `test_context.py`: the stub still starts with the elided prefix and
@@ -359,6 +359,11 @@ now contains the regenerate clause; round-trip elision tests still pass.
 ---
 
 ### Task 5: Salvage Respawn On Incomplete Artifact (design-gated)
+
+**Moved out of scope:** roadmap ownership now places continuation spawning in
+the separate `Incomplete-artifact continuation policy` backlog item. This
+implementation deliberately leaves the cumulative root-run worker ceiling
+unchanged.
 
 **Files:**
 - Modify: `musubi/agent/run.py` (spawn cap path, `~1589`)
@@ -402,14 +407,14 @@ is never exceeded beyond the single sanctioned exception.
 **Rationale:** coder cycles 5-6 wasted a cycle on `rm` (exit 1, Windows) then
 `del` (exit 0). The host shell is deterministic and belongs in the prompt.
 
-- [ ] **Step 1: Inject one host line**
+- [x] **Step 1: Inject one host line**
 
 Add a single line derived from the detected platform (e.g. `"Host: Windows cmd
 — use del not rm; \\ path separators"` or the POSIX equivalent) into the
 worker system prompt. Source the platform from the existing workspace
 detection rather than a new probe.
 
-- [ ] **Step 2: Test**
+- [x] **Step 2: Test**
 
 Assert the rendered worker system prompt contains the host line for each
 platform branch.
@@ -421,19 +426,19 @@ platform branch.
 **Files:**
 - Modify: `docs/roadmap.md`
 
-- [ ] **Step 1: Link this plan from the roadmap Backlog**
+- [x] **Step 1: Record this implemented track in the roadmap**
 
 Add a Backlog entry summarizing the effort-ceiling / per-worker output budget
 and linking `2026-07-13-agent-effort-ceiling-per-worker.md`. Note it as the
 effort-economics follow-up to the 2026-07-09 orchestrator-tokens work.
 
-- [ ] **Step 2: Focused tests**
+- [x] **Step 2: Focused tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_context.py musubi/tests/test_agent_loop.py musubi/tests/test_subagent_context.py -q
 ```
 
-- [ ] **Step 3: Vendor / salvage regressions**
+- [x] **Step 3: Vendor / salvage regressions**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_agent_vendors.py musubi/tests/test_salvage_on_exhaust.py -q

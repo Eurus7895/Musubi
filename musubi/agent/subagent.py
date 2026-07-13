@@ -106,6 +106,7 @@ async def run_subagent(
     allowed = ctx.get("allowed_tools") or []
 
     agent_md = _read_agent_md(role, agents_dir)
+    worker_max_output = _frontmatter_max_output_tokens(agent_md)
     system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
     child_tools = select_child_tools(tools, allowed)
 
@@ -157,6 +158,7 @@ async def run_subagent(
             stats=stats,
             budget=budget,
             audit_db_path=audit_db_path,
+            worker_max_output=worker_max_output,
         )
     except Exception as exc:
         if type(exc).__name__ in {
@@ -319,12 +321,24 @@ def build_subagent_system_prompt(
     agent_md: str,
     role_skill: str | None,
     brief: str,
+    *,
+    platform_name: str | None = None,
 ) -> str:
     """Stripped agent.md + role skill + brief — the brief IS the task."""
     parts: list[str] = [_strip_frontmatter(agent_md).strip()]
     skill = (role_skill or "").strip()
     if skill:
         parts.append("\n\n## Skill (pushed by harness)\n\n" + _strip_frontmatter(skill).strip())
+    host = os.name if platform_name is None else platform_name
+    if host == "nt":
+        parts.append(
+            "\n\nHost: Windows (cmd/PowerShell); use `del`, not `rm`, and "
+            "Windows path separators."
+        )
+    else:
+        parts.append(
+            "\n\nHost: POSIX shell; use `rm`, not `del`, and `/` path separators."
+        )
     parts.append(
         "\n\n## Brief\n\n" + brief.strip()
         + "\n\nFollow the Output Contract in your role section. Produce your "
@@ -371,6 +385,26 @@ def _frontmatter_spawn_allowlist(agent_md: str) -> list[str]:
         return []
     val = fm.get("spawn_allowlist") if isinstance(fm, dict) else None
     return [s for s in val if isinstance(s, str)] if isinstance(val, list) else []
+
+
+def _frontmatter_max_output_tokens(agent_md: str) -> int | None:
+    """Return a positive per-worker output cap, or the shared-default signal."""
+    text = (agent_md or "").lstrip()
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        fm = yaml.safe_load(text[3:end]) or {}
+    except Exception:
+        return None
+    value = fm.get("maxOutputTokens") if isinstance(fm, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
 
 
 def _strip_frontmatter(md: str) -> str:

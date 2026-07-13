@@ -610,6 +610,49 @@ def test_dispatch_allows_documentation_that_mentions_elision_marker(
     ]
 
 
+@pytest.mark.parametrize("tool_name", ["musubi_write_file", "musubi_append_file"])
+def test_dispatch_rejects_empty_file_content_before_mcp_call(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("stored")
+    audit_db = tmp_path / f"{tool_name}-empty.db"
+    result = asyncio.run(run_mod._dispatch_one(
+        {
+            "id": "call-empty",
+            "name": tool_name,
+            "input": {"path": "dashboard.html", "content": "  \n"},
+        },
+        session,
+        io.StringIO(),
+        vendor=None,
+        tools=[],
+        orchestration=Orchestration(
+            parent_session_id="parent", parent_agent_name="coder"
+        ),
+        gateway=None,
+        compression_db_path=None,
+        audit_db_path=audit_db,
+    ))
+
+    assert "[tool error] invalid arguments" in result
+    assert "content is empty" in result
+    assert "regenerate the full file content" in result
+    assert session.calls == []
+    assert _read_tool_rows(audit_db) == [("coder", tool_name, "error")]
+
+
+def test_edit_file_allows_empty_new_string_for_deletion() -> None:
+    from agent.run import _file_tool_argument_error
+
+    assert _file_tool_argument_error(
+        "musubi_edit_file",
+        {"path": "x.txt", "old_string": "remove me", "new_string": ""},
+    ) is None
+
+
 def test_dispatch_runs_file_mutations_sequentially_in_model_order(
     tmp_path: Path,
 ) -> None:
@@ -636,7 +679,7 @@ def test_dispatch_runs_file_mutations_sequentially_in_model_order(
         {
             "id": "w",
             "name": "musubi_write_file",
-            "input": {"path": "x.py", "content": ""},
+            "input": {"path": "x.py", "content": "seed"},
         },
         {
             "id": "a1",
@@ -1002,19 +1045,25 @@ def test_run_loop_elides_large_file_tool_args_before_next_model_call(
 
 def test_call_with_effort_escalates_on_max_tokens() -> None:
     """A truncated call is retried once at the ceiling."""
-    from agent.context import DEFAULT_EFFORT_FLOOR
-    from agent.run import EFFORT_CEILING, _call_with_effort
+    from agent.context import DEFAULT_EFFORT_CEILING, DEFAULT_EFFORT_FLOOR
+    from agent.run import _call_with_effort
 
     router = FakeRouter([
         LMResponse(stop_reason="max_tokens", content=[{"type": "text", "text": ""}]),
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    result = _call_with_effort(
+        router,
+        [{"role": "user", "content": "hi"}],
+        [],
+        floor=DEFAULT_EFFORT_FLOOR,
+        ceiling=DEFAULT_EFFORT_CEILING,
+    )
     assert result.response.stop_reason == "end_turn"
     assert len(result.attempts) == 2
     assert [c["max_tokens"] for c in router.calls] == [
         DEFAULT_EFFORT_FLOOR,
-        EFFORT_CEILING,
+        DEFAULT_EFFORT_CEILING,
     ]
 
 
@@ -1025,11 +1074,92 @@ def test_call_with_effort_no_escalation_when_complete() -> None:
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
-    result = _call_with_effort(router, [{"role": "user", "content": "hi"}], [])
+    result = _call_with_effort(
+        router,
+        [{"role": "user", "content": "hi"}],
+        [],
+        floor=DEFAULT_EFFORT_FLOOR,
+        ceiling=16_384,
+    )
     assert result.response.stop_reason == "end_turn"
     assert len(result.attempts) == 1
     assert len(router.calls) == 1
     assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
+def test_mutate_worker_opens_at_output_ceiling() -> None:
+    from agent import run as run_mod
+    from agent.context import DEFAULT_EFFORT_CEILING
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "write"}],
+        max_cycles=1,
+        log=io.StringIO(),
+        role="coder",
+    ))
+
+    assert answer == "ok"
+    assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_CEILING
+
+
+def test_read_only_worker_opens_at_effort_floor() -> None:
+    from agent import run as run_mod
+    from agent.context import DEFAULT_EFFORT_FLOOR
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "read"}],
+        max_cycles=1,
+        log=io.StringIO(),
+    ))
+
+    assert router.calls[0]["max_tokens"] == DEFAULT_EFFORT_FLOOR
+
+
+def test_effort_escalation_sticks_for_later_cycles() -> None:
+    from agent import run as run_mod
+    from agent.context import DEFAULT_EFFORT_CEILING, DEFAULT_EFFORT_FLOOR
+
+    router = FakeRouter([
+        LMResponse(stop_reason="max_tokens", content=[]),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "read-1",
+            "name": "musubi_read_file",
+            "input": {"path": "x.txt"},
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "done"}]),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        _FakeToolSession("contents"),
+        router,
+        [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "read"}],
+        max_cycles=2,
+        log=io.StringIO(),
+    ))
+
+    assert answer == "done"
+    assert cycles == 2
+    assert [call["max_tokens"] for call in router.calls] == [
+        DEFAULT_EFFORT_FLOOR,
+        DEFAULT_EFFORT_CEILING,
+        DEFAULT_EFFORT_CEILING,
+    ]
 
 
 def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None:
@@ -1118,7 +1248,6 @@ def test_run_loop_returns_truncated_tool_call_to_same_worker_for_chunk_retry() -
         "input": {"path": "dashboard.html"},
     }
     router = FakeRouter([
-        LMResponse(stop_reason="max_tokens", content=[partial_append]),
         LMResponse(stop_reason="max_tokens", content=[partial_append]),
         LMResponse(
             stop_reason="end_turn",
@@ -1543,17 +1672,22 @@ def test_resolve_vendor_labels_which_profile(
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({
         "default": "ollama.local",
-        "ollama": {"local": {"model": "llama3.1"}},
+        "ollama": {
+            "local": {"model": "llama3.1", "max_output_tokens": 8192},
+        },
     }), encoding="utf-8")
     monkeypatch.setenv("MUSUBI_LLM_CONFIG", str(cfg))
     # Avoid importing a real vendor SDK — only the label logic is under test.
-    monkeypatch.setattr(run_mod, "build_from_profile", lambda prof: "ROUTER")
+    router = FakeRouter([])
+    monkeypatch.setattr(run_mod, "build_from_profile", lambda prof: router)
 
-    _, default_src = run_mod._resolve_vendor(None)
+    default_router, default_src = run_mod._resolve_vendor(None)
     assert default_src == "ollama.local (llm.json default)"
+    assert default_router.max_output_tokens == 8192
 
-    _, profile_src = run_mod._resolve_vendor("ollama.local")
+    profile_router, profile_src = run_mod._resolve_vendor("ollama.local")
     assert profile_src == "ollama.local (--profile)"
+    assert profile_router.max_output_tokens == 8192
 
 
 def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:

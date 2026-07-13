@@ -15,6 +15,7 @@ from agent.config import (
     find_config_path,
     load_profile,
     resolve_api_key,
+    resolve_model_output_override,
     resolve_proxy_user,
 )
 
@@ -117,6 +118,16 @@ def test_resolve_api_key_inline() -> None:
 
 def test_resolve_api_key_none_when_absent() -> None:
     assert resolve_api_key({"model": "x"}) is None
+
+
+def test_resolve_model_output_override_returns_positive_operator_cap() -> None:
+    assert resolve_model_output_override({"max_output_tokens": 8192}) == 8192
+
+
+def test_resolve_model_output_override_returns_none_when_absent_or_invalid() -> None:
+    assert resolve_model_output_override({"model": "x"}) is None
+    assert resolve_model_output_override({"max_output_tokens": 0}) is None
+    assert resolve_model_output_override({"max_output_tokens": "8192"}) is None
 
 
 def test_resolve_proxy_user_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
