@@ -60,16 +60,18 @@ for the same dimension.
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
   and relevant tools.
-- **GUI/CLI orchestrator token economics.** Enrich the existing per-cycle audit
-  with tool-name, replay-token, and seed-cost fields and project those fields in
-  the Console. Add a deterministic mechanical validation gate at the worker
-  boundary so the goal-holding root can accept a compact validator signal,
-  diff/summary, and artifact path instead of re-ingesting whole artifacts.
-  Session isolation, advisory routing with explicit `--plan`, cumulative
-  worker-count enforcement, empty-write protection, and chunked retry are
-  completed dependencies rather than work owned by this track. Implementation
-  plan:
-  [`2026-07-09-gui-cli-orchestrator-tokens.md`](./superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md).
+- **GUI/CLI orchestrator token economics.** Make provider token usage the only
+  live economics contract: persist input, cached-input subset, output, latency,
+  usage source, worker identity, and tool names for every logical cycle, then
+  project selected-session totals in both Console surfaces. Retire Musubi-local
+  credit accounting and replay/seed economics labels; preserve legacy audit
+  columns without reading, writing, or destructively dropping them. Session
+  isolation, compact mechanical worker validation, advisory `--plan` routing,
+  cumulative worker-count enforcement, empty-write protection, and chunked
+  retry are completed dependencies rather than work owned by this track.
+  Design and implementation plan:
+  [`2026-07-13-orchestrator-token-economics-design.md`](./superpowers/specs/2026-07-13-orchestrator-token-economics-design.md) and
+  [`2026-07-13-orchestrator-token-economics.md`](./superpowers/plans/2026-07-13-orchestrator-token-economics.md).
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this
