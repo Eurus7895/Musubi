@@ -255,6 +255,143 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     assert "blocked" in fed_back
 
 
+# ── force-concluded-but-complete worker is accepted, not escalated ──────────
+
+
+def _completed_artifact_session(
+    completed: dict[str, Any], *, max_turns: int,
+) -> Any:
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_complete_subagent":
+                completed.update(arguments)
+                payload = '{"status":"recorded"}'
+            elif name == "musubi_spawn_subagent":
+                payload = (
+                    '{"status":"spawned","handle_id":"h-nyc","role":"coder",'
+                    f'"max_turns":{max_turns}}}'
+                )
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"nyc dashboard","role_skill":null,'
+                    '"allowed_tools":[]}'
+                )
+            else:
+                payload = '{"status":"ok"}'
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    return Session()
+
+
+_DONE_FINAL = (
+    "status: done\n"
+    "files_changed:\n- artifacts/nyc-dashboard.html\n"
+    "summary: created a self-contained NYC dashboard\n"
+    "verification: 10764 bytes, valid HTML\n"
+)
+
+
+def test_max_turns_worker_with_completed_artifact_accepted_as_done(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The NYC case: a coder force-concluded at the turn cap whose declared
+    artifact exists and is non-empty is accepted as done — no false escalation,
+    so the root is never pushed into a pointless recovery."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "artifacts" / "nyc-dashboard.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<!DOCTYPE html><html></html>", encoding="utf-8")
+
+    completed: dict[str, Any] = {}
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        run_mod._worker_touched_files.get().add("artifacts/nyc-dashboard.html")
+        return _DONE_FINAL, 10  # turns == max_turns
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        _completed_artifact_session(completed, max_turns=10),
+        {"role": "coder", "brief": "nyc", "parent_session_id": "parent"},
+        FakeRouter([]), [], io.StringIO(),
+        agents_dir=tmp_path, orchestration=orchestration,
+    ))
+
+    assert completed["status"] == "done"
+    assert orchestration.latest_unrecovered_failure() is None
+    assert "status: done" in result
+
+
+def test_max_turns_worker_without_artifact_still_escalates(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """Force-concluded at the cap but the declared file does not exist → the
+    deliverable was NOT produced, so it stays an escalation."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))  # artifact never written
+
+    completed: dict[str, Any] = {}
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        run_mod._worker_touched_files.get().add("artifacts/nyc-dashboard.html")
+        return _DONE_FINAL, 10
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    asyncio.run(run_subagent(
+        _completed_artifact_session(completed, max_turns=10),
+        {"role": "coder", "brief": "nyc", "parent_session_id": "parent"},
+        FakeRouter([]), [], io.StringIO(),
+        agents_dir=tmp_path, orchestration=orchestration,
+    ))
+
+    assert completed["status"] == "escalated"
+    assert orchestration.latest_unrecovered_failure() is not None
+
+
+def test_forced_final_is_complete_requires_status_touched_and_nonempty(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent.subagent import _forced_final_is_complete
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    f = tmp_path / "out.html"
+    f.write_text("<html></html>", encoding="utf-8")
+    empty = tmp_path / "empty.html"
+    empty.write_text("", encoding="utf-8")
+
+    # All three conditions met → complete.
+    assert _forced_final_is_complete("status: done\nfiles_changed:", {"out.html"})
+    # No touched files → not complete (nothing was produced).
+    assert not _forced_final_is_complete("status: done", set())
+    # Declared done but the file is empty → not complete.
+    assert not _forced_final_is_complete("status: done", {"empty.html"})
+    # Declared done but the file is missing → not complete.
+    assert not _forced_final_is_complete("status: done", {"missing.html"})
+    # Touched a real file but did not declare done → not complete.
+    assert not _forced_final_is_complete("status: incomplete", {"out.html"})
+    # A leading [mechanical] banner does not hide the status line.
+    assert _forced_final_is_complete(
+        "[mechanical] result=skipped\nstatus: done", {"out.html"}
+    )
+
+
 # ── pure helpers ────────────────────────────────────────────────────────────
 
 

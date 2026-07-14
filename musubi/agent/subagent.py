@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -187,10 +188,22 @@ async def run_subagent(
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
-    elif turns >= max_turns:
-        summary, status = answer, "escalated"
     elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
+        # A typed incomplete/blocked marker (e.g. a truncated tool call caught
+        # mid-mutation) is always an escalation, even at the turn cap.
         summary, status = answer, "escalated"
+    elif turns >= max_turns:
+        # Force-concluded at the turn cap. That is a real escalation ONLY if the
+        # deliverable is not already produced. If the forced-final answer
+        # self-declares `status: done` AND every file this worker mutated exists
+        # and is non-empty on disk, the artifact was written before the cutoff
+        # (the cap was spent on post-write verification, not the work itself) —
+        # accept it as done rather than sending the root into a pointless
+        # recovery that reports a finished artifact as `[incomplete]`.
+        if _forced_final_is_complete(answer, touched):
+            summary, status = answer, "done"
+        else:
+            summary, status = answer, "escalated"
     else:
         summary, status = answer, "done"
 
@@ -253,6 +266,39 @@ def _file_still_exists(path: str) -> bool:
     if not p.is_absolute():
         p = _mechanical_workspace_root() / p
     return p.exists()
+
+
+#: A worker's Output Contract opens with a `status:` line; `done` on that line
+#: is the worker's own claim that it finished. Matched anywhere at line start so
+#: a leading `[mechanical] …` banner or blank lines do not hide it.
+_STATUS_DONE_RE = re.compile(r"(?im)^\s*status:\s*done\b")
+
+
+def _file_nonempty(path: str) -> bool:
+    p = Path(path)
+    if not p.is_absolute():
+        p = _mechanical_workspace_root() / p
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _forced_final_is_complete(answer: str, touched: set[str]) -> bool:
+    """True when a max-turns worker's deliverable is already on disk.
+
+    Deterministic (zero-LLM), all three must hold: the forced-final answer
+    self-declares `status: done`, the worker actually mutated at least one file,
+    and every mutated file exists and is non-empty. This separates "cut off
+    during verification after the write" (accept) from "cut off before finishing
+    the work" (escalate). A truncated mutation never reaches here — it is caught
+    earlier as a typed `[blocked]`/`[incomplete]` answer.
+    """
+    if not touched:
+        return False
+    if not _STATUS_DONE_RE.search(answer or ""):
+        return False
+    return all(_file_nonempty(path) for path in touched)
 
 
 def _lint_errors_preview(res: dict[str, Any]) -> list[str]:
