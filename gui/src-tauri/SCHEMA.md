@@ -21,10 +21,10 @@ The reader maps the **real** tables the Musubi substrate writes
 names below match those writers. It is **read-mostly** and tolerant: a fresh DB
 with empty tables yields empty surfaces; missing optional columns fall back to
 defaults; `ts` may be a REAL epoch or a pre-formatted string. It never writes to
-the append-only audit tables. The only writes the app performs are to the
-GUI-side `chat_log` and `meta` tables (driver chat, active profile); governed
-mutations (spawning agents, running pipelines) must go through the MCP server,
-not direct DB writes — those action handlers are stubbed with a `todo`.
+the append-only audit tables. The app writes only GUI-side `chat_log` and `meta`
+state directly. Explicit driver actions launch the standalone CLI, which
+performs governed mutations through the MCP substrate; the GUI never writes
+append-only audit rows itself.
 
 ## Tables
 
@@ -110,7 +110,11 @@ The console groups non-empty Orchestrator `chat_id` values into the serialized
 `orchestratorSessions[]` index. A freshly minted ID does not appear until its
 first `chat_log` row exists. Each summary carries the first and latest user
 request, first/latest row timestamps, and root/worker counts; selecting a
-summary changes the active exact ID without deleting any rows.
+summary while the driver is idle promotes the requested exact ID without
+deleting any rows. While the driver is busy, selection changes only
+`viewedOrchestratorChatId`: `orchestratorChatId`, `driverStatus.chatId`, and
+nonce ownership remain unchanged, and the viewed session is read-only until
+the driver is idle.
 
 ### `meta` — key/value (GUI-side)
 
@@ -148,13 +152,16 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 all presentation (colours, chips) from `role`/`status`, so the backend only
 supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
 
-The snapshot also exposes `orchestratorChatId` and `pipelineChatId`, plus an
-`orchestratorSessions[]` summary index. Each `agentTurns[]` item includes a
-`request` joined from `sessions.request` through `parent_session_id`; this is
-presentation metadata for the root worker and does not alter its lifecycle.
-Current
-surface run lists compare these complete IDs; the `gui-orchestrator-` and
-`gui-pipeline-` prefixes are classification fallbacks for legacy rows only.
+The snapshot also exposes `orchestratorChatId`,
+`viewedOrchestratorChatId`, `pipelineChatId`, `orchestratorSessions[]`, and
+`driverStatus.chatId`. `orchestratorChatId` is the active Orchestrator session
+and owner of future writes; `viewedOrchestratorChatId` is the optional
+navigation target; and `driverStatus.chatId` is the exact owner of the live or
+retained process. Each `agentTurns[]` item includes a `request` joined from
+`sessions.request` through `parent_session_id`; this is presentation metadata
+for the root worker and does not alter its lifecycle. Current surface run lists
+compare these complete IDs; the `gui-orchestrator-` and `gui-pipeline-`
+prefixes are classification fallbacks for legacy rows only.
 When the sibling state database is absent, the audit snapshot remains usable
 and `pipelineRuns` is empty rather than synthesizing historical pipeline cards.
 
@@ -169,3 +176,9 @@ session never owns a filesystem root, worktree, clone, virtualenv, or container.
 `driverStatus.chatId` is the exact owner of the live or retained runtime state.
 The frontend renders that state only when it matches the current surface's full
 chat ID. Surface names remain useful labels but are not ownership boundaries.
+
+For an Orchestrator send, the optional requested session ID is validated and
+atomically promoted before both the `chat_log` insertion and driver launch.
+If another process wins the runtime between viewing and sending, the busy race
+is fail-closed: no message is inserted and no driver is launched for a
+different session.

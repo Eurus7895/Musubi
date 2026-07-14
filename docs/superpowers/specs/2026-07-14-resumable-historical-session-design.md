@@ -1,5 +1,9 @@
 # Resumable Historical Session Design
 
+> Canonical Orchestrator historical-session lifecycle. This design replaces
+> the read-only browsing design dated 2026-07-13 while preserving its busy-run
+> active-versus-viewed isolation.
+
 ## Context
 
 The Orchestrator lets an operator inspect an older session while another
