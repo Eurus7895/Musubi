@@ -8,6 +8,8 @@
 
 **Tech Stack:** Markdown, PowerShell, ripgrep, Git, Node.js test runner, Vite, Rust, Cargo.
 
+**Status:** Implemented and verified on `fix/gui-resume-historical-session`.
+
 ## Global Constraints
 
 - Do not change Console runtime behavior, database schema, or process ownership.
@@ -36,7 +38,7 @@
 - Consumes: the deletion decision in `docs/superpowers/specs/2026-07-14-documentation-source-of-truth-design.md`.
 - Produces: a roadmap containing no live link to a deleted historical plan.
 
-- [ ] **Step 1: Capture the obsolete-reference baseline**
+- [x] **Step 1: Capture the obsolete-reference baseline**
 
 Run:
 
@@ -46,13 +48,13 @@ rg -n --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-sou
 
 Expected: roadmap and historical documents still contain matches.
 
-- [ ] **Step 2: Delete the five superseded files**
+- [x] **Step 2: Delete the five superseded files**
 
 Use `apply_patch` file-deletion patches for the five exact paths above. Do not
 delete either 2026-07-14 documentation cleanup file or either 2026-07-14
 resumable historical-session file.
 
-- [ ] **Step 3: Replace roadmap links with current sources**
+- [x] **Step 3: Replace roadmap links with current sources**
 
 Keep the completed token-economics summary and link only:
 
@@ -81,7 +83,7 @@ Console guide instead:
   surface. Current operation is documented in [`guide.md`](./guide.md).
 ```
 
-- [ ] **Step 4: Verify deleted references are gone**
+- [x] **Step 4: Verify deleted references are gone**
 
 Run:
 
@@ -91,7 +93,7 @@ rg -n --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-sou
 
 Expected: exit code 1 and no output.
 
-- [ ] **Step 5: Commit the deletion boundary**
+- [x] **Step 5: Commit the deletion boundary**
 
 ```powershell
 git add docs/roadmap.md docs/superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md docs/superpowers/plans/2026-07-05-gui-pipeline-separate-session.md docs/superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md docs/superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md docs/superpowers/plans/2026-07-13-read-only-session-browsing.md docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md docs/superpowers/specs/2026-07-13-read-only-session-browsing-design.md
@@ -110,7 +112,7 @@ git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs: remo
 - Consumes: the current Tauri `send_chat` and pipeline action boundaries.
 - Produces: short overview copy that distinguishes the GUI shell from the launched standalone driver.
 
-- [ ] **Step 1: Capture stale architecture claims**
+- [x] **Step 1: Capture stale architecture claims**
 
 Run:
 
@@ -120,7 +122,7 @@ rg -n "never starts an agent|console only observes|Console \(GUI, observer\)|zer
 
 Expected: the old observer-only claims are present.
 
-- [ ] **Step 2: Update the AGENTS session-start map**
+- [x] **Step 2: Update the AGENTS session-start map**
 
 Replace the Console bullet with this bounded description:
 
@@ -136,7 +138,7 @@ Replace the Console bullet with this bounded description:
 Change “One driver surface plus one observer” to “One driver host exposed
 through CLI and native operator surfaces”. Keep `AGENTS.md` under 120 lines.
 
-- [ ] **Step 3: Reduce README Console claims to overview scope**
+- [x] **Step 3: Reduce README Console claims to overview scope**
 
 The surface table must state:
 
@@ -149,7 +151,7 @@ while explicitly submitted work launches the standalone driver process. Link
 session operation to the Console section of `docs/guide.md` instead of
 duplicating the state machine.
 
-- [ ] **Step 4: Verify the architecture boundary**
+- [x] **Step 4: Verify the architecture boundary**
 
 Run:
 
@@ -161,7 +163,7 @@ rg -n "standalone.*agent|explicit.*submission|LMRouter|audit.db" AGENTS.md READM
 Expected: the first command has no output; the second finds the new boundary
 in both files.
 
-- [ ] **Step 5: Commit the overview update**
+- [x] **Step 5: Commit the overview update**
 
 ```powershell
 git add AGENTS.md README.md
@@ -180,7 +182,7 @@ git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs: alig
 - Consumes: the overview boundary from Task 2 and exact active/viewed semantics from the 2026-07-14 session design.
 - Produces: user instructions in `docs/guide.md` and contributor architecture in `gui/README.md` without duplicated schema details.
 
-- [ ] **Step 1: Capture stale workflow claims**
+- [x] **Step 1: Capture stale workflow claims**
 
 Run:
 
@@ -190,7 +192,7 @@ rg -n "Start work through the standalone|Run a pipeline by asking the driver|roo
 
 Expected: the old CLI-only and chat-spawn pipeline instructions are present.
 
-- [ ] **Step 2: Replace the guide's Console operation section**
+- [x] **Step 2: Replace the guide's Console operation section**
 
 Document this user flow:
 
@@ -210,7 +212,7 @@ Correct “eight views” to “seven views”. Replace the Pipeline Studio row 
 direct registered-recipe workflow using the selected preset and explicit Run
 action; keep the CLI equivalent `agent "<brief>" --pipeline <name>`.
 
-- [ ] **Step 3: Update contributor architecture in GUI README**
+- [x] **Step 3: Update contributor architecture in GUI README**
 
 Under Data Source, add:
 
@@ -225,7 +227,7 @@ promotion. Under Pipeline Studio, state that the selected registered recipe is
 launched directly and is not inferred by root from an Orchestrator message.
 Link exact serialized fields to `src-tauri/SCHEMA.md`.
 
-- [ ] **Step 4: Verify current workflow wording**
+- [x] **Step 4: Verify current workflow wording**
 
 Run:
 
@@ -237,7 +239,7 @@ rg -n "historical|read-only|atomically|registered recipe|seven views" docs/guide
 Expected: the first command has no output; the second finds current user and
 contributor behavior.
 
-- [ ] **Step 5: Commit workflow documentation**
+- [x] **Step 5: Commit workflow documentation**
 
 ```powershell
 git add docs/guide.md gui/README.md
@@ -256,7 +258,7 @@ git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs(gui):
 - Consumes: `orchestratorChatId`, `viewedOrchestratorChatId`, `driverStatus.chatId`, and the existing `send_chat` Rust action.
 - Produces: one durable contract for current selection, runtime ownership, and resume behavior.
 
-- [ ] **Step 1: Capture stale contract claims**
+- [x] **Step 1: Capture stale contract claims**
 
 Run:
 
@@ -266,7 +268,7 @@ rg -n "stubbed with a `todo`|changes the active exact ID|orchestratorChatId.*pip
 
 Expected: all three outdated or incomplete contract statements are found.
 
-- [ ] **Step 2: Correct GUI-side write and action ownership**
+- [x] **Step 2: Correct GUI-side write and action ownership**
 
 Replace the stub claim with:
 
@@ -276,7 +278,7 @@ driver actions launch the standalone CLI, which performs governed mutations
 through the MCP substrate; the GUI never writes append-only audit rows itself.
 ```
 
-- [ ] **Step 3: Document active/viewed selection and atomic resume**
+- [x] **Step 3: Document active/viewed selection and atomic resume**
 
 State that session selection while idle promotes the requested exact ID.
 Selection while busy changes only `viewedOrchestratorChatId`, leaving
@@ -285,7 +287,7 @@ The viewed session is read-only until the driver is idle. On send, the optional
 requested ID is validated and promoted before both `chat_log` insertion and
 driver launch; a busy race fails closed.
 
-- [ ] **Step 4: Complete the serialized state shape**
+- [x] **Step 4: Complete the serialized state shape**
 
 The state-shape paragraph must list:
 
@@ -298,7 +300,7 @@ Explain that `orchestratorChatId` is the active/future-write owner,
 `viewedOrchestratorChatId` is the optional navigation target, and
 `driverStatus.chatId` is the exact live or retained process owner.
 
-- [ ] **Step 5: Mark the current session design as canonical**
+- [x] **Step 5: Mark the current session design as canonical**
 
 Add after its title:
 
@@ -308,7 +310,7 @@ Add after its title:
 > active-versus-viewed isolation.
 ```
 
-- [ ] **Step 6: Verify the contract language**
+- [x] **Step 6: Verify the contract language**
 
 Run:
 
@@ -320,7 +322,7 @@ rg -n "viewedOrchestratorChatId|atomic|busy|fail-closed|Canonical" gui/src-tauri
 Expected: the first command has no output; the second finds every current
 contract term.
 
-- [ ] **Step 7: Commit the contract update**
+- [x] **Step 7: Commit the contract update**
 
 ```powershell
 git add gui/src-tauri/SCHEMA.md docs/superpowers/specs/2026-07-14-resumable-historical-session-design.md
@@ -339,7 +341,7 @@ git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs(gui):
 - Consumes: the canonical documents and deletions from Tasks 1-4.
 - Produces: checked plan status and fresh evidence that documentation matches the implemented behavior.
 
-- [ ] **Step 1: Check deleted names and stale claims repository-wide**
+- [x] **Step 1: Check deleted names and stale claims repository-wide**
 
 Run:
 
@@ -350,7 +352,7 @@ rg -n -i --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-
 Expected: no output. The canonical session design may describe that it
 replaces the design “dated 2026-07-13” without using the deleted filename.
 
-- [ ] **Step 2: Validate relative Markdown links**
+- [x] **Step 2: Validate relative Markdown links**
 
 Run:
 
@@ -382,7 +384,7 @@ Write-Output "Validated $($files.Count) Markdown files; no missing links."
 
 Expected: zero missing live relative links.
 
-- [ ] **Step 3: Run frontend session regression tests**
+- [x] **Step 3: Run frontend session regression tests**
 
 ```powershell
 node --test gui/src/model/viewModel.test.mjs gui/src/data/TauriSource.test.mjs gui/src/components/NewSessionButton.test.mjs gui/src/components/chatLinks.test.mjs gui/src/data/chatCommands.test.mjs
@@ -390,7 +392,7 @@ node --test gui/src/model/viewModel.test.mjs gui/src/data/TauriSource.test.mjs g
 
 Expected: 58 tests pass.
 
-- [ ] **Step 4: Run Rust Console tests**
+- [x] **Step 4: Run Rust Console tests**
 
 ```powershell
 cargo test --manifest-path gui/src-tauri/Cargo.toml
@@ -398,7 +400,7 @@ cargo test --manifest-path gui/src-tauri/Cargo.toml
 
 Expected: 27 tests pass, with no failures in unit or doc tests.
 
-- [ ] **Step 5: Build the GUI**
+- [x] **Step 5: Build the GUI**
 
 ```powershell
 npm run build --prefix gui
@@ -406,7 +408,7 @@ npm run build --prefix gui
 
 Expected: Vite transforms 58 modules and exits 0.
 
-- [ ] **Step 6: Check final Git scope**
+- [x] **Step 6: Check final Git scope**
 
 ```powershell
 git diff --check
@@ -418,7 +420,7 @@ Expected: no whitespace errors; only the planned documentation and existing
 GUI implementation commits differ from `origin/dev`; the untracked Hanoi
 dashboard remains untouched.
 
-- [ ] **Step 7: Mark this plan implemented and commit verification**
+- [x] **Step 7: Mark this plan implemented and commit verification**
 
 Change every checkbox in this plan to `[x]` and add:
 
