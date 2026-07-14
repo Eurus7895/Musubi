@@ -42,6 +42,21 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    tool definitions, and reserve token capacity so planner/designer cannot
    consume coder/reviewer shares. Plan:
    [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
+   Landed: a validated `PipelineWorkerSpec` resolves each stage's contract
+   before spawn, so its declared `maxTurns` (clamped to [1, 12]) is the single
+   cap flowing through the spawn row, `run_unit`, and the completion audit — the
+   stage tool echoes `max_turns` and the driver fails closed on divergence.
+   `fit_model_input` gives every explicit-budget worker (each pipeline stage) a
+   hard input cap that counts tool definitions and raises before the model call
+   rather than sending an over-budget request; the root keeps soft best-effort
+   fitting. `ChildTokenBudget` + `pipeline_stage_allowance` give each stage a
+   fair-share slice of the run budget charged through to the parent, so an early
+   stage cannot spend a later stage's reserve, and allowance exhaustion
+   finalizes the run once as `escalated`. The one-cap rule also covers direct
+   workers: a role's `maxTurns:` frontmatter clamps the spawn's turn budget
+   (the model may request fewer turns, never more), and a stage or worker that
+   finishes on its last allowed turn attaches a substrate-verified artifact
+   manifest so the audit records done instead of a false escalation.
 
 Runtime limits have one owner per dimension: this track owns pipeline-stage
 turn caps, model-input characters, and total stage allowances; per-worker
@@ -66,6 +81,13 @@ for the same dimension.
   policy; it is design-gated and is not part of per-call output-token sizing.
   The continuation brief must remain firewalled and bounded to audited artifact
   state such as path, bytes, and digest.
+  Narrowed: a worker force-concluded at its turn cap that self-declares done
+  now completes as done when its surviving mutated files verify non-empty —
+  claimed by the driver as an `artifacts` manifest and independently re-checked
+  on disk by the substrate (`sub_sessions.complete`), which otherwise keeps its
+  fail-closed turn-cap coercion; the wall-clock rule is never waived. So
+  continuation is only for genuinely unfinished artifacts, not for runs that
+  merely spent their last turns on post-write verification.
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.

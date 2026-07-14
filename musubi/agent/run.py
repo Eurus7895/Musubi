@@ -52,6 +52,7 @@ from mcp.client.stdio import stdio_client
 from agent.context import (
     build_system_prompt,
     fit_context,
+    fit_model_input,
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
@@ -644,8 +645,13 @@ async def _run_loop(
         if context_budget_chars is None:
             messages = fit_context(messages, compression_db_path=compression_db_path)
         else:
-            messages = fit_context(
+            # A worker with an explicit budget (every pipeline stage) gets the
+            # HARD cap: the serialized messages PLUS tool definitions are fit
+            # under the budget or the cycle raises before the model call, so a
+            # runaway stage cannot quietly send a 200k-char input.
+            messages = fit_model_input(
                 messages,
+                tools,
                 budget_chars=context_budget_chars,
                 compression_db_path=compression_db_path,
             )
@@ -943,8 +949,10 @@ async def _run_loop(
                         messages, compression_db_path=compression_db_path,
                     )
                 else:
-                    final_messages = fit_context(
+                    # No-tools final answer: the whole budget is for messages.
+                    final_messages = fit_model_input(
                         messages,
+                        [],
                         budget_chars=context_budget_chars,
                         compression_db_path=compression_db_path,
                     )

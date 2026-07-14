@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -82,13 +83,39 @@ async def run_subagent(
         run_unit,
     )
 
+    # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
+    # _spec): the role prompt is resolved BEFORE the spawn so its declared
+    # `maxTurns:` frontmatter caps the turn budget recorded in the spawn row —
+    # the same value then drives the runtime loop and the completion audit.
+    # The spawning model may request FEWER turns, never more: without this, a
+    # root model could hand a worker any budget it liked (e.g. 10 for a coder
+    # whose contract declares 8) and the role contract was silently ignored.
+    role_hint = str(spawn_args.get("role", ""))
+    agent_md = _read_agent_md(role_hint, agents_dir)
+    declared_turns = _frontmatter_max_turns(agent_md)
+    if declared_turns:
+        requested = spawn_args.get("max_turns")
+        spawn_args = dict(spawn_args)
+        if (
+            isinstance(requested, int)
+            and not isinstance(requested, bool)
+            and requested > 0
+        ):
+            spawn_args["max_turns"] = min(requested, declared_turns)
+        else:
+            spawn_args["max_turns"] = declared_turns
+
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
     if spawn.get("status") != "spawned":
         return raw
     handle_id = str(spawn.get("handle_id", ""))
-    role = str(spawn.get("role") or spawn_args.get("role", ""))
+    role = str(spawn.get("role") or role_hint)
     max_turns = int(spawn.get("max_turns") or DEFAULT_SUBAGENT_MAX_CYCLES)
+    if role != role_hint:
+        # The server canonicalised the role differently; re-resolve so the
+        # prompt matches the role that actually spawned.
+        agent_md = _read_agent_md(role, agents_dir)
 
     ctx_raw = await _call_tool_text(
         session, "musubi_get_subagent_context", {"handle_id": handle_id}
@@ -113,7 +140,6 @@ async def run_subagent(
     role_skill = ctx.get("role_skill")
     allowed = ctx.get("allowed_tools") or []
 
-    agent_md = _read_agent_md(role, agents_dir)
     worker_max_output = _frontmatter_max_output_tokens(agent_md)
     system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
     child_tools = select_child_tools(tools, allowed)
@@ -184,13 +210,31 @@ async def run_subagent(
     finally:
         _worker_touched_files.reset(token)
         _worker_log_label.reset(label_token)
+    done_artifacts: list[str] | None = None
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
-    elif turns >= max_turns:
-        summary, status = answer, "escalated"
     elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
+        # A typed incomplete/blocked marker (e.g. a truncated tool call caught
+        # mid-mutation) is always an escalation, even at the turn cap.
         summary, status = answer, "escalated"
+    elif turns >= max_turns:
+        # Force-concluded at the turn cap. That is a real escalation ONLY if the
+        # deliverable is not already produced. If the forced-final answer
+        # self-declares `status: done` AND the surviving files this worker
+        # mutated are all non-empty on disk, the artifact was written before
+        # the cutoff (the cap was spent on post-write verification, not the
+        # work itself) — accept it as done rather than sending the root into a
+        # pointless recovery that reports a finished artifact as [incomplete].
+        # The surviving paths are also sent to the harness as the `artifacts`
+        # manifest: the substrate re-verifies them itself before waiving its
+        # own turn-cap coercion (sub_sessions.complete), so this driver-side
+        # judgement is a claim, never the verdict.
+        done_artifacts = _forced_final_artifacts(answer, touched)
+        if done_artifacts:
+            summary, status = answer, "done"
+        else:
+            summary, status = answer, "escalated"
     else:
         summary, status = answer, "done"
 
@@ -209,6 +253,8 @@ async def run_subagent(
     complete_args: dict[str, Any] = {
         "handle_id": handle_id, "summary": summary, "turns": turns, "status": status,
     }
+    if done_artifacts:
+        complete_args["artifacts"] = done_artifacts
     if gate is not None:
         complete_args["structured"] = {"mechanical": gate}
     complete_raw = await _call_tool_text(
@@ -253,6 +299,56 @@ def _file_still_exists(path: str) -> bool:
     if not p.is_absolute():
         p = _mechanical_workspace_root() / p
     return p.exists()
+
+
+#: A worker's Output Contract opens with a `status:` line; `done` on that line
+#: is the worker's own claim that it finished. Matched anywhere at line start so
+#: a leading `[mechanical] …` banner or blank lines do not hide it.
+_STATUS_DONE_RE = re.compile(r"(?im)^\s*status:\s*done\b")
+
+
+def _file_nonempty(path: str) -> bool:
+    p = Path(path)
+    if not p.is_absolute():
+        p = _mechanical_workspace_root() / p
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def surviving_nonempty_files(touched: set[str]) -> list[str] | None:
+    """Sorted mutated files that still exist and are all non-empty, else None.
+
+    Files the worker wrote and then deleted (a generator/scratch script) are
+    ignored, mirroring the mechanical gate's G1 filter. No survivors → None
+    (nothing was delivered). Any EMPTY survivor → None (truncation evidence
+    fails the whole set). Deterministic, zero-LLM — this is the driver-side
+    claim that becomes a completion's `artifacts` manifest, which the
+    substrate re-verifies itself in `sub_sessions.complete`.
+    """
+    if not touched:
+        return None
+    survivors = sorted(p for p in touched if _file_still_exists(p))
+    if not survivors:
+        return None
+    if not all(_file_nonempty(path) for path in survivors):
+        return None
+    return survivors
+
+
+def _forced_final_artifacts(answer: str, touched: set[str]) -> list[str] | None:
+    """Surviving artifact paths when a max-turns worker's deliverable is done.
+
+    On top of `surviving_nonempty_files`, the forced-final answer must
+    self-declare `status: done` — a direct worker's done-at-cap acceptance
+    changes what the ROOT does next (no recovery), so the worker's own claim
+    is required as well. A truncated mutation never reaches here — it is
+    caught earlier as a typed `[blocked]`/`[incomplete]` answer.
+    """
+    if not _STATUS_DONE_RE.search(answer or ""):
+        return None
+    return surviving_nonempty_files(touched)
 
 
 def _lint_errors_preview(res: dict[str, Any]) -> list[str]:
@@ -415,22 +511,45 @@ def _frontmatter_spawn_allowlist(agent_md: str) -> list[str]:
 
 def _frontmatter_max_output_tokens(agent_md: str) -> int | None:
     """Return a positive per-worker output cap, or the shared-default signal."""
+    value = frontmatter_dict(agent_md).get("maxOutputTokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _frontmatter_max_turns(agent_md: str) -> int | None:
+    """Positive per-role turn cap declared as `maxTurns:` frontmatter.
+
+    None when absent or invalid (non-int, bool, <= 0) — the caller falls back
+    to the spawning model's request / the server default, i.e. an undeclared
+    or broken contract grants nothing extra and removes nothing.
+    """
+    value = frontmatter_dict(agent_md).get("maxTurns")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def frontmatter_dict(agent_md: str) -> dict[str, Any]:
+    """Parse the leading `---`-fenced YAML frontmatter block into a dict.
+
+    Empty dict when there is no frontmatter or it does not parse — every caller
+    treats a missing key as "not declared", so a fail-closed empty result never
+    silently grants anything.
+    """
     text = (agent_md or "").lstrip()
     if not text.startswith("---"):
-        return None
+        return {}
     end = text.find("\n---", 3)
     if end == -1:
-        return None
+        return {}
     try:
         import yaml  # type: ignore[import-untyped]
 
         fm = yaml.safe_load(text[3:end]) or {}
     except Exception:
-        return None
-    value = fm.get("maxOutputTokens") if isinstance(fm, dict) else None
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
+        return {}
+    return fm if isinstance(fm, dict) else {}
 
 
 def _strip_frontmatter(md: str) -> str:

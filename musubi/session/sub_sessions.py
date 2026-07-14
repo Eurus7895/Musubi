@@ -33,6 +33,7 @@ read/validate.
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,36 @@ DEFAULT_MAX_TURNS: int = 8
 DEFAULT_PER_TURN_TIMEOUT_S: int = 60
 DEFAULT_WALL_CLOCK_TIMEOUT_S: int = 300
 DEFAULT_AWAIT_MAX_WAIT_S: int = 300
+
+
+def _artifacts_verified(artifacts: list[str] | None) -> bool:
+    """Deterministically verify a runner's artifact manifest on disk.
+
+    True only when the manifest is a non-empty list and EVERY entry resolves
+    inside the workspace root (`MUSUBI_ROOT`, else the server's cwd — the same
+    anchor `tools/fs.py` writes against), is a regular file, and is non-empty.
+    Any escape, miss, empty file, or stat error fails the whole manifest —
+    the caller keeps its fail-closed coercion. Zero-LLM (HI #1).
+    """
+    if not artifacts or not isinstance(artifacts, list):
+        return False
+    env = os.environ.get("MUSUBI_ROOT")
+    root = Path(env).resolve() if env else Path.cwd().resolve()
+    for entry in artifacts:
+        if not isinstance(entry, str) or not entry.strip():
+            return False
+        p = Path(entry)
+        candidate = (p if p.is_absolute() else root / p).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return False
+        try:
+            if not candidate.is_file() or candidate.stat().st_size <= 0:
+                return False
+        except OSError:
+            return False
+    return True
 
 
 def _now_dt() -> datetime:
@@ -139,6 +170,7 @@ def complete(
     tools_used: list[str] | None = None,
     turns: int = 0,
     status: str = "done",
+    artifacts: list[str] | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Persist a terminal result and return the final row.
@@ -151,6 +183,16 @@ def complete(
       - elapsed > wall_clock_timeout_s → status='escalated', escalated=True
     The reason is appended to `summary` so the user-visible chat marker
     explains why the run was killed.
+
+    `artifacts` is the runner's claim that the deliverable already exists:
+    when status is 'done' and every listed path verifies HERE — resolves
+    inside the workspace root, is a file, and is non-empty — the turn-cap
+    rule alone does not coerce the result (finishing ON the last allowed
+    turn with the artifact on disk is a completion, not a violation).
+    The claim is deterministic and re-checked by the harness, never
+    trusted; a missing/empty/escaping path, an empty list, or a non-'done'
+    status keeps today's fail-closed coercion. The wall-clock rule is
+    never waived.
 
     Raises:
       ValueError if the handle does not exist, or if the row is already
@@ -175,8 +217,9 @@ def complete(
     final_status = status
     escalated = status == "escalated"
     timeout_reasons: list[str] = []
+    accepted_note: str | None = None
 
-    # Wall-clock cap: compare row.created_at with now.
+    # Wall-clock cap: compare row.created_at with now. Never waived.
     created_at = _parse_iso(row["created_at"])
     elapsed_s = (_now_dt() - created_at).total_seconds()
     if elapsed_s > row["wall_clock_timeout_s"]:
@@ -185,11 +228,21 @@ def complete(
             f"(elapsed≈{int(elapsed_s)}s)"
         )
 
-    # Turn cap: enforced even if the runner reports 'done'.
+    # Turn cap: enforced even if the runner reports 'done' — unless the
+    # runner's 'done' comes with an artifact manifest this harness itself
+    # verifies on disk. Fail-closed: no manifest, or any path that does not
+    # verify, keeps the coercion.
     if turns >= row["max_turns"]:
-        timeout_reasons.append(
-            f"max_turns={row['max_turns']} reached (turns={turns})"
-        )
+        if status == "done" and _artifacts_verified(artifacts):
+            accepted_note = (
+                f"[harness] max_turns={row['max_turns']} reached "
+                f"(turns={turns}); accepted: {len(artifacts or [])} "
+                "artifact(s) verified non-empty on disk"
+            )
+        else:
+            timeout_reasons.append(
+                f"max_turns={row['max_turns']} reached (turns={turns})"
+            )
 
     if timeout_reasons:
         final_status = "escalated"
@@ -197,6 +250,10 @@ def complete(
         timeout_note = "[harness] " + "; ".join(timeout_reasons)
         summary = (
             f"{summary}\n\n{timeout_note}" if summary else timeout_note
+        )
+    elif accepted_note:
+        summary = (
+            f"{summary}\n\n{accepted_note}" if summary else accepted_note
         )
 
     db.update_sub_session_result(

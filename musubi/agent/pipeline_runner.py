@@ -35,6 +35,7 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,13 +43,85 @@ from typing import Any
 #: small budget keeps a runaway stage from burning the whole pipeline. In the
 #: standalone runner a stage self-explores via grep/glob before doing its work
 #: (there is no harness-injected workspace tree), so the cap leaves a few
-#: cycles for discovery on top of the stage's real output.
+#: cycles for discovery on top of the stage's real output. It is also the
+#: upper bound a worker may raise its own cap to via `maxTurns:` frontmatter —
+#: a stage never runs longer than this shared ceiling.
 DEFAULT_STAGE_MAX_CYCLES = 12
+MAX_STAGE_TURNS = DEFAULT_STAGE_MAX_CYCLES
 
 # Pipeline stages are deliberately narrower than a root-agent turn. Keeping
 # their context below the root default limits repeated glob/grep/file reads
 # from consuming the shared run budget before later stages can execute.
 PIPELINE_CONTEXT_BUDGET = 16_000
+
+
+@dataclass(frozen=True)
+class PipelineWorkerSpec:
+    """Validated contract for one pipeline stage worker.
+
+    Resolved once, before the stage is spawned, so a single cap flows through
+    the spawn row, the runtime loop, and the completion audit. `prompt` is the
+    canonical worker prompt (frontmatter intact; the system-prompt builder
+    strips it). `max_cycles` is the declared `maxTurns` clamped to
+    `[1, MAX_STAGE_TURNS]`; `worker_max_output` is the optional per-worker
+    output-token cap.
+    """
+
+    role: str
+    prompt: str
+    max_cycles: int
+    context_budget_chars: int = PIPELINE_CONTEXT_BUDGET
+    worker_max_output: int | None = None
+
+
+def _validated_max_turns(value: Any) -> int:
+    """Clamp a declared `maxTurns` to `[1, MAX_STAGE_TURNS]`, fail-closed.
+
+    Absent → the shared default. Present-but-invalid (non-int, bool, <=0, or
+    above the shared ceiling) raises so a bad contract fails the stage before
+    it ever spawns, rather than silently running an unbounded or zero-turn
+    worker.
+    """
+    if value is None:
+        return DEFAULT_STAGE_MAX_CYCLES
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(
+            f"has invalid maxTurns {value!r}: expected an integer 1..{MAX_STAGE_TURNS}"
+        )
+    if not 1 <= value <= MAX_STAGE_TURNS:
+        raise RuntimeError(
+            f"has out-of-range maxTurns {value}: expected 1..{MAX_STAGE_TURNS}"
+        )
+    return value
+
+
+def resolve_pipeline_worker_spec(
+    role: str,
+    pipeline_name: str,
+    agents_dir: Path | None = None,
+) -> PipelineWorkerSpec:
+    """Resolve + validate one stage worker's contract before spawn.
+
+    Raises `RuntimeError` (fail-closed) when the role has no prompt or declares
+    invalid `maxTurns`. The message is role/prompt-specific so the runner can
+    surface it verbatim and finalize the pipeline aborted.
+    """
+    from agent.subagent import _frontmatter_max_output_tokens, frontmatter_dict
+
+    agent_md = _read_stage_agent_md(role, pipeline_name, agents_dir)
+    if not agent_md.strip():
+        raise RuntimeError(
+            f"has no role prompt: expected .github/agents/workers/{role}.agent.md "
+            f"or .github/agents/pipeline-stages/{pipeline_name}/{role}.agent.md"
+        )
+    max_cycles = _validated_max_turns(frontmatter_dict(agent_md).get("maxTurns"))
+    return PipelineWorkerSpec(
+        role=role,
+        prompt=agent_md,
+        max_cycles=max_cycles,
+        context_budget_chars=PIPELINE_CONTEXT_BUDGET,
+        worker_max_output=_frontmatter_max_output_tokens(agent_md),
+    )
 
 
 async def run_pipeline(
@@ -80,11 +153,12 @@ async def run_pipeline(
     depth budget allows, stages whose server response declares `spawn_roles`
     may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
-    from agent.run import _call_tool_text, run_unit
+    from agent.budget import ChildTokenBudget, pipeline_stage_allowance
+    from agent.run import _call_tool_text, _worker_touched_files, run_unit
     from agent.subagent import (
-        _frontmatter_max_output_tokens,
         build_subagent_system_prompt,
         select_child_tools,
+        surviving_nonempty_files,
     )
 
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
@@ -107,9 +181,23 @@ async def run_pipeline(
         role = str(step.get("role", ""))
         brief = _stage_brief(request, summaries, i, len(plan))
 
+        # Resolve + validate the worker contract BEFORE spawning: a missing
+        # role prompt or a bad `maxTurns` fails the pipeline closed without ever
+        # opening a stage handle. `spec.max_cycles` is the ONE cap that flows
+        # into the spawn row, the runtime loop, and the completion audit — no
+        # more runner-hard-codes-12 while the server defaults to eight.
+        try:
+            spec = resolve_pipeline_worker_spec(role, pname, agents_dir)
+        except RuntimeError as exc:
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = f"[pipeline {pname}] stage {stage!r} {exc}"
+            if strict:
+                raise RuntimeError(msg) from exc
+            return msg
+
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
-            "stage": stage, "brief": brief,
+            "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
         })
         st = _loads(stage_raw)
         if st.get("status") != "spawned":
@@ -119,6 +207,28 @@ async def run_pipeline(
                 raise RuntimeError(msg)
             return msg
         handle_id = str(st.get("handle_id", ""))
+        # The server echoes the cap it recorded in the spawn row + audit. If it
+        # ever diverges from the requested spec, the run would silently audit a
+        # different cap than it enforces — fail the stage closed instead.
+        recorded_cap = st.get("max_turns")
+        if recorded_cap is not None and int(recorded_cap) != spec.max_cycles:
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": (
+                    f"[stage {stage}] recorded cap {recorded_cap} != "
+                    f"requested {spec.max_cycles}"
+                ),
+                "turns": 0,
+                "status": "failed",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            msg = (
+                f"[pipeline {pname}] stage {stage!r} cap mismatch: "
+                f"server recorded {recorded_cap}, spec requested {spec.max_cycles}"
+            )
+            if strict:
+                raise RuntimeError(msg)
+            return msg
 
         # Same context path as a direct worker (agent/subagent.py): the
         # spawn context carries the firewalled brief, the role's pushed
@@ -142,28 +252,7 @@ async def run_pipeline(
         allowed = ctx.get("allowed_tools") or st.get("allowed_tools") or []
         role_skill = ctx.get("role_skill")
 
-        agent_md = _read_stage_agent_md(role, pname, agents_dir)
-        if not agent_md.strip():
-            # Fail closed: a stage never runs on an empty role prompt. A
-            # silent brief-only worker looks like a working pipeline while
-            # quietly dropping the role's contract.
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": f"[stage {stage}] no role prompt found for {role!r}",
-                "turns": 0,
-                "status": "failed",
-            })
-            await _finalize_pipeline(session, psid, "aborted", False)
-            msg = (
-                f"[pipeline {pname}] stage {stage!r} has no role prompt: "
-                f"expected .github/agents/workers/{role}.agent.md or "
-                f".github/agents/pipeline-stages/{pname}/{role}.agent.md"
-            )
-            if strict:
-                raise RuntimeError(msg)
-            return msg
-        worker_max_output = _frontmatter_max_output_tokens(agent_md)
-        system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
+        system_prompt = build_subagent_system_prompt(spec.prompt, role_skill, brief)
         child_tools = select_child_tools(tools, allowed)
 
         # Stage nesting (mirrors agent/subagent.py's worker nesting): the
@@ -189,26 +278,43 @@ async def run_pipeline(
                 stage_orch = orchestration.stage_child(role, psid)
                 stage_spawn_catalog = tools
 
+        # Each stage runs against its own fair-share allowance of the shared run
+        # budget (charged straight through to the parent). An early planner or
+        # designer loop is capped at its slice and cannot spend coder/reviewer's
+        # reserve; a stage that underspends hands the slack to later stages.
+        stage_budget = budget
+        if budget is not None:
+            allowance = pipeline_stage_allowance(budget, len(plan) - i)
+            stage_budget = ChildTokenBudget(budget, allowance)
+
         print(
             f"[agent]     ⮑ stage {stage} (role={role}, "
-            f"tools={len(child_tools)}, nests={stage_orch is not None})",
+            f"tools={len(child_tools)}, nests={stage_orch is not None}, "
+            f"allowance={getattr(stage_budget, 'max_tokens', None)})",
             file=log,
         )
 
+        # Deterministic record of the files THIS stage mutates (same ContextVar
+        # sink a direct worker gets in agent/subagent.py). Needed so a stage
+        # that finishes exactly on its last allowed turn can send an artifact
+        # manifest with its completion — without it the substrate's turn-cap
+        # coercion marks a successful stage `escalated` in the audit DB.
+        touched: set[str] = set()
+        touched_token = _worker_touched_files.set(touched)
         try:
             answer, turns = await run_unit(
                 session, vendor, child_tools,
                 system_prompt=system_prompt, user_message=None,
-                max_cycles=DEFAULT_STAGE_MAX_CYCLES, log=log,
+                max_cycles=spec.max_cycles, log=log,
                 compression_db_path=compression_db_path,
-                context_budget_chars=PIPELINE_CONTEXT_BUDGET,
+                context_budget_chars=spec.context_budget_chars,
                 role=role,
                 stats=stats,
-                budget=budget,
+                budget=stage_budget,
                 audit_db_path=audit_db_path,
                 orchestration=stage_orch,
                 spawn_catalog=stage_spawn_catalog,
-                worker_max_output=worker_max_output,
+                worker_max_output=spec.worker_max_output,
                 audit_session_id=psid,
                 audit_worker_id=handle_id,
                 audit_stage=stage,
@@ -219,6 +325,13 @@ async def run_pipeline(
                 "TokenBudgetExhaustedError",
             }
             if is_budget:
+                print(
+                    f"[agent]     ⚠ stage {stage} halted: token allowance "
+                    f"exhausted (used {getattr(stage_budget, 'tokens_used', '?')}"
+                    f"/{getattr(stage_budget, 'max_tokens', '?')}, run remaining "
+                    f"{getattr(budget, 'remaining', '?')})",
+                    file=log,
+                )
                 await _call_tool_text(session, "musubi_complete_subagent", {
                     "handle_id": handle_id,
                     "summary": f"[stage {stage}] budget exhausted: {exc}",
@@ -231,6 +344,8 @@ async def run_pipeline(
                 is_budget,
             )
             raise
+        finally:
+            _worker_touched_files.reset(touched_token)
         if _is_incomplete_tool_outcome(answer):
             await _call_tool_text(session, "musubi_complete_subagent", {
                 "handle_id": handle_id,
@@ -247,11 +362,25 @@ async def run_pipeline(
         status = "done" if answer is not None else "escalated"
         if answer is None:
             pipeline_escalated = True
-            answer = f"[stage {stage}] exceeded {DEFAULT_STAGE_MAX_CYCLES} cycles"
+            answer = f"[stage {stage}] exceeded {spec.max_cycles} cycles"
 
-        await _call_tool_text(session, "musubi_complete_subagent", {
+        complete_payload: dict[str, Any] = {
             "handle_id": handle_id, "summary": answer, "turns": turns, "status": status,
-        })
+        }
+        if status == "done" and turns >= spec.max_cycles:
+            # The stage finished ON its last allowed turn. Without a manifest
+            # the substrate's turn-cap rule (sub_sessions.complete) would
+            # coerce this success to `escalated` in the audit DB. Attach the
+            # surviving mutated files; the substrate verifies them itself and
+            # keeps the coercion when they don't verify (or when the stage
+            # mutated nothing — a text-only claim stays unverifiable, so a
+            # read-only stage at its cap still audits as escalated by design).
+            stage_artifacts = surviving_nonempty_files(touched)
+            if stage_artifacts:
+                complete_payload["artifacts"] = stage_artifacts
+        await _call_tool_text(
+            session, "musubi_complete_subagent", complete_payload,
+        )
         summaries.append(f"### {stage}\n{answer}")
 
     await _finalize_pipeline(

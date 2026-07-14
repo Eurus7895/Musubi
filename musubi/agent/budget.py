@@ -73,6 +73,92 @@ class TokenBudgetEnforcer:
         return "allow"
 
 
+_STATUS_RANK: dict[BudgetStatus, int] = {"allow": 0, "warn": 1, "halt": 2}
+
+
+def _stricter(a: BudgetStatus, b: BudgetStatus) -> BudgetStatus:
+    """The more restrictive of two budget statuses (halt > warn > allow)."""
+    return a if _STATUS_RANK[a] >= _STATUS_RANK[b] else b
+
+
+class ChildTokenBudget:
+    """A per-stage sub-budget that charges the shared parent run budget too.
+
+    A pipeline stage may spend at most its own `max_tokens` allowance AND may
+    never push the parent run over its cap — every check returns the stricter
+    of the two. `charge` debits the child and the parent exactly once, so the
+    tokens a stage spends are reflected in the parent's `remaining`, and a
+    later stage's `pipeline_stage_allowance` shrinks accordingly. This is how an
+    early planner/designer loop is prevented from consuming coder/reviewer's
+    share: its allowance caps it, and whatever it does spend is charged through.
+
+    Duck-compatible with `TokenBudgetEnforcer` where the agent loop uses a
+    budget: `preflight`, `charge`, `tokens_used`, `remaining`, `max_tokens`,
+    `warn_at_ratio`, `warned`.
+    """
+
+    def __init__(
+        self,
+        parent: TokenBudgetEnforcer | ChildTokenBudget,
+        max_tokens: int,
+        warn_at_ratio: float = 0.8,
+    ) -> None:
+        self._parent = parent
+        self._local = TokenBudgetEnforcer(max_tokens, warn_at_ratio)
+
+    @property
+    def max_tokens(self) -> int:
+        return self._local.max_tokens
+
+    @property
+    def warn_at_ratio(self) -> float:
+        return self._local.warn_at_ratio
+
+    @property
+    def tokens_used(self) -> int:
+        return self._local.tokens_used
+
+    @property
+    def remaining(self) -> int:
+        """Whatever is left under the stricter of the child and parent caps."""
+        return min(self._local.remaining, self._parent.remaining)
+
+    @property
+    def warned(self) -> bool:
+        return self._local.warned or self._parent.warned
+
+    def preflight(self, estimated_tokens: int) -> BudgetStatus:
+        return _stricter(
+            self._local.preflight(estimated_tokens),
+            self._parent.preflight(estimated_tokens),
+        )
+
+    def charge(self, actual_tokens: int) -> BudgetStatus:
+        # Charge both exactly once; the reported status is the stricter one.
+        local_status = self._local.charge(actual_tokens)
+        parent_status = self._parent.charge(actual_tokens)
+        return _stricter(local_status, parent_status)
+
+
+def pipeline_stage_allowance(
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
+    stages_remaining: int,
+) -> int:
+    """Fair-share token allowance for the next stage, reserving the rest.
+
+    Splits the parent's *current* remaining evenly across the stages still to
+    run, so no single stage can spend more than its share and starve those
+    after it. Recomputed per stage against the live remaining, so a stage that
+    underspends hands its slack to later stages, and one that overspends cannot
+    (its allowance already capped it). Always at least 1 while budget remains.
+    """
+    if stages_remaining <= 0:
+        raise ValueError("stages_remaining must be positive")
+    remaining = parent.remaining
+    fair_share = remaining // stages_remaining
+    return max(1, min(remaining, fair_share))
+
+
 class TokenBudgetExhaustedError(RuntimeError):
     """Raised when a token budget check halts a turn."""
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -253,6 +254,283 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     )
     assert "output_too_large_for_single_tool_call" in fed_back
     assert "blocked" in fed_back
+
+
+# ── force-concluded-but-complete worker is accepted, not escalated ──────────
+
+
+def _completed_artifact_session(
+    completed: dict[str, Any], *, max_turns: int,
+) -> Any:
+    """Fake MCP session that EMULATES the server's turn-cap coercion.
+
+    `sub_sessions.complete` coerces done→escalated at turns >= max_turns
+    unless a 'done' completion carries an `artifacts` manifest the harness
+    verifies. A fake that omits this layer hides exactly the mechanism that
+    decides the outcome in production (that gap let an earlier fix pass its
+    tests while being defeated end-to-end), so the fake mirrors it.
+    """
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_complete_subagent":
+                completed.update(arguments)
+                final = arguments.get("status", "done")
+                if int(arguments.get("turns", 0)) >= max_turns and not (
+                    final == "done" and arguments.get("artifacts")
+                ):
+                    final = "escalated"
+                payload = json.dumps({
+                    "status": "recorded",
+                    "final_status": final,
+                    "summary": arguments.get("summary"),
+                })
+            elif name == "musubi_spawn_subagent":
+                payload = (
+                    '{"status":"spawned","handle_id":"h-nyc","role":"coder",'
+                    f'"max_turns":{max_turns}}}'
+                )
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"nyc dashboard","role_skill":null,'
+                    '"allowed_tools":[]}'
+                )
+            else:
+                payload = '{"status":"ok"}'
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    return Session()
+
+
+_DONE_FINAL = (
+    "status: done\n"
+    "files_changed:\n- artifacts/nyc-dashboard.html\n"
+    "summary: created a self-contained NYC dashboard\n"
+    "verification: 10764 bytes, valid HTML\n"
+)
+
+
+def test_max_turns_worker_with_completed_artifact_accepted_as_done(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The NYC case: a coder force-concluded at the turn cap whose declared
+    artifact exists and is non-empty is accepted as done — no false escalation,
+    so the root is never pushed into a pointless recovery."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "artifacts" / "nyc-dashboard.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<!DOCTYPE html><html></html>", encoding="utf-8")
+
+    completed: dict[str, Any] = {}
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        run_mod._worker_touched_files.get().add("artifacts/nyc-dashboard.html")
+        return _DONE_FINAL, 10  # turns == max_turns
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        _completed_artifact_session(completed, max_turns=10),
+        {"role": "coder", "brief": "nyc", "parent_session_id": "parent"},
+        FakeRouter([]), [], io.StringIO(),
+        agents_dir=tmp_path, orchestration=orchestration,
+    ))
+
+    assert completed["status"] == "done"
+    # The driver's claim travels as an artifacts manifest the harness
+    # re-verifies before waiving its own turn-cap coercion.
+    assert completed["artifacts"] == ["artifacts/nyc-dashboard.html"]
+    assert orchestration.latest_unrecovered_failure() is None
+    assert "status: done" in result
+
+
+def test_max_turns_worker_without_artifact_still_escalates(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """Force-concluded at the cap but the declared file does not exist → the
+    deliverable was NOT produced, so it stays an escalation."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))  # artifact never written
+
+    completed: dict[str, Any] = {}
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        run_mod._worker_touched_files.get().add("artifacts/nyc-dashboard.html")
+        return _DONE_FINAL, 10
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    asyncio.run(run_subagent(
+        _completed_artifact_session(completed, max_turns=10),
+        {"role": "coder", "brief": "nyc", "parent_session_id": "parent"},
+        FakeRouter([]), [], io.StringIO(),
+        agents_dir=tmp_path, orchestration=orchestration,
+    ))
+
+    assert completed["status"] == "escalated"
+    assert "artifacts" not in completed
+    assert orchestration.latest_unrecovered_failure() is not None
+
+
+def test_forced_final_artifacts_semantics(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent.subagent import _forced_final_artifacts
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    f = tmp_path / "out.html"
+    f.write_text("<html></html>", encoding="utf-8")
+    empty = tmp_path / "empty.html"
+    empty.write_text("", encoding="utf-8")
+
+    # Declared done + surviving non-empty file → the survivors, sorted.
+    assert _forced_final_artifacts(
+        "status: done\nfiles_changed:", {"out.html"},
+    ) == ["out.html"]
+    # A deleted scratch file (generator pattern) is ignored, mirroring the
+    # mechanical gate's G1 filter — the surviving artifact still qualifies.
+    assert _forced_final_artifacts(
+        "status: done", {"out.html", "gen-scratch.py"},
+    ) == ["out.html"]
+    # No touched files → nothing was produced.
+    assert _forced_final_artifacts("status: done", set()) is None
+    # Every touched file gone → nothing survived to deliver.
+    assert _forced_final_artifacts("status: done", {"missing.html"}) is None
+    # A surviving file that is EMPTY is truncation evidence.
+    assert _forced_final_artifacts("status: done", {"empty.html"}) is None
+    # Touched a real file but did not declare done.
+    assert _forced_final_artifacts("status: incomplete", {"out.html"}) is None
+    # A leading [mechanical] banner does not hide the status line.
+    assert _forced_final_artifacts(
+        "[mechanical] result=skipped\nstatus: done", {"out.html"},
+    ) == ["out.html"]
+
+
+# ── one-cap rule for direct workers: frontmatter maxTurns clamps the spawn ──
+
+
+def _capturing_spawn_session(captured_spawn: dict[str, Any]) -> Any:
+    """Fake session that echoes the spawn's max_turns like the real server."""
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_spawn_subagent":
+                captured_spawn.clear()
+                captured_spawn.update(arguments)
+                payload = json.dumps({
+                    "status": "spawned", "handle_id": "h-cap", "role": "coder",
+                    "max_turns": arguments.get("max_turns", 8),
+                })
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"b","role_skill":null,'
+                    '"allowed_tools":[]}'
+                )
+            else:
+                payload = '{"status":"recorded"}'
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    return Session()
+
+
+def _run_direct_spawn(
+    monkeypatch: Any,
+    tmp_path: Path,
+    *,
+    agent_md: str,
+    spawn_args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    captured_spawn: dict[str, Any] = {}
+    seen_run_unit: dict[str, Any] = {}
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        seen_run_unit.update(kwargs)
+        return "status: done", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: agent_md)
+
+    asyncio.run(run_subagent(
+        _capturing_spawn_session(captured_spawn),
+        {"role": "coder", "brief": "b", "parent_session_id": "p", **spawn_args},
+        FakeRouter([]), [], io.StringIO(), agents_dir=tmp_path,
+    ))
+    return captured_spawn, seen_run_unit
+
+
+_CODER_MD_8 = "---\nname: Coder\nmaxTurns: 8\n---\n# Coder"
+
+
+def test_model_spawn_request_cannot_exceed_frontmatter_maxturns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The NYC gap: the root model handed a coder max_turns=10 while
+    coder.agent.md declares 8 — the role contract was silently ignored.
+    Now the declared cap clamps the request before the spawn row is written,
+    so ONE value flows through spawn, runtime, and audit."""
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8, spawn_args={"max_turns": 10},
+    )
+    assert spawn["max_turns"] == 8
+    assert run_unit_kwargs["max_cycles"] == 8
+
+
+def test_model_spawn_request_may_ask_for_fewer_turns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8, spawn_args={"max_turns": 2},
+    )
+    assert spawn["max_turns"] == 2
+    assert run_unit_kwargs["max_cycles"] == 2
+
+
+def test_absent_spawn_request_uses_frontmatter_maxturns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    md = "---\nname: Coder\nmaxTurns: 5\n---\n# Coder"
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md=md, spawn_args={},
+    )
+    assert spawn["max_turns"] == 5
+    assert run_unit_kwargs["max_cycles"] == 5
+
+
+def test_undeclared_frontmatter_leaves_spawn_request_untouched(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, _ = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={},
+    )
+    assert "max_turns" not in spawn
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────
