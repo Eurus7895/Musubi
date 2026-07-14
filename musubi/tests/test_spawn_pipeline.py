@@ -708,6 +708,127 @@ def test_resolve_pipeline_worker_spec_reads_pipeline_stage_variant(tmp_path: Pat
     assert "Scope the diff" in spec.prompt
 
 
+def _single_coder_stage_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    completions: list[dict[str, Any]],
+    *,
+    stage_answer: str,
+    stage_turns: int,
+    touch: str | None,
+) -> None:
+    """One-stage feature-dev run with a capturable completion and a fake
+    run_unit that reports `stage_turns` and optionally touches a file."""
+    from agent import pipeline_runner
+    from agent import run as run_mod
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-cap-done",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok"})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        if touch:
+            run_mod._worker_touched_files.get().add(touch)
+        return stage_answer, stage_turns
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+    monkeypatch.setattr(
+        pipeline_runner, "_read_stage_agent_md",
+        lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
+    )
+
+
+def _run_single_coder_pipeline() -> None:
+    from agent import pipeline_runner
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "make page"},
+        PipelineRouter(), [], io.StringIO(), strict=True,
+    ))
+
+
+def test_pipeline_stage_done_at_cap_sends_artifact_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A stage finishing ON its last allowed turn attaches its surviving
+    mutated files as an `artifacts` manifest, so the substrate can verify
+    them and record done instead of coercing the success to escalated."""
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "artifacts" / "page.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<html></html>", encoding="utf-8")
+
+    completions: list[dict[str, Any]] = []
+    _single_coder_stage_fakes(
+        monkeypatch, completions,
+        stage_answer="wrote it", stage_turns=4,  # == maxTurns
+        touch="artifacts/page.html",
+    )
+    _run_single_coder_pipeline()
+
+    assert completions[0]["status"] == "done"
+    assert completions[0]["artifacts"] == ["artifacts/page.html"]
+
+
+def test_pipeline_stage_below_cap_sends_no_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "artifacts" / "page.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<html></html>", encoding="utf-8")
+
+    completions: list[dict[str, Any]] = []
+    _single_coder_stage_fakes(
+        monkeypatch, completions,
+        stage_answer="wrote it", stage_turns=2,  # under the cap
+        touch="artifacts/page.html",
+    )
+    _run_single_coder_pipeline()
+
+    assert completions[0]["status"] == "done"
+    assert "artifacts" not in completions[0]
+
+
+def test_pipeline_readonly_stage_at_cap_sends_no_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A stage that mutated nothing has no verifiable claim — fail-closed,
+    the substrate's turn-cap coercion stands for it."""
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    completions: list[dict[str, Any]] = []
+    _single_coder_stage_fakes(
+        monkeypatch, completions,
+        stage_answer="analysis text", stage_turns=4, touch=None,
+    )
+    _run_single_coder_pipeline()
+
+    assert completions[0]["status"] == "done"
+    assert "artifacts" not in completions[0]
+
+
 def test_pipeline_stage_budget_exhaustion_finalizes_escalated_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

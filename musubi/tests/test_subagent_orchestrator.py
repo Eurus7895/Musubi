@@ -422,6 +422,117 @@ def test_forced_final_artifacts_semantics(
     ) == ["out.html"]
 
 
+# ── one-cap rule for direct workers: frontmatter maxTurns clamps the spawn ──
+
+
+def _capturing_spawn_session(captured_spawn: dict[str, Any]) -> Any:
+    """Fake session that echoes the spawn's max_turns like the real server."""
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_spawn_subagent":
+                captured_spawn.clear()
+                captured_spawn.update(arguments)
+                payload = json.dumps({
+                    "status": "spawned", "handle_id": "h-cap", "role": "coder",
+                    "max_turns": arguments.get("max_turns", 8),
+                })
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"b","role_skill":null,'
+                    '"allowed_tools":[]}'
+                )
+            else:
+                payload = '{"status":"recorded"}'
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    return Session()
+
+
+def _run_direct_spawn(
+    monkeypatch: Any,
+    tmp_path: Path,
+    *,
+    agent_md: str,
+    spawn_args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    captured_spawn: dict[str, Any] = {}
+    seen_run_unit: dict[str, Any] = {}
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        seen_run_unit.update(kwargs)
+        return "status: done", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *a: agent_md)
+
+    asyncio.run(run_subagent(
+        _capturing_spawn_session(captured_spawn),
+        {"role": "coder", "brief": "b", "parent_session_id": "p", **spawn_args},
+        FakeRouter([]), [], io.StringIO(), agents_dir=tmp_path,
+    ))
+    return captured_spawn, seen_run_unit
+
+
+_CODER_MD_8 = "---\nname: Coder\nmaxTurns: 8\n---\n# Coder"
+
+
+def test_model_spawn_request_cannot_exceed_frontmatter_maxturns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The NYC gap: the root model handed a coder max_turns=10 while
+    coder.agent.md declares 8 — the role contract was silently ignored.
+    Now the declared cap clamps the request before the spawn row is written,
+    so ONE value flows through spawn, runtime, and audit."""
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8, spawn_args={"max_turns": 10},
+    )
+    assert spawn["max_turns"] == 8
+    assert run_unit_kwargs["max_cycles"] == 8
+
+
+def test_model_spawn_request_may_ask_for_fewer_turns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8, spawn_args={"max_turns": 2},
+    )
+    assert spawn["max_turns"] == 2
+    assert run_unit_kwargs["max_cycles"] == 2
+
+
+def test_absent_spawn_request_uses_frontmatter_maxturns(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    md = "---\nname: Coder\nmaxTurns: 5\n---\n# Coder"
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md=md, spawn_args={},
+    )
+    assert spawn["max_turns"] == 5
+    assert run_unit_kwargs["max_cycles"] == 5
+
+
+def test_undeclared_frontmatter_leaves_spawn_request_untouched(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, _ = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={},
+    )
+    assert "max_turns" not in spawn
+
+
 # ── pure helpers ────────────────────────────────────────────────────────────
 
 

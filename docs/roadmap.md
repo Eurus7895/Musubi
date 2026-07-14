@@ -52,7 +52,11 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    fitting. `ChildTokenBudget` + `pipeline_stage_allowance` give each stage a
    fair-share slice of the run budget charged through to the parent, so an early
    stage cannot spend a later stage's reserve, and allowance exhaustion
-   finalizes the run once as `escalated`.
+   finalizes the run once as `escalated`. The one-cap rule also covers direct
+   workers: a role's `maxTurns:` frontmatter clamps the spawn's turn budget
+   (the model may request fewer turns, never more), and a stage or worker that
+   finishes on its last allowed turn attaches a substrate-verified artifact
+   manifest so the audit records done instead of a false escalation.
 
 Runtime limits have one owner per dimension: this track owns pipeline-stage
 turn caps, model-input characters, and total stage allowances; per-worker

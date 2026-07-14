@@ -154,8 +154,12 @@ async def run_pipeline(
     may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
     from agent.budget import ChildTokenBudget, pipeline_stage_allowance
-    from agent.run import _call_tool_text, run_unit
-    from agent.subagent import build_subagent_system_prompt, select_child_tools
+    from agent.run import _call_tool_text, _worker_touched_files, run_unit
+    from agent.subagent import (
+        build_subagent_system_prompt,
+        select_child_tools,
+        surviving_nonempty_files,
+    )
 
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
     spawned = _loads(raw)
@@ -290,6 +294,13 @@ async def run_pipeline(
             file=log,
         )
 
+        # Deterministic record of the files THIS stage mutates (same ContextVar
+        # sink a direct worker gets in agent/subagent.py). Needed so a stage
+        # that finishes exactly on its last allowed turn can send an artifact
+        # manifest with its completion — without it the substrate's turn-cap
+        # coercion marks a successful stage `escalated` in the audit DB.
+        touched: set[str] = set()
+        touched_token = _worker_touched_files.set(touched)
         try:
             answer, turns = await run_unit(
                 session, vendor, child_tools,
@@ -333,6 +344,8 @@ async def run_pipeline(
                 is_budget,
             )
             raise
+        finally:
+            _worker_touched_files.reset(touched_token)
         if _is_incomplete_tool_outcome(answer):
             await _call_tool_text(session, "musubi_complete_subagent", {
                 "handle_id": handle_id,
@@ -351,9 +364,23 @@ async def run_pipeline(
             pipeline_escalated = True
             answer = f"[stage {stage}] exceeded {spec.max_cycles} cycles"
 
-        await _call_tool_text(session, "musubi_complete_subagent", {
+        complete_payload: dict[str, Any] = {
             "handle_id": handle_id, "summary": answer, "turns": turns, "status": status,
-        })
+        }
+        if status == "done" and turns >= spec.max_cycles:
+            # The stage finished ON its last allowed turn. Without a manifest
+            # the substrate's turn-cap rule (sub_sessions.complete) would
+            # coerce this success to `escalated` in the audit DB. Attach the
+            # surviving mutated files; the substrate verifies them itself and
+            # keeps the coercion when they don't verify (or when the stage
+            # mutated nothing — a text-only claim stays unverifiable, so a
+            # read-only stage at its cap still audits as escalated by design).
+            stage_artifacts = surviving_nonempty_files(touched)
+            if stage_artifacts:
+                complete_payload["artifacts"] = stage_artifacts
+        await _call_tool_text(
+            session, "musubi_complete_subagent", complete_payload,
+        )
         summaries.append(f"### {stage}\n{answer}")
 
     await _finalize_pipeline(
