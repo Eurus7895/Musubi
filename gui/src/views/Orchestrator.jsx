@@ -138,7 +138,7 @@ function Timeline({ vals }) {
 
 function StepCard({ step }) {
   return (
-    <Box css={step.cardStyle} onClick={step.onSelect} hover="border-color:rgba(255,155,61,0.55)">
+    <Box css={step.cardStyle} onClick={step.onSelect} hover="border-color:rgba(255,255,255,0.2)">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 28, height: 20, padding: '0 6px', borderRadius: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, fontWeight: 650, color: '#cfcfd4', background: step.isCurrent ? 'rgba(255,155,61,0.13)' : 'rgba(255,255,255,0.06)', border: '1px solid ' + (step.isCurrent ? 'rgba(255,155,61,0.42)' : 'rgba(255,255,255,0.12)') }}>{step.orderLabel}</span>

@@ -193,6 +193,7 @@ export default class TauriSource {
       sendChat: () => {
         const d = (this.state.draft || '').trim()
         if (!d) return
+        const requestedChatId = this.state.selectedSession || ''
         // Sending a new request focuses the run it starts: drop any manually
         // chosen session so the new running run reclaims the main panel.
         this._setLocal({ draft: '', selectedSession: null, selected: null })
@@ -202,7 +203,7 @@ export default class TauriSource {
           this._action('pipeline_hint', [d])
           return
         }
-        this._action('send_chat', [d])
+        this._action('send_chat', [d, requestedChatId])
       },
       sendPipelineTask: () => {
         const d = (this.state.pipeDraft || '').trim()

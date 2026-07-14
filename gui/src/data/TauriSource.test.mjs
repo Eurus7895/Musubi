@@ -91,6 +91,24 @@ test('backend history snapshots preserve the locally selected session', () => {
   assert.equal(source.state.chat[0].text, 'old answer')
 })
 
+test('sendChat forwards the viewed session before clearing local selection', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    draft: '  continue this session  ',
+    selectedSession: 'gui-orchestrator-project-old',
+    driverStatus: { running: false },
+  })
+
+  source.actions.sendChat()
+
+  assert.deepEqual(calls, [{
+    kind: 'send_chat',
+    args: ['continue this session', 'gui-orchestrator-project-old'],
+  }])
+  assert.equal(source.state.selectedSession, null)
+  assert.equal(source.state.draft, '')
+})
+
 test('sendPipelineTask passes brief and selected registered pipeline', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
