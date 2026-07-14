@@ -35,7 +35,7 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 |---|---|---|
 | `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic. Configure with `musubi setup`. |
 | `agent "<brief>" --pipeline <name>` | deterministic staged runs | the governed pipeline recipes (`feature-dev`, `code-review`, `dev-lite`, or your own presets) with the evaluator firewall and stage audit |
-| Console (GUI) | observe & operate | the orchestrator cohort, policy stream, and append-only ledger, read straight from `audit.db` — zero LLM calls |
+| Console (GUI) | start, observe, and resume governed sessions | native Tauri operator surface; launches the standalone driver on explicit submission and reads orchestration/audit state from `audit.db` |
 
 Every surface drives the **same** substrate (audit, firewall, policy,
 compression).
@@ -316,9 +316,11 @@ lean.
 
 A dark, governance-focused desktop console reads `audit.db` directly and
 shows the substrate at work — the sub-agent cohort, fail-closed policy
-stream, and the append-only audit ledger. **Zero LLM calls**, no localhost
-server, no Copilot; the agent reasons, the console only observes and
-operates the governance layer.
+stream, and the append-only audit ledger. The Tauri shell itself makes no
+model calls; explicitly submitted chat and Pipeline Studio work launches the
+standalone driver process, which reaches the model through `LMRouter`. See
+the [`docs/guide.md` Console section](./docs/guide.md#6-console-gui--operator-view)
+for session operation details.
 
 Primary path on Windows: use the prebuilt Musubi installer bootstrap from the
 **Desktop build** GitHub Actions workflow. It builds the Windows `.msi` /
