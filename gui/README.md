@@ -93,7 +93,7 @@ The sections backed by the Tauri backend:
   recipe (a pipeline built from presets), inspect its ordered stage chain,
   enter a brief, and explicitly choose **Run**. Studio launches the recipe
   directly; it is not inferred by the root agent from an Orchestrator message.
-  Stage workers stream into the Orchestrator and Audit views. The deterministic
+  Stage workers stream into the Pipeline Studio and Audit views. The deterministic
   CLI equivalent is `agent "<brief>" --pipeline <name>`. Exact serialized
   catalog, run, chat, and process-ownership fields are documented in
   [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).

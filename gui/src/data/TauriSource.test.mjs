@@ -109,6 +109,26 @@ test('sendChat forwards the viewed session before clearing local selection', () 
   assert.equal(source.state.draft, '')
 })
 
+for (const command of ['pipeline', '/pipeline', 'run pipeline']) {
+  test(`pipeline picker command ${command} targets and preserves viewed history`, () => {
+    const { source, calls } = sourceWithActionSpy()
+    source._setLocal({
+      draft: command,
+      selectedSession: 'gui-orchestrator-project-old',
+      driverStatus: { running: false },
+    })
+
+    source.actions.sendChat()
+
+    assert.equal(source.state.view, 'pipeline')
+    assert.equal(source.state.selectedSession, 'gui-orchestrator-project-old')
+    assert.deepEqual(calls, [{
+      kind: 'pipeline_hint',
+      args: [command, 'gui-orchestrator-project-old'],
+    }])
+  })
+}
+
 test('sendPipelineTask passes brief and selected registered pipeline', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({

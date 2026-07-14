@@ -10,6 +10,9 @@
 
 **Status:** Implemented and verified on `fix/gui-resume-historical-session`.
 
+Final-review correction: canonical pipeline-worker routing now names Pipeline
+Studio and Audit, matching the view-model exclusion from Orchestrator.
+
 ## Global Constraints
 
 - Do not change Console runtime behavior, database schema, or process ownership.

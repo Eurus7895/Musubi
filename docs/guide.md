@@ -403,7 +403,7 @@ configured yet.
 | View | Shows | Backed by |
 |---|---|---|
 | **Orchestrator** | The driver "knot" spawning governed sub-agents over a woven net — each card's model, spawn order, turn cap, wall-clock budget; click for the firewalled brief + restricted tools. | `subagent_audit` per handle |
-| **Pipeline studio** | Preset composer / inspector — select a registered recipe (a pipeline built from presets), inspect its ordered stage chain, enter a brief, and explicitly choose **Run**. Studio launches the selected recipe directly; stage workers appear in Orchestrator/Audit. The CLI equivalent is `agent "<brief>" --pipeline <name>`. | GUI process + `audit.db` |
+| **Pipeline studio** | Preset composer / inspector — select a registered recipe (a pipeline built from presets), inspect its ordered stage chain, enter a brief, and explicitly choose **Run**. Studio launches the selected recipe directly; stage workers appear in Pipeline Studio and Audit. The CLI equivalent is `agent "<brief>" --pipeline <name>`. | GUI process + `audit.db` |
 | **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` + `tool_audit` |
 | **Audit** | The append-only ledger (spawned / completed), filterable. | `subagent_audit` |
 | **Models** | LMRouter vendor profiles with a live config snippet; selecting one sets the active model. | `meta.active_profile` |

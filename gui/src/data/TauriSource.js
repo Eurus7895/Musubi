@@ -194,15 +194,15 @@ export default class TauriSource {
         const d = (this.state.draft || '').trim()
         if (!d) return
         const requestedChatId = this.state.selectedSession || ''
+        const command = classifyChatCommand(d)
+        if (command.kind === 'openPipelinePicker') {
+          this._setLocal({ draft: '', view: 'pipeline' })
+          this._action('pipeline_hint', [d, requestedChatId])
+          return
+        }
         // Sending a new request focuses the run it starts: drop any manually
         // chosen session so the new running run reclaims the main panel.
         this._setLocal({ draft: '', selectedSession: null, selected: null })
-        const command = classifyChatCommand(d)
-        if (command.kind === 'openPipelinePicker') {
-          this._setLocal({ view: 'pipeline' })
-          this._action('pipeline_hint', [d])
-          return
-        }
         this._action('send_chat', [d, requestedChatId])
       },
       sendPipelineTask: () => {
