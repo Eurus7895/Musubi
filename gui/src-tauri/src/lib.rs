@@ -405,6 +405,34 @@ fn select_driver_session(
     Ok(())
 }
 
+fn resolve_orchestrator_send_session(
+    conn: &Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
+    requested_chat_id: &str,
+) -> Result<String, String> {
+    let current_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
+    if requested_chat_id.trim().is_empty() || requested_chat_id == current_id {
+        return Ok(current_id);
+    }
+    if rt.running {
+        return Err("Cannot resume a historical session while another agent is running.".into());
+    }
+    select_driver_session(
+        conn,
+        rt,
+        chat_id_slot,
+        viewed_chat_id_slot,
+        "orchestrator",
+        requested_chat_id,
+    )?;
+    chat_id_slot
+        .lock()
+        .map_err(|e| e.to_string())
+        .map(|id| id.clone())
+}
+
 fn percent_encode(input: &str) -> String {
     let mut out = String::new();
     for b in input.as_bytes() {
@@ -1136,7 +1164,18 @@ fn action(
             if text.trim().is_empty() {
                 return Ok(());
             }
-            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
+            let requested_chat_id = str_arg(1);
+            let chat_id = {
+                let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                resolve_orchestrator_send_session(
+                    &conn,
+                    &mut rt,
+                    &state.chat_id,
+                    &state.viewed_orchestrator_chat_id,
+                    &requested_chat_id,
+                )?
+            };
             {
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 insert_chat(&conn, "you", None, &text, "orchestrator", &chat_id)?;
@@ -1656,6 +1695,66 @@ mod tests {
             Some("gui-orchestrator-project-old")
         );
         assert_eq!(load_or_mint_session_nonce(&conn, "orchestrator"), "current");
+    }
+
+    #[test]
+    fn resolve_send_session_promotes_idle_viewed_history() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+        let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let viewed = Mutex::new(Some("gui-orchestrator-project-old".to_string()));
+        let mut rt = ChatAgentRuntime::default();
+
+        let resolved = resolve_orchestrator_send_session(
+            &conn,
+            &mut rt,
+            &slot,
+            &viewed,
+            "gui-orchestrator-project-old",
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "gui-orchestrator-project-old");
+        assert_eq!(slot.lock().unwrap().as_str(), resolved.as_str());
+        assert!(viewed.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_send_session_refuses_busy_historical_promotion() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let slot = Mutex::new("gui-orchestrator-project-current".to_string());
+        let viewed = Mutex::new(Some("gui-orchestrator-project-old".to_string()));
+        let mut rt = ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-current".to_string(),
+            ..ChatAgentRuntime::default()
+        };
+
+        let error = resolve_orchestrator_send_session(
+            &conn,
+            &mut rt,
+            &slot,
+            &viewed,
+            "gui-orchestrator-project-old",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("running"));
+        assert_eq!(
+            slot.lock().unwrap().as_str(),
+            "gui-orchestrator-project-current"
+        );
+        assert_eq!(
+            viewed.lock().unwrap().as_deref(),
+            Some("gui-orchestrator-project-old")
+        );
     }
 
     #[test]
