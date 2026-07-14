@@ -11,7 +11,9 @@
 **Status:** Implemented and verified on `fix/gui-resume-historical-session`.
 
 Final-review correction: canonical pipeline-worker routing now names Pipeline
-Studio and Audit, matching the view-model exclusion from Orchestrator.
+Studio and Audit, matching the view-model exclusion from Orchestrator. Pipeline
+picker hints now share the runtime-to-database serialization boundary, remain
+read-only while the project driver is busy, and commit both chat rows atomically.
 
 ## Global Constraints
 
@@ -393,7 +395,7 @@ Expected: zero missing live relative links.
 node --test gui/src/model/viewModel.test.mjs gui/src/data/TauriSource.test.mjs gui/src/components/NewSessionButton.test.mjs gui/src/components/chatLinks.test.mjs gui/src/data/chatCommands.test.mjs
 ```
 
-Expected: 58 tests pass.
+Expected: 61 tests pass.
 
 - [x] **Step 4: Run Rust Console tests**
 
@@ -401,7 +403,7 @@ Expected: 58 tests pass.
 cargo test --manifest-path gui/src-tauri/Cargo.toml
 ```
 
-Expected: 27 tests pass, with no failures in unit or doc tests.
+Expected: 32 tests pass, with no failures in unit or doc tests.
 
 - [x] **Step 5: Build the GUI**
 

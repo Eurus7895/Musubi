@@ -69,6 +69,7 @@ enum TailStream {
 }
 
 const TAIL_CAP: usize = 64 * 1024;
+const PIPELINE_HINT_MESSAGE: &str = "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.";
 const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
@@ -490,6 +491,35 @@ fn prepare_pipeline_send(
     insert_chat(&tx, "you", None, text, "pipeline", chat_id)?;
     tx.commit().map_err(|e| e.to_string())?;
     claim_runtime_owner(rt, chat_id, "pipeline", pipeline_name, text, started_at)
+}
+
+fn insert_pipeline_hint(
+    conn: &mut Connection,
+    rt: &mut ChatAgentRuntime,
+    current_chat_id: &str,
+    requested_chat_id: &str,
+    text: &str,
+) -> Result<String, String> {
+    if rt.running {
+        let owner_surface = surface_arg(&rt.surface);
+        return Err(format!(
+            "This project already has an active {owner_surface} run in session {}. Cancel it or wait for it to finish.",
+            rt.chat_id
+        ));
+    }
+    let target = resolve_orchestrator_history_target(conn, current_chat_id, requested_chat_id)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    insert_chat(&tx, "you", None, text, "orchestrator", &target)?;
+    insert_chat(
+        &tx,
+        "driver",
+        None,
+        PIPELINE_HINT_MESSAGE,
+        "orchestrator",
+        &target,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -1321,19 +1351,12 @@ fn action(
             let text = str_arg(0);
             let requested_chat_id = str_arg(1);
             let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
-            let conn = state.db.lock().map_err(|e| e.to_string())?;
-            let target = resolve_orchestrator_history_target(&conn, &chat_id, &requested_chat_id)?;
-            if !text.trim().is_empty() {
-                insert_chat(&conn, "you", None, &text, "orchestrator", &target)?;
+            if text.trim().is_empty() {
+                return Ok(());
             }
-            insert_chat(
-                &conn,
-                "driver",
-                None,
-                "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.",
-                "orchestrator",
-                &target,
-            )?;
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+            insert_pipeline_hint(&mut conn, &mut rt, &chat_id, &requested_chat_id, &text)?;
         }
         "select_profile" => {
             let name = str_arg(0);
@@ -2041,6 +2064,50 @@ mod tests {
             .unwrap();
         assert_eq!(old_rows, 4);
         assert_eq!(active_rows, 0);
+    }
+
+    #[test]
+    fn busy_pipeline_hint_writes_no_rows_and_preserves_runtime_owner() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+        let mut rt = ChatAgentRuntime::default();
+        claim_runtime_owner(
+            &mut rt,
+            "gui-pipeline-project-live",
+            "pipeline",
+            "feature-dev",
+            "competing task",
+            41,
+        )
+        .unwrap();
+
+        let error = insert_pipeline_hint(
+            &mut conn,
+            &mut rt,
+            "gui-orchestrator-project-current",
+            "gui-orchestrator-project-old",
+            "pipeline",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("active pipeline run"));
+        assert!(rt.running);
+        assert_eq!(rt.chat_id, "gui-pipeline-project-live");
+        assert_eq!(rt.task, "competing task");
+        let new_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE text IN ('pipeline', ?1)",
+                [PIPELINE_HINT_MESSAGE],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_rows, 0);
     }
 
     #[test]
