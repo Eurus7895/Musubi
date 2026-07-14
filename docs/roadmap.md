@@ -106,10 +106,13 @@ for the same dimension.
   [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md)
 - Project-scoped GUI sessions — exact runtime ownership, retained logs,
   cancellation, pipeline ancestry, shared project writer lease, durable session
-  selection, and read-only browsing while another session runs. Plans:
+  selection, and read-only browsing while another session runs. Historical
+  Orchestrator sessions become resumable when the driver is idle; the follow-up
+  atomically promotes and continues the viewed chat ID. Plans:
   [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md),
   [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md), and
-  [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md)
+  [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md), and
+  [`2026-07-14-resumable-historical-session.md`](./superpowers/plans/2026-07-14-resumable-historical-session.md)
 - Per-cycle LM audit — `agent_cycles` persistence, query API, tool-surface
   exposure, and regression coverage
 - Scope-aware root routing / agent gearbox — deterministic scope hints remain
