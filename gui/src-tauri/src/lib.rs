@@ -1180,15 +1180,7 @@ fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> 
     Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
 }
 
-fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let state_conn = state
-        .state_db
-        .as_ref()
-        .map(|db| db.lock().map_err(|e| e.to_string()))
-        .transpose()?;
-    let mut st = musubi_data::load_state_with_pipeline_runs(&conn, state_conn.as_deref())
-        .map_err(|e| e.to_string())?;
+fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>, String), String> {
     let orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
     let viewed_orchestrator_chat_id = state
         .viewed_orchestrator_chat_id
@@ -1200,6 +1192,27 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
+    Ok((
+        orchestrator_chat_id,
+        viewed_orchestrator_chat_id,
+        pipeline_chat_id,
+    ))
+}
+
+fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
+    // Snapshot the independently guarded session selectors before opening the
+    // database read boundary. Mutation paths may hold one of these guards
+    // before acquiring `db`; nesting them in the opposite order can deadlock.
+    let (orchestrator_chat_id, viewed_orchestrator_chat_id, pipeline_chat_id) =
+        snapshot_session_ids(state)?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let state_conn = state
+        .state_db
+        .as_ref()
+        .map(|db| db.lock().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut st = musubi_data::load_state_with_pipeline_runs(&conn, state_conn.as_deref())
+        .map_err(|e| e.to_string())?;
     let displayed_orchestrator_chat_id = viewed_orchestrator_chat_id
         .as_deref()
         .unwrap_or(&orchestrator_chat_id);
@@ -1547,6 +1560,28 @@ fn prepare_pipeline_launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_session_ids_do_not_wait_for_database() {
+        let state = AppState {
+            db: Mutex::new(Connection::open_in_memory().unwrap()),
+            state_db: None,
+            paused: AtomicBool::new(false),
+            project_root: PathBuf::from("."),
+            audit_db: None,
+            chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
+            chat_id: Mutex::new("gui-orchestrator-project-active".into()),
+            viewed_orchestrator_chat_id: Mutex::new(Some("gui-orchestrator-project-viewed".into())),
+            pipeline_chat_id: Mutex::new("gui-pipeline-project-active".into()),
+        };
+        let _db_guard = state.db.lock().unwrap();
+
+        let ids = snapshot_session_ids(&state).unwrap();
+
+        assert_eq!(ids.0, "gui-orchestrator-project-active");
+        assert_eq!(ids.1.as_deref(), Some("gui-orchestrator-project-viewed"));
+        assert_eq!(ids.2, "gui-pipeline-project-active");
+    }
 
     #[test]
     fn runtime_owner_uses_the_exact_session_id() {

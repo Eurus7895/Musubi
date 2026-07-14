@@ -14,6 +14,8 @@ Final-review correction: canonical pipeline-worker routing now names Pipeline
 Studio and Audit, matching the view-model exclusion from Orchestrator. Pipeline
 picker hints now share the runtime-to-database serialization boundary, remain
 read-only while the project driver is busy, and commit both chat rows atomically.
+Snapshot reads capture session selectors before acquiring the database mutex so
+the polling path cannot invert the mutation lock order.
 
 ## Global Constraints
 
@@ -403,7 +405,7 @@ Expected: 61 tests pass.
 cargo test --manifest-path gui/src-tauri/Cargo.toml
 ```
 
-Expected: 32 tests pass, with no failures in unit or doc tests.
+Expected: 33 tests pass, with no failures in unit or doc tests.
 
 - [x] **Step 5: Build the GUI**
 
