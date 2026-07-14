@@ -28,6 +28,8 @@
 - Delete: `docs/superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md`
 - Delete: `docs/superpowers/plans/2026-07-13-read-only-session-browsing.md`
 - Delete: `docs/superpowers/specs/2026-07-13-read-only-session-browsing-design.md`
+- Modify: `docs/superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md:32-37`
+- Modify: `docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md:25-32,95`
 - Modify: `docs/roadmap.md:90-115,148-159`
 
 **Interfaces:**
@@ -92,7 +94,7 @@ Expected: exit code 1 and no output.
 - [ ] **Step 5: Commit the deletion boundary**
 
 ```powershell
-git add docs/roadmap.md docs/superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md docs/superpowers/plans/2026-07-05-gui-pipeline-separate-session.md docs/superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md docs/superpowers/plans/2026-07-13-read-only-session-browsing.md docs/superpowers/specs/2026-07-13-read-only-session-browsing-design.md
+git add docs/roadmap.md docs/superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md docs/superpowers/plans/2026-07-05-gui-pipeline-separate-session.md docs/superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md docs/superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md docs/superpowers/plans/2026-07-13-read-only-session-browsing.md docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md docs/superpowers/specs/2026-07-13-read-only-session-browsing-design.md
 git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs: remove superseded implementation plans"
 ```
 

@@ -92,8 +92,7 @@ for the same dimension.
   LM time, usage source, worker identity, and tool names. Both Console surfaces
   project selected-session totals from the same rows. The live contract is
   token-only; obsolete pricing and history-attribution fields are ignored in
-  existing databases rather than destructively dropped. Design and plan:
-  [`2026-07-13-orchestrator-token-economics-design.md`](./superpowers/specs/2026-07-13-orchestrator-token-economics-design.md) and
+  existing databases rather than destructively dropped. Plans:
   [`2026-07-13-orchestrator-token-economics.md`](./superpowers/plans/2026-07-13-orchestrator-token-economics.md)
 - Per-worker effort ceiling and output budget — mutate workers open at the
   shared 16,384-token per-call brake while read-only workers retain the cheap
@@ -111,7 +110,6 @@ for the same dimension.
   atomically promotes and continues the viewed chat ID. Plans:
   [`2026-07-12-project-scoped-session-runtime.md`](./superpowers/plans/2026-07-12-project-scoped-session-runtime.md),
   [`2026-07-12-orchestrator-session-list.md`](./superpowers/plans/2026-07-12-orchestrator-session-list.md), and
-  [`2026-07-13-read-only-session-browsing.md`](./superpowers/plans/2026-07-13-read-only-session-browsing.md), and
   [`2026-07-14-resumable-historical-session.md`](./superpowers/plans/2026-07-14-resumable-historical-session.md)
 - Per-cycle LM audit — `agent_cycles` persistence, query API, tool-surface
   exposure, and regression coverage
@@ -145,9 +143,9 @@ for the same dimension.
 - Windows GUI installer bootstrap
 - Setup-aware GUI first run
 - Agent catalog worker modes and chunk-safe large-file writes
-- GUI audit/orchestrator console first-run slice (the separate task launcher
-  was removed so the Orchestrator remains the single session surface; plan:
-  [`2026-07-01-gui-on-demand-task-launcher.md`](./superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md))
+- GUI audit/orchestrator Console first-run slice — the separate task launcher
+  was removed so Orchestrator chat remains the single interactive session
+  surface. Current operation is documented in [`guide.md`](./guide.md).
 - Deterministic pipeline run: `agent --pipeline <name>` CLI entry point. The
   root agent does NOT auto-summon whole pipelines (`musubi_spawn_pipeline` is
   off the agent tool surface — a pipeline is a user-invoked run via the CLI
