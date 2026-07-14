@@ -42,6 +42,199 @@ class FakeRouter(LMRouter):
         return self._responses.pop(0)
 
 
+def test_orchestration_tracks_latest_failed_worker_outcome() -> None:
+    from agent import run as run_mod
+
+    assert hasattr(run_mod, "WorkerOutcome")
+    orchestration = Orchestration(parent_session_id="parent")
+    orchestration.record_worker_outcome(
+        role="coder",
+        status="escalated",
+        summary="dashboard is incomplete",
+        touched_files={"dashboard.html"},
+    )
+
+    outcome = orchestration.latest_failed_outcome("coder")
+    assert outcome == run_mod.WorkerOutcome(
+        role="coder",
+        status="escalated",
+        summary="dashboard is incomplete",
+        touched_files=("dashboard.html",),
+    )
+
+    orchestration.record_worker_outcome(
+        role="coder", status="done", summary="fixed", touched_files={"dashboard.html"},
+    )
+    assert orchestration.latest_failed_outcome("coder") is None
+
+
+def test_replacement_brief_includes_prior_terminal_outcome() -> None:
+    from agent import run as run_mod
+
+    assert hasattr(run_mod, "_replacement_brief")
+    outcome = run_mod.WorkerOutcome(
+        role="coder",
+        status="escalated",
+        summary="created the shell but charts are missing",
+        touched_files=("china-dashboard.html",),
+    )
+
+    brief = run_mod._replacement_brief("finish the dashboard", outcome)
+
+    assert "finish the dashboard" in brief
+    assert "escalated" in brief
+    assert "created the shell but charts are missing" in brief
+    assert "china-dashboard.html" in brief
+    assert "Continue the existing artifact" in brief
+    assert "[worker-replacement]" in brief
+
+
+def test_root_recovery_dispatches_at_most_two_analysis_cycles(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    read_tool = {
+        "name": "musubi_read_file",
+        "description": "read",
+        "input_schema": {"type": "object"},
+    }
+    spawn_tool = {
+        "name": "musubi_spawn_subagent",
+        "description": "spawn",
+        "input_schema": {"type": "object"},
+    }
+    responses = [
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use", "id": f"read-{index}",
+                "name": "musubi_read_file", "input": {"path": "dashboard.html"},
+            }],
+        )
+        for index in range(3)
+    ]
+    router = FakeRouter(responses)
+    session = _FakeToolSession("html")
+    orchestration = Orchestration(parent_session_id="parent")
+    orchestration.record_worker_outcome(
+        role="coder", status="escalated", summary="charts missing",
+        touched_files={"dashboard.html"},
+    )
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        session,
+        router,
+        [read_tool, spawn_tool],
+        [{"role": "user", "content": "build dashboard"}],
+        max_cycles=5,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+        audit_db_path=tmp_path / "audit.db",
+    ))
+
+    assert cycles == 3
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert len(session.calls) == 2
+    assert [tool["name"] for tool in router.calls[2]["tools"]] == [
+        "musubi_spawn_subagent"
+    ]
+
+
+def test_root_stops_immediately_when_last_replacement_exhausts_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    orchestration = Orchestration(parent_session_id="parent", spawned_workers=2)
+    orchestration.record_worker_outcome(
+        role="coder", status="escalated", summary="first attempt incomplete",
+        touched_files={"dashboard.html"},
+    )
+
+    async def fake_run_subagent(session, spawn_args, *args, **kwargs):  # noqa: ANN001
+        kwargs["orchestration"].record_worker_outcome(
+            role="coder", status="escalated", summary="replacement incomplete",
+            touched_files={"dashboard.html"},
+        )
+        return "[incomplete] replacement incomplete"
+
+    monkeypatch.setattr(subagent_mod, "run_subagent", fake_run_subagent)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use", "id": "last-worker",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "finish it"},
+            }],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "should not be called"}],
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        _FakeToolSession(),
+        router,
+        [{
+            "name": "musubi_spawn_subagent",
+            "description": "spawn",
+            "input_schema": {"type": "object"},
+        }],
+        [{"role": "user", "content": "build dashboard"}],
+        max_cycles=4,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+        audit_db_path=tmp_path / "audit.db",
+    ))
+
+    assert cycles == 1
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "replacement incomplete" in answer
+    assert len(router.calls) == 1
+
+
+def test_root_cannot_report_success_while_worker_failure_is_unrecovered(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    orchestration = Orchestration(parent_session_id="parent")
+    orchestration.record_worker_outcome(
+        role="coder", status="escalated", summary="footer is missing",
+        touched_files={"dashboard.html"},
+    )
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "Everything is complete."}],
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        _FakeToolSession(),
+        router,
+        [],
+        [{"role": "user", "content": "build dashboard"}],
+        max_cycles=4,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+        audit_db_path=tmp_path / "audit.db",
+    ))
+
+    assert cycles == 1
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "footer is missing" in answer
+    assert "dashboard.html" in answer
+
+
 def _musubi_dir() -> Path:
     """The agent-harness package directory (this file's grandparent)."""
     return Path(__file__).resolve().parent.parent
@@ -348,6 +541,52 @@ def test_dispatch_allows_coder_write_and_records_post_tool_audit(
     assert _read_tool_rows(audit_db) == [
         ("coder", "musubi_write_file", "ok")
     ]
+
+
+def test_dispatch_injects_prior_failure_into_replacement_worker_brief(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    orchestration = Orchestration(parent_session_id="parent")
+    orchestration.record_worker_outcome(
+        role="coder",
+        status="escalated",
+        summary="HTML shell exists; charts are missing",
+        touched_files={"dashboard.html"},
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_run_subagent(session, spawn_args, *args, **kwargs):  # noqa: ANN001
+        captured.update(spawn_args)
+        return "replacement finished"
+
+    monkeypatch.setattr(subagent_mod, "run_subagent", fake_run_subagent)
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "replacement",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "finish the dashboard"},
+            },
+            _FakeToolSession(),
+            io.StringIO(),
+            vendor=FakeRouter([]),
+            tools=[],
+            orchestration=orchestration,
+            gateway=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert result == "replacement finished"
+    assert captured["role"] == "coder"
+    assert "finish the dashboard" in captured["brief"]
+    assert "HTML shell exists; charts are missing" in captured["brief"]
+    assert "dashboard.html" in captured["brief"]
 
 
 def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
@@ -1791,7 +2030,8 @@ def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
     assert "[agent-routing-scope]" in system_text
     assert "scope=simple_edit" in system_text
     assert "route=single_coder" in system_text
-    assert "max_workers=1" in system_text
+    assert "max_workers=" not in system_text
+    assert "start with one coder" in system_text.lower()
 
 
 def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:

@@ -101,8 +101,8 @@ for the same dimension.
   `maxOutputTokens`; an optional profile `max_output_tokens` clamps it. Empty
   create/append content is rejected before dispatch, replay elision markers
   instruct regeneration, and worker prompts identify the host shell. The
-  cumulative root worker ceiling is unchanged; continuation spawning remains a
-  separate design-gated backlog item. Plan:
+  cumulative root worker ceiling is classifier-independent; terminal worker
+  outcomes now feed bounded replacement recovery. Plan:
   [`2026-07-13-agent-effort-ceiling-per-worker.md`](./superpowers/plans/2026-07-13-agent-effort-ceiling-per-worker.md)
 - Project-scoped GUI sessions — exact runtime ownership, retained logs,
   cancellation, pipeline ancestry, shared project writer lease, durable session
@@ -113,9 +113,12 @@ for the same dimension.
 - Per-cycle LM audit — `agent_cycles` persistence, query API, tool-surface
   exposure, and regression coverage
 - Scope-aware root routing / agent gearbox — deterministic scope hints remain
-  advisory, planning is explicit via `--plan`, and `max_workers` is the
-  cumulative root-run ceiling. Plan:
+  advisory and planning is explicit via `--plan`. Simple artifacts start with
+  one coder without imposing a lifetime classifier cap; all direct runs share
+  a three-worker ceiling, structured replacement handoff, and a two-cycle root
+  recovery-analysis window. Plans:
   [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md)
+  and [`2026-07-13-simple-artifact-recovery.md`](./superpowers/plans/2026-07-13-simple-artifact-recovery.md)
 - MCP tool surface profiles — model-visible internal and external catalogs are
   trimmed without removing substrate tools. Plan:
   [`2026-07-01-mcp-tool-surface-trimming.md`](./superpowers/plans/2026-07-01-mcp-tool-surface-trimming.md)

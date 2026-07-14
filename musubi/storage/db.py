@@ -1183,7 +1183,8 @@ def insert_agent_cycle(
     queryable (path-rules preamble, empty-project fallback, the
     bail-out counter) so dissolution decisions can be data-driven.
 
-    `cycle_status` is one of {'ok', 'final', 'truncated', 'budget_halt'}:
+    `cycle_status` is one of
+    {'ok', 'final', 'truncated', 'budget_halt', 'recovery_halt'}:
       - 'final' = cycle emitted zero tool calls and broke out
         (model is done; finalText == this cycle's text)
       - 'ok'    = cycle dispatched ≥ 1 tool call (intermediate)
@@ -1191,9 +1192,12 @@ def insert_agent_cycle(
         hit its output limit and arguments may be incomplete
       - 'budget_halt' = usage was measured, but postflight enforcement stopped
         the run before any requested tool was dispatched
+      - 'recovery_halt' = bounded root recovery ended the run, either before a
+        disallowed third analysis dispatch or after the last worker failed
 
     `tool_calls_json` is a JSON-encoded array of tool names (one per tool call
-    dispatched in this cycle). Empty / null unless `cycle_status='ok'`.
+    dispatched in this cycle). It may be populated for `ok` and
+    `recovery_halt` cycles.
 
     Best-effort: caller wraps in a fire-and-forget catch so a row
     write failure never aborts the run.
