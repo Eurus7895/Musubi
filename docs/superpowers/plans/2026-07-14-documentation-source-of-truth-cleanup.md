@@ -39,7 +39,7 @@
 Run:
 
 ```powershell
-rg -n "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing" docs README.md AGENTS.md gui/README.md
+rg -n --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md' --glob '!docs/superpowers/specs/2026-07-14-documentation-source-of-truth-design.md' "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing" .
 ```
 
 Expected: roadmap and historical documents still contain matches.
@@ -84,7 +84,7 @@ Console guide instead:
 Run:
 
 ```powershell
-rg -n "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing" docs README.md AGENTS.md gui/README.md
+rg -n --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md' --glob '!docs/superpowers/specs/2026-07-14-documentation-source-of-truth-design.md' "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing" .
 ```
 
 Expected: exit code 1 and no output.
@@ -92,7 +92,7 @@ Expected: exit code 1 and no output.
 - [ ] **Step 5: Commit the deletion boundary**
 
 ```powershell
-git add docs/roadmap.md docs/superpowers/plans docs/superpowers/specs
+git add docs/roadmap.md docs/superpowers/plans/2026-07-01-gui-on-demand-task-launcher.md docs/superpowers/plans/2026-07-05-gui-pipeline-separate-session.md docs/superpowers/plans/2026-07-09-gui-cli-orchestrator-tokens.md docs/superpowers/plans/2026-07-13-read-only-session-browsing.md docs/superpowers/specs/2026-07-13-read-only-session-browsing-design.md
 git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs: remove superseded implementation plans"
 ```
 
@@ -342,7 +342,7 @@ git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs(gui):
 Run:
 
 ```powershell
-rg -n -i --glob '*.md' "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing|stubbed with a `todo`|Select it again after the active run|Run a pipeline by asking the driver"
+rg -n -i --glob '*.md' --glob '!docs/superpowers/plans/2026-07-14-documentation-source-of-truth-cleanup.md' --glob '!docs/superpowers/specs/2026-07-14-documentation-source-of-truth-design.md' "gui-on-demand-task-launcher|gui-pipeline-separate-session|gui-cli-orchestrator-tokens|read-only-session-browsing|stubbed with a `todo`|Select it again after the active run|Run a pipeline by asking the driver"
 ```
 
 Expected: no output. The canonical session design may describe that it
