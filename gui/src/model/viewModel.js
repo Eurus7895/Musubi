@@ -304,8 +304,9 @@ export function buildViewModel(s, act) {
     && orchestratorChatId
     && s.selectedSession !== orchestratorChatId
   )
-  const historicalDisabledText = viewingHistoricalSession
-    ? 'Viewing historical session (read-only). Select it again after the active run finishes to resume.'
+  const historicalSessionBlocked = viewingHistoricalSession && driverRunning
+  const historicalDisabledText = historicalSessionBlocked
+    ? 'Viewing historical session (read-only) while another run is active.'
     : ''
   const runsRaw = hasSessionIndex
     ? groupOrchestratorSessions(orchestratorSessions, orchSubagents, orchAgentTurns, driverStatusForRuns)
@@ -839,8 +840,8 @@ export function buildViewModel(s, act) {
     onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,
     sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : 'Send'),
     sendMode: orchestratorOwnsDriver ? 'cancel' : 'send',
-    sendDisabled: orchestratorBlockedByPipeline || viewingHistoricalSession,
-    inputDisabled: orchestratorBlockedByPipeline || viewingHistoricalSession,
+    sendDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
+    inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : ''),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     pipeRuns,

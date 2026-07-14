@@ -773,7 +773,7 @@ test('historical session is read-only while another session owns the driver', ()
   assert.match(vm.disabledText, /read-only/i)
 })
 
-test('historical session stays read-only after the other run finishes', () => {
+test('historical session becomes resumable after the other run finishes', () => {
   const vm = buildViewModel(baseState({
     orchestratorChatId: 'live-session',
     selectedSession: 'old-session',
@@ -793,8 +793,9 @@ test('historical session stays read-only after the other run finishes', () => {
   }), actions())
 
   assert.equal(vm.viewingHistoricalSession, true)
-  assert.equal(vm.sendDisabled, true)
-  assert.match(vm.disabledText, /select it again/i)
+  assert.equal(vm.sendDisabled, false)
+  assert.equal(vm.inputDisabled, false)
+  assert.equal(vm.disabledText, '')
 })
 
 test('active running session keeps cancel available', () => {
