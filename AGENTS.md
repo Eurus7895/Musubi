@@ -11,7 +11,8 @@
 A **governed-orchestration substrate** for agentic SE work — evaluator
 firewall, fail-closed policy engine, append-only audit, skill catalog,
 3-tier memory, reversible input compression — exposed as an MCP server that
-makes **zero LLM calls** (HI #1). One driver surface plus one observer:
+makes **zero LLM calls** (HI #1). One driver host exposed through CLI and
+native operator surfaces:
 
 - **Standalone `agent` CLI (the host):** `musubi/agent/` reaches the model
   through the vendor-agnostic `LMRouter` — anthropic / openai / deepseek /
@@ -23,9 +24,12 @@ makes **zero LLM calls** (HI #1). One driver surface plus one observer:
   when their pipeline.yaml declares `spawns:`. Workers offload bounded work
   and return compact summaries so the orchestrator's context stays small.
   First run: `musubi setup`.
-- **Console (GUI, observer):** the Tauri desktop app reads `audit.db`
-  directly — orchestrator cohort, policy stream, append-only ledger. It
-  never starts an agent and makes zero LLM calls.
+- **Console (GUI, operator):** the Tauri desktop app reads `audit.db` directly
+  and may launch the standalone `agent` CLI only after an explicit chat or
+  Pipeline Studio submission. The GUI shell and substrate make zero model
+  calls; the launched driver reaches the model through `LMRouter`. It exposes
+  orchestrator sessions, policy, audit, models, skills, and deterministic
+  pipeline runs.
 
 ---
 

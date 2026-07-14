@@ -29,12 +29,10 @@ again?" message. The causal chain, from the run log:
    was refused by `run worker cap (1) reached` (`agent/run.py:1589`); the run
    ended incomplete.
 
-This plan removes the root cause (step 1-2, 4) and the recovery dead-end
-(step 5). It is the effort-economics follow-up to
-[`2026-07-09-gui-cli-orchestrator-tokens.md`](./2026-07-09-gui-cli-orchestrator-tokens.md),
-which covered empty-write-guarding and same-worker chunked retry at the
-tool-result layer but did not touch the `max_tokens` floor/ceiling sizing that
-*causes* the truncation in the first place.
+This plan removes the root cause (steps 1–2 and 4) and the recovery dead-end
+(step 5). It builds on the earlier empty-write guard and same-worker chunked
+retry at the tool-result layer, which did not change the `max_tokens`
+floor/ceiling sizing that causes truncation.
 
 **Design assumption being corrected:** the floor's docstring states *"Most
 cycles emit a small tool_use block, so the floor cap costs nothing they

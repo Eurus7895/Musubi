@@ -28,4 +28,6 @@ test('both chat surfaces use only the approved New session control', () => {
   assert.match(orchestrator, /project conversations/)
   assert.match(orchestrator, />agent flow</)
   assert.doesNotMatch(orchestrator, /Parent runs|Session unavailable/)
+  assert.match(orchestrator, /hover="border-color:rgba\(255,255,255,0\.2\)"/)
+  assert.doesNotMatch(orchestrator, /hover="border-color:rgba\(255,155,61,0\.55\)"/)
 })

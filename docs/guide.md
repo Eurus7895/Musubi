@@ -379,15 +379,21 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 - Run npm commands from the repository root. The root `package.json` delegates
   to the GUI workspace in `gui/`.
 
-### Observe an agent run
+### Start and continue an Orchestrator session
 
-Opening the console never starts an agent. Start work through the standalone
-`agent "<task>"` CLI or another governed Musubi surface; the console observes
-the resulting orchestration through `audit.db`. The Orchestrator, Policy, and
-Audit views update as the run writes governed rows, so there is only one visible
-session model: the orchestrator and its child workers.
+Opening the Console is passive. Submitting Orchestrator chat explicitly
+launches the standalone `agent` driver under that exact durable chat ID. While
+one run owns the shared process, you may select another historical session to
+inspect its chat and worker flow, but its input remains read-only. Only the
+active owning session exposes **Cancel**. When the driver becomes idle, that
+viewed session becomes writable; the first follow-up atomically validates,
+promotes, persists, and launches under the viewed ID.
 
-### The eight views
+The Orchestrator, Policy, and Audit views update as the launched run writes
+governed rows to `audit.db`. You can still start the same standalone driver from
+a terminal with `agent "<task>"`.
+
+### The seven views
 
 A persistent **trust strip** surfaces the Hard Invariants (zero-LLM substrate,
 fail-closed policy, append-only audit, evaluator firewall), the active model,
@@ -397,7 +403,7 @@ configured yet.
 | View | Shows | Backed by |
 |---|---|---|
 | **Orchestrator** | The driver "knot" spawning governed sub-agents over a woven net — each card's model, spawn order, turn cap, wall-clock budget; click for the firewalled brief + restricted tools. | `subagent_audit` per handle |
-| **Pipeline studio** | Preset composer / inspector — pick a preset and view the ordered stage chain. Run a pipeline by asking the driver in chat (the Orchestrator session input); the root agent spawns it and stage workers appear in Orchestrator/Audit. The CLI `agent "<brief>" --pipeline <name>` runs it directly. | GUI process + `audit.db` |
+| **Pipeline studio** | Preset composer / inspector — select a registered recipe (a pipeline built from presets), inspect its ordered stage chain, enter a brief, and explicitly choose **Run**. Studio launches the selected recipe directly; stage workers appear in Pipeline Studio and Audit. The CLI equivalent is `agent "<brief>" --pipeline <name>`. | GUI process + `audit.db` |
 | **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` + `tool_audit` |
 | **Audit** | The append-only ledger (spawned / completed), filterable. | `subagent_audit` |
 | **Models** | LMRouter vendor profiles with a live config snippet; selecting one sets the active model. | `meta.active_profile` |

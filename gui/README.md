@@ -63,6 +63,11 @@ The setup-aware first-run artifact lives at
 The UI is desktop-only. `TauriSource` connects through native IPC to the Rust
 core, which reads `audit.db` and emits domain snapshots. The backend contract
 (SQLite schema and JSON shape) is in [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md).
+
+The Rust shell owns one shared driver process per project. Explicit
+Orchestrator or Pipeline Studio submission launches the standalone Python
+driver; the React/Tauri shell does not call a model directly.
+
 The Rust reader and its tests are in `src-tauri/musubi-data/`:
 
 ```bash
@@ -75,13 +80,23 @@ The sections backed by the Tauri backend:
 
 - **Orchestrator**: the driver knot spawning governed sub-agents over a woven
   net; each card shows model, spawn-order badge, turn cap, and wall-clock
-  budget.
-- **Pipeline studio**: a preset composer / inspector — pick a preset and view
-  the ordered stage chain. To run a pipeline, ask the driver in chat (the
-  Orchestrator session input); the root agent spawns it via
-  `musubi_spawn_pipeline` and stage workers stream into the Orchestrator and
-  Audit views. (The deterministic runner is also available from the CLI:
-  `agent "<brief>" --pipeline <name>`.)
+  budget. The active chat ID is the durable Orchestrator resume target, while a
+  different viewed chat ID may expose historical chat and worker flow
+  read-only. Once the shared driver is idle, the first follow-up to that viewed
+  session atomically validates and promotes its exact ID, persists the message,
+  and launches the driver. `driverStatus.chatId` is the exact process owner;
+  only the active owning session may cancel a run. The serialized
+  `orchestratorChatId`, `viewedOrchestratorChatId`,
+  `orchestratorSessions[]`, and `driverStatus.chatId` fields are documented in
+  [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).
+- **Pipeline studio**: a preset composer / inspector — select a registered
+  recipe (a pipeline built from presets), inspect its ordered stage chain,
+  enter a brief, and explicitly choose **Run**. Studio launches the recipe
+  directly; it is not inferred by the root agent from an Orchestrator message.
+  Stage workers stream into the Pipeline Studio and Audit views. The deterministic
+  CLI equivalent is `agent "<brief>" --pipeline <name>`. Exact serialized
+  catalog, run, chat, and process-ownership fields are documented in
+  [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).
 - **Policy**: fail-closed PreToolUse allow/deny stream and role tool surfaces.
 - **Audit**: append-only ledger, filterable by event type.
 - **Models**: LMRouter vendor profiles and active profile selection.
