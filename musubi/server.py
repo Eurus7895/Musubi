@@ -1715,6 +1715,7 @@ def musubi_complete_subagent(
     turns: int = 0,
     status: str = "done",
     max_summary_tokens: int = verifier.DEFAULT_SUBAGENT_MAX_TOKENS,
+    artifacts: list[str] | None = None,
 ) -> str:
     """Record the terminal result of a sub-agent run.
 
@@ -1722,7 +1723,12 @@ def musubi_complete_subagent(
     produces its summary. The harness applies four-layer timeout checks
     here — even if the runner reports `status='done'`, exceeding max_turns
     or wall_clock_timeout_s coerces the row to status='escalated' with an
-    explanatory note appended to the summary.
+    explanatory note appended to the summary. One narrow exception: a
+    'done' at exactly the turn cap accompanied by an `artifacts` manifest
+    that the harness itself verifies on disk (inside the workspace root,
+    every file non-empty) is recorded as done — finishing on the last
+    allowed turn with the deliverable written is a completion, not a
+    timeout violation. The wall-clock rule is never waived.
 
     Phase A.2 firewall — the recorded summary is also passed through
     `verifier.verify_subagent_summary`:
@@ -1774,6 +1780,7 @@ def musubi_complete_subagent(
             tools_used=tools_used,
             turns=turns,
             status=final_status,
+            artifacts=artifacts,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})

@@ -185,6 +185,7 @@ async def run_subagent(
     finally:
         _worker_touched_files.reset(token)
         _worker_log_label.reset(label_token)
+    done_artifacts: list[str] | None = None
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
@@ -195,12 +196,17 @@ async def run_subagent(
     elif turns >= max_turns:
         # Force-concluded at the turn cap. That is a real escalation ONLY if the
         # deliverable is not already produced. If the forced-final answer
-        # self-declares `status: done` AND every file this worker mutated exists
-        # and is non-empty on disk, the artifact was written before the cutoff
-        # (the cap was spent on post-write verification, not the work itself) —
-        # accept it as done rather than sending the root into a pointless
-        # recovery that reports a finished artifact as `[incomplete]`.
-        if _forced_final_is_complete(answer, touched):
+        # self-declares `status: done` AND the surviving files this worker
+        # mutated are all non-empty on disk, the artifact was written before
+        # the cutoff (the cap was spent on post-write verification, not the
+        # work itself) — accept it as done rather than sending the root into a
+        # pointless recovery that reports a finished artifact as [incomplete].
+        # The surviving paths are also sent to the harness as the `artifacts`
+        # manifest: the substrate re-verifies them itself before waiving its
+        # own turn-cap coercion (sub_sessions.complete), so this driver-side
+        # judgement is a claim, never the verdict.
+        done_artifacts = _forced_final_artifacts(answer, touched)
+        if done_artifacts:
             summary, status = answer, "done"
         else:
             summary, status = answer, "escalated"
@@ -222,6 +228,8 @@ async def run_subagent(
     complete_args: dict[str, Any] = {
         "handle_id": handle_id, "summary": summary, "turns": turns, "status": status,
     }
+    if done_artifacts:
+        complete_args["artifacts"] = done_artifacts
     if gate is not None:
         complete_args["structured"] = {"mechanical": gate}
     complete_raw = await _call_tool_text(
@@ -284,21 +292,29 @@ def _file_nonempty(path: str) -> bool:
         return False
 
 
-def _forced_final_is_complete(answer: str, touched: set[str]) -> bool:
-    """True when a max-turns worker's deliverable is already on disk.
+def _forced_final_artifacts(answer: str, touched: set[str]) -> list[str] | None:
+    """Surviving artifact paths when a max-turns worker's deliverable is done.
 
     Deterministic (zero-LLM), all three must hold: the forced-final answer
-    self-declares `status: done`, the worker actually mutated at least one file,
-    and every mutated file exists and is non-empty. This separates "cut off
-    during verification after the write" (accept) from "cut off before finishing
-    the work" (escalate). A truncated mutation never reaches here — it is caught
-    earlier as a typed `[blocked]`/`[incomplete]` answer.
+    self-declares `status: done`, at least one mutated file still exists
+    (files the worker wrote and then deleted — a generator/scratch script —
+    are ignored, mirroring the mechanical gate's G1 filter), and every
+    surviving file is non-empty (an empty survivor is truncation evidence).
+    Returns the sorted survivors to send to the harness as the completion's
+    `artifacts` manifest, or None when the run must stay an escalation. A
+    truncated mutation never reaches here — it is caught earlier as a typed
+    `[blocked]`/`[incomplete]` answer.
     """
     if not touched:
-        return False
+        return None
     if not _STATUS_DONE_RE.search(answer or ""):
-        return False
-    return all(_file_nonempty(path) for path in touched)
+        return None
+    survivors = sorted(p for p in touched if _file_still_exists(p))
+    if not survivors:
+        return None
+    if not all(_file_nonempty(path) for path in survivors):
+        return None
+    return survivors
 
 
 def _lint_errors_preview(res: dict[str, Any]) -> list[str]:

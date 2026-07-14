@@ -77,6 +77,13 @@ for the same dimension.
   policy; it is design-gated and is not part of per-call output-token sizing.
   The continuation brief must remain firewalled and bounded to audited artifact
   state such as path, bytes, and digest.
+  Narrowed: a worker force-concluded at its turn cap that self-declares done
+  now completes as done when its surviving mutated files verify non-empty —
+  claimed by the driver as an `artifacts` manifest and independently re-checked
+  on disk by the substrate (`sub_sessions.complete`), which otherwise keeps its
+  fail-closed turn-cap coercion; the wall-clock rule is never waived. So
+  continuation is only for genuinely unfinished artifacts, not for runs that
+  merely spent their last turns on post-write verification.
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.

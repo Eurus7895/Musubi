@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -261,11 +262,29 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
 def _completed_artifact_session(
     completed: dict[str, Any], *, max_turns: int,
 ) -> Any:
+    """Fake MCP session that EMULATES the server's turn-cap coercion.
+
+    `sub_sessions.complete` coerces done→escalated at turns >= max_turns
+    unless a 'done' completion carries an `artifacts` manifest the harness
+    verifies. A fake that omits this layer hides exactly the mechanism that
+    decides the outcome in production (that gap let an earlier fix pass its
+    tests while being defeated end-to-end), so the fake mirrors it.
+    """
+
     class Session:
         async def call_tool(self, name, arguments):  # noqa: ANN001
             if name == "musubi_complete_subagent":
                 completed.update(arguments)
-                payload = '{"status":"recorded"}'
+                final = arguments.get("status", "done")
+                if int(arguments.get("turns", 0)) >= max_turns and not (
+                    final == "done" and arguments.get("artifacts")
+                ):
+                    final = "escalated"
+                payload = json.dumps({
+                    "status": "recorded",
+                    "final_status": final,
+                    "summary": arguments.get("summary"),
+                })
             elif name == "musubi_spawn_subagent":
                 payload = (
                     '{"status":"spawned","handle_id":"h-nyc","role":"coder",'
@@ -330,6 +349,9 @@ def test_max_turns_worker_with_completed_artifact_accepted_as_done(
     ))
 
     assert completed["status"] == "done"
+    # The driver's claim travels as an artifacts manifest the harness
+    # re-verifies before waiving its own turn-cap coercion.
+    assert completed["artifacts"] == ["artifacts/nyc-dashboard.html"]
     assert orchestration.latest_unrecovered_failure() is None
     assert "status: done" in result
 
@@ -362,13 +384,14 @@ def test_max_turns_worker_without_artifact_still_escalates(
     ))
 
     assert completed["status"] == "escalated"
+    assert "artifacts" not in completed
     assert orchestration.latest_unrecovered_failure() is not None
 
 
-def test_forced_final_is_complete_requires_status_touched_and_nonempty(
+def test_forced_final_artifacts_semantics(
     monkeypatch, tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    from agent.subagent import _forced_final_is_complete
+    from agent.subagent import _forced_final_artifacts
 
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
     f = tmp_path / "out.html"
@@ -376,20 +399,27 @@ def test_forced_final_is_complete_requires_status_touched_and_nonempty(
     empty = tmp_path / "empty.html"
     empty.write_text("", encoding="utf-8")
 
-    # All three conditions met → complete.
-    assert _forced_final_is_complete("status: done\nfiles_changed:", {"out.html"})
-    # No touched files → not complete (nothing was produced).
-    assert not _forced_final_is_complete("status: done", set())
-    # Declared done but the file is empty → not complete.
-    assert not _forced_final_is_complete("status: done", {"empty.html"})
-    # Declared done but the file is missing → not complete.
-    assert not _forced_final_is_complete("status: done", {"missing.html"})
-    # Touched a real file but did not declare done → not complete.
-    assert not _forced_final_is_complete("status: incomplete", {"out.html"})
+    # Declared done + surviving non-empty file → the survivors, sorted.
+    assert _forced_final_artifacts(
+        "status: done\nfiles_changed:", {"out.html"},
+    ) == ["out.html"]
+    # A deleted scratch file (generator pattern) is ignored, mirroring the
+    # mechanical gate's G1 filter — the surviving artifact still qualifies.
+    assert _forced_final_artifacts(
+        "status: done", {"out.html", "gen-scratch.py"},
+    ) == ["out.html"]
+    # No touched files → nothing was produced.
+    assert _forced_final_artifacts("status: done", set()) is None
+    # Every touched file gone → nothing survived to deliver.
+    assert _forced_final_artifacts("status: done", {"missing.html"}) is None
+    # A surviving file that is EMPTY is truncation evidence.
+    assert _forced_final_artifacts("status: done", {"empty.html"}) is None
+    # Touched a real file but did not declare done.
+    assert _forced_final_artifacts("status: incomplete", {"out.html"}) is None
     # A leading [mechanical] banner does not hide the status line.
-    assert _forced_final_is_complete(
-        "[mechanical] result=skipped\nstatus: done", {"out.html"}
-    )
+    assert _forced_final_artifacts(
+        "[mechanical] result=skipped\nstatus: done", {"out.html"},
+    ) == ["out.html"]
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────

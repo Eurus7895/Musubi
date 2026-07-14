@@ -585,6 +585,118 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
     assert payload["escalated"] is True
 
 
+def _spawn_coder_at_cap(max_turns: int = 3) -> str:
+    parent = state.create_session("p")
+    spawn = json.loads(
+        server.musubi_spawn_subagent(
+            parent_session_id=parent,
+            parent_agent_name="agent",
+            role="coder",
+            brief="write dashboard",
+            max_turns=max_turns,
+        )
+    )
+    return spawn["handle_id"]
+
+
+def test_mcp_complete_max_turns_done_with_verified_artifacts_stays_done(
+    mcp_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """'done' at exactly the turn cap + an artifacts manifest the harness
+    verifies on disk is a completion, not a timeout violation. This is the
+    layer that used to coerce a finished artifact back to escalated and
+    push the root into a pointless recovery."""
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "artifacts" / "nyc-dashboard.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<!DOCTYPE html><html></html>", encoding="utf-8")
+
+    raw = server.musubi_complete_subagent(
+        handle_id=_spawn_coder_at_cap(),
+        summary="status: done",
+        turns=3,  # at the cap
+        status="done",
+        artifacts=["artifacts/nyc-dashboard.html"],
+    )
+    payload = json.loads(raw)
+    assert payload["final_status"] == "done"
+    assert payload["escalated"] is False
+    # The audit trail still records that the cap was reached — and why the
+    # result was accepted anyway.
+    assert "max_turns=3 reached" in payload["summary"]
+    assert "verified non-empty on disk" in payload["summary"]
+
+
+def test_mcp_complete_max_turns_done_with_missing_artifact_coerces(
+    mcp_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    raw = server.musubi_complete_subagent(
+        handle_id=_spawn_coder_at_cap(),
+        summary="status: done",
+        turns=3,
+        status="done",
+        artifacts=["artifacts/never-written.html"],
+    )
+    payload = json.loads(raw)
+    assert payload["final_status"] == "escalated"
+    assert payload["escalated"] is True
+
+
+def test_mcp_complete_max_turns_artifact_escape_coerces(
+    mcp_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A manifest path escaping the workspace root fails verification —
+    the runner cannot point at an arbitrary host file to dodge the cap."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setenv("MUSUBI_ROOT", str(root))
+    outside = tmp_path / "outside.html"
+    outside.write_text("<html></html>", encoding="utf-8")
+
+    raw = server.musubi_complete_subagent(
+        handle_id=_spawn_coder_at_cap(),
+        summary="status: done",
+        turns=3,
+        status="done",
+        artifacts=["../outside.html"],
+    )
+    payload = json.loads(raw)
+    assert payload["final_status"] == "escalated"
+    assert payload["escalated"] is True
+
+
+def test_mcp_complete_wall_clock_never_waived_by_artifacts(
+    mcp_db: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "out.html"
+    artifact.write_text("<html></html>", encoding="utf-8")
+
+    parent = state.create_session("p")
+    spawn = json.loads(
+        server.musubi_spawn_subagent(
+            parent_session_id=parent,
+            parent_agent_name="agent",
+            role="coder",
+            brief="x",
+            max_turns=3,
+            wall_clock_timeout_s=1,
+        )
+    )
+    time.sleep(1.1)
+    raw = server.musubi_complete_subagent(
+        handle_id=spawn["handle_id"],
+        summary="status: done",
+        turns=3,
+        status="done",
+        artifacts=["out.html"],
+    )
+    payload = json.loads(raw)
+    assert payload["final_status"] == "escalated"
+    assert payload["escalated"] is True
+
+
 # ── musubi_list_subagents (MCP tool) ───────────────────────────────────────
 
 def test_mcp_list_subagents_for_agent(mcp_db: Path) -> None:
