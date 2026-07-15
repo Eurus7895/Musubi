@@ -60,7 +60,7 @@ def test_outcome_packet_bounds_unstructured_fallback() -> None:
         role="planner", status="done", summary="x" * 5000,
         touched_files=(),
     )
-    assert len(packet.summary) <= 803
+    assert len(packet.summary) <= 800
     assert packet.summary.endswith("… [truncated]")
 ```
 
@@ -99,7 +99,8 @@ def _bounded(value: str, limit: int) -> str:
     compact = " ".join((value or "").split())
     if len(compact) <= limit:
         return compact
-    return compact[:limit].rstrip() + "… [truncated]"
+    suffix = "… [truncated]"
+    return compact[:limit - len(suffix)].rstrip() + suffix
 
 
 def _fields(text: str) -> dict[str, str]:
@@ -445,9 +446,12 @@ Add:
 def _compact_root_goal_messages(
     messages: list[dict[str, Any]], state: GoalState,
 ) -> list[dict[str, Any]]:
-    stable = [message for message in messages if message.get("role") == "system"]
+    stable = next(
+        (message for message in messages if message.get("role") == "system"),
+        None,
+    )
     return [
-        *stable,
+        *([stable] if stable is not None else []),
         {"role": "user", "content": state.render_decision_block()},
     ]
 ```
