@@ -3,7 +3,7 @@
 import { classifyChatCommand } from './chatCommands.js'
 import {
   createPipelineDraft, addStage, moveStage, removeStage, updateStage,
-  setStageSpawns, requestTransition, confirmTransition, cancelTransition,
+  setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
 } from '../model/pipelineBuilder.js'
 
 const DOMAIN_KEYS = [
@@ -20,6 +20,9 @@ export default class TauriSource {
     this.props = props || {}
     this.subs = new Set()
     this._unlisten = null
+    this._builderGeneration = 0
+    this._pendingBuilderOperations = 0
+    this._pendingNewSessionFrom = null
     const emptyDraft = createPipelineDraft()
     this.state = {
       view: this.props.startView || 'orchestrator',
@@ -43,12 +46,55 @@ export default class TauriSource {
   subscribe(cb) { this.subs.add(cb); return () => this.subs.delete(cb) }
   _notify() { for (const cb of this.subs) cb() }
   _setLocal(patch) { this.state = { ...this.state, ...patch }; this._notify() }
-  _setBuilder(patch) { this._setLocal({ pipelineBuilder: { ...this.state.pipelineBuilder, ...patch } }) }
+  _setBuilder(patch, invalidate = true) {
+    if (invalidate) this._builderGeneration += 1
+    this._setLocal({ pipelineBuilder: { ...this.state.pipelineBuilder, ...patch } })
+  }
+  _replaceBuilder(pipelineBuilder, invalidate = true) {
+    if (invalidate) this._builderGeneration += 1
+    this._setLocal({ pipelineBuilder })
+  }
+  _beginBuilderOperation() {
+    const generation = ++this._builderGeneration
+    this._pendingBuilderOperations += 1
+    this._setBuilder({ loading: true }, false)
+    return generation
+  }
+  _finishBuilderOperation(generation, update) {
+    this._pendingBuilderOperations = Math.max(0, this._pendingBuilderOperations - 1)
+    const loading = this._pendingBuilderOperations > 0
+    if (generation !== this._builderGeneration) {
+      this._setBuilder({ loading }, false)
+      return
+    }
+    this._replaceBuilder({ ...update(this.state.pipelineBuilder), loading }, false)
+  }
 
   _mergeDomain(dom) {
     if (!dom || typeof dom !== 'object') return
     const patch = {}
     for (const key of DOMAIN_KEYS) if (key in dom) patch[key] = dom[key]
+    if (this._pendingNewSessionFrom !== null) {
+      const backendChatId = String(dom.orchestratorChatId || '')
+      if (backendChatId && backendChatId !== this._pendingNewSessionFrom) {
+        this._pendingNewSessionFrom = null
+      } else {
+        delete patch.orchestratorChatId
+        delete patch.viewedOrchestratorChatId
+      }
+    }
+    const catalog = Array.isArray(dom.pipelineCatalog) ? dom.pipelineCatalog : []
+    const builder = this.state.pipelineBuilder
+    if (catalog.length && !builder.draft.name && !isDirty(builder.draft, builder.savedRecipe)) {
+      const entry = catalog[0]
+      const recipe = {
+        name: entry.name,
+        description: entry.description || '',
+        stages: (entry.stages || []).map((agent) => ({ agent })),
+      }
+      patch.pipelineBuilder = requestTransition(builder, { type: 'switch', recipe, savedRecipe: recipe })
+      this._builderGeneration += 1
+    }
     this.state = { ...this.state, ...patch }
     this._notify()
   }
@@ -110,9 +156,11 @@ export default class TauriSource {
       },
       newSession: () => {
         if (this.state.driverStatus?.running) return
+        this._pendingNewSessionFrom = this.state.orchestratorChatId || ''
         this._setLocal({
           chat: [], orchestratorChatId: '__pending_orchestrator_session__',
-          selected: null, draft: '', processOpen: false, logWindowOpen: false,
+          viewedOrchestratorChatId: '', selectedSession: null, selected: null,
+          draft: '', processOpen: false, logWindowOpen: false,
           driverStatus: emptyDriverStatus(), runMode: 'direct', selectedPipeline: '',
         })
         this._action('new_session', ['orchestrator'])
@@ -137,7 +185,10 @@ export default class TauriSource {
       sendChat: () => {
         const text = String(this.state.draft || '').trim()
         if (!text) return
-        const requestedChatId = this.state.viewedOrchestratorChatId || this.state.selectedSession || ''
+        const requestedChatId = this.state.selectedSession
+          || (this.state.orchestratorChatId === '__pending_orchestrator_session__'
+            ? ''
+            : this.state.viewedOrchestratorChatId || '')
         const command = classifyChatCommand(text)
         const namedPipeline = text.match(/^(?:\/pipeline|pipeline|run\s+pipeline)\s+([a-z0-9]+(?:-[a-z0-9]+)*)$/i)?.[1]?.toLowerCase()
         if (command.kind === 'openPipelinePicker' || namedPipeline) {
@@ -158,12 +209,12 @@ export default class TauriSource {
       },
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
 
-      newPipelineRecipe: () => this._setLocal({
-        pipelineBuilder: requestTransition(this.state.pipelineBuilder, { type: 'new' }),
-      }),
-      closePipelineRecipe: () => this._setLocal({
-        pipelineBuilder: requestTransition(this.state.pipelineBuilder, { type: 'close' }),
-      }),
+      newPipelineRecipe: () => this._replaceBuilder(
+        requestTransition(this.state.pipelineBuilder, { type: 'new' }),
+      ),
+      closePipelineRecipe: () => this._replaceBuilder(
+        requestTransition(this.state.pipelineBuilder, { type: 'close' }),
+      ),
       selectPipelineBuilderStep: (step) => this._setBuilder({ step }),
       selectPipelineStage: (selectedStageIndex) => this._setBuilder({ selectedStageIndex }),
       addPipelineStage: (stage, index) => this._setBuilder({ draft: addStage(this.state.pipelineBuilder.draft, stage, index) }),
@@ -186,52 +237,53 @@ export default class TauriSource {
             .filter((item) => item !== String(role || '').trim().toLowerCase()),
         ),
       }),
-      confirmPipelineTransition: () => this._setLocal({ pipelineBuilder: confirmTransition(this.state.pipelineBuilder) }),
-      cancelPipelineTransition: () => this._setLocal({ pipelineBuilder: cancelTransition(this.state.pipelineBuilder) }),
+      confirmPipelineTransition: () => this._replaceBuilder(confirmTransition(this.state.pipelineBuilder)),
+      cancelPipelineTransition: () => this._replaceBuilder(cancelTransition(this.state.pipelineBuilder)),
       loadPipelineRecipe: async (name) => {
         if (!this._invoke) return
-        this._setBuilder({ loading: true })
+        const generation = this._beginBuilderOperation()
         try {
           const recipe = await this._invoke('load_pipeline_recipe', { name })
-          const next = requestTransition(this.state.pipelineBuilder, { type: 'switch', recipe })
-          this._setLocal({
-            pipelineBuilder: {
-              ...next,
-              savedRecipe: next.pendingTransition ? this.state.pipelineBuilder.savedRecipe : structuredClone(recipe),
-              findings: structuredClone(recipe.findings || []), loading: false,
-            },
-          })
+          this._finishBuilderOperation(generation, (builder) => requestTransition(builder, {
+            type: 'switch', recipe, savedRecipe: recipe,
+          }))
         } catch (error) {
-          this._setBuilder({ loading: false, findings: [errorFinding(error, 'load')] })
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder, findings: [errorFinding(error, 'load')],
+          }))
         }
       },
       validatePipelineRecipe: async () => {
         if (!this._invoke) return
         const recipe = this._recipePayload()
-        this._setBuilder({ loading: true })
+        const generation = this._beginBuilderOperation()
         try {
           const findings = await this._invoke('validate_pipeline_recipe', { recipe })
-          this._setBuilder({ loading: false, findings: structuredClone(findings || []) })
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder, findings: structuredClone(findings || []),
+          }))
         } catch (error) {
-          this._setBuilder({ loading: false, findings: [errorFinding(error, 'validate')] })
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder, findings: [errorFinding(error, 'validate')],
+          }))
         }
       },
       savePipelineRecipe: async () => {
         if (!this._invoke) return
         const recipe = this._recipePayload()
-        this._setBuilder({ loading: true })
+        const generation = this._beginBuilderOperation()
         try {
           const result = await this._invoke('save_pipeline_recipe', { recipe })
-          this._setBuilder({
-            loading: false, saveResult: structuredClone(result),
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder, saveResult: structuredClone(result),
             findings: structuredClone(result.findings || []),
-            savedRecipe: result.saved ? structuredClone(recipe) : this.state.pipelineBuilder.savedRecipe,
-          })
+            savedRecipe: result.saved ? structuredClone(recipe) : builder.savedRecipe,
+          }))
         } catch (error) {
-          this._setBuilder({
-            loading: false,
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder,
             saveResult: { saved: false, catalogRefreshed: false, path: '', findings: [], error: errorMessage(error) },
-          })
+          }))
         }
       },
     }

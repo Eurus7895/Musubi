@@ -80,11 +80,20 @@ function applyTransition(state, transition) {
   const recipe = transition?.recipe || {}
   if (transition?.type === 'close') {
     const empty = createPipelineDraft()
-    return { ...state, step: 'catalog', draft: empty, savedRecipe: empty, selectedStageIndex: null, pendingTransition: null }
+    return {
+      ...state, step: 'catalog', draft: empty, savedRecipe: empty,
+      selectedStageIndex: null, findings: [], saveResult: null,
+      pendingTransition: null,
+    }
   }
   if (transition?.type === 'new' || transition?.type === 'switch') {
-    const next = createPipelineDraft(recipe)
-    return { ...state, step: 'edit', draft: next, savedRecipe: next, selectedStageIndex: null, pendingTransition: null }
+    const draft = createPipelineDraft(recipe)
+    const savedRecipe = clone(transition.savedRecipe ?? draft)
+    return {
+      ...state, step: 'edit', draft, savedRecipe, selectedStageIndex: null,
+      findings: clone(savedRecipe.findings || []), saveResult: null,
+      pendingTransition: null,
+    }
   }
   return { ...state, pendingTransition: null }
 }

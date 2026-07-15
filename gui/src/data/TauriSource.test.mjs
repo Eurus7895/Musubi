@@ -9,6 +9,13 @@ function sourceWithActionSpy() {
   return { source, calls }
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
 test('merges pipeline chat from backend snapshots', () => {
   const { source } = sourceWithActionSpy()
 
@@ -91,6 +98,48 @@ test('backend history snapshots preserve the locally selected session', () => {
   assert.equal(source.state.chat[0].text, 'old answer')
 })
 
+test('immediate send after New ignores stale viewed session until new-session acknowledgement', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-old',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-history',
+    selectedSession: 'gui-orchestrator-project-history',
+    driverStatus: { running: false },
+  })
+
+  source.actions.newSession()
+  source._mergeDomain({
+    orchestratorChatId: 'gui-orchestrator-project-old',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-history',
+  })
+  source._setLocal({ draft: 'start fresh' })
+  source.actions.sendChat()
+
+  assert.equal(source.state.viewedOrchestratorChatId, '')
+  assert.deepEqual(calls, [
+    { kind: 'new_session', args: ['orchestrator'] },
+    { kind: 'send_chat', args: ['start fresh', '', 'direct', ''] },
+  ])
+})
+
+test('immediate send after selecting history uses local selection before backend acknowledgement', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-current',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-current',
+    driverStatus: { running: false },
+  })
+
+  source.actions.selectSession('gui-orchestrator-project-history')
+  source._setLocal({ draft: 'continue history' })
+  source.actions.sendChat()
+
+  assert.deepEqual(calls, [
+    { kind: 'select_session', args: ['gui-orchestrator-project-history'] },
+    { kind: 'send_chat', args: ['continue history', 'gui-orchestrator-project-history', 'direct', ''] },
+  ])
+})
+
 test('direct sendChat forwards exact four-argument contract and viewed chat id', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
@@ -159,6 +208,14 @@ for (const [command, selectedPipeline] of [
 
 test('backend polling preserves dirty builder drafts and initializes only pristine state', () => {
   const { source } = sourceWithActionSpy()
+
+  source._mergeDomain({
+    pipelineCatalog: [{ name: 'feature-dev', description: 'Feature flow', runnable: true, stages: ['planner', 'coder'] }],
+  })
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'feature-dev')
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages.map((stage) => stage.agent), ['planner', 'coder'])
+
   source._setLocal({
     pipelineBuilder: {
       ...source.state.pipelineBuilder,
@@ -252,6 +309,70 @@ test('recipe command failures are recorded in builder state', async () => {
   assert.match(source.state.pipelineBuilder.findings[0].message, /IPC unavailable/)
   await source.actions.savePipelineRecipe()
   assert.match(source.state.pipelineBuilder.saveResult.error, /IPC unavailable/)
+})
+
+test('out-of-order recipe loads keep the newest result and loading until all requests settle', async () => {
+  const source = new TauriSource({})
+  const first = deferred()
+  const second = deferred()
+  source._invoke = (_command, { name }) => name === 'first' ? first.promise : second.promise
+
+  const firstRequest = source.actions.loadPipelineRecipe('first')
+  const secondRequest = source.actions.loadPipelineRecipe('second')
+  second.resolve({ name: 'second', stages: [{ agent: 'planner' }, { agent: 'coder' }], resolvedContracts: [], findings: [] })
+  await secondRequest
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'second')
+  assert.equal(source.state.pipelineBuilder.loading, true)
+
+  first.resolve({ name: 'first', stages: [{ agent: 'planner' }, { agent: 'coder' }], resolvedContracts: [], findings: [] })
+  await firstRequest
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'second')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('overlapping validation and save ignore stale validation completion', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  const save = deferred()
+  source._invoke = (command) => command === 'validate_pipeline_recipe' ? validation.promise : save.promise
+
+  const validationRequest = source.actions.validatePipelineRecipe()
+  const saveRequest = source.actions.savePipelineRecipe()
+  save.resolve({
+    saved: true, catalogRefreshed: true, path: 'pipeline.yaml',
+    findings: [{ severity: 'warning', message: 'save finding' }], error: '',
+  })
+  await saveRequest
+
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'save finding')
+  assert.equal(source.state.pipelineBuilder.loading, true)
+
+  validation.resolve([{ severity: 'warning', message: 'stale validation' }])
+  await validationRequest
+
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'save finding')
+  assert.equal(source.state.pipelineBuilder.saveResult.saved, true)
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('confirmed dirty recipe load retains resolved contracts in save payload', async () => {
+  const source = new TauriSource({})
+  source.actions.addPipelineStage({ agent: 'dirty' })
+  source._invoke = async () => ({
+    name: 'feature-dev',
+    stages: [{ agent: 'planner' }, { agent: 'coder' }],
+    resolvedContracts: [{ step: 'planner', allowedTools: ['Read'] }],
+    findings: [{ severity: 'warning', message: 'backend finding' }],
+  })
+
+  await source.actions.loadPipelineRecipe('feature-dev')
+  source.actions.confirmPipelineTransition()
+
+  assert.deepEqual(source._recipePayload().resolvedContracts, [
+    { step: 'planner', allowedTools: ['Read'] },
+  ])
 })
 
 test('builder edits stages and spawn roles through immutable actions', () => {

@@ -100,6 +100,34 @@ test('dirty new close and switch transitions require confirmation', () => {
   }
 })
 
+test('confirmed dirty switch preserves the full backend recipe as saved baseline', () => {
+  const savedRecipe = createPipelineDraft(recipe())
+  const state = {
+    step: 'edit',
+    draft: updateStage(savedRecipe, 0, { stage: 'dirty' }),
+    savedRecipe,
+    selectedStageIndex: 0,
+    findings: [],
+    pendingTransition: null,
+  }
+  const loaded = {
+    ...recipe(),
+    name: 'code-review',
+    resolvedContracts: [{ step: 'plan', allowedTools: ['Read'] }],
+    findings: [{ severity: 'warning', message: 'backend finding' }],
+  }
+
+  const requested = requestTransition(state, {
+    type: 'switch', recipe: loaded, savedRecipe: loaded,
+  })
+  const confirmed = confirmTransition(requested)
+
+  assert.equal(confirmed.draft.name, 'code-review')
+  assert.equal('resolvedContracts' in confirmed.draft, false)
+  assert.deepEqual(confirmed.savedRecipe.resolvedContracts, loaded.resolvedContracts)
+  assert.deepEqual(confirmed.findings, loaded.findings)
+})
+
 test('pristine transition applies immediately and client validation is advisory', () => {
   const savedRecipe = createPipelineDraft(recipe())
   const state = { step: 'edit', draft: savedRecipe, savedRecipe, selectedStageIndex: 0, pendingTransition: null }
