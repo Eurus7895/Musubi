@@ -3,6 +3,13 @@ name: code-review
 description: Reviews code for correctness, security, type safety, and convention compliance. Use when the user asks to review, check, audit, or inspect code quality.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - review
+  - audit
+  - correctness
+  - acceptance criteria
+  - severity
+  - code quality
 ---
 
 ## Purpose

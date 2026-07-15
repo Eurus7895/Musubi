@@ -3,6 +3,14 @@ name: database-patterns
 description: SQLite schema design, query patterns, and state management for append-only session storage. Use when the user is working with a database, schema, SQL, SQLite, queries, migrations, or state storage.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - sqlite
+  - schema
+  - sql
+  - migration
+  - query
+  - append-only
+  - state storage
 ---
 
 ## Purpose

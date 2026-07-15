@@ -3,6 +3,14 @@ name: api-design
 description: Designs REST APIs and MCP tool interfaces with consistent conventions. Use when the user is designing an API, endpoint, REST interface, MCP tool, or tool schema.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - rest api
+  - endpoint
+  - mcp tool
+  - tool schema
+  - interface design
+  - http method
+  - request schema
 ---
 
 ## Purpose

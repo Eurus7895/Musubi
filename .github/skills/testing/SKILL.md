@@ -6,6 +6,13 @@ applies-to:
   test_frameworks: [pytest]
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - pytest
+  - fixture
+  - mock
+  - coverage
+  - unit test
+  - write tests
 ---
 
 ## Purpose

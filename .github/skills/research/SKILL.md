@@ -3,6 +3,16 @@ name: research
 description: Gather and synthesise information from a codebase or external sources to answer a specific question. Use when the user asks "how does X work?", "where does Y come from?", "compare X vs Y", "what are best practices for Z" — anything where the deliverable is a written finding, not code.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - how does
+  - where does
+  - compare
+  - best practices
+  - investigate
+  - synthesis
+tools:
+  - musubi_grep
+  - musubi_glob
 ---
 
 ## Purpose

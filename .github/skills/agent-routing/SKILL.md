@@ -3,6 +3,17 @@ name: agent-routing
 description: Routing rules for the Agent — answer directly using the available read tools, delegate write-capable and diagnostic work to bounded sub-agents, and keep vague requests out of the tool loop.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - spawn
+  - sub-agent
+  - delegate
+  - routing
+  - worker brief
+  - wall-clock cap
+tools:
+  - musubi_spawn_subagent
+  - musubi_await_subagent
+  - musubi_list_subagents
 ---
 
 ## Today

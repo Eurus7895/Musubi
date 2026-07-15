@@ -5,6 +5,13 @@ applies-to:
   doc_tools: [sphinx, mkdocs, mdbook]
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - readme
+  - design doc
+  - adr
+  - user guide
+  - api reference
+  - write documentation
 ---
 
 ## Purpose

@@ -88,6 +88,12 @@ for the same dimension.
 - **Skill catalog growth.** Skills remain the cheapest optimization surface.
   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
   and relevant tools.
+  First batch landed: `debugging`, `refactoring`, and `git-workflow` (universal
+  procedures) plus `typescript` (router-gated to JS/TS workspaces). Coder gains
+  all four; the dispatcher agent gains only the read-safe pair
+  (`debugging`, `git-workflow`) so the generator boundary holds. Every prior
+  catalog entry was backfilled with `triggers:` so the recommender can rank the
+  whole catalog, not just the newest skills.
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this
