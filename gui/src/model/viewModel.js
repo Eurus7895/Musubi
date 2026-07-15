@@ -7,6 +7,7 @@ import {
 } from './data.js'
 import { roleChip, navStyle, auditBtn } from './styleHelpers.js'
 import { fmtClock } from './format.js'
+import { createPipelineDraft, isDirty } from './pipelineBuilder.js'
 
 function statusForRun(run) {
   const steps = run.steps || []
@@ -278,6 +279,21 @@ function buildChatView(messages = []) {
 }
 
 export function buildViewModel(s, act) {
+  const pipelineBuilderState = s.pipelineBuilder || {
+    step: 'catalog', draft: createPipelineDraft(), savedRecipe: createPipelineDraft(),
+    selectedStageIndex: null, findings: [], saveResult: null,
+    loading: false, pendingTransition: null,
+  }
+  const pipelineOptions = (s.pipelineCatalog || []).map((entry) => ({
+    name: entry.name,
+    description: entry.description || '',
+    stages: entry.stages || [],
+    runnable: !!entry.runnable,
+    blockedReason: entry.blockedReason || '',
+    selected: entry.name === s.selectedPipeline,
+    onSelect: () => act.selectPipeline?.(entry.name),
+  }))
+  const selectedPipelineEntry = pipelineOptions.find((entry) => entry.selected)
   const sm = statusMeta
   const allSubagents = s.subagents || []
   const allAgentTurns = s.agentTurns || []
@@ -681,7 +697,8 @@ export function buildViewModel(s, act) {
   // composition makes it a draft until saved as a workspace pipeline.
   const stColor = { idle: '#6a6a72', queued: '#e3b341', running: '#ff9b3d', done: '#54c79a' }
   const editable = true
-  const pipeStepsVM = s.pipeSteps.map((st, i) => {
+  const legacyPipeSteps = s.pipeSteps || []
+  const pipeStepsVM = legacyPipeSteps.map((st, i) => {
     const cat = pipeCatalog.find((c) => c.role === st.role) || { tools: [], max: 0, hue: '#8a8a92' }
     const col = stColor[st.status]
     const prog = st.status === 'done' ? 100 : (st.status === 'running' ? s.pipeProg : 0)
@@ -697,7 +714,7 @@ export function buildViewModel(s, act) {
       cardStyle: 'position:relative;width:208px;flex-shrink:0;background:#141b27;border:1px solid ' + (st.status === 'running' ? 'rgba(255,155,61,0.55)' : (st.status === 'done' ? 'rgba(84,199,154,0.42)' : 'rgba(255,255,255,0.08)')) + ';border-radius:12px;padding:14px 15px;' + (st.status === 'running' ? 'box-shadow:0 0 22px rgba(255,155,61,0.13);' : ''),
       showControls: editable, showHandle: (st.status === 'running' || st.status === 'done'),
       onUp: () => act.movePipe(st.uid, -1), onDown: () => act.movePipe(st.uid, 1), onRemove: () => act.removePipe(st.uid),
-      showConnector: i < s.pipeSteps.length - 1,
+      showConnector: i < legacyPipeSteps.length - 1,
       connStyle: 'color:' + (st.status === 'done' ? '#54c79a' : '#3a4250'),
     }
   })
@@ -713,8 +730,8 @@ export function buildViewModel(s, act) {
     onLoad: () => act.loadPreset(p.name),
   }))
   const pipeNameLabel = s.pipeName || 'choose preset'
-  const pipeStageOverflowLabel = s.pipeSteps.length > 3
-    ? `${s.pipeSteps.length - 3} more stage${s.pipeSteps.length - 3 === 1 ? '' : 's'} →`
+  const pipeStageOverflowLabel = legacyPipeSteps.length > 3
+    ? `${legacyPipeSteps.length - 3} more stage${legacyPipeSteps.length - 3 === 1 ? '' : 's'} →`
     : ''
   const pipeStatusTextForDisplay = s.pipeName
     ? (s.pipeModified
@@ -797,12 +814,39 @@ export function buildViewModel(s, act) {
   }
 
   return {
+    runMode: s.runMode === 'pipeline' ? 'pipeline' : 'direct',
+    selectedPipeline: s.selectedPipeline || '',
+    selectedPipelineRunnable: !!selectedPipelineEntry?.runnable,
+    pipelineOptions,
+    onSetRunMode: act.setRunMode,
+    pipelineBuilder: {
+      ...pipelineBuilderState,
+      dirty: isDirty(pipelineBuilderState.draft, pipelineBuilderState.savedRecipe),
+      selectedStage: pipelineBuilderState.draft?.stages?.[pipelineBuilderState.selectedStageIndex] || null,
+      actions: {
+        onNew: act.newPipelineRecipe,
+        onClose: act.closePipelineRecipe,
+        onSelectStep: act.selectPipelineBuilderStep,
+        onSelectStage: act.selectPipelineStage,
+        onAddStage: act.addPipelineStage,
+        onMoveStage: act.movePipelineStage,
+        onRemoveStage: act.removePipelineStage,
+        onUpdateStage: act.updatePipelineStage,
+        onAddSpawn: act.addPipelineSpawn,
+        onRemoveSpawn: act.removePipelineSpawn,
+        onLoad: act.loadPipelineRecipe,
+        onValidate: act.validatePipelineRecipe,
+        onSave: act.savePipelineRecipe,
+        onConfirmTransition: act.confirmPipelineTransition,
+        onCancelTransition: act.cancelPipelineTransition,
+      },
+    },
     isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
     view: s.view,
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: s.pipeSteps.length === 0, pipeHasSteps: s.pipeSteps.length > 0, pipeStageOverflowLabel, pipeStatusText: pipeStatusTextForDisplay,
+    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: legacyPipeSteps.length === 0, pipeHasSteps: legacyPipeSteps.length > 0, pipeStageOverflowLabel, pipeStatusText: pipeStatusTextForDisplay,
     pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:12px;padding:14px;text-align:center;',
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
@@ -844,18 +888,6 @@ export function buildViewModel(s, act) {
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : ''),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
-    pipeRuns,
-    activePipeRunId: activePipeSessionId,
-    activePipeRunSteps: pipeRunSteps,
-    pipeRunSummary,
-    pipeSessionTitle: activePipeRunRaw
-      ? `${activePipeRunRaw.pipelineName || 'pipeline'} · run ${String(activePipeSessionId).slice(0, 12)}`
-      : 'Pipeline run history',
-    pipeSessionSubtitle: pipeRunSteps.length
-      ? (pipeRunSteps.length + ' workers in this pipeline session')
-      : (activePipeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no pipeline workers in this session yet'),
-    pipeChat: pipeChatView,
-    pipeChatBody,
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),

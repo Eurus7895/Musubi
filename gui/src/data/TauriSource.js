@@ -1,23 +1,18 @@
-// Native DataSource for the Tauri desktop shell. Domain data comes from the
-// Rust core (which reads Musubi's audit.db / llm.toml); navigation state stays
-// client-side.
-//
-//   get_state            invoke → initial domain snapshot
-//   state://update       event  → domain snapshot on every change (Rust poller)
-//   action               invoke({ kind, args }) → backend mutating actions (chat, profile)
+// Native DataSource for the Tauri desktop shell. Backend domain snapshots are
+// merged with local Orchestrator composer and Pipeline Studio builder state.
 import { classifyChatCommand } from './chatCommands.js'
+import {
+  createPipelineDraft, addStage, moveStage, removeStage, updateStage,
+  setStageSpawns, requestTransition, confirmTransition, cancelTransition,
+} from '../model/pipelineBuilder.js'
 
-// Domain keys owned by the backend; everything else (view, selected, draft,
-// auditFilter and the whole pipe* composer) is local UI state. The Pipeline
-// studio keeps draft pipeSteps/pipeName client-side so snapshot polling cannot clobber
-// every add/move/preset change the user makes.
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
-  'agentTurns', 'agentCycles',
-  'totalSpawned', 'totalDone', 'allowCount', 'denyCount', 'activeProfile', 'profiles',
-  'paused', 't',
-  'runtimeSource', 'setupStatus', 'driverStatus',
-  'orchestratorChatId', 'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions', 'pipelineCatalog', 'pipelineRuns',
+  'agentTurns', 'agentCycles', 'totalSpawned', 'totalDone', 'allowCount',
+  'denyCount', 'activeProfile', 'profiles', 'paused', 't', 'runtimeSource',
+  'setupStatus', 'driverStatus', 'orchestratorChatId',
+  'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
+  'pipelineCatalog', 'pipelineRuns',
 ]
 
 export default class TauriSource {
@@ -25,50 +20,35 @@ export default class TauriSource {
     this.props = props || {}
     this.subs = new Set()
     this._unlisten = null
-    this._pipeUid = 0
+    const emptyDraft = createPipelineDraft()
     this.state = {
       view: this.props.startView || 'orchestrator',
-      selected: null, selectedSession: null, selectedPipeSession: null, paused: false, t: 0, auditFilter: 'all', draft: '', pipeDraft: '',
-      processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], agentCycles: [], orchestratorSessions: [], pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
-      orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '', pipelineCatalog: [],
+      selected: null, selectedSession: null, paused: false, t: 0,
+      auditFilter: 'all', draft: '', processOpen: false, logWindowOpen: false,
+      subagents: [], agentTurns: [], agentCycles: [], orchestratorSessions: [],
+      pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
+      orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '',
+      pipelineCatalog: [], runMode: 'direct', selectedPipeline: '',
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
-      activeProfile: 'anthropic.default', profiles: [],
-      pipeName: '', pipeSteps: [], pipeModified: false,
-      pipeRunning: false, pipeCur: -1, pipeProg: 0, pipeDoneFlag: false,
-      runtimeSource: 'none',
-      driverStatus: emptyDriverStatus(),
-      setupStatus: emptySetupStatus(),
+      activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
+      driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
+      pipelineBuilder: {
+        step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
+        selectedStageIndex: null, findings: [], saveResult: null,
+        loading: false, pendingTransition: null,
+      },
     }
   }
 
   subscribe(cb) { this.subs.add(cb); return () => this.subs.delete(cb) }
   _notify() { for (const cb of this.subs) cb() }
   _setLocal(patch) { this.state = { ...this.state, ...patch }; this._notify() }
-  _nextPipeUid() { this._pipeUid += 1; return this._pipeUid }
-  // Build studio stage rows from a preset's role list. The composer is purely
-  // client-side; roles carry their display metadata from `pipeCatalog`.
-  _stepsFromRoles(roles) {
-    return (roles || []).map((role) => ({ uid: this._nextPipeUid(), role, status: 'idle', handle: null }))
-  }
+  _setBuilder(patch) { this._setLocal({ pipelineBuilder: { ...this.state.pipelineBuilder, ...patch } }) }
+
   _mergeDomain(dom) {
     if (!dom || typeof dom !== 'object') return
     const patch = {}
-    for (const k of DOMAIN_KEYS) if (k in dom) patch[k] = dom[k]
-    const catalogChanged = Array.isArray(dom.pipelineCatalog)
-      && JSON.stringify(dom.pipelineCatalog) !== JSON.stringify(this.state.pipelineCatalog)
-    if (Array.isArray(dom.pipelineCatalog) && !this.state.pipeModified && (catalogChanged || !this.state.pipeName)) {
-      const selected = dom.pipelineCatalog.find((entry) => entry.name === this.state.pipeName)
-        || dom.pipelineCatalog[0]
-      if (selected) {
-        patch.pipeName = selected.name
-        patch.pipeSteps = this._stepsFromRoles(selected.stages)
-        patch.pipeModified = false
-      }
-    }
-    // The Orchestrator session index mirrors durable chat plus append-only
-    // worker audit (HI #8). Clearing one visible chat never clears another
-    // session's summaries, agent turns, or subagent ancestry.
+    for (const key of DOMAIN_KEYS) if (key in dom) patch[key] = dom[key]
     this.state = { ...this.state, ...patch }
     this._notify()
   }
@@ -79,184 +59,206 @@ export default class TauriSource {
     this._invoke = invoke
     try {
       this._mergeDomain(await invoke('get_state'))
-    } catch (e) {
-      console.error('[musubi] get_state failed:', e)
+    } catch (error) {
+      console.error('[musubi] get_state failed:', error)
     }
-    this._unlisten = await listen('state://update', (ev) => this._mergeDomain(ev.payload))
+    this._unlisten = await listen('state://update', (event) => this._mergeDomain(event.payload))
   }
+
   stop() { if (this._unlisten) { this._unlisten(); this._unlisten = null } }
 
   _action(kind, args) {
     if (!this._invoke) return
-    this._invoke('action', { kind, args: args || [] }).catch((e) => console.error('[musubi] action ' + kind + ' failed:', e))
+    this._invoke('action', { kind, args: args || [] })
+      .catch((error) => console.error('[musubi] action ' + kind + ' failed:', error))
+  }
+
+  _recipePayload() {
+    const builder = this.state.pipelineBuilder
+    return {
+      ...createPipelineDraft(builder.draft),
+      resolvedContracts: structuredClone(builder.savedRecipe?.resolvedContracts || []),
+      findings: structuredClone(builder.findings || []),
+    }
   }
 
   get actions() {
     if (this._actions) return this._actions
     const local = (patch) => () => this._setLocal(patch)
     this._actions = {
-      // client-side navigation / UI
-      setView: (v) => this._setLocal({ view: v }),
-      selectAgent: (h) => this._setLocal({ view: 'orchestrator', selected: h, selectedSession: null }),
-      // Choose a durable chat session (including driver-only sessions). Clear
-      // any per-worker selection and let the backend swap the exact chat ID.
+      setView: (view) => this._setLocal({ view }),
+      selectAgent: (handle) => this._setLocal({ view: 'orchestrator', selected: handle, selectedSession: null }),
       selectSession: (id) => {
         this._setLocal({
-          view: 'orchestrator',
-          selectedSession: id,
-          selected: null,
-          chat: [],
-          draft: '',
-          processOpen: false,
-          logWindowOpen: false,
+          view: 'orchestrator', selectedSession: id, selected: null, chat: [],
+          draft: '', processOpen: false, logWindowOpen: false,
         })
         this._action('select_session', [id])
       },
-      selectPipeSession: (id) => this._setLocal({ view: 'pipeline', selectedPipeSession: id }),
       clearSelect: local({ selected: null, selectedSession: null }),
-      setAuditFilter: (f) => this._setLocal({ auditFilter: f }),
+      setAuditFilter: (auditFilter) => this._setLocal({ auditFilter }),
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
       openProcessLog: () => this._setLocal({ logWindowOpen: true }),
       closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
       clearDriverChat: () => {
         if (this.state.driverStatus?.running) return
-        // Clear the conversation only. The Orchestrator run history
-        // (subagents / agentTurns) is the append-only audit and stays put.
         this._setLocal({
-          chat: [],
-          selected: null,
-          draft: '',
-          processOpen: false,
-          logWindowOpen: false,
-          driverStatus: emptyDriverStatus(),
+          chat: [], selected: null, draft: '', processOpen: false,
+          logWindowOpen: false, driverStatus: emptyDriverStatus(),
         })
         this._action('clear_driver_chat', ['orchestrator'])
       },
-      clearPipeDriverChat: () => {
-        if (this.state.driverStatus?.running) return
-        this._setLocal({
-          pipeChat: [],
-          pipeDraft: '',
-          selectedPipeSession: null,
-          processOpen: false,
-          logWindowOpen: false,
-          driverStatus: emptyDriverStatus(),
-        })
-        this._action('clear_driver_chat', ['pipeline'])
-      },
-      // New session: re-mint the surface's chat_id so the agent replays no
-      // prior history (unlike clear, which only wipes the visible chat). Old
-      // turns stay under the previous id.
       newSession: () => {
         if (this.state.driverStatus?.running) return
         this._setLocal({
-          chat: [],
-          orchestratorChatId: '__pending_orchestrator_session__',
-          selected: null,
-          draft: '',
-          processOpen: false,
-          logWindowOpen: false,
-          driverStatus: emptyDriverStatus(),
+          chat: [], orchestratorChatId: '__pending_orchestrator_session__',
+          selected: null, draft: '', processOpen: false, logWindowOpen: false,
+          driverStatus: emptyDriverStatus(), runMode: 'direct', selectedPipeline: '',
         })
         this._action('new_session', ['orchestrator'])
       },
-      newPipeSession: () => {
-        if (this.state.driverStatus?.running) return
-        this._setLocal({
-          pipeChat: [],
-          pipelineChatId: '__pending_pipeline_session__',
-          pipeDraft: '',
-          selectedPipeSession: null,
-          processOpen: false,
-          logWindowOpen: false,
-          driverStatus: emptyDriverStatus(),
-        })
-        this._action('new_session', ['pipeline'])
-      },
-      onDraft: (e) => this._setLocal({ draft: e.target.value }),
-      onDraftKey: (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
+      onDraft: (event) => this._setLocal({ draft: event.target.value }),
+      onDraftKey: (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault()
           if (!this.state.driverStatus?.running) this.actions.sendChat()
         }
       },
-      onPipeDraft: (e) => this._setLocal({ pipeDraft: e.target.value }),
-      onPipeDraftKey: (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          if (!this.state.driverStatus?.running) this.actions.sendPipelineTask()
-        }
+      setRunMode: (mode) => {
+        if (mode !== 'direct' && mode !== 'pipeline') return
+        this._setLocal({ runMode: mode, selectedPipeline: mode === 'direct' ? '' : this.state.selectedPipeline })
       },
-      // backend-mutating actions
+      selectPipeline: (name) => {
+        if (!(this.state.pipelineCatalog || []).some((entry) => entry.name === name)) return
+        this._setLocal({ runMode: 'pipeline', selectedPipeline: name })
+      },
       cancelAgent: () => this._action('cancel_agent'),
-      selectProfile: (n) => this._action('select_profile', [n]),
+      selectProfile: (name) => this._action('select_profile', [name]),
       sendChat: () => {
-        const d = (this.state.draft || '').trim()
-        if (!d) return
-        const requestedChatId = this.state.selectedSession || ''
-        const command = classifyChatCommand(d)
-        if (command.kind === 'openPipelinePicker') {
-          this._setLocal({ draft: '', view: 'pipeline' })
-          this._action('pipeline_hint', [d, requestedChatId])
+        const text = String(this.state.draft || '').trim()
+        if (!text) return
+        const requestedChatId = this.state.viewedOrchestratorChatId || this.state.selectedSession || ''
+        const command = classifyChatCommand(text)
+        const namedPipeline = text.match(/^(?:\/pipeline|pipeline|run\s+pipeline)\s+([a-z0-9]+(?:-[a-z0-9]+)*)$/i)?.[1]?.toLowerCase()
+        if (command.kind === 'openPipelinePicker' || namedPipeline) {
+          const selected = namedPipeline
+            ? (this.state.pipelineCatalog || []).find((entry) => entry.name === namedPipeline)?.name
+            : this.state.selectedPipeline
+          this._setLocal({ draft: '', runMode: 'pipeline', selectedPipeline: selected || '' })
           return
         }
-        // Sending a new request focuses the run it starts: drop any manually
-        // chosen session so the new running run reclaims the main panel.
+        const mode = this.state.runMode === 'pipeline' ? 'pipeline' : 'direct'
+        const pipelineName = mode === 'pipeline' ? this.state.selectedPipeline : ''
+        if (mode === 'pipeline') {
+          const entry = (this.state.pipelineCatalog || []).find((item) => item.name === pipelineName)
+          if (!entry?.runnable) return
+        }
         this._setLocal({ draft: '', selectedSession: null, selected: null })
-        this._action('send_chat', [d, requestedChatId])
-      },
-      sendPipelineTask: () => {
-        const d = (this.state.pipeDraft || '').trim()
-        if (!d) return
-        const entry = (this.state.pipelineCatalog || []).find((item) => item.name === this.state.pipeName)
-        if (this.state.pipeModified || !entry?.runnable) return
-        this._setLocal({ pipeDraft: '', selectedPipeSession: null })
-        this._action('send_pipeline_task', [d, this.state.pipeName])
+        this._action('send_chat', [text, requestedChatId, mode, pipelineName])
       },
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
-      // Pipeline studio composer — pure client-side UI state (see DOMAIN_KEYS).
-      addPipe: (role) => this._setLocal({
-        pipeSteps: [...this.state.pipeSteps, { uid: this._nextPipeUid(), role, status: 'idle', handle: null }],
-        pipeModified: true,
+
+      newPipelineRecipe: () => this._setLocal({
+        pipelineBuilder: requestTransition(this.state.pipelineBuilder, { type: 'new' }),
       }),
-      removePipe: (uid) => this._setLocal({
-        pipeSteps: this.state.pipeSteps.filter((st) => st.uid !== uid),
-        pipeModified: true,
+      closePipelineRecipe: () => this._setLocal({
+        pipelineBuilder: requestTransition(this.state.pipelineBuilder, { type: 'close' }),
       }),
-      movePipe: (uid, dir) => {
-        const steps = [...this.state.pipeSteps]
-        const i = steps.findIndex((st) => st.uid === uid)
-        const j = i + dir
-        if (i < 0 || j < 0 || j >= steps.length) return
-        const moved = steps.splice(i, 1)[0]
-        steps.splice(j, 0, moved)
-        this._setLocal({ pipeSteps: steps, pipeModified: true })
+      selectPipelineBuilderStep: (step) => this._setBuilder({ step }),
+      selectPipelineStage: (selectedStageIndex) => this._setBuilder({ selectedStageIndex }),
+      addPipelineStage: (stage, index) => this._setBuilder({ draft: addStage(this.state.pipelineBuilder.draft, stage, index) }),
+      movePipelineStage: (fromIndex, toIndex) => this._setBuilder({ draft: moveStage(this.state.pipelineBuilder.draft, fromIndex, toIndex) }),
+      removePipelineStage: (index) => this._setBuilder({
+        draft: removeStage(this.state.pipelineBuilder.draft, index),
+        selectedStageIndex: this.state.pipelineBuilder.selectedStageIndex === index ? null : this.state.pipelineBuilder.selectedStageIndex,
+      }),
+      updatePipelineStage: (index, patch) => this._setBuilder({ draft: updateStage(this.state.pipelineBuilder.draft, index, patch) }),
+      addPipelineSpawn: (index, role) => this._setBuilder({
+        draft: setStageSpawns(this.state.pipelineBuilder.draft, index, [
+          ...(this.state.pipelineBuilder.draft.stages[index]?.spawns || []), role,
+        ]),
+      }),
+      removePipelineSpawn: (index, role) => this._setBuilder({
+        draft: setStageSpawns(
+          this.state.pipelineBuilder.draft,
+          index,
+          (this.state.pipelineBuilder.draft.stages[index]?.spawns || [])
+            .filter((item) => item !== String(role || '').trim().toLowerCase()),
+        ),
+      }),
+      confirmPipelineTransition: () => this._setLocal({ pipelineBuilder: confirmTransition(this.state.pipelineBuilder) }),
+      cancelPipelineTransition: () => this._setLocal({ pipelineBuilder: cancelTransition(this.state.pipelineBuilder) }),
+      loadPipelineRecipe: async (name) => {
+        if (!this._invoke) return
+        this._setBuilder({ loading: true })
+        try {
+          const recipe = await this._invoke('load_pipeline_recipe', { name })
+          const next = requestTransition(this.state.pipelineBuilder, { type: 'switch', recipe })
+          this._setLocal({
+            pipelineBuilder: {
+              ...next,
+              savedRecipe: next.pendingTransition ? this.state.pipelineBuilder.savedRecipe : structuredClone(recipe),
+              findings: structuredClone(recipe.findings || []), loading: false,
+            },
+          })
+        } catch (error) {
+          this._setBuilder({ loading: false, findings: [errorFinding(error, 'load')] })
+        }
       },
-      loadPreset: (name) => {
-        const entry = (this.state.pipelineCatalog || []).find((item) => item.name === name)
-        if (!entry) return
-        this._setLocal({ pipeName: name, pipeSteps: this._stepsFromRoles(entry.stages), pipeModified: false })
+      validatePipelineRecipe: async () => {
+        if (!this._invoke) return
+        const recipe = this._recipePayload()
+        this._setBuilder({ loading: true })
+        try {
+          const findings = await this._invoke('validate_pipeline_recipe', { recipe })
+          this._setBuilder({ loading: false, findings: structuredClone(findings || []) })
+        } catch (error) {
+          this._setBuilder({ loading: false, findings: [errorFinding(error, 'validate')] })
+        }
+      },
+      savePipelineRecipe: async () => {
+        if (!this._invoke) return
+        const recipe = this._recipePayload()
+        this._setBuilder({ loading: true })
+        try {
+          const result = await this._invoke('save_pipeline_recipe', { recipe })
+          this._setBuilder({
+            loading: false, saveResult: structuredClone(result),
+            findings: structuredClone(result.findings || []),
+            savedRecipe: result.saved ? structuredClone(recipe) : this.state.pipelineBuilder.savedRecipe,
+          })
+        } catch (error) {
+          this._setBuilder({
+            loading: false,
+            saveResult: { saved: false, catalogRefreshed: false, path: '', findings: [], error: errorMessage(error) },
+          })
+        }
       },
     }
     return this._actions
   }
 }
 
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function errorFinding(error, step) {
+  return { severity: 'error', step, field: '', message: errorMessage(error) }
+}
+
 function emptySetupStatus() {
   const cli = { found: false, path: '', hint: '' }
   return {
-    projectRoot: '',
-    auditDbPath: '',
-    auditDbSource: 'none',
-    pythonCli: { found: false, path: '', hint: '' },
-    musubiCli: cli,
-    agentCli: cli,
-    llmConfigPath: '',
-    llmConfigured: false,
-    pathHint: '',
+    projectRoot: '', auditDbPath: '', auditDbSource: 'none',
+    pythonCli: { found: false, path: '', hint: '' }, musubiCli: cli,
+    agentCli: cli, llmConfigPath: '', llmConfigured: false, pathHint: '',
   }
 }
 
 function emptyDriverStatus() {
-  return { running: false, chatId: '', surface: 'orchestrator', pipelineName: '', terminalStatus: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '' }
+  return {
+    running: false, chatId: '', surface: 'orchestrator', pipelineName: '',
+    terminalStatus: '', task: '', startedAt: null, stdoutTail: '', stderrTail: '',
+  }
 }
