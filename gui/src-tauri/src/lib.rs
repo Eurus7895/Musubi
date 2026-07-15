@@ -22,7 +22,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tauri::{Emitter, Manager};
 
 struct AppState {
@@ -40,9 +40,6 @@ struct AppState {
     // Optional read-only history focus. Never owns a running process or future
     // messages; it only chooses which orchestrator chat snapshot is displayed.
     viewed_orchestrator_chat_id: Mutex<Option<String>>,
-    // Pipeline studio session id (gui-pipeline-*-<nonce>). Same single process
-    // slot, but its own conversation history + run scope.
-    pipeline_chat_id: Mutex<String>,
 }
 
 #[derive(Default)]
@@ -108,8 +105,8 @@ fn insert_chat(
     .map_err(|e| e.to_string())
 }
 
-/// Normalize a caller-supplied surface to one of the two known values,
-/// defaulting to the Orchestrator.
+/// Normalize persisted legacy labels while keeping all new mutations owned by
+/// the Orchestrator action paths below.
 fn surface_arg(raw: &str) -> &'static str {
     if raw == "pipeline" {
         "pipeline"
@@ -1269,32 +1266,34 @@ fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> 
     Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
 }
 
-fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>, String), String> {
+fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>), String> {
     let orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
     let viewed_orchestrator_chat_id = state
         .viewed_orchestrator_chat_id
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    let pipeline_chat_id = state
-        .pipeline_chat_id
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
-    Ok((
-        orchestrator_chat_id,
-        viewed_orchestrator_chat_id,
-        pipeline_chat_id,
-    ))
+    Ok((orchestrator_chat_id, viewed_orchestrator_chat_id))
+}
+
+fn load_legacy_pipeline_chat_id(conn: &Connection) -> Result<String, String> {
+    conn.query_row(
+        "SELECT chat_id FROM chat_log WHERE surface='pipeline' ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map(|value| value.unwrap_or_default())
+    .map_err(|e| e.to_string())
 }
 
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     // Snapshot the independently guarded session selectors before opening the
     // database read boundary. Mutation paths may hold one of these guards
     // before acquiring `db`; nesting them in the opposite order can deadlock.
-    let (orchestrator_chat_id, viewed_orchestrator_chat_id, pipeline_chat_id) =
-        snapshot_session_ids(state)?;
+    let (orchestrator_chat_id, viewed_orchestrator_chat_id) = snapshot_session_ids(state)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let pipeline_chat_id = load_legacy_pipeline_chat_id(&conn)?;
     let state_conn = state
         .state_db
         .as_ref()
@@ -1550,58 +1549,38 @@ fn action(
             )?;
         }
         "clear_driver_chat" => {
-            let surface = surface_arg(&str_arg(0));
-            let chat_id = if surface == "pipeline" {
-                state.pipeline_chat_id.lock()
-            } else {
-                state.chat_id.lock()
-            }
-            .map_err(|e| e.to_string())?
-            .clone();
+            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            clear_driver_chat_log(&conn, &mut rt, surface, &chat_id)?;
+            clear_driver_chat_log(&conn, &mut rt, "orchestrator", &chat_id)?;
         }
-        // Fresh session: re-mint the surface's chat_id so the agent's replay
+        // Fresh Orchestrator session: re-mint its chat_id so the agent's replay
         // history starts empty. Old turns stay under the previous chat_id.
         "new_session" => {
-            let surface = surface_arg(&str_arg(0));
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            let slot = if surface == "pipeline" {
-                &state.pipeline_chat_id
-            } else {
-                &state.chat_id
-            };
             new_driver_session(
                 &conn,
                 &mut rt,
-                slot,
+                &state.chat_id,
                 &state.viewed_orchestrator_chat_id,
                 &state.project_root,
-                surface,
+                "orchestrator",
             )?;
         }
         "open_artifact" => {
             let raw_path = str_arg(0);
-            let surface = surface_arg(&str_arg(1));
             match open_workspace_path(&state.project_root, &raw_path) {
                 Ok(_) => {}
                 Err(e) => {
-                    let chat_id = if surface == "pipeline" {
-                        state.pipeline_chat_id.lock()
-                    } else {
-                        state.chat_id.lock()
-                    }
-                    .map_err(|err| err.to_string())?
-                    .clone();
+                    let chat_id = state.chat_id.lock().map_err(|err| err.to_string())?.clone();
                     let conn = state.db.lock().map_err(|err| err.to_string())?;
                     insert_chat(
                         &conn,
                         "driver",
                         Some("deny"),
                         &artifact_open_failed_message(&raw_path, &e),
-                        surface,
+                        "orchestrator",
                         &chat_id,
                     )?;
                 }
@@ -1627,23 +1606,17 @@ pub fn run() {
             [],
         );
     }
-    // Continue the persisted session for each surface (option a: restart resumes
-    // the current session); mint on first use.
+    // Continue the persisted Orchestrator session (option a: restart resumes
+    // the current session); mint on first use. Pipeline Studio is builder-only
+    // and therefore owns no live session nonce.
     let chat_nonce = load_or_mint_session_nonce(&opened.conn, "orchestrator")
         .expect("failed to persist orchestrator session nonce");
-    let pipe_nonce = load_or_mint_session_nonce(&opened.conn, "pipeline")
-        .expect("failed to persist pipeline session nonce");
     let chat_id = scoped_chat_id(&opened.project_root, "orchestrator", &chat_nonce);
-    let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline", &pipe_nonce);
     // Pre-session rows can only belong to the session that was active when the
     // migration ran. Backfill once; future rows are written with their owner.
     let _ = opened.conn.execute(
         "UPDATE chat_log SET chat_id=?1 WHERE surface='orchestrator' AND chat_id=''",
         [&chat_id],
-    );
-    let _ = opened.conn.execute(
-        "UPDATE chat_log SET chat_id=?1 WHERE surface='pipeline' AND chat_id=''",
-        [&pipeline_chat_id],
     );
     tauri::Builder::default()
         .manage(AppState {
@@ -1655,7 +1628,6 @@ pub fn run() {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new(chat_id),
             viewed_orchestrator_chat_id: Mutex::new(None),
-            pipeline_chat_id: Mutex::new(pipeline_chat_id),
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -1695,7 +1667,6 @@ mod tests {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new("gui-orchestrator-project-active".into()),
             viewed_orchestrator_chat_id: Mutex::new(Some("gui-orchestrator-project-viewed".into())),
-            pipeline_chat_id: Mutex::new("gui-pipeline-project-active".into()),
         };
         let _db_guard = state.db.lock().unwrap();
 
@@ -1703,7 +1674,32 @@ mod tests {
 
         assert_eq!(ids.0, "gui-orchestrator-project-active");
         assert_eq!(ids.1.as_deref(), Some("gui-orchestrator-project-viewed"));
-        assert_eq!(ids.2, "gui-pipeline-project-active");
+    }
+
+    #[test]
+    fn legacy_pipeline_chat_id_is_read_without_minting_a_new_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','pipeline','gui-pipeline-project-old'),
+             ('new','driver','old result','pipeline','gui-pipeline-project-latest')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_legacy_pipeline_chat_id(&conn).unwrap(),
+            "gui-pipeline-project-latest"
+        );
+        let nonce_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key='session_nonce.pipeline'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nonce_count, 0);
     }
 
     #[test]
@@ -1845,23 +1841,6 @@ mod tests {
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator").unwrap();
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
-    }
-
-    #[test]
-    fn new_pipeline_session_preserves_viewed_orchestrator_history() {
-        let conn = Connection::open_in_memory().unwrap();
-        musubi_data::init_schema(&conn).unwrap();
-        let root = Path::new("/tmp/musubi-new-pipeline-session-test");
-        let slot = Mutex::new("gui-pipeline-project-old".to_string());
-        let viewed = Mutex::new(Some("gui-orchestrator-project-history".to_string()));
-        let mut rt = ChatAgentRuntime::default();
-
-        new_driver_session(&conn, &mut rt, &slot, &viewed, root, "pipeline").unwrap();
-
-        assert_eq!(
-            viewed.lock().unwrap().as_deref(),
-            Some("gui-orchestrator-project-history")
-        );
     }
 
     #[test]
@@ -2656,7 +2635,10 @@ mod tests {
         }
         assert!(!source.contains("\"send_pipeline_task\" =>"));
         assert!(!source.contains("\"pipeline_hint\" =>"));
-        assert!(source.contains("load_pipeline_chat_for_session"));
+        assert!(!source.contains(&["pipeline_chat_id", ": Mutex"].concat()));
+        assert!(!source
+            .contains(&["load_or_mint_session_nonce(&opened.conn, ", "\"pipeline\")"].concat()));
+        assert!(source.contains(&["fn load_legacy_", "pipeline_chat_id("].concat()));
     }
 
     fn copy_tree(source: &Path, target: &Path) {

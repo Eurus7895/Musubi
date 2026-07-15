@@ -75,7 +75,7 @@ each row as an `ALLOW`, and `denyCount` is `0` against a real DB.
 | `pipeline` | TEXT | |
 | `agent` | TEXT | requesting agent → `role` |
 | `tool` | TEXT | the executed tool |
-| `args_json`, `result_hash` | TEXT | not surfaced |
+| `args_json`, `result_hash` | TEXT | raw values are never surfaced; only a sanitized `skill_id` from successful `musubi_get_skill` calls may be projected as provenance |
 | `status` | TEXT | shown as the decision `reason` |
 
 ### `policy_audit` — optional verdict ledger (console / forward-compat)
@@ -116,6 +116,10 @@ deleting any rows. While the driver is busy, selection changes only
 nonce ownership remain unchanged, and the viewed session is read-only until
 the driver is idle.
 
+Legacy `surface = 'pipeline'` rows remain readable for compatibility. Pipeline
+Studio no longer writes chat rows or launches a process; new pipeline runs use
+an Orchestrator chat ID.
+
 ### `meta` — key/value (GUI-side)
 
 | key | meaning |
@@ -134,26 +138,30 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 
 | UI surface | source |
 |---|---|
-| Orchestrator cohort | `subagent_audit` folded per `handle_id` |
-| Orchestrator counts (running/completed) | derived from `final_status` |
+| Orchestrator runtime graph | selected root turn, `subagent_audit`, and Orchestrator-scoped pipeline envelopes/stages |
+| Orchestrator runtime logs | `agent_cycles`, safe `toolEvidence`, policy rows, and lifecycle evidence filtered by selected node |
+| Orchestrator skill provenance | successful `musubi_get_skill` rows only, with sanitized identifiers and exact worker correlation only when `(session, role)` is unambiguous |
 | Policy stream + allow/deny tallies | `policy_audit` if it has rows, else `tool_audit` |
 | Audit ledger | `subagent_audit` (newest first, capped 120) |
 | Models active profile | `meta.active_profile` → `.musubi/llm.json` `default` |
 | Settings first-run status | runtime discovery of Python, `musubi`, `agent`, `.musubi/llm.json`, and audit DB |
 | Driver chat | `chat_log` |
-| Pipeline studio catalog | registered deterministic recipes under `.github/pipelines/` |
-| Pipeline studio runs | finalized/live `pipeline_runs` from the read-only sibling `musubi.db`, joined through the `pipeline:<name>` audit envelope. The outer driver's durable `pipeline_runs.chat_id` scopes an active or halted run before `agent_turns` exists; completed turns use `agent_turns.chat_id` as a compatible fallback. Child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id`. Only an envelope handle is a displayed run; the outer driver session row is excluded. |
+| Pipeline Studio builder | registered deterministic recipes under `.github/pipelines/`, resolved preset/agent contracts, and local unsaved draft state |
+| Orchestrator pipeline runs | finalized/live `pipeline_runs` from the read-only sibling `musubi.db`, joined through the `pipeline:<name>` audit envelope. The outer driver's durable `pipeline_runs.chat_id` scopes an active or halted run before `agent_turns` exists; completed turns use `agent_turns.chat_id` as a compatible fallback. Child stages come from `subagent_audit.parent_session_id = pipeline_runs.session_id`. Only an envelope handle is a displayed run; the outer driver session row is excluded. |
 
 ## State shape (Rust → JSON → `buildViewModel`)
 
 `load_state()` serialises to camelCase JSON matching the frontend domain state:
-`subagents[]`, `policy[]`, `audit[]`, `chat[]`, `totalSpawned`, `totalDone`,
-`allowCount`, `denyCount`, `activeProfile`, `pipeSteps[]`, … The frontend derives
-all presentation (colours, chips) from `role`/`status`, so the backend only
-supplies domain fields. See `musubi-data/src/lib.rs` and its tests.
+`subagents[]`, `policy[]`, `audit[]`, `chat[]`, `agentCycles[]`,
+`toolEvidence[]`, `pipelineRuns[]`, `pipelineBuilderCatalog`, `totalSpawned`,
+`totalDone`, `allowCount`, `denyCount`, and `activeProfile`. The frontend
+derives runtime graph and log presentation from these domain fields. Raw tool
+arguments and results never cross this boundary; ambiguous tool evidence is
+left unassigned rather than guessed. See `musubi-data/src/lib.rs` and its tests.
 
 The snapshot also exposes `orchestratorChatId`,
-`viewedOrchestratorChatId`, `pipelineChatId`, `orchestratorSessions[]`, and
+`viewedOrchestratorChatId`, legacy `pipelineChatId`,
+`orchestratorSessions[]`, and
 `driverStatus.chatId`. `orchestratorChatId` is the active Orchestrator session
 and owner of future writes; `viewedOrchestratorChatId` is the optional
 navigation target; and `driverStatus.chatId` is the exact owner of the live or

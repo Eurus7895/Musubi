@@ -64,9 +64,10 @@ The UI is desktop-only. `TauriSource` connects through native IPC to the Rust
 core, which reads `audit.db` and emits domain snapshots. The backend contract
 (SQLite schema and JSON shape) is in [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md).
 
-The Rust shell owns one shared driver process per project. Explicit
-Orchestrator or Pipeline Studio submission launches the standalone Python
-driver; the React/Tauri shell does not call a model directly.
+The Rust shell owns one shared driver process per project. Only an explicit
+Orchestrator submission launches the standalone Python driver; the React/Tauri
+shell does not call a model directly. Pipeline Studio only edits registered
+recipes and never owns runtime execution.
 
 The Rust reader and its tests are in `src-tauri/musubi-data/`:
 
@@ -78,24 +79,32 @@ npm run test:data
 
 The sections backed by the Tauri backend:
 
-- **Orchestrator**: the driver knot spawning governed sub-agents over a woven
-  net; each card shows model, spawn-order badge, turn cap, and wall-clock
-  budget. The active chat ID is the durable Orchestrator resume target, while a
-  different viewed chat ID may expose historical chat and worker flow
-  read-only. Once the shared driver is idle, the first follow-up to that viewed
-  session atomically validates and promotes its exact ID, persists the message,
-  and launches the driver. `driverStatus.chatId` is the exact process owner;
-  only the active owning session may cancel a run. The serialized
+- **Orchestrator**: the only Console execution surface. Direct mode launches a
+  worker run; Pipeline mode launches an explicitly selected runnable recipe
+  under the same durable conversation. The center workspace separates minimal
+  runtime topology from evidence: selecting a node opens its filtered logs,
+  while Conversation owns narrative summaries and artifacts. Skill badges are
+  derived only from successful audited skill calls. Graph edges mean
+  "summoned" and do not assert sequential or parallel execution. The active
+  chat ID is the durable resume target, while a different viewed chat ID may
+  expose historical chat and runtime evidence read-only. Once the shared
+  driver is idle, the first follow-up to that viewed session atomically
+  validates and promotes its exact ID, persists the message, and launches the
+  driver. `driverStatus.chatId` is the exact process owner; only the active
+  owning session may cancel a run. The serialized
   `orchestratorChatId`, `viewedOrchestratorChatId`,
   `orchestratorSessions[]`, and `driverStatus.chatId` fields are documented in
   [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).
-- **Pipeline studio**: a preset composer / inspector — select a registered
-  recipe (a pipeline built from presets), inspect its ordered stage chain,
-  enter a brief, and explicitly choose **Run**. Studio launches the recipe
-  directly; it is not inferred by the root agent from an Orchestrator message.
-  Stage workers stream into the Pipeline Studio and Audit views. The deterministic
-  CLI equivalent is `agent "<brief>" --pipeline <name>`. Exact serialized
-  catalog, run, chat, and process-ownership fields are documented in
+- **Pipeline studio**: a builder-only workspace with Basics, Stages, Handoffs,
+  and Validate steps. Create a pipeline, drag presets or agents into its ordered
+  primary stage chain, reorder and inspect stages, configure each stage's
+  `spawns` allowlist, validate, then save atomically to
+  `.github/pipelines/<name>/pipeline.yaml`. Primary stages run sequentially;
+  nested workers summoned in the same worker turn may run in parallel. Studio
+  has no chat, Run button, process ownership, or runtime history. Execute a
+  saved recipe from Orchestrator Pipeline mode or with
+  `agent "<brief>" --pipeline <name>`. Exact serialized catalog and builder
+  fields are documented in
   [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).
 - **Policy**: fail-closed PreToolUse allow/deny stream and role tool surfaces.
 - **Audit**: append-only ledger, filterable by event type.

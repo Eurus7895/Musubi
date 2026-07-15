@@ -2,7 +2,7 @@
 // the flat view-model the React views render. Colours are derived from
 // role/status here, so the backend only needs to supply domain fields.
 import {
-  statusMeta, pipeCatalog, policyRoleDefs, profileDefs, skillDefs,
+  statusMeta, policyRoleDefs, profileDefs, skillDefs,
   hueFor, modelColorFor,
 } from './data.js'
 import { roleChip, navStyle, auditBtn } from './styleHelpers.js'
@@ -40,10 +40,6 @@ function driverBelongsToSession(status, surface, currentChatId) {
   return status?.surface === surface
     && !!currentChatId
     && status?.chatId === currentChatId
-}
-
-function isTerminalStatus(status) {
-  return ['success', 'aborted', 'escalated', 'budget_halted', 'failed'].includes(status)
 }
 
 function groupRuns(subagents, agentTurns = [], driverStatus = {}, surface = 'orchestrator', currentChatId = '') {
@@ -331,12 +327,10 @@ export function buildViewModel(s, act) {
   const allSubagents = s.subagents || []
   const allAgentTurns = s.agentTurns || []
   const orchestratorChatId = s.orchestratorChatId || ''
-  const pipelineChatId = s.pipelineChatId || ''
   const orchestratorSessions = s.orchestratorSessions || []
   const hasSessionIndex = orchestratorSessions.length > 0
   const orchSubagents = allSubagents.filter((a) => belongsToSurface(a, 'orchestrator', hasSessionIndex ? '' : orchestratorChatId))
   const orchAgentTurns = allAgentTurns.filter((t) => belongsToSurface(t, 'orchestrator', hasSessionIndex ? '' : orchestratorChatId))
-  const pipeSubagents = allSubagents.filter((a) => belongsToSurface(a, 'pipeline', pipelineChatId))
   const workerOrder = new Map(orchSubagents.map((a, i) => [a.handle, i + 1]))
   const selectedAgent = orchSubagents.find((a) => a.handle === s.selected)
   const latestAgent = orchSubagents[orchSubagents.length - 1]
@@ -345,9 +339,7 @@ export function buildViewModel(s, act) {
   const driverSurface = driverStatusForRuns.surface || 'orchestrator'
   const driverRunning = !!driverStatusForRuns.running
   const driverBelongsToOrchestrator = driverBelongsToSession(driverStatusForRuns, 'orchestrator', orchestratorChatId)
-  const driverBelongsToPipeline = driverBelongsToSession(driverStatusForRuns, 'pipeline', pipelineChatId)
   const orchestratorOwnsDriver = driverRunning && driverBelongsToOrchestrator
-  const pipelineOwnsDriver = driverRunning && driverBelongsToPipeline
   const viewingHistoricalSession = Boolean(
     s.selectedSession
     && orchestratorChatId
@@ -360,48 +352,7 @@ export function buildViewModel(s, act) {
   const runsRaw = hasSessionIndex
     ? groupOrchestratorSessions(orchestratorSessions, orchSubagents, orchAgentTurns, driverStatusForRuns)
     : groupRuns(orchSubagents, orchAgentTurns, driverStatusForRuns, 'orchestrator', orchestratorChatId)
-  const pipeRunsRaw = (s.pipelineRuns || [])
-    .filter((run) => belongsToSurface(run, 'pipeline', pipelineChatId))
-    .map((run, index) => ({
-      id: run.sessionId,
-      steps: run.stages || [],
-      recency: Number(run.startedAt || 0),
-      lastIndex: index,
-      status: run.status || 'running',
-      pipelineName: run.pipelineName || 'pipeline',
-      brief: run.brief || '',
-    }))
-    .sort((a, b) => (b.recency - a.recency) || (b.lastIndex - a.lastIndex))
-  // A pipeline's durable lifecycle row wins once finalized. The one exception
-  // is the precise budget-halt reason: it is emitted by the exited driver and
-  // refines the state store's broader `escalated` outcome for the same run.
-  const exitedPipelineStatus = !driverRunning && driverBelongsToPipeline
-    ? driverStatusForRuns.terminalStatus
-    : ''
-  if (isTerminalStatus(exitedPipelineStatus)) {
-    const pendingOrEscalated = pipeRunsRaw.find((run) => run.status === 'running'
-      || (run.status === 'escalated' && exitedPipelineStatus === 'budget_halted'))
-    if (pendingOrEscalated) pendingOrEscalated.status = exitedPipelineStatus
-  }
-  // The process overlay bridges only the short interval before the runner has
-  // appended its audited envelope. Once a real run exists, preserve its ID and
-  // terminal status instead of manufacturing a second history card.
-  if (pipelineOwnsDriver && pipeRunsRaw.length === 0) {
-    pipeRunsRaw.unshift({
-      id: `driver-running-${driverStatusForRuns.startedAt || 'now'}`,
-      steps: [],
-      recency: Number.MAX_SAFE_INTEGER,
-      lastIndex: Number.MAX_SAFE_INTEGER,
-      live: true,
-      status: 'running',
-      pipelineName: driverStatusForRuns.pipelineName || s.pipeName || 'pipeline',
-      brief: driverStatusForRuns.task || '',
-      task: driverStatusForRuns.task || '',
-    })
-  }
-  const pipeWorkerOrder = new Map(pipeSubagents.map((a, i) => [a.handle, i + 1]))
   const runningRun = runsRaw.find((run) => statusForRun(run) === 'running')
-  const runningPipeRun = pipeRunsRaw.find((run) => statusForRun(run) === 'running')
   // A session the user explicitly clicked (honoured only while it still exists).
   const chosenSession = s.selectedSession && runsRaw.some((run) => run.id === s.selectedSession)
     ? s.selectedSession
@@ -426,20 +377,7 @@ export function buildViewModel(s, act) {
   const processTextForRuns = driverBelongsToOrchestrator
     ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
     : ''
-  const processTextForPipeRuns = driverBelongsToPipeline
-    ? [driverStatusForRuns.stderrTail, driverStatusForRuns.stdoutTail].filter(Boolean).join('\n')
-    : ''
   const activeRunStatus = activeRunRaw ? statusForRun(activeRunRaw) : 'abandoned'
-  const chosenPipeSession = s.selectedPipeSession && pipeRunsRaw.some((run) => run.id === s.selectedPipeSession)
-    ? s.selectedPipeSession
-    : null
-  const latestPipeAgent = pipeSubagents[pipeSubagents.length - 1]
-  const activePipeSessionId = chosenPipeSession || runningPipeRun?.id || latestPipeAgent?.parentSession || pipeRunsRaw[0]?.id || ''
-  const activePipeRunRaw = pipeRunsRaw.find((run) => run.id === activePipeSessionId)
-  const activePipeSessionAgents = activePipeRunRaw?.steps || []
-  const runningInPipeSession = activePipeSessionAgents.find((a) => a.status === 'running')
-  const currentPipeSessionAgent = runningInPipeSession || activePipeSessionAgents[activePipeSessionAgents.length - 1]
-  const activePipeRunStatus = activePipeRunRaw ? statusForRun(activePipeRunRaw) : 'abandoned'
   // Always list EVERY session (newest first); the main panel focuses the
   // active/chosen one. Chronological run number: oldest is R01, newest highest.
   const runNumberById = new Map()
@@ -469,28 +407,6 @@ export function buildViewModel(s, act) {
       dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
       cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 18px rgba(255,155,61,0.16);' : ''),
       onSelect: () => act.selectSession(run.id),
-    }
-  })
-  const pipeRunNumberById = new Map()
-  pipeRunsRaw.forEach((run, i) => pipeRunNumberById.set(run.id, pipeRunsRaw.length - i))
-  const pipeRuns = pipeRunsRaw.map((run) => {
-    const status = statusForRun(run)
-    const m = sm[status] || sm.abandoned
-    const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
-    const selected = run.id === activePipeSessionId
-    return {
-      id: run.id,
-      orderLabel: 'R' + String(pipeRunNumberById.get(run.id) || 1).padStart(2, '0'),
-      title: run.pipelineName || 'pipeline',
-      subtitle: run.steps.length + ' stages',
-      workerCount: run.steps.length,
-      status,
-      statusLabel: m.label,
-      statusColor: m.color,
-      currentBrief: run.brief || current?.brief || run.task || '',
-      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:10px 11px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 16px rgba(255,155,61,0.14);' : ''),
-      onSelect: () => act.selectPipeSession(run.id),
     }
   })
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
@@ -718,43 +634,6 @@ export function buildViewModel(s, act) {
     })),
   }
 
-  const pipeRoleTotals = activePipeSessionAgents.reduce((acc, agent) => {
-    const role = agent.role || 'worker'
-    acc.set(role, (acc.get(role) || 0) + 1)
-    return acc
-  }, new Map())
-  const pipeRoleSeen = new Map()
-  const pipeRunSteps = activePipeSessionAgents.map((a, i) => {
-    const m = sm[a.status] || sm.abandoned
-    const hue = hueFor(a.role)
-    const isCurrent = a.handle === currentPipeSessionAgent?.handle
-    const stopHint = stopHintFor(a, processTextForPipeRuns)
-    const pct = a.max ? Math.min(100, Math.round(a.turns / a.max * 100)) : 0
-    const role = a.role || 'worker'
-    const totalAttempts = pipeRoleTotals.get(role) || 1
-    const attempt = (pipeRoleSeen.get(role) || 0) + 1
-    pipeRoleSeen.set(role, attempt)
-    return {
-      handle: a.handle,
-      role: a.role,
-      brief: a.brief,
-      status: a.status,
-      statusLabel: m.label,
-      statusColor: m.color,
-      isCurrent,
-      stopHint,
-      attemptLabel: totalAttempts > 1 ? 'attempt ' + attempt + '/' + totalAttempts : '',
-      orderLabel: 'W' + String(pipeWorkerOrder.get(a.handle) || i + 1).padStart(2, '0'),
-      roleChipStyle: roleChip(a.role, hue),
-      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (a.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      barFillStyle: 'height:100%;width:' + pct + '%;background:' + m.color + ';border-radius:3px;transition:width .4s ease',
-      cardStyle: 'position:relative;width:210px;flex-shrink:0;background:#141b27;border:1px solid ' + (isCurrent ? m.color : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:12px 13px;' + (isCurrent ? 'box-shadow:0 0 0 1px ' + m.color + '55,0 0 22px ' + m.color + '22;' : ''),
-      turnsLabel: a.turns + '/' + a.max,
-      toolsLabel: a.tools.length + ' tools',
-      showConnector: i < activePipeSessionAgents.length - 1,
-    }
-  })
-
   const selAgent = orchSubagents.find((a) => a.handle === s.selected)
   let detail = null
   if (selAgent) {
@@ -837,14 +716,6 @@ export function buildViewModel(s, act) {
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
     economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionId),
   }
-  const pipeRunSummary = {
-    title: 'Studio run',
-    countLine: statusCountLine(activePipeSessionAgents),
-    focusLine: focusLineForRun(activePipeSessionAgents, currentPipeSessionAgent),
-    alertLine: runSummary(activePipeRunStatus, processTextForPipeRuns, activePipeRunRaw),
-    metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
-    economics: economicsForSession(s.agentCycles || [], activePipeSessionId),
-  }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
     return {
@@ -868,55 +739,7 @@ export function buildViewModel(s, act) {
       : 'font-family:\'IBM Plex Mono\',monospace;font-size:10px;font-weight:600;color:#8ab4d8;background:rgba(138,180,216,0.1);border:1px solid rgba(138,180,216,0.3);padding:2px 8px;border-radius:5px',
   }))
 
-  // ── pipeline studio view-model ──
-  // Registered recipes run deterministically from Studio. Editing the visual
-  // composition makes it a draft until saved as a workspace pipeline.
-  const stColor = { idle: '#6a6a72', queued: '#e3b341', running: '#ff9b3d', done: '#54c79a' }
-  const editable = true
-  const legacyPipeSteps = s.pipeSteps || []
-  const pipeStepsVM = legacyPipeSteps.map((st, i) => {
-    const cat = pipeCatalog.find((c) => c.role === st.role) || { tools: [], max: 0, hue: '#8a8a92' }
-    const col = stColor[st.status]
-    const prog = st.status === 'done' ? 100 : (st.status === 'running' ? s.pipeProg : 0)
-    return {
-      uid: st.uid, role: st.role, desc: cat.desc, handle: st.handle || '—',
-      orderLabel: String(i + 1).padStart(2, '0'),
-      orderBadge: 'display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border-radius:6px;font-family:\'IBM Plex Mono\',monospace;font-size:10.5px;font-weight:600;color:' + (st.status === 'idle' ? '#9b9ba2' : col) + ';background:' + (st.status === 'idle' ? 'rgba(255,255,255,0.06)' : col + '1f') + ';border:1px solid ' + (st.status === 'idle' ? 'rgba(255,255,255,0.12)' : col + '55'),
-      roleChipStyle: roleChip(st.role, cat.hue),
-      toolsLabel: cat.tools.length + ' tools', maxLabel: 'max ' + cat.max + ' turns',
-      statusLabel: st.status, statusColor: col,
-      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + col + ';' + (st.status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      barFillStyle: 'height:100%;width:' + prog + '%;background:' + col + ';border-radius:3px;transition:width .4s ease',
-      cardStyle: 'position:relative;width:208px;flex-shrink:0;background:#141b27;border:1px solid ' + (st.status === 'running' ? 'rgba(255,155,61,0.55)' : (st.status === 'done' ? 'rgba(84,199,154,0.42)' : 'rgba(255,255,255,0.08)')) + ';border-radius:12px;padding:14px 15px;' + (st.status === 'running' ? 'box-shadow:0 0 22px rgba(255,155,61,0.13);' : ''),
-      showControls: editable, showHandle: (st.status === 'running' || st.status === 'done'),
-      onUp: () => act.movePipe(st.uid, -1), onDown: () => act.movePipe(st.uid, 1), onRemove: () => act.removePipe(st.uid),
-      showConnector: i < legacyPipeSteps.length - 1,
-      connStyle: 'color:' + (st.status === 'done' ? '#54c79a' : '#3a4250'),
-    }
-  })
-  const pipeCatalogVM = pipeCatalog.map((c) => ({
-    role: c.role, desc: c.desc, roleChipStyle: roleChip(c.role, c.hue), toolsLabel: c.tools.length + ' tools',
-    cardStyle: 'text-align:left;width:100%;background:#141b27;border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:11px 13px;cursor:pointer;transition:border-color .14s',
-    onAdd: () => act.addPipe(c.role),
-  }))
-  const pipePresetsVM = (s.pipelineCatalog || []).map((p) => ({
-    name: p.name, countLabel: p.stages.length + ' stages',
-    selected: !!s.pipeName && s.pipeName === p.name,
-    btnStyle: 'display:flex;align-items:center;justify-content:space-between;width:100%;font-family:\'IBM Plex Mono\',monospace;font-size:11px;padding:8px 11px;border-radius:8px;cursor:pointer;background:' + (s.pipeName === p.name ? 'rgba(255,155,61,0.1)' : '#19212f') + ';border:1px solid ' + (s.pipeName === p.name ? 'rgba(255,155,61,0.4)' : 'rgba(255,255,255,0.08)') + ';color:' + (s.pipeName === p.name ? '#ff9b3d' : '#9b9ba2'),
-    onLoad: () => act.loadPreset(p.name),
-  }))
-  const pipeNameLabel = s.pipeName || 'choose preset'
-  const pipeStageOverflowLabel = legacyPipeSteps.length > 3
-    ? `${legacyPipeSteps.length - 3} more stage${legacyPipeSteps.length - 3 === 1 ? '' : 's'} →`
-    : ''
-  const pipeStatusTextForDisplay = s.pipeName
-    ? (s.pipeModified
-        ? 'Draft composition - save it as a registered pipeline before running.'
-        : 'Every Studio message runs ' + s.pipeName + ' directly in this isolated session.')
-    : 'Choose a registered pipeline before running.'
-
   const chatView = buildChatView(s.chat || [])
-  const pipeChatView = buildChatView(s.pipeChat || [])
 
   const sourceLabels = {
     'musubi-db': 'MUSUBI_DB audit.db',
@@ -952,43 +775,9 @@ export function buildViewModel(s, act) {
     driverStatus.stdoutTail ? 'stdout:\n' + driverStatus.stdoutTail.trim() : '',
   ].filter(Boolean).join('\n\n')
   const hasDriverLog = !!driverProcessLog
-  const pipelineHasDriverLog = driverBelongsToPipeline && hasDriverLog
   const orchestratorHasDriverLog = driverBelongsToOrchestrator && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
-  const pipelineBlockedByOrchestrator = driverRunning && !pipelineOwnsDriver
-  const selectedPipeline = (s.pipelineCatalog || []).find((entry) => entry.name === s.pipeName)
-  const pipelineConfigBlocked = !!s.pipeModified || !selectedPipeline?.runnable
-  const pipelineConfigMessage = s.pipeModified
-    ? 'Save this composition as a registered pipeline before running.'
-    : 'Choose a registered pipeline before running.'
-  const pipeChatBody = {
-    chat: pipeChatView,
-    draft: s.pipeDraft || '',
-    onDraft: act.onPipeDraft,
-    onDraftKey: act.onPipeDraftKey,
-    driverBusy: pipelineOwnsDriver,
-    driverTask: (pipelineOwnsDriver || pipelineHasDriverLog) ? (driverStatus.task || '') : '',
-    driverStatusText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active.` : (driverBelongsToPipeline ? driverStatusText : ''),
-    driverProcessOpen: pipelineOwnsDriver && !!s.processOpen,
-    driverProcessLog: pipelineHasDriverLog ? driverProcessLog : '',
-    hasDriverLog: pipelineHasDriverLog,
-    onToggleProcess: act.toggleProcess,
-    logWindowOpen: pipelineHasDriverLog && !!s.logWindowOpen,
-    onOpenLog: act.openProcessLog,
-    onCloseLog: act.closeProcessLog,
-    onNewSession: act.newPipeSession,
-    clearDriverDisabled: !!driverStatus.running,
-    onSend: pipelineOwnsDriver ? act.cancelAgent : act.sendPipelineTask,
-    sendTitle: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active` : (pipelineOwnsDriver ? 'Cancel pipeline' : `Run ${s.pipeName || 'pipeline'}`),
-    sendMode: pipelineOwnsDriver ? 'cancel' : 'send',
-    sendDisabled: pipelineBlockedByOrchestrator || (!pipelineOwnsDriver && pipelineConfigBlocked),
-    inputDisabled: pipelineBlockedByOrchestrator || (!pipelineOwnsDriver && pipelineConfigBlocked),
-    disabledText: pipelineBlockedByOrchestrator ? `${activeSurfaceLabel} run is active...` : ((!pipelineOwnsDriver && pipelineConfigBlocked) ? pipelineConfigMessage : ''),
-    placeholder: `Describe the task for ${s.pipeName || 'the pipeline'}...`,
-    onOpenArtifact: (path) => act.openArtifact(path, 'pipeline'),
-  }
-
   return {
     runMode: s.runMode === 'pipeline' ? 'pipeline' : 'direct',
     selectedPipeline: s.selectedPipeline || '',
@@ -1034,8 +823,6 @@ export function buildViewModel(s, act) {
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
     selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
-    pipeStepsView: pipeStepsVM, pipeCatalog: pipeCatalogVM, pipePresets: pipePresetsVM, pipeName: pipeNameLabel, pipeEmpty: legacyPipeSteps.length === 0, pipeHasSteps: legacyPipeSteps.length > 0, pipeStageOverflowLabel, pipeStatusText: pipeStatusTextForDisplay,
-    pipeDriverStyle: 'width:144px;flex-shrink:0;align-self:center;background:#19212f;border:1px solid rgba(255,155,61,0.4);border-radius:12px;padding:14px;text-align:center;',
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
     totalDone: orchSubagents.filter((a) => a.status === 'done').length,

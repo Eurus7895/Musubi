@@ -24,12 +24,12 @@ native operator surfaces:
   when their pipeline.yaml declares `spawns:`. Workers offload bounded work
   and return compact summaries so the orchestrator's context stays small.
   First run: `musubi setup`.
-- **Console (GUI, operator):** the Tauri desktop app reads `audit.db` directly
-  and may launch the standalone `agent` CLI only after an explicit chat or
-  Pipeline Studio submission. The GUI shell and substrate make zero model
-  calls; the launched driver reaches the model through `LMRouter`. It exposes
-  orchestrator sessions, policy, audit, models, skills, and deterministic
-  pipeline runs.
+- **Console (GUI, operator):** the Tauri desktop app reads `audit.db` directly.
+  Only an explicit Orchestrator submission may launch the standalone `agent`
+  CLI; Pipeline Studio only creates and edits deterministic recipes. The GUI
+  shell and substrate make zero model calls; the launched driver reaches the
+  model through `LMRouter`. It exposes orchestrator sessions, policy, audit,
+  models, skills, and deterministic pipeline runs.
 
 ---
 

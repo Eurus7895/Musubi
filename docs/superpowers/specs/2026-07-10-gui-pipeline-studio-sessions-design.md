@@ -1,5 +1,9 @@
 # GUI Pipeline Studio Sessions and Direct Runs Design
 
+> Superseded by
+> [`2026-07-14-console-workspace-separation-design.md`](./2026-07-14-console-workspace-separation-design.md).
+> Pipeline Studio is now builder-only; Orchestrator owns pipeline execution.
+
 ## Context
 
 The desktop GUI currently presents Pipeline Studio as a separate surface, but

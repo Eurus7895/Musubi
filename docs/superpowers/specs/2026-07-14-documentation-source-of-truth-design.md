@@ -1,5 +1,9 @@
 # Documentation Source-of-Truth Cleanup Design
 
+> Superseded for Console workspace ownership by
+> [`2026-07-14-console-workspace-separation-design.md`](./2026-07-14-console-workspace-separation-design.md).
+> This document remains as the rationale for the earlier documentation cleanup.
+
 ## Context
 
 Musubi currently has 38 Markdown files. The 28 files under

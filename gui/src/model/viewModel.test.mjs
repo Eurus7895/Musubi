@@ -87,17 +87,8 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
-    selectPipeSession() {},
     clearSelect() {},
     setAuditFilter() {},
-    movePipe() {},
-    removePipe() {},
-    addPipe() {},
-    loadPreset() {},
-    runPipe() {},
-    stopPipe() {},
-    resetPipe() {},
-    clearPipe() {},
     selectProfile() {},
     toggleProcess() {},
     openProcessLog() {},
@@ -106,12 +97,8 @@ function actions() {
     onDraft() {},
     onDraftKey() {},
     sendChat() {},
-    sendPipelineTask() {},
     cancelAgent() {},
     openArtifact() {},
-    onPipeDraft() {},
-    onPipeDraftKey() {},
-    clearPipeDriverChat() {},
     updatePipelineRecipe() {},
   }
 }
@@ -615,12 +602,12 @@ test('explains repeated workers as retry attempts', () => {
   assert.equal(vm.activeRunSteps[1].attemptLabel, 'attempt 2/2')
 })
 
-test('does not treat a pipeline preset as selected by default', () => {
+test('does not expose legacy Studio execution projections', () => {
   const vm = buildViewModel(baseState(), actions())
 
-  assert.equal(vm.pipeName, 'choose preset')
-  assert.match(vm.pipeStatusText, /Choose a registered pipeline/)
-  assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
+  for (const field of ['pipeName', 'pipeStatusText', 'pipePresets', 'pipeStepsView', 'pipeChatBody']) {
+    assert.equal(vm[field], undefined)
+  }
 })
 
 test('keeps Orchestrator runs while hiding legacy pipeline run history', () => {
@@ -781,7 +768,7 @@ test('pipeline budget status stays out of builder-only Studio projection', () =>
   assert.equal(vm.pipeRunSummary, undefined)
 })
 
-test('pipeline flow exposes every configured stage and designer metadata', () => {
+test('keeps a complete legacy pipeline snapshot out of the builder-only Studio model', () => {
   const vm = buildViewModel(baseState({
     pipeName: 'feature-dev',
     pipelineChatId: 'gui-pipeline-current',
@@ -796,11 +783,9 @@ test('pipeline flow exposes every configured stage and designer metadata', () =>
     ],
   }), actions())
 
-  assert.deepEqual(vm.pipeStepsView.map((step) => step.role), ['planner', 'designer', 'coder', 'reviewer'])
-  assert.equal(vm.pipeStepsView[1].toolsLabel, '3 tools')
-  assert.equal(vm.pipeStepsView[1].maxLabel, 'max 12 turns')
-  assert.equal(vm.pipeStageOverflowLabel, '1 more stage →')
-  assert.equal(vm.pipeSessionTitle, undefined)
+  for (const field of ['pipeStepsView', 'pipeStageOverflowLabel', 'pipeSessionTitle']) {
+    assert.equal(vm[field], undefined)
+  }
 })
 
 test('legacy pipeline process logs are absent from builder-only Studio', () => {
