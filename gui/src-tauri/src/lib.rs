@@ -699,8 +699,15 @@ fn append_artifact_links(answer: &str, root: &Path, artifacts: &[PathBuf]) -> St
         .into_iter()
         .chain(artifacts.iter().cloned())
     {
-        if !linked.iter().any(|p| p == &path) {
-            linked.push(path);
+        // The two sources normalize paths differently: the mentioned-artifact
+        // scan canonicalizes (on Windows a verbatim `\\?\C:\…` path), while the
+        // manifest paths arrive raw. Comparing raw PathBufs would miss that the
+        // same file appears in both forms and list it twice. Canonicalize each
+        // to one normal form (falling back to the raw path when the file cannot
+        // be resolved) before the dedup check.
+        let key = path.canonicalize().unwrap_or(path);
+        if !linked.iter().any(|p| p == &key) {
+            linked.push(key);
         }
     }
 
@@ -2266,6 +2273,30 @@ mod tests {
             append_artifact_links("Open `weather-dashboard.html` in your browser.", &root, &[]);
 
         assert!(text.contains("[weather-dashboard.html](musubi-artifact:"));
+        let _ = std::fs::remove_file(file);
+        let _ = std::fs::remove_dir(root);
+    }
+
+    #[test]
+    fn artifact_links_dedup_mentioned_and_manifest_same_file() {
+        // Regression: the same file arrives from the answer-mention scan
+        // (canonicalized) and from the manifest (raw). Comparing raw PathBufs
+        // missed the match and listed it twice; canonicalizing both dedups it.
+        let root = std::env::temp_dir().join(format!("musubi-artifact-dup-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("japan-dashboard.html");
+        std::fs::write(&file, "<html></html>").unwrap();
+
+        // Manifest passes the RAW (non-canonicalized) path; the answer mentions
+        // the same file by name (scan canonicalizes it).
+        let text = append_artifact_links(
+            "Created `japan-dashboard.html`.",
+            &root,
+            &[file.clone()],
+        );
+
+        let occurrences = text.matches("musubi-artifact:").count();
+        assert_eq!(occurrences, 1, "artifact should be listed once, got:\n{text}");
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_dir(root);
     }
