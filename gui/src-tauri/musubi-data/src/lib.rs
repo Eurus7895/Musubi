@@ -899,9 +899,7 @@ fn checked_pipeline_path(
         let canonical_root = canonical_root
             .as_ref()
             .ok_or_else(|| "pipeline root disappeared during safety check".to_string())?;
-        if !canonical.starts_with(canonical_root) {
-            return Err("pipeline directory resolves outside the registered root".into());
-        }
+        ensure_exact_canonical_owner(&canonical_root.join(name), &canonical, "pipeline directory")?;
     }
     let target = directory.join("pipeline.yaml");
     if target.exists() {
@@ -911,9 +909,11 @@ fn checked_pipeline_path(
         let canonical_root = canonical_root
             .as_ref()
             .ok_or_else(|| "pipeline root disappeared during safety check".to_string())?;
-        if !canonical_target.starts_with(canonical_root) {
-            return Err("pipeline target resolves outside the registered root".into());
-        }
+        ensure_exact_canonical_owner(
+            &canonical_root.join(name).join("pipeline.yaml"),
+            &canonical_target,
+            "pipeline target",
+        )?;
     }
     Ok(target)
 }
@@ -926,6 +926,18 @@ fn ensure_canonical_child(project: &Path, child: &Path, label: &str) -> Result<(
             "{label} {} resolves outside project {}",
             child.display(),
             project.display()
+        ))
+    }
+}
+
+fn ensure_exact_canonical_owner(expected: &Path, actual: &Path, label: &str) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} {} is an alias for {}, not its registered name",
+            expected.display(),
+            actual.display()
         ))
     }
 }
@@ -3696,6 +3708,47 @@ mod tests {
 
         assert!(ensure_canonical_child(project, inside, "pipeline root").is_ok());
         assert!(ensure_canonical_child(project, outside, "pipeline root").is_err());
+    }
+
+    #[test]
+    fn pipeline_recipe_requires_exact_canonical_name_ownership() {
+        let root = Path::new("C:/workspace/project/.github/pipelines");
+        let expected = root.join("safe-flow");
+        let owned = root.join("safe-flow");
+        let sibling_alias = root.join("other-flow");
+
+        assert!(ensure_exact_canonical_owner(&expected, &owned, "pipeline directory").is_ok());
+        assert!(
+            ensure_exact_canonical_owner(&expected, &sibling_alias, "pipeline directory").is_err()
+        );
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_sibling_recipe_directory_alias() {
+        let root = temp_dir("pipeline-recipe-sibling-alias");
+        write_recipe_fixture(&root);
+        let other_recipe = valid_pipeline_recipe("other-flow");
+        assert!(save_pipeline_recipe(&root, &other_recipe).saved);
+        let pipeline_root = root.join(".github/pipelines");
+        let other_directory = pipeline_root.join("other-flow");
+        let safe_directory = pipeline_root.join("safe-flow");
+        let other_path = other_directory.join("pipeline.yaml");
+        let before = std::fs::read_to_string(&other_path).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&other_directory, &safe_directory).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&other_directory, &safe_directory).is_err() {
+            return;
+        }
+
+        let mut safe_recipe = valid_pipeline_recipe("safe-flow");
+        safe_recipe.description = "must not overwrite sibling".into();
+        let result = save_pipeline_recipe(&root, &safe_recipe);
+
+        assert!(!result.saved);
+        assert!(read_pipeline_recipe(&root, "safe-flow").is_err());
+        assert_eq!(std::fs::read_to_string(other_path).unwrap(), before);
     }
 
     #[test]
