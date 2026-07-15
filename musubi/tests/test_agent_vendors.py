@@ -138,6 +138,39 @@ def test_openai_messages_tool_results_fan_out() -> None:
     assert [m["content"] for m in out] == ["A", "B", "C"]
 
 
+def test_openai_messages_mixed_tool_results_and_text_keeps_all_results() -> None:
+    """A user turn may mix tool_result blocks with a trailing text block —
+    the root's recovery-analysis window appends a text note to the
+    tool-results message (agent/run.py). Every tool_result must still fan
+    out into a role:'tool' message, or the preceding assistant tool_calls is
+    left unanswered and an OpenAI-family vendor rejects the request with
+    'insufficient tool messages following tool_calls message'. The trailing
+    text becomes one extra user message; the results are never dropped."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "musubi_recommend_skills", "input": {}},
+                {"type": "tool_use", "id": "t2", "name": "musubi_glob", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "A"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "B"},
+                {"type": "text", "text": "[recovery decision required] ..."},
+            ],
+        },
+    ]
+    out = to_openai_messages(messages)
+    tool_msgs = [m for m in out if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["t1", "t2"]
+    assert [m["content"] for m in tool_msgs] == ["A", "B"]
+    # Tool messages come first (they answer the assistant turn); the note trails.
+    assert out[-1] == {"role": "user", "content": "[recovery decision required] ..."}
+
+
 def test_openai_messages_tool_result_content_coerced_to_string() -> None:
     messages = [{
         "role": "user",
