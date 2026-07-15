@@ -7,6 +7,23 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Skill catalog growth
+
+- Five new substrate skills: `debugging` (reproduce → isolate → fix once
+  with evidence), `refactoring` (behaviour-preserving restructuring in
+  verifiable steps), `git-workflow` (Conventional Commits, outcome-named
+  branches, rebase-before-push), `typescript` (strict TS/JS, router-gated
+  to JS/TS workspaces via `applies-to`), and `web-ui` (self-contained,
+  accessible, responsive HTML/CSS/vanilla-JS artifacts — universal, so it
+  also matches a dashboard emitted from a non-JS repo).
+- `AGENT_SKILL_ALLOWLIST` extended without widening the generator boundary
+  (HI #3): coder gains all four; the dispatcher `agent` gains only the
+  read-safe `debugging` + `git-workflow` — the authoring skills stay
+  coder-only.
+- Every pre-existing catalog entry backfilled with `triggers:` frontmatter so
+  the deterministic recommender can rank the whole catalog, not just the newest
+  skills.
+
 ### Per-worker effort and output budgets
 
 - Mutation-capable workers now open at the shared 16,384-token response

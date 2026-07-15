@@ -4092,10 +4092,7 @@ mod tests {
             assert!(temp.exists());
             assert_eq!(std::fs::read_to_string(temp).unwrap(), expected_temp);
             *captured_temp.borrow_mut() = Some(temp.to_path_buf());
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "simulated rename failure",
-            ))
+            Err(std::io::Error::other("simulated rename failure"))
         });
 
         assert!(!result.saved);
@@ -4113,10 +4110,7 @@ mod tests {
         let replacer = move |temp: &Path, _: &Path| {
             assert!(temp.exists());
             captured_paths.borrow_mut().push(temp.to_path_buf());
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "stop before mutation",
-            ))
+            Err(std::io::Error::other("stop before mutation"))
         };
 
         for _ in 0..2 {

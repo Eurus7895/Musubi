@@ -62,7 +62,17 @@ def scan_injection(text: str) -> bool:
 AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     "planner":       set(),
     "designer":      {"api-design", "database-patterns", "documentation", "docs-writing"},
-    "coder":         {"python", "testing", "database-patterns", "api-design"},
+    # Catalog growth — coder gains the generator-side skills it executes:
+    # typescript (JS/TS workspaces, applies-to gated by the router),
+    # debugging (root-cause procedure before a fix), refactoring
+    # (behaviour-preserving restructuring), git-workflow (commit/branch
+    # hygiene for the mutations it lands), web-ui (self-contained HTML/CSS/JS
+    # artifacts — universal, so it also matches a dashboard emitted from a
+    # non-JS repo).
+    "coder":         {
+        "python", "testing", "database-patterns", "api-design",
+        "typescript", "debugging", "refactoring", "git-workflow", "web-ui",
+    },
     "reviewer":      {"code-review", "testing"},
     "skill-builder": set(),
     # Phase B.1 — agent. Routing skill is pushed via inject_skills
@@ -76,11 +86,19 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # MVP item 9 — first non-coding skills (docs-writing, research) added
     # to the agent allowlist so the agent can pull them on demand
     # when a user asks "write a design doc" or "how does X work?".
+    #
+    # Catalog growth — debugging and git-workflow are dispatcher-safe
+    # additions: "why does X fail?" and "how should this be branched /
+    # committed?" are answerable with read tools and don't blur the
+    # generator boundary (test_agent_skill_allowlist_excludes_generator_skills
+    # pins that boundary; refactoring/typescript stay coder-only).
     "agent": {
         "agent-routing",
         "compression-aware-context",
         "docs-writing",
         "research",
+        "debugging",
+        "git-workflow",
     },
     # Phase H.1 — /code-review pipeline roles.
     # scoper        triages files; needs the scope-detection skill only.

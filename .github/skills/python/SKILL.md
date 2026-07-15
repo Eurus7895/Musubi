@@ -5,6 +5,14 @@ applies-to:
   languages: [python]
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
+triggers:
+  - python
+  - pyproject
+  - dataclass
+  - async
+  - type hints
+  - ruff
+  - mypy
 ---
 
 ## Purpose
