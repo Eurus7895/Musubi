@@ -187,6 +187,27 @@ fn ensure_runtime_owner(runtime: &ChatAgentRuntime, requested_chat_id: &str) -> 
     }
 }
 
+fn authorize_cancel_request(
+    requested_chat_id: &str,
+    active_chat_id: &str,
+    viewed_chat_id: Option<&str>,
+    runtime: &ChatAgentRuntime,
+) -> Result<String, String> {
+    let displayed_chat_id = viewed_chat_id.unwrap_or(active_chat_id);
+    let requested_chat_id = if requested_chat_id.trim().is_empty() {
+        displayed_chat_id
+    } else {
+        requested_chat_id
+    };
+    if requested_chat_id != displayed_chat_id {
+        return Err(format!(
+            "Session {requested_chat_id} is not the currently displayed Orchestrator session {displayed_chat_id}."
+        ));
+    }
+    ensure_runtime_owner(runtime, displayed_chat_id)?;
+    Ok(displayed_chat_id.to_string())
+}
+
 fn clear_driver_chat_log(
     conn: &Connection,
     rt: &mut ChatAgentRuntime,
@@ -833,22 +854,31 @@ fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
     format!("Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}")
 }
 
-fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
+fn append_driver_chat_to_conn(
+    conn: &Connection,
+    surface: &str,
+    chat_id: &str,
+    tone: Option<&str>,
+    text: &str,
+) -> Result<(), String> {
+    insert_chat(conn, "driver", tone, text, surface, chat_id)
+}
+
+fn append_driver_chat_to(
+    app: &tauri::AppHandle,
+    surface: &str,
+    chat_id: &str,
+    tone: Option<&str>,
+    text: &str,
+) {
     let state = app.state::<AppState>();
-    let Ok((surface, chat_id)) = state
-        .chat_agent
-        .lock()
-        .map(|rt| (surface_arg(&rt.surface).to_string(), rt.chat_id.clone()))
-    else {
-        return;
-    };
     if chat_id.is_empty() {
         return;
     }
     let Ok(conn) = state.db.lock() else {
         return;
     };
-    let _ = insert_chat(&conn, "driver", tone, text, &surface, &chat_id);
+    let _ = append_driver_chat_to_conn(&conn, surface, chat_id, tone, text);
 }
 
 fn pump_stream(
@@ -889,6 +919,12 @@ fn start_chat_agent(
     pipeline_name: Option<&str>,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
+    let launch_chat_id = chat_id.to_string();
+    let launch_surface = {
+        let rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        ensure_runtime_owner(&rt, &launch_chat_id)?;
+        surface_arg(&rt.surface).to_string()
+    };
 
     let mut env = musubi_data::current_env_map();
     let setup =
@@ -994,19 +1030,24 @@ fn start_chat_agent(
                         rt.running = false;
                         rt.child = None;
                         rt.cancel_requested = false;
-                        (rt.stdout_tail.clone(), rt.stderr_tail.clone(), cancelled)
+                        let stdout_tail = rt.stdout_tail.clone();
+                        let stderr_tail = rt.stderr_tail.clone();
+                        let terminal = terminal_status(
+                            cancelled,
+                            code,
+                            &format!("{stderr_tail}\n{stdout_tail}"),
+                        );
+                        rt.terminal_status = terminal.to_string();
+                        (stdout_tail, stderr_tail, cancelled)
                     }
                     Err(_) => (String::new(), String::new(), false),
                 };
-                let terminal =
-                    terminal_status(cancelled, code, &format!("{stderr_tail}\n{stdout_tail}"));
-                if let Ok(mut rt) = shared.lock() {
-                    rt.terminal_status = terminal.to_string();
-                }
                 let log = process_log(&stdout_tail, &stderr_tail);
                 if cancelled {
-                    append_driver_chat(
+                    append_driver_chat_to(
                         &app,
+                        &launch_surface,
+                        &launch_chat_id,
                         Some("deny"),
                         &append_process_log_link("Agent cancelled by user.", &log),
                     );
@@ -1021,10 +1062,22 @@ fn start_chat_agent(
                             &artifact_root,
                             &artifacts,
                         );
-                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                        append_driver_chat_to(
+                            &app,
+                            &launch_surface,
+                            &launch_chat_id,
+                            None,
+                            &append_process_log_link(&text, &log),
+                        );
                     } else {
                         let text = append_artifact_links(answer, &artifact_root, &artifacts);
-                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                        append_driver_chat_to(
+                            &app,
+                            &launch_surface,
+                            &launch_chat_id,
+                            None,
+                            &append_process_log_link(&text, &log),
+                        );
                     }
                 } else {
                     let detail = if !stderr_tail.trim().is_empty() {
@@ -1033,7 +1086,13 @@ fn start_chat_agent(
                         stdout_tail.trim()
                     };
                     let text = summarize_agent_failure(code, detail);
-                    append_driver_chat(&app, Some("deny"), &append_process_log_link(&text, &log));
+                    append_driver_chat_to(
+                        &app,
+                        &launch_surface,
+                        &launch_chat_id,
+                        Some("deny"),
+                        &append_process_log_link(&text, &log),
+                    );
                 }
                 break;
             }
@@ -1043,7 +1102,13 @@ fn start_chat_agent(
                     rt.child = None;
                     rt.terminal_status = "failed".into();
                 }
-                append_driver_chat(&app, Some("deny"), &format!("Agent wait failed: {e}"));
+                append_driver_chat_to(
+                    &app,
+                    &launch_surface,
+                    &launch_chat_id,
+                    Some("deny"),
+                    &format!("Agent wait failed: {e}"),
+                );
                 break;
             }
         }
@@ -1056,23 +1121,35 @@ fn cancel_chat_agent(
     app: &tauri::AppHandle,
     state: &AppState,
     requested_chat_id: &str,
+    active_chat_id: &str,
+    viewed_chat_id: Option<&str>,
 ) -> Result<(), String> {
-    let child = {
+    let (child, owner_surface, owner_chat_id) = {
         let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
         if !rt.running {
             return Ok(());
         }
-        ensure_runtime_owner(&rt, requested_chat_id)?;
+        let owner_chat_id =
+            authorize_cancel_request(requested_chat_id, active_chat_id, viewed_chat_id, &rt)?;
+        let owner_surface = surface_arg(&rt.surface).to_string();
         rt.cancel_requested = true;
-        rt.child.clone()
+        (rt.child.clone(), owner_surface, owner_chat_id)
     };
 
     let Some(child) = child else {
-        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-        rt.running = false;
-        rt.child = None;
-        rt.cancel_requested = false;
-        append_driver_chat(app, Some("deny"), "Agent cancelled by user.");
+        {
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            rt.running = false;
+            rt.child = None;
+            rt.cancel_requested = false;
+        }
+        append_driver_chat_to(
+            app,
+            &owner_surface,
+            &owner_chat_id,
+            Some("deny"),
+            "Agent cancelled by user.",
+        );
         return Ok(());
     };
 
@@ -1323,6 +1400,24 @@ fn resolve_orchestrator_launch(
     }
 }
 
+fn dispatch_orchestrator_send<Prepare, Launch>(
+    text: &str,
+    requested_chat_id: &str,
+    mode: &str,
+    pipeline_name: &str,
+    catalog: &[musubi_data::PipelineCatalogEntry],
+    prepare: Prepare,
+    launch: Launch,
+) -> Result<(), String>
+where
+    Prepare: FnOnce(&str, &str, Option<&str>) -> Result<String, String>,
+    Launch: FnOnce(&str, &str, Option<&str>) -> Result<(), String>,
+{
+    let (task, pipeline_name) = resolve_orchestrator_launch(text, mode, pipeline_name, catalog)?;
+    let chat_id = prepare(&task, requested_chat_id, pipeline_name.as_deref())?;
+    launch(&task, &chat_id, pipeline_name.as_deref())
+}
+
 #[tauri::command]
 fn action(
     kind: String,
@@ -1339,40 +1434,53 @@ fn action(
     match kind.as_str() {
         "send_chat" => {
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
-            let (text, pipeline_name) =
-                resolve_orchestrator_launch(&str_arg(0), &str_arg(2), &str_arg(3), &catalog)?;
+            let text = str_arg(0);
             let requested_chat_id = str_arg(1);
-            let chat_id = {
-                let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-                let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-                let mut active = state.chat_id.lock().map_err(|e| e.to_string())?;
-                let mut viewed = state
-                    .viewed_orchestrator_chat_id
-                    .lock()
-                    .map_err(|e| e.to_string())?;
-                prepare_orchestrator_send(
-                    &mut conn,
-                    &mut rt,
-                    &mut active,
-                    &mut viewed,
-                    &requested_chat_id,
-                    &text,
-                    pipeline_name.as_deref(),
-                    epoch_secs(),
-                )?
-            };
-            if let Err(e) =
-                start_chat_agent(app, state.inner(), text, &chat_id, pipeline_name.as_deref())
-            {
-                if let Ok(mut rt) = state.chat_agent.lock() {
-                    if rt.chat_id == chat_id {
-                        rt.running = false;
-                        rt.child = None;
+            dispatch_orchestrator_send(
+                &text,
+                &requested_chat_id,
+                &str_arg(2),
+                &str_arg(3),
+                &catalog,
+                |task, requested_chat_id, pipeline_name| {
+                    let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+                    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+                    let mut active = state.chat_id.lock().map_err(|e| e.to_string())?;
+                    let mut viewed = state
+                        .viewed_orchestrator_chat_id
+                        .lock()
+                        .map_err(|e| e.to_string())?;
+                    prepare_orchestrator_send(
+                        &mut conn,
+                        &mut rt,
+                        &mut active,
+                        &mut viewed,
+                        requested_chat_id,
+                        task,
+                        pipeline_name,
+                        epoch_secs(),
+                    )
+                },
+                |task, chat_id, pipeline_name| {
+                    if let Err(e) = start_chat_agent(
+                        app,
+                        state.inner(),
+                        task.to_string(),
+                        chat_id,
+                        pipeline_name,
+                    ) {
+                        if let Ok(mut rt) = state.chat_agent.lock() {
+                            if rt.chat_id == chat_id {
+                                rt.running = false;
+                                rt.child = None;
+                            }
+                        }
+                        let conn = state.db.lock().map_err(|err| err.to_string())?;
+                        insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator", chat_id)?;
                     }
-                }
-                let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator", &chat_id)?;
-            }
+                    Ok(())
+                },
+            )?;
         }
         "select_profile" => {
             let name = str_arg(0);
@@ -1389,21 +1497,20 @@ fn action(
             state.paused.store(!cur, Ordering::Relaxed);
         }
         "cancel_agent" => {
-            let requested_chat_id = match str_arg(0) {
-                requested if !requested.trim().is_empty() => requested,
-                _ => {
-                    let viewed = state
-                        .viewed_orchestrator_chat_id
-                        .lock()
-                        .map_err(|e| e.to_string())?
-                        .clone();
-                    match viewed {
-                        Some(viewed) => viewed,
-                        None => state.chat_id.lock().map_err(|e| e.to_string())?.clone(),
-                    }
-                }
-            };
-            cancel_chat_agent(&app, state.inner(), &requested_chat_id)?;
+            let requested_chat_id = str_arg(0);
+            let active_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
+            let viewed_chat_id = state
+                .viewed_orchestrator_chat_id
+                .lock()
+                .map_err(|e| e.to_string())?
+                .clone();
+            cancel_chat_agent(
+                &app,
+                state.inner(),
+                &requested_chat_id,
+                &active_chat_id,
+                viewed_chat_id.as_deref(),
+            )?;
         }
         "select_session" => {
             let requested_chat_id = str_arg(0);
@@ -1476,9 +1583,6 @@ fn action(
                 }
             }
         }
-        // Pipeline Studio launches registered recipes through
-        // `send_pipeline_task`; edited client-only compositions remain drafts
-        // and never reach this backend.
         other => eprintln!("[musubi] unknown action: {other}"),
     }
     Ok(())
@@ -2566,5 +2670,151 @@ mod tests {
             .any(|entry| entry.name == "ipc-test"));
 
         std::fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_completion_append_stays_with_captured_owner() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let launch_surface = "orchestrator".to_string();
+        let launch_chat_id = "gui-orchestrator-project-old".to_string();
+        let mut runtime = ChatAgentRuntime {
+            chat_id: launch_chat_id.clone(),
+            surface: launch_surface.clone(),
+            ..ChatAgentRuntime::default()
+        };
+        set_runtime_owner(
+            &mut runtime,
+            "gui-orchestrator-project-new",
+            "orchestrator",
+            "feature-dev",
+            "new task",
+            43,
+        );
+
+        append_driver_chat_to_conn(
+            &conn,
+            &launch_surface,
+            &launch_chat_id,
+            None,
+            "old completion",
+        )
+        .unwrap();
+
+        let old_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE chat_id=?1 AND text='old completion'",
+                [&launch_chat_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let new_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE chat_id=?1 AND text='old completion'",
+                [&runtime.chat_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_rows, 1);
+        assert_eq!(new_rows, 0);
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_cancel_rejects_supplied_owner_while_viewing_history() {
+        let runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-owner".into(),
+            ..ChatAgentRuntime::default()
+        };
+
+        let error = authorize_cancel_request(
+            "gui-orchestrator-project-owner",
+            "gui-orchestrator-project-owner",
+            Some("gui-orchestrator-project-history"),
+            &runtime,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("displayed"));
+        assert!(authorize_cancel_request(
+            "gui-orchestrator-project-owner",
+            "gui-orchestrator-project-owner",
+            None,
+            &runtime,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_dispatch_direct_preserves_prepare_launch_identity() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        dispatch_orchestrator_send(
+            " ship ",
+            "gui-orchestrator-project-exact",
+            "direct",
+            "ignored",
+            &[],
+            |task, requested, pipeline| {
+                events.borrow_mut().push(format!(
+                    "prepare:{task}:{requested}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(requested.to_string())
+            },
+            |task, chat_id, pipeline| {
+                events.borrow_mut().push(format!(
+                    "launch:{task}:{chat_id}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "prepare:ship:gui-orchestrator-project-exact:none",
+                "launch:ship:gui-orchestrator-project-exact:none",
+            ]
+        );
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_dispatch_pipeline_validates_before_exact_launch() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let catalog = vec![runnable_pipeline("feature-dev")];
+
+        dispatch_orchestrator_send(
+            " ship ",
+            "gui-orchestrator-project-exact",
+            "pipeline",
+            "feature-dev",
+            &catalog,
+            |task, requested, pipeline| {
+                events.borrow_mut().push(format!(
+                    "prepare:{task}:{requested}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(requested.to_string())
+            },
+            |task, chat_id, pipeline| {
+                events.borrow_mut().push(format!(
+                    "launch:{task}:{chat_id}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "prepare:ship:gui-orchestrator-project-exact:feature-dev",
+                "launch:ship:gui-orchestrator-project-exact:feature-dev",
+            ]
+        );
     }
 }
