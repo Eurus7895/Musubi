@@ -421,3 +421,58 @@ def test_role_skill_files_exist_and_load() -> None:
         content = skill_loader.get_skill(role)
         assert content is not None, f"SKILL.md missing for role {role}"
         assert "## Procedure" in content or "## Purpose" in content
+
+
+# ── pushed skill provenance (option 3) ─────────────────────────────────────
+
+def test_record_spawn_persists_pushed_skill_id(tmp_path: Path) -> None:
+    """A root-selected pushed skill is durable on the spawn row so the
+    Console can prove the worker received it (no musubi_get_skill call)."""
+    db_path = tmp_path / "audit.db"
+    subagent_audit.record_spawn(
+        handle_id="h1", parent_session_id="s1", parent_agent_name="agent",
+        role="coder", brief="build the page", allowed_tools=["Write"],
+        max_turns=6, wall_clock_timeout_s=300, pushed_skill_id="web-ui",
+        db_path=db_path,
+    )
+    events = subagent_audit.query_events(handle_id="h1", db_path=db_path)
+    assert events[0]["pushed_skill_id"] == "web-ui"
+
+
+def test_record_spawn_pushed_skill_defaults_none(tmp_path: Path) -> None:
+    db_path = tmp_path / "audit.db"
+    subagent_audit.record_spawn(
+        handle_id="h2", parent_session_id="s1", parent_agent_name="agent",
+        role="explorer", brief="look", allowed_tools=["Read"],
+        max_turns=6, wall_clock_timeout_s=300, db_path=db_path,
+    )
+    events = subagent_audit.query_events(handle_id="h2", db_path=db_path)
+    assert events[0]["pushed_skill_id"] is None
+
+
+def test_pushed_skill_column_migrated_in_place(tmp_path: Path) -> None:
+    """A DB created before the column exists gains it via ALTER on next
+    connect — no rebuild, no data loss."""
+    import sqlite3
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE subagent_audit ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,"
+        " handle_id TEXT NOT NULL, parent_session_id TEXT NOT NULL,"
+        " parent_agent_name TEXT NOT NULL, role TEXT NOT NULL, brief TEXT NOT NULL,"
+        " event TEXT NOT NULL, allowed_tools TEXT, max_turns INTEGER,"
+        " wall_clock_timeout_s INTEGER, final_status TEXT, escalated INTEGER,"
+        " turns INTEGER, tools_used TEXT, summary_truncated INTEGER,"
+        " verification_errors TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    subagent_audit.record_spawn(
+        handle_id="h3", parent_session_id="s1", parent_agent_name="agent",
+        role="coder", brief="b", allowed_tools=["Write"],
+        max_turns=6, wall_clock_timeout_s=300, pushed_skill_id="debugging",
+        db_path=db_path,
+    )
+    events = subagent_audit.query_events(handle_id="h3", db_path=db_path)
+    assert events[0]["pushed_skill_id"] == "debugging"

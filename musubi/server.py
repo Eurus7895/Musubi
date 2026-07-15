@@ -1574,6 +1574,7 @@ def musubi_spawn_subagent(
             allowed_tools=effective_tools,
             max_turns=max_turns,
             wall_clock_timeout_s=wall_clock_timeout_s,
+            pushed_skill_id=skill_choice,
         )
     except Exception:
         # Audit failure must not silently drop a spawn — but it also must

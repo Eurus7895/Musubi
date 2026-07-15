@@ -1308,6 +1308,11 @@ pub struct Agent {
     // uses it to sort runs by real chronology across worker sessions and
     // driver-only turns, which live in separate audit tables.
     pub spawn_epoch: Option<i64>,
+    // Root-selected skill pushed into this worker's prompt at spawn (option 3),
+    // serialized as `pushedSkill`. A pushed skill has no `musubi_get_skill`
+    // tool-call, so this spawn-row field is the only evidence the worker
+    // received procedural knowledge. Empty when none was pushed.
+    pub pushed_skill: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -1676,7 +1681,7 @@ fn load_state_at_with_pipeline_runs(
     let mut stmt = conn.prepare(
         "SELECT id, ts, event, handle_id, role, parent_session_id, parent_agent_name, \
                 brief, allowed_tools, max_turns, wall_clock_timeout_s, final_status, \
-                turns, tools_used \
+                turns, tools_used, COALESCE(pushed_skill_id,'') \
          FROM subagent_audit ORDER BY id ASC",
     )?;
     let mut order: Vec<String> = Vec::new();
@@ -1703,6 +1708,7 @@ fn load_state_at_with_pipeline_runs(
             final_status: r.get::<_, Option<String>>(11)?,
             turns: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
             tools_used: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+            pushed_skill: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
         })
     })?;
 
@@ -1746,6 +1752,7 @@ fn load_state_at_with_pipeline_runs(
                         parent_agent: row.parent_agent.clone(),
                         chat_id: String::new(), // backfilled from agent_turns below
                         spawn_epoch: row.ts_epoch,
+                        pushed_skill: row.pushed_skill.clone(),
                     },
                 );
             }
@@ -2201,6 +2208,7 @@ struct RawAudit {
     final_status: Option<String>,
     turns: i64,
     tools_used: String,
+    pushed_skill: String,
 }
 
 struct PipelineEnvelope {
@@ -2456,7 +2464,8 @@ CREATE TABLE IF NOT EXISTS subagent_audit (
   turns                INTEGER,
   tools_used           TEXT,                     -- JSON array
   summary_truncated    INTEGER,
-  verification_errors  TEXT
+  verification_errors  TEXT,
+  pushed_skill_id      TEXT                       -- root-selected skill pushed at spawn (option 3)
 );
 -- Real substrate table — scripts/post_tool_use.py. Every governed tool call.
 CREATE TABLE IF NOT EXISTS tool_audit (
@@ -2868,6 +2877,45 @@ mod tests {
 
         assert_eq!(st.subagents.len(), 1);
         assert_eq!(st.subagents[0].status, "abandoned");
+    }
+
+    #[test]
+    fn spawn_row_pushed_skill_id_surfaces_on_agent() {
+        // Option 3: a root-selected skill is recorded on the spawn row, not as
+        // a musubi_get_skill tool-call. The reader must surface it so the
+        // Console can show which skill the worker received.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s,pushed_skill_id)\
+             VALUES(1,1000.0,'spawned','w-1','session-1','driver','coder','build dashboard','[\"Write\"]',6,300,'web-ui')",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].pushed_skill, "web-ui");
+    }
+
+    #[test]
+    fn spawn_row_without_pushed_skill_is_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','w-2','session-1','driver','explorer','look','[\"Read\"]',6,300)",
+            [],
+        )
+        .unwrap();
+
+        let st = load_state_at(&conn, 2000).unwrap();
+
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].pushed_skill, "");
     }
 
     #[test]

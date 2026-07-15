@@ -23,6 +23,24 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   simple artifacts (previously spawn-only). This costs ~1k tokens across the
   two-call simple-root projection; the simple-root regression guard moved
   from 3k to ~4.5k, still far under the 20k ceiling.
+- A pushed skill has no `musubi_get_skill` tool-call, so it was invisible to
+  the Console (which builds skill provenance from `tool_audit`). The spawn now
+  records `pushed_skill_id` on the `subagent_audit` row (idempotent in-place
+  migration for existing DBs); the `musubi-data` reader surfaces it on the
+  worker as `pushedSkill`, and the Orchestrator folds it into the worker's
+  skill badges, the "Skills used" panel, and the audited-activity log — a
+  pushed skill now shows exactly like a pulled one.
+
+### Fixes
+
+- **OpenAI-family tool-result pairing.** When a user turn mixed `tool_result`
+  blocks with a text block (the root's recovery-analysis window appends a
+  note to the tool-results message), the OpenAI/DeepSeek wire converter
+  required every block to be a `tool_result` and otherwise dropped them all,
+  leaving the assistant's `tool_calls` unanswered — DeepSeek rejected the
+  request with "insufficient tool messages following tool_calls message". The
+  converter now fans out each `tool_result` into a `role:"tool"` message and
+  emits any trailing text as one extra user message.
 
 ### Skill catalog growth
 
