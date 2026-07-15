@@ -203,6 +203,11 @@ function prettyRole(role) {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
+function clipEvidence(value, max = 240) {
+  const text = String(value || '')
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text
+}
+
 function retryLineForRun(steps) {
   const byRole = new Map()
   steps.forEach((step) => {
@@ -321,6 +326,7 @@ export function buildViewModel(s, act) {
     .filter((item) => item.runnable && spawnRoleNames.has(item.name))
     .filter((item) => searchable(item, ['name', 'displayLabel']))
   const selectedPipelineEntry = pipelineOptions.find((entry) => entry.selected)
+  const orchestratorPipelineBlocked = s.runMode === 'pipeline' && !selectedPipelineEntry?.runnable
   const sm = statusMeta
   const allSubagents = s.subagents || []
   const allAgentTurns = s.agentTurns || []
@@ -406,7 +412,15 @@ export function buildViewModel(s, act) {
       || (!orchestratorChatId ? (chosenSession || runningRun?.id || runsRaw[0]?.id || '') : ''))
     : (selectedAgent?.parentSession || chosenSession || runningRun?.id || latestTurn?.parentSession || latestAgent?.parentSession || runsRaw[0]?.id || '')
   const activeRunRaw = runsRaw.find((run) => run.id === activeSessionId)
-  const activeSessionAgents = activeRunRaw?.steps || []
+  const activePipelineRun = (s.pipelineRuns || [])
+    .filter((run) => run.chatId === activeSessionId
+      && !isPipelineChatId(run.chatId)
+      && (!activeRunRaw?.rootTurn?.startedAt || Number(run.startedAt || 0) >= Number(activeRunRaw.rootTurn.startedAt)))
+    .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0))[0]
+  const activeSessionAgents = Array.from(new Map([
+    ...(activeRunRaw?.steps || []),
+    ...(activePipelineRun?.stages || []),
+  ].map((agent) => [agent.handle, agent])).values())
   const runningInSession = activeSessionAgents.find((a) => a.status === 'running')
   const currentSessionAgent = runningInSession || activeSessionAgents[activeSessionAgents.length - 1]
   const processTextForRuns = driverBelongsToOrchestrator
@@ -568,6 +582,141 @@ export function buildViewModel(s, act) {
       }
     : null
   const sessionSteps = rootStep ? [rootStep, ...workerSessionSteps] : workerSessionSteps
+
+  const activeEvidenceSessions = new Set([
+    rootTurn?.parentSession,
+    activeRunRaw?.turn?.parentSession,
+    activePipelineRun?.sessionId,
+  ].filter(Boolean))
+  const activeWorkerHandles = new Set(activeSessionAgents.map((agent) => agent.handle))
+  const toolEvidence = (s.toolEvidence || []).filter((row) => (
+    (row.chatId && row.chatId === activeSessionId)
+    || activeEvidenceSessions.has(row.sessionId)
+  ))
+  const skillsByWorker = {}
+  toolEvidence.forEach((row) => {
+    if (row.category !== 'skills' || row.status !== 'ok' || !row.skillId || !row.workerId) return
+    if (!skillsByWorker[row.workerId]) skillsByWorker[row.workerId] = []
+    if (!skillsByWorker[row.workerId].includes(row.skillId)) skillsByWorker[row.workerId].push(row.skillId)
+  })
+  const runtimeLogs = []
+  toolEvidence.forEach((row) => runtimeLogs.push({
+    id: `tool-${row.id}`,
+    auditId: row.id,
+    ts: row.ts || '',
+    workerId: row.workerId || '',
+    role: clipEvidence(row.role || 'worker', 60),
+    category: row.category === 'skills' ? 'skills' : 'tools',
+    name: clipEvidence(row.category === 'skills' && row.skillId ? row.skillId : row.tool, 100),
+    status: clipEvidence(String(row.status || 'unknown').toLowerCase(), 40),
+    detail: clipEvidence(row.detail || ''),
+  }))
+  ;(s.agentCycles || [])
+    .filter((row) => activeEvidenceSessions.has(row.sessionId))
+    .forEach((row) => {
+      const workerId = row.workerId || 'root'
+      runtimeLogs.push({
+        id: `model-${row.sessionId}-${workerId}-${row.cycleIdx}`,
+        auditId: null,
+        ts: '',
+        workerId,
+        role: row.stage || (workerId === 'root' ? 'root' : 'worker'),
+        category: 'model',
+        name: `cycle ${Number(row.cycleIdx || 0) + 1}`,
+        status: String(row.cycleStatus || 'ok').toLowerCase(),
+        detail: `${Number(row.tokensIn || 0)} in · ${Number(row.tokensOut || 0)} out · ${Number(row.lmMs || 0)} ms`,
+      })
+      ;(row.toolNames || []).forEach((tool, index) => {
+        const backedByToolLedger = toolEvidence.some((entry) => entry.workerId === workerId && entry.tool === tool)
+        if (backedByToolLedger) return
+        runtimeLogs.push({
+          id: `cycle-tool-${row.sessionId}-${workerId}-${row.cycleIdx}-${index}`,
+          auditId: null,
+          ts: '',
+          workerId,
+          role: row.stage || 'worker',
+          category: tool === 'musubi_get_skill' ? 'skills' : 'tools',
+          name: tool,
+          status: String(row.cycleStatus || 'ok').toLowerCase(),
+          detail: '',
+        })
+      })
+    })
+  ;(s.policy || [])
+    .filter((row) => activeWorkerHandles.has(row.handle) || (!row.handle && ['agent', 'driver'].includes(row.role)))
+    .forEach((row) => runtimeLogs.push({
+      id: `policy-${row.id}`,
+      auditId: row.id,
+      ts: row.ts || '',
+      workerId: row.handle || 'root',
+      role: clipEvidence(row.role || 'worker', 60),
+      category: 'policy',
+      name: clipEvidence(row.tool, 100),
+      status: clipEvidence(String(row.verdict || 'unknown').toLowerCase(), 40),
+      detail: clipEvidence(row.reason || ''),
+    }))
+  const runtimeNodes = []
+  if (activeRunRaw || rootTurn) {
+    runtimeNodes.push({
+      id: 'root',
+      parentId: null,
+      kind: 'root',
+      role: 'driver',
+      label: 'Driver · the knot',
+      brief: rootBrief,
+      status: rootStatus,
+      statusLabel: rootMeta.label,
+      turns: Number(rootTurn?.cycles || 0),
+      maxTurns: null,
+      tools: runtimeLogs.filter((row) => row.workerId === 'root' && row.category === 'tools').length,
+      skills: skillsByWorker.root || [],
+    })
+  }
+  activeSessionAgents.forEach((agent) => {
+    const exactParent = activeWorkerHandles.has(agent.parentAgent) ? agent.parentAgent : 'root'
+    const meta = sm[agent.status] || sm.abandoned
+    runtimeNodes.push({
+      id: agent.handle,
+      parentId: exactParent,
+      kind: 'worker',
+      role: agent.role || 'worker',
+      label: prettyRole(agent.role),
+      brief: agent.brief || '',
+      status: agent.status,
+      statusLabel: meta.label,
+      turns: Number(agent.turns || 0),
+      maxTurns: Number(agent.max || 0),
+      tools: runtimeLogs.filter((row) => row.workerId === agent.handle && row.category === 'tools').length,
+      skills: skillsByWorker[agent.handle] || [],
+    })
+  })
+  if (runtimeLogs.some((row) => !row.workerId)) {
+    runtimeNodes.push({
+      id: 'unassigned',
+      parentId: runtimeNodes.some((node) => node.id === 'root') ? 'root' : null,
+      kind: 'evidence',
+      role: 'unassigned',
+      label: 'Unassigned evidence',
+      brief: '',
+      status: 'unknown',
+      statusLabel: 'unassigned',
+      turns: 0,
+      maxTurns: null,
+      tools: runtimeLogs.filter((row) => !row.workerId && row.category === 'tools').length,
+      skills: [],
+    })
+    runtimeLogs.forEach((row) => { if (!row.workerId) row.workerId = 'unassigned' })
+  }
+  const runtimeGraph = {
+    mode: activePipelineRun ? 'pipeline' : 'direct',
+    pipelineName: activePipelineRun?.pipelineName || '',
+    nodes: runtimeNodes,
+    edges: runtimeNodes.filter((node) => node.parentId).map((node) => ({
+      from: node.parentId,
+      to: node.id,
+      relation: 'summoned',
+    })),
+  }
 
   const pipeRoleTotals = activePipeSessionAgents.reduce((acc, agent) => {
     const role = agent.role || 'worker'
@@ -846,6 +995,11 @@ export function buildViewModel(s, act) {
     selectedPipelineRunnable: !!selectedPipelineEntry?.runnable,
     pipelineOptions,
     onSetRunMode: act.setRunMode,
+    runtimeGraph,
+    runtimeLogs,
+    skillsByWorker,
+    onSelectRuntimeNode: act.selectAgent,
+    onOpenAuditEvidence: () => act.setView('audit'),
     pipelineBuilder: {
       ...pipelineBuilderState,
       library: {
@@ -916,11 +1070,11 @@ export function buildViewModel(s, act) {
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
     onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,
-    sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : 'Send'),
+    sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : (orchestratorPipelineBlocked ? 'Select a runnable pipeline' : 'Send')),
     sendMode: orchestratorOwnsDriver ? 'cancel' : 'send',
-    sendDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
+    sendDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked || orchestratorPipelineBlocked,
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
-    disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : ''),
+    disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : (orchestratorPipelineBlocked ? 'Select a runnable pipeline before sending.' : '')),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',

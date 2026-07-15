@@ -195,8 +195,8 @@ function ProcessMessage({ vals }) {
   )
 }
 
-// Scrollable message list + composer, shared by the orchestrator feed and the
-// pipeline driver chat. Auto-scrolls to the newest message.
+// Scrollable Orchestrator conversation + composer. Pipeline execution now
+// shares this durable conversation instead of owning a Studio chat surface.
 export default function ChatBody({ vals }) {
   const scrollRef = useRef(null)
   const shouldStickRef = useRef(true)

@@ -40,6 +40,7 @@ pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
     pub agent_cycles: Vec<AgentCycle>,
+    pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
@@ -1345,6 +1346,22 @@ pub struct AgentCycle {
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ToolEvidence {
+    pub id: i64,
+    pub ts: String,
+    pub session_id: String,
+    pub chat_id: String,
+    pub role: String,
+    pub worker_id: String,
+    pub tool: String,
+    pub category: String,
+    pub status: String,
+    pub skill_id: String,
+    pub detail: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OrchestratorSession {
     pub chat_id: String,
     pub created_at: String,
@@ -1444,6 +1461,34 @@ fn parse_cycle_tools(raw: &str) -> Vec<String> {
             })
         })
         .collect()
+}
+
+fn safe_tool_provenance(tool: &str, args_json: &str) -> (String, String, String) {
+    if tool != "musubi_get_skill" {
+        return ("tools".into(), String::new(), String::new());
+    }
+    let skill_id = serde_json::from_str::<serde_json::Value>(args_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("skill_id")
+                .and_then(|item| item.as_str())
+                .map(str::to_string)
+        })
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+        .unwrap_or_default();
+    let detail = if skill_id.is_empty() {
+        String::new()
+    } else {
+        format!("skill {skill_id}")
+    };
+    ("skills".into(), skill_id, detail)
 }
 
 fn current_epoch_secs() -> i64 {
@@ -2059,6 +2104,60 @@ fn load_state_at_with_pipeline_runs(
                 .flatten()
                 .collect();
         }
+    }
+
+    // Project an audit-safe tool ledger for the runtime Logs surface. Raw
+    // arguments and result bodies never cross this boundary. A worker handle
+    // is attached only when (session, role) identifies exactly one audited
+    // worker; retries with the same role deliberately remain unassigned.
+    if table_exists(conn, "tool_audit")? {
+        let mut workers_by_scope: HashMap<(String, String), Vec<String>> = HashMap::new();
+        for agent in &st.subagents {
+            workers_by_scope
+                .entry((agent.parent_session.clone(), agent.role.clone()))
+                .or_default()
+                .push(agent.handle.clone());
+        }
+        let mut tool_stmt = conn.prepare(
+            "SELECT id, ts, COALESCE(session_id,''), COALESCE(agent,''), tool,
+                    COALESCE(args_json,''), COALESCE(status,'')
+             FROM (SELECT id, ts, session_id, agent, tool, args_json, status
+                   FROM tool_audit ORDER BY id DESC LIMIT 500)
+             ORDER BY id ASC",
+        )?;
+        st.tool_evidence = tool_stmt
+            .query_map([], |row| {
+                let id = row.get(0)?;
+                let ts_value = row.get::<_, Value>(1)?;
+                let session_id: String = row.get(2)?;
+                let role: String = row.get(3)?;
+                let tool: String = row.get(4)?;
+                let args_json: String = row.get(5)?;
+                let status: String = row.get(6)?;
+                let worker_id = match workers_by_scope.get(&(session_id.clone(), role.clone())) {
+                    Some(handles) if handles.len() == 1 => handles[0].clone(),
+                    _ if role == "agent" || role == "driver" => "root".into(),
+                    _ => String::new(),
+                };
+                let (category, skill_id, detail) = safe_tool_provenance(&tool, &args_json);
+                Ok(ToolEvidence {
+                    id,
+                    ts: fmt_ts(&ts_value),
+                    chat_id: session_to_chat
+                        .get(&session_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    session_id,
+                    role,
+                    worker_id,
+                    tool,
+                    category,
+                    status,
+                    skill_id,
+                    detail,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
     }
 
     let pipeline_sessions = st
@@ -2913,6 +3012,75 @@ mod tests {
         assert_eq!(cycle.tokens_out, 90);
         assert_eq!(cycle.token_source, "provider");
         assert_eq!(cycle.tool_names, vec!["musubi_read_file", "musubi_grep"]);
+    }
+
+    #[test]
+    fn tool_evidence_exposes_only_safe_provenance_and_exact_worker_when_unambiguous() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO subagent_audit
+             (ts,handle_id,parent_session_id,parent_agent_name,role,brief,event,
+              allowed_tools,max_turns,wall_clock_timeout_s)
+             VALUES(10.0,'worker-1','session-1','agent','coder','build','spawned',
+                    '[\"musubi_get_skill\"]',8,300);
+             INSERT INTO tool_audit
+             (id,ts,session_id,pipeline,agent,tool,args_json,result_hash,status)
+             VALUES(7,11.0,'session-1','standalone-agent','coder','musubi_get_skill',
+                    '{\"skill_id\":\"python\",\"agent_name\":\"coder\",\"secret\":\"hidden\"}',
+                    'sha256:abc','ok');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.tool_evidence.len(), 1);
+        let row = &st.tool_evidence[0];
+        assert_eq!(row.worker_id, "worker-1");
+        assert_eq!(row.skill_id, "python");
+        assert_eq!(row.category, "skills");
+        assert_eq!(row.detail, "skill python");
+        let json = serde_json::to_string(row).unwrap();
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("hidden"));
+        assert!(!json.contains("argsJson"));
+    }
+
+    #[test]
+    fn tool_evidence_does_not_guess_worker_for_repeated_roles() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO subagent_audit
+             (ts,handle_id,parent_session_id,parent_agent_name,role,brief,event,
+              allowed_tools,max_turns,wall_clock_timeout_s)
+             VALUES
+             (10.0,'worker-1','session-1','agent','coder','first','spawned','[]',8,300),
+             (12.0,'worker-2','session-1','agent','coder','retry','spawned','[]',8,300);
+             INSERT INTO tool_audit
+             (id,ts,session_id,pipeline,agent,tool,args_json,status)
+             VALUES(8,13.0,'session-1','standalone-agent','coder','musubi_read_file',
+                    '{\"path\":\"private.txt\"}','ok');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.tool_evidence.len(), 1);
+        assert_eq!(st.tool_evidence[0].worker_id, "");
+        assert_eq!(st.tool_evidence[0].detail, "");
+    }
+
+    #[test]
+    fn tool_evidence_rejects_unsafe_or_oversized_skill_identifiers() {
+        let oversized = "x".repeat(81);
+        for value in ["../secret", oversized.as_str()] {
+            let args = serde_json::json!({ "skill_id": value }).to_string();
+            let (category, skill_id, detail) = safe_tool_provenance("musubi_get_skill", &args);
+            assert_eq!(category, "skills");
+            assert!(skill_id.is_empty());
+            assert!(detail.is_empty());
+        }
     }
 
     #[test]

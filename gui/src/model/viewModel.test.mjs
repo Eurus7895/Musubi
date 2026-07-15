@@ -135,6 +135,99 @@ test('projects Orchestrator run mode and registered pipeline options', () => {
   assert.equal(vm.selectedPipelineRunnable, true)
 })
 
+test('Pipeline composer fails closed until a runnable recipe is selected', () => {
+  const vm = buildViewModel(baseState({
+    runMode: 'pipeline',
+    selectedPipeline: 'blocked',
+    pipelineCatalog: [{ name: 'blocked', runnable: false, blockedReason: 'invalid contract', stages: [] }],
+  }), actions())
+
+  assert.equal(vm.sendDisabled, true)
+  assert.match(vm.disabledText, /runnable pipeline/i)
+})
+
+test('projects evidence-backed runtime graph logs and successful skill provenance', () => {
+  const coder = agent(10, 'root-session', 'done', 'coder', 'gui-orchestrator-project-one')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-one',
+    selectedSession: 'gui-orchestrator-project-one',
+    selected: coder.handle,
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-project-one', title: 'ship it', lastRequest: 'ship it',
+      rootTurns: 1, workers: 1,
+    }],
+    subagents: [coder],
+    agentTurns: [{
+      id: 1, chatId: 'gui-orchestrator-project-one', parentSession: 'root-session',
+      request: 'ship it', startedAt: 100, cycles: 1, tokensInEstimate: 20, tokensOutEstimate: 5,
+    }],
+    agentCycles: [{
+      sessionId: 'root-session', stage: 'coder', workerId: coder.handle, cycleIdx: 1,
+      lmMs: 12, tokensIn: 20, cachedInputTokens: 0, tokensOut: 5,
+      tokenSource: 'provider', toolNames: ['musubi_get_skill'], cycleStatus: 'final',
+    }],
+    toolEvidence: [
+      { id: 20, ts: '10:00:01', sessionId: 'root-session', chatId: 'gui-orchestrator-project-one', role: 'coder', workerId: coder.handle, tool: 'musubi_get_skill', category: 'skills', status: 'ok', skillId: 'python', detail: 'skill python' },
+      { id: 21, ts: '10:00:02', sessionId: 'root-session', chatId: 'gui-orchestrator-project-one', role: 'coder', workerId: coder.handle, tool: 'musubi_get_skill', category: 'skills', status: 'error', skillId: 'unsafe', detail: 'skill unsafe' },
+    ],
+    policy: [{ id: 30, ts: '10:00:03', verdict: 'DENY', tool: 'musubi_write_file', role: 'coder', handle: coder.handle, reason: 'outside surface' }],
+  }), actions())
+
+  assert.deepEqual(vm.runtimeGraph.nodes.map((node) => [node.id, node.parentId]), [
+    ['root', null], [coder.handle, 'root'],
+  ])
+  assert.deepEqual(vm.skillsByWorker[coder.handle], ['python'])
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'skills' && row.status === 'error'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'policy' && row.status === 'deny'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'model' && row.workerId === coder.handle), true)
+  assert.equal(JSON.stringify(vm.runtimeLogs).includes('rawArgs'), false)
+})
+
+test('includes pipeline stages launched by an Orchestrator chat in the runtime graph', () => {
+  const stage = agent(40, 'pipeline-session', 'done', 'reviewer', 'gui-orchestrator-unified')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-unified',
+    selectedSession: 'gui-orchestrator-unified',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-unified', title: 'review', lastRequest: 'review', rootTurns: 1, workers: 1 }],
+    agentTurns: [{ id: 1, chatId: 'gui-orchestrator-unified', parentSession: 'root-session', request: 'review', startedAt: 100 }],
+    pipelineRuns: [{
+      sessionId: 'pipeline-session', chatId: 'gui-orchestrator-unified', pipelineName: 'code-review',
+      brief: 'review', startedAt: 101, endedAt: 120, status: 'success', stages: [stage],
+    }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.mode, 'pipeline')
+  assert.equal(vm.runtimeGraph.pipelineName, 'code-review')
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === stage.handle), true)
+})
+
+test('does not attach an older pipeline run to a newer direct root turn', () => {
+  const staleStage = agent(41, 'old-pipeline', 'done', 'coder', 'gui-orchestrator-unified')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-unified',
+    selectedSession: 'gui-orchestrator-unified',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-unified', title: 'new direct turn', lastRequest: 'new direct turn', rootTurns: 2, workers: 0 }],
+    agentTurns: [{ id: 2, chatId: 'gui-orchestrator-unified', parentSession: 'new-root', request: 'new direct turn', startedAt: 100 }],
+    pipelineRuns: [{ sessionId: 'old-pipeline', chatId: 'gui-orchestrator-unified', pipelineName: 'feature-dev', startedAt: 90, status: 'success', stages: [staleStage] }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.mode, 'direct')
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === staleStage.handle), false)
+})
+
+test('keeps ambiguous audit rows visible without guessing a worker', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-one',
+    selectedSession: 'gui-orchestrator-one',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-one', title: 'task', lastRequest: 'task', rootTurns: 1, workers: 2 }],
+    agentTurns: [{ id: 1, chatId: 'gui-orchestrator-one', parentSession: 'root-one', request: 'task', startedAt: 100 }],
+    toolEvidence: [{ id: 8, ts: '10:00:00', sessionId: 'root-one', chatId: 'gui-orchestrator-one', role: 'coder', workerId: '', tool: 'musubi_read_file', category: 'tools', status: 'ok', skillId: '', detail: '' }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === 'unassigned'), true)
+  assert.equal(vm.runtimeLogs[0].workerId, 'unassigned')
+})
+
 test('projects builder state without active Studio runtime controls', () => {
   const vm = buildViewModel(baseState({
     pipelineBuilder: {
