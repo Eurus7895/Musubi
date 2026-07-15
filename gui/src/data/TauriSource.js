@@ -13,6 +13,7 @@ const DOMAIN_KEYS = [
   'setupStatus', 'driverStatus', 'orchestratorChatId',
   'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
   'pipelineCatalog', 'pipelineRuns',
+  'pipelineBuilderCatalog',
 ]
 
 export default class TauriSource {
@@ -32,6 +33,7 @@ export default class TauriSource {
       pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '',
       pipelineCatalog: [], runMode: 'direct', selectedPipeline: '',
+      pipelineBuilderCatalog: { presets: [], agents: [] },
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
@@ -217,7 +219,18 @@ export default class TauriSource {
       ),
       selectPipelineBuilderStep: (step) => this._setBuilder({ step }, false),
       selectPipelineStage: (selectedStageIndex) => this._setBuilder({ selectedStageIndex }, false),
-      addPipelineStage: (stage, index) => this._setBuilder({ draft: addStage(this.state.pipelineBuilder.draft, stage, index) }),
+      addPipelineStage: (stage, index) => {
+        const catalog = this.state.pipelineBuilderCatalog || { presets: [], agents: [] }
+        const presetId = String(stage?.id || stage?.preset || '')
+        const agentName = String(stage?.name || stage?.agent || '')
+        const preset = (catalog.presets || []).find((item) => item.id === presetId && item.runnable)
+        const agent = preset ? null : (catalog.agents || []).find((item) => item.name === agentName && item.runnable)
+        if (!preset && !agent) return
+        const recipeStage = preset
+          ? { preset: preset.id }
+          : { agent: agent.name, stage: agent.step || agent.name }
+        this._setBuilder({ draft: addStage(this.state.pipelineBuilder.draft, recipeStage, index) })
+      },
       movePipelineStage: (fromIndex, toIndex) => this._setBuilder({ draft: moveStage(this.state.pipelineBuilder.draft, fromIndex, toIndex) }),
       removePipelineStage: (index) => this._setBuilder({
         draft: removeStage(this.state.pipelineBuilder.draft, index),

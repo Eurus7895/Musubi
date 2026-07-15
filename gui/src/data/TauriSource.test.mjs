@@ -230,6 +230,26 @@ test('backend polling preserves dirty builder drafts and initializes only pristi
   assert.equal(source.state.pipelineBuilder.draft.name, 'dirty-local')
 })
 
+test('backend polling refreshes builder catalog without replacing a dirty draft', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilder: {
+      ...source.state.pipelineBuilder,
+      draft: { ...source.state.pipelineBuilder.draft, name: 'dirty-local' },
+    },
+  })
+
+  source._mergeDomain({
+    pipelineBuilderCatalog: {
+      presets: [{ id: 'plan', agent: 'planner', stage: 'plan', runnable: true }],
+      agents: [{ name: 'planner', displayLabel: 'Planner', runnable: true }],
+    },
+  })
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'dirty-local')
+  assert.equal(source.state.pipelineBuilderCatalog.presets[0].id, 'plan')
+})
+
 test('newSession re-mints Orchestrator and defaults composer to Direct', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
@@ -391,6 +411,12 @@ test('recipe edit still invalidates an older validation completion', async () =>
   const source = new TauriSource({})
   const validation = deferred()
   source._invoke = () => validation.promise
+  source._setLocal({
+    pipelineBuilderCatalog: {
+      presets: [],
+      agents: [{ name: 'planner', step: 'plan', runnable: true }],
+    },
+  })
 
   const request = source.actions.validatePipelineRecipe()
   source.actions.addPipelineStage({ agent: 'planner' })
@@ -422,13 +448,43 @@ test('confirmed dirty recipe load retains resolved contracts in save payload', a
 
 test('builder edits stages and spawn roles through immutable actions', () => {
   const { source } = sourceWithActionSpy()
-  source.actions.addPipelineStage({ agent: 'planner', spawns: ['Researcher'] })
+  source._setLocal({
+    pipelineBuilderCatalog: {
+      presets: [],
+      agents: [
+        { name: 'planner', step: 'planner', runnable: true },
+        { name: 'coder', step: 'coder', runnable: true },
+      ],
+    },
+  })
+  source.actions.addPipelineStage({ agent: 'planner' })
   source.actions.addPipelineStage({ agent: 'coder' })
   source.actions.addPipelineSpawn(1, 'Reviewer-Aux')
   source.actions.movePipelineStage(1, 0)
 
   assert.deepEqual(source.state.pipelineBuilder.draft.stages.map((stage) => stage.agent), ['coder', 'planner'])
   assert.deepEqual(source.state.pipelineBuilder.draft.stages[0].spawns, ['reviewer-aux'])
+})
+
+test('builder add-stage accepts only runnable backend catalog entries', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'plan', agent: 'planner', stage: 'plan', runnable: true },
+        { id: 'broken', agent: 'missing', stage: 'build', runnable: false, blockedReason: 'unknown agent' },
+      ],
+      agents: [{ name: 'coder', displayLabel: 'Coder', runnable: true }],
+    },
+  })
+
+  source.actions.addPipelineStage({ preset: 'missing' })
+  source.actions.addPipelineStage({ preset: 'broken' })
+  source.actions.addPipelineStage({ preset: 'plan' })
+
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages, [
+    { preset: 'plan', agent: '', stage: '', spawns: [] },
+  ])
 })
 
 test('legacy Pipeline Studio runtime actions are absent', () => {

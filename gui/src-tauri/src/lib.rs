@@ -1314,6 +1314,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     st.viewed_orchestrator_chat_id = viewed_orchestrator_chat_id.unwrap_or_default();
     st.pipeline_chat_id = pipeline_chat_id;
     st.pipeline_catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
+    st.pipeline_builder_catalog = musubi_data::read_pipeline_builder_catalog(&state.project_root);
     st.paused = state.paused.load(Ordering::Relaxed);
     st.runtime_source = state
         .audit_db

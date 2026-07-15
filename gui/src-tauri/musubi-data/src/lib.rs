@@ -43,6 +43,7 @@ pub struct State {
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
+    pub pipeline_builder_catalog: PipelineBuilderCatalog,
     pub orchestrator_chat_id: String,
     pub viewed_orchestrator_chat_id: String,
     pub pipeline_chat_id: String,
@@ -129,6 +130,43 @@ pub struct PipelineCatalogEntry {
     pub name: String,
     pub description: String,
     pub stages: Vec<String>,
+    pub runnable: bool,
+    pub blocked_reason: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineBuilderCatalog {
+    pub presets: Vec<PipelinePresetCatalogEntry>,
+    pub agents: Vec<PipelineAgentCatalogEntry>,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelinePresetCatalogEntry {
+    pub id: String,
+    pub description: String,
+    pub agent: String,
+    pub stage: String,
+    pub source_path: String,
+    pub runnable: bool,
+    pub blocked_reason: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineAgentCatalogEntry {
+    pub name: String,
+    pub display_label: String,
+    pub step: String,
+    pub agent: String,
+    pub prompt_path: String,
+    pub role_skill: String,
+    pub allowed_tools: Vec<String>,
+    pub max_turns: i64,
+    pub max_output_tokens: Option<i64>,
+    pub spawn_allowlist: Vec<String>,
+    pub source_paths: Vec<String>,
     pub runnable: bool,
     pub blocked_reason: String,
 }
@@ -736,6 +774,146 @@ fn effective_spawn_firewall(
             })
         })
         .collect()
+}
+
+fn collect_agent_catalog_paths(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_agent_catalog_paths(&path, paths);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".agent.md"))
+        {
+            paths.push(path);
+        }
+    }
+}
+
+/// Project the authoritative preset and agent catalogs for Pipeline Studio.
+/// Resolution delegates to the same parser, contract, and policy functions
+/// used by recipe validation; this projection never makes an entry runnable
+/// on weaker evidence than the backend save boundary.
+pub fn read_pipeline_builder_catalog(project_root: &Path) -> PipelineBuilderCatalog {
+    let firewall = read_spawn_firewall(project_root);
+    let presets_root = project_root
+        .join(".github")
+        .join("pipelines")
+        .join("presets");
+    let mut preset_paths = std::fs::read_dir(&presets_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("yaml")
+        })
+        .collect::<Vec<_>>();
+    preset_paths.sort();
+    let presets = preset_paths
+        .into_iter()
+        .filter_map(|path| {
+            let id = path.file_stem()?.to_str()?.to_string();
+            if !valid_pipeline_name(&id) {
+                return None;
+            }
+            let mut entry = PipelinePresetCatalogEntry {
+                id: id.clone(),
+                source_path: path.to_string_lossy().to_string(),
+                ..PipelinePresetCatalogEntry::default()
+            };
+            let parsed = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read preset {id:?}: {error}"))
+                .and_then(|raw| {
+                    serde_yaml::from_str::<PresetDocument>(&raw)
+                        .map_err(|error| format!("invalid preset {id:?}: {error}"))
+                });
+            if let Ok(preset) = parsed {
+                entry.agent = preset.agent;
+                entry.stage = preset.stage;
+                entry.description = preset.description;
+            }
+            let recipe = PipelineRecipe {
+                stages: vec![PipelineStageRecipe {
+                    preset: id,
+                    ..PipelineStageRecipe::default()
+                }],
+                ..PipelineRecipe::default()
+            };
+            let resolved = resolve_recipe_stages(project_root, &recipe).and_then(|mut stages| {
+                let stage = stages.remove(0);
+                resolve_stage_contract(&stage, String::new())?;
+                effective_spawn_firewall(&stage, &firewall)?;
+                Ok(())
+            });
+            match resolved {
+                Ok(()) => entry.runnable = true,
+                Err(error) => entry.blocked_reason = error,
+            }
+            Some(entry)
+        })
+        .collect();
+
+    let agents_root = project_root.join(".github").join("agents");
+    let mut agent_paths = Vec::new();
+    collect_agent_catalog_paths(&agents_root, &mut agent_paths);
+    agent_paths.sort();
+    let mut emitted = HashSet::new();
+    let agents = agent_paths
+        .into_iter()
+        .filter_map(|path| {
+            let filename = path.file_name()?.to_str()?;
+            let name = filename.strip_suffix(".agent.md")?.to_string();
+            if !valid_pipeline_name(&name) || !emitted.insert(name.clone()) {
+                return None;
+            }
+            let mut entry = PipelineAgentCatalogEntry {
+                name: name.clone(),
+                step: name.clone(),
+                agent: name.clone(),
+                prompt_path: path.to_string_lossy().to_string(),
+                source_paths: vec![path.to_string_lossy().to_string()],
+                ..PipelineAgentCatalogEntry::default()
+            };
+            let resolved = (|| {
+                let resolved_path = resolve_agent_path(project_root, &name)?;
+                let frontmatter = parse_agent_frontmatter(&resolved_path)?;
+                entry.display_label = yaml_mapping_get(&frontmatter, "name")
+                    .and_then(serde_yaml::Value::as_str)
+                    .filter(|label| !label.trim().is_empty())
+                    .ok_or_else(|| format!("agent {name:?} has missing or invalid name"))?
+                    .to_string();
+                let stage = EffectiveStage {
+                    agent: name.clone(),
+                    stage: name.clone(),
+                    preset_path: None,
+                    agent_path: resolved_path,
+                };
+                let contract = resolve_stage_contract(&stage, String::new())?;
+                entry.step = contract.step;
+                entry.agent = contract.agent;
+                entry.prompt_path = contract.prompt_path;
+                entry.role_skill = contract.role_skill;
+                entry.allowed_tools = contract.allowed_tools;
+                entry.max_turns = contract.max_turns;
+                entry.max_output_tokens = contract.max_output_tokens;
+                entry.source_paths = contract.source_paths;
+                entry.spawn_allowlist = effective_spawn_firewall(&stage, &firewall)?;
+                Ok::<(), String>(())
+            })();
+            match resolved {
+                Ok(()) => entry.runnable = true,
+                Err(error) => entry.blocked_reason = error,
+            }
+            Some(entry)
+        })
+        .collect();
+
+    PipelineBuilderCatalog { presets, agents }
 }
 
 fn evaluator_like(stage: &EffectiveStage, recipe_stage: &PipelineStageRecipe) -> bool {
@@ -2562,6 +2740,7 @@ mod tests {
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
         assert!(v.get("runtimeSource").is_some());
+        assert!(v.get("pipelineBuilderCatalog").is_some());
         // spawnEpoch is now serialized so the UI can sort runs chronologically.
         assert!(v["subagents"][0].get("spawnEpoch").is_some());
         assert!(v["subagents"][0].get("max").is_some());
@@ -3573,6 +3752,90 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn pipeline_builder_catalog_projects_resolved_contracts_and_spawn_precedence() {
+        let root = temp_dir("pipeline-builder-catalog-contracts");
+        write_recipe_fixture(&root);
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(
+            root.join("scripts/policy_engine.py"),
+            "MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {\n    \"coder\": [\"explorer\"],\n}\n",
+        )
+        .unwrap();
+        let coder = root
+            .join(".github")
+            .join("agents")
+            .join("workers")
+            .join("coder.agent.md");
+        std::fs::write(
+            &coder,
+            "---\nname: Coder Display\nmaxTurns: 8\nmaxOutputTokens: 4096\ntools: [Read, Write]\nspawn_allowlist: [reviewer-aux]\n---\n\n# Coder prompt\n",
+        )
+        .unwrap();
+
+        let catalog = read_pipeline_builder_catalog(&root);
+
+        let build = catalog
+            .presets
+            .iter()
+            .find(|item| item.id == "build")
+            .unwrap();
+        assert_eq!(build.agent, "coder");
+        assert_eq!(build.stage, "code");
+        assert!(build.source_path.ends_with("build.yaml"));
+        assert!(build.runnable, "{}", build.blocked_reason);
+        let agent = catalog
+            .agents
+            .iter()
+            .find(|item| item.name == "coder")
+            .unwrap();
+        assert_eq!(agent.display_label, "Coder Display");
+        assert_eq!(agent.prompt_path, coder.to_string_lossy());
+        assert_eq!(agent.allowed_tools, vec!["Read", "Write"]);
+        assert_eq!(agent.max_turns, 8);
+        assert_eq!(agent.max_output_tokens, Some(4096));
+        assert_eq!(agent.spawn_allowlist, vec!["reviewer-aux"]);
+        assert_eq!(
+            agent.source_paths,
+            vec![coder.to_string_lossy().to_string()]
+        );
+        assert!(agent.runnable, "{}", agent.blocked_reason);
+    }
+
+    #[test]
+    fn pipeline_builder_catalog_blocks_malformed_and_unknown_entries_fail_closed() {
+        let root = temp_dir("pipeline-builder-catalog-blocked");
+        write_recipe_fixture(&root);
+        let presets = root.join(".github").join("pipelines").join("presets");
+        let agents = root.join(".github").join("agents").join("workers");
+        std::fs::write(
+            presets.join("unknown.yaml"),
+            "id: unknown\nagent: missing\nstage: investigate\n",
+        )
+        .unwrap();
+        std::fs::write(presets.join("malformed.yaml"), "id: [\n").unwrap();
+        std::fs::write(
+            agents.join("broken.agent.md"),
+            "---\nname: Broken\nmaxTurns: 4\ntools: Read\n---\n# prompt\n",
+        )
+        .unwrap();
+
+        let catalog = read_pipeline_builder_catalog(&root);
+
+        for id in ["unknown", "malformed"] {
+            let item = catalog.presets.iter().find(|item| item.id == id).unwrap();
+            assert!(!item.runnable);
+            assert!(!item.blocked_reason.is_empty());
+        }
+        let broken = catalog
+            .agents
+            .iter()
+            .find(|item| item.name == "broken")
+            .unwrap();
+        assert!(!broken.runnable);
+        assert!(!broken.blocked_reason.is_empty());
     }
 
     fn valid_pipeline_recipe(name: &str) -> PipelineRecipe {

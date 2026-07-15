@@ -293,6 +293,33 @@ export function buildViewModel(s, act) {
     selected: entry.name === s.selectedPipeline,
     onSelect: () => act.selectPipeline?.(entry.name),
   }))
+  const builderCatalog = s.pipelineBuilderCatalog || { presets: [], agents: [] }
+  const libraryQuery = String(
+    pipelineBuilderState.libraryQuery
+      ?? pipelineBuilderState.librarySearch
+      ?? pipelineBuilderState.search
+      ?? '',
+  ).trim().toLowerCase()
+  const searchable = (item, fields) => !libraryQuery || fields
+    .some((field) => String(item?.[field] || '').toLowerCase().includes(libraryQuery))
+  const by = (field) => (a, b) => String(a?.[field] || '').localeCompare(String(b?.[field] || ''))
+  const libraryPresets = (builderCatalog.presets || [])
+    .filter((item) => searchable(item, ['id', 'description', 'agent', 'stage', 'blockedReason']))
+    .map((item) => ({ ...item, blocked: !item.runnable }))
+    .sort(by('id'))
+  const allLibraryAgents = (builderCatalog.agents || [])
+    .map((item) => ({ ...item, blocked: !item.runnable }))
+    .sort(by('name'))
+  const libraryAgents = allLibraryAgents
+    .filter((item) => searchable(item, ['name', 'displayLabel', 'blockedReason']))
+  const spawnRoleNames = new Set(
+    (builderCatalog.agents || [])
+      .filter((item) => item.runnable)
+      .flatMap((item) => item.spawnAllowlist || []),
+  )
+  const librarySpawnRoles = allLibraryAgents
+    .filter((item) => item.runnable && spawnRoleNames.has(item.name))
+    .filter((item) => searchable(item, ['name', 'displayLabel']))
   const selectedPipelineEntry = pipelineOptions.find((entry) => entry.selected)
   const sm = statusMeta
   const allSubagents = s.subagents || []
@@ -821,6 +848,12 @@ export function buildViewModel(s, act) {
     onSetRunMode: act.setRunMode,
     pipelineBuilder: {
       ...pipelineBuilderState,
+      library: {
+        query: libraryQuery,
+        presets: libraryPresets,
+        agents: libraryAgents,
+        spawnRoles: librarySpawnRoles,
+      },
       dirty: isDirty(pipelineBuilderState.draft, pipelineBuilderState.savedRecipe),
       selectedStage: pipelineBuilderState.draft?.stages?.[pipelineBuilderState.selectedStageIndex] || null,
       actions: {

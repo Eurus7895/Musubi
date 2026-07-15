@@ -41,6 +41,7 @@ function baseState(overrides = {}) {
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
+    pipelineBuilderCatalog: { presets: [], agents: [] },
     runMode: 'direct',
     selectedPipeline: '',
     pipelineBuilder: {
@@ -157,6 +158,50 @@ test('projects builder state without active Studio runtime controls', () => {
   for (const field of ['pipeChatBody', 'pipeRuns', 'activePipeRunId', 'activePipeRunSteps', 'pipeRunSummary', 'pipeChat']) {
     assert.equal(vm[field], undefined, field)
   }
+})
+
+test('projects a sorted searchable builder library with blocked metadata and spawn roles', () => {
+  const vm = buildViewModel(baseState({
+    pipelineBuilder: {
+      ...baseState().pipelineBuilder,
+      libraryQuery: 'plan',
+    },
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'z-build', agent: 'coder', stage: 'code', runnable: false, blockedReason: 'invalid tools' },
+        { id: 'a-plan', agent: 'planner', stage: 'plan', runnable: true, blockedReason: '' },
+      ],
+      agents: [
+        { name: 'reviewer-aux', displayLabel: 'Reviewer Aux', runnable: true, spawnAllowlist: [] },
+        { name: 'planner', displayLabel: 'Planner', runnable: true, spawnAllowlist: ['reviewer-aux'] },
+        { name: 'broken', displayLabel: 'Broken', runnable: false, blockedReason: 'bad frontmatter', spawnAllowlist: [] },
+      ],
+    },
+  }), actions())
+
+  assert.deepEqual(vm.pipelineBuilder.library.presets.map((item) => item.id), ['a-plan'])
+  assert.deepEqual(vm.pipelineBuilder.library.agents.map((item) => item.name), ['planner'])
+  assert.deepEqual(vm.pipelineBuilder.library.spawnRoles.map((item) => item.name), [])
+  assert.equal(vm.pipelineBuilder.library.presets[0].blocked, false)
+
+  const all = buildViewModel(baseState({
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'z-blocked', runnable: false, blockedReason: 'unknown agent' },
+        { id: 'a-plan', runnable: true, blockedReason: '' },
+      ],
+      agents: [
+        { name: 'reviewer-aux', displayLabel: 'Reviewer Aux', runnable: true },
+        { name: 'planner', displayLabel: 'Planner', runnable: true, spawnAllowlist: ['reviewer-aux'] },
+        { name: 'broken', displayLabel: 'Broken', runnable: false, blockedReason: 'bad frontmatter' },
+      ],
+    },
+  }), actions())
+  assert.deepEqual(all.pipelineBuilder.library.presets.map((item) => item.id), ['a-plan', 'z-blocked'])
+  assert.deepEqual(all.pipelineBuilder.library.agents.map((item) => item.name), ['broken', 'planner', 'reviewer-aux'])
+  assert.deepEqual(all.pipelineBuilder.library.spawnRoles.map((item) => item.name), ['reviewer-aux'])
+  assert.equal(all.pipelineBuilder.library.presets[1].blocked, true)
+  assert.equal(all.pipelineBuilder.library.agents[0].blockedReason, 'bad frontmatter')
 })
 
 test('groups workers into parent runs newest first', () => {
