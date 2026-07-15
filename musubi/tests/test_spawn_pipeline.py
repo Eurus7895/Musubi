@@ -362,6 +362,58 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
         assert "## Skill (pushed by harness)" in prompt
 
 
+def test_runner_recommends_and_pushes_a_skill_per_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Option 3 for pipelines: the runner asks the deterministic recommender
+    for a per-stage skill (for_role = stage role) and threads the top pick as
+    pushed_skill_id on the stage spawn."""
+    from agent import pipeline_runner
+
+    pushed: dict[str, str | None] = {}
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-rec",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_recommend_skills":
+            # The runner asks for the stage role's skills.
+            assert args["for_role"] == "coder"
+            return json.dumps({"recommended": [{"skill_id": "web-ui"}]})
+        if name == "musubi_spawn_pipeline_stage":
+            pushed[args["stage"]] = args.get("pushed_skill_id")
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role": "coder",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name in ("musubi_complete_subagent", "musubi_finalize_pipeline_run"):
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "stage done", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "create a dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=True,
+    ))
+
+    assert pushed == {"code": "web-ui"}
+
+
 def test_pipeline_stage_threads_frontmatter_output_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

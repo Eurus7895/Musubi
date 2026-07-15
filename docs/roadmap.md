@@ -108,6 +108,20 @@ for the same dimension.
   entries were previously unreachable by workers. The root now selects a skill
   per spawned worker and pushes it (option 3, see Active track 2), so catalog
   growth reaches workers without adding a skill tool to their lean surface.
+  Extended to pipeline stages: the deterministic runner recommends a skill per
+  stage (`musubi_recommend_skills(for_role=…)`, zero-LLM) and pushes it through
+  `musubi_spawn_pipeline_stage` so feature-dev stages (designer/coder/reviewer)
+  carry role-appropriate procedure instead of showing "no skill evidence";
+  `planner` has an empty skill allowlist and remains skill-less by design.
+- **Stage extension by user grant.** When a pipeline stage exhausts its cycle
+  cap it currently fails closed (`[stage <x>] exceeded N cycles`). Reuse the
+  existing budget-grant gate (`pause_reason='budget_exhausted'`,
+  `pending_extra_budget`, `grant` action) — today wired only into the
+  server/GUI session path — inside the standalone pipeline runner, so an
+  escalated stage (reviewer or any) can be extended by asking the user for
+  more cycles instead of aborting the run. Design-gated: the grant is bounded,
+  audited, and never waives the wall-clock rule. Plan to be written before
+  implementation.
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this

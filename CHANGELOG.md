@@ -30,6 +30,13 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   worker as `pushedSkill`, and the Orchestrator folds it into the worker's
   skill badges, the "Skills used" panel, and the audited-activity log — a
   pushed skill now shows exactly like a pulled one.
+- Extended to pipeline stages: the deterministic runner asks the recommender
+  (`for_role`) for the best skill in each stage role's allowlist and pushes it
+  through `musubi_spawn_pipeline_stage` (validated fail-closed against the
+  role's allowlist). feature-dev stages that previously showed "no skill
+  evidence" now carry role-appropriate procedure — a dashboard run pushes
+  `web-ui` to the coder and `code-review` to the reviewer. `planner` has an
+  empty skill allowlist and stays skill-less by design.
 
 ### Fixes
 

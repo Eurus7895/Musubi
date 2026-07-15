@@ -1668,6 +1668,7 @@ def musubi_spawn_pipeline_stage(
     stage: str,
     brief: str,
     max_turns: int = sub_sessions.DEFAULT_MAX_TURNS,
+    pushed_skill_id: str | None = None,
 ) -> str:
     """Authorise + record one pipeline stage worker, by pipeline membership.
 
@@ -1701,6 +1702,16 @@ def musubi_spawn_pipeline_stage(
     tools = list(_policy.PIPELINE_POLICIES.get(pipeline_name, {}).get(role, []))
     if not tools:  # user-defined pipeline (Increment 6) → role's own cap
         tools = _policy.get_subagent_tools(role)
+    # Root-selected skill for this stage (option 3 extended to pipelines).
+    # Validate against the stage role's skill allowlist and the catalog before
+    # recording — fail-closed, so the runner can only push a skill the role is
+    # authorised for. An unknown/unauthorised choice is dropped, not fatal:
+    # the stage still runs, just without a pushed skill.
+    skill_choice = (pushed_skill_id or "").strip() or None
+    if skill_choice is not None:
+        role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
+        if skill_choice not in role_skills or skill_loader.get_skill(skill_choice) is None:
+            skill_choice = None
     try:
         handle_id = sub_sessions.spawn(
             parent_session_id=pipeline_session_id,
@@ -1712,6 +1723,7 @@ def musubi_spawn_pipeline_stage(
             per_turn_timeout_s=sub_sessions.DEFAULT_PER_TURN_TIMEOUT_S,
             wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
             output_schema=None,
+            pushed_skill_id=skill_choice,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
@@ -1725,6 +1737,7 @@ def musubi_spawn_pipeline_stage(
             allowed_tools=tools,
             max_turns=max_turns,
             wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+            pushed_skill_id=skill_choice,
         )
     except Exception:
         pass
@@ -1741,6 +1754,7 @@ def musubi_spawn_pipeline_stage(
         # role's firewall (fail-closed [] when the yaml declares none).
         "spawn_roles": _policy.list_subagent_roles(role, pipeline_name),
         "brief": brief,
+        "pushed_skill_id": skill_choice,
     })
 
 
