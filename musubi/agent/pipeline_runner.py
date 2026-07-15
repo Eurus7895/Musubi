@@ -195,9 +195,18 @@ async def run_pipeline(
                 raise RuntimeError(msg) from exc
             return msg
 
+        # Skill selection for this stage (option 3 extended to pipelines):
+        # ask the deterministic recommender (zero-LLM) for the single best
+        # skill in the stage role's allowlist, then push it into the stage.
+        # The role name is folded into the task text so a role-canonical skill
+        # matches (e.g. "reviewer" fires code-review's "review" trigger). The
+        # spawn re-validates the id against the role's allowlist (fail-closed).
+        stage_skill = await _recommend_stage_skill(session, role, brief)
+
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
             "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
+            "pushed_skill_id": stage_skill,
         })
         st = _loads(stage_raw)
         if st.get("status") != "spawned":
@@ -446,6 +455,34 @@ def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> st
         )
     joined = "\n\n".join(summaries)
     return f"{request}\n\n## Prior stage outputs\n\n{joined}"
+
+
+async def _recommend_stage_skill(session: Any, role: str, brief: str) -> str | None:
+    """Return the single best catalog skill id for a pipeline stage, or None.
+
+    Deterministic (the recommender is pure scoring, zero-LLM — HI #1). Ranks
+    only skills in the stage role's allowlist (`for_role`); the role name is
+    folded into the task text so a role-canonical skill matches even when the
+    brief itself does not (e.g. "reviewer" fires code-review's "review"
+    trigger). Any failure degrades to None — a stage without a matched skill
+    simply runs without one, never blocking the pipeline.
+    """
+    from agent.run import _call_tool_text
+
+    try:
+        raw = await _call_tool_text(session, "musubi_recommend_skills", {
+            "task": f"{role} {brief}",
+            "agent_name": role,
+            "for_role": role,
+            "limit": 1,
+        })
+        recommended = _loads(raw).get("recommended") or []
+        if recommended:
+            skill_id = str(recommended[0].get("skill_id") or "").strip()
+            return skill_id or None
+    except Exception:
+        return None
+    return None
 
 
 def _loads(raw: str) -> dict[str, Any]:

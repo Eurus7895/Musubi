@@ -113,20 +113,36 @@ def _message_to_openai_list(message: dict[str, Any]) -> list[dict[str, Any]]:
         return [out]
 
     if role == "user":
-        # Fan out tool_result blocks into separate role:"tool" messages.
-        if isinstance(content, list) and content and all(
-            b.get("type") == "tool_result" for b in content
-        ):
-            return [
-                {
-                    "role": "tool",
-                    "tool_call_id": b.get("tool_use_id", ""),
-                    "content": _coerce_tool_result_content(b.get("content")),
-                }
-                for b in content
-            ]
-        text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-        return [{"role": "user", "content": text}]
+        # Fan out tool_result blocks into separate role:"tool" messages, one
+        # per tool_call_id. A user turn may MIX tool_result blocks with text
+        # (the root's recovery-analysis window appends a text block to the
+        # tool-results message — see agent/run.py). Every tool_result must
+        # still be emitted, or the preceding assistant `tool_calls` is left
+        # unanswered and an OpenAI-family vendor rejects the request with
+        # "insufficient tool messages following tool_calls message". So we
+        # walk the blocks: tool results become `tool` messages (kept first so
+        # they immediately follow the assistant turn), and any trailing text
+        # becomes one extra `user` message rather than replacing them.
+        if isinstance(content, list):
+            tool_msgs: list[dict[str, Any]] = []
+            text_parts: list[str] = []
+            for b in content:
+                btype = b.get("type")
+                if btype == "tool_result":
+                    tool_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": b.get("tool_use_id", ""),
+                        "content": _coerce_tool_result_content(b.get("content")),
+                    })
+                elif btype == "text":
+                    text_parts.append(b.get("text", ""))
+            if tool_msgs:
+                out_msgs = list(tool_msgs)
+                trailing = "".join(text_parts)
+                if trailing:
+                    out_msgs.append({"role": "user", "content": trailing})
+                return out_msgs
+            return [{"role": "user", "content": "".join(text_parts)}]
 
     return [{"role": role, "content": str(content)}]
 

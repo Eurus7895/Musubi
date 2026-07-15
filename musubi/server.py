@@ -1196,14 +1196,18 @@ def musubi_recommend_skills(
     context_summary: str = "",
     tools_used: list[str] | None = None,
     limit: int = 5,
+    for_role: str | None = None,
 ) -> str:
-    """Return deterministic skill recommendations for the calling agent.
+    """Rank catalog skills for a task; returns ids/titles only, never bodies.
 
-    This ranks only skills the caller may already load. It never injects skill
-    content and never widens AGENT_SKILL_ALLOWLIST.
+    Defaults to the caller's (`agent_name`) allowlist. Set `for_role` to rank
+    a worker's skills before a spawn (option 3): the root picks a
+    `pushed_skill_id` from that role's allowlist. Widens nothing — the spawn
+    re-validates the id. Unknown `for_role` → no recommendations.
     """
     key = agent_name.lower().strip()
-    allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
+    candidate_key = (for_role or "").lower().strip() or key
+    allowed = AGENT_SKILL_ALLOWLIST.get(candidate_key, set())
     metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
     profile = _load_project_profile()
     applicable = skill_router.applicable_skills(profile, metas)
@@ -1216,6 +1220,7 @@ def musubi_recommend_skills(
     )
     return json.dumps({
         "agent_name": key,
+        "for_role": candidate_key,
         "recommended": [
             {
                 "skill_id": item.skill_id,
@@ -1442,6 +1447,7 @@ def musubi_spawn_subagent(
     per_turn_timeout_s: int = sub_sessions.DEFAULT_PER_TURN_TIMEOUT_S,
     wall_clock_timeout_s: int = sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
     output_schema: str | None = None,
+    pushed_skill_id: str | None = None,
 ) -> str:
     """Spawn a sub-agent run. Returns a handle_id the parent can await.
 
@@ -1450,6 +1456,13 @@ def musubi_spawn_subagent(
       2. parent_agent_name must list role in MAIN_SUBAGENT_ALLOWLIST.
       3. effective_tools = SUBAGENT_POLICIES[role] ∩ allowed_tools.
          Empty intersection → reject; the sub-agent would have nothing to do.
+      4. pushed_skill_id, when given, must be in the worker role's skill
+         allowlist (AGENT_SKILL_ALLOWLIST[role]) and resolve to a real
+         SKILL.md. This is the option-3 injection point: the root selects a
+         catalog skill for the worker and it is pushed into the worker's
+         system prompt. The allowlist is the same firewall the pull path
+         uses (HI #3) — the root can never push a skill the role could not
+         itself load, and a direct worker still has no skill tool of its own.
 
     Four-layer timeouts are recorded on the row:
       - max_turns                 (caller arg)
@@ -1510,6 +1523,28 @@ def musubi_spawn_subagent(
             ),
         })
 
+    # 4. Root-selected skill (option 3). Validate against the worker role's
+    #    allowlist and catalog before recording it — fail-closed so the root
+    #    can only push a skill the role is authorised for.
+    skill_choice = (pushed_skill_id or "").strip() or None
+    if skill_choice is not None:
+        role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
+        if skill_choice not in role_skills:
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    f"Skill {skill_choice!r} is not permitted for worker role "
+                    f"{role!r}."
+                ),
+                "allowed_skills": sorted(role_skills),
+            })
+        if skill_loader.get_skill(skill_choice) is None:
+            return json.dumps({
+                "status": "error",
+                "error": f"Skill {skill_choice!r} not found in the catalog.",
+                "available_skills": [s.skill_id for s in skill_loader.list_skills()],
+            })
+
     try:
         handle_id = sub_sessions.spawn(
             parent_session_id=parent_session_id,
@@ -1521,6 +1556,7 @@ def musubi_spawn_subagent(
             per_turn_timeout_s=per_turn_timeout_s,
             wall_clock_timeout_s=wall_clock_timeout_s,
             output_schema=output_schema,
+            pushed_skill_id=skill_choice,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
@@ -1538,6 +1574,7 @@ def musubi_spawn_subagent(
             allowed_tools=effective_tools,
             max_turns=max_turns,
             wall_clock_timeout_s=wall_clock_timeout_s,
+            pushed_skill_id=skill_choice,
         )
     except Exception:
         # Audit failure must not silently drop a spawn — but it also must
@@ -1556,6 +1593,7 @@ def musubi_spawn_subagent(
         "max_turns": max_turns,
         "per_turn_timeout_s": per_turn_timeout_s,
         "wall_clock_timeout_s": wall_clock_timeout_s,
+        "pushed_skill_id": skill_choice,
     })
 
 
@@ -1630,6 +1668,7 @@ def musubi_spawn_pipeline_stage(
     stage: str,
     brief: str,
     max_turns: int = sub_sessions.DEFAULT_MAX_TURNS,
+    pushed_skill_id: str | None = None,
 ) -> str:
     """Authorise + record one pipeline stage worker, by pipeline membership.
 
@@ -1663,6 +1702,16 @@ def musubi_spawn_pipeline_stage(
     tools = list(_policy.PIPELINE_POLICIES.get(pipeline_name, {}).get(role, []))
     if not tools:  # user-defined pipeline (Increment 6) → role's own cap
         tools = _policy.get_subagent_tools(role)
+    # Root-selected skill for this stage (option 3 extended to pipelines).
+    # Validate against the stage role's skill allowlist and the catalog before
+    # recording — fail-closed, so the runner can only push a skill the role is
+    # authorised for. An unknown/unauthorised choice is dropped, not fatal:
+    # the stage still runs, just without a pushed skill.
+    skill_choice = (pushed_skill_id or "").strip() or None
+    if skill_choice is not None:
+        role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
+        if skill_choice not in role_skills or skill_loader.get_skill(skill_choice) is None:
+            skill_choice = None
     try:
         handle_id = sub_sessions.spawn(
             parent_session_id=pipeline_session_id,
@@ -1674,6 +1723,7 @@ def musubi_spawn_pipeline_stage(
             per_turn_timeout_s=sub_sessions.DEFAULT_PER_TURN_TIMEOUT_S,
             wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
             output_schema=None,
+            pushed_skill_id=skill_choice,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
@@ -1687,6 +1737,7 @@ def musubi_spawn_pipeline_stage(
             allowed_tools=tools,
             max_turns=max_turns,
             wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+            pushed_skill_id=skill_choice,
         )
     except Exception:
         pass
@@ -1703,6 +1754,7 @@ def musubi_spawn_pipeline_stage(
         # role's firewall (fail-closed [] when the yaml declares none).
         "spawn_roles": _policy.list_subagent_roles(role, pipeline_name),
         "brief": brief,
+        "pushed_skill_id": skill_choice,
     })
 
 
@@ -1937,7 +1989,9 @@ def musubi_get_subagent_context(handle_id: str) -> str:
         })
     try:
         ctx = subagent_context.build_subagent_context(
-            brief=row["brief"], role=row["role"]
+            brief=row["brief"],
+            role=row["role"],
+            pushed_skill_id=row.get("pushed_skill_id"),
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})

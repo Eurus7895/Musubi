@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS subagent_audit (
     turns                INTEGER,
     tools_used           TEXT,                     -- JSON array
     summary_truncated    INTEGER,                  -- 0/1
-    verification_errors  TEXT                      -- JSON array
+    verification_errors  TEXT,                     -- JSON array
+    pushed_skill_id      TEXT                      -- root-selected skill pushed at spawn (option 3)
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_audit_ts
     ON subagent_audit (ts);
@@ -94,6 +95,7 @@ def _connect(
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA_SQL)
+        _migrate(conn)
         yield conn
         conn.commit()
     except Exception:
@@ -101,6 +103,17 @@ def _connect(
         raise
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns to a pre-existing table in place. Idempotent.
+
+    `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a DB
+    created before a column was added needs an ALTER. Cheap PRAGMA check.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(subagent_audit)")}
+    if "pushed_skill_id" not in have:
+        conn.execute("ALTER TABLE subagent_audit ADD COLUMN pushed_skill_id TEXT")
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -121,22 +134,29 @@ def record_spawn(
     allowed_tools: list[str] | None,
     max_turns: int,
     wall_clock_timeout_s: int,
+    pushed_skill_id: str | None = None,
     db_path: Path | None = None,
 ) -> None:
-    """Persist one row marking a sub-agent spawn."""
+    """Persist one row marking a sub-agent spawn.
+
+    `pushed_skill_id` records the root-selected skill injected into the
+    worker's prompt (option 3). It has no tool-call of its own, so the
+    spawn row is the only place a Console can prove the worker received it.
+    """
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO subagent_audit ("
             " ts, handle_id, parent_session_id, parent_agent_name,"
             " role, brief, event,"
-            " allowed_tools, max_turns, wall_clock_timeout_s"
-            ") VALUES (?, ?, ?, ?, ?, ?, 'spawned', ?, ?, ?)",
+            " allowed_tools, max_turns, wall_clock_timeout_s, pushed_skill_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, 'spawned', ?, ?, ?, ?)",
             (
                 time.time(),
                 handle_id, parent_session_id, parent_agent_name,
                 role, brief,
                 tools_json, max_turns, wall_clock_timeout_s,
+                (pushed_skill_id.strip() if pushed_skill_id else None),
             ),
         )
 

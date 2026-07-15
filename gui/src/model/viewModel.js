@@ -515,6 +515,18 @@ export function buildViewModel(s, act) {
     if (!skillsByWorker[row.workerId]) skillsByWorker[row.workerId] = []
     if (!skillsByWorker[row.workerId].includes(row.skillId)) skillsByWorker[row.workerId].push(row.skillId)
   })
+  // Root-selected skills pushed into a worker at spawn (option 3) have no
+  // musubi_get_skill tool-call, so they never reach `toolEvidence`. Fold the
+  // spawn-row `pushedSkill` into the same per-worker skill map + log stream so
+  // the node badge, "Skills used" panel, and audited-activity list show them
+  // exactly like a pulled skill.
+  activeSessionAgents.forEach((agent) => {
+    if (!agent.pushedSkill || !agent.handle) return
+    if (!skillsByWorker[agent.handle]) skillsByWorker[agent.handle] = []
+    if (!skillsByWorker[agent.handle].includes(agent.pushedSkill)) {
+      skillsByWorker[agent.handle].push(agent.pushedSkill)
+    }
+  })
   const runtimeLogs = []
   toolEvidence.forEach((row) => runtimeLogs.push({
     id: `tool-${row.id}`,
@@ -527,6 +539,20 @@ export function buildViewModel(s, act) {
     status: clipEvidence(String(row.status || 'unknown').toLowerCase(), 40),
     detail: clipEvidence(row.detail || ''),
   }))
+  activeSessionAgents.forEach((agent) => {
+    if (!agent.pushedSkill || !agent.handle) return
+    runtimeLogs.push({
+      id: `pushed-skill-${agent.handle}`,
+      auditId: agent.id ?? null,
+      ts: '',
+      workerId: agent.handle,
+      role: clipEvidence(agent.role || 'worker', 60),
+      category: 'skills',
+      name: clipEvidence(agent.pushedSkill, 100),
+      status: 'pushed',
+      detail: 'pushed at spawn',
+    })
+  })
   ;(s.agentCycles || [])
     .filter((row) => activeEvidenceSessions.has(row.sessionId))
     .forEach((row) => {
@@ -571,6 +597,18 @@ export function buildViewModel(s, act) {
       status: clipEvidence(String(row.verdict || 'unknown').toLowerCase(), 40),
       detail: clipEvidence(row.reason || ''),
     }))
+  // Per-worker token totals for the runtime graph. Worker cycles record under
+  // the parent session_id with worker_id = handle (root cycles use 'root'), so
+  // one pass over the active-session cycles gives each node its own usage.
+  const tokensByWorker = {}
+  ;(s.agentCycles || [])
+    .filter((row) => activeEvidenceSessions.has(row.sessionId))
+    .forEach((row) => {
+      const workerId = row.workerId || 'root'
+      tokensByWorker[workerId] = (tokensByWorker[workerId] || 0)
+        + Math.max(0, Number(row.tokensIn) || 0)
+        + Math.max(0, Number(row.tokensOut) || 0)
+    })
   const runtimeNodes = []
   if (activeRunRaw || rootTurn) {
     runtimeNodes.push({
@@ -586,6 +624,7 @@ export function buildViewModel(s, act) {
       maxTurns: null,
       tools: runtimeLogs.filter((row) => row.workerId === 'root' && row.category === 'tools').length,
       skills: skillsByWorker.root || [],
+      tokens: tokensByWorker.root || 0,
     })
   }
   activeSessionAgents.forEach((agent) => {
@@ -604,6 +643,7 @@ export function buildViewModel(s, act) {
       maxTurns: Number(agent.max || 0),
       tools: runtimeLogs.filter((row) => row.workerId === agent.handle && row.category === 'tools').length,
       skills: skillsByWorker[agent.handle] || [],
+      tokens: tokensByWorker[agent.handle] || 0,
     })
   })
   if (runtimeLogs.some((row) => !row.workerId)) {

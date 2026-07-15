@@ -280,10 +280,17 @@ def test_simple_root_two_call_projection_stays_below_3k_tokens() -> None:
         first_call["messages"], first_call["tools"],
     ) + run_mod._estimate_input_tokens(second_messages, first_call["tools"])
 
-    assert [tool["name"] for tool in first_call["tools"]] == [
+    # Simple-scope root sees spawn + skill *selection* (option 3): it may push
+    # a skill to the worker it summons. Content-loading skill tools stay out.
+    assert {tool["name"] for tool in first_call["tools"]} == {
         "musubi_spawn_subagent",
-    ]
-    assert projected_total < 3_000
+        "musubi_recommend_skills",
+    }
+    # Adding skill selection to a simple root costs ~1k tokens across the
+    # two-call projection (the recommend tool def rides both calls). That is a
+    # deliberate budget shift so simple artifacts can still receive a pushed
+    # skill; the hard regression guard stays far below the 20k ceiling.
+    assert projected_total < 4_500
 
 
 def test_replacement_brief_includes_prior_terminal_outcome() -> None:

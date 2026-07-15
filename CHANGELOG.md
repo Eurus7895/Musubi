@@ -7,6 +7,48 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Root-selected skill injection into workers
+
+- The root now chooses a catalog skill for each worker it spawns and pushes
+  it into the worker's prompt. `musubi_spawn_subagent` gains a
+  `pushed_skill_id` argument; the skill is validated against the worker
+  role's `AGENT_SKILL_ALLOWLIST` entry (fail-closed, HI #3), stored on the
+  `sub_sessions` row, and surfaced as the worker's `role_skill` — so a direct
+  worker, which has no skill tool of its own, still receives role-appropriate
+  procedure.
+- `musubi_recommend_skills` gains `for_role`: the root ranks a *worker's*
+  skills (e.g. `for_role="coder"`) rather than its own, returning ids/titles
+  only. Selection widens nothing — the spawn re-validates the chosen id.
+- Skill selection is now available to the root in **every** scope, including
+  simple artifacts (previously spawn-only). This costs ~1k tokens across the
+  two-call simple-root projection; the simple-root regression guard moved
+  from 3k to ~4.5k, still far under the 20k ceiling.
+- A pushed skill has no `musubi_get_skill` tool-call, so it was invisible to
+  the Console (which builds skill provenance from `tool_audit`). The spawn now
+  records `pushed_skill_id` on the `subagent_audit` row (idempotent in-place
+  migration for existing DBs); the `musubi-data` reader surfaces it on the
+  worker as `pushedSkill`, and the Orchestrator folds it into the worker's
+  skill badges, the "Skills used" panel, and the audited-activity log — a
+  pushed skill now shows exactly like a pulled one.
+- Extended to pipeline stages: the deterministic runner asks the recommender
+  (`for_role`) for the best skill in each stage role's allowlist and pushes it
+  through `musubi_spawn_pipeline_stage` (validated fail-closed against the
+  role's allowlist). feature-dev stages that previously showed "no skill
+  evidence" now carry role-appropriate procedure — a dashboard run pushes
+  `web-ui` to the coder and `code-review` to the reviewer. `planner` has an
+  empty skill allowlist and stays skill-less by design.
+
+### Fixes
+
+- **OpenAI-family tool-result pairing.** When a user turn mixed `tool_result`
+  blocks with a text block (the root's recovery-analysis window appends a
+  note to the tool-results message), the OpenAI/DeepSeek wire converter
+  required every block to be a `tool_result` and otherwise dropped them all,
+  leaving the assistant's `tool_calls` unanswered — DeepSeek rejected the
+  request with "insufficient tool messages following tool_calls message". The
+  converter now fans out each `tool_result` into a `role:"tool"` message and
+  emits any trailing text as one extra user message.
+
 ### Skill catalog growth
 
 - Five new substrate skills: `debugging` (reproduce → isolate → fix once
