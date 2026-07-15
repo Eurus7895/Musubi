@@ -466,24 +466,26 @@ test('builder edits stages and spawn roles through immutable actions', () => {
   assert.deepEqual(source.state.pipelineBuilder.draft.stages[0].spawns, ['reviewer-aux'])
 })
 
-test('builder add-stage accepts only runnable backend catalog entries', () => {
+test('builder add-stage never falls through from blocked presets to runnable agents', () => {
   const { source } = sourceWithActionSpy()
   source._setLocal({
     pipelineBuilderCatalog: {
       presets: [
         { id: 'plan', agent: 'planner', stage: 'plan', runnable: true },
-        { id: 'broken', agent: 'missing', stage: 'build', runnable: false, blockedReason: 'unknown agent' },
+        { id: 'broken', agent: 'coder', stage: 'build', runnable: false, blockedReason: 'invalid preset' },
       ],
-      agents: [{ name: 'coder', displayLabel: 'Coder', runnable: true }],
+      agents: [{ name: 'coder', displayLabel: 'Coder', step: 'code', runnable: true }],
     },
   })
 
-  source.actions.addPipelineStage({ preset: 'missing' })
-  source.actions.addPipelineStage({ preset: 'broken' })
-  source.actions.addPipelineStage({ preset: 'plan' })
+  source.actions.addPipelineStage({ id: 'broken', agent: 'coder', runnable: false })
+  source.actions.addPipelineStage('broken')
+  source.actions.addPipelineStage({ id: 'plan', agent: 'planner', runnable: true })
+  source.actions.addPipelineStage({ kind: 'agent', agent: 'coder' })
 
   assert.deepEqual(source.state.pipelineBuilder.draft.stages, [
     { preset: 'plan', agent: '', stage: '', spawns: [] },
+    { preset: '', agent: 'coder', stage: 'code', spawns: [] },
   ])
 })
 
