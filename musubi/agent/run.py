@@ -56,6 +56,7 @@ from agent.context import (
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
+from agent.goal_state import GoalState
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -160,6 +161,7 @@ class Orchestration:
     max_root_workers: int = DEFAULT_MAX_ROOT_WORKERS
     root_recovery_analysis_cycles: int = 0
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
+    goal_state: GoalState | None = None
 
     @property
     def enabled(self) -> bool:
@@ -211,6 +213,13 @@ class Orchestration:
             touched_files=tuple(sorted(set(touched_files))),
         )
         self.worker_outcomes.append(outcome)
+        if self.goal_state is not None:
+            self.goal_state.record_outcome(
+                role=role,
+                status=status,
+                summary=summary,
+                touched_files=touched_files,
+            )
         return outcome
 
     def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
@@ -341,6 +350,11 @@ async def run_agent(
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
     scope_hint = classify_task(task)
+    goal_state = GoalState.create(
+        intent=task,
+        scope=scope_hint.kind.value,
+        route=scope_hint.route,
+    )
     direct_answer = _deterministic_scope_answer(task, scope_hint)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
@@ -447,7 +461,10 @@ async def run_agent(
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
         parent_session_id = await _open_parent_session(session, task, log, chat_id)
-        orchestration = Orchestration(parent_session_id=parent_session_id)
+        orchestration = Orchestration(
+            parent_session_id=parent_session_id,
+            goal_state=goal_state,
+        )
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
         if plan_first:
@@ -701,6 +718,16 @@ async def _run_loop(
         usage = _cycle_token_usage(
             effort.attempts, input_tokens_est,
         )
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            and orchestration.goal_state is not None
+        ):
+            orchestration.goal_state.record_root_usage(
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+            )
         if stats is not None:
             stats.record_cycle(
                 lm_ms=lm_ms,

@@ -18,6 +18,7 @@ import pytest
 
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
+from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter
 
 
@@ -66,6 +67,64 @@ def test_orchestration_tracks_latest_failed_worker_outcome() -> None:
         role="coder", status="done", summary="fixed", touched_files={"dashboard.html"},
     )
     assert orchestration.latest_failed_outcome("coder") is None
+
+
+def test_root_orchestration_reduces_worker_outcome_into_goal_state() -> None:
+    state = GoalState.create(
+        "create dashboard", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+
+    orchestration.record_worker_outcome(
+        role="coder",
+        status="done",
+        summary="summary: complete",
+        touched_files={"dashboard.html"},
+    )
+
+    assert len(orchestration.worker_outcomes) == 1
+    assert len(state.outcomes) == 1
+    assert state.outcomes[0].summary == "complete"
+    assert orchestration.child("reviewer").goal_state is None
+
+
+def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
+    from agent import run as run_mod
+
+    state = GoalState.create(
+        "create dashboard", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "done"}],
+            usage={"input_tokens": 1200, "output_tokens": 100},
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [],
+        [{"role": "user", "content": "create dashboard"}],
+        max_cycles=1,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    assert answer == "done"
+    assert cycles == 1
+    assert state.root_calls == 1
+    assert state.root_tokens_in == 1200
+    assert state.root_tokens_out == 100
 
 
 def test_replacement_brief_includes_prior_terminal_outcome() -> None:
