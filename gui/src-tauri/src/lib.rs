@@ -1117,36 +1117,71 @@ fn start_chat_agent(
     Ok(())
 }
 
+struct CancelClaim {
+    child: Option<Arc<Mutex<Child>>>,
+    owner_surface: String,
+    owner_chat_id: String,
+}
+
+fn prepare_cancel_claim_with_hook<BeforeRuntimeLock>(
+    runtime: &Mutex<ChatAgentRuntime>,
+    active_chat_id: &Mutex<String>,
+    viewed_chat_id: &Mutex<Option<String>>,
+    requested_chat_id: &str,
+    before_runtime_lock: BeforeRuntimeLock,
+) -> Result<Option<CancelClaim>, String>
+where
+    BeforeRuntimeLock: FnOnce(),
+{
+    before_runtime_lock();
+    let mut rt = runtime.lock().map_err(|e| e.to_string())?;
+    if !rt.running {
+        return Ok(None);
+    }
+    let active_chat_id = active_chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let viewed_chat_id = viewed_chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let owner_chat_id = authorize_cancel_request(
+        requested_chat_id,
+        &active_chat_id,
+        viewed_chat_id.as_deref(),
+        &rt,
+    )?;
+    let claim = CancelClaim {
+        child: rt.child.clone(),
+        owner_surface: surface_arg(&rt.surface).to_string(),
+        owner_chat_id,
+    };
+    if claim.child.is_some() {
+        rt.cancel_requested = true;
+    } else {
+        rt.running = false;
+        rt.child = None;
+        rt.cancel_requested = false;
+    }
+    Ok(Some(claim))
+}
+
 fn cancel_chat_agent(
     app: &tauri::AppHandle,
     state: &AppState,
     requested_chat_id: &str,
-    active_chat_id: &str,
-    viewed_chat_id: Option<&str>,
 ) -> Result<(), String> {
-    let (child, owner_surface, owner_chat_id) = {
-        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-        if !rt.running {
-            return Ok(());
-        }
-        let owner_chat_id =
-            authorize_cancel_request(requested_chat_id, active_chat_id, viewed_chat_id, &rt)?;
-        let owner_surface = surface_arg(&rt.surface).to_string();
-        rt.cancel_requested = true;
-        (rt.child.clone(), owner_surface, owner_chat_id)
+    let Some(claim) = prepare_cancel_claim_with_hook(
+        &state.chat_agent,
+        &state.chat_id,
+        &state.viewed_orchestrator_chat_id,
+        requested_chat_id,
+        || {},
+    )?
+    else {
+        return Ok(());
     };
 
-    let Some(child) = child else {
-        {
-            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-            rt.running = false;
-            rt.child = None;
-            rt.cancel_requested = false;
-        }
+    let Some(child) = claim.child else {
         append_driver_chat_to(
             app,
-            &owner_surface,
-            &owner_chat_id,
+            &claim.owner_surface,
+            &claim.owner_chat_id,
             Some("deny"),
             "Agent cancelled by user.",
         );
@@ -1498,19 +1533,7 @@ fn action(
         }
         "cancel_agent" => {
             let requested_chat_id = str_arg(0);
-            let active_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
-            let viewed_chat_id = state
-                .viewed_orchestrator_chat_id
-                .lock()
-                .map_err(|e| e.to_string())?
-                .clone();
-            cancel_chat_agent(
-                &app,
-                state.inner(),
-                &requested_chat_id,
-                &active_chat_id,
-                viewed_chat_id.as_deref(),
-            )?;
+            cancel_chat_agent(&app, state.inner(), &requested_chat_id)?;
         }
         "select_session" => {
             let requested_chat_id = str_arg(0);
@@ -2816,5 +2839,41 @@ mod tests {
                 "launch:ship:gui-orchestrator-project-exact:feature-dev",
             ]
         );
+    }
+
+    #[test]
+    fn orchestrator_pipeline_cancel_snapshots_displayed_session_under_runtime_lock() {
+        let runtime = Arc::new(Mutex::new(ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-owner".into(),
+            ..ChatAgentRuntime::default()
+        }));
+        let active = Arc::new(Mutex::new("gui-orchestrator-project-owner".to_string()));
+        let viewed = Arc::new(Mutex::new(None));
+        let runtime_guard = runtime.lock().unwrap();
+        let worker_runtime = runtime.clone();
+        let worker_active = active.clone();
+        let worker_viewed = viewed.clone();
+        let (before_lock_tx, before_lock_rx) = std::sync::mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            prepare_cancel_claim_with_hook(
+                &worker_runtime,
+                &worker_active,
+                &worker_viewed,
+                "gui-orchestrator-project-owner",
+                || before_lock_tx.send(()).unwrap(),
+            )
+        });
+        before_lock_rx.recv().unwrap();
+        *viewed.lock().unwrap() = Some("gui-orchestrator-project-history".into());
+        drop(runtime_guard);
+
+        let error = match worker.join().unwrap() {
+            Err(error) => error,
+            Ok(_) => panic!("stale owner snapshot authorized cancellation"),
+        };
+        assert!(error.contains("displayed"));
+        assert!(!runtime.lock().unwrap().cancel_requested);
     }
 }
