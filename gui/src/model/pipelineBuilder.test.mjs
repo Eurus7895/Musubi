@@ -6,6 +6,7 @@ import {
   moveStage,
   removeStage,
   updateStage,
+  updateRecipe,
   setStageSpawns,
   isDirty,
   validateDraft,
@@ -72,6 +73,25 @@ test('spawn roles lowercase and deduplicate without mutating inputs', () => {
   assert.deepEqual(roles, before)
   assert.deepEqual(next.stages[0].spawns, ['reviewer-aux', 'evaluator'])
   assert.deepEqual(draft.stages[0].spawns, ['researcher'])
+})
+
+test('recipe basics update immutably without changing stages', () => {
+  const draft = createPipelineDraft(recipe())
+  const stages = structuredClone(draft.stages)
+  const next = updateRecipe(draft, {
+    name: 'custom-flow', description: 'Custom flow', version: '2',
+    baselineChecks: ['npm test'], correction: { maxAttempts: 2 },
+    ignored: 'not recipe-owned',
+  })
+
+  assert.equal(draft.name, 'feature-dev')
+  assert.deepEqual(next, {
+    ...draft,
+    name: 'custom-flow', description: 'Custom flow', version: '2',
+    baselineChecks: ['npm test'], correction: { maxAttempts: 2 },
+  })
+  assert.deepEqual(next.stages, stages)
+  assert.equal('ignored' in next, false)
 })
 
 test('dirty new close and switch transitions require confirmation', () => {

@@ -2,7 +2,7 @@
 // merged with local Orchestrator composer and Pipeline Studio builder state.
 import { classifyChatCommand } from './chatCommands.js'
 import {
-  createPipelineDraft, addStage, moveStage, removeStage, updateStage,
+  createPipelineDraft, addStage, moveStage, removeStage, updateStage, updateRecipe,
   setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
 } from '../model/pipelineBuilder.js'
 
@@ -249,6 +249,9 @@ export default class TauriSource {
         selectedStageIndex: this.state.pipelineBuilder.selectedStageIndex === index ? null : this.state.pipelineBuilder.selectedStageIndex,
       }),
       updatePipelineStage: (index, patch) => this._setBuilder({ draft: updateStage(this.state.pipelineBuilder.draft, index, patch) }),
+      updatePipelineRecipe: (patch) => this._setBuilder({
+        draft: updateRecipe(this.state.pipelineBuilder.draft, patch),
+      }),
       addPipelineSpawn: (index, role) => this._setBuilder({
         draft: setStageSpawns(this.state.pipelineBuilder.draft, index, [
           ...(this.state.pipelineBuilder.draft.stages[index]?.spawns || []), role,

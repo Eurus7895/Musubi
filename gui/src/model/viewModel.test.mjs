@@ -112,6 +112,7 @@ function actions() {
     onPipeDraft() {},
     onPipeDraftKey() {},
     clearPipeDriverChat() {},
+    updatePipelineRecipe() {},
   }
 }
 
@@ -155,6 +156,7 @@ test('projects builder state without active Studio runtime controls', () => {
   assert.equal(vm.pipelineBuilder.dirty, true)
   assert.equal(vm.pipelineBuilder.selectedStage.agent, 'planner')
   assert.equal(vm.pipelineBuilder.findings[0].message, 'check it')
+  assert.equal(typeof vm.pipelineBuilder.actions.onUpdateRecipe, 'function')
   for (const field of ['pipeChatBody', 'pipeRuns', 'activePipeRunId', 'activePipeRunSteps', 'pipeRunSummary', 'pipeChat']) {
     assert.equal(vm[field], undefined, field)
   }

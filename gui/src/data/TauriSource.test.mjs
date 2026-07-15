@@ -466,6 +466,29 @@ test('builder edits stages and spawn roles through immutable actions', () => {
   assert.deepEqual(source.state.pipelineBuilder.draft.stages[0].spawns, ['reviewer-aux'])
 })
 
+test('builder updates recipe-owned Basics fields without changing stages', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilder: {
+      ...source.state.pipelineBuilder,
+      draft: {
+        ...source.state.pipelineBuilder.draft,
+        name: 'old-flow',
+        stages: [{ preset: '', agent: 'planner', stage: 'plan', spawns: [] }],
+      },
+    },
+  })
+
+  source.actions.updatePipelineRecipe({
+    name: 'new-flow', description: 'New flow', baselineChecks: ['npm test'],
+  })
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'new-flow')
+  assert.equal(source.state.pipelineBuilder.draft.description, 'New flow')
+  assert.deepEqual(source.state.pipelineBuilder.draft.baselineChecks, ['npm test'])
+  assert.equal(source.state.pipelineBuilder.draft.stages[0].agent, 'planner')
+})
+
 test('builder add-stage never falls through from blocked presets to runnable agents', () => {
   const { source } = sourceWithActionSpy()
   source._setLocal({

@@ -865,6 +865,7 @@ export function buildViewModel(s, act) {
         onMoveStage: act.movePipelineStage,
         onRemoveStage: act.removePipelineStage,
         onUpdateStage: act.updatePipelineStage,
+        onUpdateRecipe: act.updatePipelineRecipe,
         onAddSpawn: act.addPipelineSpawn,
         onRemoveSpawn: act.removePipelineSpawn,
         onLoad: act.loadPipelineRecipe,

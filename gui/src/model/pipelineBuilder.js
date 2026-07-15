@@ -57,6 +57,18 @@ export function updateStage(draft, index, patch) {
   }
 }
 
+export function updateRecipe(draft, patch = {}) {
+  const next = { ...draft }
+  if (Object.hasOwn(patch, 'name')) next.name = String(patch.name || '')
+  if (Object.hasOwn(patch, 'description')) next.description = String(patch.description || '')
+  if (Object.hasOwn(patch, 'version')) next.version = String(patch.version || '')
+  if (Object.hasOwn(patch, 'baselineChecks')) {
+    next.baselineChecks = clone(Array.isArray(patch.baselineChecks) ? patch.baselineChecks : [])
+  }
+  if (Object.hasOwn(patch, 'correction')) next.correction = clone(patch.correction ?? null)
+  return next
+}
+
 export function setStageSpawns(draft, index, roles) {
   return updateStage(draft, index, { spawns: normalizeSpawns(roles) })
 }
