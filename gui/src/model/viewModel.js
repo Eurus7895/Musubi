@@ -597,6 +597,18 @@ export function buildViewModel(s, act) {
       status: clipEvidence(String(row.verdict || 'unknown').toLowerCase(), 40),
       detail: clipEvidence(row.reason || ''),
     }))
+  // Per-worker token totals for the runtime graph. Worker cycles record under
+  // the parent session_id with worker_id = handle (root cycles use 'root'), so
+  // one pass over the active-session cycles gives each node its own usage.
+  const tokensByWorker = {}
+  ;(s.agentCycles || [])
+    .filter((row) => activeEvidenceSessions.has(row.sessionId))
+    .forEach((row) => {
+      const workerId = row.workerId || 'root'
+      tokensByWorker[workerId] = (tokensByWorker[workerId] || 0)
+        + Math.max(0, Number(row.tokensIn) || 0)
+        + Math.max(0, Number(row.tokensOut) || 0)
+    })
   const runtimeNodes = []
   if (activeRunRaw || rootTurn) {
     runtimeNodes.push({
@@ -612,6 +624,7 @@ export function buildViewModel(s, act) {
       maxTurns: null,
       tools: runtimeLogs.filter((row) => row.workerId === 'root' && row.category === 'tools').length,
       skills: skillsByWorker.root || [],
+      tokens: tokensByWorker.root || 0,
     })
   }
   activeSessionAgents.forEach((agent) => {
@@ -630,6 +643,7 @@ export function buildViewModel(s, act) {
       maxTurns: Number(agent.max || 0),
       tools: runtimeLogs.filter((row) => row.workerId === agent.handle && row.category === 'tools').length,
       skills: skillsByWorker[agent.handle] || [],
+      tokens: tokensByWorker[agent.handle] || 0,
     })
   })
   if (runtimeLogs.some((row) => !row.workerId)) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import ChatBody from '../components/ChatBody.jsx'
 import NewSessionButton from '../components/NewSessionButton.jsx'
+import TokenEconomics from '../components/TokenEconomics.jsx'
 
 const LOG_FILTERS = ['All', 'Tools', 'Skills', 'Policy', 'Model']
 
@@ -131,7 +132,7 @@ function RuntimeGraph({ graph = {}, selectedNodeId, onSelectNode }) {
             <button className={`runtime-node${node.id === selectedNodeId ? ' is-selected' : ''}`} onClick={() => onSelectNode(node)}>
               <span className="runtime-node__identity"><em>{node.kind}</em><strong>{node.label}</strong><code>{node.id}</code></span>
               <span className={`runtime-node__status status-${node.status}`}>● {node.statusLabel}</span>
-              <span className="runtime-node__metrics"><b>{node.turns}{node.maxTurns ? `/${node.maxTurns}` : ''}</b> turns <b>{node.tools}</b> tools</span>
+              <span className="runtime-node__metrics"><b>{node.turns}{node.maxTurns ? `/${node.maxTurns}` : ''}</b> turns <b>{node.tools}</b> tools <b>{new Intl.NumberFormat('en-US').format(node.tokens || 0)}</b> tokens</span>
               <span className="runtime-node__skills">{node.skills?.length ? node.skills.map((skill) => <i key={skill}>{skill}</i>) : <small>no skill evidence</small>}</span>
               <span className="runtime-node__open">Open logs →</span>
             </button>
@@ -176,6 +177,7 @@ function ConversationPanel({ vals, collapsed, onToggle, mode, onMode }) {
         <button className={mode === 'verbose' ? 'is-active' : ''} onClick={() => onMode('verbose')}>Verbose</button>
       </div>
       <div className="skills-used"><span>Skills used</span>{skills.length ? skills.map((skill) => <i key={skill}>{skill}</i>) : <small>No successful skill calls recorded</small>}</div>
+      <TokenEconomics economics={vals.driverSummary?.economics} />
       {mode === 'verbose' && <VerboseEvidence rows={vals.runtimeLogs || []} />}
       <ChatBody vals={vals} />
     </aside>

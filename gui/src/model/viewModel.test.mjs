@@ -164,6 +164,9 @@ test('projects evidence-backed runtime graph logs and successful skill provenanc
     ['root', null], [coder.handle, 'root'],
   ])
   assert.deepEqual(vm.skillsByWorker[coder.handle], ['python'])
+  // Per-worker token total surfaces on the worker's runtime node (tokensIn +
+  // tokensOut from its agent_cycles, keyed by worker_id under the parent).
+  assert.equal(vm.runtimeGraph.nodes.find((node) => node.id === coder.handle).tokens, 25)
   assert.equal(vm.runtimeLogs.some((row) => row.category === 'skills' && row.status === 'error'), true)
   assert.equal(vm.runtimeLogs.some((row) => row.category === 'policy' && row.status === 'deny'), true)
   assert.equal(vm.runtimeLogs.some((row) => row.category === 'model' && row.workerId === coder.handle), true)
