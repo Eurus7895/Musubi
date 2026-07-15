@@ -75,4 +75,5 @@ files_changed:
 - path/to/file
 summary: one sentence
 verification: command and result, or "not run: reason"
+remaining_gap: "none" or exact unresolved work
 ```

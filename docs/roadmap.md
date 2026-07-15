@@ -58,6 +58,19 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    finishes on its last allowed turn attaches a substrate-verified artifact
    manifest so the audit records done instead of a false escalation.
 
+2. **Root goal-state controller and token economics.** The root now owns a
+   current-run-only `GoalState` containing the exact user intent, deterministic
+   scope/route, root usage, and bounded `OutcomePacket` feedback. After a worker
+   terminates, the driver retains the stable system contract but replaces raw
+   tool transcripts with one decision delta; model-visible root tools are
+   reduced by phase (spawn-only for simple work, spawn plus skill lookup for
+   broader work, recovery tools only inside the bounded recovery window).
+   Simple successful runs target at most 3k root tokens and 8–12k total task
+   tokens; 20k is a regression guard, not a normal budget. Plans:
+   [`2026-07-15-root-goal-state-controller.md`](./superpowers/plans/2026-07-15-root-goal-state-controller.md)
+   and design
+   [`2026-07-15-root-goal-state-controller-design.md`](./superpowers/specs/2026-07-15-root-goal-state-controller-design.md).
+
 Runtime limits have one owner per dimension: this track owns pipeline-stage
 turn caps, model-input characters, and total stage allowances; per-worker
 effort owns output tokens for one LM call; root routing owns worker-count and

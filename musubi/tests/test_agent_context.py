@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from memory import memory_loader
+from agent.context import build_system_prompt
 from validation import context_builder
 from validation.context_builder import AGENT_SKILL_ALLOWLIST
 
@@ -262,6 +263,12 @@ _AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )
+_PLANNER_WORKER_FILE = (
+    _REPO_ROOT / ".github" / "agents" / "workers" / "planner.agent.md"
+)
+_REVIEWER_WORKER_FILE = (
+    _REPO_ROOT / ".github" / "agents" / "workers" / "reviewer.agent.md"
+)
 _SKILL_FILE = (
     _REPO_ROOT / ".github" / "skills" / "agent-routing" / "SKILL.md"
 )
@@ -269,6 +276,23 @@ _SKILL_FILE = (
 
 def test_agent_agent_file_exists() -> None:
     assert _AGENT_FILE.is_file()
+
+
+def test_stable_root_prompt_declares_goal_state_controller_contract() -> None:
+    prompt = build_system_prompt().lower()
+
+    assert "exact user intent" in prompt
+    assert "cheapest worker" in prompt
+    assert "stop when the goal is satisfied" in prompt
+
+
+@pytest.mark.parametrize("worker_file", [
+    _CODER_WORKER_FILE,
+    _PLANNER_WORKER_FILE,
+    _REVIEWER_WORKER_FILE,
+])
+def test_decision_workers_report_remaining_gap(worker_file: Path) -> None:
+    assert "remaining_gap" in worker_file.read_text(encoding="utf-8")
 
 
 def test_catalog_has_no_flat_agent_files() -> None:

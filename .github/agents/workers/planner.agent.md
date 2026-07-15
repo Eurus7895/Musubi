@@ -28,9 +28,11 @@ actionable plan for another worker or the root agent.
 
 ## Output Contract
 
-Plain text with:
+Plain text:
 
-- scope
-- acceptance criteria
-- suggested files to inspect or change
-- risks or missing decisions
+```
+status: done | incomplete
+summary: compact scope, acceptance criteria, and implementation outline
+verification: files inspected, or "not run: reason"
+remaining_gap: "none" or exact missing decision/work for the next worker
+```
