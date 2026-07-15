@@ -215,8 +215,8 @@ export default class TauriSource {
       closePipelineRecipe: () => this._replaceBuilder(
         requestTransition(this.state.pipelineBuilder, { type: 'close' }),
       ),
-      selectPipelineBuilderStep: (step) => this._setBuilder({ step }),
-      selectPipelineStage: (selectedStageIndex) => this._setBuilder({ selectedStageIndex }),
+      selectPipelineBuilderStep: (step) => this._setBuilder({ step }, false),
+      selectPipelineStage: (selectedStageIndex) => this._setBuilder({ selectedStageIndex }, false),
       addPipelineStage: (stage, index) => this._setBuilder({ draft: addStage(this.state.pipelineBuilder.draft, stage, index) }),
       movePipelineStage: (fromIndex, toIndex) => this._setBuilder({ draft: moveStage(this.state.pipelineBuilder.draft, fromIndex, toIndex) }),
       removePipelineStage: (index) => this._setBuilder({

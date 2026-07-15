@@ -357,6 +357,51 @@ test('overlapping validation and save ignore stale validation completion', async
   assert.equal(source.state.pipelineBuilder.loading, false)
 })
 
+test('step navigation does not invalidate in-flight validation', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  source._invoke = () => validation.promise
+
+  const request = source.actions.validatePipelineRecipe()
+  source.actions.selectPipelineBuilderStep('review')
+  validation.resolve([{ severity: 'warning', message: 'validation complete' }])
+  await request
+
+  assert.equal(source.state.pipelineBuilder.step, 'review')
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'validation complete')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('stage navigation does not invalidate in-flight save', async () => {
+  const source = new TauriSource({})
+  const save = deferred()
+  source._invoke = () => save.promise
+
+  const request = source.actions.savePipelineRecipe()
+  source.actions.selectPipelineStage(1)
+  save.resolve({ saved: true, catalogRefreshed: true, path: 'pipeline.yaml', findings: [], error: '' })
+  await request
+
+  assert.equal(source.state.pipelineBuilder.selectedStageIndex, 1)
+  assert.equal(source.state.pipelineBuilder.saveResult.saved, true)
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('recipe edit still invalidates an older validation completion', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  source._invoke = () => validation.promise
+
+  const request = source.actions.validatePipelineRecipe()
+  source.actions.addPipelineStage({ agent: 'planner' })
+  validation.resolve([{ severity: 'warning', message: 'stale validation' }])
+  await request
+
+  assert.deepEqual(source.state.pipelineBuilder.findings, [])
+  assert.equal(source.state.pipelineBuilder.draft.stages[0].agent, 'planner')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
 test('confirmed dirty recipe load retains resolved contracts in save payload', async () => {
   const source = new TauriSource({})
   source.actions.addPipelineStage({ agent: 'dirty' })
