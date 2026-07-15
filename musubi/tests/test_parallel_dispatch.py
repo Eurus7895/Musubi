@@ -44,8 +44,8 @@ def _spawns(n: int, role: str = "explorer") -> LMResponse:
 
 def _is_parent_followup(messages: list[dict[str, Any]]) -> bool:
     return any(
-        isinstance(m.get("content"), list)
-        and any(b.get("type") == "tool_result" for b in m["content"])
+        isinstance(m.get("content"), str)
+        and "[root-goal-state]" in m["content"]
         for m in messages
     )
 
@@ -69,6 +69,7 @@ class BarrierRouter(LMRouter):
     def __init__(self, n: int) -> None:
         self.n = n
         self.barrier = threading.Barrier(n, timeout=8)
+        self.completed: set[int] = set()
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         if _is_parent_followup(messages):
@@ -76,27 +77,23 @@ class BarrierRouter(LMRouter):
         idx = _child_index(messages)
         if idx is not None:
             self.barrier.wait()  # blocks until all N children are here
+            self.completed.add(idx)
             return _text(f"explored worker {idx}")
         return _spawns(self.n)
 
 
-def test_parallel_workers_run_concurrently_and_results_are_ordered() -> None:
+def test_parallel_workers_run_concurrently_then_compact_root_followup() -> None:
     n = 2
     router = BarrierRouter(n)
     answer = asyncio.run(run_agent("delegate a scan", router, _musubi_dir(), log=io.StringIO()))
 
     assert answer == "done"
-    # The parent's follow-up turn (the LM call that returned "done") must carry
-    # one tool_result per spawn, paired by id in input order.
-    followups = [
-        m for m in _last_followup(router) if isinstance(m.get("content"), list)
-    ]
-    results = [b for m in followups for b in m["content"] if b.get("type") == "tool_result"]
-    assert len(results) == n
-    for i, b in enumerate(results):
-        assert b["tool_use_id"] == f"spawn-{i}"          # order preserved
-        assert f"worker {i}" in b["content"]             # right worker's summary
-        assert "error" not in b["content"].lower()        # barrier never broke
+    # Both children reached the barrier and completed. The root sees a bounded
+    # goal-state delta instead of replaying their raw tool_result blocks.
+    assert router.completed == {0, 1}
+    followup = str(_last_followup(router))
+    assert "[root-goal-state]" in followup
+    assert "subagent error" not in followup.lower()
 
 
 # Capture the messages of the parent's final LM call for the assertion above.
@@ -235,14 +232,7 @@ class SequentialRetryRouter(LMRouter):
             if self.children == 1:
                 return _text("[incomplete] first worker could not finish")
             return _text("worker finished")
-        results = sum(
-            1
-            for message in messages
-            if isinstance(message.get("content"), list)
-            for block in message["content"]
-            if block.get("type") == "tool_result"
-        )
-        if results < 2:
+        if self.children < 2:
             return _spawns(1, role="coder")
         return _text("done")
 
