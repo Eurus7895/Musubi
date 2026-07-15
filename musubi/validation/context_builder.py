@@ -66,10 +66,12 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # typescript (JS/TS workspaces, applies-to gated by the router),
     # debugging (root-cause procedure before a fix), refactoring
     # (behaviour-preserving restructuring), git-workflow (commit/branch
-    # hygiene for the mutations it lands).
+    # hygiene for the mutations it lands), web-ui (self-contained HTML/CSS/JS
+    # artifacts — universal, so it also matches a dashboard emitted from a
+    # non-JS repo).
     "coder":         {
         "python", "testing", "database-patterns", "api-design",
-        "typescript", "debugging", "refactoring", "git-workflow",
+        "typescript", "debugging", "refactoring", "git-workflow", "web-ui",
     },
     "reviewer":      {"code-review", "testing"},
     "skill-builder": set(),

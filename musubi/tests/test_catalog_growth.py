@@ -1,10 +1,10 @@
 """Tests for the skill-catalog growth track.
 
 musubi-tier: substrate test — pins that the new catalog entries
-(debugging, refactoring, git-workflow, typescript) load, parse, declare
-sensible metadata (applies-to / triggers / tools), reach the correct
-agents through the allowlist firewall (HI #3), and surface via the
-recommender without widening access.
+(debugging, refactoring, git-workflow, typescript, web-ui) load, parse,
+declare sensible metadata (applies-to / triggers / tools), reach the
+correct agents through the allowlist firewall (HI #3), and surface via
+the recommender without widening access.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from validation.context_builder import (
     check_skill_permission,
 )
 
-NEW_SKILLS = ["debugging", "refactoring", "git-workflow", "typescript"]
+NEW_SKILLS = ["debugging", "refactoring", "git-workflow", "typescript", "web-ui"]
 
 
 # ── Every new skill loads and has the required section + tier tag ──────────
@@ -59,10 +59,12 @@ def test_typescript_scoped_to_ts_js() -> None:
 
 
 def test_procedure_skills_are_universal() -> None:
-    """debugging / refactoring / git-workflow apply in any workspace —
-    they are language-agnostic procedures, so no applies-to constraint."""
+    """debugging / refactoring / git-workflow / web-ui apply in any
+    workspace — no applies-to constraint. web-ui is deliberately universal
+    (not JS/TS-scoped) so an HTML artifact emitted from a Python repo still
+    matches it."""
     metas = {m.skill_id: m for m in skill_loader.list_skills()}
-    for sid in ["debugging", "refactoring", "git-workflow"]:
+    for sid in ["debugging", "refactoring", "git-workflow", "web-ui"]:
         assert metas[sid].applies_to is None, (
             f"{sid} unexpectedly declares applies-to: {metas[sid].applies_to}"
         )
@@ -73,7 +75,9 @@ def test_procedure_skills_are_universal() -> None:
 
 def test_coder_gains_generator_side_skills() -> None:
     coder = AGENT_SKILL_ALLOWLIST["coder"]
-    assert {"typescript", "debugging", "refactoring", "git-workflow"} <= coder
+    assert {
+        "typescript", "debugging", "refactoring", "git-workflow", "web-ui",
+    } <= coder
 
 
 def test_agent_gains_dispatcher_safe_skills_only() -> None:
@@ -117,7 +121,9 @@ def test_coder_catalog_surfaces_new_skills(monkeypatch) -> None:
     monkeypatch.setattr(server, "_load_project_profile", lambda: None)
     payload = json.loads(server.musubi_list_skills("coder"))
     ids = {s["skill_id"] for s in payload["skills"]}
-    assert {"debugging", "refactoring", "git-workflow", "typescript"} <= ids
+    assert {
+        "debugging", "refactoring", "git-workflow", "typescript", "web-ui",
+    } <= ids
 
 
 def test_typescript_dropped_in_python_only_workspace(monkeypatch) -> None:
@@ -134,7 +140,9 @@ def test_typescript_dropped_in_python_only_workspace(monkeypatch) -> None:
     payload = json.loads(server.musubi_list_skills("coder"))
     ids = {s["skill_id"] for s in payload["skills"]}
     assert "typescript" not in ids
-    assert {"debugging", "refactoring", "git-workflow"} <= ids
+    # web-ui is universal, so it survives in a Python workspace — that is the
+    # whole point: a dashboard emitted from a Python repo can still match it.
+    assert {"debugging", "refactoring", "git-workflow", "web-ui"} <= ids
 
 
 def test_typescript_kept_in_ts_workspace(monkeypatch) -> None:
@@ -174,3 +182,16 @@ def test_recommend_skills_tool_respects_coder_allowlist() -> None:
     coder = AGENT_SKILL_ALLOWLIST["coder"]
     assert ids <= coder
     assert "refactoring" in ids
+
+
+def test_web_ui_matches_the_dashboard_case() -> None:
+    """The motivating case: 'create an HTML dashboard with a chart' now
+    matches a catalog skill, so the root has something to push to the coder.
+    web-ui is universal, so this holds even without a JS/TS profile."""
+    metas = [m for m in skill_loader.list_skills() if m.skill_id in NEW_SKILLS]
+    out = recommend_skills(
+        "create a self-contained HTML dashboard with a population chart",
+        metas,
+    )
+    assert out, "expected a recommendation for an HTML dashboard task"
+    assert out[0].skill_id == "web-ui"
