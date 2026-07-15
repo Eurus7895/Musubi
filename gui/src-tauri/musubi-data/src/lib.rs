@@ -1678,12 +1678,23 @@ fn load_state_at_with_pipeline_runs(
     // ── sub-agent cohort: fold the append-only lifecycle log per handle ──
     // One row per (spawned|completed) event; a handle is 'running' until its
     // 'completed' row lands. Columns are the real subagent_audit schema.
-    let mut stmt = conn.prepare(
+    // `pushed_skill_id` was added after this table shipped (option 3). A DB
+    // the Python side has not yet migrated will not have it, so gate on
+    // column_exists — selecting a missing column throws and would abort the
+    // whole load, blanking every panel (session history included). Fall back
+    // to an empty literal when absent.
+    let pushed_skill_col = if column_exists(conn, "subagent_audit", "pushed_skill_id")? {
+        "COALESCE(pushed_skill_id,'')"
+    } else {
+        "''"
+    };
+    let subagent_sql = format!(
         "SELECT id, ts, event, handle_id, role, parent_session_id, parent_agent_name, \
                 brief, allowed_tools, max_turns, wall_clock_timeout_s, final_status, \
-                turns, tools_used, COALESCE(pushed_skill_id,'') \
-         FROM subagent_audit ORDER BY id ASC",
-    )?;
+                turns, tools_used, {pushed_skill_col} \
+         FROM subagent_audit ORDER BY id ASC"
+    );
+    let mut stmt = conn.prepare(&subagent_sql)?;
     let mut order: Vec<String> = Vec::new();
     let mut agents: std::collections::HashMap<String, Agent> = std::collections::HashMap::new();
     let mut pipeline_envelopes: std::collections::HashMap<String, PipelineEnvelope> =
@@ -2898,6 +2909,40 @@ mod tests {
 
         assert_eq!(st.subagents.len(), 1);
         assert_eq!(st.subagents[0].pushed_skill, "web-ui");
+    }
+
+    #[test]
+    fn reader_tolerates_subagent_audit_without_pushed_skill_column() {
+        // Regression: a DB created before pushed_skill_id existed must still
+        // load. Selecting the missing column would throw and abort load_state,
+        // blanking the whole Console (session history included).
+        let conn = Connection::open_in_memory().unwrap();
+        // Old schema: subagent_audit WITHOUT pushed_skill_id.
+        conn.execute_batch(
+            "CREATE TABLE subagent_audit (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,\
+                handle_id TEXT NOT NULL, parent_session_id TEXT NOT NULL,\
+                parent_agent_name TEXT NOT NULL, role TEXT NOT NULL, brief TEXT NOT NULL,\
+                event TEXT NOT NULL, allowed_tools TEXT, max_turns INTEGER,\
+                wall_clock_timeout_s INTEGER, final_status TEXT, escalated INTEGER,\
+                turns INTEGER, tools_used TEXT, summary_truncated INTEGER,\
+                verification_errors TEXT);\
+             CREATE TABLE tool_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL,\
+                session_id TEXT, agent TEXT, tool TEXT, args_json TEXT, status TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_audit\
+             (id,ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,allowed_tools,max_turns,wall_clock_timeout_s)\
+             VALUES(1,1000.0,'spawned','w-old','session-1','driver','coder','build','[\"Write\"]',6,300)",
+            [],
+        )
+        .unwrap();
+
+        // Must NOT error, and the missing column degrades to empty.
+        let st = load_state_at(&conn, 2000).unwrap();
+        assert_eq!(st.subagents.len(), 1);
+        assert_eq!(st.subagents[0].pushed_skill, "");
     }
 
     #[test]
