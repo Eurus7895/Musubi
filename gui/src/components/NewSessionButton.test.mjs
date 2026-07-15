@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-test('both chat surfaces use only the approved New session control', () => {
+test('Orchestrator is the only session surface and Studio is builder-only', () => {
   const button = readFileSync(join(here, 'NewSessionButton.jsx'), 'utf8')
   const pipeline = readFileSync(join(here, '..', 'views', 'Pipeline.jsx'), 'utf8')
   const orchestrator = readFileSync(join(here, '..', 'views', 'Orchestrator.jsx'), 'utf8')
@@ -17,9 +17,10 @@ test('both chat surfaces use only the approved New session control', () => {
   assert.match(button, /height:\s*32/)
   assert.match(button, /borderRadius:\s*9/)
   assert.match(button, /aria-label/)
-  assert.match(pipeline, /<NewSessionButton/)
   assert.match(orchestrator, /<NewSessionButton/)
-  assert.match(pipeline, /label="New pipeline session"/)
+  assert.doesNotMatch(pipeline, /NewSessionButton|New pipeline session|Chat · pipeline/)
+  assert.match(pipeline, /New Pipeline/)
+  assert.match(pipeline, /Save Pipeline/)
   assert.doesNotMatch(pipeline, /onClearDriverChat|closePipeChat|openPipeChat/)
   assert.doesNotMatch(pipeline, /onClearPipe/)
   assert.match(chatBody, /latestUserMessageIndex/)
