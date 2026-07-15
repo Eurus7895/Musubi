@@ -2626,12 +2626,19 @@ mod tests {
         assert!(source.contains("fn load_pipeline_recipe("));
         assert!(source.contains("fn validate_pipeline_recipe("));
         assert!(source.contains("fn save_pipeline_recipe("));
+        let handler_block = source
+            .split_once("invoke_handler(tauri::generate_handler![")
+            .unwrap()
+            .1
+            .split_once("])")
+            .unwrap()
+            .0;
         for handler in [
-            ["            load_pipeline_", "recipe,"].concat(),
-            ["            validate_pipeline_", "recipe,"].concat(),
-            ["            save_pipeline_", "recipe\n"].concat(),
+            "load_pipeline_recipe",
+            "validate_pipeline_recipe",
+            "save_pipeline_recipe",
         ] {
-            assert!(source.contains(&handler));
+            assert!(handler_block.contains(handler));
         }
         assert!(!source.contains("\"send_pipeline_task\" =>"));
         assert!(!source.contains("\"pipeline_hint\" =>"));
