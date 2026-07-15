@@ -110,6 +110,7 @@ def spawn(
     per_turn_timeout_s: int = DEFAULT_PER_TURN_TIMEOUT_S,
     wall_clock_timeout_s: int = DEFAULT_WALL_CLOCK_TIMEOUT_S,
     output_schema: str | None = None,
+    pushed_skill_id: str | None = None,
     db_path: Path | None = None,
 ) -> str:
     """Insert a sub-session row and return its handle_id.
@@ -119,6 +120,10 @@ def spawn(
       - max_turns >= 1
       - per_turn_timeout_s, wall_clock_timeout_s >= 1
       - role + brief non-empty
+
+    `pushed_skill_id` is the root-selected catalog skill (option 3). It is
+    stored verbatim; the spawn tool validates it against the worker role's
+    allowlist before this call, so this layer treats it as opaque.
     """
     if not role or not role.strip():
         raise ValueError("role must be non-empty")
@@ -141,6 +146,7 @@ def spawn(
         per_turn_timeout_s=per_turn_timeout_s,
         wall_clock_timeout_s=wall_clock_timeout_s,
         output_schema=output_schema,
+        pushed_skill_id=(pushed_skill_id.strip() if pushed_skill_id else None),
         now=_now_iso(),
         db_path=db_path,
     )

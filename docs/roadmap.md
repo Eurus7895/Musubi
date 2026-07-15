@@ -63,10 +63,18 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    scope/route, root usage, and bounded `OutcomePacket` feedback. After a worker
    terminates, the driver retains the stable system contract but replaces raw
    tool transcripts with one decision delta; model-visible root tools are
-   reduced by phase (spawn-only for simple work, spawn plus skill lookup for
-   broader work, recovery tools only inside the bounded recovery window).
-   Simple successful runs target at most 3k root tokens and 8–12k total task
-   tokens; 20k is a regression guard, not a normal budget. Plans:
+   reduced by phase (spawn plus skill *selection* in every scope, the
+   content-loading skill tools added for broader work, recovery tools only
+   inside the bounded recovery window). Skill selection is deliberately
+   available even for simple artifacts: the root ranks a worker's skills with
+   `musubi_recommend_skills(for_role=…)` and pushes the chosen `pushed_skill_id`
+   into the spawn, so a direct worker (which carries no skill tool of its own)
+   still receives role-appropriate procedure. The spawn re-validates the id
+   against the worker role's `AGENT_SKILL_ALLOWLIST` entry (HI #3), so the root
+   can never push a skill the role could not itself load. Adding the selection
+   tool to a simple root costs ~1k tokens across the two-call projection, so the
+   simple-root guard moved from 3k to ~4.5k; 20k remains the hard regression
+   guard, not a normal budget. Plans:
    [`2026-07-15-root-goal-state-controller.md`](./superpowers/plans/2026-07-15-root-goal-state-controller.md)
    and design
    [`2026-07-15-root-goal-state-controller-design.md`](./superpowers/specs/2026-07-15-root-goal-state-controller-design.md).
@@ -96,6 +104,10 @@ for the same dimension.
   still matches it — closing the dashboard case where no catalog skill applied.
   Every prior catalog entry was backfilled with `triggers:` so the recommender
   can rank the whole catalog, not just the newest skills.
+  Reachability closed: a direct worker carries no skill tool, so grown catalog
+  entries were previously unreachable by workers. The root now selects a skill
+  per spawned worker and pushes it (option 3, see Active track 2), so catalog
+  growth reaches workers without adding a skill tool to their lean surface.
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this

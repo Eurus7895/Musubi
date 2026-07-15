@@ -21,8 +21,17 @@ _FIELD_RE = re.compile(
 )
 _SIMPLE_SCOPES = frozenset({"simple_edit", "simple_artifact"})
 _SPAWN_TOOL = "musubi_spawn_subagent"
-_SKILL_TOOLS = frozenset({
-    "musubi_recommend_skills",
+# Skill selection is available to the root in EVERY scope, including simple
+# artifacts: the root ranks the catalog with `musubi_recommend_skills` and
+# passes the chosen `pushed_skill_id` into the spawn (option 3). This is one
+# cheap tool definition — it returns ids + titles, not skill bodies — so it
+# does not blow the simple-scope root-token target.
+_SKILL_SELECT_TOOL = "musubi_recommend_skills"
+# The content-loading skill tools stay gated to broader scopes, where the root
+# may itself read a skill. A simple-scope root never needs to pull full skill
+# text into its own context — it delegates the reading to the worker it pushes
+# the skill to.
+_SKILL_READ_TOOLS = frozenset({
     "musubi_get_skill",
     "musubi_get_reference",
 })
@@ -155,7 +164,9 @@ def root_decision_tools(
     """Return the model-visible root tools for the current decision phase."""
     if recovery_outcome and not decision_only:
         return list(tools)
-    allowed = {_SPAWN_TOOL}
+    # Spawn plus skill *selection* in every scope, so the root can push a
+    # skill to the worker it summons even for a simple artifact.
+    allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
     if state.scope not in _SIMPLE_SCOPES:
-        allowed.update(_SKILL_TOOLS)
+        allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

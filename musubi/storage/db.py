@@ -266,6 +266,12 @@ _PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("chat_id", "TEXT"),
 )
 
+# Root-selected skill injection (option 3): the root may name a catalog
+# skill for a spawned worker, stored per-row so it is provable post-hoc.
+_SUB_SESSIONS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("pushed_skill_id", "TEXT"),
+)
+
 
 def _existing_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -295,6 +301,7 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
         _migrate_columns(conn, "agent_cycles", _AGENT_CYCLE_COLUMNS)
         _migrate_columns(conn, "pipeline_runs", _PIPELINE_RUNS_COLUMNS)
+        _migrate_columns(conn, "sub_sessions", _SUB_SESSIONS_COLUMNS)
 
 
 @contextmanager
@@ -804,6 +811,7 @@ def insert_sub_session(
     wall_clock_timeout_s: int,
     output_schema: str | None,
     now: str,
+    pushed_skill_id: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
@@ -812,12 +820,12 @@ def insert_sub_session(
             "INSERT INTO sub_sessions ("
             " handle_id, parent_session_id, parent_agent_name, role, brief,"
             " allowed_tools, max_turns, per_turn_timeout_s, wall_clock_timeout_s,"
-            " output_schema, status, created_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            " output_schema, pushed_skill_id, status, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
             (
                 handle_id, parent_session_id, parent_agent_name, role, brief,
                 tools_json, max_turns, per_turn_timeout_s, wall_clock_timeout_s,
-                output_schema, now,
+                output_schema, pushed_skill_id, now,
             ),
         )
 

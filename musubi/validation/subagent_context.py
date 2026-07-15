@@ -93,6 +93,7 @@ def build_subagent_context(
     brief: str,
     role: str,
     *,
+    pushed_skill_id: str | None = None,
     skills_dir: Path | None = None,
 ) -> SubagentContext:
     """Build the immutable pre-prompt payload for a sub-agent.
@@ -101,9 +102,18 @@ def build_subagent_context(
     parent's session state:
 
       - `brief`: the user-/parent-supplied task string passed at spawn.
-      - `role_skill`: the SKILL.md text for the role's procedure, loaded
-        from `.github/skills/<skill_id>/SKILL.md` via `skill_loader`.
-        None when no skill is registered for the role yet.
+      - `role_skill`: the SKILL.md text pushed into the worker prompt,
+        loaded from `.github/skills/<skill_id>/SKILL.md` via `skill_loader`.
+        Resolution order (option 3): the root's per-spawn choice
+        (`pushed_skill_id`) wins when present; otherwise the role's native
+        push (`SUBAGENT_ROLE_SKILLS[role]`). None when neither is set —
+        the runner treats that as "no procedure pushed; rely on the role
+        description in the spawn brief".
+
+    `pushed_skill_id`, when set, was already validated against the worker
+    role's allowlist by `musubi_spawn_subagent` (fail-closed at spawn), so
+    it is trusted here — the firewall stays at the spawn boundary and this
+    builder only loads public catalog content (no parent state, HI #3).
 
     `allowed_tools` is the role's hard-cap tool list — the actual run-time
     tool set is `role ∩ main` (Phase A.1, computed in policy_engine).
@@ -126,14 +136,13 @@ def build_subagent_context(
             f"Valid roles: {sorted(SUBAGENT_POLICIES.keys())}"
         )
 
-    skill_id = SUBAGENT_ROLE_SKILLS.get(role_key)
+    chosen = (pushed_skill_id or "").strip() or SUBAGENT_ROLE_SKILLS.get(role_key)
     role_skill: str | None = None
-    if skill_id is not None:
-        # Loaded only when the SKILL.md actually exists on disk; Phase A.3
-        # adds the files. Until then `role_skill` stays None — the runner
-        # treats that as "no procedure pushed; rely on the role
-        # description in the spawn brief".
-        role_skill = skill_loader.get_skill(skill_id, skills_dir=skills_dir)
+    if chosen is not None:
+        # Loaded only when the SKILL.md actually exists on disk; a stale
+        # skill_id resolves to None rather than raising, so a spawn is never
+        # blocked by a catalog gap after validation.
+        role_skill = skill_loader.get_skill(chosen, skills_dir=skills_dir)
 
     return SubagentContext(
         brief=brief.strip(),

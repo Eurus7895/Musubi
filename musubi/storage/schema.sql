@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     per_turn_timeout_s   INTEGER NOT NULL DEFAULT 60,
     wall_clock_timeout_s INTEGER NOT NULL DEFAULT 300,
     output_schema        TEXT,                       -- optional JSON schema for `result_structured`
+    pushed_skill_id      TEXT,                       -- root-selected skill_id injected into the worker prompt (option 3)
     status               TEXT NOT NULL DEFAULT 'running',
     result_summary       TEXT,
     result_structured    TEXT,                       -- JSON

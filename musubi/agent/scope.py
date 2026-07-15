@@ -32,7 +32,9 @@ class ScopeHint:
         route_guidance = {
             "single_coder": (
                 "Simple route: start with one coder worker using a compact, "
-                "implementation-ready brief. This is an initial routing "
+                "implementation-ready brief. Recommend a skill for the coder "
+                "(musubi_recommend_skills) and pass the best skill_id as "
+                "pushed_skill_id on the spawn. This is an initial routing "
                 "recommendation, not a lifetime worker cap."
             ),
             "planner_then_coder_check": (
