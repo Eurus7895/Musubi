@@ -56,7 +56,7 @@ from agent.context import (
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
-from agent.goal_state import GoalState
+from agent.goal_state import GoalState, root_decision_tools
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -580,6 +580,20 @@ async def run_agent(
     return final_answer
 
 
+def _compact_root_goal_messages(
+    messages: list[dict[str, Any]],
+    state: GoalState,
+) -> list[dict[str, Any]]:
+    """Keep the stable system contract plus one bounded decision delta."""
+    stable_system = next(
+        (message for message in messages if message.get("role") == "system"),
+        None,
+    )
+    compacted = [stable_system] if stable_system is not None else []
+    compacted.append({"role": "user", "content": state.render_decision_block()})
+    return compacted
+
+
 async def _run_loop(
     session: ClientSession,
     vendor: LMRouter,
@@ -638,6 +652,13 @@ async def _run_loop(
     effort_escalated = False
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
+        root_state = (
+            orchestration.goal_state
+            if role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            else None
+        )
         recovery_outcome = (
             orchestration.latest_unrecovered_failure()
             if role == "agent"
@@ -652,7 +673,14 @@ async def _run_loop(
             >= DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
         )
         cycle_tools = tools
-        if recovery_decision_only:
+        if root_state is not None:
+            cycle_tools = root_decision_tools(
+                tools,
+                root_state,
+                recovery_outcome=recovery_outcome is not None,
+                decision_only=recovery_decision_only,
+            )
+        elif recovery_decision_only:
             cycle_tools = [
                 tool for tool in tools
                 if tool.get("name") == "musubi_spawn_subagent"
@@ -668,7 +696,7 @@ async def _run_loop(
             # runaway stage cannot quietly send a 200k-char input.
             messages = fit_model_input(
                 messages,
-                tools,
+                cycle_tools,
                 budget_chars=context_budget_chars,
                 compression_db_path=compression_db_path,
             )
@@ -880,6 +908,7 @@ async def _run_loop(
             )
             break
 
+        outcomes_before = len(root_state.outcomes) if root_state is not None else 0
         tool_results = await _dispatch(
             session, tool_uses, log,
             vendor=vendor, tools=(spawn_catalog or tools),
@@ -945,7 +974,17 @@ async def _run_loop(
             cycle_status="recovery_halt" if recovery_halt else "ok",
             log=log,
         )
-        messages.append({"role": "user", "content": tool_results})
+        if root_state is not None and len(root_state.outcomes) > outcomes_before:
+            messages = _compact_root_goal_messages(messages, root_state)
+            print(
+                "[agent] root goal-state compacted "
+                f"outcomes={len(root_state.outcomes)} "
+                f"chars={sum(len(str(item)) for item in messages)} "
+                f"tools={len(cycle_tools)}",
+                file=log,
+            )
+        else:
+            messages.append({"role": "user", "content": tool_results})
         if recovery_halt is not None:
             final_answer = recovery_halt
             break

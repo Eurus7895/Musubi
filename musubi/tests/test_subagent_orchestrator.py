@@ -127,14 +127,12 @@ def test_spawn_runs_child_and_feeds_summary_back() -> None:
     answer = asyncio.run(run_agent("delegate a scan", router, _musubi_dir(), log=log))
 
     assert answer == "done"
-    # Parent's second LM call must carry the child's summary as a tool_result.
+    # Parent's second LM call sees a bounded goal-state delta, not transcript.
     parent_followup = router.calls[2]["messages"]
-    tool_results = [
-        b for m in parent_followup if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
-    ]
-    assert tool_results, "expected a tool_result fed back to the parent"
-    assert "explored: found server.py" in tool_results[-1]["content"]
+    feedback = str(parent_followup)
+    assert "[root-goal-state]" in feedback
+    assert "explored: found server.py" in feedback
+    assert "latest_worker=explorer (done)" in feedback
 
 
 # ── child gets a restricted, firewalled tool surface ────────────────────────
@@ -216,11 +214,8 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
     assert router.calls[2]["tools"] == []
-    fed_back = "".join(
-        b["content"] for m in router.calls[3]["messages"]
-        if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
-    )
+    fed_back = str(router.calls[3]["messages"])
+    assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
     assert "max_turns=1 reached" in fed_back
 
@@ -247,11 +242,8 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "coder (escalated)" in answer
     assert "output_too_large_for_single_tool_call" in answer
-    fed_back = "".join(
-        b["content"] for m in router.calls[2]["messages"]
-        if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
-    )
+    fed_back = str(router.calls[2]["messages"])
+    assert "[root-goal-state]" in fed_back
     assert "output_too_large_for_single_tool_call" in fed_back
     assert "blocked" in fed_back
 

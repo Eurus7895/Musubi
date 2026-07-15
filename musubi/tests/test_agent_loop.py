@@ -127,6 +127,165 @@ def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
     assert state.root_tokens_out == 100
 
 
+def test_simple_root_cycle_sees_spawn_only_goal_surface() -> None:
+    from agent import run as run_mod
+
+    state = GoalState.create(
+        "create dashboard", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+    tools = [
+        {
+            "name": name,
+            "description": name,
+            "input_schema": {"type": "object"},
+        }
+        for name in (
+            "musubi_read_file",
+            "musubi_spawn_subagent",
+            "musubi_get_skill",
+        )
+    ]
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "done"}],
+        ),
+    ])
+
+    asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        tools,
+        [{"role": "user", "content": "create dashboard"}],
+        max_cycles=1,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    assert [tool["name"] for tool in router.calls[0]["tools"]] == [
+        "musubi_spawn_subagent",
+    ]
+
+
+def test_root_compacts_terminal_worker_feedback_to_goal_state_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    raw_marker = "RAW-WORKER-TRANSCRIPT-" * 300
+    state = GoalState.create(
+        "exact user intent", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+
+    async def fake_dispatch(*args, **kwargs):  # noqa: ANN002, ANN003
+        kwargs["orchestration"].record_worker_outcome(
+            role="coder",
+            status="done",
+            summary=f"summary: completed {raw_marker}",
+            touched_files={"dashboard.html"},
+        )
+        return [{
+            "type": "tool_result",
+            "tool_use_id": "spawn-1",
+            "content": raw_marker,
+        }]
+
+    monkeypatch.setattr(run_mod, "_dispatch", fake_dispatch)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use",
+                "id": "spawn-1",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "create dashboard"},
+            }],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "accepted"}],
+        ),
+    ])
+    spawn_tool = {
+        "name": "musubi_spawn_subagent",
+        "description": "spawn",
+        "input_schema": {"type": "object"},
+    }
+    log = io.StringIO()
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [spawn_tool],
+        [
+            {"role": "system", "content": "stable root prompt"},
+            {"role": "user", "content": "exact user intent"},
+        ],
+        max_cycles=2,
+        log=log,
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    replay = str(router.calls[1]["messages"])
+    assert answer == "accepted"
+    assert cycles == 2
+    assert "[root-goal-state]" in replay
+    assert "intent=exact user intent" in replay
+    assert "… [truncated]" in replay
+    assert raw_marker not in replay
+    assert "root goal-state compacted outcomes=1" in log.getvalue()
+
+
+def test_simple_root_two_call_projection_stays_below_3k_tokens() -> None:
+    from agent import run as run_mod
+
+    task = "create an HTML dashboard file"
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "done"}],
+        ),
+    ])
+
+    asyncio.run(run_agent(
+        task,
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    first_call = router.calls[0]
+    state = GoalState.create(task, "simple_artifact", "single_coder")
+    state.record_outcome(
+        role="coder",
+        status="done",
+        summary="summary: created dashboard\nverification: browser smoke test passed",
+        touched_files={"dashboard.html"},
+    )
+    second_messages = run_mod._compact_root_goal_messages(
+        first_call["messages"], state,
+    )
+    projected_total = run_mod._estimate_input_tokens(
+        first_call["messages"], first_call["tools"],
+    ) + run_mod._estimate_input_tokens(second_messages, first_call["tools"])
+
+    assert [tool["name"] for tool in first_call["tools"]] == [
+        "musubi_spawn_subagent",
+    ]
+    assert projected_total < 3_000
+
+
 def test_replacement_brief_includes_prior_terminal_outcome() -> None:
     from agent import run as run_mod
 
@@ -1964,10 +2123,12 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
 
     assert answer == "ok"
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert "musubi_read_file" in names
-    assert "musubi_recommend_skills" in names
-    assert "musubi_retrieve" in names
-    assert "musubi_spawn_subagent" in names
+    assert names == {
+        "musubi_get_reference",
+        "musubi_get_skill",
+        "musubi_recommend_skills",
+        "musubi_spawn_subagent",
+    }
     assert "musubi_write_file" not in names
     assert "musubi_edit_file" not in names
     assert "musubi_run_command" not in names
@@ -1978,7 +2139,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
     assert "musubi_record_agent_cycle" not in names
 
 
-def test_run_agent_full_tool_surface_keeps_internal_tools(
+def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MUSUBI_TOOL_SURFACE", "full")
@@ -1991,10 +2152,12 @@ def test_run_agent_full_tool_surface_keeps_internal_tools(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert "musubi_write_file" in names
-    assert "musubi_run_command" in names
-    assert "musubi_write_stage" in names
-    assert "musubi_read_stage" in names
+    assert names == {
+        "musubi_get_reference",
+        "musubi_get_skill",
+        "musubi_recommend_skills",
+        "musubi_spawn_subagent",
+    }
 
 
 def test_run_agent_persists_and_replays_chat_history(
