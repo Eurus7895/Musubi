@@ -167,6 +167,46 @@ def _resolve_stage_entry(
     return (agent, str(stage))
 
 
+def _flat_stage_entries(data: dict[str, Any]) -> list[dict[str, object]]:
+    """Normalize every resolvable entry in a flat ``stages:`` list.
+
+    Malformed spawn values are projected fail-closed (only non-empty strings
+    survive); :func:`validate_catalog` reports declaration errors from the raw
+    entries before a pipeline can run.
+    """
+    stages_list = data.get("stages")
+    if not isinstance(stages_list, list):
+        return []
+    presets = _load_presets()
+    out: list[dict[str, object]] = []
+    for entry in stages_list:
+        resolved = _resolve_stage_entry(entry, presets)
+        if resolved is None:
+            continue
+        raw_spawns = entry.get("spawns")
+        spawns = (
+            [
+                role.strip().lower()
+                for role in raw_spawns
+                if isinstance(role, str) and role.strip()
+            ]
+            if isinstance(raw_spawns, list)
+            else []
+        )
+        out.append({
+            "agent": resolved[0],
+            "stage": resolved[1],
+            "preset": str(entry.get("preset") or ""),
+            "spawns": spawns,
+        })
+    return out
+
+
+def pipeline_stage_entries(pipeline_name: str) -> list[dict[str, object]]:
+    """Return the canonical normalized projection of flat pipeline stages."""
+    return _flat_stage_entries(_load_pipeline_yaml(pipeline_name))
+
+
 _SKILL_PATH_RE = re.compile(r"^skills/([^/]+)/SKILL\.md$")
 
 
@@ -203,13 +243,10 @@ def _pipeline_stage_chain(data: dict[str, Any]) -> list[tuple[str, str]]:
     """
     stages_list = data.get("stages")
     if isinstance(stages_list, list) and stages_list:
-        presets = _load_presets()
-        chain: list[tuple[str, str]] = []
-        for entry in stages_list:
-            resolved = _resolve_stage_entry(entry, presets)
-            if resolved:
-                chain.append(resolved)
-        return chain
+        return [
+            (str(entry["agent"]), str(entry["stage"]))
+            for entry in _flat_stage_entries(data)
+        ]
 
     out: list[tuple[str, str]] = []
     gen = data.get("generator") or {}
@@ -410,6 +447,7 @@ def validate_catalog() -> list[str]:
             if not isinstance(stages_list, list) or not stages_list:
                 continue  # legacy generator/evaluator shape — not ours to check
             resolved_count = 0
+            resolved_agents: set[str] = set()
             for entry in stages_list:
                 if not isinstance(entry, dict):
                     errors.append(f"pipeline {d.name!r} has a non-dict stage entry")
@@ -433,6 +471,62 @@ def validate_catalog() -> list[str]:
                     )
                 else:
                     resolved_count += 1
+                    if resolved[0] in resolved_agents:
+                        errors.append(
+                            f"pipeline {d.name!r} stage {resolved[1]!r} "
+                            f"agent {resolved[0]!r} has a duplicate resolved "
+                            "agent; role-keyed spawn declarations require "
+                            "one stage per agent"
+                        )
+                    resolved_agents.add(resolved[0])
+                    if "spawns" not in entry:
+                        continue
+                    raw_spawns = entry["spawns"]
+                    context = (
+                        f"pipeline {d.name!r} stage {resolved[1]!r} "
+                        f"agent {resolved[0]!r} spawns"
+                    )
+                    if not isinstance(raw_spawns, list):
+                        errors.append(
+                            f"{context} must be a list, got "
+                            f"{type(raw_spawns).__name__}"
+                        )
+                        continue
+                    normalized: list[str] = []
+                    for role in raw_spawns:
+                        if not isinstance(role, str):
+                            errors.append(
+                                f"{context} has non-string role {role!r}"
+                            )
+                            continue
+                        normalized.append(role.strip().lower())
+                    seen: set[str] = set()
+                    for role in normalized:
+                        if role in seen:
+                            errors.append(
+                                f"{context} has duplicate role {role!r}"
+                            )
+                        seen.add(role)
+
+                    # Lazy import avoids making policy_engine part of
+                    # composer's import-time dependency surface.
+                    try:
+                        import policy_engine
+                    except ImportError:  # source tree without scripts on path
+                        from scripts import policy_engine  # type: ignore[no-redef]
+                    firewall = set(
+                        policy_engine.main_subagent_allowlist(resolved[0])
+                    )
+                    for role in normalized:
+                        if role not in policy_engine.SUBAGENT_POLICIES:
+                            errors.append(
+                                f"{context} references unknown role {role!r}"
+                            )
+                        elif role not in firewall:
+                            errors.append(
+                                f"{context} role {role!r} is outside the "
+                                "effective firewall allowlist"
+                            )
             if resolved_count < 2:
                 errors.append(
                     f"pipeline {d.name!r} needs at least 2 resolvable stages "

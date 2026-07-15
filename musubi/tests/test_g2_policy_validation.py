@@ -30,6 +30,115 @@ from policy_engine import (  # noqa: E402
 )
 
 
+def _write_flat_pipeline(tmp_path: Path, name: str, stages: list[dict]) -> None:
+    pipeline_dir = tmp_path / ".github" / "pipelines" / name
+    pipeline_dir.mkdir(parents=True)
+    import yaml
+    (pipeline_dir / "pipeline.yaml").write_text(
+        yaml.safe_dump({"name": name, "stages": stages}),
+        encoding="utf-8",
+    )
+
+
+def test_policy_reads_flat_stage_spawns_through_firewall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_flat_pipeline(tmp_path, "flat-policy", [
+        {
+            "agent": "coder",
+            "stage": "code",
+            "spawns": ["Explorer", "reviewer-aux"],
+        },
+        {"agent": "reviewer", "stage": "review"},
+    ])
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_pipeline_spawns_cache()
+    policy_engine._reset_agent_spawns_cache()
+
+    assert policy_engine.list_subagent_roles("coder", "flat-policy") == [
+        "explorer",
+    ]
+
+
+def test_policy_flat_stage_omitted_spawns_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_flat_pipeline(tmp_path, "flat-omitted", [
+        {"agent": "coder", "stage": "code"},
+        {"agent": "reviewer", "stage": "review"},
+    ])
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_pipeline_spawns_cache()
+    policy_engine._reset_agent_spawns_cache()
+
+    assert policy_engine.list_subagent_roles("coder", "flat-omitted") == []
+
+
+def test_policy_resolves_preset_stage_spawns_by_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    presets = tmp_path / ".github" / "pipelines" / "presets"
+    presets.mkdir(parents=True)
+    import yaml
+    (presets / "build.yaml").write_text(
+        yaml.safe_dump({"id": "build", "agent": "coder", "stage": "code"}),
+        encoding="utf-8",
+    )
+    _write_flat_pipeline(tmp_path, "flat-preset-policy", [
+        {"preset": "build", "spawns": ["explorer"]},
+        {"agent": "reviewer", "stage": "review"},
+    ])
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_pipeline_spawns_cache()
+    policy_engine._reset_agent_spawns_cache()
+
+    assert policy_engine.list_subagent_roles(
+        "coder", "flat-preset-policy",
+    ) == ["explorer"]
+
+
+def test_duplicate_flat_stage_agents_are_runtime_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_flat_pipeline(tmp_path, "flat-duplicate-agent", [
+        {"agent": "coder", "stage": "prepare"},
+        {"agent": "Coder", "stage": "implement", "spawns": ["explorer"]},
+        {"agent": "reviewer", "stage": "review"},
+    ])
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_pipeline_spawns_cache()
+    policy_engine._reset_agent_spawns_cache()
+
+    assert policy_engine.list_subagent_roles(
+        "coder", "flat-duplicate-agent",
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "spawns",
+    [
+        "explorer",
+        [7],
+        ["ghost-runner"],
+        ["reviewer-aux"],
+    ],
+)
+def test_invalid_flat_stage_spawns_never_widen_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spawns: object,
+) -> None:
+    _write_flat_pipeline(tmp_path, "flat-invalid", [
+        {"agent": "coder", "stage": "code", "spawns": spawns},
+        {"agent": "reviewer", "stage": "review"},
+    ])
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_pipeline_spawns_cache()
+    policy_engine._reset_agent_spawns_cache()
+
+    assert policy_engine.list_subagent_roles("coder", "flat-invalid") == []
+
+
 def _restore_globals(monkeypatch: pytest.MonkeyPatch) -> None:
     """Helper to ensure each test starts from the unaltered shipped
     tables. monkeypatch.setattr handles teardown automatically."""
