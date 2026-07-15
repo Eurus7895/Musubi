@@ -41,6 +41,19 @@ function baseState(overrides = {}) {
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
+    pipelineBuilderCatalog: { presets: [], agents: [] },
+    runMode: 'direct',
+    selectedPipeline: '',
+    pipelineBuilder: {
+      step: 'catalog',
+      draft: { name: '', description: '', version: '', baselineChecks: [], correction: null, stages: [] },
+      savedRecipe: { name: '', description: '', version: '', baselineChecks: [], correction: null, stages: [] },
+      selectedStageIndex: null,
+      findings: [],
+      saveResult: null,
+      loading: false,
+      pendingTransition: null,
+    },
     orchestratorChatId: '',
     pipelineChatId: '',
     pipeModified: false,
@@ -74,17 +87,8 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
-    selectPipeSession() {},
     clearSelect() {},
     setAuditFilter() {},
-    movePipe() {},
-    removePipe() {},
-    addPipe() {},
-    loadPreset() {},
-    runPipe() {},
-    stopPipe() {},
-    resetPipe() {},
-    clearPipe() {},
     selectProfile() {},
     toggleProcess() {},
     openProcessLog() {},
@@ -93,14 +97,194 @@ function actions() {
     onDraft() {},
     onDraftKey() {},
     sendChat() {},
-    sendPipelineTask() {},
     cancelAgent() {},
     openArtifact() {},
-    onPipeDraft() {},
-    onPipeDraftKey() {},
-    clearPipeDriverChat() {},
+    updatePipelineRecipe() {},
   }
 }
+
+test('projects Orchestrator run mode and registered pipeline options', () => {
+  const vm = buildViewModel(baseState({
+    runMode: 'pipeline',
+    selectedPipeline: 'feature-dev',
+    pipelineCatalog: [
+      { name: 'feature-dev', description: 'ship features', runnable: true, blockedReason: '', stages: ['planner', 'coder'] },
+      { name: 'blocked', description: 'blocked', runnable: false, blockedReason: 'invalid evaluator', stages: [] },
+    ],
+  }), actions())
+
+  assert.equal(vm.runMode, 'pipeline')
+  assert.equal(vm.selectedPipeline, 'feature-dev')
+  assert.deepEqual(vm.pipelineOptions.map((option) => [option.name, option.selected, option.runnable]), [
+    ['feature-dev', true, true],
+    ['blocked', false, false],
+  ])
+  assert.equal(vm.selectedPipelineRunnable, true)
+})
+
+test('Pipeline composer fails closed until a runnable recipe is selected', () => {
+  const vm = buildViewModel(baseState({
+    runMode: 'pipeline',
+    selectedPipeline: 'blocked',
+    pipelineCatalog: [{ name: 'blocked', runnable: false, blockedReason: 'invalid contract', stages: [] }],
+  }), actions())
+
+  assert.equal(vm.sendDisabled, true)
+  assert.match(vm.disabledText, /runnable pipeline/i)
+})
+
+test('projects evidence-backed runtime graph logs and successful skill provenance', () => {
+  const coder = agent(10, 'root-session', 'done', 'coder', 'gui-orchestrator-project-one')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-project-one',
+    selectedSession: 'gui-orchestrator-project-one',
+    selected: coder.handle,
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-project-one', title: 'ship it', lastRequest: 'ship it',
+      rootTurns: 1, workers: 1,
+    }],
+    subagents: [coder],
+    agentTurns: [{
+      id: 1, chatId: 'gui-orchestrator-project-one', parentSession: 'root-session',
+      request: 'ship it', startedAt: 100, cycles: 1, tokensInEstimate: 20, tokensOutEstimate: 5,
+    }],
+    agentCycles: [{
+      sessionId: 'root-session', stage: 'coder', workerId: coder.handle, cycleIdx: 1,
+      lmMs: 12, tokensIn: 20, cachedInputTokens: 0, tokensOut: 5,
+      tokenSource: 'provider', toolNames: ['musubi_get_skill'], cycleStatus: 'final',
+    }],
+    toolEvidence: [
+      { id: 20, ts: '10:00:01', sessionId: 'root-session', chatId: 'gui-orchestrator-project-one', role: 'coder', workerId: coder.handle, tool: 'musubi_get_skill', category: 'skills', status: 'ok', skillId: 'python', detail: 'skill python' },
+      { id: 21, ts: '10:00:02', sessionId: 'root-session', chatId: 'gui-orchestrator-project-one', role: 'coder', workerId: coder.handle, tool: 'musubi_get_skill', category: 'skills', status: 'error', skillId: 'unsafe', detail: 'skill unsafe' },
+    ],
+    policy: [{ id: 30, ts: '10:00:03', verdict: 'DENY', tool: 'musubi_write_file', role: 'coder', handle: coder.handle, reason: 'outside surface' }],
+  }), actions())
+
+  assert.deepEqual(vm.runtimeGraph.nodes.map((node) => [node.id, node.parentId]), [
+    ['root', null], [coder.handle, 'root'],
+  ])
+  assert.deepEqual(vm.skillsByWorker[coder.handle], ['python'])
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'skills' && row.status === 'error'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'policy' && row.status === 'deny'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'model' && row.workerId === coder.handle), true)
+  assert.equal(JSON.stringify(vm.runtimeLogs).includes('rawArgs'), false)
+})
+
+test('includes pipeline stages launched by an Orchestrator chat in the runtime graph', () => {
+  const stage = agent(40, 'pipeline-session', 'done', 'reviewer', 'gui-orchestrator-unified')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-unified',
+    selectedSession: 'gui-orchestrator-unified',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-unified', title: 'review', lastRequest: 'review', rootTurns: 1, workers: 1 }],
+    agentTurns: [{ id: 1, chatId: 'gui-orchestrator-unified', parentSession: 'root-session', request: 'review', startedAt: 100 }],
+    pipelineRuns: [{
+      sessionId: 'pipeline-session', chatId: 'gui-orchestrator-unified', pipelineName: 'code-review',
+      brief: 'review', startedAt: 101, endedAt: 120, status: 'success', stages: [stage],
+    }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.mode, 'pipeline')
+  assert.equal(vm.runtimeGraph.pipelineName, 'code-review')
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === stage.handle), true)
+})
+
+test('does not attach an older pipeline run to a newer direct root turn', () => {
+  const staleStage = agent(41, 'old-pipeline', 'done', 'coder', 'gui-orchestrator-unified')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-unified',
+    selectedSession: 'gui-orchestrator-unified',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-unified', title: 'new direct turn', lastRequest: 'new direct turn', rootTurns: 2, workers: 0 }],
+    agentTurns: [{ id: 2, chatId: 'gui-orchestrator-unified', parentSession: 'new-root', request: 'new direct turn', startedAt: 100 }],
+    pipelineRuns: [{ sessionId: 'old-pipeline', chatId: 'gui-orchestrator-unified', pipelineName: 'feature-dev', startedAt: 90, status: 'success', stages: [staleStage] }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.mode, 'direct')
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === staleStage.handle), false)
+})
+
+test('keeps ambiguous audit rows visible without guessing a worker', () => {
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-one',
+    selectedSession: 'gui-orchestrator-one',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-one', title: 'task', lastRequest: 'task', rootTurns: 1, workers: 2 }],
+    agentTurns: [{ id: 1, chatId: 'gui-orchestrator-one', parentSession: 'root-one', request: 'task', startedAt: 100 }],
+    toolEvidence: [{ id: 8, ts: '10:00:00', sessionId: 'root-one', chatId: 'gui-orchestrator-one', role: 'coder', workerId: '', tool: 'musubi_read_file', category: 'tools', status: 'ok', skillId: '', detail: '' }],
+  }), actions())
+
+  assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === 'unassigned'), true)
+  assert.equal(vm.runtimeLogs[0].workerId, 'unassigned')
+})
+
+test('projects builder state without active Studio runtime controls', () => {
+  const vm = buildViewModel(baseState({
+    pipelineBuilder: {
+      step: 'edit',
+      draft: {
+        name: 'feature-dev', description: '', version: '', baselineChecks: [], correction: null,
+        stages: [{ preset: 'planner', agent: 'planner', stage: 'plan', spawns: ['researcher'] }],
+      },
+      savedRecipe: { name: 'feature-dev', description: '', version: '', baselineChecks: [], correction: null, stages: [] },
+      selectedStageIndex: 0,
+      findings: [{ severity: 'warning', message: 'check it' }],
+      saveResult: null,
+      loading: false,
+      pendingTransition: { type: 'close' },
+    },
+  }), actions())
+
+  assert.equal(vm.pipelineBuilder.step, 'edit')
+  assert.equal(vm.pipelineBuilder.dirty, true)
+  assert.equal(vm.pipelineBuilder.selectedStage.agent, 'planner')
+  assert.equal(vm.pipelineBuilder.findings[0].message, 'check it')
+  assert.equal(typeof vm.pipelineBuilder.actions.onUpdateRecipe, 'function')
+  for (const field of ['pipeChatBody', 'pipeRuns', 'activePipeRunId', 'activePipeRunSteps', 'pipeRunSummary', 'pipeChat']) {
+    assert.equal(vm[field], undefined, field)
+  }
+})
+
+test('projects a sorted searchable builder library with blocked metadata and spawn roles', () => {
+  const vm = buildViewModel(baseState({
+    pipelineBuilder: {
+      ...baseState().pipelineBuilder,
+      libraryQuery: 'plan',
+    },
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'z-build', agent: 'coder', stage: 'code', runnable: false, blockedReason: 'invalid tools' },
+        { id: 'a-plan', agent: 'planner', stage: 'plan', runnable: true, blockedReason: '' },
+      ],
+      agents: [
+        { name: 'reviewer-aux', displayLabel: 'Reviewer Aux', runnable: true, spawnAllowlist: [] },
+        { name: 'planner', displayLabel: 'Planner', runnable: true, spawnAllowlist: ['reviewer-aux'] },
+        { name: 'broken', displayLabel: 'Broken', runnable: false, blockedReason: 'bad frontmatter', spawnAllowlist: [] },
+      ],
+    },
+  }), actions())
+
+  assert.deepEqual(vm.pipelineBuilder.library.presets.map((item) => item.id), ['a-plan'])
+  assert.deepEqual(vm.pipelineBuilder.library.agents.map((item) => item.name), ['planner'])
+  assert.deepEqual(vm.pipelineBuilder.library.spawnRoles.map((item) => item.name), [])
+  assert.equal(vm.pipelineBuilder.library.presets[0].blocked, false)
+
+  const all = buildViewModel(baseState({
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'z-blocked', runnable: false, blockedReason: 'unknown agent' },
+        { id: 'a-plan', runnable: true, blockedReason: '' },
+      ],
+      agents: [
+        { name: 'reviewer-aux', displayLabel: 'Reviewer Aux', runnable: true },
+        { name: 'planner', displayLabel: 'Planner', runnable: true, spawnAllowlist: ['reviewer-aux'] },
+        { name: 'broken', displayLabel: 'Broken', runnable: false, blockedReason: 'bad frontmatter' },
+      ],
+    },
+  }), actions())
+  assert.deepEqual(all.pipelineBuilder.library.presets.map((item) => item.id), ['a-plan', 'z-blocked'])
+  assert.deepEqual(all.pipelineBuilder.library.agents.map((item) => item.name), ['broken', 'planner', 'reviewer-aux'])
+  assert.deepEqual(all.pipelineBuilder.library.spawnRoles.map((item) => item.name), ['reviewer-aux'])
+  assert.equal(all.pipelineBuilder.library.presets[1].blocked, true)
+  assert.equal(all.pipelineBuilder.library.agents[0].blockedReason, 'bad frontmatter')
+})
 
 test('groups workers into parent runs newest first', () => {
   const vm = buildViewModel(baseState({
@@ -356,7 +540,7 @@ test('driver card marks mixed and clamped cycle usage estimated', () => {
   assert.equal(vm.driverSummary.economics.tokenSource, 'estimated')
 })
 
-test('pipeline card scopes token economics to the active pipeline session', () => {
+test('legacy pipeline economics are not projected as an active Studio card', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-one',
     pipelineRuns: [
@@ -367,9 +551,7 @@ test('pipeline card scopes token economics to the active pipeline session', () =
     ],
   }), actions())
 
-  assert.equal(vm.pipeRunSummary.economics.inputTokens, 300)
-  assert.equal(vm.pipeRunSummary.economics.cachedInputTokens, 100)
-  assert.deepEqual(vm.pipeRunSummary.economics.tools, [{ name: 'musubi_read_file', count: 1 }])
+  assert.equal(vm.pipeRunSummary, undefined)
 })
 
 test('empty run economics has zero totals', () => {
@@ -420,15 +602,15 @@ test('explains repeated workers as retry attempts', () => {
   assert.equal(vm.activeRunSteps[1].attemptLabel, 'attempt 2/2')
 })
 
-test('does not treat a pipeline preset as selected by default', () => {
+test('does not expose legacy Studio execution projections', () => {
   const vm = buildViewModel(baseState(), actions())
 
-  assert.equal(vm.pipeName, 'choose preset')
-  assert.match(vm.pipeStatusText, /Choose a registered pipeline/)
-  assert.equal(vm.pipePresets.some((p) => p.name === 'feature-dev' && p.selected), false)
+  for (const field of ['pipeName', 'pipeStatusText', 'pipePresets', 'pipeStepsView', 'pipeChatBody']) {
+    assert.equal(vm[field], undefined)
+  }
 })
 
-test('scopes orchestrator and pipeline runs by chat id surface', () => {
+test('keeps Orchestrator runs while hiding legacy pipeline run history', () => {
   const vm = buildViewModel(baseState({
     subagents: [
       agent(1, 'orch-session', 'done', 'planner', 'gui-orchestrator-abc'),
@@ -446,10 +628,10 @@ test('scopes orchestrator and pipeline runs by chat id surface', () => {
   }), actions())
 
   assert.deepEqual(vm.runs.map((run) => run.id), ['orch-direct', 'orch-session'])
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-session'])
+  assert.equal(vm.pipeRuns, undefined)
 })
 
-test('scopes real pipeline runs to the exact current studio session', () => {
+test('does not project legacy Studio sessions beside current Orchestrator history', () => {
   const vm = buildViewModel(baseState({
     orchestratorChatId: 'gui-orchestrator-current',
     pipelineChatId: 'gui-pipeline-current',
@@ -471,14 +653,10 @@ test('scopes real pipeline runs to the exact current studio session', () => {
   }), actions())
 
   assert.deepEqual(vm.runs.map((run) => run.id), ['orch-current'])
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-current'])
-  assert.equal(vm.pipeRuns[0].title, 'feature-dev')
-  assert.equal(vm.pipeRuns[0].subtitle, '2 stages')
-  assert.equal(vm.pipeRuns[0].currentBrief, 'ship it')
-  assert.doesNotMatch(JSON.stringify(vm.pipeRuns), /driver-only turn/)
+  assert.equal(vm.pipeRuns, undefined)
 })
 
-test('live driver run appears only on owning surface', () => {
+test('legacy Pipeline surface driver is not exposed through Studio runtime controls', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-current',
     driverStatus: {
@@ -493,14 +671,12 @@ test('live driver run appears only on owning surface', () => {
   }), actions())
 
   assert.equal(vm.runs.length, 0)
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['driver-running-77'])
   assert.equal(vm.driverBusy, false)
   assert.equal(vm.sendDisabled, true)
   assert.equal(vm.sendMode, 'send')
   assert.match(vm.sendTitle, /Pipeline run is active/)
-  assert.equal(vm.pipeChatBody.driverBusy, true)
-  assert.equal(vm.pipeChatBody.sendDisabled, false)
-  assert.equal(vm.pipeChatBody.sendMode, 'cancel')
+  assert.equal(vm.pipeRuns, undefined)
+  assert.equal(vm.pipeChatBody, undefined)
 })
 
 test('chat view preserves message roles so a live process can anchor to the latest request', () => {
@@ -521,11 +697,11 @@ test('chat view preserves message roles so a live process can anchor to the late
 
   assert.equal(vm.driverBusy, true)
   assert.equal(vm.chat[0].role, 'you')
-  assert.equal(vm.pipeChatBody.chat[0].role, 'you')
+  assert.equal(vm.pipeChatBody, undefined)
   assert.match(vm.driverProcessLog, /working/)
 })
 
-test('pipeline chat body uses pipe chat and disables while orchestrator owns process', () => {
+test('legacy pipeline chat is not projected while Orchestrator owns process', () => {
   const vm = buildViewModel(baseState({
     orchestratorChatId: 'gui-orchestrator-current',
     chat: [{ role: 'driver', ts: '10:00:00', text: 'orchestrator answer', tone: null }],
@@ -543,16 +719,12 @@ test('pipeline chat body uses pipe chat and disables while orchestrator owns pro
   }), actions())
 
   assert.equal(vm.chat[0].text, 'orchestrator answer')
-  assert.equal(vm.pipeChatBody.chat[0].text, 'pipeline answer')
-  assert.equal(vm.pipeChatBody.draft, 'run pipeline')
-  assert.equal(vm.pipeChatBody.driverBusy, false)
-  assert.equal(vm.pipeChatBody.sendDisabled, true)
-  assert.match(vm.pipeChatBody.sendTitle, /Orchestrator run is active/)
+  assert.equal(vm.pipeChatBody, undefined)
   assert.equal(vm.driverBusy, true)
   assert.equal(vm.sendMode, 'cancel')
 })
 
-test('pipeline studio exposes scoped run rail and active timeline', () => {
+test('pipeline studio does not expose a run rail or active timeline', () => {
   const vm = buildViewModel(baseState({
     pipelineRuns: [
       { sessionId: 'pipe-old', chatId: 'gui-pipeline-abc', pipelineName: 'feature-dev', brief: 'old', startedAt: 1, status: 'success', stages: [agent(11, 'pipe-old', 'done', 'planner')] },
@@ -560,15 +732,14 @@ test('pipeline studio exposes scoped run rail and active timeline', () => {
     ],
   }), actions())
 
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['pipe-new', 'pipe-old'])
-  assert.equal(vm.activePipeRunId, 'pipe-new')
-  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h12'])
-  assert.equal(vm.activePipeRunSteps[0].isCurrent, true)
-  assert.match(vm.pipeRunSummary.countLine, /1 steps/)
-  assert.match(vm.pipeSessionSubtitle, /1 workers/)
+  assert.equal(vm.pipeRuns, undefined)
+  assert.equal(vm.activePipeRunId, undefined)
+  assert.equal(vm.activePipeRunSteps, undefined)
+  assert.equal(vm.pipeRunSummary, undefined)
+  assert.equal(vm.pipeSessionSubtitle, undefined)
 })
 
-test('pipeline studio does not synthesize history after an audited run exists', () => {
+test('pipeline studio does not project audited run history', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-current',
     pipelineRuns: [
@@ -577,10 +748,10 @@ test('pipeline studio does not synthesize history after an audited run exists', 
     driverStatus: { running: true, surface: 'pipeline', chatId: 'gui-pipeline-current', task: 'retry', startedAt: 77, stdoutTail: '', stderrTail: '' },
   }), actions())
 
-  assert.deepEqual(vm.pipeRuns.map((run) => run.id), ['real-run'])
+  assert.equal(vm.pipeRuns, undefined)
 })
 
-test('pipeline run uses the exited driver budget status instead of active-worker copy', () => {
+test('pipeline budget status stays out of builder-only Studio projection', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-current',
     pipelineRuns: [
@@ -592,12 +763,12 @@ test('pipeline run uses the exited driver budget status instead of active-worker
     },
   }), actions())
 
-  assert.equal(vm.pipeRuns[0].status, 'budget_halted')
-  assert.equal(vm.pipeChatBody.driverBusy, false)
-  assert.match(vm.pipeRunSummary.alertLine, /Budget halted/)
+  assert.equal(vm.pipeRuns, undefined)
+  assert.equal(vm.pipeChatBody, undefined)
+  assert.equal(vm.pipeRunSummary, undefined)
 })
 
-test('pipeline flow exposes every configured stage and designer metadata', () => {
+test('keeps a complete legacy pipeline snapshot out of the builder-only Studio model', () => {
   const vm = buildViewModel(baseState({
     pipeName: 'feature-dev',
     pipelineChatId: 'gui-pipeline-current',
@@ -612,14 +783,12 @@ test('pipeline flow exposes every configured stage and designer metadata', () =>
     ],
   }), actions())
 
-  assert.deepEqual(vm.pipeStepsView.map((step) => step.role), ['planner', 'designer', 'coder', 'reviewer'])
-  assert.equal(vm.pipeStepsView[1].toolsLabel, '3 tools')
-  assert.equal(vm.pipeStepsView[1].maxLabel, 'max 12 turns')
-  assert.equal(vm.pipeStageOverflowLabel, '1 more stage →')
-  assert.equal(vm.pipeSessionTitle, 'feature-dev · run run-abcdef')
+  for (const field of ['pipeStepsView', 'pipeStageOverflowLabel', 'pipeSessionTitle']) {
+    assert.equal(vm[field], undefined)
+  }
 })
 
-test('completed process logs stay available only on their owning surface', () => {
+test('legacy pipeline process logs are absent from builder-only Studio', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-current',
     logWindowOpen: true,
@@ -629,14 +798,11 @@ test('completed process logs stay available only on their owning surface', () =>
     },
   }), actions())
 
-  assert.equal(vm.pipeChatBody.driverBusy, false)
-  assert.match(vm.pipeChatBody.driverProcessLog, /failure details/)
-  assert.equal(vm.pipeChatBody.hasDriverLog, true)
-  assert.equal(vm.pipeChatBody.logWindowOpen, true)
+  assert.equal(vm.pipeChatBody, undefined)
   assert.equal(vm.driverProcessLog, '')
 })
 
-test('retained pipeline log belongs only to its exact session', () => {
+test('retained legacy pipeline log is not projected for another session', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-new',
     logWindowOpen: true,
@@ -647,12 +813,10 @@ test('retained pipeline log belongs only to its exact session', () => {
     },
   }), actions())
 
-  assert.equal(vm.pipeChatBody.hasDriverLog, false)
-  assert.equal(vm.pipeChatBody.logWindowOpen, false)
-  assert.equal(vm.pipeChatBody.driverTask, '')
+  assert.equal(vm.pipeChatBody, undefined)
 })
 
-test('retained pipeline log remains visible to its exact session', () => {
+test('retained legacy pipeline log is not projected for its old session', () => {
   const vm = buildViewModel(baseState({
     pipelineChatId: 'gui-pipeline-current',
     logWindowOpen: true,
@@ -663,9 +827,7 @@ test('retained pipeline log remains visible to its exact session', () => {
     },
   }), actions())
 
-  assert.equal(vm.pipeChatBody.hasDriverLog, true)
-  assert.equal(vm.pipeChatBody.logWindowOpen, true)
-  assert.equal(vm.pipeChatBody.driverTask, 'current task')
+  assert.equal(vm.pipeChatBody, undefined)
 })
 
 test('retained orchestrator process belongs only to its exact session', () => {
@@ -685,7 +847,7 @@ test('retained orchestrator process belongs only to its exact session', () => {
   assert.equal(vm.driverTask, '')
 })
 
-test('pipeline studio honours selected pipeline session', () => {
+test('pipeline studio ignores selected legacy pipeline runtime session', () => {
   const vm = buildViewModel(baseState({
     selectedPipeSession: 'pipe-old',
     pipelineRuns: [
@@ -694,10 +856,9 @@ test('pipeline studio honours selected pipeline session', () => {
     ],
   }), actions())
 
-  assert.equal(vm.activePipeRunId, 'pipe-old')
-  assert.deepEqual(vm.activePipeRunSteps.map((step) => step.handle), ['h11'])
-  const chosen = vm.pipeRuns.find((run) => run.id === 'pipe-old')
-  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
+  assert.equal(vm.activePipeRunId, undefined)
+  assert.equal(vm.activePipeRunSteps, undefined)
+  assert.equal(vm.pipeRuns, undefined)
 })
 
 test('lists every session but focuses the latest driver turn', () => {

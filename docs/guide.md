@@ -312,8 +312,10 @@ returns only a compact summary, so the orchestrator's context stays small.
   worker) and resolves its prompt from `workers/<role>.agent.md`, falling back
   to `pipeline-stages/<pipeline>/<role>.agent.md`; a role with **no prompt in
   either place fails the stage** — a stage never runs on an empty prompt.
-  Standalone pipeline stages are strict leaves: the `spawns:` a pipeline.yaml
-  declares applies to the embedded host only.
+  Primary stages run sequentially. A stage's optional `spawns:` list is a
+  fail-closed allowlist, intersected with that role's spawn firewall; it permits
+  nested workers but does not force them. Nested siblings summoned in the same
+  worker turn run concurrently.
 
 The spawn firewall (which role may summon which) lives in each agent's
 `spawn_allowlist:` frontmatter, fail-closed (an unknown role is denied).
@@ -381,13 +383,14 @@ MUSUBI_DB=/path/to/storage/audit.db npm run tauri:dev   # explicit DB override
 
 ### Start and continue an Orchestrator session
 
-Opening the Console is passive. Submitting Orchestrator chat explicitly
-launches the standalone `agent` driver under that exact durable chat ID. While
-one run owns the shared process, you may select another historical session to
-inspect its chat and worker flow, but its input remains read-only. Only the
-active owning session exposes **Cancel**. When the driver becomes idle, that
-viewed session becomes writable; the first follow-up atomically validates,
-promotes, persists, and launches under the viewed ID.
+Opening the Console is passive. Orchestrator is its only execution surface.
+Submitting in **Direct** mode launches a worker run; **Pipeline** mode requires
+an explicitly selected runnable recipe and launches it under the same exact
+durable chat ID. While one run owns the shared process, you may select another
+historical session to inspect its chat and runtime evidence, but its input
+remains read-only. Only the active owning session exposes **Cancel**. When the
+driver becomes idle, that viewed session becomes writable; the first follow-up
+atomically validates, promotes, persists, and launches under the viewed ID.
 
 The Orchestrator, Policy, and Audit views update as the launched run writes
 governed rows to `audit.db`. You can still start the same standalone driver from
@@ -402,8 +405,8 @@ configured yet.
 
 | View | Shows | Backed by |
 |---|---|---|
-| **Orchestrator** | The driver "knot" spawning governed sub-agents over a woven net — each card's model, spawn order, turn cap, wall-clock budget; click for the firewalled brief + restricted tools. | `subagent_audit` per handle |
-| **Pipeline studio** | Preset composer / inspector — select a registered recipe (a pipeline built from presets), inspect its ordered stage chain, enter a brief, and explicitly choose **Run**. Studio launches the selected recipe directly; stage workers appear in Pipeline Studio and Audit. The CLI equivalent is `agent "<brief>" --pipeline <name>`. | GUI process + `audit.db` |
+| **Orchestrator** | Direct/Pipeline launch controls, durable sessions, minimal summon topology, and evidence logs. Selecting a node filters its tools, skills, policy, and model events; Conversation alone owns narrative summaries and artifacts. Edges mean "summoned", not sequential or parallel execution. | `chat_log`, `subagent_audit`, `agent_cycles`, `tool_audit`, `policy_audit`, and pipeline envelopes |
+| **Pipeline studio** | Builder-only Basics / Stages / Handoffs / Validate workflow. Create recipes, drag presets or agents into the sequential primary chain, configure nested `spawns` allowlists, validate, and save atomically. It has no chat, Run button, or runtime history. | registered recipes under `.github/pipelines/` plus builder IPC |
 | **Policy** | Fail-closed PreToolUse allow/deny stream + tool-surface-by-role; the evaluator-firewall invariant (HI #3) is called out. | `policy_audit` + `tool_audit` |
 | **Audit** | The append-only ledger (spawned / completed), filterable. | `subagent_audit` |
 | **Models** | LMRouter vendor profiles with a live config snippet; selecting one sets the active model. | `meta.active_profile` |

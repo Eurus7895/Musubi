@@ -23,13 +23,16 @@
 //! The reader is tolerant of a fresh DB (empty tables → empty surfaces) and of
 //! either a REAL or a TEXT `ts`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Default, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -37,9 +40,11 @@ pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
     pub agent_cycles: Vec<AgentCycle>,
+    pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
+    pub pipeline_builder_catalog: PipelineBuilderCatalog,
     pub orchestrator_chat_id: String,
     pub viewed_orchestrator_chat_id: String,
     pub pipeline_chat_id: String,
@@ -130,96 +135,89 @@ pub struct PipelineCatalogEntry {
     pub blocked_reason: String,
 }
 
-const STUDIO_PIPELINES: [&str; 2] = ["feature-dev", "dev-lite"];
-
-/// Load the deterministic pipelines the standalone linear runner supports.
-/// This intentionally avoids a second YAML dependency: Studio needs only the
-/// stable name/description/stage fields from the two supported recipe shapes.
-pub fn read_studio_pipeline_catalog(project_root: &Path) -> Vec<PipelineCatalogEntry> {
-    STUDIO_PIPELINES
-        .iter()
-        .filter_map(|name| {
-            let path = project_root
-                .join(".github")
-                .join("pipelines")
-                .join(name)
-                .join("pipeline.yaml");
-            let raw = std::fs::read_to_string(path).ok()?;
-            parse_studio_pipeline(&raw).filter(|entry| entry.name == *name && entry.runnable)
-        })
-        .collect()
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineBuilderCatalog {
+    pub presets: Vec<PipelinePresetCatalogEntry>,
+    pub agents: Vec<PipelineAgentCatalogEntry>,
 }
 
-fn parse_studio_pipeline(raw: &str) -> Option<PipelineCatalogEntry> {
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut stages = Vec::new();
-    let mut section = "";
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelinePresetCatalogEntry {
+    pub id: String,
+    pub description: String,
+    pub agent: String,
+    pub stage: String,
+    pub source_path: String,
+    pub runnable: bool,
+    pub blocked_reason: String,
+}
 
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len().saturating_sub(line.trim_start().len());
-        if indent == 0 {
-            if let Some(value) = trimmed.strip_prefix("name:") {
-                name = value.trim().to_string();
-                continue;
-            }
-            if let Some(value) = trimmed.strip_prefix("description:") {
-                description = value.trim().to_string();
-                continue;
-            }
-            section = match trimmed {
-                "stages:" => "stages",
-                "generator:" => "generator",
-                "evaluator:" => "evaluator",
-                _ => "",
-            };
-            continue;
-        }
-        match section {
-            "stages" => {
-                if let Some(value) = trimmed.strip_prefix("- preset:") {
-                    stages.push(value.trim().to_string());
-                }
-            }
-            "generator" => {
-                if let Some(value) = trimmed.strip_prefix("- name:") {
-                    stages.push(value.trim().to_string());
-                }
-            }
-            "evaluator" => {
-                if let Some(value) = trimmed.strip_prefix("stage:") {
-                    stages.push(value.trim().to_string());
-                    section = "";
-                } else if let Some(value) = trimmed.strip_prefix("name:") {
-                    stages.push(value.trim().to_string());
-                    section = "";
-                } else if let Some(value) = trimmed.strip_prefix("agent:") {
-                    let file = Path::new(value.trim()).file_name()?.to_str()?;
-                    let role = file.strip_suffix(".agent.md").unwrap_or(file);
-                    stages.push(role.to_string());
-                    section = "";
-                }
-            }
-            _ => {}
-        }
-    }
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineAgentCatalogEntry {
+    pub name: String,
+    pub display_label: String,
+    pub step: String,
+    pub agent: String,
+    pub prompt_path: String,
+    pub role_skill: String,
+    pub allowed_tools: Vec<String>,
+    pub max_turns: i64,
+    pub max_output_tokens: Option<i64>,
+    pub spawn_allowlist: Vec<String>,
+    pub source_paths: Vec<String>,
+    pub runnable: bool,
+    pub blocked_reason: String,
+}
 
-    let runnable = valid_pipeline_name(&name) && stages.len() >= 2;
-    Some(PipelineCatalogEntry {
-        name,
-        description,
-        stages,
-        runnable,
-        blocked_reason: if runnable {
-            String::new()
-        } else {
-            "Pipeline must resolve to at least two safe stages.".into()
-        },
-    })
+/// Load every safe, valid pipeline registered below `.github/pipelines`.
+/// Invalid or unresolved recipes fail closed and stay out of the runnable
+/// catalog; legacy generator/evaluator recipes are projected into the same
+/// flat sequential stage view.
+pub fn read_studio_pipeline_catalog(project_root: &Path) -> Vec<PipelineCatalogEntry> {
+    let root = project_root.join(".github").join("pipelines");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return vec![];
+    };
+    let mut names = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| name != "presets" && valid_pipeline_name(name))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let recipe = read_pipeline_recipe(project_root, &name).ok()?;
+            let findings = validate_pipeline_recipe(project_root, &recipe);
+            if findings.iter().any(|finding| finding.severity == "error") {
+                return None;
+            }
+            let stages = recipe
+                .stages
+                .iter()
+                .map(|stage| {
+                    if !stage.preset.is_empty() {
+                        stage.preset.clone()
+                    } else if !stage.stage.is_empty() {
+                        stage.stage.clone()
+                    } else {
+                        stage.agent.clone()
+                    }
+                })
+                .collect();
+            Some(PipelineCatalogEntry {
+                name: recipe.name,
+                description: recipe.description,
+                stages,
+                runnable: true,
+                blocked_reason: String::new(),
+            })
+        })
+        .collect()
 }
 
 pub fn valid_pipeline_name(name: &str) -> bool {
@@ -227,6 +225,1050 @@ pub fn valid_pipeline_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRecipe {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub baseline_checks: Vec<serde_yaml::Value>,
+    pub correction: serde_yaml::Value,
+    pub stages: Vec<PipelineStageRecipe>,
+    pub resolved_contracts: Vec<ResolvedStageContract>,
+    pub findings: Vec<PipelineFinding>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PipelineStageRecipe {
+    pub preset: String,
+    pub agent: String,
+    pub stage: String,
+    pub spawns: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedStageContract {
+    pub step: String,
+    pub agent: String,
+    pub prompt_path: String,
+    pub role_skill: String,
+    pub allowed_tools: Vec<String>,
+    pub max_turns: i64,
+    pub max_output_tokens: Option<i64>,
+    pub source_paths: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineFinding {
+    pub severity: String,
+    pub step: String,
+    pub field: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineSaveResult {
+    pub saved: bool,
+    pub catalog_refreshed: bool,
+    pub path: String,
+    pub findings: Vec<PipelineFinding>,
+    pub error: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineDocument {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    baseline_checks: Vec<serde_yaml::Value>,
+    #[serde(default)]
+    correction: serde_yaml::Value,
+    #[serde(default)]
+    stages: Vec<RawPipelineStage>,
+    #[serde(default)]
+    generator: Option<LegacyGenerator>,
+    #[serde(default)]
+    evaluator: Option<LegacyStage>,
+    #[serde(default)]
+    level: Option<serde_yaml::Value>,
+    #[serde(default)]
+    max_credits: Option<serde_yaml::Value>,
+    #[serde(default)]
+    warn_at: Option<serde_yaml::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPipelineStage {
+    #[serde(default)]
+    preset: String,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    stage: String,
+    #[serde(default)]
+    spawns: serde_yaml::Value,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct LegacyGenerator {
+    #[serde(default)]
+    agents: Vec<LegacyStage>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct LegacyStage {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    agent: String,
+    #[serde(default)]
+    stage: String,
+    #[serde(default)]
+    skill: Option<String>,
+    #[serde(default)]
+    spawns: serde_yaml::Value,
+}
+
+#[derive(Serialize)]
+struct PipelineOutputDocument<'a> {
+    name: &'a str,
+    description: &'a str,
+    version: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    baseline_checks: &'a Vec<serde_yaml::Value>,
+    stages: &'a Vec<PipelineStageRecipe>,
+    #[serde(skip_serializing_if = "yaml_value_is_null")]
+    correction: &'a serde_yaml::Value,
+}
+
+#[derive(Clone)]
+struct EffectiveStage {
+    agent: String,
+    stage: String,
+    preset_path: Option<PathBuf>,
+    agent_path: PathBuf,
+}
+
+fn yaml_value_is_null(value: &&serde_yaml::Value) -> bool {
+    value.is_null()
+}
+
+fn finding(step: impl Into<String>, field: &str, message: impl Into<String>) -> PipelineFinding {
+    PipelineFinding {
+        severity: "error".into(),
+        step: step.into(),
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+fn spawns_from_value(
+    value: serde_yaml::Value,
+    step: &str,
+    findings: &mut Vec<PipelineFinding>,
+) -> Vec<String> {
+    if value.is_null() {
+        return vec![];
+    }
+    match value {
+        serde_yaml::Value::Sequence(items) => {
+            let mut roles = Vec::new();
+            for item in items {
+                if let Some(role) = item.as_str() {
+                    roles.push(role.to_string());
+                } else {
+                    findings.push(finding(step, "spawns", "spawn roles must be strings"));
+                }
+            }
+            roles
+        }
+        _ => {
+            findings.push(finding(step, "spawns", "spawns must be a list of roles"));
+            vec![]
+        }
+    }
+}
+
+fn role_from_agent_reference(reference: &str) -> String {
+    Path::new(reference)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(reference)
+        .strip_suffix(".agent.md")
+        .unwrap_or(reference)
+        .to_string()
+}
+
+pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineRecipe, String> {
+    let path = checked_pipeline_path(project_root, name, false)?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let document: PipelineDocument = serde_yaml::from_str(&raw)
+        .map_err(|error| format!("invalid pipeline YAML in {}: {error}", path.display()))?;
+    if document.name != name {
+        return Err(format!(
+            "pipeline directory {name:?} contains recipe named {:?}",
+            document.name
+        ));
+    }
+    let _legacy_ignored = (document.level, document.max_credits, document.warn_at);
+    let mut findings = Vec::new();
+    let mut role_skills = Vec::new();
+    let stages = if !document.stages.is_empty() {
+        document
+            .stages
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let step = format!("stages[{index}]");
+                role_skills.push(String::new());
+                PipelineStageRecipe {
+                    preset: raw.preset,
+                    agent: raw.agent,
+                    stage: raw.stage,
+                    spawns: spawns_from_value(raw.spawns, &step, &mut findings),
+                }
+            })
+            .collect()
+    } else {
+        let mut legacy = document.generator.unwrap_or_default().agents;
+        if let Some(evaluator) = document.evaluator {
+            legacy.push(evaluator);
+        } else {
+            findings.push(finding(
+                "pipeline",
+                "evaluator",
+                "legacy recipe has no evaluator",
+            ));
+        }
+        legacy
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let step = format!("stages[{index}]");
+                let role = if raw.name.is_empty() {
+                    role_from_agent_reference(&raw.agent)
+                } else {
+                    raw.name
+                };
+                let stage = if raw.stage.is_empty() {
+                    role.clone()
+                } else {
+                    raw.stage
+                };
+                role_skills.push(raw.skill.unwrap_or_default());
+                PipelineStageRecipe {
+                    preset: String::new(),
+                    agent: role,
+                    stage,
+                    spawns: spawns_from_value(raw.spawns, &step, &mut findings),
+                }
+            })
+            .collect()
+    };
+    let mut recipe = PipelineRecipe {
+        name: document.name,
+        description: document.description,
+        version: document.version,
+        baseline_checks: document.baseline_checks,
+        correction: document.correction,
+        stages,
+        resolved_contracts: vec![],
+        findings,
+    };
+    if let Ok(effective) = resolve_recipe_stages(project_root, &recipe) {
+        for (index, stage) in effective.iter().enumerate() {
+            match resolve_stage_contract(stage, role_skills.get(index).cloned().unwrap_or_default())
+            {
+                Ok(contract) => recipe.resolved_contracts.push(contract),
+                Err(error) => {
+                    recipe
+                        .findings
+                        .push(finding(format!("stages[{index}]"), "contract", error))
+                }
+            }
+        }
+    }
+    Ok(recipe)
+}
+
+fn render_pipeline_recipe(recipe: &PipelineRecipe) -> Result<String, String> {
+    serde_yaml::to_string(&PipelineOutputDocument {
+        name: &recipe.name,
+        description: &recipe.description,
+        version: &recipe.version,
+        baseline_checks: &recipe.baseline_checks,
+        stages: &recipe.stages,
+        correction: &recipe.correction,
+    })
+    .map_err(|error| format!("failed to render pipeline YAML: {error}"))
+}
+
+fn safe_relative_reference(value: &str) -> bool {
+    !value.is_empty()
+        && !Path::new(value).is_absolute()
+        && Path::new(value).components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+fn collect_agent_matches(dir: &Path, filename: &str, matches: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_agent_matches(&path, filename, matches);
+        } else if path.file_name().and_then(|name| name.to_str()) == Some(filename) {
+            matches.push(path);
+        }
+    }
+}
+
+fn resolve_agent_path(project_root: &Path, reference: &str) -> Result<PathBuf, String> {
+    if !safe_relative_reference(reference) {
+        return Err(format!("unsafe agent reference {reference:?}"));
+    }
+    let agents_root = project_root.join(".github").join("agents");
+    let mut matches = Vec::new();
+    if reference.contains('/') || reference.contains('\\') || reference.ends_with(".agent.md") {
+        let normalized = reference.replace('\\', "/");
+        let relative = normalized.strip_prefix("agents/").unwrap_or(&normalized);
+        let candidate = agents_root.join(relative);
+        if candidate.is_file() {
+            matches.push(candidate);
+        }
+    } else {
+        collect_agent_matches(&agents_root, &format!("{reference}.agent.md"), &mut matches);
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(format!("unresolved agent {reference:?}")),
+        _ => Err(format!(
+            "ambiguous agent {reference:?}: {} matches",
+            matches.len()
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PresetDocument {
+    id: String,
+    agent: String,
+    stage: String,
+    #[serde(default)]
+    description: String,
+}
+
+fn resolve_recipe_stages(
+    project_root: &Path,
+    recipe: &PipelineRecipe,
+) -> Result<Vec<EffectiveStage>, String> {
+    let mut effective = Vec::new();
+    for (index, stage) in recipe.stages.iter().enumerate() {
+        let mut agent = stage.agent.clone();
+        let mut stage_name = stage.stage.clone();
+        let mut preset_path = None;
+        if !stage.preset.is_empty() {
+            if !valid_pipeline_name(&stage.preset) {
+                return Err(format!(
+                    "stages[{index}] has unsafe preset {:?}",
+                    stage.preset
+                ));
+            }
+            let path = project_root
+                .join(".github/pipelines/presets")
+                .join(format!("{}.yaml", stage.preset));
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|error| format!("unresolved preset {:?}: {error}", stage.preset))?;
+            let preset: PresetDocument = serde_yaml::from_str(&raw)
+                .map_err(|error| format!("invalid preset {:?}: {error}", stage.preset))?;
+            let _description = preset.description;
+            if preset.id != stage.preset {
+                return Err(format!(
+                    "preset {:?} declares mismatched id {:?}",
+                    stage.preset, preset.id
+                ));
+            }
+            if agent.is_empty() {
+                agent = preset.agent;
+            }
+            if stage_name.is_empty() {
+                stage_name = preset.stage;
+            }
+            preset_path = Some(path);
+        }
+        if agent.is_empty() {
+            return Err(format!("stages[{index}] has no agent or preset default"));
+        }
+        if stage_name.is_empty() || !valid_pipeline_name(&stage_name) {
+            return Err(format!(
+                "stages[{index}] has unsafe or empty stage {stage_name:?}"
+            ));
+        }
+        let agent_path = resolve_agent_path(project_root, &agent)?;
+        effective.push(EffectiveStage {
+            agent,
+            stage: stage_name,
+            preset_path,
+            agent_path,
+        });
+    }
+    Ok(effective)
+}
+
+fn parse_agent_frontmatter(path: &Path) -> Result<serde_yaml::Mapping, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|error| format!("failed to read agent {}: {error}", path.display()))?;
+    let text = raw.trim_start();
+    let rest = text
+        .strip_prefix("---")
+        .ok_or_else(|| format!("agent {} has no YAML frontmatter", path.display()))?;
+    let end = rest
+        .find("\n---")
+        .ok_or_else(|| format!("agent {} has unterminated frontmatter", path.display()))?;
+    let frontmatter = serde_yaml::from_str::<serde_yaml::Mapping>(&rest[..end])
+        .map_err(|error| format!("invalid agent frontmatter {}: {error}", path.display()))?;
+    if rest[end + "\n---".len()..].trim().is_empty() {
+        return Err(format!("agent {} has an empty prompt", path.display()));
+    }
+    Ok(frontmatter)
+}
+
+fn yaml_mapping_get<'a>(map: &'a serde_yaml::Mapping, key: &str) -> Option<&'a serde_yaml::Value> {
+    map.get(serde_yaml::Value::String(key.into()))
+}
+
+fn resolve_stage_contract(
+    stage: &EffectiveStage,
+    role_skill: String,
+) -> Result<ResolvedStageContract, String> {
+    let frontmatter = parse_agent_frontmatter(&stage.agent_path)?;
+    let tool_items = yaml_mapping_get(&frontmatter, "tools")
+        .and_then(serde_yaml::Value::as_sequence)
+        .ok_or_else(|| format!("agent {:?} has missing or invalid tools", stage.agent))?;
+    let allowed_tools = tool_items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("agent {:?} has a non-string tool", stage.agent))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let max_turns = yaml_mapping_get(&frontmatter, "maxTurns")
+        .and_then(serde_yaml::Value::as_i64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("agent {:?} has invalid maxTurns", stage.agent))?;
+    let max_output_tokens = match yaml_mapping_get(&frontmatter, "maxOutputTokens") {
+        Some(value) => Some(
+            value
+                .as_i64()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| format!("agent {:?} has invalid maxOutputTokens", stage.agent))?,
+        ),
+        None => None,
+    };
+    let mut source_paths = Vec::new();
+    if let Some(path) = &stage.preset_path {
+        source_paths.push(path.to_string_lossy().to_string());
+    }
+    source_paths.push(stage.agent_path.to_string_lossy().to_string());
+    Ok(ResolvedStageContract {
+        step: stage.stage.clone(),
+        agent: stage.agent.clone(),
+        prompt_path: stage.agent_path.to_string_lossy().to_string(),
+        role_skill,
+        allowed_tools,
+        max_turns,
+        max_output_tokens,
+        source_paths,
+    })
+}
+
+fn extract_quoted_strings(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut chars = line.char_indices();
+    while let Some((start, ch)) = chars.next() {
+        if ch != '"' {
+            continue;
+        }
+        if let Some((end, _)) = chars.find(|(_, candidate)| *candidate == '"') {
+            values.push(line[start + 1..end].to_string());
+        }
+    }
+    values
+}
+
+fn read_spawn_firewall(project_root: &Path) -> HashMap<String, Vec<String>> {
+    let Ok(raw) = std::fs::read_to_string(project_root.join("scripts/policy_engine.py")) else {
+        return HashMap::new();
+    };
+    let Some(start) = raw.find("MAIN_SUBAGENT_ALLOWLIST:") else {
+        return HashMap::new();
+    };
+    let mut result = HashMap::new();
+    let mut current: Option<String> = None;
+    for line in raw[start..].lines().skip(1) {
+        let trimmed = line.trim();
+        if trimmed == "}" {
+            break;
+        }
+        let quoted = extract_quoted_strings(trimmed);
+        if trimmed.contains(':') {
+            if let Some(key) = quoted.first() {
+                current = Some(key.clone());
+                result.entry(key.clone()).or_insert_with(Vec::new);
+                for role in quoted.iter().skip(1) {
+                    result.entry(key.clone()).or_default().push(role.clone());
+                }
+            }
+        } else if let Some(key) = &current {
+            result.entry(key.clone()).or_default().extend(quoted);
+        }
+        if trimmed.contains(']') {
+            current = None;
+        }
+    }
+    result
+}
+
+fn effective_spawn_firewall(
+    stage: &EffectiveStage,
+    fallback: &HashMap<String, Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let frontmatter = parse_agent_frontmatter(&stage.agent_path)?;
+    let Some(value) = yaml_mapping_get(&frontmatter, "spawn_allowlist") else {
+        return Ok(fallback.get(&stage.agent).cloned().unwrap_or_default());
+    };
+    let items = value.as_sequence().ok_or_else(|| {
+        format!(
+            "agent {:?} has invalid spawn_allowlist; expected a list",
+            stage.agent
+        )
+    })?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str().map(str::to_string).ok_or_else(|| {
+                format!(
+                    "agent {:?} has a non-string spawn_allowlist role",
+                    stage.agent
+                )
+            })
+        })
+        .collect()
+}
+
+fn collect_agent_catalog_paths(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_agent_catalog_paths(&path, paths);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".agent.md"))
+        {
+            paths.push(path);
+        }
+    }
+}
+
+/// Project the authoritative preset and agent catalogs for Pipeline Studio.
+/// Resolution delegates to the same parser, contract, and policy functions
+/// used by recipe validation; this projection never makes an entry runnable
+/// on weaker evidence than the backend save boundary.
+pub fn read_pipeline_builder_catalog(project_root: &Path) -> PipelineBuilderCatalog {
+    let firewall = read_spawn_firewall(project_root);
+    let presets_root = project_root
+        .join(".github")
+        .join("pipelines")
+        .join("presets");
+    let mut preset_paths = std::fs::read_dir(&presets_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("yaml")
+        })
+        .collect::<Vec<_>>();
+    preset_paths.sort();
+    let presets = preset_paths
+        .into_iter()
+        .filter_map(|path| {
+            let id = path.file_stem()?.to_str()?.to_string();
+            if !valid_pipeline_name(&id) {
+                return None;
+            }
+            let mut entry = PipelinePresetCatalogEntry {
+                id: id.clone(),
+                source_path: path.to_string_lossy().to_string(),
+                ..PipelinePresetCatalogEntry::default()
+            };
+            let parsed = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read preset {id:?}: {error}"))
+                .and_then(|raw| {
+                    serde_yaml::from_str::<PresetDocument>(&raw)
+                        .map_err(|error| format!("invalid preset {id:?}: {error}"))
+                });
+            if let Ok(preset) = parsed {
+                entry.agent = preset.agent;
+                entry.stage = preset.stage;
+                entry.description = preset.description;
+            }
+            let recipe = PipelineRecipe {
+                stages: vec![PipelineStageRecipe {
+                    preset: id,
+                    ..PipelineStageRecipe::default()
+                }],
+                ..PipelineRecipe::default()
+            };
+            let resolved = resolve_recipe_stages(project_root, &recipe).and_then(|mut stages| {
+                let stage = stages.remove(0);
+                resolve_stage_contract(&stage, String::new())?;
+                effective_spawn_firewall(&stage, &firewall)?;
+                Ok(())
+            });
+            match resolved {
+                Ok(()) => entry.runnable = true,
+                Err(error) => entry.blocked_reason = error,
+            }
+            Some(entry)
+        })
+        .collect();
+
+    let agents_root = project_root.join(".github").join("agents");
+    let mut agent_paths = Vec::new();
+    collect_agent_catalog_paths(&agents_root, &mut agent_paths);
+    agent_paths.sort();
+    let mut emitted = HashSet::new();
+    let agents = agent_paths
+        .into_iter()
+        .filter_map(|path| {
+            let filename = path.file_name()?.to_str()?;
+            let name = filename.strip_suffix(".agent.md")?.to_string();
+            if !valid_pipeline_name(&name) || !emitted.insert(name.clone()) {
+                return None;
+            }
+            let mut entry = PipelineAgentCatalogEntry {
+                name: name.clone(),
+                step: name.clone(),
+                agent: name.clone(),
+                prompt_path: path.to_string_lossy().to_string(),
+                source_paths: vec![path.to_string_lossy().to_string()],
+                ..PipelineAgentCatalogEntry::default()
+            };
+            let resolved = (|| {
+                let resolved_path = resolve_agent_path(project_root, &name)?;
+                let frontmatter = parse_agent_frontmatter(&resolved_path)?;
+                entry.display_label = yaml_mapping_get(&frontmatter, "name")
+                    .and_then(serde_yaml::Value::as_str)
+                    .filter(|label| !label.trim().is_empty())
+                    .ok_or_else(|| format!("agent {name:?} has missing or invalid name"))?
+                    .to_string();
+                let stage = EffectiveStage {
+                    agent: name.clone(),
+                    stage: name.clone(),
+                    preset_path: None,
+                    agent_path: resolved_path,
+                };
+                let contract = resolve_stage_contract(&stage, String::new())?;
+                entry.step = contract.step;
+                entry.agent = contract.agent;
+                entry.prompt_path = contract.prompt_path;
+                entry.role_skill = contract.role_skill;
+                entry.allowed_tools = contract.allowed_tools;
+                entry.max_turns = contract.max_turns;
+                entry.max_output_tokens = contract.max_output_tokens;
+                entry.source_paths = contract.source_paths;
+                entry.spawn_allowlist = effective_spawn_firewall(&stage, &firewall)?;
+                Ok::<(), String>(())
+            })();
+            match resolved {
+                Ok(()) => entry.runnable = true,
+                Err(error) => entry.blocked_reason = error,
+            }
+            Some(entry)
+        })
+        .collect();
+
+    PipelineBuilderCatalog { presets, agents }
+}
+
+fn evaluator_like(stage: &EffectiveStage, recipe_stage: &PipelineStageRecipe) -> bool {
+    matches!(stage.agent.as_str(), "reviewer" | "synthesizer")
+        || matches!(stage.stage.as_str(), "review" | "check" | "synthesis")
+        || recipe_stage.preset == "check"
+}
+
+pub fn validate_pipeline_recipe(
+    project_root: &Path,
+    recipe: &PipelineRecipe,
+) -> Vec<PipelineFinding> {
+    let mut findings = recipe.findings.clone();
+    if !valid_pipeline_name(&recipe.name) {
+        findings.push(finding(
+            "pipeline",
+            "name",
+            "name must be lowercase kebab-case",
+        ));
+    }
+    if recipe.stages.len() < 2 {
+        findings.push(finding(
+            "pipeline",
+            "stages",
+            "pipeline requires at least two stages",
+        ));
+    }
+    let firewall = read_spawn_firewall(project_root);
+    let mut seen_agents = HashSet::new();
+    let mut seen_stages = HashSet::new();
+    let mut effective = Vec::new();
+    for (index, recipe_stage) in recipe.stages.iter().enumerate() {
+        let step = format!("stages[{index}]");
+        let one = PipelineRecipe {
+            stages: vec![recipe_stage.clone()],
+            ..PipelineRecipe::default()
+        };
+        match resolve_recipe_stages(project_root, &one) {
+            Ok(mut stages) => {
+                let stage = stages.remove(0);
+                if let Err(error) = resolve_stage_contract(&stage, String::new()) {
+                    let contract_finding = finding(&step, "contract", error);
+                    if !findings.contains(&contract_finding) {
+                        findings.push(contract_finding);
+                    }
+                }
+                if !seen_agents.insert(stage.agent.clone()) {
+                    findings.push(finding(
+                        &step,
+                        "agent",
+                        "duplicate resolved agent is ambiguous",
+                    ));
+                }
+                if !seen_stages.insert(stage.stage.clone()) {
+                    findings.push(finding(
+                        &step,
+                        "stage",
+                        "duplicate resolved stage is ambiguous",
+                    ));
+                }
+                let allowed_spawns = match effective_spawn_firewall(&stage, &firewall) {
+                    Ok(allowed) => allowed,
+                    Err(error) => {
+                        findings.push(finding(&step, "spawns", error));
+                        Vec::new()
+                    }
+                };
+                for role in &recipe_stage.spawns {
+                    if !valid_pipeline_name(role) || resolve_agent_path(project_root, role).is_err()
+                    {
+                        findings.push(finding(
+                            &step,
+                            "spawns",
+                            format!("unknown spawn role {role:?}"),
+                        ));
+                    } else if !allowed_spawns.contains(role) {
+                        findings.push(finding(
+                            &step,
+                            "spawns",
+                            format!(
+                                "spawn role {role:?} is outside the {:?} firewall",
+                                stage.agent
+                            ),
+                        ));
+                    }
+                }
+                effective.push((index, stage));
+            }
+            Err(error) => {
+                let field = if !recipe_stage.preset.is_empty()
+                    && (error.contains("preset") || error.contains("Preset"))
+                {
+                    "preset"
+                } else if error.contains("stage") {
+                    "stage"
+                } else {
+                    "agent"
+                };
+                findings.push(finding(&step, field, error));
+            }
+        }
+    }
+    for (position, (index, stage)) in effective.iter().enumerate() {
+        let is_last = *index + 1 == recipe.stages.len();
+        let is_evaluator = evaluator_like(stage, &recipe.stages[*index]);
+        if (is_last && !is_evaluator) || (!is_last && is_evaluator) {
+            findings.push(finding(
+                format!("stages[{index}]"),
+                "evaluator",
+                if is_last {
+                    "final stage must resolve to an evaluator"
+                } else {
+                    "evaluator may appear only as the final stage"
+                },
+            ));
+        }
+        let _ = position;
+    }
+    findings
+}
+
+fn checked_pipeline_path(
+    project_root: &Path,
+    name: &str,
+    for_write: bool,
+) -> Result<PathBuf, String> {
+    if !valid_pipeline_name(name) {
+        return Err(format!("unsafe pipeline name {name:?}"));
+    }
+    let canonical_project = project_root
+        .canonicalize()
+        .map_err(|error| format!("invalid project root {}: {error}", project_root.display()))?;
+    let github = canonical_project.join(".github");
+    if github.exists() {
+        let canonical_github = github
+            .canonicalize()
+            .map_err(|error| format!("unsafe .github root: {error}"))?;
+        ensure_canonical_child(&canonical_project, &canonical_github, ".github root")?;
+    }
+    let pipelines = github.join("pipelines");
+    if !for_write && !pipelines.is_dir() {
+        return Err(format!(
+            "pipeline root does not exist: {}",
+            pipelines.display()
+        ));
+    }
+    let canonical_root = if pipelines.exists() {
+        let canonical = pipelines
+            .canonicalize()
+            .map_err(|error| format!("unsafe pipeline root: {error}"))?;
+        ensure_canonical_child(&canonical_project, &canonical, "pipeline root")?;
+        Some(canonical)
+    } else {
+        None
+    };
+    let directory = pipelines.join(name);
+    if directory.exists() {
+        let canonical = directory
+            .canonicalize()
+            .map_err(|error| format!("unsafe pipeline directory: {error}"))?;
+        let canonical_root = canonical_root
+            .as_ref()
+            .ok_or_else(|| "pipeline root disappeared during safety check".to_string())?;
+        ensure_exact_canonical_owner(&canonical_root.join(name), &canonical, "pipeline directory")?;
+    }
+    let target = directory.join("pipeline.yaml");
+    if target.exists() {
+        let canonical_target = target
+            .canonicalize()
+            .map_err(|error| format!("unsafe pipeline target: {error}"))?;
+        let canonical_root = canonical_root
+            .as_ref()
+            .ok_or_else(|| "pipeline root disappeared during safety check".to_string())?;
+        ensure_exact_canonical_owner(
+            &canonical_root.join(name).join("pipeline.yaml"),
+            &canonical_target,
+            "pipeline target",
+        )?;
+    }
+    Ok(target)
+}
+
+fn ensure_canonical_child(project: &Path, child: &Path, label: &str) -> Result<(), String> {
+    if child.starts_with(project) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} {} resolves outside project {}",
+            child.display(),
+            project.display()
+        ))
+    }
+}
+
+fn ensure_exact_canonical_owner(expected: &Path, actual: &Path, label: &str) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} {} is an alias for {}, not its registered name",
+            expected.display(),
+            actual.display()
+        ))
+    }
+}
+
+type PipelineReplacer = dyn Fn(&Path, &Path) -> std::io::Result<()>;
+
+static PIPELINE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn pipeline_temp_path(directory: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = PIPELINE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    directory.join(format!(
+        ".pipeline.yaml.{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        sequence
+    ))
+}
+
+fn atomic_pipeline_writer(
+    temp: &Path,
+    target: &Path,
+    bytes: &[u8],
+    replacer: &PipelineReplacer,
+) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(temp)?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replacer(temp, target)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp, target)
+}
+
+#[cfg(windows)]
+fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    if !target.exists() {
+        return std::fs::rename(temp, target);
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced: *const u16,
+            replacement: *const u16,
+            backup: *const u16,
+            flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+    let replaced = target
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let replacement = temp
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn save_pipeline_recipe(project_root: &Path, recipe: &PipelineRecipe) -> PipelineSaveResult {
+    save_pipeline_recipe_with_replacer(project_root, recipe, &atomic_replace)
+}
+
+fn save_pipeline_recipe_with_replacer(
+    project_root: &Path,
+    recipe: &PipelineRecipe,
+    replacer: &PipelineReplacer,
+) -> PipelineSaveResult {
+    let findings = validate_pipeline_recipe(project_root, recipe);
+    let mut result = PipelineSaveResult {
+        findings,
+        ..PipelineSaveResult::default()
+    };
+    if result
+        .findings
+        .iter()
+        .any(|finding| finding.severity == "error")
+    {
+        result.error = "pipeline recipe validation failed".into();
+        return result;
+    }
+    let rendered = match render_pipeline_recipe(recipe) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            result.error = error;
+            return result;
+        }
+    };
+    let target = match checked_pipeline_path(project_root, &recipe.name, true) {
+        Ok(target) => target,
+        Err(error) => {
+            result.error = error;
+            return result;
+        }
+    };
+    let Some(directory) = target.parent() else {
+        result.error = "pipeline target has no parent".into();
+        return result;
+    };
+    if let Err(error) = std::fs::create_dir_all(directory) {
+        result.error = format!("failed to create pipeline directory: {error}");
+        return result;
+    }
+    if checked_pipeline_path(project_root, &recipe.name, true).is_err() {
+        result.error = "pipeline directory failed canonical safety check".into();
+        return result;
+    }
+    let temp = pipeline_temp_path(directory);
+    if let Err(error) = atomic_pipeline_writer(&temp, &target, rendered.as_bytes(), replacer) {
+        result.error = format!("atomic pipeline write failed: {error}");
+        return result;
+    }
+    result.saved = true;
+    result.path = target.to_string_lossy().to_string();
+    result.catalog_refreshed = read_studio_pipeline_catalog(project_root)
+        .iter()
+        .any(|entry| entry.name == recipe.name);
+    if !result.catalog_refreshed {
+        result.error = "saved_but_refresh_failed".into();
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +1342,22 @@ pub struct AgentCycle {
     pub token_source: String,
     pub tool_names: Vec<String>,
     pub cycle_status: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolEvidence {
+    pub id: i64,
+    pub ts: String,
+    pub session_id: String,
+    pub chat_id: String,
+    pub role: String,
+    pub worker_id: String,
+    pub tool: String,
+    pub category: String,
+    pub status: String,
+    pub skill_id: String,
+    pub detail: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -403,6 +1461,34 @@ fn parse_cycle_tools(raw: &str) -> Vec<String> {
             })
         })
         .collect()
+}
+
+fn safe_tool_provenance(tool: &str, args_json: &str) -> (String, String, String) {
+    if tool != "musubi_get_skill" {
+        return ("tools".into(), String::new(), String::new());
+    }
+    let skill_id = serde_json::from_str::<serde_json::Value>(args_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("skill_id")
+                .and_then(|item| item.as_str())
+                .map(str::to_string)
+        })
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 80
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+        .unwrap_or_default();
+    let detail = if skill_id.is_empty() {
+        String::new()
+    } else {
+        format!("skill {skill_id}")
+    };
+    ("skills".into(), skill_id, detail)
 }
 
 fn current_epoch_secs() -> i64 {
@@ -1018,6 +2104,60 @@ fn load_state_at_with_pipeline_runs(
                 .flatten()
                 .collect();
         }
+    }
+
+    // Project an audit-safe tool ledger for the runtime Logs surface. Raw
+    // arguments and result bodies never cross this boundary. A worker handle
+    // is attached only when (session, role) identifies exactly one audited
+    // worker; retries with the same role deliberately remain unassigned.
+    if table_exists(conn, "tool_audit")? {
+        let mut workers_by_scope: HashMap<(String, String), Vec<String>> = HashMap::new();
+        for agent in &st.subagents {
+            workers_by_scope
+                .entry((agent.parent_session.clone(), agent.role.clone()))
+                .or_default()
+                .push(agent.handle.clone());
+        }
+        let mut tool_stmt = conn.prepare(
+            "SELECT id, ts, COALESCE(session_id,''), COALESCE(agent,''), tool,
+                    COALESCE(args_json,''), COALESCE(status,'')
+             FROM (SELECT id, ts, session_id, agent, tool, args_json, status
+                   FROM tool_audit ORDER BY id DESC LIMIT 500)
+             ORDER BY id ASC",
+        )?;
+        st.tool_evidence = tool_stmt
+            .query_map([], |row| {
+                let id = row.get(0)?;
+                let ts_value = row.get::<_, Value>(1)?;
+                let session_id: String = row.get(2)?;
+                let role: String = row.get(3)?;
+                let tool: String = row.get(4)?;
+                let args_json: String = row.get(5)?;
+                let status: String = row.get(6)?;
+                let worker_id = match workers_by_scope.get(&(session_id.clone(), role.clone())) {
+                    Some(handles) if handles.len() == 1 => handles[0].clone(),
+                    _ if role == "agent" || role == "driver" => "root".into(),
+                    _ => String::new(),
+                };
+                let (category, skill_id, detail) = safe_tool_provenance(&tool, &args_json);
+                Ok(ToolEvidence {
+                    id,
+                    ts: fmt_ts(&ts_value),
+                    chat_id: session_to_chat
+                        .get(&session_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    session_id,
+                    role,
+                    worker_id,
+                    tool,
+                    category,
+                    status,
+                    skill_id,
+                    detail,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
     }
 
     let pipeline_sessions = st
@@ -1699,6 +2839,7 @@ mod tests {
         assert!(v.get("totalSpawned").is_some());
         assert!(v.get("activeProfile").is_some());
         assert!(v.get("runtimeSource").is_some());
+        assert!(v.get("pipelineBuilderCatalog").is_some());
         // spawnEpoch is now serialized so the UI can sort runs chronologically.
         assert!(v["subagents"][0].get("spawnEpoch").is_some());
         assert!(v["subagents"][0].get("max").is_some());
@@ -1871,6 +3012,75 @@ mod tests {
         assert_eq!(cycle.tokens_out, 90);
         assert_eq!(cycle.token_source, "provider");
         assert_eq!(cycle.tool_names, vec!["musubi_read_file", "musubi_grep"]);
+    }
+
+    #[test]
+    fn tool_evidence_exposes_only_safe_provenance_and_exact_worker_when_unambiguous() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO subagent_audit
+             (ts,handle_id,parent_session_id,parent_agent_name,role,brief,event,
+              allowed_tools,max_turns,wall_clock_timeout_s)
+             VALUES(10.0,'worker-1','session-1','agent','coder','build','spawned',
+                    '[\"musubi_get_skill\"]',8,300);
+             INSERT INTO tool_audit
+             (id,ts,session_id,pipeline,agent,tool,args_json,result_hash,status)
+             VALUES(7,11.0,'session-1','standalone-agent','coder','musubi_get_skill',
+                    '{\"skill_id\":\"python\",\"agent_name\":\"coder\",\"secret\":\"hidden\"}',
+                    'sha256:abc','ok');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.tool_evidence.len(), 1);
+        let row = &st.tool_evidence[0];
+        assert_eq!(row.worker_id, "worker-1");
+        assert_eq!(row.skill_id, "python");
+        assert_eq!(row.category, "skills");
+        assert_eq!(row.detail, "skill python");
+        let json = serde_json::to_string(row).unwrap();
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("hidden"));
+        assert!(!json.contains("argsJson"));
+    }
+
+    #[test]
+    fn tool_evidence_does_not_guess_worker_for_repeated_roles() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO subagent_audit
+             (ts,handle_id,parent_session_id,parent_agent_name,role,brief,event,
+              allowed_tools,max_turns,wall_clock_timeout_s)
+             VALUES
+             (10.0,'worker-1','session-1','agent','coder','first','spawned','[]',8,300),
+             (12.0,'worker-2','session-1','agent','coder','retry','spawned','[]',8,300);
+             INSERT INTO tool_audit
+             (id,ts,session_id,pipeline,agent,tool,args_json,status)
+             VALUES(8,13.0,'session-1','standalone-agent','coder','musubi_read_file',
+                    '{\"path\":\"private.txt\"}','ok');",
+        )
+        .unwrap();
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.tool_evidence.len(), 1);
+        assert_eq!(st.tool_evidence[0].worker_id, "");
+        assert_eq!(st.tool_evidence[0].detail, "");
+    }
+
+    #[test]
+    fn tool_evidence_rejects_unsafe_or_oversized_skill_identifiers() {
+        let oversized = "x".repeat(81);
+        for value in ["../secret", oversized.as_str()] {
+            let args = serde_json::json!({ "skill_id": value }).to_string();
+            let (category, skill_id, detail) = safe_tool_provenance("musubi_get_skill", &args);
+            assert_eq!(category, "skills");
+            assert!(skill_id.is_empty());
+            assert!(detail.is_empty());
+        }
     }
 
     #[test]
@@ -2617,9 +3827,30 @@ mod tests {
     }
 
     #[test]
-    fn studio_pipeline_catalog_reads_only_supported_registered_recipes() {
+    fn studio_pipeline_catalog_discovers_all_safe_valid_registered_recipes() {
         let root = temp_dir("studio-pipeline-catalog");
+        write_recipe_fixture(&root);
         let pipeline_root = root.join(".github").join("pipelines");
+        let presets = pipeline_root.join("presets");
+        let agents = root.join(".github").join("agents").join("workers");
+        for (preset, agent, stage) in [
+            ("scope", "scoper", "scope"),
+            ("findings", "finder", "findings"),
+            ("synthesis", "synthesizer", "synthesis"),
+        ] {
+            std::fs::write(
+                presets.join(format!("{preset}.yaml")),
+                format!("id: {preset}\nagent: {agent}\nstage: {stage}\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                agents.join(format!("{agent}.agent.md")),
+                format!(
+                    "---\nname: {agent}\nmaxTurns: 4\nmaxOutputTokens: 4096\ntools: [Read, View]\n---\n\n# {agent}\n"
+                ),
+            )
+            .unwrap();
+        }
         let feature = pipeline_root.join("feature-dev");
         let lite = pipeline_root.join("dev-lite");
         let review = pipeline_root.join("code-review");
@@ -2646,12 +3877,567 @@ mod tests {
 
         assert_eq!(
             catalog.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-            vec!["feature-dev", "dev-lite"]
+            vec!["code-review", "dev-lite", "feature-dev"]
         );
-        assert_eq!(catalog[0].description, "Ship a feature");
-        assert_eq!(catalog[0].stages, vec!["planner", "coder", "reviewer"]);
+        assert_eq!(catalog[0].stages, vec!["scope", "findings", "synthesis"]);
         assert_eq!(catalog[1].stages, vec!["plan", "build", "check"]);
+        assert_eq!(catalog[2].description, "Ship a feature");
+        assert_eq!(catalog[2].stages, vec!["planner", "coder", "reviewer"]);
         assert!(catalog.iter().all(|p| p.runnable));
+    }
+
+    fn write_recipe_fixture(root: &Path) {
+        let presets = root.join(".github").join("pipelines").join("presets");
+        let agents = root.join(".github").join("agents").join("workers");
+        std::fs::create_dir_all(&presets).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            presets.join("plan.yaml"),
+            "id: plan\nagent: planner\nstage: plan\n",
+        )
+        .unwrap();
+        std::fs::write(
+            presets.join("build.yaml"),
+            "id: build\nagent: coder\nstage: code\n",
+        )
+        .unwrap();
+        std::fs::write(
+            presets.join("check.yaml"),
+            "id: check\nagent: reviewer\nstage: review\n",
+        )
+        .unwrap();
+        for (role, turns, tools) in [
+            ("planner", 4, "[Read, View]"),
+            ("coder", 8, "[Read, View, Write, Edit, Bash]"),
+            ("reviewer", 4, "[Read, View]"),
+            ("explorer", 4, "[Read, View, Grep, Glob]"),
+        ] {
+            std::fs::write(
+                agents.join(format!("{role}.agent.md")),
+                format!(
+                    "---\nname: {role}\nmaxTurns: {turns}\nmaxOutputTokens: 4096\ntools: {tools}\n---\n\n# {role}\n"
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn pipeline_builder_catalog_projects_resolved_contracts_and_spawn_precedence() {
+        let root = temp_dir("pipeline-builder-catalog-contracts");
+        write_recipe_fixture(&root);
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(
+            root.join("scripts/policy_engine.py"),
+            "MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {\n    \"coder\": [\"explorer\"],\n}\n",
+        )
+        .unwrap();
+        let coder = root
+            .join(".github")
+            .join("agents")
+            .join("workers")
+            .join("coder.agent.md");
+        std::fs::write(
+            &coder,
+            "---\nname: Coder Display\nmaxTurns: 8\nmaxOutputTokens: 4096\ntools: [Read, Write]\nspawn_allowlist: [reviewer-aux]\n---\n\n# Coder prompt\n",
+        )
+        .unwrap();
+
+        let catalog = read_pipeline_builder_catalog(&root);
+
+        let build = catalog
+            .presets
+            .iter()
+            .find(|item| item.id == "build")
+            .unwrap();
+        assert_eq!(build.agent, "coder");
+        assert_eq!(build.stage, "code");
+        assert!(build.source_path.ends_with("build.yaml"));
+        assert!(build.runnable, "{}", build.blocked_reason);
+        let agent = catalog
+            .agents
+            .iter()
+            .find(|item| item.name == "coder")
+            .unwrap();
+        assert_eq!(agent.display_label, "Coder Display");
+        assert_eq!(agent.prompt_path, coder.to_string_lossy());
+        assert_eq!(agent.allowed_tools, vec!["Read", "Write"]);
+        assert_eq!(agent.max_turns, 8);
+        assert_eq!(agent.max_output_tokens, Some(4096));
+        assert_eq!(agent.spawn_allowlist, vec!["reviewer-aux"]);
+        assert_eq!(
+            agent.source_paths,
+            vec![coder.to_string_lossy().to_string()]
+        );
+        assert!(agent.runnable, "{}", agent.blocked_reason);
+    }
+
+    #[test]
+    fn pipeline_builder_catalog_blocks_malformed_and_unknown_entries_fail_closed() {
+        let root = temp_dir("pipeline-builder-catalog-blocked");
+        write_recipe_fixture(&root);
+        let presets = root.join(".github").join("pipelines").join("presets");
+        let agents = root.join(".github").join("agents").join("workers");
+        std::fs::write(
+            presets.join("unknown.yaml"),
+            "id: unknown\nagent: missing\nstage: investigate\n",
+        )
+        .unwrap();
+        std::fs::write(presets.join("malformed.yaml"), "id: [\n").unwrap();
+        std::fs::write(
+            agents.join("broken.agent.md"),
+            "---\nname: Broken\nmaxTurns: 4\ntools: Read\n---\n# prompt\n",
+        )
+        .unwrap();
+
+        let catalog = read_pipeline_builder_catalog(&root);
+
+        for id in ["unknown", "malformed"] {
+            let item = catalog.presets.iter().find(|item| item.id == id).unwrap();
+            assert!(!item.runnable);
+            assert!(!item.blocked_reason.is_empty());
+        }
+        let broken = catalog
+            .agents
+            .iter()
+            .find(|item| item.name == "broken")
+            .unwrap();
+        assert!(!broken.runnable);
+        assert!(!broken.blocked_reason.is_empty());
+    }
+
+    fn valid_pipeline_recipe(name: &str) -> PipelineRecipe {
+        PipelineRecipe {
+            name: name.into(),
+            description: "A governed recipe".into(),
+            version: "1.0.0".into(),
+            baseline_checks: vec![],
+            correction: serde_yaml::Value::Null,
+            stages: vec![
+                PipelineStageRecipe {
+                    preset: "plan".into(),
+                    agent: String::new(),
+                    stage: String::new(),
+                    spawns: vec![],
+                },
+                PipelineStageRecipe {
+                    preset: "check".into(),
+                    agent: String::new(),
+                    stage: String::new(),
+                    spawns: vec![],
+                },
+            ],
+            resolved_contracts: vec![],
+            findings: vec![],
+        }
+    }
+
+    #[test]
+    fn pipeline_recipe_read_render_read_preserves_flat_order_and_overrides() {
+        let root = temp_dir("pipeline-recipe-roundtrip");
+        write_recipe_fixture(&root);
+        let dir = root.join(".github").join("pipelines").join("custom-flow");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("pipeline.yaml"),
+            "name: custom-flow\ndescription: Custom\nversion: 1.2.3\nstages:\n  - preset: plan\n    agent: coder\n    stage: implement\n    spawns: [explorer]\n  - preset: check\n",
+        )
+        .unwrap();
+
+        let recipe = read_pipeline_recipe(&root, "custom-flow").unwrap();
+        assert_eq!(recipe.stages[0].preset, "plan");
+        assert_eq!(recipe.stages[0].agent, "coder");
+        assert_eq!(recipe.stages[0].stage, "implement");
+        assert_eq!(recipe.stages[0].spawns, vec!["explorer"]);
+        let rendered = render_pipeline_recipe(&recipe).unwrap();
+        assert!(rendered.contains("stages:"));
+        assert!(!rendered.contains("generator:"));
+        assert!(!rendered.contains("allowedTools"));
+        assert!(!rendered.contains("maxTurns"));
+        assert!(!rendered.contains("maxOutputTokens"));
+        std::fs::write(dir.join("pipeline.yaml"), rendered).unwrap();
+        let reread = read_pipeline_recipe(&root, "custom-flow").unwrap();
+        assert_eq!(reread.stages, recipe.stages);
+    }
+
+    #[test]
+    fn pipeline_recipe_invalid_save_preserves_existing_file() {
+        let root = temp_dir("pipeline-recipe-invalid-save");
+        write_recipe_fixture(&root);
+        let mut recipe = valid_pipeline_recipe("safe-flow");
+        assert!(save_pipeline_recipe(&root, &recipe).saved);
+        let path = root.join(".github/pipelines/safe-flow/pipeline.yaml");
+        let before = std::fs::read_to_string(&path).unwrap();
+        recipe.stages.truncate(1);
+
+        let result = save_pipeline_recipe(&root, &recipe);
+
+        assert!(!result.saved);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    }
+
+    #[test]
+    fn pipeline_recipe_atomic_writer_failure_preserves_existing_file() {
+        let root = temp_dir("pipeline-recipe-atomic-failure");
+        write_recipe_fixture(&root);
+        let recipe = valid_pipeline_recipe("safe-flow");
+        assert!(save_pipeline_recipe(&root, &recipe).saved);
+        let path = root.join(".github/pipelines/safe-flow/pipeline.yaml");
+        let before = std::fs::read_to_string(&path).unwrap();
+        let expected_temp = render_pipeline_recipe(&recipe).unwrap();
+        let observed_temp = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let captured_temp = observed_temp.clone();
+
+        let result = save_pipeline_recipe_with_replacer(&root, &recipe, &move |temp, _| {
+            assert!(temp.exists());
+            assert_eq!(std::fs::read_to_string(temp).unwrap(), expected_temp);
+            *captured_temp.borrow_mut() = Some(temp.to_path_buf());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated rename failure",
+            ))
+        });
+
+        assert!(!result.saved);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+        assert!(!observed_temp.borrow().as_ref().unwrap().exists());
+    }
+
+    #[test]
+    fn pipeline_recipe_save_attempts_use_distinct_owned_temp_paths() {
+        let root = temp_dir("pipeline-recipe-distinct-temp-paths");
+        write_recipe_fixture(&root);
+        let recipe = valid_pipeline_recipe("safe-flow");
+        let temp_paths = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured_paths = temp_paths.clone();
+        let replacer = move |temp: &Path, _: &Path| {
+            assert!(temp.exists());
+            captured_paths.borrow_mut().push(temp.to_path_buf());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "stop before mutation",
+            ))
+        };
+
+        for _ in 0..2 {
+            let result = save_pipeline_recipe_with_replacer(&root, &recipe, &replacer);
+            assert!(!result.saved);
+        }
+
+        let temp_paths = temp_paths.borrow();
+        assert_eq!(temp_paths.len(), 2);
+        assert_ne!(temp_paths[0], temp_paths[1]);
+        assert_eq!(temp_paths[0].parent(), temp_paths[1].parent());
+        assert!(temp_paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_pipeline_root_outside_canonical_project() {
+        let project = Path::new("C:/workspace/project");
+        let inside = Path::new("C:/workspace/project/.github/pipelines");
+        let outside = Path::new("C:/outside/pipelines");
+
+        assert!(ensure_canonical_child(project, inside, "pipeline root").is_ok());
+        assert!(ensure_canonical_child(project, outside, "pipeline root").is_err());
+    }
+
+    #[test]
+    fn pipeline_recipe_requires_exact_canonical_name_ownership() {
+        let root = Path::new("C:/workspace/project/.github/pipelines");
+        let expected = root.join("safe-flow");
+        let owned = root.join("safe-flow");
+        let sibling_alias = root.join("other-flow");
+
+        assert!(ensure_exact_canonical_owner(&expected, &owned, "pipeline directory").is_ok());
+        assert!(
+            ensure_exact_canonical_owner(&expected, &sibling_alias, "pipeline directory").is_err()
+        );
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_sibling_recipe_directory_alias() {
+        let root = temp_dir("pipeline-recipe-sibling-alias");
+        write_recipe_fixture(&root);
+        let other_recipe = valid_pipeline_recipe("other-flow");
+        assert!(save_pipeline_recipe(&root, &other_recipe).saved);
+        let pipeline_root = root.join(".github/pipelines");
+        let other_directory = pipeline_root.join("other-flow");
+        let safe_directory = pipeline_root.join("safe-flow");
+        let other_path = other_directory.join("pipeline.yaml");
+        let before = std::fs::read_to_string(&other_path).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&other_directory, &safe_directory).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&other_directory, &safe_directory).is_err() {
+            return;
+        }
+
+        let mut safe_recipe = valid_pipeline_recipe("safe-flow");
+        safe_recipe.description = "must not overwrite sibling".into();
+        let result = save_pipeline_recipe(&root, &safe_recipe);
+
+        assert!(!result.saved);
+        assert!(read_pipeline_recipe(&root, "safe-flow").is_err());
+        assert_eq!(std::fs::read_to_string(other_path).unwrap(), before);
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_unsafe_name_traversal_and_symlink_escape() {
+        let root = temp_dir("pipeline-recipe-path-safety");
+        write_recipe_fixture(&root);
+        for name in ["../escape", "Upper", "two/slashes", "."] {
+            let mut recipe = valid_pipeline_recipe(name);
+            assert!(!save_pipeline_recipe(&root, &recipe).saved, "{name}");
+            recipe.name = "safe-flow".into();
+        }
+        assert!(read_pipeline_recipe(&root, "../escape").is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = temp_dir("pipeline-recipe-outside");
+            let pipeline_root = root.join(".github/pipelines");
+            std::fs::create_dir_all(&pipeline_root).unwrap();
+            symlink(&outside, pipeline_root.join("safe-flow")).unwrap();
+            assert!(!save_pipeline_recipe(&root, &valid_pipeline_recipe("safe-flow")).saved);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_dir;
+            let outside = temp_dir("pipeline-recipe-outside");
+            let pipeline_root = root.join(".github/pipelines");
+            std::fs::create_dir_all(&pipeline_root).unwrap();
+            if symlink_dir(&outside, pipeline_root.join("safe-flow")).is_ok() {
+                assert!(!save_pipeline_recipe(&root, &valid_pipeline_recipe("safe-flow")).saved);
+            }
+        }
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_ancestor_link_outside_project() {
+        let root = temp_dir("pipeline-recipe-ancestor-link");
+        let outside = temp_dir("pipeline-recipe-ancestor-outside");
+        std::fs::create_dir_all(outside.join("pipelines")).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join(".github")).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, root.join(".github")).is_err() {
+            return;
+        }
+
+        let result = save_pipeline_recipe(&root, &valid_pipeline_recipe("safe-flow"));
+        assert!(!result.saved);
+        assert!(!outside.join("pipelines/safe-flow/pipeline.yaml").exists());
+    }
+
+    #[test]
+    fn pipeline_recipe_contract_errors_are_located_and_fail_closed() {
+        let cases = [
+            ("missing frontmatter", "# prompt only\n"),
+            (
+                "malformed tools",
+                "---\nname: Planner\nmaxTurns: 4\nmaxOutputTokens: 4096\ntools: Read\n---\n# prompt\n",
+            ),
+            (
+                "malformed maxTurns",
+                "---\nname: Planner\nmaxTurns: 0\nmaxOutputTokens: 4096\ntools: [Read]\n---\n# prompt\n",
+            ),
+            (
+                "malformed maxOutputTokens",
+                "---\nname: Planner\nmaxTurns: 4\nmaxOutputTokens: nope\ntools: [Read]\n---\n# prompt\n",
+            ),
+            (
+                "missing prompt",
+                "---\nname: Planner\nmaxTurns: 4\nmaxOutputTokens: 4096\ntools: [Read]\n---\n",
+            ),
+        ];
+
+        for (label, frontmatter) in cases {
+            let root = temp_dir(&format!("pipeline-recipe-contract-{label}"));
+            write_recipe_fixture(&root);
+            std::fs::write(
+                root.join(".github/agents/workers/planner.agent.md"),
+                frontmatter,
+            )
+            .unwrap();
+            let recipe = valid_pipeline_recipe("contract-flow");
+            let directory = root.join(".github/pipelines/contract-flow");
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("pipeline.yaml"),
+                render_pipeline_recipe(&recipe).unwrap(),
+            )
+            .unwrap();
+
+            let findings = validate_pipeline_recipe(&root, &recipe);
+
+            assert!(
+                findings
+                    .iter()
+                    .any(|finding| { finding.step == "stages[0]" && finding.field == "contract" }),
+                "{label}: {findings:?}"
+            );
+            let loaded = read_pipeline_recipe(&root, "contract-flow").unwrap();
+            assert!(loaded
+                .findings
+                .iter()
+                .any(|finding| finding.field == "contract"));
+            assert!(!read_studio_pipeline_catalog(&root)
+                .iter()
+                .any(|entry| entry.name == "contract-flow"));
+            assert!(!save_pipeline_recipe(&root, &recipe).saved, "{label}");
+        }
+    }
+
+    #[test]
+    fn pipeline_recipe_spawn_firewall_frontmatter_overrides_python_fallback() {
+        for (label, declared, spawn, expected_error) in [
+            ("narrower", Some("[explorer]"), "investigator", true),
+            (
+                "wider",
+                Some("[explorer, investigator, reviewer-aux]"),
+                "reviewer-aux",
+                false,
+            ),
+            ("fallback", None, "investigator", false),
+        ] {
+            let root = temp_dir(&format!("pipeline-recipe-firewall-{label}"));
+            write_recipe_fixture(&root);
+            let agents = root.join(".github/agents/workers");
+            for role in ["investigator", "reviewer-aux"] {
+                std::fs::write(
+                    agents.join(format!("{role}.agent.md")),
+                    format!(
+                        "---\nname: {role}\nmaxTurns: 4\nmaxOutputTokens: 4096\ntools: [Read]\n---\n# {role}\n"
+                    ),
+                )
+                .unwrap();
+            }
+            let spawn_allowlist = declared
+                .map(|value| format!("spawn_allowlist: {value}\n"))
+                .unwrap_or_default();
+            std::fs::write(
+                agents.join("coder.agent.md"),
+                format!(
+                    "---\nname: coder\nmaxTurns: 8\nmaxOutputTokens: 4096\ntools: [Read, Write]\n{spawn_allowlist}---\n# coder\n"
+                ),
+            )
+            .unwrap();
+            let scripts = root.join("scripts");
+            std::fs::create_dir_all(&scripts).unwrap();
+            std::fs::write(
+                scripts.join("policy_engine.py"),
+                "MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {\n    \"coder\": [\"explorer\", \"investigator\"],\n    \"reviewer\": [],\n}\n",
+            )
+            .unwrap();
+            let mut recipe = valid_pipeline_recipe("firewall-flow");
+            recipe.stages[0] = PipelineStageRecipe {
+                preset: "build".into(),
+                agent: String::new(),
+                stage: String::new(),
+                spawns: vec![spawn.into()],
+            };
+
+            let findings = validate_pipeline_recipe(&root, &recipe);
+            let has_spawn_error = findings
+                .iter()
+                .any(|finding| finding.step == "stages[0]" && finding.field == "spawns");
+
+            assert_eq!(has_spawn_error, expected_error, "{label}: {findings:?}");
+        }
+    }
+
+    #[test]
+    fn pipeline_recipe_validation_reports_every_fail_closed_case_with_location() {
+        let root = temp_dir("pipeline-recipe-validation");
+        write_recipe_fixture(&root);
+        let mut recipe = valid_pipeline_recipe("safe-flow");
+        recipe.stages = vec![
+            PipelineStageRecipe {
+                preset: "missing".into(),
+                agent: String::new(),
+                stage: String::new(),
+                spawns: vec![],
+            },
+            PipelineStageRecipe {
+                preset: String::new(),
+                agent: "ghost".into(),
+                stage: "ghost-stage".into(),
+                spawns: vec![],
+            },
+            PipelineStageRecipe {
+                preset: "plan".into(),
+                agent: "coder".into(),
+                stage: "same".into(),
+                spawns: vec!["ghost-spawn".into()],
+            },
+            PipelineStageRecipe {
+                preset: "build".into(),
+                agent: "coder".into(),
+                stage: "same".into(),
+                spawns: vec![],
+            },
+            PipelineStageRecipe {
+                preset: "plan".into(),
+                agent: String::new(),
+                stage: String::new(),
+                spawns: vec![],
+            },
+        ];
+
+        let findings = validate_pipeline_recipe(&root, &recipe);
+
+        for field in ["preset", "agent", "stage", "spawns", "evaluator"] {
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.field == field && !f.step.is_empty()),
+                "missing located finding for {field}: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_recipe_malformed_spawns_becomes_a_located_finding() {
+        let root = temp_dir("pipeline-recipe-malformed-spawns");
+        write_recipe_fixture(&root);
+        let dir = root.join(".github/pipelines/bad-spawns");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("pipeline.yaml"),
+            "name: bad-spawns\nstages:\n  - preset: plan\n    spawns: explorer\n  - preset: check\n",
+        )
+        .unwrap();
+
+        let recipe = read_pipeline_recipe(&root, "bad-spawns").unwrap();
+        let findings = validate_pipeline_recipe(&root, &recipe);
+
+        assert!(findings
+            .iter()
+            .any(|f| f.step == "stages[0]" && f.field == "spawns"));
+    }
+
+    #[test]
+    fn pipeline_recipe_successful_save_refreshes_catalog_at_canonical_path() {
+        let root = temp_dir("pipeline-recipe-save");
+        write_recipe_fixture(&root);
+        let recipe = valid_pipeline_recipe("custom-flow");
+
+        let result = save_pipeline_recipe(&root, &recipe);
+
+        assert!(result.saved);
+        assert!(result.catalog_refreshed);
+        assert_eq!(
+            PathBuf::from(result.path).canonicalize().unwrap(),
+            root.join(".github/pipelines/custom-flow/pipeline.yaml")
+                .canonicalize()
+                .unwrap()
+        );
+        assert!(read_studio_pipeline_catalog(&root)
+            .iter()
+            .any(|entry| entry.name == "custom-flow"));
     }
 
     #[test]

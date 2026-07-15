@@ -317,8 +317,9 @@ lean.
 A dark, governance-focused desktop console reads `audit.db` directly and
 shows the substrate at work — the sub-agent cohort, fail-closed policy
 stream, and the append-only audit ledger. The Tauri shell itself makes no
-model calls; explicitly submitted chat and Pipeline Studio work launches the
-standalone driver process, which reaches the model through `LMRouter`. See
+model calls; only an explicit Orchestrator submission launches the standalone
+driver process, which reaches the model through `LMRouter`. Pipeline Studio is
+a builder-only workspace for deterministic recipes. See
 the [`docs/guide.md` Console section](./docs/guide.md#6-console-gui--operator-view)
 for session operation details.
 

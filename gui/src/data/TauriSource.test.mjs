@@ -9,6 +9,13 @@ function sourceWithActionSpy() {
   return { source, calls }
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
 test('merges pipeline chat from backend snapshots', () => {
   const { source } = sourceWithActionSpy()
 
@@ -91,7 +98,49 @@ test('backend history snapshots preserve the locally selected session', () => {
   assert.equal(source.state.chat[0].text, 'old answer')
 })
 
-test('sendChat forwards the viewed session before clearing local selection', () => {
+test('immediate send after New ignores stale viewed session until new-session acknowledgement', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-old',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-history',
+    selectedSession: 'gui-orchestrator-project-history',
+    driverStatus: { running: false },
+  })
+
+  source.actions.newSession()
+  source._mergeDomain({
+    orchestratorChatId: 'gui-orchestrator-project-old',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-history',
+  })
+  source._setLocal({ draft: 'start fresh' })
+  source.actions.sendChat()
+
+  assert.equal(source.state.viewedOrchestratorChatId, '')
+  assert.deepEqual(calls, [
+    { kind: 'new_session', args: ['orchestrator'] },
+    { kind: 'send_chat', args: ['start fresh', '', 'direct', ''] },
+  ])
+})
+
+test('immediate send after selecting history uses local selection before backend acknowledgement', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-current',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-current',
+    driverStatus: { running: false },
+  })
+
+  source.actions.selectSession('gui-orchestrator-project-history')
+  source._setLocal({ draft: 'continue history' })
+  source.actions.sendChat()
+
+  assert.deepEqual(calls, [
+    { kind: 'select_session', args: ['gui-orchestrator-project-history'] },
+    { kind: 'send_chat', args: ['continue history', 'gui-orchestrator-project-history', 'direct', ''] },
+  ])
+})
+
+test('direct sendChat forwards exact four-argument contract and viewed chat id', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
     draft: '  continue this session  ',
@@ -103,98 +152,112 @@ test('sendChat forwards the viewed session before clearing local selection', () 
 
   assert.deepEqual(calls, [{
     kind: 'send_chat',
-    args: ['continue this session', 'gui-orchestrator-project-old'],
+    args: ['continue this session', 'gui-orchestrator-project-old', 'direct', ''],
   }])
   assert.equal(source.state.selectedSession, null)
   assert.equal(source.state.draft, '')
 })
 
-for (const command of ['pipeline', '/pipeline', 'run pipeline']) {
-  test(`pipeline picker command ${command} targets and preserves viewed history`, () => {
+test('pipeline send requires a registered runnable recipe', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    draft: 'ship it',
+    viewedOrchestratorChatId: 'gui-orchestrator-project-old',
+    runMode: 'pipeline',
+    selectedPipeline: 'feature-dev',
+    pipelineCatalog: [{ name: 'feature-dev', runnable: false, stages: ['planner', 'coder'] }],
+  })
+
+  source.actions.sendChat()
+  assert.deepEqual(calls, [])
+  assert.equal(source.state.draft, 'ship it')
+
+  source._setLocal({ pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }] })
+  source.actions.sendChat()
+  assert.deepEqual(calls, [{
+    kind: 'send_chat',
+    args: ['ship it', 'gui-orchestrator-project-old', 'pipeline', 'feature-dev'],
+  }])
+})
+
+for (const [command, selectedPipeline] of [
+  ['pipeline', ''],
+  ['/pipeline', ''],
+  ['pipeline feature-dev', 'feature-dev'],
+  ['run pipeline feature-dev', 'feature-dev'],
+]) {
+  test(`pipeline command ${command} selects current Orchestrator composer`, () => {
     const { source, calls } = sourceWithActionSpy()
     source._setLocal({
       draft: command,
       selectedSession: 'gui-orchestrator-project-old',
       driverStatus: { running: false },
+      pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
     })
 
     source.actions.sendChat()
 
-    assert.equal(source.state.view, 'pipeline')
+    assert.equal(source.state.view, 'orchestrator')
+    assert.equal(source.state.runMode, 'pipeline')
+    assert.equal(source.state.selectedPipeline, selectedPipeline)
     assert.equal(source.state.selectedSession, 'gui-orchestrator-project-old')
-    assert.deepEqual(calls, [{
-      kind: 'pipeline_hint',
-      args: [command, 'gui-orchestrator-project-old'],
-    }])
+    assert.equal(source.state.draft, '')
+    assert.deepEqual(calls, [])
   })
 }
 
-test('sendPipelineTask passes brief and selected registered pipeline', () => {
-  const { source, calls } = sourceWithActionSpy()
-  source._setLocal({
-    pipeDraft: '  ship it  ',
-    pipeName: 'feature-dev',
-    pipeModified: false,
-    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
-  })
-
-  source.actions.sendPipelineTask()
-
-  assert.deepEqual(calls, [{ kind: 'send_pipeline_task', args: ['ship it', 'feature-dev'] }])
-  assert.equal(source.state.pipeDraft, '')
-})
-
-test('repeated backend snapshots preserve an unchanged studio composition', () => {
+test('backend polling preserves dirty builder drafts and initializes only pristine state', () => {
   const { source } = sourceWithActionSpy()
-  const snapshot = {
-    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
-  }
 
-  source._mergeDomain(snapshot)
-  const firstUids = source.state.pipeSteps.map((step) => step.uid)
-  source._mergeDomain(snapshot)
+  source._mergeDomain({
+    pipelineCatalog: [{ name: 'feature-dev', description: 'Feature flow', runnable: true, stages: ['planner', 'coder'] }],
+  })
 
-  assert.deepEqual(source.state.pipeSteps.map((step) => step.uid), firstUids)
-})
+  assert.equal(source.state.pipelineBuilder.draft.name, 'feature-dev')
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages.map((stage) => stage.agent), ['planner', 'coder'])
 
-test('sendPipelineTask refuses a modified client-only composition', () => {
-  const { source, calls } = sourceWithActionSpy()
   source._setLocal({
-    pipeDraft: 'ship it',
-    pipeName: 'feature-dev',
-    pipeModified: true,
+    pipelineBuilder: {
+      ...source.state.pipelineBuilder,
+      draft: { ...source.state.pipelineBuilder.draft, name: 'dirty-local' },
+    },
+  })
+
+  source._mergeDomain({
     pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
   })
 
-  source.actions.sendPipelineTask()
-
-  assert.deepEqual(calls, [])
-  assert.equal(source.state.pipeDraft, 'ship it')
+  assert.equal(source.state.pipelineBuilder.draft.name, 'dirty-local')
 })
 
-test('clearPipeDriverChat clears pipeline chat only', () => {
-  const { source, calls } = sourceWithActionSpy()
+test('backend polling refreshes builder catalog without replacing a dirty draft', () => {
+  const { source } = sourceWithActionSpy()
   source._setLocal({
-    chat: [{ role: 'driver', text: 'keep me' }],
-    pipeChat: [{ role: 'driver', text: 'clear me' }],
-    pipeDraft: 'draft',
-    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+    pipelineBuilder: {
+      ...source.state.pipelineBuilder,
+      draft: { ...source.state.pipelineBuilder.draft, name: 'dirty-local' },
+    },
   })
 
-  source.actions.clearPipeDriverChat()
+  source._mergeDomain({
+    pipelineBuilderCatalog: {
+      presets: [{ id: 'plan', agent: 'planner', stage: 'plan', runnable: true }],
+      agents: [{ name: 'planner', displayLabel: 'Planner', runnable: true }],
+    },
+  })
 
-  assert.deepEqual(source.state.chat.map((m) => m.text), ['keep me'])
-  assert.deepEqual(source.state.pipeChat, [])
-  assert.equal(source.state.pipeDraft, '')
-  assert.deepEqual(calls, [{ kind: 'clear_driver_chat', args: ['pipeline'] }])
+  assert.equal(source.state.pipelineBuilder.draft.name, 'dirty-local')
+  assert.equal(source.state.pipelineBuilderCatalog.presets[0].id, 'plan')
 })
 
-test('newSession re-mints the orchestrator session and clears the chat', () => {
+test('newSession re-mints Orchestrator and defaults composer to Direct', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
     chat: [{ role: 'driver', text: 'old turn' }],
     pipeChat: [{ role: 'driver', text: 'keep me' }],
     draft: 'draft',
+    runMode: 'pipeline',
+    selectedPipeline: 'feature-dev',
     driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
   })
 
@@ -203,24 +266,9 @@ test('newSession re-mints the orchestrator session and clears the chat', () => {
   assert.deepEqual(source.state.chat, [])
   assert.deepEqual(source.state.pipeChat.map((m) => m.text), ['keep me'])
   assert.equal(source.state.draft, '')
+  assert.equal(source.state.runMode, 'direct')
+  assert.equal(source.state.selectedPipeline, '')
   assert.deepEqual(calls, [{ kind: 'new_session', args: ['orchestrator'] }])
-})
-
-test('newPipeSession re-mints the pipeline session only', () => {
-  const { source, calls } = sourceWithActionSpy()
-  source._setLocal({
-    chat: [{ role: 'driver', text: 'keep me' }],
-    pipeChat: [{ role: 'driver', text: 'old turn' }],
-    pipeDraft: 'draft',
-    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
-  })
-
-  source.actions.newPipeSession()
-
-  assert.deepEqual(source.state.chat.map((m) => m.text), ['keep me'])
-  assert.deepEqual(source.state.pipeChat, [])
-  assert.equal(source.state.pipeDraft, '')
-  assert.deepEqual(calls, [{ kind: 'new_session', args: ['pipeline'] }])
 })
 
 test('newSession is a no-op while the agent is running', () => {
@@ -244,21 +292,229 @@ test('openArtifact forwards the requested surface', () => {
   assert.deepEqual(calls, [{ kind: 'open_artifact', args: ['report.html', 'pipeline'] }])
 })
 
-test('pipeline session selection stays local and clears with pipeline chat', () => {
-  const { source } = sourceWithActionSpy()
+test('recipe load validate and save invoke exact Tauri commands and capture success', async () => {
+  const source = new TauriSource({})
+  const recipe = { name: 'feature-dev', stages: [{ agent: 'planner' }, { agent: 'coder' }] }
+  const calls = []
+  source._invoke = async (command, args) => {
+    calls.push({ command, args })
+    if (command === 'load_pipeline_recipe') return recipe
+    if (command === 'validate_pipeline_recipe') return [{ severity: 'warning', message: 'advisory' }]
+    return { saved: true, catalogRefreshed: true, path: 'pipeline.yaml', findings: [], error: '' }
+  }
+
+  await source.actions.loadPipelineRecipe('feature-dev')
+  await source.actions.validatePipelineRecipe()
+  await source.actions.savePipelineRecipe()
+
+  assert.deepEqual(calls.map((call) => call.command), [
+    'load_pipeline_recipe', 'validate_pipeline_recipe', 'save_pipeline_recipe',
+  ])
+  assert.deepEqual(calls[0].args, { name: 'feature-dev' })
+  assert.equal(calls[1].args.recipe.name, 'feature-dev')
+  assert.deepEqual(calls[1].args.recipe.resolvedContracts, [])
+  assert.equal(calls[2].args.recipe.findings[0].message, 'advisory')
+  assert.equal(source.state.pipelineBuilder.savedRecipe.name, 'feature-dev')
+  assert.deepEqual(source.state.pipelineBuilder.findings, [])
+  assert.equal(source.state.pipelineBuilder.saveResult.saved, true)
+})
+
+test('recipe command failures are recorded in builder state', async () => {
+  const source = new TauriSource({})
+  source._invoke = async () => { throw new Error('IPC unavailable') }
+
+  await source.actions.loadPipelineRecipe('feature-dev')
+  assert.match(source.state.pipelineBuilder.findings[0].message, /IPC unavailable/)
+  await source.actions.validatePipelineRecipe()
+  assert.match(source.state.pipelineBuilder.findings[0].message, /IPC unavailable/)
+  await source.actions.savePipelineRecipe()
+  assert.match(source.state.pipelineBuilder.saveResult.error, /IPC unavailable/)
+})
+
+test('out-of-order recipe loads keep the newest result and loading until all requests settle', async () => {
+  const source = new TauriSource({})
+  const first = deferred()
+  const second = deferred()
+  source._invoke = (_command, { name }) => name === 'first' ? first.promise : second.promise
+
+  const firstRequest = source.actions.loadPipelineRecipe('first')
+  const secondRequest = source.actions.loadPipelineRecipe('second')
+  second.resolve({ name: 'second', stages: [{ agent: 'planner' }, { agent: 'coder' }], resolvedContracts: [], findings: [] })
+  await secondRequest
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'second')
+  assert.equal(source.state.pipelineBuilder.loading, true)
+
+  first.resolve({ name: 'first', stages: [{ agent: 'planner' }, { agent: 'coder' }], resolvedContracts: [], findings: [] })
+  await firstRequest
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'second')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('overlapping validation and save ignore stale validation completion', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  const save = deferred()
+  source._invoke = (command) => command === 'validate_pipeline_recipe' ? validation.promise : save.promise
+
+  const validationRequest = source.actions.validatePipelineRecipe()
+  const saveRequest = source.actions.savePipelineRecipe()
+  save.resolve({
+    saved: true, catalogRefreshed: true, path: 'pipeline.yaml',
+    findings: [{ severity: 'warning', message: 'save finding' }], error: '',
+  })
+  await saveRequest
+
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'save finding')
+  assert.equal(source.state.pipelineBuilder.loading, true)
+
+  validation.resolve([{ severity: 'warning', message: 'stale validation' }])
+  await validationRequest
+
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'save finding')
+  assert.equal(source.state.pipelineBuilder.saveResult.saved, true)
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('step navigation does not invalidate in-flight validation', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  source._invoke = () => validation.promise
+
+  const request = source.actions.validatePipelineRecipe()
+  source.actions.selectPipelineBuilderStep('review')
+  validation.resolve([{ severity: 'warning', message: 'validation complete' }])
+  await request
+
+  assert.equal(source.state.pipelineBuilder.step, 'review')
+  assert.equal(source.state.pipelineBuilder.findings[0].message, 'validation complete')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('stage navigation does not invalidate in-flight save', async () => {
+  const source = new TauriSource({})
+  const save = deferred()
+  source._invoke = () => save.promise
+
+  const request = source.actions.savePipelineRecipe()
+  source.actions.selectPipelineStage(1)
+  save.resolve({ saved: true, catalogRefreshed: true, path: 'pipeline.yaml', findings: [], error: '' })
+  await request
+
+  assert.equal(source.state.pipelineBuilder.selectedStageIndex, 1)
+  assert.equal(source.state.pipelineBuilder.saveResult.saved, true)
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('recipe edit still invalidates an older validation completion', async () => {
+  const source = new TauriSource({})
+  const validation = deferred()
+  source._invoke = () => validation.promise
   source._setLocal({
-    selectedPipeSession: 'pipe-old',
-    selectedSession: 'orch-old',
-    pipeChat: [{ role: 'driver', text: 'pipeline answer' }],
-    driverStatus: { running: false, surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
+    pipelineBuilderCatalog: {
+      presets: [],
+      agents: [{ name: 'planner', step: 'plan', runnable: true }],
+    },
   })
 
-  source.actions.selectPipeSession('pipe-new')
-  assert.equal(source.state.view, 'pipeline')
-  assert.equal(source.state.selectedPipeSession, 'pipe-new')
-  assert.equal(source.state.selectedSession, 'orch-old')
+  const request = source.actions.validatePipelineRecipe()
+  source.actions.addPipelineStage({ agent: 'planner' })
+  validation.resolve([{ severity: 'warning', message: 'stale validation' }])
+  await request
 
-  source.actions.clearPipeDriverChat()
-  assert.equal(source.state.selectedPipeSession, null)
-  assert.deepEqual(source.state.pipeChat, [])
+  assert.deepEqual(source.state.pipelineBuilder.findings, [])
+  assert.equal(source.state.pipelineBuilder.draft.stages[0].agent, 'planner')
+  assert.equal(source.state.pipelineBuilder.loading, false)
+})
+
+test('confirmed dirty recipe load retains resolved contracts in save payload', async () => {
+  const source = new TauriSource({})
+  source.actions.addPipelineStage({ agent: 'dirty' })
+  source._invoke = async () => ({
+    name: 'feature-dev',
+    stages: [{ agent: 'planner' }, { agent: 'coder' }],
+    resolvedContracts: [{ step: 'planner', allowedTools: ['Read'] }],
+    findings: [{ severity: 'warning', message: 'backend finding' }],
+  })
+
+  await source.actions.loadPipelineRecipe('feature-dev')
+  source.actions.confirmPipelineTransition()
+
+  assert.deepEqual(source._recipePayload().resolvedContracts, [
+    { step: 'planner', allowedTools: ['Read'] },
+  ])
+})
+
+test('builder edits stages and spawn roles through immutable actions', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilderCatalog: {
+      presets: [],
+      agents: [
+        { name: 'planner', step: 'planner', runnable: true },
+        { name: 'coder', step: 'coder', runnable: true },
+      ],
+    },
+  })
+  source.actions.addPipelineStage({ agent: 'planner' })
+  source.actions.addPipelineStage({ agent: 'coder' })
+  source.actions.addPipelineSpawn(1, 'Reviewer-Aux')
+  source.actions.movePipelineStage(1, 0)
+
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages.map((stage) => stage.agent), ['coder', 'planner'])
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages[0].spawns, ['reviewer-aux'])
+})
+
+test('builder updates recipe-owned Basics fields without changing stages', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilder: {
+      ...source.state.pipelineBuilder,
+      draft: {
+        ...source.state.pipelineBuilder.draft,
+        name: 'old-flow',
+        stages: [{ preset: '', agent: 'planner', stage: 'plan', spawns: [] }],
+      },
+    },
+  })
+
+  source.actions.updatePipelineRecipe({
+    name: 'new-flow', description: 'New flow', baselineChecks: ['npm test'],
+  })
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'new-flow')
+  assert.equal(source.state.pipelineBuilder.draft.description, 'New flow')
+  assert.deepEqual(source.state.pipelineBuilder.draft.baselineChecks, ['npm test'])
+  assert.equal(source.state.pipelineBuilder.draft.stages[0].agent, 'planner')
+})
+
+test('builder add-stage never falls through from blocked presets to runnable agents', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({
+    pipelineBuilderCatalog: {
+      presets: [
+        { id: 'plan', agent: 'planner', stage: 'plan', runnable: true },
+        { id: 'broken', agent: 'coder', stage: 'build', runnable: false, blockedReason: 'invalid preset' },
+      ],
+      agents: [{ name: 'coder', displayLabel: 'Coder', step: 'code', runnable: true }],
+    },
+  })
+
+  source.actions.addPipelineStage({ id: 'broken', agent: 'coder', runnable: false })
+  source.actions.addPipelineStage('broken')
+  source.actions.addPipelineStage({ id: 'plan', agent: 'planner', runnable: true })
+  source.actions.addPipelineStage({ kind: 'agent', agent: 'coder' })
+
+  assert.deepEqual(source.state.pipelineBuilder.draft.stages, [
+    { preset: 'plan', agent: '', stage: '', spawns: [] },
+    { preset: '', agent: 'coder', stage: 'code', spawns: [] },
+  ])
+})
+
+test('legacy Pipeline Studio runtime actions are absent', () => {
+  const { actions } = new TauriSource({})
+  for (const name of ['selectPipeSession', 'clearPipeDriverChat', 'newPipeSession', 'onPipeDraft', 'onPipeDraftKey', 'sendPipelineTask']) {
+    assert.equal(actions[name], undefined, name)
+  }
 })

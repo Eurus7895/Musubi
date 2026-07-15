@@ -1,259 +1,225 @@
-import Box from '../lib/Box.jsx'
-import { cssToObj } from '../lib/css.js'
-import ChatBody from '../components/ChatBody.jsx'
-import NewSessionButton from '../components/NewSessionButton.jsx'
-import TokenEconomics from '../components/TokenEconomics.jsx'
+import { useMemo, useState } from 'react'
+
+const STEPS = ['basics', 'stages', 'handoffs', 'validate']
+const STEP_LABELS = { basics: 'Basics', stages: 'Stages', handoffs: 'Handoffs', validate: 'Validate' }
 
 export default function Pipeline({ vals }) {
+  const builder = vals.pipelineBuilder
+  const actions = builder.actions
+  const draft = builder.draft || { stages: [] }
+  const activeStep = STEPS.includes(builder.step) ? builder.step : 'basics'
+  const [query, setQuery] = useState('')
+  const library = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    const matches = (item) => !needle || `${item.id || ''} ${item.name || ''} ${item.displayLabel || ''} ${item.agent || ''}`.toLowerCase().includes(needle)
+    return {
+      presets: (builder.library?.presets || []).filter(matches),
+      agents: (builder.library?.agents || []).filter(matches),
+      spawnRoles: builder.library?.spawnRoles || [],
+    }
+  }, [builder.library, query])
+  const clientErrors = []
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(draft.name || '')) clientErrors.push('Use a lowercase safe pipeline name.')
+  if ((draft.stages || []).length < 2) clientErrors.push('Add at least two primary stages.')
+  const hasErrors = clientErrors.length > 0 || (builder.findings || []).some((finding) => finding.severity === 'error')
+
   return (
-    <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-      {/* ░ palette ░ */}
-      <div style={{ width: 248, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div style={{ padding: '16px 16px 10px', flexShrink: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>Agents</div>
-          <div style={{ fontSize: 11, color: '#6a6a72', marginTop: 2 }}>Click to add to the pipeline →</div>
-        </div>
-        <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
-          {vals.pipeCatalog.map((c) => (
-            <Box as="button" key={c.role} onClick={c.onAdd} css={c.cardStyle} hover="border-color:rgba(255,155,61,0.4)">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
-                <span style={cssToObj(c.roleChipStyle)}>{c.role}</span>
-                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 19, height: 19, borderRadius: 6, background: 'rgba(255,155,61,0.14)', color: '#ff9b3d', fontSize: 15, lineHeight: 1, fontWeight: 500 }}>+</span>
-              </div>
-              <div style={{ fontSize: 11, color: '#9b9ba2', lineHeight: 1.42, marginBottom: 8 }}>{c.desc}</div>
-              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#6a6a72' }}>{c.toolsLabel}</div>
-            </Box>
-          ))}
-        </div>
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '13px 14px', flexShrink: 0 }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 9 }}>Presets</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {vals.pipePresets.map((p) => (
-              <button key={p.name} onClick={p.onLoad} style={cssToObj(p.btnStyle)}><span>{p.name}</span><span style={{ color: '#6a6a72', fontSize: 10 }}>{p.countLabel}</span></button>
-            ))}
+    <main className="pipeline-studio">
+      <header className="pipeline-studio__header">
+        <div>
+          <div className="pipeline-studio__eyebrow">Recipe workspace</div>
+          <div className="pipeline-studio__title-row">
+            <h1>Pipeline Studio</h1>
+            <span className="pipeline-studio__name">{draft.name || 'untitled-pipeline'}</span>
+            {builder.dirty && <span className="pipeline-studio__dirty">Unsaved</span>}
           </div>
+          <p>Build a governed sequential recipe. Execution happens in Orchestrator.</p>
         </div>
-      </div>
-
-      {/* ░ builder canvas ░ */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, padding: '22px 26px 14px', flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ fontSize: 18, fontWeight: 600 }}>Pipeline studio</div>
-              <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#ff9b3d', background: 'rgba(255,155,61,0.1)', border: '1px solid rgba(255,155,61,0.3)', padding: '2px 9px', borderRadius: 6 }}>{vals.pipeName}</span>
-            </div>
-            <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 4, fontFamily: "'IBM Plex Mono',monospace" }}>{vals.pipeStatusText}</div>
-          </div>
+        <div className="pipeline-studio__actions">
+          <button className="ui-button" onClick={actions.onNew}>＋ New Pipeline</button>
+          <button className="ui-button ui-button--primary" onClick={actions.onSave} disabled={builder.loading || hasErrors}>Save Pipeline</button>
         </div>
+      </header>
 
-        <div style={{ flex: 1, minHeight: 0, padding: '6px 26px 26px' }}>
-          {vals.pipeEmpty && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, height: 280, background: '#0f1620', border: '1px dashed rgba(255,255,255,0.12)', borderRadius: 14, color: '#6a6a72', textAlign: 'center' }}>
-              <svg viewBox="0 0 24 24" width="34" height="34" fill="none" style={{ color: '#3a4250' }}><circle cx="5" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.5" /><circle cx="19" cy="12" r="2.1" stroke="currentColor" strokeWidth="1.5" /><path d="M7.1 12 H9.9 M14.1 12 H16.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-              <div style={{ fontSize: 13, color: '#9b9ba2' }}>No agents staged</div>
-              <div style={{ fontSize: 11.5, maxWidth: 280, lineHeight: 1.5 }}>Add agents from the left, or load the <span style={{ color: '#ff9b3d' }}>feature-dev</span> preset to compose your pipeline.</div>
-            </div>
-          )}
+      <nav className="pipeline-steps" aria-label="Pipeline builder steps">
+        {STEPS.map((step, index) => (
+          <button key={step} className={step === activeStep ? 'pipeline-step is-active' : 'pipeline-step'} onClick={() => actions.onSelectStep(step)}>
+            <span>{String(index + 1).padStart(2, '0')}</span>{STEP_LABELS[step]}
+          </button>
+        ))}
+      </nav>
 
-          {vals.pipeHasSteps && (
-            <>
-              <div style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, padding: '20px 18px', overflowX: 'auto' }}>
-                {vals.pipeStageOverflowLabel && (
-                  <div style={{ display: 'inline-flex', marginBottom: 12, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8ab4d8', background: 'rgba(138,180,216,0.1)', border: '1px solid rgba(138,180,216,0.25)', borderRadius: 6, padding: '4px 7px' }}>
-                    {vals.pipeStageOverflowLabel} scroll to view the full flow
-                  </div>
-                )}
-                <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, minWidth: 'min-content' }}>
-
-                  {/* driver origin */}
-                  <div style={cssToObj(vals.pipeDriverStyle)}>
-                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#ff9b3d', fontWeight: 600, marginBottom: 7 }}>driver</div>
-                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: '#e9e9ea' }}>the knot</div>
-                    <div style={{ fontSize: 10, color: '#6a6a72', marginTop: 6, lineHeight: 1.4 }}>spawns each agent in order</div>
-                  </div>
-                  <div style={{ width: 42, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', color: '#ff9b3d' }}><svg viewBox="0 0 40 24" width="36" height="18" fill="none"><path d="M2 12 H32 M27 7 L32 12 L27 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" opacity="0.7" /></svg></div>
-
-                  {/* the ordered chain */}
-                  {vals.pipeStepsView.map((st) => (
-                    <div key={st.uid} style={{ display: 'flex', alignItems: 'stretch', flexShrink: 0 }}>
-                      <div style={cssToObj(st.cardStyle)}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                            <span style={cssToObj(st.orderBadge)}>{st.orderLabel}</span>
-                            <span style={cssToObj(st.roleChipStyle)}>{st.role}</span>
-                          </div>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: st.statusColor, fontFamily: "'IBM Plex Mono',monospace" }}><span style={cssToObj(st.dotStyle)} />{st.statusLabel}</span>
-                        </div>
-                        <div style={{ fontSize: 11.5, color: '#cfcfd4', lineHeight: 1.42, height: 50, overflow: 'hidden', marginBottom: 10 }}>{st.desc}</div>
-                        <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden', marginBottom: 10 }}><div style={cssToObj(st.barFillStyle)} /></div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#6a6a72' }}>
-                          <span>{st.toolsLabel}</span>
-                          <span>{st.maxLabel}</span>
-                        </div>
-                        {st.showHandle && (
-                          <div style={{ marginTop: 10, paddingTop: 9, borderTop: '1px solid rgba(255,255,255,0.06)', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92' }}>{st.handle}</div>
-                        )}
-                        {st.showControls && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, paddingTop: 9, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                            <Box as="button" onClick={st.onUp} title="Move earlier" css="display:flex;align-items:center;justify-content:center;width:26px;height:24px;border-radius:6px;background:#232c3c;border:1px solid rgba(255,255,255,0.1);color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"><path d="M14 6 L8 12 L14 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg></Box>
-                            <Box as="button" onClick={st.onDown} title="Move later" css="display:flex;align-items:center;justify-content:center;width:26px;height:24px;border-radius:6px;background:#232c3c;border:1px solid rgba(255,255,255,0.1);color:#9b9ba2;cursor:pointer" hover="color:#fff"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"><path d="M10 6 L16 12 L10 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg></Box>
-                            <div style={{ flex: 1 }} />
-                            <Box as="button" onClick={st.onRemove} title="Remove" css="display:flex;align-items:center;justify-content:center;width:26px;height:24px;border-radius:6px;background:transparent;border:1px solid rgba(232,106,95,0.3);color:#e86a5f;cursor:pointer" hover="background:rgba(232,106,95,0.12)"><svg viewBox="0 0 24 24" width="13" height="13" fill="none"><path d="M6 6 L18 18 M18 6 L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg></Box>
-                          </div>
-                        )}
-                      </div>
-                      {st.showConnector && (
-                        <div style={{ width: 56, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5, alignSelf: 'center' }}>
-                          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" style={cssToObj(st.connStyle)}><path d="M12 3 L19 6 V11 C19 15.5 15.7 18.6 12 20.5 C8.3 18.6 5 15.5 5 11 V6 Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><path d="M9 11.6 L11.2 13.8 L15 9.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8.5, color: '#5a5a62' }}>handoff</div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-
-                  {/* audit terminal */}
-                  <div style={{ width: 42, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', color: '#3a4250' }}><svg viewBox="0 0 40 24" width="36" height="18" fill="none"><path d="M2 12 H32 M27 7 L32 12 L27 17" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg></div>
-                  <div style={{ width: 144, flexShrink: 0, alignSelf: 'center', background: '#141b27', border: '1px solid rgba(138,180,216,0.32)', borderRadius: 12, padding: 14, textAlign: 'center' }}>
-                    <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#8ab4d8', fontWeight: 600, marginBottom: 7 }}>audit</div>
-                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: '#e9e9ea' }}>append-only</div>
-                    <div style={{ fontSize: 10, color: '#6a6a72', marginTop: 6, lineHeight: 1.4 }}>every handoff tied here</div>
-                  </div>
-
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 14, flexWrap: 'wrap', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#e3b341' }} />queued</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#ff9b3d' }} />running</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#54c79a' }} />done</span>
-                <span style={{ color: '#4a4a52' }}>·</span>
-                <span>each agent turn-capped · firewalled brief · every spawn &amp; handoff appended to the audit</span>
-              </div>
-            </>
-          )}
-
-          <PipelineRunHistory vals={vals} />
-        </div>
-      </div>
-
-      {/* ░ chat · driver (opens on driver click) ░ */}
-      <div style={{ width: 322, flexShrink: 0, borderLeft: '1px solid rgba(255,255,255,0.06)', background: '#111721', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Chat · pipeline</span>
-              <span style={{ fontSize: 10, color: '#6a6a72' }}>{vals.pipeName} · isolated session</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <NewSessionButton
-                label="New pipeline session"
-                onClick={vals.pipeChatBody.onNewSession}
-                disabled={vals.pipeChatBody.clearDriverDisabled}
-              />
-            </div>
-          </div>
-          <ChatBody vals={vals.pipeChatBody} />
-      </div>
-    </div>
-  )
-}
-
-function PipelineRunHistory({ vals }) {
-  const steps = vals.activePipeRunSteps || []
-  const summary = vals.pipeRunSummary || {}
-  return (
-    <section style={{ marginTop: 18, display: 'grid', gridTemplateColumns: '230px minmax(0, 1fr)', gap: 14, minHeight: 260 }}>
-      <aside style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, overflow: 'hidden', minHeight: 0 }}>
-        <div style={{ padding: '12px 13px 9px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: 13, fontWeight: 650 }}>Studio runs</div>
-          <div style={{ marginTop: 3, fontSize: 10.5, color: '#6a6a72', lineHeight: 1.35 }}>pipeline sessions only</div>
-        </div>
-        <div style={{ maxHeight: 310, overflow: 'auto', padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {vals.pipeRuns.length ? vals.pipeRuns.map((run) => (
-            <Box key={run.id} as="button" css={run.cardStyle} onClick={run.onSelect} hover="border-color:rgba(255,155,61,0.45)">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ffbe7a' }}>{run.orderLabel}</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: run.statusColor }}><span style={cssToObj(run.dotStyle)} />{run.statusLabel}</span>
-              </div>
-              <div style={{ marginTop: 7, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: '#f4f4f5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{run.title}</div>
-              <div style={{ marginTop: 4, fontSize: 11, color: '#8a8a92' }}>{run.subtitle}</div>
-              {run.currentBrief && <div style={{ marginTop: 8, fontSize: 11, color: '#cfcfd4', lineHeight: 1.35, maxHeight: 45, overflow: 'hidden' }}>{run.currentBrief}</div>}
-            </Box>
-          )) : (
-            <div style={{ border: '1px dashed rgba(255,255,255,0.12)', borderRadius: 10, padding: 13, color: '#7a7a82', fontSize: 12, lineHeight: 1.45 }}>
-              No pipeline runs yet. Use the studio chat to start one.
-            </div>
-          )}
-        </div>
-      </aside>
-
-      <div style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, overflow: 'hidden', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, padding: '13px 15px 11px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, fontWeight: 650 }}>{vals.pipeSessionTitle}</span>
-              <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#7a7a82' }}>{vals.pipeSessionSubtitle}</span>
-            </div>
-            <div style={{ marginTop: 6, fontSize: 12, color: '#cfcfd4', lineHeight: 1.4 }}>
-              <span style={{ fontFamily: "'IBM Plex Mono',monospace", color: '#fff', fontWeight: 650 }}>{summary.countLine || 'no run selected'}</span>
-              {summary.focusLine ? <span> · {summary.focusLine}</span> : null}
-            </div>
-          </div>
-          <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#ff9b3d', whiteSpace: 'nowrap' }}>spawn order</span>
-        </div>
-        {summary.alertLine && (
-          <div style={{ margin: '11px 15px 0', width: 'fit-content', maxWidth: 'calc(100% - 30px)', fontSize: 11.5, color: '#ffcc77', lineHeight: 1.35, background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '6px 9px' }}>{summary.alertLine}</div>
+      <section className="pipeline-studio__body">
+        {activeStep === 'basics' && <Basics draft={draft} onUpdateRecipe={actions.onUpdateRecipe} />}
+        {activeStep === 'stages' && (
+          <Stages
+            builder={builder} draft={draft} library={library} query={query} setQuery={setQuery}
+            onAddStage={actions.onAddStage} onMoveStage={actions.onMoveStage}
+            onRemoveStage={actions.onRemoveStage} onSelectStage={actions.onSelectStage}
+            onUpdateStage={actions.onUpdateStage}
+          />
         )}
-        <div style={{ margin: '0 15px' }}><TokenEconomics economics={summary.economics} /></div>
-        <div style={{ flex: 1, overflow: 'auto', padding: 15 }}>
-          {steps.length ? (
-            <div style={{ display: 'flex', alignItems: 'stretch', gap: 14, minHeight: 178 }}>
-              {steps.map((st) => (
-                <div key={st.handle} style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
-                  <PipelineRunStep step={st} />
-                  {st.showConnector && <PipelineConnector />}
-                </div>
-              ))}
+        {activeStep === 'handoffs' && (
+          <Handoffs
+            draft={draft} agents={library.spawnRoles} onAddSpawn={actions.onAddSpawn}
+            onRemoveSpawn={actions.onRemoveSpawn}
+          />
+        )}
+        {activeStep === 'validate' && (
+          <Validate
+            draft={draft} findings={builder.findings || []} clientErrors={clientErrors}
+            saveResult={builder.saveResult} loading={builder.loading} onValidate={actions.onValidate}
+            onSave={actions.onSave} hasErrors={hasErrors}
+          />
+        )}
+      </section>
+
+      {builder.pendingTransition && (
+        <div className="pipeline-confirm" role="dialog" aria-modal="true" aria-label="Unsaved pipeline changes">
+          <div className="pipeline-confirm__card">
+            <div className="pipeline-studio__eyebrow">Unsaved changes</div>
+            <h2>Discard this draft?</h2>
+            <p>The current recipe has local edits that have not been saved.</p>
+            <div className="pipeline-confirm__actions">
+              <button className="ui-button" onClick={actions.onCancelTransition}>Keep editing</button>
+              <button className="ui-button ui-button--danger" onClick={actions.onConfirmTransition}>Discard changes</button>
             </div>
-          ) : (
-            <div style={{ minHeight: 190, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7a7a82', fontSize: 12 }}>
-              No workers have been spawned for this pipeline session yet.
-            </div>
-          )}
+          </div>
         </div>
-      </div>
-    </section>
+      )}
+    </main>
   )
 }
 
-function PipelineRunStep({ step }) {
+function Basics({ draft, onUpdateRecipe }) {
+  const correction = draft.correction || {}
   return (
-    <div style={cssToObj(step.cardStyle)}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 9 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 28, height: 20, padding: '0 6px', borderRadius: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, fontWeight: 650, color: '#cfcfd4', background: step.isCurrent ? 'rgba(255,155,61,0.13)' : 'rgba(255,255,255,0.06)', border: '1px solid ' + (step.isCurrent ? 'rgba(255,155,61,0.42)' : 'rgba(255,255,255,0.12)') }}>{step.orderLabel}</span>
-          <span style={cssToObj(step.roleChipStyle)}>{step.role}</span>
-        </div>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: step.statusColor }}><span style={cssToObj(step.dotStyle)} />{step.statusLabel}</span>
-      </div>
-      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92', marginBottom: 8 }}>{step.handle}</div>
-      <div style={{ minHeight: 50, maxHeight: 62, overflow: 'hidden', fontSize: 11.5, lineHeight: 1.42, color: '#f4f4f5', marginBottom: 11 }}>{step.brief}</div>
-      {step.stopHint && <div style={{ fontSize: 11, lineHeight: 1.35, color: '#ffcc77', background: 'rgba(227,179,65,0.09)', border: '1px solid rgba(227,179,65,0.24)', borderRadius: 7, padding: '7px 8px', marginBottom: 10 }}>{step.stopHint}</div>}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <div style={{ flex: 1, height: 4, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={cssToObj(step.barFillStyle)} /></div>
-        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#8a8a92' }}>{step.turnsLabel}</span>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#6a6a72' }}>
-        <span>{step.toolsLabel}</span>
-        <span>{step.attemptLabel || (step.isCurrent ? 'current' : 'step')}</span>
+    <div className="builder-panel builder-panel--narrow" data-step="basics">
+      <PanelHeading title="Recipe identity" copy="These fields belong to pipeline.yaml and are validated before save." />
+      <div className="builder-form-grid">
+        <Field label="Pipeline name" hint="lowercase, digits and hyphens">
+          <input value={draft.name || ''} onChange={(event) => onUpdateRecipe({ name: event.target.value })} placeholder="feature-dev" />
+        </Field>
+        <Field label="Version"><input value={draft.version || ''} onChange={(event) => onUpdateRecipe({ version: event.target.value })} placeholder="1" /></Field>
+        <Field label="Description" wide><textarea value={draft.description || ''} onChange={(event) => onUpdateRecipe({ description: event.target.value })} rows={3} /></Field>
+        <Field label="Baseline checks" hint="one deterministic command per line" wide>
+          <textarea value={(draft.baselineChecks || []).join('\n')} onChange={(event) => onUpdateRecipe({ baselineChecks: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean) })} rows={4} placeholder="npm test" />
+        </Field>
+        <Field label="Correction attempts" hint="0 disables correction">
+          <input type="number" min="0" value={correction.max_retries || 0} onChange={(event) => onUpdateRecipe({ correction: { ...correction, max_retries: Number(event.target.value) } })} />
+        </Field>
       </div>
     </div>
   )
 }
 
-function PipelineConnector() {
+function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveStage, onRemoveStage, onSelectStage, onUpdateStage }) {
+  const selectedIndex = builder.selectedStageIndex
+  const selected = draft.stages?.[selectedIndex]
+  const selectedPreset = (builder.library?.presets || []).find((item) => item.id === selected?.preset)
+  const resolvedAgentName = selected?.agent || selectedPreset?.agent
+  const contract = (builder.library?.agents || []).find((item) => item.name === resolvedAgentName)
+  const readPayload = (event) => {
+    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-stage')) } catch { return null }
+  }
   return (
-    <div style={{ display: 'flex', alignItems: 'center', color: '#3a4250', flexShrink: 0 }}>
-      <svg viewBox="0 0 42 24" width="42" height="24" fill="none"><path d="M3 12 H35 M29 6 L35 12 L29 18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    <div className="stages-workspace" data-step="stages">
+      <aside className="agent-library">
+        <PanelHeading title="Preset / Agent Library" copy="Catalog-owned contracts are resolved read-only." />
+        <input className="library-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search presets and agents…" />
+        <LibraryGroup title="Presets" items={library.presets} kind="preset" onAddStage={onAddStage} />
+        <LibraryGroup title="Agents" items={library.agents} kind="agent" onAddStage={onAddStage} />
+      </aside>
+      <section className="stage-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const payload = readPayload(event); if (payload) onAddStage(payload) }}>
+        <PanelHeading title="Ordered primary stages" copy="Primary stages execute sequentially in this order." />
+        {!draft.stages?.length && <div className="empty-drop">Drop a runnable preset or agent here</div>}
+        {(draft.stages || []).map((stage, index) => (
+          <article
+            key={`${stage.preset || stage.agent}-${index}`}
+            className={selectedIndex === index ? 'stage-card is-selected' : 'stage-card'}
+            draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-index', String(index))}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => { event.preventDefault(); event.stopPropagation(); const raw = event.dataTransfer.getData('application/x-musubi-index'); if (!raw) return; const from = Number(raw); if (Number.isInteger(from)) onMoveStage(from, index) }}
+            onClick={() => onSelectStage(index)}
+          >
+            <span className="stage-card__handle">⠿</span><span className="stage-card__index">{String(index + 1).padStart(2, '0')}</span>
+            <div><strong>{stage.preset || stage.agent || 'unresolved'}</strong><small>{stage.stage || 'default stage name'}</small></div>
+            <span className="stage-card__spawns">{stage.spawns?.length || 0} helpers</span>
+            <button aria-label="Move stage earlier" disabled={index === 0} onClick={(event) => { event.stopPropagation(); onMoveStage(index, index - 1) }}>↑</button>
+            <button aria-label="Move stage later" disabled={index === draft.stages.length - 1} onClick={(event) => { event.stopPropagation(); onMoveStage(index, index + 1) }}>↓</button>
+            <button className="danger-icon" aria-label="Remove stage" onClick={(event) => { event.stopPropagation(); onRemoveStage(index) }}>×</button>
+          </article>
+        ))}
+      </section>
+      <aside className="stage-inspector">
+        <PanelHeading title="Stage inspector" copy={selected ? `Stage ${selectedIndex + 1}` : 'Select a stage to inspect'} />
+        {!selected ? <div className="empty-inspector">No stage selected.</div> : <>
+          <Field label="Stage override"><input value={selected.stage || ''} onChange={(event) => onUpdateStage(selectedIndex, { stage: event.target.value })} placeholder="catalog default" /></Field>
+          <div className="contract-card">
+            <h3>Resolved contract <span>read-only</span></h3>
+            <ContractRow label="Agent" value={contract?.displayLabel || resolvedAgentName || 'unresolved'} />
+            <ContractRow label="Role skill" value={contract?.roleSkill || 'none'} />
+            <ContractRow label="Allowed tools" value={(contract?.allowedTools || []).join(', ') || 'none'} />
+            <ContractRow label="Max turns" value={contract?.maxTurns ?? 'unresolved'} />
+            <ContractRow label="Output budget" value={contract?.maxOutputTokens ?? 'profile default'} />
+            <ContractRow label="Source" value={(contract?.sourcePaths || []).join(' · ') || 'catalog'} mono />
+          </div>
+        </>}
+      </aside>
     </div>
   )
 }
+
+function LibraryGroup({ title, items, kind, onAddStage }) {
+  return <div className="library-group"><h3>{title}</h3>{items.map((item) => {
+    const blocked = item.blocked || item.runnable === false
+    const payload = kind === 'preset' ? { kind, id: item.id } : { kind, agent: item.name }
+    return <button
+      key={item.id || item.name} className={blocked ? 'library-item is-blocked' : 'library-item'} disabled={blocked}
+      draggable={!blocked} onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-stage', JSON.stringify(payload))}
+      onClick={() => !blocked && onAddStage(payload)} title={item.blockedReason || ''}
+    ><span><strong>{item.id || item.displayLabel || item.name}</strong><small>{item.agent || item.name}</small></span><em>{blocked ? 'blocked' : '+'}</em></button>
+  })}</div>
+}
+
+function Handoffs({ draft, agents, onAddSpawn, onRemoveSpawn }) {
+  const readRole = (event) => {
+    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-spawn')).role } catch { return '' }
+  }
+  return (
+    <div className="builder-panel" data-step="handoffs">
+      <PanelHeading title="Handoffs and nested workers" copy="The primary backbone is sequential. Nested roles are allowlists, not guaranteed work." />
+      <div className="handoff-layout">
+        <aside className="spawn-library"><h3>Spawnable agents</h3>{agents.map((agent) => <button key={agent.name} draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-spawn', JSON.stringify({ role: agent.name }))}>{agent.displayLabel || agent.name}<span>drag</span></button>)}</aside>
+        <div className="handoff-chain">
+          {(draft.stages || []).map((stage, index) => <div className="handoff-stage" key={`${stage.preset || stage.agent}-${index}`}>
+            <div className="handoff-stage__node"><span>{String(index + 1).padStart(2, '0')}</span><strong>{stage.preset || stage.agent}</strong>{index < draft.stages.length - 1 && <em>sequential handoff ↓</em>}</div>
+            <div className="spawn-cluster" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const role = readRole(event); if (role) onAddSpawn(index, role) }}>
+              <label>May spawn</label>
+              {(stage.spawns || []).map((role) => <button key={role} onClick={() => onRemoveSpawn(index, role)}>{role} ×</button>)}
+              {!stage.spawns?.length && <span>Drop an agent role</span>}
+            </div>
+          </div>)}
+        </div>
+      </div>
+      <p className="parallel-note">Runs in parallel only when summoned in the same worker turn.</p>
+    </div>
+  )
+}
+
+function Validate({ draft, findings, clientErrors, saveResult, loading, onValidate, onSave, hasErrors }) {
+  return (
+    <div className="builder-panel" data-step="validate">
+      <div className="validate-toolbar"><PanelHeading title="Validate recipe" copy="Backend validation is authoritative and fail-closed." /><div><button className="ui-button" onClick={onValidate} disabled={loading}>Validate</button><button className="ui-button ui-button--primary" onClick={onSave} disabled={loading || hasErrors}>Save Pipeline</button></div></div>
+      <div className="validate-grid">
+        <section><h3>Final recipe topology</h3><div className="final-topology">{(draft.stages || []).map((stage, index) => <div key={index}><span>{String(index + 1).padStart(2, '0')}</span><strong>{stage.preset || stage.agent || 'unresolved'}</strong><small>{stage.spawns?.length ? `may spawn ${stage.spawns.join(', ')}` : 'no nested workers'}</small></div>)}</div></section>
+        <section><h3>Findings</h3>{!clientErrors.length && !findings.length ? <div className="finding finding--ok">No findings. Run backend validation before save.</div> : <>{clientErrors.map((message) => <div className="finding finding--error" key={message}>{message}</div>)}{findings.map((finding, index) => <div className={`finding finding--${finding.severity}`} key={`${finding.field}-${index}`}><strong>{finding.step || 'recipe'} · {finding.field || 'general'}</strong>{finding.message}</div>)}</>}</section>
+      </div>
+      <div className="yaml-target"><span>YAML target</span><code>.github/pipelines/{draft.name || '&lt;name&gt;'}/pipeline.yaml</code>{saveResult?.saved && <em>{saveResult.catalogRefreshed ? 'saved · catalog refreshed' : 'saved · catalog refresh failed'}</em>}</div>
+    </div>
+  )
+}
+
+function PanelHeading({ title, copy }) { return <div className="panel-heading"><h2>{title}</h2><p>{copy}</p></div> }
+function Field({ label, hint, wide, children }) { return <label className={wide ? 'builder-field is-wide' : 'builder-field'}><span>{label}</span>{children}{hint && <small>{hint}</small>}</label> }
+function ContractRow({ label, value, mono }) { return <div className="contract-row"><span>{label}</span><strong className={mono ? 'is-mono' : ''}>{value}</strong></div> }

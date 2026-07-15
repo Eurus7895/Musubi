@@ -71,6 +71,143 @@ def _write_pipeline_yaml(tmp_path: Path, name: str, body: dict) -> Path:
     return yaml_path
 
 
+def _write_preset_yaml(tmp_path: Path, name: str, body: dict) -> Path:
+    presets = tmp_path / ".github" / "pipelines" / "presets"
+    presets.mkdir(parents=True, exist_ok=True)
+    path = presets / f"{name}.yaml"
+    with path.open("w", encoding="utf-8") as fh:
+        yaml.safe_dump(body, fh)
+    return path
+
+
+def test_flat_explicit_stage_projection_preserves_spawn_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pipeline_yaml(tmp_path, "flat-explicit", {
+        "stages": [
+            {"agent": "Coder", "stage": "build", "spawns": ["Explorer"]},
+            {"agent": "reviewer", "stage": "check"},
+        ],
+    })
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    assert composer.pipeline_stage_entries("flat-explicit") == [
+        {
+            "agent": "coder",
+            "stage": "build",
+            "preset": "",
+            "spawns": ["explorer"],
+        },
+        {
+            "agent": "reviewer",
+            "stage": "check",
+            "preset": "",
+            "spawns": [],
+        },
+    ]
+
+
+def test_flat_preset_stage_projection_resolves_agent_and_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_preset_yaml(tmp_path, "build", {
+        "id": "build",
+        "agent": "coder",
+        "stage": "code",
+    })
+    _write_pipeline_yaml(tmp_path, "flat-preset", {
+        "stages": [
+            {"preset": "build", "spawns": ["Explorer"]},
+            {"agent": "reviewer", "stage": "review"},
+        ],
+    })
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    assert composer.pipeline_stage_entries("flat-preset")[0] == {
+        "agent": "coder",
+        "stage": "code",
+        "preset": "build",
+        "spawns": ["explorer"],
+    }
+
+
+def test_flat_stage_spawns_do_not_change_pipeline_chain_order() -> None:
+    data = {
+        "stages": [
+            {"agent": "planner", "stage": "plan", "spawns": []},
+            {"agent": "coder", "stage": "code", "spawns": ["explorer"]},
+            {"agent": "reviewer", "stage": "review"},
+        ],
+    }
+
+    assert composer._pipeline_stage_chain(data) == [
+        ("planner", "plan"),
+        ("coder", "code"),
+        ("reviewer", "review"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("spawns", "error_fragment"),
+    [
+        (None, "must be a list"),
+        ("explorer", "must be a list"),
+        ([7], "non-string"),
+        (["explorer", "EXPLORER"], "duplicate"),
+        (["ghost-runner"], "unknown role"),
+        (["reviewer-aux"], "outside"),
+    ],
+)
+def test_catalog_rejects_invalid_flat_stage_spawn_declarations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spawns: object,
+    error_fragment: str,
+) -> None:
+    _write_pipeline_yaml(tmp_path, "invalid-spawns", {
+        "stages": [
+            {"agent": "coder", "stage": "code", "spawns": spawns},
+            {"agent": "reviewer", "stage": "review"},
+        ],
+    })
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    errors = composer.validate_catalog()
+
+    assert any(
+        "invalid-spawns" in error
+        and "coder" in error
+        and error_fragment in error
+        for error in errors
+    ), errors
+
+
+def test_catalog_rejects_duplicate_resolved_flat_stage_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pipeline_yaml(tmp_path, "duplicate-agent", {
+        "stages": [
+            {"agent": "coder", "stage": "prepare"},
+            {"agent": "Coder", "stage": "implement", "spawns": ["explorer"]},
+            {"agent": "reviewer", "stage": "review"},
+        ],
+    })
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    errors = composer.validate_catalog()
+
+    assert any(
+        "duplicate-agent" in error
+        and "coder" in error
+        and "duplicate resolved agent" in error
+        for error in errors
+    ), errors
+
+
 def test_null_skill_field_yields_no_injection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -22,7 +22,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use tauri::{Emitter, Manager};
 
 struct AppState {
@@ -40,9 +40,6 @@ struct AppState {
     // Optional read-only history focus. Never owns a running process or future
     // messages; it only chooses which orchestrator chat snapshot is displayed.
     viewed_orchestrator_chat_id: Mutex<Option<String>>,
-    // Pipeline studio session id (gui-pipeline-*-<nonce>). Same single process
-    // slot, but its own conversation history + run scope.
-    pipeline_chat_id: Mutex<String>,
 }
 
 #[derive(Default)]
@@ -69,7 +66,6 @@ enum TailStream {
 }
 
 const TAIL_CAP: usize = 64 * 1024;
-const PIPELINE_HINT_MESSAGE: &str = "Choose a pipeline preset in Pipeline studio before running. A bare `pipeline` command does not start an agent or consume model tokens.";
 const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
@@ -109,8 +105,8 @@ fn insert_chat(
     .map_err(|e| e.to_string())
 }
 
-/// Normalize a caller-supplied surface to one of the two known values,
-/// defaulting to the Orchestrator.
+/// Normalize persisted legacy labels while keeping all new mutations owned by
+/// the Orchestrator action paths below.
 fn surface_arg(raw: &str) -> &'static str {
     if raw == "pipeline" {
         "pipeline"
@@ -175,6 +171,38 @@ fn claim_runtime_owner(
     runtime.terminal_status.clear();
     set_runtime_owner(runtime, chat_id, surface, pipeline_name, task, started_at);
     Ok(())
+}
+
+fn ensure_runtime_owner(runtime: &ChatAgentRuntime, requested_chat_id: &str) -> Result<(), String> {
+    if runtime.chat_id == requested_chat_id {
+        Ok(())
+    } else {
+        Err(format!(
+            "Session {requested_chat_id} is read-only while session {} owns the active run.",
+            runtime.chat_id
+        ))
+    }
+}
+
+fn authorize_cancel_request(
+    requested_chat_id: &str,
+    active_chat_id: &str,
+    viewed_chat_id: Option<&str>,
+    runtime: &ChatAgentRuntime,
+) -> Result<String, String> {
+    let displayed_chat_id = viewed_chat_id.unwrap_or(active_chat_id);
+    let requested_chat_id = if requested_chat_id.trim().is_empty() {
+        displayed_chat_id
+    } else {
+        requested_chat_id
+    };
+    if requested_chat_id != displayed_chat_id {
+        return Err(format!(
+            "Session {requested_chat_id} is not the currently displayed Orchestrator session {displayed_chat_id}."
+        ));
+    }
+    ensure_runtime_owner(runtime, displayed_chat_id)?;
+    Ok(displayed_chat_id.to_string())
 }
 
 fn clear_driver_chat_log(
@@ -448,6 +476,7 @@ fn prepare_orchestrator_send(
     viewed_chat_id: &mut Option<String>,
     requested_chat_id: &str,
     text: &str,
+    pipeline_name: Option<&str>,
     started_at: i64,
 ) -> Result<String, String> {
     if rt.running {
@@ -468,57 +497,18 @@ fn prepare_orchestrator_send(
     insert_chat(&tx, "you", None, text, "orchestrator", &target)?;
     tx.commit().map_err(|e| e.to_string())?;
 
-    claim_runtime_owner(rt, &target, "orchestrator", "", text, started_at)?;
+    claim_runtime_owner(
+        rt,
+        &target,
+        "orchestrator",
+        pipeline_name.unwrap_or_default(),
+        text,
+        started_at,
+    )?;
     if target != *active_chat_id {
         *active_chat_id = target.clone();
         *viewed_chat_id = None;
     }
-    Ok(target)
-}
-
-fn prepare_pipeline_send(
-    conn: &mut Connection,
-    rt: &mut ChatAgentRuntime,
-    chat_id: &str,
-    pipeline_name: &str,
-    text: &str,
-    started_at: i64,
-) -> Result<(), String> {
-    if rt.running {
-        return claim_runtime_owner(rt, chat_id, "pipeline", pipeline_name, text, started_at);
-    }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    insert_chat(&tx, "you", None, text, "pipeline", chat_id)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    claim_runtime_owner(rt, chat_id, "pipeline", pipeline_name, text, started_at)
-}
-
-fn insert_pipeline_hint(
-    conn: &mut Connection,
-    rt: &mut ChatAgentRuntime,
-    current_chat_id: &str,
-    requested_chat_id: &str,
-    text: &str,
-) -> Result<String, String> {
-    if rt.running {
-        let owner_surface = surface_arg(&rt.surface);
-        return Err(format!(
-            "This project already has an active {owner_surface} run in session {}. Cancel it or wait for it to finish.",
-            rt.chat_id
-        ));
-    }
-    let target = resolve_orchestrator_history_target(conn, current_chat_id, requested_chat_id)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    insert_chat(&tx, "you", None, text, "orchestrator", &target)?;
-    insert_chat(
-        &tx,
-        "driver",
-        None,
-        PIPELINE_HINT_MESSAGE,
-        "orchestrator",
-        &target,
-    )?;
-    tx.commit().map_err(|e| e.to_string())?;
     Ok(target)
 }
 
@@ -861,22 +851,31 @@ fn artifact_open_failed_message(raw_path: &str, error: &str) -> String {
     format!("Could not open artifact.\n\nPath: `{raw_path}`\n\n{error}")
 }
 
-fn append_driver_chat(app: &tauri::AppHandle, tone: Option<&str>, text: &str) {
+fn append_driver_chat_to_conn(
+    conn: &Connection,
+    surface: &str,
+    chat_id: &str,
+    tone: Option<&str>,
+    text: &str,
+) -> Result<(), String> {
+    insert_chat(conn, "driver", tone, text, surface, chat_id)
+}
+
+fn append_driver_chat_to(
+    app: &tauri::AppHandle,
+    surface: &str,
+    chat_id: &str,
+    tone: Option<&str>,
+    text: &str,
+) {
     let state = app.state::<AppState>();
-    let Ok((surface, chat_id)) = state
-        .chat_agent
-        .lock()
-        .map(|rt| (surface_arg(&rt.surface).to_string(), rt.chat_id.clone()))
-    else {
-        return;
-    };
     if chat_id.is_empty() {
         return;
     }
     let Ok(conn) = state.db.lock() else {
         return;
     };
-    let _ = insert_chat(&conn, "driver", tone, text, &surface, &chat_id);
+    let _ = append_driver_chat_to_conn(&conn, surface, chat_id, tone, text);
 }
 
 fn pump_stream(
@@ -917,6 +916,12 @@ fn start_chat_agent(
     pipeline_name: Option<&str>,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
+    let launch_chat_id = chat_id.to_string();
+    let launch_surface = {
+        let rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        ensure_runtime_owner(&rt, &launch_chat_id)?;
+        surface_arg(&rt.surface).to_string()
+    };
 
     let mut env = musubi_data::current_env_map();
     let setup =
@@ -1022,19 +1027,24 @@ fn start_chat_agent(
                         rt.running = false;
                         rt.child = None;
                         rt.cancel_requested = false;
-                        (rt.stdout_tail.clone(), rt.stderr_tail.clone(), cancelled)
+                        let stdout_tail = rt.stdout_tail.clone();
+                        let stderr_tail = rt.stderr_tail.clone();
+                        let terminal = terminal_status(
+                            cancelled,
+                            code,
+                            &format!("{stderr_tail}\n{stdout_tail}"),
+                        );
+                        rt.terminal_status = terminal.to_string();
+                        (stdout_tail, stderr_tail, cancelled)
                     }
                     Err(_) => (String::new(), String::new(), false),
                 };
-                let terminal =
-                    terminal_status(cancelled, code, &format!("{stderr_tail}\n{stdout_tail}"));
-                if let Ok(mut rt) = shared.lock() {
-                    rt.terminal_status = terminal.to_string();
-                }
                 let log = process_log(&stdout_tail, &stderr_tail);
                 if cancelled {
-                    append_driver_chat(
+                    append_driver_chat_to(
                         &app,
+                        &launch_surface,
+                        &launch_chat_id,
                         Some("deny"),
                         &append_process_log_link("Agent cancelled by user.", &log),
                     );
@@ -1049,10 +1059,22 @@ fn start_chat_agent(
                             &artifact_root,
                             &artifacts,
                         );
-                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                        append_driver_chat_to(
+                            &app,
+                            &launch_surface,
+                            &launch_chat_id,
+                            None,
+                            &append_process_log_link(&text, &log),
+                        );
                     } else {
                         let text = append_artifact_links(answer, &artifact_root, &artifacts);
-                        append_driver_chat(&app, None, &append_process_log_link(&text, &log));
+                        append_driver_chat_to(
+                            &app,
+                            &launch_surface,
+                            &launch_chat_id,
+                            None,
+                            &append_process_log_link(&text, &log),
+                        );
                     }
                 } else {
                     let detail = if !stderr_tail.trim().is_empty() {
@@ -1061,7 +1083,13 @@ fn start_chat_agent(
                         stdout_tail.trim()
                     };
                     let text = summarize_agent_failure(code, detail);
-                    append_driver_chat(&app, Some("deny"), &append_process_log_link(&text, &log));
+                    append_driver_chat_to(
+                        &app,
+                        &launch_surface,
+                        &launch_chat_id,
+                        Some("deny"),
+                        &append_process_log_link(&text, &log),
+                    );
                 }
                 break;
             }
@@ -1071,7 +1099,13 @@ fn start_chat_agent(
                     rt.child = None;
                     rt.terminal_status = "failed".into();
                 }
-                append_driver_chat(&app, Some("deny"), &format!("Agent wait failed: {e}"));
+                append_driver_chat_to(
+                    &app,
+                    &launch_surface,
+                    &launch_chat_id,
+                    Some("deny"),
+                    &format!("Agent wait failed: {e}"),
+                );
                 break;
             }
         }
@@ -1080,22 +1114,74 @@ fn start_chat_agent(
     Ok(())
 }
 
-fn cancel_chat_agent(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
-    let child = {
-        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-        if !rt.running {
-            return Ok(());
-        }
-        rt.cancel_requested = true;
-        rt.child.clone()
-    };
+struct CancelClaim {
+    child: Option<Arc<Mutex<Child>>>,
+    owner_surface: String,
+    owner_chat_id: String,
+}
 
-    let Some(child) = child else {
-        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+fn prepare_cancel_claim_with_hook<BeforeRuntimeLock>(
+    runtime: &Mutex<ChatAgentRuntime>,
+    active_chat_id: &Mutex<String>,
+    viewed_chat_id: &Mutex<Option<String>>,
+    requested_chat_id: &str,
+    before_runtime_lock: BeforeRuntimeLock,
+) -> Result<Option<CancelClaim>, String>
+where
+    BeforeRuntimeLock: FnOnce(),
+{
+    before_runtime_lock();
+    let mut rt = runtime.lock().map_err(|e| e.to_string())?;
+    if !rt.running {
+        return Ok(None);
+    }
+    let active_chat_id = active_chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let viewed_chat_id = viewed_chat_id.lock().map_err(|e| e.to_string())?.clone();
+    let owner_chat_id = authorize_cancel_request(
+        requested_chat_id,
+        &active_chat_id,
+        viewed_chat_id.as_deref(),
+        &rt,
+    )?;
+    let claim = CancelClaim {
+        child: rt.child.clone(),
+        owner_surface: surface_arg(&rt.surface).to_string(),
+        owner_chat_id,
+    };
+    if claim.child.is_some() {
+        rt.cancel_requested = true;
+    } else {
         rt.running = false;
         rt.child = None;
         rt.cancel_requested = false;
-        append_driver_chat(app, Some("deny"), "Agent cancelled by user.");
+    }
+    Ok(Some(claim))
+}
+
+fn cancel_chat_agent(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    requested_chat_id: &str,
+) -> Result<(), String> {
+    let Some(claim) = prepare_cancel_claim_with_hook(
+        &state.chat_agent,
+        &state.chat_id,
+        &state.viewed_orchestrator_chat_id,
+        requested_chat_id,
+        || {},
+    )?
+    else {
+        return Ok(());
+    };
+
+    let Some(child) = claim.child else {
+        append_driver_chat_to(
+            app,
+            &claim.owner_surface,
+            &claim.owner_chat_id,
+            Some("deny"),
+            "Agent cancelled by user.",
+        );
         return Ok(());
     };
 
@@ -1180,32 +1266,34 @@ fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> 
     Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
 }
 
-fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>, String), String> {
+fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>), String> {
     let orchestrator_chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
     let viewed_orchestrator_chat_id = state
         .viewed_orchestrator_chat_id
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    let pipeline_chat_id = state
-        .pipeline_chat_id
-        .lock()
-        .map_err(|e| e.to_string())?
-        .clone();
-    Ok((
-        orchestrator_chat_id,
-        viewed_orchestrator_chat_id,
-        pipeline_chat_id,
-    ))
+    Ok((orchestrator_chat_id, viewed_orchestrator_chat_id))
+}
+
+fn load_legacy_pipeline_chat_id(conn: &Connection) -> Result<String, String> {
+    conn.query_row(
+        "SELECT chat_id FROM chat_log WHERE surface='pipeline' ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map(|value| value.unwrap_or_default())
+    .map_err(|e| e.to_string())
 }
 
 fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     // Snapshot the independently guarded session selectors before opening the
     // database read boundary. Mutation paths may hold one of these guards
     // before acquiring `db`; nesting them in the opposite order can deadlock.
-    let (orchestrator_chat_id, viewed_orchestrator_chat_id, pipeline_chat_id) =
-        snapshot_session_ids(state)?;
+    let (orchestrator_chat_id, viewed_orchestrator_chat_id) = snapshot_session_ids(state)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let pipeline_chat_id = load_legacy_pipeline_chat_id(&conn)?;
     let state_conn = state
         .state_db
         .as_ref()
@@ -1225,6 +1313,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     st.viewed_orchestrator_chat_id = viewed_orchestrator_chat_id.unwrap_or_default();
     st.pipeline_chat_id = pipeline_chat_id;
     st.pipeline_catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
+    st.pipeline_builder_catalog = musubi_data::read_pipeline_builder_catalog(&state.project_root);
     st.paused = state.paused.load(Ordering::Relaxed);
     st.runtime_source = state
         .audit_db
@@ -1267,6 +1356,104 @@ fn get_state(state: tauri::State<AppState>) -> Result<musubi_data::State, String
 }
 
 #[tauri::command]
+fn load_pipeline_recipe(
+    name: String,
+    state: tauri::State<AppState>,
+) -> Result<musubi_data::PipelineRecipe, String> {
+    load_pipeline_recipe_at(&state.project_root, &name)
+}
+
+fn load_pipeline_recipe_at(
+    project_root: &Path,
+    name: &str,
+) -> Result<musubi_data::PipelineRecipe, String> {
+    musubi_data::read_pipeline_recipe(project_root, name)
+}
+
+#[tauri::command]
+fn validate_pipeline_recipe(
+    recipe: musubi_data::PipelineRecipe,
+    state: tauri::State<AppState>,
+) -> Result<Vec<musubi_data::PipelineFinding>, String> {
+    Ok(validate_pipeline_recipe_at(&state.project_root, &recipe))
+}
+
+fn validate_pipeline_recipe_at(
+    project_root: &Path,
+    recipe: &musubi_data::PipelineRecipe,
+) -> Vec<musubi_data::PipelineFinding> {
+    musubi_data::validate_pipeline_recipe(project_root, recipe)
+}
+
+#[tauri::command]
+fn save_pipeline_recipe(
+    recipe: musubi_data::PipelineRecipe,
+    state: tauri::State<AppState>,
+) -> Result<musubi_data::PipelineSaveResult, String> {
+    Ok(save_pipeline_recipe_at(&state.project_root, &recipe))
+}
+
+fn save_pipeline_recipe_at(
+    project_root: &Path,
+    recipe: &musubi_data::PipelineRecipe,
+) -> musubi_data::PipelineSaveResult {
+    musubi_data::save_pipeline_recipe(project_root, recipe)
+}
+
+fn resolve_orchestrator_launch(
+    text: &str,
+    mode: &str,
+    pipeline_name: &str,
+    catalog: &[musubi_data::PipelineCatalogEntry],
+) -> Result<(String, Option<String>), String> {
+    let task = text.trim();
+    if task.is_empty() {
+        return Err("Task is empty — describe the work to run.".into());
+    }
+    match mode {
+        "direct" => Ok((task.to_string(), None)),
+        "pipeline" => {
+            let pipeline_name = pipeline_name.trim();
+            if !musubi_data::valid_pipeline_name(pipeline_name) {
+                return Err(format!("invalid pipeline name: {pipeline_name:?}"));
+            }
+            let Some(entry) = catalog.iter().find(|entry| entry.name == pipeline_name) else {
+                return Err(format!(
+                    "Pipeline {pipeline_name:?} is not registered for Orchestrator."
+                ));
+            };
+            if !entry.runnable || entry.stages.len() < 2 {
+                return Err(if entry.blocked_reason.is_empty() {
+                    format!("Pipeline {pipeline_name:?} is not runnable.")
+                } else {
+                    entry.blocked_reason.clone()
+                });
+            }
+            Ok((task.to_string(), Some(pipeline_name.to_string())))
+        }
+        _ => Err(format!("Unknown Orchestrator launch mode: {mode:?}.")),
+    }
+}
+
+fn dispatch_orchestrator_send<Prepare, Launch>(
+    text: &str,
+    requested_chat_id: &str,
+    mode: &str,
+    pipeline_name: &str,
+    catalog: &[musubi_data::PipelineCatalogEntry],
+    prepare: Prepare,
+    launch: Launch,
+) -> Result<(), String>
+where
+    Prepare: FnOnce(&str, &str, Option<&str>) -> Result<String, String>,
+    Launch: FnOnce(&str, &str, Option<&str>) -> Result<(), String>,
+{
+    let (task, pipeline_name) = resolve_orchestrator_launch(text, mode, pipeline_name, catalog)?;
+    let chat_id = prepare(&task, requested_chat_id, pipeline_name.as_deref())?;
+    launch(&task, &chat_id, pipeline_name.as_deref())
+}
+
+#[tauri::command]
 fn action(
     kind: String,
     args: Vec<serde_json::Value>,
@@ -1281,95 +1468,54 @@ fn action(
     };
     match kind.as_str() {
         "send_chat" => {
-            let text = str_arg(0);
-            if text.trim().is_empty() {
-                return Ok(());
-            }
-            let requested_chat_id = str_arg(1);
-            let chat_id = {
-                let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-                let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-                let mut active = state.chat_id.lock().map_err(|e| e.to_string())?;
-                let mut viewed = state
-                    .viewed_orchestrator_chat_id
-                    .lock()
-                    .map_err(|e| e.to_string())?;
-                prepare_orchestrator_send(
-                    &mut conn,
-                    &mut rt,
-                    &mut active,
-                    &mut viewed,
-                    &requested_chat_id,
-                    &text,
-                    epoch_secs(),
-                )?
-            };
-            if let Err(e) = start_chat_agent(app, state.inner(), text, &chat_id, None) {
-                if let Ok(mut rt) = state.chat_agent.lock() {
-                    if rt.chat_id == chat_id {
-                        rt.running = false;
-                        rt.child = None;
-                    }
-                }
-                let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator", &chat_id)?;
-            }
-        }
-        // Pipeline studio session: same single process slot, its own chat_id +
-        // conversation history + run scope.
-        "send_pipeline_task" => {
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
-            let requested_text = str_arg(0);
-            let requested_pipeline = str_arg(1);
-            let chat_id = state
-                .pipeline_chat_id
-                .lock()
-                .map_err(|e| e.to_string())?
-                .clone();
-            let (text, pipeline_name) =
-                match prepare_pipeline_launch(&requested_text, &requested_pipeline, &catalog) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        let conn = state.db.lock().map_err(|e| e.to_string())?;
-                        insert_chat(&conn, "driver", Some("deny"), &error, "pipeline", &chat_id)?;
-                        return Ok(());
-                    }
-                };
-            {
-                let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-                let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-                prepare_pipeline_send(
-                    &mut conn,
-                    &mut rt,
-                    &chat_id,
-                    &pipeline_name,
-                    &text,
-                    epoch_secs(),
-                )?;
-            }
-            if let Err(e) =
-                start_chat_agent(app, state.inner(), text, &chat_id, Some(&pipeline_name))
-            {
-                if let Ok(mut rt) = state.chat_agent.lock() {
-                    if rt.chat_id == chat_id {
-                        rt.running = false;
-                        rt.child = None;
-                    }
-                }
-                let conn = state.db.lock().map_err(|err| err.to_string())?;
-                insert_chat(&conn, "driver", Some("deny"), &e, "pipeline", &chat_id)?;
-            }
-        }
-        "pipeline_hint" => {
             let text = str_arg(0);
             let requested_chat_id = str_arg(1);
-            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
-            if text.trim().is_empty() {
-                return Ok(());
-            }
-            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
-            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-            insert_pipeline_hint(&mut conn, &mut rt, &chat_id, &requested_chat_id, &text)?;
+            dispatch_orchestrator_send(
+                &text,
+                &requested_chat_id,
+                &str_arg(2),
+                &str_arg(3),
+                &catalog,
+                |task, requested_chat_id, pipeline_name| {
+                    let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+                    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+                    let mut active = state.chat_id.lock().map_err(|e| e.to_string())?;
+                    let mut viewed = state
+                        .viewed_orchestrator_chat_id
+                        .lock()
+                        .map_err(|e| e.to_string())?;
+                    prepare_orchestrator_send(
+                        &mut conn,
+                        &mut rt,
+                        &mut active,
+                        &mut viewed,
+                        requested_chat_id,
+                        task,
+                        pipeline_name,
+                        epoch_secs(),
+                    )
+                },
+                |task, chat_id, pipeline_name| {
+                    if let Err(e) = start_chat_agent(
+                        app,
+                        state.inner(),
+                        task.to_string(),
+                        chat_id,
+                        pipeline_name,
+                    ) {
+                        if let Ok(mut rt) = state.chat_agent.lock() {
+                            if rt.chat_id == chat_id {
+                                rt.running = false;
+                                rt.child = None;
+                            }
+                        }
+                        let conn = state.db.lock().map_err(|err| err.to_string())?;
+                        insert_chat(&conn, "driver", Some("deny"), &e, "orchestrator", chat_id)?;
+                    }
+                    Ok(())
+                },
+            )?;
         }
         "select_profile" => {
             let name = str_arg(0);
@@ -1386,7 +1532,8 @@ fn action(
             state.paused.store(!cur, Ordering::Relaxed);
         }
         "cancel_agent" => {
-            cancel_chat_agent(&app, state.inner())?;
+            let requested_chat_id = str_arg(0);
+            cancel_chat_agent(&app, state.inner(), &requested_chat_id)?;
         }
         "select_session" => {
             let requested_chat_id = str_arg(0);
@@ -1402,66 +1549,43 @@ fn action(
             )?;
         }
         "clear_driver_chat" => {
-            let surface = surface_arg(&str_arg(0));
-            let chat_id = if surface == "pipeline" {
-                state.pipeline_chat_id.lock()
-            } else {
-                state.chat_id.lock()
-            }
-            .map_err(|e| e.to_string())?
-            .clone();
+            let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            clear_driver_chat_log(&conn, &mut rt, surface, &chat_id)?;
+            clear_driver_chat_log(&conn, &mut rt, "orchestrator", &chat_id)?;
         }
-        // Fresh session: re-mint the surface's chat_id so the agent's replay
+        // Fresh Orchestrator session: re-mint its chat_id so the agent's replay
         // history starts empty. Old turns stay under the previous chat_id.
         "new_session" => {
-            let surface = surface_arg(&str_arg(0));
             let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
-            let slot = if surface == "pipeline" {
-                &state.pipeline_chat_id
-            } else {
-                &state.chat_id
-            };
             new_driver_session(
                 &conn,
                 &mut rt,
-                slot,
+                &state.chat_id,
                 &state.viewed_orchestrator_chat_id,
                 &state.project_root,
-                surface,
+                "orchestrator",
             )?;
         }
         "open_artifact" => {
             let raw_path = str_arg(0);
-            let surface = surface_arg(&str_arg(1));
             match open_workspace_path(&state.project_root, &raw_path) {
                 Ok(_) => {}
                 Err(e) => {
-                    let chat_id = if surface == "pipeline" {
-                        state.pipeline_chat_id.lock()
-                    } else {
-                        state.chat_id.lock()
-                    }
-                    .map_err(|err| err.to_string())?
-                    .clone();
+                    let chat_id = state.chat_id.lock().map_err(|err| err.to_string())?.clone();
                     let conn = state.db.lock().map_err(|err| err.to_string())?;
                     insert_chat(
                         &conn,
                         "driver",
                         Some("deny"),
                         &artifact_open_failed_message(&raw_path, &e),
-                        surface,
+                        "orchestrator",
                         &chat_id,
                     )?;
                 }
             }
         }
-        // Pipeline Studio launches registered recipes through
-        // `send_pipeline_task`; edited client-only compositions remain drafts
-        // and never reach this backend.
         other => eprintln!("[musubi] unknown action: {other}"),
     }
     Ok(())
@@ -1482,23 +1606,17 @@ pub fn run() {
             [],
         );
     }
-    // Continue the persisted session for each surface (option a: restart resumes
-    // the current session); mint on first use.
+    // Continue the persisted Orchestrator session (option a: restart resumes
+    // the current session); mint on first use. Pipeline Studio is builder-only
+    // and therefore owns no live session nonce.
     let chat_nonce = load_or_mint_session_nonce(&opened.conn, "orchestrator")
         .expect("failed to persist orchestrator session nonce");
-    let pipe_nonce = load_or_mint_session_nonce(&opened.conn, "pipeline")
-        .expect("failed to persist pipeline session nonce");
     let chat_id = scoped_chat_id(&opened.project_root, "orchestrator", &chat_nonce);
-    let pipeline_chat_id = scoped_chat_id(&opened.project_root, "pipeline", &pipe_nonce);
     // Pre-session rows can only belong to the session that was active when the
     // migration ran. Backfill once; future rows are written with their owner.
     let _ = opened.conn.execute(
         "UPDATE chat_log SET chat_id=?1 WHERE surface='orchestrator' AND chat_id=''",
         [&chat_id],
-    );
-    let _ = opened.conn.execute(
-        "UPDATE chat_log SET chat_id=?1 WHERE surface='pipeline' AND chat_id=''",
-        [&pipeline_chat_id],
     );
     tauri::Builder::default()
         .manage(AppState {
@@ -1510,9 +1628,14 @@ pub fn run() {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new(chat_id),
             viewed_orchestrator_chat_id: Mutex::new(None),
-            pipeline_chat_id: Mutex::new(pipeline_chat_id),
         })
-        .invoke_handler(tauri::generate_handler![get_state, action])
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            action,
+            load_pipeline_recipe,
+            validate_pipeline_recipe,
+            save_pipeline_recipe
+        ])
         .setup(|app| {
             // Poll the audit.db and push live snapshots to the UI.
             let handle = app.handle().clone();
@@ -1527,34 +1650,6 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Musubi console");
-}
-
-fn prepare_pipeline_launch(
-    brief: &str,
-    pipeline_name: &str,
-    catalog: &[musubi_data::PipelineCatalogEntry],
-) -> Result<(String, String), String> {
-    let brief = brief.trim();
-    if brief.is_empty() {
-        return Err("Pipeline brief is empty — describe the task to run.".into());
-    }
-    let pipeline_name = pipeline_name.trim();
-    if !musubi_data::valid_pipeline_name(pipeline_name) {
-        return Err(format!("invalid pipeline name: {pipeline_name:?}"));
-    }
-    let Some(entry) = catalog.iter().find(|entry| entry.name == pipeline_name) else {
-        return Err(format!(
-            "Pipeline {pipeline_name:?} is not registered for Studio."
-        ));
-    };
-    if !entry.runnable || entry.stages.len() < 2 {
-        return Err(if entry.blocked_reason.is_empty() {
-            format!("Pipeline {pipeline_name:?} is not runnable in Studio.")
-        } else {
-            entry.blocked_reason.clone()
-        });
-    }
-    Ok((brief.to_string(), pipeline_name.to_string()))
 }
 
 #[cfg(test)]
@@ -1572,7 +1667,6 @@ mod tests {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new("gui-orchestrator-project-active".into()),
             viewed_orchestrator_chat_id: Mutex::new(Some("gui-orchestrator-project-viewed".into())),
-            pipeline_chat_id: Mutex::new("gui-pipeline-project-active".into()),
         };
         let _db_guard = state.db.lock().unwrap();
 
@@ -1580,7 +1674,32 @@ mod tests {
 
         assert_eq!(ids.0, "gui-orchestrator-project-active");
         assert_eq!(ids.1.as_deref(), Some("gui-orchestrator-project-viewed"));
-        assert_eq!(ids.2, "gui-pipeline-project-active");
+    }
+
+    #[test]
+    fn legacy_pipeline_chat_id_is_read_without_minting_a_new_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','pipeline','gui-pipeline-project-old'),
+             ('new','driver','old result','pipeline','gui-pipeline-project-latest')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_legacy_pipeline_chat_id(&conn).unwrap(),
+            "gui-pipeline-project-latest"
+        );
+        let nonce_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key='session_nonce.pipeline'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(nonce_count, 0);
     }
 
     #[test]
@@ -1722,23 +1841,6 @@ mod tests {
         // The new nonce is persisted, so a restart continues this new session.
         let persisted = load_or_mint_session_nonce(&conn, "orchestrator").unwrap();
         assert_eq!(scoped_chat_id(root, "orchestrator", &persisted), new_id);
-    }
-
-    #[test]
-    fn new_pipeline_session_preserves_viewed_orchestrator_history() {
-        let conn = Connection::open_in_memory().unwrap();
-        musubi_data::init_schema(&conn).unwrap();
-        let root = Path::new("/tmp/musubi-new-pipeline-session-test");
-        let slot = Mutex::new("gui-pipeline-project-old".to_string());
-        let viewed = Mutex::new(Some("gui-orchestrator-project-history".to_string()));
-        let mut rt = ChatAgentRuntime::default();
-
-        new_driver_session(&conn, &mut rt, &slot, &viewed, root, "pipeline").unwrap();
-
-        assert_eq!(
-            viewed.lock().unwrap().as_deref(),
-            Some("gui-orchestrator-project-history")
-        );
     }
 
     #[test]
@@ -1940,6 +2042,7 @@ mod tests {
             &mut viewed,
             "gui-orchestrator-project-old",
             "continue",
+            None,
             42,
         )
         .unwrap();
@@ -2004,6 +2107,7 @@ mod tests {
             viewed,
             "gui-orchestrator-project-old",
             "must not persist",
+            None,
             42,
         )
         .unwrap_err();
@@ -2044,6 +2148,7 @@ mod tests {
             &mut viewed,
             "gui-orchestrator-project-old",
             "must not launch",
+            None,
             42,
         )
         .unwrap_err();
@@ -2060,89 +2165,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 0);
-    }
-
-    #[test]
-    fn pipeline_hint_resolves_all_spellings_to_exact_viewed_history() {
-        let conn = Connection::open_in_memory().unwrap();
-        musubi_data::init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
-             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
-            [],
-        )
-        .unwrap();
-
-        for spelling in ["pipeline", "/pipeline", "run pipeline"] {
-            let target = resolve_orchestrator_history_target(
-                &conn,
-                "gui-orchestrator-project-current",
-                "gui-orchestrator-project-old",
-            )
-            .unwrap();
-            insert_chat(&conn, "you", None, spelling, "orchestrator", &target).unwrap();
-        }
-
-        let old_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM chat_log WHERE chat_id='gui-orchestrator-project-old'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let active_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM chat_log WHERE chat_id='gui-orchestrator-project-current'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(old_rows, 4);
-        assert_eq!(active_rows, 0);
-    }
-
-    #[test]
-    fn busy_pipeline_hint_writes_no_rows_and_preserves_runtime_owner() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        musubi_data::init_schema(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
-             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
-            [],
-        )
-        .unwrap();
-        let mut rt = ChatAgentRuntime::default();
-        claim_runtime_owner(
-            &mut rt,
-            "gui-pipeline-project-live",
-            "pipeline",
-            "feature-dev",
-            "competing task",
-            41,
-        )
-        .unwrap();
-
-        let error = insert_pipeline_hint(
-            &mut conn,
-            &mut rt,
-            "gui-orchestrator-project-current",
-            "gui-orchestrator-project-old",
-            "pipeline",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("active pipeline run"));
-        assert!(rt.running);
-        assert_eq!(rt.chat_id, "gui-pipeline-project-live");
-        assert_eq!(rt.task, "competing task");
-        let new_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM chat_log WHERE text IN ('pipeline', ?1)",
-                [PIPELINE_HINT_MESSAGE],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(new_rows, 0);
     }
 
     #[test]
@@ -2391,28 +2413,457 @@ mod tests {
         assert!(failed.contains("cannot open artifact"));
     }
 
-    #[test]
-    fn pipeline_launch_validates_registered_runnable_recipe() {
-        let catalog = vec![musubi_data::PipelineCatalogEntry {
-            name: "feature-dev".into(),
-            description: "Ship a feature".into(),
-            stages: vec!["planner".into(), "coder".into()],
+    fn runnable_pipeline(name: &str) -> musubi_data::PipelineCatalogEntry {
+        musubi_data::PipelineCatalogEntry {
+            name: name.into(),
+            description: "Runnable recipe".into(),
+            stages: vec!["plan".into(), "build".into()],
             runnable: true,
             blocked_reason: String::new(),
-        }];
+        }
+    }
+
+    #[test]
+    fn orchestrator_pipeline_direct_launch_resolves_trimmed_task_without_pipeline() {
+        assert_eq!(
+            resolve_orchestrator_launch("  ship it  ", "direct", "", &[]).unwrap(),
+            ("ship it".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn orchestrator_pipeline_launch_resolves_registered_runnable_recipe() {
+        let catalog = vec![runnable_pipeline("feature-dev")];
 
         assert_eq!(
-            prepare_pipeline_launch(" ship it ", "feature-dev", &catalog).unwrap(),
-            ("ship it".to_string(), "feature-dev".to_string())
+            resolve_orchestrator_launch("  ship it  ", "pipeline", "feature-dev", &catalog)
+                .unwrap(),
+            ("ship it".to_string(), Some("feature-dev".to_string()))
         );
-        assert!(prepare_pipeline_launch("", "feature-dev", &catalog)
-            .unwrap_err()
-            .contains("empty"));
-        assert!(prepare_pipeline_launch("ship", "../feature-dev", &catalog)
-            .unwrap_err()
-            .contains("invalid"));
-        assert!(prepare_pipeline_launch("ship", "missing", &catalog)
-            .unwrap_err()
-            .contains("not registered"));
+    }
+
+    #[test]
+    fn orchestrator_pipeline_invalid_launches_fail_closed_before_send_mutation() {
+        let mut blocked = runnable_pipeline("blocked");
+        blocked.runnable = false;
+        blocked.blocked_reason = "recipe is blocked".into();
+        let catalog = vec![runnable_pipeline("feature-dev"), blocked];
+
+        for (task, mode, pipeline) in [
+            ("", "direct", ""),
+            ("ship", "", ""),
+            ("ship", "unknown", ""),
+            ("ship", "pipeline", "missing"),
+            ("ship", "pipeline", "../unsafe"),
+            ("ship", "pipeline", "blocked"),
+        ] {
+            assert!(resolve_orchestrator_launch(task, mode, pipeline, &catalog).is_err());
+        }
+    }
+
+    #[test]
+    fn orchestrator_pipeline_send_claims_exact_orchestrator_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let mut active = "gui-orchestrator-project-current".to_string();
+        let mut viewed = None;
+        let mut rt = ChatAgentRuntime::default();
+
+        let resolved = prepare_orchestrator_send(
+            &mut conn,
+            &mut rt,
+            &mut active,
+            &mut viewed,
+            "gui-orchestrator-project-current",
+            "ship it",
+            Some("feature-dev"),
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "gui-orchestrator-project-current");
+        assert_eq!(rt.chat_id, resolved);
+        assert_eq!(rt.surface, "orchestrator");
+        assert_eq!(rt.pipeline_name, "feature-dev");
+    }
+
+    #[test]
+    fn orchestrator_pipeline_historical_idle_send_atomically_promotes_exact_viewed_id() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(ts,role,text,surface,chat_id) VALUES
+             ('old','you','old request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+        let mut active = "gui-orchestrator-project-current".to_string();
+        let mut viewed = Some("gui-orchestrator-project-old".to_string());
+        let mut rt = ChatAgentRuntime::default();
+
+        let resolved = prepare_orchestrator_send(
+            &mut conn,
+            &mut rt,
+            &mut active,
+            &mut viewed,
+            "gui-orchestrator-project-old",
+            "continue",
+            Some("feature-dev"),
+            42,
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "gui-orchestrator-project-old");
+        assert_eq!(active, resolved);
+        assert_eq!(viewed, None);
+        assert_eq!(rt.chat_id, resolved);
+        assert_eq!(rt.pipeline_name, "feature-dev");
+    }
+
+    #[test]
+    fn orchestrator_pipeline_busy_owner_rejects_without_changing_owner_or_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let mut active = "gui-orchestrator-project-current".to_string();
+        let mut viewed = None;
+        let mut rt = ChatAgentRuntime::default();
+        claim_runtime_owner(
+            &mut rt,
+            "gui-orchestrator-project-owner",
+            "orchestrator",
+            "",
+            "owner task",
+            41,
+        )
+        .unwrap();
+
+        assert!(prepare_orchestrator_send(
+            &mut conn,
+            &mut rt,
+            &mut active,
+            &mut viewed,
+            "gui-orchestrator-project-current",
+            "must not send",
+            Some("feature-dev"),
+            42,
+        )
+        .is_err());
+
+        assert_eq!(rt.chat_id, "gui-orchestrator-project-owner");
+        assert_eq!(rt.pipeline_name, "");
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE text='must not send'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn orchestrator_pipeline_non_owner_session_cannot_cancel_runtime() {
+        let rt = ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-owner".into(),
+            ..ChatAgentRuntime::default()
+        };
+
+        assert!(ensure_runtime_owner(&rt, "gui-orchestrator-project-viewed").is_err());
+        assert!(ensure_runtime_owner(&rt, "gui-orchestrator-project-owner").is_ok());
+    }
+
+    #[test]
+    fn orchestrator_pipeline_send_writes_only_orchestrator_surface() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let mut active = "gui-orchestrator-project-current".to_string();
+        let mut viewed = None;
+        let mut rt = ChatAgentRuntime::default();
+
+        prepare_orchestrator_send(
+            &mut conn,
+            &mut rt,
+            &mut active,
+            &mut viewed,
+            "gui-orchestrator-project-current",
+            "pipeline task",
+            Some("feature-dev"),
+            42,
+        )
+        .unwrap();
+        insert_chat(
+            &conn,
+            "driver",
+            None,
+            "pipeline reply",
+            &rt.surface,
+            &rt.chat_id,
+        )
+        .unwrap();
+
+        let orchestrator_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE surface='orchestrator' AND chat_id=?1",
+                [&active],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pipeline_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE surface='pipeline'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orchestrator_rows, 2);
+        assert_eq!(pipeline_rows, 0);
+    }
+
+    #[test]
+    fn orchestrator_pipeline_ipc_and_active_routes_are_registered_without_legacy_mutations() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains("fn load_pipeline_recipe("));
+        assert!(source.contains("fn validate_pipeline_recipe("));
+        assert!(source.contains("fn save_pipeline_recipe("));
+        let handler_block = source
+            .split_once("invoke_handler(tauri::generate_handler![")
+            .unwrap()
+            .1
+            .split_once("])")
+            .unwrap()
+            .0;
+        for handler in [
+            "load_pipeline_recipe",
+            "validate_pipeline_recipe",
+            "save_pipeline_recipe",
+        ] {
+            assert!(handler_block.contains(handler));
+        }
+        assert!(!source.contains("\"send_pipeline_task\" =>"));
+        assert!(!source.contains("\"pipeline_hint\" =>"));
+        assert!(!source.contains(&["pipeline_chat_id", ": Mutex"].concat()));
+        assert!(!source
+            .contains(&["load_or_mint_session_nonce(&opened.conn, ", "\"pipeline\")"].concat()));
+        assert!(source.contains(&["fn load_legacy_", "pipeline_chat_id("].concat()));
+    }
+
+    fn copy_tree(source: &Path, target: &Path) {
+        std::fs::create_dir_all(target).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let destination = target.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrator_pipeline_recipe_wrappers_delegate_and_refresh_catalog() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let project_root = std::env::temp_dir().join(format!(
+            "musubi-tauri-recipe-ipc-{}-{}",
+            std::process::id(),
+            epoch_secs()
+        ));
+        copy_tree(&source_root.join(".github"), &project_root.join(".github"));
+
+        let mut recipe = load_pipeline_recipe_at(&project_root, "dev-lite").unwrap();
+        recipe.name = "ipc-test".into();
+        let findings = validate_pipeline_recipe_at(&project_root, &recipe);
+        assert!(!findings.iter().any(|finding| finding.severity == "error"));
+        let saved = save_pipeline_recipe_at(&project_root, &recipe);
+        assert!(saved.saved, "{}", saved.error);
+        assert!(saved.catalog_refreshed);
+        assert!(musubi_data::read_studio_pipeline_catalog(&project_root)
+            .iter()
+            .any(|entry| entry.name == "ipc-test"));
+
+        std::fs::remove_dir_all(project_root).unwrap();
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_completion_append_stays_with_captured_owner() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let launch_surface = "orchestrator".to_string();
+        let launch_chat_id = "gui-orchestrator-project-old".to_string();
+        let mut runtime = ChatAgentRuntime {
+            chat_id: launch_chat_id.clone(),
+            surface: launch_surface.clone(),
+            ..ChatAgentRuntime::default()
+        };
+        set_runtime_owner(
+            &mut runtime,
+            "gui-orchestrator-project-new",
+            "orchestrator",
+            "feature-dev",
+            "new task",
+            43,
+        );
+
+        append_driver_chat_to_conn(
+            &conn,
+            &launch_surface,
+            &launch_chat_id,
+            None,
+            "old completion",
+        )
+        .unwrap();
+
+        let old_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE chat_id=?1 AND text='old completion'",
+                [&launch_chat_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let new_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_log WHERE chat_id=?1 AND text='old completion'",
+                [&runtime.chat_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_rows, 1);
+        assert_eq!(new_rows, 0);
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_cancel_rejects_supplied_owner_while_viewing_history() {
+        let runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-owner".into(),
+            ..ChatAgentRuntime::default()
+        };
+
+        let error = authorize_cancel_request(
+            "gui-orchestrator-project-owner",
+            "gui-orchestrator-project-owner",
+            Some("gui-orchestrator-project-history"),
+            &runtime,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("displayed"));
+        assert!(authorize_cancel_request(
+            "gui-orchestrator-project-owner",
+            "gui-orchestrator-project-owner",
+            None,
+            &runtime,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_dispatch_direct_preserves_prepare_launch_identity() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        dispatch_orchestrator_send(
+            " ship ",
+            "gui-orchestrator-project-exact",
+            "direct",
+            "ignored",
+            &[],
+            |task, requested, pipeline| {
+                events.borrow_mut().push(format!(
+                    "prepare:{task}:{requested}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(requested.to_string())
+            },
+            |task, chat_id, pipeline| {
+                events.borrow_mut().push(format!(
+                    "launch:{task}:{chat_id}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "prepare:ship:gui-orchestrator-project-exact:none",
+                "launch:ship:gui-orchestrator-project-exact:none",
+            ]
+        );
+    }
+
+    #[test]
+    fn orchestrator_pipeline_review_dispatch_pipeline_validates_before_exact_launch() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let catalog = vec![runnable_pipeline("feature-dev")];
+
+        dispatch_orchestrator_send(
+            " ship ",
+            "gui-orchestrator-project-exact",
+            "pipeline",
+            "feature-dev",
+            &catalog,
+            |task, requested, pipeline| {
+                events.borrow_mut().push(format!(
+                    "prepare:{task}:{requested}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(requested.to_string())
+            },
+            |task, chat_id, pipeline| {
+                events.borrow_mut().push(format!(
+                    "launch:{task}:{chat_id}:{}",
+                    pipeline.unwrap_or("none")
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                "prepare:ship:gui-orchestrator-project-exact:feature-dev",
+                "launch:ship:gui-orchestrator-project-exact:feature-dev",
+            ]
+        );
+    }
+
+    #[test]
+    fn orchestrator_pipeline_cancel_snapshots_displayed_session_under_runtime_lock() {
+        let runtime = Arc::new(Mutex::new(ChatAgentRuntime {
+            running: true,
+            chat_id: "gui-orchestrator-project-owner".into(),
+            ..ChatAgentRuntime::default()
+        }));
+        let active = Arc::new(Mutex::new("gui-orchestrator-project-owner".to_string()));
+        let viewed = Arc::new(Mutex::new(None));
+        let runtime_guard = runtime.lock().unwrap();
+        let worker_runtime = runtime.clone();
+        let worker_active = active.clone();
+        let worker_viewed = viewed.clone();
+        let (before_lock_tx, before_lock_rx) = std::sync::mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            prepare_cancel_claim_with_hook(
+                &worker_runtime,
+                &worker_active,
+                &worker_viewed,
+                "gui-orchestrator-project-owner",
+                || before_lock_tx.send(()).unwrap(),
+            )
+        });
+        before_lock_rx.recv().unwrap();
+        *viewed.lock().unwrap() = Some("gui-orchestrator-project-history".into());
+        drop(runtime_guard);
+
+        let error = match worker.join().unwrap() {
+            Err(error) => error,
+            Ok(_) => panic!("stale owner snapshot authorized cancellation"),
+        };
+        assert!(error.contains("displayed"));
+        assert!(!runtime.lock().unwrap().cancel_requested);
     }
 }

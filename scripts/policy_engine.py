@@ -171,6 +171,32 @@ def _load_pipeline_spawns(pipeline_name: str) -> dict[str, list[str]]:
     if not isinstance(data, dict):
         return {}
     out: dict[str, list[str]] = {}
+    stages = data.get("stages")
+    if isinstance(stages, list) and stages:
+        # Composer owns flat-stage/preset resolution. Import lazily so this
+        # standalone hook remains usable in both repo and packaged layouts.
+        try:
+            import composer as pipeline_composer
+        except ImportError:
+            from musubi import composer as pipeline_composer
+        ambiguous_agents: set[str] = set()
+        for entry in pipeline_composer.pipeline_stage_entries(pipeline_name):
+            agent = entry["agent"]
+            spawns = entry["spawns"]
+            if isinstance(agent, str) and isinstance(spawns, list):
+                if agent in ambiguous_agents:
+                    continue
+                if agent in out:
+                    # Validation rejects duplicate resolved agents because
+                    # policy is role-keyed, not stage-keyed. If boot
+                    # validation is bypassed, grant neither stage anything.
+                    out[agent] = []
+                    ambiguous_agents.add(agent)
+                else:
+                    out[agent] = [s for s in spawns if isinstance(s, str)]
+        _PIPELINE_SPAWNS_CACHE[str(path)] = (mtime, out)
+        return out
+
     gen = data.get("generator") or {}
     if isinstance(gen, dict):
         for entry in (gen.get("agents") or []):

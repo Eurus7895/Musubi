@@ -124,11 +124,19 @@ for the same dimension.
 
 - GUI/CLI orchestrator token economics — every logical root, child, pipeline,
   retry, and forced-final LM cycle records input, cached-input subset, output,
-  LM time, usage source, worker identity, and tool names. Both Console surfaces
-  project selected-session totals from the same rows. The live contract is
+  LM time, usage source, worker identity, and tool names. The CLI and
+  Orchestrator project selected-session totals from the same rows. The live contract is
   token-only; obsolete pricing and history-attribution fields are ignored in
   existing databases rather than destructively dropped. Plans:
   [`2026-07-13-orchestrator-token-economics.md`](./superpowers/plans/2026-07-13-orchestrator-token-economics.md)
+- Console workspace separation — Orchestrator is the only GUI execution
+  surface, with Direct/Pipeline launch modes, durable conversation, minimal
+  summon topology, node-filtered runtime evidence, and evidence-backed skill
+  provenance. Pipeline Studio is builder-only: create, drag/reorder, configure
+  nested spawn allowlists, validate, and atomically save deterministic recipes.
+  Design and plan:
+  [`2026-07-14-console-workspace-separation-design.md`](./superpowers/specs/2026-07-14-console-workspace-separation-design.md) and
+  [`2026-07-14-console-workspace-separation.md`](./superpowers/plans/2026-07-14-console-workspace-separation.md)
 - Per-worker effort ceiling and output budget — mutate workers open at the
   shared 16,384-token per-call brake while read-only workers retain the cheap
   2,048-token floor and sticky escalation. Worker frontmatter may declare
@@ -185,10 +193,10 @@ for the same dimension.
   root agent does NOT auto-summon whole pipelines (`musubi_spawn_pipeline` is
   off the agent tool surface — a pipeline is a user-invoked run via the CLI
   flag, per policy locked decision #4), so a simple task can't be silently
-  routed into a multi-stage pipeline. Pipeline Studio invokes this entry point
-  directly for registered recipes, owns an exact isolated chat session, and
-  renders pipeline envelopes plus child stages separately from Orchestrator;
-  implementation plan:
+  routed into a multi-stage pipeline. An operator may launch a registered
+  recipe from Orchestrator Pipeline mode under the same durable conversation;
+  Pipeline Studio only builds and saves recipes. Legacy Pipeline Studio chat
+  rows remain readable for compatibility. Original implementation plan:
   [`2026-07-10-gui-pipeline-studio-sessions.md`](./superpowers/plans/2026-07-10-gui-pipeline-studio-sessions.md).
 - Read-only discovery substrate: `musubi_glob` / `musubi_grep` MCP tools map the
   Grep/Glob capabilities, so standalone pipeline stages (and the root agent)
