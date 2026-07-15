@@ -109,16 +109,30 @@ def test_token_budget_exhaustion_returns_incomplete_answer() -> None:
     assert "token budget exhausted" in answer.lower()
 
 
+class BudgetAccountingRouter(AlwaysToolsRouter):
+    """Tracks calls so the budget-halt test pins one completed cycle."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        self.calls += 1
+        response = super().call(messages, tools, max_tokens=max_tokens)
+        response.usage = {"input_tokens": 1_000, "output_tokens": 5_500}
+        return response
+
+
 def test_token_budget_halt_marks_salvaged_text_incomplete() -> None:
+    router = BudgetAccountingRouter()
     answer = asyncio.run(
         run_agent(
             "create a report file",
-            AlwaysToolsRouter(),
+            router,
             _musubi_dir(),
             max_cycles=3,
-            # Enough headroom for one cycle to run (so there is salvageable
-            # text) before the next preflight halts. Sized above one call's
-            # input estimate rather than to a fixed prompt length.
+            # The router reports 6,500 provider tokens: enough headroom for one
+            # completed cycle (and salvageable text), while the next preflight
+            # must halt independently of prompt/tool-schema size.
             max_tokens=7_000,
             log=io.StringIO(),
         )
@@ -127,3 +141,4 @@ def test_token_budget_halt_marks_salvaged_text_incomplete() -> None:
     assert answer.startswith("[incomplete]")
     assert "token budget exhausted" in answer.lower()
     assert "Hello! Working on it." in answer
+    assert router.calls == 1

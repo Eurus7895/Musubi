@@ -36,12 +36,11 @@ _VERBOSITY_NOTE = (
     "scope, multiple steps, or real risk -> spawn a `planner` first and pass "
     "its summary to the `coder`; (4) planner output spanning multiple modules "
     "or real architectural choices -> insert a `designer` between planner and "
-    "coder. Never ask a coder to both plan and implement. Before spawning a "
-    "coder, state the approach in its brief: for a large artifact, write it in "
-    "ordered `musubi_append_file` chunks or a compact generator script - never "
-    "one oversized `write_file`, whose output is truncated at the model's cap - "
-    "and use UTF-8 for non-ASCII content; do not scan the whole file tree just "
-    "to create a new file. Use platform-native validation commands: on Windows "
+    "coder. Never ask a coder to both plan and implement. Give workers compact, "
+    "implementation-ready briefs; let the coder choose `musubi_append_file` "
+    "chunks or split files and require UTF-8. "
+    "Do not scan the whole tree just to create a file. Use platform-native "
+    "validation commands: on Windows "
     "use PowerShell or cmd equivalents, never Unix-only commands such as wc or "
     "tail. Never validate by printing an entire artifact; inspect bounded "
     "metadata or slices instead. If a task needs commands, tests, linting, "
@@ -54,6 +53,10 @@ _VERBOSITY_NOTE = (
 )
 
 _ACCEPTANCE_NOTE = (
+    "The root is the goal-state controller: retain the exact user intent, "
+    "compare bounded worker evidence against it, and optimize the next step. "
+    "Stop when the goal is satisfied; otherwise summon only the cheapest worker "
+    "needed for the remaining gap. "
     "Validation has two layers with different owners. A worker's completion "
     "carries a deterministic `[mechanical]` line at the top of its summary with "
     "`result=`: pass (linted clean), fail (real lint errors), error (the "

@@ -56,6 +56,7 @@ from agent.context import (
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
+from agent.goal_state import GoalState, root_decision_tools
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -160,6 +161,7 @@ class Orchestration:
     max_root_workers: int = DEFAULT_MAX_ROOT_WORKERS
     root_recovery_analysis_cycles: int = 0
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
+    goal_state: GoalState | None = None
 
     @property
     def enabled(self) -> bool:
@@ -211,6 +213,13 @@ class Orchestration:
             touched_files=tuple(sorted(set(touched_files))),
         )
         self.worker_outcomes.append(outcome)
+        if self.goal_state is not None:
+            self.goal_state.record_outcome(
+                role=role,
+                status=status,
+                summary=summary,
+                touched_files=touched_files,
+            )
         return outcome
 
     def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
@@ -341,6 +350,11 @@ async def run_agent(
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
     scope_hint = classify_task(task)
+    goal_state = GoalState.create(
+        intent=task,
+        scope=scope_hint.kind.value,
+        route=scope_hint.route,
+    )
     direct_answer = _deterministic_scope_answer(task, scope_hint)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
@@ -447,7 +461,10 @@ async def run_agent(
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
         parent_session_id = await _open_parent_session(session, task, log, chat_id)
-        orchestration = Orchestration(parent_session_id=parent_session_id)
+        orchestration = Orchestration(
+            parent_session_id=parent_session_id,
+            goal_state=goal_state,
+        )
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
         if plan_first:
@@ -563,6 +580,20 @@ async def run_agent(
     return final_answer
 
 
+def _compact_root_goal_messages(
+    messages: list[dict[str, Any]],
+    state: GoalState,
+) -> list[dict[str, Any]]:
+    """Keep the stable system contract plus one bounded decision delta."""
+    stable_system = next(
+        (message for message in messages if message.get("role") == "system"),
+        None,
+    )
+    compacted = [stable_system] if stable_system is not None else []
+    compacted.append({"role": "user", "content": state.render_decision_block()})
+    return compacted
+
+
 async def _run_loop(
     session: ClientSession,
     vendor: LMRouter,
@@ -621,6 +652,13 @@ async def _run_loop(
     effort_escalated = False
     for cycle in range(max_cycles):
         cycles_used = cycle + 1
+        root_state = (
+            orchestration.goal_state
+            if role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            else None
+        )
         recovery_outcome = (
             orchestration.latest_unrecovered_failure()
             if role == "agent"
@@ -635,7 +673,14 @@ async def _run_loop(
             >= DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
         )
         cycle_tools = tools
-        if recovery_decision_only:
+        if root_state is not None:
+            cycle_tools = root_decision_tools(
+                tools,
+                root_state,
+                recovery_outcome=recovery_outcome is not None,
+                decision_only=recovery_decision_only,
+            )
+        elif recovery_decision_only:
             cycle_tools = [
                 tool for tool in tools
                 if tool.get("name") == "musubi_spawn_subagent"
@@ -651,7 +696,7 @@ async def _run_loop(
             # runaway stage cannot quietly send a 200k-char input.
             messages = fit_model_input(
                 messages,
-                tools,
+                cycle_tools,
                 budget_chars=context_budget_chars,
                 compression_db_path=compression_db_path,
             )
@@ -701,6 +746,16 @@ async def _run_loop(
         usage = _cycle_token_usage(
             effort.attempts, input_tokens_est,
         )
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            and orchestration.goal_state is not None
+        ):
+            orchestration.goal_state.record_root_usage(
+                tokens_in=usage.tokens_in,
+                tokens_out=usage.tokens_out,
+            )
         if stats is not None:
             stats.record_cycle(
                 lm_ms=lm_ms,
@@ -853,6 +908,7 @@ async def _run_loop(
             )
             break
 
+        outcomes_before = len(root_state.outcomes) if root_state is not None else 0
         tool_results = await _dispatch(
             session, tool_uses, log,
             vendor=vendor, tools=(spawn_catalog or tools),
@@ -918,7 +974,17 @@ async def _run_loop(
             cycle_status="recovery_halt" if recovery_halt else "ok",
             log=log,
         )
-        messages.append({"role": "user", "content": tool_results})
+        if root_state is not None and len(root_state.outcomes) > outcomes_before:
+            messages = _compact_root_goal_messages(messages, root_state)
+            print(
+                "[agent] root goal-state compacted "
+                f"outcomes={len(root_state.outcomes)} "
+                f"chars={sum(len(str(item)) for item in messages)} "
+                f"tools={len(cycle_tools)}",
+                file=log,
+            )
+        else:
+            messages.append({"role": "user", "content": tool_results})
         if recovery_halt is not None:
             final_answer = recovery_halt
             break

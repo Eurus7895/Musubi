@@ -28,8 +28,11 @@ verification output named in the brief.
 
 ## Output Contract
 
-Plain text with:
+Plain text:
 
-- status: pass | fail | inconclusive
-- findings, ordered by severity
-- verification gaps
+```
+status: pass | fail | inconclusive
+summary: findings ordered by severity, or "no findings"
+verification: evidence reviewed
+remaining_gap: "none" or exact issue/verification gap to resolve
+```
