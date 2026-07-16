@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musubi System Atlas — Maintainer Edition</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.5; }
+    body { margin: auto; max-width: 78rem; padding: 1.5rem; }
+    nav ul, .records, .questions { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+    section { border-block-start: 1px solid currentColor; margin-block: 2rem; padding-block: 1rem; }
+    article, li { padding: .75rem; }
+    code { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <header id="orientation" data-snapshot="49c58d3" data-generated="2026-07-16">
+    <h1>Musubi System Atlas</h1>
+    <p>Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time datetime="2026-07-16">2026-07-16</time>.</p>
+  </header>
+  <nav aria-label="Mục lục">
+    <ul>
+      <li><a href="#system-map">Bản đồ hệ thống</a></li>
+      <li><a href="#components">Thành phần</a></li>
+      <li><a href="#traces">Luồng chạy</a></li>
+      <li><a href="#invariants">Bất biến</a></li>
+      <li><a href="#economics">Kinh tế token</a></li>
+      <li><a href="#evolution">Tiến hóa</a></li>
+      <li><a href="#quiz">Kiểm tra</a></li>
+    </ul>
+  </nav>
+  <main>
+    <section id="system-map">
+      <h2>Bản đồ hệ thống</h2>
+      <p>Driver suy luận qua một điểm tiêm model; substrate định tuyến, kiểm soát policy, validation và audit mà không gọi LLM.</p>
+    </section>
+    <section id="components">
+      <h2>Danh mục thành phần</h2>
+      <div class="records">
+        <article data-component="session-map" data-trust-zone="documentation" data-durability="substrate" data-evidence-kind="source" data-source="AGENTS.md"><h3>Session map</h3></article>
+        <article data-component="governance-rules" data-trust-zone="documentation" data-durability="substrate" data-evidence-kind="source" data-source="CLAUDE.md"><h3>Governance rules</h3></article>
+        <article data-component="mcp-server" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="musubi/server.py"><h3>MCP server</h3></article>
+        <article data-component="audit-schema" data-trust-zone="storage" data-durability="substrate" data-evidence-kind="schema" data-source="musubi/storage/schema.sql"><h3>Audit schema</h3></article>
+        <article data-component="policy-engine" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="scripts/policy_engine.py"><h3>Policy engine</h3></article>
+        <article data-component="worker-loop" data-trust-zone="driver" data-durability="substrate" data-evidence-kind="source" data-source="musubi/agent/run.py"><h3>Worker loop</h3></article>
+        <article data-component="pipeline-runner" data-trust-zone="driver" data-durability="substrate" data-evidence-kind="source" data-source="musubi/agent/pipeline_runner.py"><h3>Pipeline runner</h3></article>
+        <article data-component="lm-router" data-trust-zone="driver" data-durability="substrate" data-evidence-kind="source" data-source="musubi/agent/vendors/base.py"><h3>LMRouter</h3></article>
+        <article data-component="profile-config" data-trust-zone="driver" data-durability="substrate" data-evidence-kind="source" data-source="musubi/agent/config.py"><h3>Model profiles</h3></article>
+        <article data-component="setup-wizard" data-trust-zone="operator" data-durability="substrate" data-evidence-kind="source" data-source="musubi/setup_wizard.py"><h3>Setup wizard</h3></article>
+        <article data-component="cli-dispatch" data-trust-zone="operator" data-durability="substrate" data-evidence-kind="source" data-source="musubi/cli.py"><h3>CLI dispatch</h3></article>
+        <article data-component="context-firewall" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="musubi/validation/context_builder.py"><h3>Context firewall</h3></article>
+        <article data-component="worker-spawn" data-trust-zone="driver" data-durability="ephemeral" data-evidence-kind="source" data-source="musubi/agent/subagent.py"><h3>Worker spawn</h3></article>
+        <article data-component="feature-pipeline" data-trust-zone="recipe" data-durability="ephemeral" data-evidence-kind="configuration" data-source=".github/pipelines/feature-dev/pipeline.yaml"><h3>Feature pipeline</h3></article>
+        <article data-component="preset-plan" data-trust-zone="recipe" data-durability="ephemeral" data-evidence-kind="configuration" data-source=".github/pipelines/presets/plan.yaml"><h3>Plan preset</h3></article>
+        <article data-component="console-shell" data-trust-zone="operator" data-durability="substrate" data-evidence-kind="source" data-source="gui/src/App.jsx"><h3>Console shell</h3></article>
+        <article data-component="tauri-bridge" data-trust-zone="operator" data-durability="substrate" data-evidence-kind="source" data-source="gui/src-tauri/src/lib.rs"><h3>Tauri bridge</h3></article>
+        <article data-component="roadmap" data-trust-zone="documentation" data-durability="substrate" data-evidence-kind="decision" data-source="docs/roadmap.md"><h3>Roadmap</h3></article>
+        <article data-component="hook-registry" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="configuration" data-source="hooks.json"><h3>Hook registry</h3></article>
+        <article data-component="token-budget" data-trust-zone="driver" data-durability="substrate" data-evidence-kind="source" data-source="musubi/agent/budget.py"><h3>Token budget</h3></article>
+        <article data-component="audit-store" data-trust-zone="storage" data-durability="substrate" data-evidence-kind="source" data-source="musubi/storage/db.py"><h3>Audit store</h3></article>
+        <article data-component="compression-router" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="musubi/compression/router.py"><h3>Compression router</h3></article>
+        <article data-component="memory-loader" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="musubi/memory/memory_loader.py"><h3>Memory loader</h3></article>
+        <article data-component="verifier" data-trust-zone="substrate" data-durability="substrate" data-evidence-kind="source" data-source="musubi/validation/verifier.py"><h3>Verifier</h3></article>
+      </div>
+    </section>
+    <section id="traces">
+      <h2>Luồng chạy có thể kiểm chứng</h2>
+      <ol>
+        <li data-scenario="standalone-run" data-evidence-kind="runtime">Chạy một yêu cầu bằng standalone agent.</li>
+        <li data-scenario="profile-selection" data-evidence-kind="configuration">Chọn model qua profile.</li>
+        <li data-scenario="pipeline-run" data-evidence-kind="runtime">Chạy recipe pipeline xác định.</li>
+        <li data-scenario="nested-worker" data-evidence-kind="runtime">Worker triệu hồi công việc giới hạn.</li>
+        <li data-scenario="nested-pipeline" data-evidence-kind="runtime">Worker triệu hồi pipeline đã khai báo.</li>
+        <li data-scenario="policy-allow" data-evidence-kind="policy">Policy cho phép tool đã khai báo.</li>
+        <li data-scenario="policy-deny" data-evidence-kind="policy">Policy từ chối role hoặc tool lạ.</li>
+        <li data-scenario="audit-write" data-evidence-kind="storage">PostToolUse ghi sự kiện audit.</li>
+        <li data-scenario="evaluator-read" data-evidence-kind="firewall">Evaluator chỉ đọc artifact được phép.</li>
+        <li data-scenario="retry-write" data-evidence-kind="storage">Retry tạo attempt mới thay vì ghi đè.</li>
+        <li data-scenario="compression" data-evidence-kind="runtime">Input được nén có thể đảo ngược.</li>
+        <li data-scenario="memory-load" data-evidence-kind="runtime">Ngữ cảnh memory được nạp theo tier.</li>
+        <li data-scenario="console-launch" data-evidence-kind="operator">Operator khởi chạy agent từ Console.</li>
+      </ol>
+    </section>
+    <section id="invariants">
+      <h2>Bất biến</h2>
+      <p>Atlas phân biệt rõ driver với substrate và giữ các rào chắn fail-closed, evaluator firewall, append-only store và audit bắt buộc.</p>
+    </section>
+    <section id="economics">
+      <h2>Kinh tế vận hành</h2>
+      <p>Token được hạch toán theo từng LM call; cấu trúc tạm thời phải có điều kiện hết hạn và cost lever.</p>
+    </section>
+    <section id="evolution">
+      <h2>Tiến hóa kiến trúc</h2>
+      <p>Substrate được đầu tư dài hạn; pipeline shape và worker scaffolding là cấu trúc có thể giải thể.</p>
+    </section>
+    <section id="quiz">
+      <h2>Tự kiểm tra</h2>
+      <ol class="questions">
+        <li data-question-id="q01">Lớp nào được phép gọi model?</li>
+        <li data-question-id="q02">Điểm tiêm model duy nhất là gì?</li>
+        <li data-question-id="q03">Policy xử lý role lạ thế nào?</li>
+        <li data-question-id="q04">Evaluator được đọc artifact nào?</li>
+        <li data-question-id="q05">Retry lưu stage output ra sao?</li>
+        <li data-question-id="q06">Spawn worker để lại bằng chứng nào?</li>
+        <li data-question-id="q07">Pipeline được chọn bằng cơ chế nào?</li>
+        <li data-question-id="q08">Role skill đến worker bằng đường nào?</li>
+        <li data-question-id="q09">Agent tải skill theo nhu cầu bằng tool nào?</li>
+        <li data-question-id="q10">Console có tự gọi model không?</li>
+        <li data-question-id="q11">Pipeline Studio được phép làm gì?</li>
+        <li data-question-id="q12">Model profile nằm ở đâu?</li>
+        <li data-question-id="q13">Hook nào kiểm tra policy?</li>
+        <li data-question-id="q14">Hook nào ghi audit?</li>
+        <li data-question-id="q15">Budget được tính theo đơn vị nào?</li>
+        <li data-question-id="q16">Khi input quá lớn cần làm gì?</li>
+        <li data-question-id="q17">Thành phần substrate có vòng đời thế nào?</li>
+        <li data-question-id="q18">Ephemeral component cần metadata nào?</li>
+        <li data-question-id="q19">Unknown tool được mặc định allow hay deny?</li>
+        <li data-question-id="q20">Stage cuối pipeline nhận ngữ cảnh nào?</li>
+        <li data-question-id="q21">Worker có thể lồng sâu tối đa bao nhiêu?</li>
+        <li data-question-id="q22">Ai chọn vendor và model?</li>
+        <li data-question-id="q23">Audit DB thuộc trust zone nào?</li>
+        <li data-question-id="q24">Snapshot nào làm nền cho atlas này?</li>
+      </ol>
+    </section>
+  </main>
+  <aside id="evidence-drawer" aria-label="Bằng chứng nguồn">
+    <p>Mỗi record dùng <code>data-source</code> để nối nhận định với tệp nguồn trong repository.</p>
+  </aside>
+  <noscript>
+    <section aria-label="Đáp án quiz khi JavaScript bị tắt">
+      <h2>Đáp án tự kiểm tra</h2>
+      <p>1. Chỉ driver gọi model. 2. Điểm tiêm duy nhất là LMRouter. 3. Role lạ bị từ chối theo nguyên tắc fail-closed. 4. Evaluator chỉ đọc artifact ngay trước nó trong chain và quyền đọc bị context firewall giới hạn. 5. Mỗi retry tạo tệp attempt mới, không ghi đè lịch sử. 6. Mỗi spawn và completion tạo dòng trong subagent_audit. 7. Pipeline là recipe được khai báo và chọn bằng tham số pipeline hoặc được worker triệu hồi. 8. Role skill được đẩy vào spawn system prompt. 9. Agent kéo skill bằng musubi_get_skill. 10. Console không tự gọi model; chỉ submission rõ ràng mới khởi chạy standalone agent. 11. Pipeline Studio tạo và sửa recipe xác định. 12. Profile nằm trong .musubi/llm.json. 13. PreToolUse chạy policy gate. 14. PostToolUse ghi audit SQLite. 15. Budget được tính cho từng LM call. 16. Input lớn phải được tái cấu trúc bằng tiền xử lý, fan-out hoặc map-reduce. 17. Substrate được duy trì và refactor dài hạn. 18. Ephemeral component phải có musubi-tier, expires-when và cost-lever. 19. Unknown tool bị deny. 20. Stage cuối chỉ nhận output của stage ngay trước. 21. Worker có thể lồng đến depth 2. 22. Operator chọn profile, vendor và model qua CLI hoặc cấu hình. 23. Audit DB thuộc storage trust zone. 24. Atlas này dùng snapshot 49c58d3 ngày 2026-07-16.</p>
+    </section>
+  </noscript>
+  <script>
+    document.documentElement.dataset.javascript = "enabled";
+  </script>
+</body>
+</html>
