@@ -94,6 +94,106 @@ class SystemAtlasContractTests(unittest.TestCase):
         )
         self.assertEqual(missing, [])
 
+    def test_component_cards_have_required_maintainer_fields(self) -> None:
+        html, parser = parsed_atlas()
+        required = {
+            "data-responsibility",
+            "data-why",
+            "data-inputs",
+            "data-outputs",
+            "data-called-by",
+            "data-depends-on",
+            "data-enforces",
+            "data-failure-modes",
+            "data-economics",
+            "data-source",
+            "data-trust-zone",
+            "data-durability",
+        }
+        components = [a for a in parser.attrs if "data-component" in a]
+        self.assertTrue(all(required <= a.keys() for a in components))
+        for badge in ("verified", "rationale", "historical", "open", "stale"):
+            self.assertIn(f'data-evidence-kind="{badge}"', html)
+
+    def test_current_routing_and_boundary_corrections_are_explicit(self) -> None:
+        html, _ = parsed_atlas()
+        self.assertIn(
+            "model-visible root và child không thấy musubi_spawn_pipeline", html
+        )
+        self.assertIn("same-turn", html)
+        self.assertIn("external MCP", html)
+        self.assertIn("ngoài Musubi-owned policy/audit boundary", html)
+        self.assertIn("durable driver", html)
+        self.assertIn("zero-LLM substrate", html)
+
+    def test_map_nodes_and_trace_scenarios_are_complete(self) -> None:
+        html, parser = parsed_atlas()
+        expected_map_nodes = {
+            "cli", "console", "goal-state", "worker-loop", "pipeline-runner",
+            "lm-router", "model-provider", "mcp-server", "policy",
+            "evaluator-firewall", "skills", "memory", "compression", "state-db",
+            "audit-db", "rust-projection", "react-view-model", "external-mcp",
+        }
+        mapped_nodes = {
+            attrs["data-map-component"]
+            for attrs in parser.attrs
+            if "data-map-component" in attrs
+        }
+        self.assertEqual(mapped_nodes, expected_map_nodes)
+        component_ids = {
+            attrs["data-component"]
+            for attrs in parser.attrs
+            if "data-component" in attrs
+        }
+        self.assertLessEqual(mapped_nodes, component_ids)
+
+        expected_scenarios = {
+            "direct-worker", "pushed-skill", "parallel-workers", "nested-helper",
+            "operator-pipeline", "pipeline-helpers", "policy-denial",
+            "evaluator-denial", "budget-limit", "context-elision",
+            "console-projection", "historical-console", "external-mcp",
+        }
+        scenario_ids = set(re.findall(r"\bid:\s*'([^']+)'", html))
+        self.assertLessEqual(expected_scenarios, scenario_ids)
+        trace_data = html.split("const TRACE_SCENARIOS = [", 1)[1].split(
+            "const TRACE_STEP_FIELDS", 1
+        )[0]
+        step_fields = {
+            "component", "title", "input", "output", "decision", "lmCall",
+            "economics", "evidence", "failure",
+        }
+        step_records = re.findall(
+            r"\{\s*component:\s*'[^']+'(.*?)\}\s*,?", trace_data, re.S
+        )
+        self.assertGreaterEqual(len(step_records), 13)
+        for record in step_records:
+            present = set(re.findall(r"\b(\w+):", "component:" + record))
+            self.assertLessEqual(step_fields, present)
+
+    def test_governance_economics_and_evolution_are_maintainer_complete(self) -> None:
+        html, _ = parsed_atlas()
+        for invariant in ("HI #1", "HI #2", "HI #3", "HI #5", "HI #7", "HI #8", "HI #9"):
+            self.assertIn(invariant, html)
+        for owner in (
+            "Per-call output tokens",
+            "Worker turns/cycles",
+            "Model-input characters",
+            "Parent ChildTokenBudget allocation",
+            "Root routing/goal-state controller",
+            "Each actual router call",
+            "Append-only persistence boundaries",
+        ):
+            self.assertIn(owner, html)
+        for residue in (
+            "worker-summoned whole pipelines",
+            "one-level leaf wording",
+            "max_credits/warn_at compatibility fields",
+            "extension-side runner comments",
+            "legacy Pipeline Studio chat/session fields",
+            "root prompt maxTurns",
+        ):
+            self.assertIn(residue, html)
+
 
 if __name__ == "__main__":
     unittest.main()
