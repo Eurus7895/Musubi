@@ -13,6 +13,7 @@ from enum import StrEnum
 
 
 class ScopeKind(StrEnum):
+    INSPECT = "inspect"
     SIMPLE_EDIT = "simple_edit"
     SIMPLE_ARTIFACT = "simple_artifact"
     MEDIUM_CHANGE = "medium_change"
@@ -30,6 +31,14 @@ class ScopeHint:
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
+            "single_explorer": (
+                "Read-only route: the user wants to inspect, not change. Spawn "
+                "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
+                "compact brief to reach the target path or files and summarize "
+                "what is there. Do NOT spawn a planner or coder and do NOT "
+                "attempt any edit. If the path is outside the workspace root or "
+                "does not exist, report that plainly and stop — do not retry."
+            ),
             "single_coder": (
                 "Simple route: start with one coder worker using a compact, "
                 "implementation-ready brief. Recommend a skill for the coder "
@@ -82,6 +91,43 @@ class ScopeHint:
 _PATH_RE = re.compile(
     r"(?i)\b[\w .\-/\\]+\.(?:py|js|jsx|ts|tsx|rs|go|java|html|htm|css|md|json|ya?ml|toml|csv|txt)\b"
 )
+# Read-only intent: the user wants to reach/look at something, not change it.
+_INSPECT_RE = re.compile(
+    r"(?i)(\breach(?:\s+(?:to|into|out\s+to))?\b|\bopen\b|\bshow\b|\bview\b|"
+    r"\bread\b|\blist\b|\bbrowse\b|\bexplore\b|\binspect\b|\bexamine\b|"
+    r"\blook(?:\s+(?:at|into|in))?\b|\bfind\b|\blocate\b|\bcat\b|\bdisplay\b|"
+    r"\bdescribe\b|\btell me about\b|\bwhat(?:'?s| is) in\b|\bwhere(?:'?s| is)\b)"
+)
+# Any verb that would change state — its presence disqualifies the read-only
+# route so an explicit edit/create/run request is never sent to an explorer.
+_MUTATION_RE = re.compile(
+    r"(?i)\b(create|make|generate|write|build|add|update|change|modify|replace|"
+    r"rename|fix|tweak|adjust|set|delete|remove|erase|refactor|implement|"
+    r"install|run|execute|deploy|commit|push|edit|migrate|rewrite|append)\b"
+)
+# A concrete path/dir/file target, so bare intent ("open a PR") does not route
+# to inspection. Matches a drive-letter path, a slashed path segment, or an
+# explicit filesystem noun.
+_PATHISH_RE = re.compile(
+    r"(?i)(\b[a-z]:[\\/]|[\\/][\w.\-]+[\\/]|\b[\w.\-]+[\\/][\w.\-]+|"
+    r"\b(folder|directory|directories|dir|path|file|files|repo|repository|"
+    r"workspace|project|codebase|module|package)\b)"
+)
+# Path-like tokens (drive paths, slashed paths, and filenames with an
+# extension) — WITHOUT the space-tolerant matching of `_PATH_RE`, which would
+# greedily swallow a whole clause. Stripped before the mutation check so a
+# filename such as `run.py` or `src/update-config` never reads as the mutation
+# verb it embeds, while a real verb ("...replace TODO in run.py") survives.
+_PATH_TOKEN_RE = re.compile(
+    r"(?i)[a-z]:[\\/][\w.\-\\/]*|[\w.\-]*[\\/][\w.\-/\\]*|"
+    r"\b[\w.\-]+\.(?:py|js|jsx|ts|tsx|rs|go|java|html|htm|css|md|json|ya?ml|toml|csv|txt)\b"
+)
+
+
+def _mutation_intent(text: str) -> bool:
+    return _MUTATION_RE.search(_PATH_TOKEN_RE.sub(" ", text)) is not None
+
+
 _SIMPLE_EDIT_RE = re.compile(
     r"(?i)\b(update|change|modify|replace|rename|fix|tweak|adjust|set|add)\b"
 )
@@ -136,6 +182,22 @@ def classify_task(task: str) -> ScopeHint:
             requires=("clarification",),
         )
 
+    # Read-only inspection ("reach to / open / show / read / list <path>")
+    # routes to a single explorer BEFORE the risk/medium heuristics: reading a
+    # sensitive area is still just reading, so it must not be scoped as a
+    # planner→coder change. Gated on a concrete path/dir target and the absence
+    # of any mutation verb, so explicit edits/creates are never intercepted.
+    if (
+        _INSPECT_RE.search(text)
+        and not _mutation_intent(text)
+        and (_PATH_RE.search(text) or _PATHISH_RE.search(text))
+    ):
+        return ScopeHint(
+            kind=ScopeKind.INSPECT,
+            route="single_explorer",
+            reason="read-only inspection of a path or files",
+        )
+
     risk_hits = sorted(set(match.group(1).lower() for match in _LARGE_RISK_RE.finditer(text)))
     if len(risk_hits) >= 2 or _mentions_large_workflow(low):
         return ScopeHint(
@@ -178,6 +240,7 @@ def classify_task(task: str) -> ScopeHint:
 
 def is_simple_scope(hint: ScopeHint | None) -> bool:
     return hint is not None and hint.kind in {
+        ScopeKind.INSPECT,
         ScopeKind.SIMPLE_EDIT,
         ScopeKind.SIMPLE_ARTIFACT,
     }

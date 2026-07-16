@@ -19,7 +19,7 @@ MAX_DETAIL_CHARS = 400
 _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
-_SIMPLE_SCOPES = frozenset({"simple_edit", "simple_artifact"})
+_SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and

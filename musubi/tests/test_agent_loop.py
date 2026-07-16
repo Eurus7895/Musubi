@@ -2203,7 +2203,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
     ])
 
     answer = asyncio.run(
-        run_agent("inspect files", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
+        run_agent("debug the dashboard", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
     )
 
     assert answer == "ok"
@@ -2243,6 +2243,24 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
         "musubi_recommend_skills",
         "musubi_spawn_subagent",
     }
+
+
+def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
+    # A read-only "reach to a path" request is a simple scope: the root gets the
+    # spawn + skill-selection surface but NOT the skill-reading tools it would
+    # only need for its own broader work.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    asyncio.run(run_agent(
+        r"could you reach to C:\Workspace\21_A2lPatcher\a2l-patcher-stla",
+        router, _musubi_dir(), log=io.StringIO(), max_tokens=0,
+    ))
+
+    names = {tool["name"] for tool in router.calls[0]["tools"]}
+    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
+    assert "musubi_get_skill" not in names
 
 
 def test_run_agent_persists_and_replays_chat_history(

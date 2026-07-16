@@ -19,6 +19,23 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   and never fires on a run that is actually producing. It caps wasted spend;
   it is not a substitute for a driver model that can converge.
 
+### Read-only requests route to a single explorer
+
+- The scope classifier had no notion of a read-only inspection: "reach to
+  `C:\…\a2l-patcher-stla`", "open the src folder", "read run.py", "show me
+  what's in ./musubi/agent" all fell through to `medium_change`, so the root
+  was told to spawn a **planner then a coder** — a mutation workflow — just to
+  look at a path. Combined with the worker-ceiling spin that meant multiple
+  workers and a burned cycle budget for a request that only needed one read.
+- New `ScopeKind.INSPECT` / `single_explorer` route: a read-only verb (reach,
+  open, show, read, list, look at, explore, …) with a concrete path/dir target
+  and no mutation verb now routes to **one read-only explorer** worker. The
+  mutation guard strips path/filename tokens first, so a filename like `run.py`
+  (which embeds "run") is not misread as intent to change, while an explicit
+  edit ("find and replace TODO in run.py") still routes to the coder. Bare
+  intent without a path ("open a PR") is left alone. `inspect` counts as a
+  simple scope, so the root keeps its lean spawn + skill-selection surface.
+
 ### Root concludes when its worker budget is spent (cycle-limit fix)
 
 - A root that keeps wanting more work but has exhausted its worker ceiling

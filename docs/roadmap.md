@@ -218,7 +218,10 @@ for the same dimension.
   advisory and planning is explicit via `--plan`. Simple artifacts start with
   one coder without imposing a lifetime classifier cap; all direct runs share
   a three-worker ceiling, structured replacement handoff, and a two-cycle root
-  recovery-analysis window. Plans:
+  recovery-analysis window. Read-only requests (reach/open/read/list/show a
+  concrete path) now classify as `inspect` and route to a single read-only
+  explorer instead of a `planner→coder` change — a mutation verb or the absence
+  of a path target keeps the old routing. Plans:
   [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md)
   and [`2026-07-13-simple-artifact-recovery.md`](./superpowers/plans/2026-07-13-simple-artifact-recovery.md)
 - MCP tool surface profiles — model-visible internal and external catalogs are
