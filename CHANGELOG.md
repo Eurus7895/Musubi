@@ -19,6 +19,24 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   and never fires on a run that is actually producing. It caps wasted spend;
   it is not a substitute for a driver model that can converge.
 
+### Root concludes when its worker budget is spent (cycle-limit fix)
+
+- A root that keeps wanting more work but has exhausted its worker ceiling
+  (`DEFAULT_MAX_ROOT_WORKERS = 3`) used to spin every remaining cycle on
+  refused `musubi_spawn_subagent` calls before salvaging a placeholder — up to
+  13 wasted LLM cycles for a single prompt, and on builds predating the
+  cycle-exhaustion salvage a hard `agent exceeded N cycles without a final
+  answer` failure surfaced in the Console. The failure-recovery halt only fires
+  when the *last* worker failed; workers that all report `done` never tripped
+  it.
+- `root_decision_tools` now takes `spawn_exhausted`: once the ceiling is spent
+  and no worker failure is pending recovery, the root is offered **no** tools
+  and a `[worker budget spent]` directive, forcing it to conclude from the
+  evidence it already has. A runaway spin (16 cycles) collapses to spawn-ceiling
+  + one conclusion cycle, and the user gets a real, model-authored answer
+  instead of a salvaged fragment. Active failure recovery still keeps its full
+  analysis surface — that path has its own ceiling-driven halt.
+
 ### Root-selected skill injection into workers
 
 - The root now chooses a catalog skill for each worker it spawns and pushes

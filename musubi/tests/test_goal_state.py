@@ -110,3 +110,39 @@ def test_recovery_analysis_preserves_existing_tools_until_decision_only() -> Non
     assert root_decision_tools(
         tools, state, recovery_outcome=True, decision_only=True,
     ) == [{"name": "musubi_spawn_subagent"}]
+
+
+def test_spawn_exhausted_root_surface_offers_no_tools() -> None:
+    # Once the worker ceiling is spent, offering the spawn tool only lets the
+    # root burn cycles on refused spawns; withhold every tool so it must
+    # conclude from the evidence it has.
+    tools = [
+        {"name": name}
+        for name in (
+            "musubi_spawn_subagent",
+            "musubi_recommend_skills",
+            "musubi_get_skill",
+        )
+    ]
+    state = GoalState.create(
+        "add authentication", "medium_change", "planner_then_coder_check",
+    )
+
+    assert root_decision_tools(tools, state, spawn_exhausted=True) == []
+
+
+def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
+    # A pending worker failure keeps the full analysis surface even when the
+    # worker ceiling is spent — the ceiling-driven halt is handled separately by
+    # the loop's recovery path, not by starving the root of tools mid-analysis.
+    tools = [
+        {"name": "musubi_read_file"},
+        {"name": "musubi_spawn_subagent"},
+    ]
+    state = GoalState.create(
+        "create dashboard", "simple_artifact", "single_coder",
+    )
+
+    assert root_decision_tools(
+        tools, state, recovery_outcome=True, spawn_exhausted=True,
+    ) == tools

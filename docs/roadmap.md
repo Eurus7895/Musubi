@@ -65,7 +65,11 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    tool transcripts with one decision delta; model-visible root tools are
    reduced by phase (spawn plus skill *selection* in every scope, the
    content-loading skill tools added for broader work, recovery tools only
-   inside the bounded recovery window). Skill selection is deliberately
+   inside the bounded recovery window, and **no tools once the worker ceiling
+   is spent** — a root that all-succeeded into its `max_root_workers` cap is
+   forced to conclude from the evidence it has instead of spinning refused
+   spawns to the cycle limit, which previously wasted the whole budget and, on
+   pre-salvage builds, surfaced as an `exceeded N cycles` failure). Skill selection is deliberately
    available even for simple artifacts: the root ranks a worker's skills with
    `musubi_recommend_skills(for_role=…)` and pushes the chosen `pushed_skill_id`
    into the spawn, so a direct worker (which carries no skill tool of its own)
