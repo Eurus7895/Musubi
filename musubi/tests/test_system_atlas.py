@@ -73,8 +73,9 @@ class SystemAtlasContractTests(unittest.TestCase):
         questions = [a for a in parser.attrs if "data-question-id" in a]
         scenarios = [a for a in parser.attrs if "data-scenario" in a]
         self.assertGreaterEqual(len(components), 24)
+        self.assertTrue(all(a.get("data-trust-zone") for a in components))
         self.assertTrue(
-            all(a.get("data-trust-zone") and a.get("data-durability") for a in components)
+            all(a.get("data-durability") in {"durable", "ephemeral"} for a in components)
         )
         self.assertGreaterEqual(len(scenarios), 13)
         self.assertGreaterEqual(len(questions), 24)
@@ -89,10 +90,17 @@ class SystemAtlasContractTests(unittest.TestCase):
         html, _ = parsed_atlas()
         paths = set(re.findall(r'data-source="([^"]+)"', html))
         self.assertGreaterEqual(len(paths), 18)
+        self.assertTrue(all(re.fullmatch(r"[^:]+:\d+", path) for path in paths))
         missing = sorted(
             path for path in paths if not (ROOT / path.split(":", 1)[0]).exists()
         )
         self.assertEqual(missing, [])
+        out_of_range = []
+        for source in paths:
+            path, line = source.rsplit(":", 1)
+            if int(line) > len((ROOT / path).read_text(encoding="utf-8").splitlines()):
+                out_of_range.append(source)
+        self.assertEqual(out_of_range, [])
 
     def test_component_cards_have_required_maintainer_fields(self) -> None:
         html, parser = parsed_atlas()
@@ -112,8 +120,33 @@ class SystemAtlasContractTests(unittest.TestCase):
         }
         components = [a for a in parser.attrs if "data-component" in a]
         self.assertTrue(all(required <= a.keys() for a in components))
+        self.assertTrue(all(all(a.get(field) for field in required) for a in components))
+        self.assertTrue(all(a.get("data-evidence-kind") in {"verified", "rationale"} for a in components))
+        self.assertTrue(
+            all(
+                a.get("data-musubi-tier") in {"substrate", "ephemeral"}
+                for a in components
+                if a.get("data-trust-zone") != "external system"
+            )
+        )
+        ephemeral = [a for a in components if a.get("data-durability") == "ephemeral"]
+        self.assertGreaterEqual(len(ephemeral), 1)
+        self.assertTrue(
+            all(a.get("data-expires-when") and a.get("data-cost-lever") for a in ephemeral)
+        )
         for badge in ("verified", "rationale", "historical", "open", "stale"):
             self.assertIn(f'data-evidence-kind="{badge}"', html)
+        invariants = [a for a in parser.attrs if "data-invariant" in a]
+        self.assertEqual(
+            {a["data-invariant"] for a in invariants},
+            {"HI #1", "HI #2", "HI #3", "HI #5", "HI #7", "HI #8", "HI #9"},
+        )
+        self.assertTrue(
+            all(a.get("data-evidence-kind") == "verified" and a.get("data-source") for a in invariants)
+        )
+        open_questions = [a for a in parser.attrs if a.get("data-evidence-kind") == "open"]
+        self.assertGreaterEqual(len(open_questions), 1)
+        self.assertTrue(all(a.get("data-source") for a in open_questions))
 
     def test_current_routing_and_boundary_corrections_are_explicit(self) -> None:
         html, _ = parsed_atlas()
@@ -153,8 +186,10 @@ class SystemAtlasContractTests(unittest.TestCase):
             "evaluator-denial", "budget-limit", "context-elision",
             "console-projection", "historical-console", "external-mcp",
         }
-        scenario_ids = set(re.findall(r"\bid:\s*'([^']+)'", html))
-        self.assertLessEqual(expected_scenarios, scenario_ids)
+        scenario_id_list = re.findall(r"\bid:\s*'([^']+)'", html)
+        scenario_ids = set(scenario_id_list)
+        self.assertEqual(scenario_ids, expected_scenarios)
+        self.assertEqual(len(scenario_id_list), 13)
         trace_data = html.split("const TRACE_SCENARIOS = [", 1)[1].split(
             "const TRACE_STEP_FIELDS", 1
         )[0]
@@ -165,10 +200,64 @@ class SystemAtlasContractTests(unittest.TestCase):
         step_records = re.findall(
             r"\{\s*component:\s*'[^']+'(.*?)\}\s*,?", trace_data, re.S
         )
-        self.assertGreaterEqual(len(step_records), 13)
+        self.assertGreaterEqual(len(step_records), 26)
         for record in step_records:
             present = set(re.findall(r"\b(\w+):", "component:" + record))
             self.assertLessEqual(step_fields, present)
+
+        scenario_blocks = {
+            match.group(1): match.group(2)
+            for match in re.finditer(
+                r"\bid:\s*'([^']+)'.*?steps:\s*\[(.*?)\]\s*\n\s*\}",
+                trace_data,
+                re.S,
+            )
+        }
+        self.assertEqual(set(scenario_blocks), expected_scenarios)
+        for scenario_id, block in scenario_blocks.items():
+            self.assertGreaterEqual(len(re.findall(r"\bcomponent:\s*'", block)), 2, scenario_id)
+        non_model_scenarios = {"console-projection", "historical-console"}
+        for scenario_id in expected_scenarios - non_model_scenarios:
+            self.assertIn("lmCall: true", scenario_blocks[scenario_id], scenario_id)
+            self.assertIn("lmCall: false", scenario_blocks[scenario_id], scenario_id)
+
+    def test_inventory_axes_and_evidence_cover_reviewed_ownership(self) -> None:
+        html, parser = parsed_atlas()
+        component_ids = {
+            attrs["data-component"]
+            for attrs in parser.attrs
+            if "data-component" in attrs
+        }
+        self.assertLessEqual(
+            {
+                "compression-eval", "prompt-catalog", "vendor-implementations",
+                "conversation-store", "stage-attempt-store", "agent-cycle-store",
+                "audit-projection", "policy-projection", "models-projection",
+                "skills-projection", "settings-projection",
+            },
+            component_ids,
+        )
+        for source in (
+            "musubi/agent/boundary.py",
+            "musubi/validation/subagent_context.py",
+            "gui/src/views/Orchestrator.jsx",
+            "gui/src/views/Pipeline.jsx",
+            "musubi/tests/test_agent_context.py",
+            "musubi/tests/test_agent_budget.py",
+        ):
+            self.assertRegex(html, re.escape(source) + r":\d+")
+
+        mapped = [a for a in parser.attrs if "data-map-component" in a]
+        self.assertTrue(all(a.get("data-trust-zone") and a.get("data-durability") for a in mapped))
+        self.assertIn('[data-trust-zone="model-calling driver"]', html)
+        self.assertIn('[data-durability="ephemeral"]', html)
+        self.assertIn("stroke-dasharray", html)
+
+        historical = [a for a in parser.attrs if a.get("data-evidence-kind") == "historical"]
+        stale = [a for a in parser.attrs if a.get("data-evidence-kind") == "stale"]
+        self.assertGreaterEqual(len(historical), 9)
+        self.assertGreaterEqual(len(stale), 6)
+        self.assertTrue(all(a.get("data-source") for a in historical + stale))
 
     def test_governance_economics_and_evolution_are_maintainer_complete(self) -> None:
         html, _ = parsed_atlas()
