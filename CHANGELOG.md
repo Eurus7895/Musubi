@@ -7,6 +7,18 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### No-progress budget breaker
+
+- A root run now stops early when it has spent ≥70% of its token budget with
+  at least one failed/escalated worker and no worker having delivered a
+  completed artifact (a `done` outcome with mutated files). A non-converging
+  driver model (e.g. a flash model that emits tool calls as text and never
+  signals done) previously burned the full 200k ceiling across the whole
+  worker tree — an observed run spent 202k/200k on five escalating workers.
+  The breaker is checked between workers (never interrupts a mid-flight one)
+  and never fires on a run that is actually producing. It caps wasted spend;
+  it is not a substitute for a driver model that can converge.
+
 ### Root-selected skill injection into workers
 
 - The root now chooses a catalog skill for each worker it spawns and pushes

@@ -118,3 +118,69 @@ def test_pipeline_stage_allowance_never_returns_zero_while_budget_remains() -> N
     parent.charge(999)
     # 1 token left across 4 stages → floor of 1, never 0.
     assert pipeline_stage_allowance(parent, 4) == 1
+
+
+# ── No-progress budget breaker ──────────────────────────────────────────────
+
+
+def _orch_with(outcomes):
+    from agent.run import Orchestration, WorkerOutcome
+    orch = Orchestration(parent_session_id="root")
+    for role, status, files in outcomes:
+        orch.worker_outcomes.append(
+            WorkerOutcome(role=role, status=status, summary="s", touched_files=files)
+        )
+    return orch
+
+
+def test_no_progress_trip_fires_on_failures_with_high_spend() -> None:
+    from agent.run import _no_progress_budget_trip
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(800)  # 80% spent
+    orch = _orch_with([("coder", "escalated", ("weather.html",))])
+    trip = _no_progress_budget_trip(budget, orch)
+    assert trip is not None
+    assert "stopped early" in trip
+
+
+def test_no_progress_trip_silent_below_ratio() -> None:
+    from agent.run import _no_progress_budget_trip
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(500)  # 50% < 70%
+    orch = _orch_with([("coder", "escalated", ())])
+    assert _no_progress_budget_trip(budget, orch) is None
+
+
+def test_no_progress_trip_silent_when_artifact_delivered() -> None:
+    """A worker that completed done WITH files means real progress — never trip
+    even at high spend."""
+    from agent.run import _no_progress_budget_trip
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(900)
+    orch = _orch_with([
+        ("coder", "escalated", ()),
+        ("coder", "done", ("weather.html",)),
+    ])
+    assert _no_progress_budget_trip(budget, orch) is None
+
+
+def test_no_progress_trip_silent_without_any_failure() -> None:
+    """No failed/escalated worker yet → nothing to abort even at high spend
+    (a single long-running worker hasn't returned)."""
+    from agent.run import _no_progress_budget_trip
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(900)
+    assert _no_progress_budget_trip(budget, _orch_with([])) is None
+
+
+def test_no_progress_trip_done_without_files_does_not_count() -> None:
+    """A planner completing done (no files) is not artifact delivery; a run
+    that then only escalates should still trip."""
+    from agent.run import _no_progress_budget_trip
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(800)
+    orch = _orch_with([
+        ("planner", "done", ()),
+        ("coder", "escalated", ("weather.html",)),
+    ])
+    assert _no_progress_budget_trip(budget, orch) is not None
