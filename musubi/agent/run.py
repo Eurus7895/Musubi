@@ -91,6 +91,14 @@ DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 DEFAULT_MAX_ROOT_WORKERS = 3
 DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
+#: No-progress budget breaker: if the root run has spent at least this fraction
+#: of its token budget and no worker has delivered a completed artifact (a
+#: `done` outcome with mutated files), stop instead of grinding the remaining
+#: budget on more escalating workers. A weak driver model that never converges
+#: otherwise burns the full ceiling (e.g. 200k) across the whole worker tree;
+#: this caps that waste while never firing on a run that is actually producing.
+DEFAULT_NO_PROGRESS_BUDGET_RATIO = 0.7
+
 # Injected into the root prompt only when the caller passes --plan. Explicit
 # opt-in replaces the retired regex force (a keyword guess used to refuse the
 # coder and demand a planner at cycle 0); now the user declares plan-first.
@@ -672,6 +680,22 @@ async def _run_loop(
             and orchestration.root_recovery_analysis_cycles
             >= DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
         )
+        # No-progress budget breaker (root only). Checked between workers, so a
+        # mid-flight worker is never interrupted: it fires when the completed
+        # workers have failed and most of the run budget is already gone, before
+        # the next model call spends more on a run that will not converge.
+        if root_state is not None and budget is not None and orchestration is not None:
+            budget_trip = _no_progress_budget_trip(budget, orchestration)
+            if budget_trip is not None:
+                print(
+                    "[agent] no-progress budget breaker: "
+                    f"{getattr(budget, 'tokens_used', 0)}/"
+                    f"{getattr(budget, 'max_tokens', 0)} tokens spent, "
+                    "no delivered artifact — stopping",
+                    file=log,
+                )
+                final_answer = budget_trip
+                break
         cycle_tools = tools
         if root_state is not None:
             cycle_tools = root_decision_tools(
@@ -1814,6 +1838,42 @@ def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | Non
     if isinstance(nested, float):
         return int(nested)
     return None
+
+
+def _no_progress_budget_trip(
+    budget: Any,
+    orchestration: "Orchestration",
+    *,
+    ratio: float = DEFAULT_NO_PROGRESS_BUDGET_RATIO,
+) -> str | None:
+    """Return an incomplete message if the root run should stop early.
+
+    Fires only when ALL of these hold, so it never aborts a productive run:
+      - a token budget exists with a positive ceiling;
+      - at least `ratio` of that ceiling is already spent;
+      - at least one worker has terminated failed/escalated;
+      - NO worker has delivered a completed artifact (a `done` outcome that
+        actually mutated files).
+    The remaining budget will not fund a fresh successful worker when the spent
+    majority produced only failures, so stopping here caps the waste a
+    non-converging driver model would otherwise spend up to the hard ceiling.
+    """
+    max_tokens = int(getattr(budget, "max_tokens", 0) or 0)
+    if max_tokens <= 0:
+        return None
+    if int(getattr(budget, "tokens_used", 0) or 0) < ratio * max_tokens:
+        return None
+    outcomes = orchestration.worker_outcomes
+    if any(o.status == "done" and o.touched_files for o in outcomes):
+        return None
+    if not any(o.status in {"failed", "escalated"} for o in outcomes):
+        return None
+    return (
+        "[incomplete] run stopped early: "
+        f"{int(ratio * 100)}% of the token budget was spent without any worker "
+        "delivering a completed artifact. The driver model did not converge — "
+        "retry with a stronger model or a narrower request."
+    )
 
 
 def _check_budget_preflight(

@@ -122,6 +122,16 @@ for the same dimension.
   more cycles instead of aborting the run. Design-gated: the grant is bounded,
   audited, and never waives the wall-clock rule. Plan to be written before
   implementation.
+  Landed alongside: a **no-progress budget breaker** on the root run. A weak
+  driver model that never converges (e.g. a flash model that emits tool calls
+  as text and never signals done) otherwise burns the full 200k ceiling across
+  the whole worker tree — the observed failure spent 202k/200k on five
+  escalating workers. The breaker stops the run once ≥70% of the budget is
+  spent with at least one failed worker and no worker having delivered a
+  completed artifact (a `done` outcome with mutated files); it never fires on a
+  run that is actually producing, and the remaining budget would not fund a
+  fresh successful worker anyway. This does not fix a weak model — the real fix
+  is a stronger driver — it only caps the wasted spend fail-fast.
 - **Incomplete-artifact continuation policy.** Decide whether an exhausted
   mutate worker may receive exactly one audited continuation spawn without
   weakening the cumulative root-run worker ceiling. Root routing owns this
