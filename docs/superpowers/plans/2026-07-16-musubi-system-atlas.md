@@ -570,4 +570,3 @@ Expected: all atlas tests pass and no whitespace errors.
 git add artifacts/musubi-system-atlas.html musubi/tests/test_system_atlas.py docs/roadmap.md docs/superpowers/plans/2026-07-16-musubi-system-atlas.md
 git -c user.name=Eurus -c user.email=t.hoang7895@gmail.com commit -m "docs(atlas): publish verified Musubi system guide"
 ```
-

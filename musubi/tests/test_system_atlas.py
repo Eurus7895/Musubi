@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import unittest
 from collections import Counter
 from html.parser import HTMLParser
@@ -18,6 +19,11 @@ class AtlasParser(HTMLParser):
         self.attrs: list[dict[str, str]] = []
         self.external_refs: list[str] = []
         self.dependency_refs: list[str] = []
+        self.component_records: dict[str, list[str]] = {}
+        self.component_record_count = 0
+        self._record_id: str | None = None
+        self._record_cells: list[str] = []
+        self._cell_text: list[str] | None = None
         self.noscript_depth = 0
         self.noscript_text: list[str] = []
 
@@ -35,14 +41,29 @@ class AtlasParser(HTMLParser):
                 self.dependency_refs.append(value)
         if tag == "noscript":
             self.noscript_depth += 1
+        if tag == "tr" and values.get("data-component-record"):
+            self._record_id = values["data-component-record"]
+            self._record_cells = []
+        elif self._record_id and tag in {"th", "td"}:
+            self._cell_text = []
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "noscript":
             self.noscript_depth -= 1
+        if self._record_id and tag in {"th", "td"} and self._cell_text is not None:
+            self._record_cells.append(" ".join("".join(self._cell_text).split()))
+            self._cell_text = None
+        elif tag == "tr" and self._record_id:
+            self.component_record_count += 1
+            self.component_records[self._record_id] = self._record_cells
+            self._record_id = None
+            self._record_cells = []
 
     def handle_data(self, data: str) -> None:
         if self.noscript_depth:
             self.noscript_text.append(data)
+        if self._cell_text is not None:
+            self._cell_text.append(data)
 
 
 def parsed_atlas() -> tuple[str, AtlasParser]:
@@ -97,7 +118,10 @@ class SystemAtlasContractTests(unittest.TestCase):
     def test_atlas_is_self_contained_and_has_required_landmarks(self) -> None:
         html, parser = parsed_atlas()
         self.assertEqual(parser.external_refs, [])
-        self.assertEqual(parser.dependency_refs, [])
+        self.assertTrue(
+            all(ref.startswith("../") and "#L" in ref for ref in parser.dependency_refs),
+            parser.dependency_refs,
+        )
         self.assertIsNone(re.search(r"<(?:link|script)[^>]+(?:src|href)=", html, re.I))
         self.assertLessEqual(
             {
@@ -114,13 +138,139 @@ class SystemAtlasContractTests(unittest.TestCase):
         )
         self.assertIn("49c58d3", html)
         self.assertIn("2026-07-16", html)
+        self.assertIn("Snapshot drift", html)
+
+    def test_map_overlays_distinguish_runtime_flow_from_control_boundaries(self) -> None:
+        html, _ = parsed_atlas()
+        self.assertIn('<option value="runtime">Runtime flow</option>', html)
+        self.assertIn('<option value="control">Control boundary</option>', html)
+        self.assertNotIn('<option value="trust">Trust zone</option>', html)
+        self.assertNotIn('<option value="durability">Durability</option>', html)
+        self.assertIn('[data-map-mode="runtime"]', html)
+        self.assertIn('[data-map-mode="control"]', html)
+        self.assertIn('[data-relation-kind="control"].is-muted { opacity: .62; }', html)
+        self.assertIn("request/context/tool/result/audit/model-call", html)
+        self.assertIn("allow/deny/validate/persist", html)
+        relationship_block = re.search(
+            r"const MAP_RELATIONSHIPS = \[(.*?)\];\s*const state", html, re.S
+        )
+        self.assertIsNotNone(relationship_block)
+        relationships = re.findall(
+            r"\['([^']+)','([^']+)','([^']+)','(runtime|control)'\]",
+            relationship_block.group(1),
+        )
+        self.assertEqual(len(relationships), len(re.findall(r'class="edge"', html)))
+        self.assertEqual({item[3] for item in relationships}, {"runtime", "control"})
+        set_mode = re.search(
+            r"function setMapMode\(mode\) \{(.*?)\n\s*\}", html, re.S
+        )
+        self.assertIsNotNone(set_mode)
+        for contract in (
+            "state.mapMode = mode === 'control' ? 'control' : 'runtime'",
+            "byId('system-map').dataset.mapMode = state.mapMode",
+            "byId('map-mode').value = state.mapMode",
+        ):
+            self.assertIn(contract, set_mode.group(1))
+        self.assertIn(
+            "edges.forEach((edge, index) => { edge.dataset.relationKind = MAP_RELATIONSHIPS[index]?.[3] || 'runtime'; })",
+            html,
+        )
+        self.assertIn('data-map-shape="', html)
+        self.assertIn('data-durability="', html)
+        self.assertIn("stroke-dasharray", html)
+
+    def test_every_component_has_reader_visible_semantic_maintainer_record(self) -> None:
+        html, parser = parsed_atlas()
+        component_ids = {
+            attrs["data-component"] for attrs in parser.attrs if "data-component" in attrs
+        }
+        fallback_ids = {
+            attrs["data-component-record"]
+            for attrs in parser.attrs
+            if "data-component-record" in attrs
+        }
+        self.assertEqual(len(component_ids), 40)
+        self.assertEqual(parser.component_record_count, 40)
+        self.assertEqual(fallback_ids, component_ids)
+        self.assertEqual(set(parser.component_records), component_ids)
+        self.assertIn('return `<dl class="maintainer-record">', html)
+        self.assertIn("maintainerRecordMarkup(card)", html)
+        for label in (
+            "Trust boundary", "Lifecycle", "Expiry", "Cost lever", "Evidence",
+            "Inputs", "Outputs", "Called by", "Depends on", "Enforces",
+            "Failure modes", "Economics",
+        ):
+            self.assertIn(label, html)
+        self.assertIn("maintainer-record-fallback", html)
+
+        cards = {
+            attrs["data-component"]: attrs
+            for attrs in parser.attrs
+            if "data-component" in attrs
+        }
+        fields = (
+            "data-responsibility", "data-why", "data-inputs", "data-outputs",
+            "data-called-by", "data-depends-on", "data-enforces",
+            "data-failure-modes", "data-economics", "data-trust-zone",
+            "data-durability", "data-expires-when", "data-cost-lever", "data-source",
+        )
+        for component_id, cells in parser.component_records.items():
+            self.assertEqual(len(cells), 15, component_id)
+            expected = [
+                cards[component_id].get(field) or "not applicable"
+                for field in fields
+            ]
+            self.assertEqual(cells[1:], expected, component_id)
+
+    def test_operator_authoring_surfaces_are_not_read_only_projection(self) -> None:
+        _, parser = parsed_atlas()
+        cards = {
+            attrs["data-component"]: attrs
+            for attrs in parser.attrs
+            if "data-component" in attrs
+        }
+        self.assertEqual(cards["setup-wizard"]["data-trust-zone"], "operator control")
+        self.assertEqual(cards["pipeline-studio"]["data-trust-zone"], "operator control")
+        self.assertIn(
+            "operator control",
+            {
+                attrs.get("data-trust-zone")
+                for attrs in parser.attrs
+                if "data-component" in attrs
+            },
+        )
+
+    def test_representative_evidence_lines_support_symbols_at_snapshot(self) -> None:
+        html, _ = parsed_atlas()
+        expected = {
+            "musubi/agent/run.py:1234": "def main",
+            "musubi/agent/run.py:1303": '"--pipeline"',
+            "musubi/agent/vendors/base.py:44": "class LMRouter",
+            "musubi/agent/run.py:705": "_check_budget_preflight",
+            "musubi/agent/run.py:734": "_call_with_effort",
+            "musubi/agent/run.py:2234": "target_session.call_tool",
+            "gui/src-tauri/musubi-data/src/lib.rs:1210": "save_pipeline_recipe",
+            "musubi/setup_wizard.py:682": "path.write_text",
+        }
+        for anchor, symbol in expected.items():
+            self.assertIn(anchor, html)
+            path, line_text = anchor.rsplit(":", 1)
+            snapshot = subprocess.run(
+                ["git", "show", f"49c58d3:{path}"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.splitlines()
+            self.assertIn(symbol, snapshot[int(line_text) - 1], anchor)
 
     def test_atlas_records_have_complete_classification_and_quiz_contract(self) -> None:
         html, parser = parsed_atlas()
         components = [a for a in parser.attrs if "data-component" in a]
         questions = [a for a in parser.attrs if "data-question-id" in a]
         scenarios = [a for a in parser.attrs if "data-scenario" in a]
-        self.assertGreaterEqual(len(components), 24)
+        self.assertEqual(len(components), 40)
         self.assertTrue(all(a.get("data-trust-zone") for a in components))
         self.assertTrue(
             all(a.get("data-durability") in {"durable", "ephemeral"} for a in components)
@@ -181,7 +331,7 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertIn('aria-current="step"', html)
         self.assertIn("incoming", html)
         self.assertIn("outgoing", html)
-        self.assertIn("['react-view-model','console','renders']", html)
+        self.assertIn("['react-view-model','console','renders result','runtime']", html)
 
     def test_cards_have_keyboard_selection_and_relationship_state(self) -> None:
         html, _ = parsed_atlas()
@@ -334,31 +484,31 @@ class SystemAtlasContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(block)
         relationships = re.findall(
-            r"\['([^']+)','([^']+)','([^']+)'\]", block.group(1)
+            r"\['([^']+)','([^']+)','([^']+)','([^']+)'\]", block.group(1)
         )
         self.assertEqual(len(relationships), len(re.findall(r'class="edge"', html)))
         self.assertEqual(
             relationships,
             [
-                ("cli", "goal-state", "launches"),
-                ("console", "pipeline-runner", "launches --pipeline"),
-                ("goal-state", "worker-loop", "routes"),
-                ("worker-loop", "pipeline-runner", "dispatches"),
-                ("worker-loop", "lm-router", "calls"),
-                ("lm-router", "model-provider", "requests"),
-                ("worker-loop", "mcp-server", "calls tools"),
-                ("mcp-server", "policy", "gates"),
-                ("mcp-server", "evaluator-firewall", "limits context"),
-                ("mcp-server", "skills", "injects"),
-                ("mcp-server", "memory", "loads"),
-                ("mcp-server", "compression", "compresses"),
-                ("mcp-server", "state-db", "persists state"),
-                ("mcp-server", "audit-db", "records audit"),
-                ("worker-loop", "external-mcp", "routes namespaced calls"),
-                ("state-db", "rust-projection", "reads state"),
-                ("audit-db", "rust-projection", "reads audit"),
-                ("rust-projection", "react-view-model", "projects"),
-                ("react-view-model", "console", "renders"),
+                ("cli", "goal-state", "launches request", "runtime"),
+                ("console", "pipeline-runner", "launches pipeline request", "runtime"),
+                ("goal-state", "worker-loop", "routes context", "runtime"),
+                ("worker-loop", "pipeline-runner", "dispatches stage result", "runtime"),
+                ("worker-loop", "lm-router", "model call", "runtime"),
+                ("lm-router", "model-provider", "model request/result", "runtime"),
+                ("worker-loop", "mcp-server", "tool request/result", "runtime"),
+                ("mcp-server", "policy", "allow/deny gate", "control"),
+                ("mcp-server", "evaluator-firewall", "validates context boundary", "control"),
+                ("mcp-server", "skills", "injects context", "runtime"),
+                ("mcp-server", "memory", "loads context", "runtime"),
+                ("mcp-server", "compression", "fits context", "runtime"),
+                ("mcp-server", "state-db", "persists state", "control"),
+                ("mcp-server", "audit-db", "persists audit", "control"),
+                ("worker-loop", "external-mcp", "routes tool request/result", "runtime"),
+                ("state-db", "rust-projection", "reads persisted state", "control"),
+                ("audit-db", "rust-projection", "reads persisted audit", "control"),
+                ("rust-projection", "react-view-model", "validates safe projection", "control"),
+                ("react-view-model", "console", "renders result", "runtime"),
             ],
         )
     def test_quiz_no_script_key_mirrors_every_answer_and_section(self) -> None:
@@ -367,9 +517,9 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertIsNotNone(block)
         questions = json.loads(block.group(1))
         fallback = " ".join(parser.noscript_text)
-        fallback_markup_match = re.search(r"<noscript>(.*?)</noscript>", html, re.S)
-        self.assertIsNotNone(fallback_markup_match)
-        fallback_markup = fallback_markup_match.group(1)
+        fallback_blocks = re.findall(r"<noscript>(.*?)</noscript>", html, re.S)
+        self.assertTrue(fallback_blocks)
+        fallback_markup = " ".join(fallback_blocks)
         for question in questions:
             self.assertIn(question["prompt"], fallback)
             self.assertIn(question["options"][question["answer"]], fallback)
@@ -515,10 +665,10 @@ class SystemAtlasContractTests(unittest.TestCase):
                 lm_call_owners.add(component)
                 self.assertIn(component, {"worker-loop", "lm-router", "model-provider"})
         self.assertLessEqual({"lm-router", "worker-loop"}, lm_call_owners)
-        self.assertIn("musubi/agent/run.py:757", trace_data)
-        self.assertIn("musubi/agent/run.py:729", trace_data)
-        self.assertIn("musubi/agent/run.py:1258", trace_data)
-        self.assertIn("musubi/agent/run.py:1327", trace_data)
+        self.assertIn("musubi/agent/run.py:734", trace_data)
+        self.assertIn("musubi/agent/run.py:705", trace_data)
+        self.assertIn("musubi/agent/run.py:1234", trace_data)
+        self.assertIn("musubi/agent/run.py:1303", trace_data)
 
         scenario_blocks = {
             match.group(1): match.group(2)
@@ -604,8 +754,8 @@ class SystemAtlasContractTests(unittest.TestCase):
         html, parser = parsed_atlas()
         components = [a for a in parser.attrs if "data-component" in a]
         cli = next(a for a in components if a["data-component"] == "cli")
-        self.assertEqual(cli["data-source"], "musubi/agent/run.py:1258")
-        self.assertEqual(cli.get("data-related-source"), "musubi/agent/run.py:1327")
+        self.assertEqual(cli["data-source"], "musubi/agent/run.py:1234")
+        self.assertEqual(cli.get("data-related-source"), "musubi/agent/run.py:1303")
         provider = next(a for a in components if a["data-component"] == "model-provider")
         self.assertEqual(provider["data-trust-zone"], "external system")
         self.assertNotIn("data-musubi-tier", provider)
