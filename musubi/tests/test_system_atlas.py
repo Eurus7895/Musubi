@@ -20,6 +20,7 @@ class AtlasParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key: value or "" for key, value in attrs}
+        values["_tag"] = tag
         self.attrs.append(values)
         if values.get("id"):
             self.ids.add(values["id"])
@@ -126,7 +127,7 @@ class SystemAtlasContractTests(unittest.TestCase):
             all(
                 a.get("data-musubi-tier") in {"substrate", "ephemeral"}
                 for a in components
-                if a.get("data-trust-zone") != "external system"
+                if a.get("data-musubi-tier")
             )
         )
         ephemeral = [a for a in components if a.get("data-durability") == "ephemeral"]
@@ -144,7 +145,10 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertTrue(
             all(a.get("data-evidence-kind") == "verified" and a.get("data-source") for a in invariants)
         )
-        open_questions = [a for a in parser.attrs if a.get("data-evidence-kind") == "open"]
+        open_questions = [
+            a for a in parser.attrs
+            if a.get("data-evidence-kind") == "open" and a.get("_tag") != "span"
+        ]
         self.assertGreaterEqual(len(open_questions), 1)
         self.assertTrue(all(a.get("data-source") for a in open_questions))
 
@@ -198,12 +202,30 @@ class SystemAtlasContractTests(unittest.TestCase):
             "economics", "evidence", "failure",
         }
         step_records = re.findall(
-            r"\{\s*component:\s*'[^']+'(.*?)\}\s*,?", trace_data, re.S
+            r"\{\s*component:\s*'([^']+)'(.*?)\}\s*,?", trace_data, re.S
         )
         self.assertGreaterEqual(len(step_records), 26)
-        for record in step_records:
+        lm_call_owners = set()
+        for component, record in step_records:
             present = set(re.findall(r"\b(\w+):", "component:" + record))
             self.assertLessEqual(step_fields, present)
+            string_values = dict(re.findall(r"\b(\w+):\s*'([^']*)'", record))
+            for field in step_fields - {"component", "lmCall"}:
+                self.assertTrue(string_values.get(field, "").strip(), f"{component}:{field}")
+            evidence_path, evidence_line = string_values["evidence"].rsplit(":", 1)
+            source = ROOT / evidence_path
+            self.assertTrue(source.exists(), string_values["evidence"])
+            self.assertLessEqual(
+                int(evidence_line), len(source.read_text(encoding="utf-8").splitlines())
+            )
+            if "lmCall: true" in record:
+                lm_call_owners.add(component)
+                self.assertIn(component, {"worker-loop", "lm-router", "model-provider"})
+        self.assertLessEqual({"lm-router", "worker-loop"}, lm_call_owners)
+        self.assertIn("musubi/agent/run.py:757", trace_data)
+        self.assertIn("musubi/agent/run.py:729", trace_data)
+        self.assertIn("musubi/agent/run.py:1258", trace_data)
+        self.assertIn("musubi/agent/run.py:1327", trace_data)
 
         scenario_blocks = {
             match.group(1): match.group(2)
@@ -249,15 +271,80 @@ class SystemAtlasContractTests(unittest.TestCase):
 
         mapped = [a for a in parser.attrs if "data-map-component" in a]
         self.assertTrue(all(a.get("data-trust-zone") and a.get("data-durability") for a in mapped))
+        shape_by_trust = {
+            "model-calling driver": "rect",
+            "zero-LLM governance substrate": "polygon",
+            "read-only operator projection": "ellipse",
+            "external system": "circle",
+        }
+        self.assertTrue(
+            all(a.get("data-map-shape") == shape_by_trust[a["data-trust-zone"]] for a in mapped)
+        )
+        self.assertEqual(len(set(shape_by_trust.values())), 4)
         self.assertIn('[data-trust-zone="model-calling driver"]', html)
         self.assertIn('[data-durability="ephemeral"]', html)
         self.assertIn("stroke-dasharray", html)
 
-        historical = [a for a in parser.attrs if a.get("data-evidence-kind") == "historical"]
-        stale = [a for a in parser.attrs if a.get("data-evidence-kind") == "stale"]
+        historical = [
+            a for a in parser.attrs
+            if a.get("data-evidence-kind") == "historical" and a.get("_tag") != "span"
+        ]
+        stale = [
+            a for a in parser.attrs
+            if a.get("data-evidence-kind") == "stale" and a.get("_tag") != "span"
+        ]
         self.assertGreaterEqual(len(historical), 9)
         self.assertGreaterEqual(len(stale), 6)
         self.assertTrue(all(a.get("data-source") for a in historical + stale))
+
+    def test_component_lifecycle_matches_declared_source_metadata(self) -> None:
+        _, parser = parsed_atlas()
+        components = [a for a in parser.attrs if "data-component" in a]
+        compared = 0
+        for component in components:
+            source_path = component["data-source"].rsplit(":", 1)[0]
+            source = ROOT / source_path
+            header = "\n".join(source.read_text(encoding="utf-8").splitlines()[:12])
+            tier_match = re.search(r"musubi-tier:\s*(substrate|ephemeral)", header)
+            if not tier_match:
+                continue
+            compared += 1
+            expires_match = re.search(r"expires-when:\s*([^\r\n]+)", header)
+            cost_match = re.search(r"cost-lever:\s*([^\r\n]+)", header)
+            self.assertEqual(component.get("data-musubi-tier"), tier_match.group(1), component["data-component"])
+            expected_durability = "durable" if tier_match.group(1) == "substrate" else "ephemeral"
+            self.assertEqual(component.get("data-durability"), expected_durability, component["data-component"])
+            if expires_match:
+                expected = expires_match.group(1).strip().removesuffix("*/").strip()
+                self.assertEqual(component.get("data-expires-when"), expected, component["data-component"])
+            if cost_match:
+                expected = cost_match.group(1).strip().removesuffix("*/").strip()
+                self.assertEqual(component.get("data-cost-lever"), expected, component["data-component"])
+        self.assertGreaterEqual(compared, 15)
+
+    def test_new_maintainer_content_is_vietnamese(self) -> None:
+        html, parser = parsed_atlas()
+        vietnamese = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.I)
+        reviewed = {
+            "compression-eval", "prompt-catalog", "vendor-implementations",
+            "conversation-store", "stage-attempt-store", "agent-cycle-store",
+            "audit-projection", "policy-projection", "models-projection",
+            "skills-projection", "settings-projection",
+        }
+        cards = [a for a in parser.attrs if a.get("data-component") in reviewed]
+        self.assertEqual({a["data-component"] for a in cards}, reviewed)
+        self.assertTrue(all(vietnamese.search(a["data-responsibility"]) for a in cards))
+        self.assertTrue(all(vietnamese.search(a["data-why"]) for a in cards))
+        trace_data = html.split("const TRACE_SCENARIOS = [", 1)[1].split(
+            "const TRACE_STEP_FIELDS", 1
+        )[0]
+        scenario_headers = re.findall(r"title:\s*'([^']+)',\s*summary:\s*'([^']+)'", trace_data)
+        self.assertEqual(len(scenario_headers), 13)
+        self.assertTrue(all(vietnamese.search(title) and vietnamese.search(summary) for title, summary in scenario_headers))
+        for field in ("title", "decision", "economics", "failure"):
+            values = re.findall(rf"\b{field}:\s*'([^']+)'", trace_data)
+            self.assertGreaterEqual(len(values), 35)
+            self.assertTrue(all(vietnamese.search(value) for value in values), field)
 
     def test_governance_economics_and_evolution_are_maintainer_complete(self) -> None:
         html, _ = parsed_atlas()
