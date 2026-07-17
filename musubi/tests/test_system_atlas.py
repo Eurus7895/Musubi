@@ -161,7 +161,7 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertIn("focusActiveStep", html)
         self.assertIn("activeStepButton.focus()", html)
         self.assertIn('tabindex="-1" data-question-result', html)
-        self.assertIn("quizResult.focus()", html)
+        self.assertIn("quizResult?.focus()", html)
         self.assertIn("data-trace-step", html)
         self.assertIn("aria-current=\"step\"", html)
 
@@ -180,8 +180,25 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertIn('aria-expanded="false"', html)
         self.assertIn("setDrawer", html)
         self.assertIn("event.key === 'Escape'", html)
+        self.assertIn("target.inert = drawerMode && !state.drawers[name]", html)
+        self.assertIn("destination.setAttribute('tabindex', '-1')", html)
+        self.assertIn("destination.focus()", html)
         self.assertIn('grid-template-areas: "header header header" "nav main evidence"', html)
         self.assertNotIn(":focus-within", html)
+
+    def test_responsive_drawer_css_is_javascript_gated(self) -> None:
+        html, _ = parsed_atlas()
+        for selector in (
+            'html[data-javascript="enabled"] #evidence-drawer',
+            'html[data-javascript="enabled"] #atlas-nav',
+            'html[data-javascript="enabled"] #evidence-drawer-toggle',
+            'html[data-javascript="enabled"] #nav-drawer-toggle',
+        ):
+            self.assertIn(selector, html)
+        self.assertNotRegex(
+            html,
+            r"(?m)^\s*#(?:evidence-drawer|atlas-nav)\s*\{[^}]*transform:",
+        )
 
     def test_quiz_has_one_answer_and_explanation_per_question(self) -> None:
         html, _ = parsed_atlas()

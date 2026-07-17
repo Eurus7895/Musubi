@@ -74,16 +74,18 @@
     .drawer-toggle, .drawer-close { display: none; }
     .sr-only { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
     @media (max-width: 1100px) {
-      body { grid-template-areas: "header header" "nav main" "fallback fallback"; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); }
-      #evidence-drawer { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-end: 0; max-width: min(28rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(105%); transition: transform .18s ease; width: 100%; z-index: 20; }
-      #evidence-drawer.is-open { transform: translateX(0); }
-      #evidence-drawer-toggle, #evidence-drawer-close { display: inline-flex; }
+      body { grid-template-areas: "header header" "nav main" "evidence evidence" "fallback fallback"; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); }
+      html[data-javascript="enabled"] body { grid-template-areas: "header header" "nav main" "fallback fallback"; }
+      html[data-javascript="enabled"] #evidence-drawer { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-end: 0; max-width: min(28rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      html[data-javascript="enabled"] #evidence-drawer.is-open { transform: translateX(0); }
+      html[data-javascript="enabled"] #evidence-drawer-toggle, html[data-javascript="enabled"] #evidence-drawer-close { display: inline-flex; }
     }
     @media (max-width: 760px) {
-      body { grid-template-areas: "header" "main" "fallback"; grid-template-columns: minmax(0, 1fr); padding: .75rem; }
-      #atlas-nav { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-start: 0; max-width: min(24rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(-105%); transition: transform .18s ease; width: 100%; z-index: 20; }
-      #atlas-nav.is-open { transform: translateX(0); }
-      #nav-drawer-toggle, #nav-drawer-close { display: inline-flex; }
+      body { grid-template-areas: "header" "nav" "main" "evidence" "fallback"; grid-template-columns: minmax(0, 1fr); padding: .75rem; }
+      html[data-javascript="enabled"] body { grid-template-areas: "header" "main" "fallback"; }
+      html[data-javascript="enabled"] #atlas-nav { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-start: 0; max-width: min(24rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(-105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      html[data-javascript="enabled"] #atlas-nav.is-open { transform: translateX(0); }
+      html[data-javascript="enabled"] #nav-drawer-toggle, html[data-javascript="enabled"] #nav-drawer-close { display: inline-flex; }
       nav ul { grid-template-columns: 1fr 1fr; }
       .records, .questions { grid-template-columns: 1fr; }
       .map-scroll, .trace-scroll { margin-inline: -.75rem; padding-inline: .75rem; }
@@ -663,7 +665,7 @@
         }).join('');
         if (focusQuestionId) {
           const quizResult = byId('quiz-questions').querySelector(`[data-question-result="${focusQuestionId}"]`);
-          quizResult.focus();
+          quizResult?.focus();
         }
       }
 
@@ -697,6 +699,7 @@
         state.drawers[name] = Boolean(open);
         target.classList.toggle('is-open', state.drawers[name]);
         target.setAttribute('aria-hidden', String(drawerMode && !state.drawers[name]));
+        target.inert = drawerMode && !state.drawers[name];
         toggle.setAttribute('aria-expanded', String(state.drawers[name]));
         toggle.textContent = `${state.drawers[name] ? 'Đóng' : 'Mở'} ${isNav ? 'mục lục' : 'bằng chứng'}`;
         if (returnFocus) toggle.focus();
@@ -736,7 +739,17 @@
         byId('evidence-drawer-toggle').addEventListener('click', () => setDrawer('evidence', !state.drawers.evidence));
         byId('nav-drawer-close').addEventListener('click', () => setDrawer('nav', false, true));
         byId('evidence-drawer-close').addEventListener('click', () => setDrawer('evidence', false, true));
-        byId('atlas-nav').addEventListener('click', event => { if (event.target.closest('a') && window.matchMedia('(max-width: 760px)').matches) setDrawer('nav', false); });
+        byId('atlas-nav').addEventListener('click', event => {
+          const link = event.target.closest('a[href^="#"]');
+          if (link && window.matchMedia('(max-width: 760px)').matches) {
+            const destination = document.querySelector(link.getAttribute('href'));
+            setDrawer('nav', false);
+            if (destination) {
+              if (!destination.hasAttribute('tabindex')) destination.setAttribute('tabindex', '-1');
+              destination.focus();
+            }
+          }
+        });
         document.addEventListener('keydown', event => {
           if (event.key === 'Escape') {
             if (window.matchMedia('(max-width: 760px)').matches && state.drawers.nav) setDrawer('nav', false, true);
