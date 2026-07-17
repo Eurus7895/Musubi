@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from html.parser import HTMLParser
@@ -86,6 +87,95 @@ class SystemAtlasContractTests(unittest.TestCase):
         )
         self.assertIn("noscript", html.lower())
         self.assertGreater(len(" ".join(parser.noscript_text)), 500)
+
+    def test_interaction_contract_and_accessibility_markers_exist(self) -> None:
+        html, _ = parsed_atlas()
+        self.assertRegex(html, r"(?:window\.)?AtlasApp\s*=\s*\(\(\)\s*=>")
+        for name in (
+            "selectComponent",
+            "setMapMode",
+            "setFilters",
+            "selectScenario",
+            "selectTraceStep",
+            "answerQuestion",
+            "resetQuiz",
+        ):
+            self.assertRegex(html, rf"\b{name}\b")
+        for marker in (
+            "musubi-system-atlas.quiz.v1",
+            "prefers-reduced-motion",
+            'aria-live="polite"',
+            ":focus-visible",
+            "@media (max-width: 1100px)",
+            "@media (max-width: 760px)",
+        ):
+            self.assertIn(marker, html)
+
+    def test_component_controls_and_trace_navigation_are_complete(self) -> None:
+        html, _ = parsed_atlas()
+        for control_id in (
+            "component-search",
+            "trust-zone-filter",
+            "durability-filter",
+            "map-mode",
+            "trace-scenario",
+            "trace-previous",
+            "trace-next",
+            "trace-restart",
+            "trace-steps",
+        ):
+            self.assertIn(f'id="{control_id}"', html)
+        for indexed_field in (
+            "data-responsibility",
+            "data-source",
+            "data-enforces",
+            "data-failure-modes",
+        ):
+            self.assertIn(indexed_field, html)
+        self.assertIn('aria-current="step"', html)
+        self.assertIn("incoming", html)
+        self.assertIn("outgoing", html)
+        self.assertIn("['react-view-model','console','renders']", html)
+
+    def test_quiz_has_one_answer_and_explanation_per_question(self) -> None:
+        html, _ = parsed_atlas()
+        blocks = re.findall(r"const QUIZ_QUESTIONS = (\[.*?\]);\s*const", html, re.S)
+        self.assertEqual(len(blocks), 1)
+        questions = json.loads(blocks[0])
+        self.assertGreaterEqual(len(questions), 24)
+        self.assertEqual(len({question["id"] for question in questions}), len(questions))
+        self.assertTrue(all(len(question["options"]) in (3, 4) for question in questions))
+        self.assertTrue(
+            all(
+                isinstance(question["answer"], int)
+                and 0 <= question["answer"] < len(question["options"])
+                for question in questions
+            )
+        )
+        self.assertTrue(all(question["explanation"] and question["section"] for question in questions))
+        self.assertTrue(
+            all(
+                question["difficulty"]
+                in {"boundary", "trace", "economics", "failure", "evolution"}
+                for question in questions
+            )
+        )
+
+    def test_quiz_no_script_key_mirrors_every_answer_and_section(self) -> None:
+        html, parser = parsed_atlas()
+        block = re.search(r"const QUIZ_QUESTIONS = (\[.*?\]);\s*const", html, re.S)
+        self.assertIsNotNone(block)
+        questions = json.loads(block.group(1))
+        fallback = " ".join(parser.noscript_text)
+        for question in questions:
+            self.assertIn(question["prompt"], fallback)
+            self.assertIn(question["options"][question["answer"]], fallback)
+            self.assertIn(question["explanation"], fallback)
+            self.assertIn(f'href="#{question["section"]}"', html)
+        self.assertIn("try {", html)
+        self.assertIn("localStorage.getItem", html)
+        self.assertIn("localStorage.setItem", html)
+        self.assertIn("localStorage.removeItem", html)
 
     def test_every_embedded_source_path_exists(self) -> None:
         html, _ = parsed_atlas()
