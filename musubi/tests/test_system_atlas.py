@@ -271,6 +271,16 @@ class SystemAtlasContractTests(unittest.TestCase):
 
         mapped = [a for a in parser.attrs if "data-map-component" in a]
         self.assertTrue(all(a.get("data-trust-zone") and a.get("data-durability") for a in mapped))
+        components_by_id = {
+            a["data-component"]: a for a in parser.attrs if "data-component" in a
+        }
+        self.assertTrue(
+            all(
+                a["data-durability"]
+                == components_by_id[a["data-map-component"]]["data-durability"]
+                for a in mapped
+            )
+        )
         shape_by_trust = {
             "model-calling driver": "rect",
             "zero-LLM governance substrate": "polygon",
@@ -298,10 +308,20 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertTrue(all(a.get("data-source") for a in historical + stale))
 
     def test_component_lifecycle_matches_declared_source_metadata(self) -> None:
-        _, parser = parsed_atlas()
+        html, parser = parsed_atlas()
         components = [a for a in parser.attrs if "data-component" in a]
+        cli = next(a for a in components if a["data-component"] == "cli")
+        self.assertEqual(cli["data-source"], "musubi/agent/run.py:1258")
+        self.assertEqual(cli.get("data-related-source"), "musubi/agent/run.py:1327")
+        provider = next(a for a in components if a["data-component"] == "model-provider")
+        self.assertEqual(provider["data-trust-zone"], "external system")
+        self.assertNotIn("data-musubi-tier", provider)
+        self.assertNotIn("data-expires-when", provider)
+        self.assertNotIn("data-cost-lever", provider)
         compared = 0
         for component in components:
+            if component["data-trust-zone"] == "external system":
+                continue
             source_path = component["data-source"].rsplit(":", 1)[0]
             source = ROOT / source_path
             header = "\n".join(source.read_text(encoding="utf-8").splitlines()[:12])
@@ -315,12 +335,14 @@ class SystemAtlasContractTests(unittest.TestCase):
             expected_durability = "durable" if tier_match.group(1) == "substrate" else "ephemeral"
             self.assertEqual(component.get("data-durability"), expected_durability, component["data-component"])
             if expires_match:
-                expected = expires_match.group(1).strip().removesuffix("*/").strip()
+                declared = expires_match.group(1).strip().removesuffix("*/").strip()
+                expected = "never" if declared.lower().startswith("never") else declared
                 self.assertEqual(component.get("data-expires-when"), expected, component["data-component"])
             if cost_match:
                 expected = cost_match.group(1).strip().removesuffix("*/").strip()
                 self.assertEqual(component.get("data-cost-lever"), expected, component["data-component"])
         self.assertGreaterEqual(compared, 15)
+        self.assertNotRegex(html, r'data-expires-when="[^"]*\b(?:that|the|at|of|to|be|must be)"')
 
     def test_new_maintainer_content_is_vietnamese(self) -> None:
         html, parser = parsed_atlas()
