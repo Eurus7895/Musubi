@@ -17,6 +17,7 @@ class AtlasParser(HTMLParser):
         self.ids: set[str] = set()
         self.attrs: list[dict[str, str]] = []
         self.external_refs: list[str] = []
+        self.dependency_refs: list[str] = []
         self.noscript_depth = 0
         self.noscript_text: list[str] = []
 
@@ -30,6 +31,8 @@ class AtlasParser(HTMLParser):
             value = values.get(key, "")
             if re.match(r"^(?:https?:)?//", value):
                 self.external_refs.append(value)
+            if value and not value.startswith(("#", "data:")):
+                self.dependency_refs.append(value)
         if tag == "noscript":
             self.noscript_depth += 1
 
@@ -94,6 +97,7 @@ class SystemAtlasContractTests(unittest.TestCase):
     def test_atlas_is_self_contained_and_has_required_landmarks(self) -> None:
         html, parser = parsed_atlas()
         self.assertEqual(parser.external_refs, [])
+        self.assertEqual(parser.dependency_refs, [])
         self.assertIsNone(re.search(r"<(?:link|script)[^>]+(?:src|href)=", html, re.I))
         self.assertLessEqual(
             {
