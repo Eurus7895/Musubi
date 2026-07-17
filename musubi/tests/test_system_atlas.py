@@ -50,6 +50,47 @@ def parsed_atlas() -> tuple[str, AtlasParser]:
 
 
 class SystemAtlasContractTests(unittest.TestCase):
+    def test_atlas_uses_an_explicit_high_contrast_light_palette(self) -> None:
+        html, _ = parsed_atlas()
+        root_css = re.search(r":root\s*\{([^}]*)\}", html, re.S)
+        self.assertIsNotNone(root_css)
+        declarations = dict(
+            re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", root_css.group(1))
+        )
+
+        self.assertRegex(root_css.group(1), r"\bcolor-scheme\s*:\s*light\s*;")
+        self.assertNotIn("color-scheme: light dark", html)
+        self.assertNotRegex(html, r"\bCanvas(?:Text)?\b")
+        for name in (
+            "--page-bg",
+            "--page-fg",
+            "--surface",
+            "--border",
+            "--trust-driver",
+            "--trust-substrate",
+            "--trust-projection",
+            "--trust-external",
+            "--state-selected",
+            "--state-related",
+            "--state-error",
+            "--state-success",
+        ):
+            self.assertIn(name, declarations)
+        self.assertEqual(len(set(declarations.values())), len(declarations.values()))
+        self.assertRegex(html, r"body\s*\{[^}]*background:\s*var\(--page-bg\)")
+        self.assertRegex(html, r"body\s*\{[^}]*color:\s*var\(--page-fg\)")
+        for token in (
+            "--trust-driver",
+            "--trust-substrate",
+            "--trust-projection",
+            "--trust-external",
+            "--state-selected",
+            "--state-related",
+            "--state-error",
+            "--state-success",
+        ):
+            self.assertIn(f"var({token})", html)
+
     def test_atlas_is_self_contained_and_has_required_landmarks(self) -> None:
         html, parser = parsed_atlas()
         self.assertEqual(parser.external_refs, [])
