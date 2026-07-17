@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -137,6 +138,51 @@ class SystemAtlasContractTests(unittest.TestCase):
         self.assertIn("outgoing", html)
         self.assertIn("['react-view-model','console','renders']", html)
 
+    def test_cards_have_keyboard_selection_and_relationship_state(self) -> None:
+        html, _ = parsed_atlas()
+        for marker in (
+            "component-select",
+            'aria-pressed',
+            "data-relationship-state",
+            "is-related",
+            "is-muted",
+            "Trạng thái quan hệ",
+        ):
+            self.assertIn(marker, html)
+        self.assertIn("card.dataset.component", html)
+        self.assertIn("relatedIds.has(card.dataset.component)", html)
+        for component in ("nested-dispatch", "context-fit", "budget", "subagent-audit"):
+            self.assertIn(f'data-component="{component}"', html)
+
+    def test_focus_is_preserved_after_trace_and_quiz_rerenders(self) -> None:
+        html, _ = parsed_atlas()
+        self.assertIn('id="trace-status"', html)
+        self.assertIn('id="trace-status" aria-live="polite"', html)
+        self.assertIn("focusActiveStep", html)
+        self.assertIn("activeStepButton.focus()", html)
+        self.assertIn('tabindex="-1" data-question-result', html)
+        self.assertIn("quizResult.focus()", html)
+        self.assertIn("data-trace-step", html)
+        self.assertIn("aria-current=\"step\"", html)
+
+    def test_responsive_regions_have_operable_drawers(self) -> None:
+        html, _ = parsed_atlas()
+        for control_id, target_id in (
+            ("nav-drawer-toggle", "atlas-nav"),
+            ("evidence-drawer-toggle", "evidence-drawer"),
+            ("nav-drawer-close", "atlas-nav"),
+            ("evidence-drawer-close", "evidence-drawer"),
+        ):
+            self.assertRegex(
+                html,
+                rf'id="{control_id}"[^>]+aria-controls="{target_id}"',
+            )
+        self.assertIn('aria-expanded="false"', html)
+        self.assertIn("setDrawer", html)
+        self.assertIn("event.key === 'Escape'", html)
+        self.assertIn('grid-template-areas: "header header header" "nav main evidence"', html)
+        self.assertNotIn(":focus-within", html)
+
     def test_quiz_has_one_answer_and_explanation_per_question(self) -> None:
         html, _ = parsed_atlas()
         blocks = re.findall(r"const QUIZ_QUESTIONS = (\[.*?\]);\s*const", html, re.S)
@@ -160,18 +206,113 @@ class SystemAtlasContractTests(unittest.TestCase):
                 for question in questions
             )
         )
+        self.assertEqual(
+            Counter(question["chapter"] for question in questions),
+            Counter(
+                {
+                    "orientation": 4,
+                    "components": 4,
+                    "traces": 4,
+                    "invariants": 4,
+                    "economics": 4,
+                    "evolution": 4,
+                }
+            ),
+        )
+        causal_corpus = " ".join(
+            question["prompt"]
+            + " "
+            + question["options"][question["answer"]]
+            + " "
+            + question["explanation"]
+            for question in questions
+        ).casefold()
+        for causal_marker in (
+            "vendor neutrality",
+            "root muốn sửa file",
+            "same-turn",
+            "evaluator",
+            "pushed skill",
+            "final turn",
+            "childtokenbudget",
+            "elision marker",
+            "sanitize",
+            "join musubi.db",
+            "external mcp",
+            "helper role",
+        ):
+            self.assertIn(causal_marker, causal_corpus)
 
+    def test_atlas_app_exports_exact_public_interface(self) -> None:
+        html, _ = parsed_atlas()
+        public_return = re.search(r"return \{([^}]+)\};\s*\}\)\(\);", html, re.S)
+        self.assertIsNotNone(public_return)
+        exports = {
+            name.strip() for name in public_return.group(1).split(",") if name.strip()
+        }
+        self.assertEqual(
+            exports,
+            {
+                "selectComponent",
+                "setMapMode",
+                "setFilters",
+                "selectScenario",
+                "selectTraceStep",
+                "answerQuestion",
+                "resetQuiz",
+            },
+        )
+
+    def test_map_relationship_table_matches_svg_edges(self) -> None:
+        html, _ = parsed_atlas()
+        block = re.search(
+            r"const MAP_RELATIONSHIPS = \[(.*?)\];\s*const state",
+            html,
+            re.S,
+        )
+        self.assertIsNotNone(block)
+        relationships = re.findall(
+            r"\['([^']+)','([^']+)','([^']+)'\]", block.group(1)
+        )
+        self.assertEqual(len(relationships), len(re.findall(r'class="edge"', html)))
+        self.assertEqual(
+            relationships,
+            [
+                ("cli", "goal-state", "launches"),
+                ("console", "pipeline-runner", "launches --pipeline"),
+                ("goal-state", "worker-loop", "routes"),
+                ("worker-loop", "pipeline-runner", "dispatches"),
+                ("worker-loop", "lm-router", "calls"),
+                ("lm-router", "model-provider", "requests"),
+                ("worker-loop", "mcp-server", "calls tools"),
+                ("mcp-server", "policy", "gates"),
+                ("mcp-server", "evaluator-firewall", "limits context"),
+                ("mcp-server", "skills", "injects"),
+                ("mcp-server", "memory", "loads"),
+                ("mcp-server", "compression", "compresses"),
+                ("mcp-server", "state-db", "persists state"),
+                ("mcp-server", "audit-db", "records audit"),
+                ("worker-loop", "external-mcp", "routes namespaced calls"),
+                ("state-db", "rust-projection", "reads state"),
+                ("audit-db", "rust-projection", "reads audit"),
+                ("rust-projection", "react-view-model", "projects"),
+                ("react-view-model", "console", "renders"),
+            ],
+        )
     def test_quiz_no_script_key_mirrors_every_answer_and_section(self) -> None:
         html, parser = parsed_atlas()
         block = re.search(r"const QUIZ_QUESTIONS = (\[.*?\]);\s*const", html, re.S)
         self.assertIsNotNone(block)
         questions = json.loads(block.group(1))
         fallback = " ".join(parser.noscript_text)
+        fallback_markup_match = re.search(r"<noscript>(.*?)</noscript>", html, re.S)
+        self.assertIsNotNone(fallback_markup_match)
+        fallback_markup = fallback_markup_match.group(1)
         for question in questions:
             self.assertIn(question["prompt"], fallback)
             self.assertIn(question["options"][question["answer"]], fallback)
             self.assertIn(question["explanation"], fallback)
-            self.assertIn(f'href="#{question["section"]}"', html)
+            self.assertIn(f'href="#{question["section"]}"', fallback_markup)
         self.assertIn("try {", html)
         self.assertIn("localStorage.getItem", html)
         self.assertIn("localStorage.setItem", html)

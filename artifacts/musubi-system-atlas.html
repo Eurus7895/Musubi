@@ -6,7 +6,12 @@
   <title>Musubi System Atlas — Maintainer Edition</title>
   <style>
     :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.55; }
-    body { margin: auto; max-width: 92rem; min-width: 18rem; padding: 1.5rem; }
+    body { display: grid; gap: 1.25rem; grid-template-areas: "header header header" "nav main evidence" "fallback fallback fallback"; grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr) minmax(16rem, 22rem); margin: auto; max-width: 110rem; min-width: 18rem; padding: 1.5rem; }
+    #orientation { grid-area: header; }
+    #atlas-nav { align-self: start; grid-area: nav; position: sticky; top: 1rem; }
+    main { grid-area: main; min-width: 0; }
+    #evidence-drawer { align-self: start; grid-area: evidence; position: sticky; top: 1rem; }
+    noscript { grid-area: fallback; }
     nav ul, .records, .questions { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
     section { border-block-start: 1px solid currentColor; margin-block: 2rem; padding-block: 1rem; }
     article, li, .callout { padding: .8rem; }
@@ -48,7 +53,11 @@
     .edge.is-muted { opacity: .16; }
     article[data-component] { transition: border-color .18s ease, opacity .18s ease; }
     article[data-component].is-selected { border-color: #f4b860; box-shadow: 0 0 0 2px color-mix(in srgb, #f4b860 45%, transparent); }
+    article[data-component].is-related { border-style: dashed; border-color: #5b8def; }
+    article[data-component].is-muted { opacity: .58; }
     article[data-component][hidden] { display: none; }
+    .component-select-row { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
+    .relationship-state { font-size: .875rem; font-weight: 650; }
     .relationship-list, .trace-panel, .quiz-card { border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: .6rem; padding: 1rem; }
     .trace-actions, .trace-step-buttons, .quiz-options, .quiz-toolbar { display: flex; flex-wrap: wrap; gap: .6rem; }
     .trace-step-buttons button[aria-current="step"] { background: #f4b860; color: #101827; font-weight: 750; }
@@ -61,15 +70,20 @@
     .quiz-option.is-wrong { border: 2px solid #e46666; }
     .quiz-result { border-inline-start: .35rem solid #5b8def; margin-block: .8rem; padding: .7rem; }
     .quiz-summary { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+    .drawer-controls { display: flex; flex-wrap: wrap; gap: .6rem; }
+    .drawer-toggle, .drawer-close { display: none; }
     .sr-only { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
     @media (max-width: 1100px) {
-      #evidence-drawer { border: 1px solid currentColor; max-height: 16rem; overflow: auto; }
-      #evidence-drawer:not(.is-open) > :not(h2):not(#relationship-summary) { display: none; }
+      body { grid-template-areas: "header header" "nav main" "fallback fallback"; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); }
+      #evidence-drawer { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-end: 0; max-width: min(28rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      #evidence-drawer.is-open { transform: translateX(0); }
+      #evidence-drawer-toggle, #evidence-drawer-close { display: inline-flex; }
     }
     @media (max-width: 760px) {
-      body { padding: .75rem; }
-      nav, #evidence-drawer { max-height: 13rem; overflow: auto; }
-      nav:not(:focus-within), #evidence-drawer:not(.is-open) { max-height: 4.25rem; }
+      body { grid-template-areas: "header" "main" "fallback"; grid-template-columns: minmax(0, 1fr); padding: .75rem; }
+      #atlas-nav { background: Canvas; border: 1px solid currentColor; height: 100dvh; inset-block: 0; inset-inline-start: 0; max-width: min(24rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(-105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      #atlas-nav.is-open { transform: translateX(0); }
+      #nav-drawer-toggle, #nav-drawer-close { display: inline-flex; }
       nav ul { grid-template-columns: 1fr 1fr; }
       .records, .questions { grid-template-columns: 1fr; }
       .map-scroll, .trace-scroll { margin-inline: -.75rem; padding-inline: .75rem; }
@@ -83,6 +97,10 @@
 <body>
   <header id="orientation" data-snapshot="49c58d3" data-generated="2026-07-16">
     <h1>Musubi System Atlas</h1>
+    <div class="drawer-controls" aria-label="Điều khiển vùng phụ">
+      <button id="nav-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="atlas-nav">Mở mục lục</button>
+      <button id="evidence-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="evidence-drawer">Mở bằng chứng</button>
+    </div>
     <p>Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time datetime="2026-07-16">2026-07-16</time>.</p>
     <p class="callout"><strong>Mental model đầu tiên:</strong> The driver reasons. Musubi controls the environment. Model tạo reasoning, text và tool request; driver sở hữu model call, goal state và orchestration; substrate kiểm soát deterministic action, context, validation, persistence và evidence mà không gọi model.</p>
     <div class="axes">
@@ -92,7 +110,7 @@
     <p><strong>Thuật ngữ:</strong> surface là cửa vào của operator; worker là một vòng <code>run_unit</code>; pipeline là recipe nhiều stage xác định; skill là capability/prompt được inject hoặc tải; audit evidence là record bền; fail-closed nghĩa là không có allowlist thì deny; substrate là governance không gọi LLM; ephemeral là scaffolding có ngày hết hạn.</p>
     <p><strong>Unified worker model</strong> chỉ có nghĩa root và child dùng chung primitive <code>run_unit</code>. Root giữ goal state, phase routing, recovery và quyền đọc rộng hơn; child nhận brief đóng băng, pushed skill và tool/spawn bị giới hạn.</p>
   </header>
-  <nav aria-label="Mục lục"><ul>
+  <nav id="atlas-nav" aria-label="Mục lục"><button id="nav-drawer-close" class="drawer-close" type="button" aria-controls="atlas-nav">Đóng mục lục</button><ul>
     <li><a href="#system-map">Bản đồ hệ thống</a></li><li><a href="#components">Thành phần</a></li><li><a href="#traces">Luồng chạy</a></li>
     <li><a href="#invariants">Bất biến</a></li><li><a href="#economics">Kinh tế token</a></li><li><a href="#evolution">Tiến hóa</a></li><li><a href="#quiz">Kiểm tra</a></li>
   </ul></nav>
@@ -224,7 +242,7 @@
         <h3 id="trace-title">Đang tải trace…</h3><p id="trace-summary"></p>
         <div class="trace-actions"><button id="trace-previous" type="button">Bước trước</button><button id="trace-next" type="button">Bước kế</button><button id="trace-restart" type="button">Chạy lại</button></div>
         <div id="trace-steps" class="trace-step-buttons trace-scroll" aria-label="Chọn trực tiếp bước trace"><button type="button" aria-current="step">Bước 1</button></div>
-        <p><span id="trace-progress"></span> <span id="trace-lm" class="lm-badge"></span></p>
+        <p><span id="trace-progress"></span> <span id="trace-lm" class="lm-badge"></span></p><p id="trace-status" aria-live="polite"></p>
         <div class="trace-grid"><p><strong>Component:</strong> <span id="trace-component"></span></p><p><strong>Input:</strong> <span id="trace-input"></span></p><p><strong>Output:</strong> <span id="trace-output"></span></p><p><strong>Quyết định:</strong> <span id="trace-decision"></span></p><p><strong>Kinh tế:</strong> <span id="trace-economics"></span></p><p><strong>Evidence:</strong> <code id="trace-evidence"></code></p><p><strong>Failure:</strong> <span id="trace-failure"></span></p></div>
       </div>
       <h3>Bản tóm tắt tĩnh của 13 kịch bản</h3><ol>
@@ -289,6 +307,7 @@
     </section>
   </main>
   <aside id="evidence-drawer" aria-label="Bằng chứng nguồn">
+    <button id="evidence-drawer-close" class="drawer-close" type="button" aria-controls="evidence-drawer">Đóng bằng chứng</button>
     <h2>Text equivalent của map edges</h2>
     <div id="relationship-summary" class="relationship-list" aria-live="polite"><strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.</div>
     <ol><li>CLI launches GoalState root controller.</li><li>Console launches deterministic pipeline bằng <code>--pipeline</code>.</li><li>GoalState routes sang worker loop; worker dispatches pipeline stages khi caller đã chọn pipeline.</li><li>Worker loop calls LMRouter; LMRouter requests model provider.</li><li>Worker calls Musubi MCP tools; MCP server delegates gates cho fail-closed policy và evaluator firewall.</li><li>MCP server injects skills, loads memory, compresses context, persists state vào musubi.db và records audit vào audit.db.</li><li>Top-level driver routes namespaced calls tới external MCP; đường này không qua Musubi gate/audit.</li><li>Rust projection reads state và audit, projects sang React view model, rồi renders Console.</li></ol>
@@ -470,7 +489,8 @@
       ];
       const state = {
         selectedComponent: '', mapMode: 'trust', filters: { search: '', trust: 'all', durability: 'all' },
-        scenario: TRACE_SCENARIOS[0].id, traceStep: 0, quiz: { version: 1, answers: {} }, quizScope: 'all'
+        scenario: TRACE_SCENARIOS[0].id, traceStep: 0, quiz: { version: 1, answers: {} }, quizScope: 'all',
+        drawers: { nav: false, evidence: false }
       };
       const byId = id => document.getElementById(id);
       const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -507,7 +527,16 @@
         });
         cards.forEach(card => {
           const selected = card.dataset.component === componentId;
+          const relatedCard = !selected && relatedIds.has(card.dataset.component);
+          const mutedCard = Boolean(componentId) && !selected && !relatedCard;
           card.classList.toggle('is-selected', selected);
+          card.classList.toggle('is-related', relatedCard);
+          card.classList.toggle('is-muted', mutedCard);
+          card.setAttribute('data-relationship-state', selected ? 'selected' : relatedCard ? 'related' : mutedCard ? 'muted' : 'neutral');
+          const selectButton = card.querySelector('.component-select');
+          if (selectButton) selectButton.setAttribute('aria-pressed', String(selected));
+          const relationState = card.querySelector('.relationship-state');
+          if (relationState) relationState.textContent = `Trạng thái quan hệ: ${selected ? 'đang chọn' : relatedCard ? 'có quan hệ trực tiếp' : mutedCard ? 'không có quan hệ trực tiếp' : 'trung lập'}`;
           if (selected) card.querySelector('details')?.setAttribute('open', '');
         });
         const card = cards.find(item => item.dataset.component === componentId);
@@ -516,7 +545,6 @@
         const relationHtml = componentId ? `<strong>${escapeHtml(card?.querySelector('h3')?.textContent || componentId)}</strong><p><b>incoming:</b> ${incoming.length ? incoming.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>outgoing:</b> ${outgoing.length ? outgoing.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>Evidence:</b> <code>${escapeHtml(card?.dataset.source || 'xem trace dataset')}</code></p>` : '<strong>Quan hệ dạng văn bản:</strong> Chọn một node hoặc component card để xem cạnh incoming và outgoing.';
         byId('map-relationships').innerHTML = relationHtml;
         byId('relationship-summary').innerHTML = componentId ? `<strong>Component đang chọn:</strong> ${relationHtml}<p><b>Called by:</b> ${escapeHtml(card?.dataset.calledBy || 'xem map')}</p><p><b>Depends on:</b> ${escapeHtml(card?.dataset.dependsOn || 'xem map')}</p>` : '<strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.';
-        if (componentId) byId('evidence-drawer').classList.add('is-open');
         applyFilters();
       }
 
@@ -538,7 +566,7 @@
         applyFilters();
       }
 
-      function renderTrace() {
+      function renderTrace(focusActiveStep = false) {
         const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
         const step = scenario.steps[state.traceStep];
         byId('trace-title').textContent = scenario.title;
@@ -552,10 +580,15 @@
         byId('trace-economics').textContent = step.economics;
         byId('trace-evidence').textContent = step.evidence;
         byId('trace-failure').textContent = step.failure;
+        byId('trace-status').textContent = `Đã chọn bước ${state.traceStep + 1}: ${step.title}. ${step.lmCall ? 'Có LM call.' : 'Không có LM call.'}`;
         byId('trace-previous').disabled = state.traceStep === 0;
         byId('trace-next').disabled = state.traceStep === scenario.steps.length - 1;
         byId('trace-steps').innerHTML = scenario.steps.map((item, index) => `<button type="button" data-trace-step="${index}"${index === state.traceStep ? ' aria-current="step"' : ''}>Bước ${index + 1}: ${escapeHtml(item.title)}</button>`).join('');
         selectComponent(step.component);
+        if (focusActiveStep) {
+          const activeStepButton = byId('trace-steps').querySelector(`[data-trace-step="${state.traceStep}"]`);
+          activeStepButton.focus();
+        }
       }
 
       function selectScenario(scenarioId) {
@@ -565,10 +598,10 @@
         renderTrace();
       }
 
-      function selectTraceStep(index) {
+      function selectTraceStep(index, focusActiveStep = false) {
         const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
         state.traceStep = Math.max(0, Math.min(Number(index) || 0, scenario.steps.length - 1));
-        renderTrace();
+        renderTrace(focusActiveStep);
       }
 
       function isValidQuizPayload(payload) {
@@ -609,7 +642,7 @@
         return QUIZ_QUESTIONS.filter(question => question.chapter === state.quizScope);
       }
 
-      function renderQuiz() {
+      function renderQuiz(focusQuestionId = '') {
         const visible = visibleQuizQuestions();
         const entries = Object.entries(state.quiz.answers);
         const totalCorrect = entries.filter(([id, answer]) => QUIZ_QUESTIONS.find(item => item.id === id)?.answer === answer).length;
@@ -625,9 +658,13 @@
             const status = answered && optionIndex === question.answer ? ' is-correct' : answered && optionIndex === selected ? ' is-wrong' : '';
             return `<button class="quiz-option${status}" type="button" data-question="${question.id}" data-answer="${optionIndex}"${answered ? ' disabled' : ''}>${String.fromCharCode(65 + optionIndex)}. ${escapeHtml(option)}</button>`;
           }).join('');
-          const result = answered ? `<div class="quiz-result"><strong>${selected === question.answer ? 'Đúng.' : 'Chưa đúng.'}</strong> ${escapeHtml(question.explanation)} <a href="#${question.section}">Đọc lại phần liên quan</a>.</div>` : '';
+          const result = answered ? `<div class="quiz-result" tabindex="-1" data-question-result="${question.id}"><strong>${selected === question.answer ? 'Đúng.' : 'Chưa đúng.'}</strong> ${escapeHtml(question.explanation)} <a href="#${question.section}">Đọc lại phần liên quan</a>.</div>` : '';
           return `<article class="quiz-card" data-rendered-question="${question.id}"><fieldset><legend><strong>Câu ${index + 1} · ${escapeHtml(question.difficulty)}</strong><br>${escapeHtml(question.prompt)}</legend><div class="quiz-options">${options}</div></fieldset>${result}</article>`;
         }).join('');
+        if (focusQuestionId) {
+          const quizResult = byId('quiz-questions').querySelector(`[data-question-result="${focusQuestionId}"]`);
+          quizResult.focus();
+        }
       }
 
       function answerQuestion(questionId, answerIndex) {
@@ -638,7 +675,7 @@
         state.quiz.answers[questionId] = answer;
         saveQuiz();
         byId('quiz-announcer').textContent = answer === question.answer ? `Đúng: ${question.explanation}` : `Chưa đúng: ${question.explanation}`;
-        renderQuiz();
+        renderQuiz(questionId);
       }
 
       function resetQuiz() {
@@ -652,6 +689,24 @@
         renderQuiz();
       }
 
+      function setDrawer(name, open, returnFocus = false) {
+        const isNav = name === 'nav';
+        const target = byId(isNav ? 'atlas-nav' : 'evidence-drawer');
+        const toggle = byId(isNav ? 'nav-drawer-toggle' : 'evidence-drawer-toggle');
+        const drawerMode = window.matchMedia(isNav ? '(max-width: 760px)' : '(max-width: 1100px)').matches;
+        state.drawers[name] = Boolean(open);
+        target.classList.toggle('is-open', state.drawers[name]);
+        target.setAttribute('aria-hidden', String(drawerMode && !state.drawers[name]));
+        toggle.setAttribute('aria-expanded', String(state.drawers[name]));
+        toggle.textContent = `${state.drawers[name] ? 'Đóng' : 'Mở'} ${isNav ? 'mục lục' : 'bằng chứng'}`;
+        if (returnFocus) toggle.focus();
+      }
+
+      function syncDrawerLayout() {
+        setDrawer('nav', !window.matchMedia('(max-width: 760px)').matches);
+        setDrawer('evidence', !window.matchMedia('(max-width: 1100px)').matches);
+      }
+
       function init() {
         document.documentElement.dataset.javascript = 'enabled';
         nodes.forEach(node => {
@@ -659,7 +714,12 @@
           node.addEventListener('click', () => selectComponent(node.dataset.mapComponent));
           node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectComponent(node.dataset.mapComponent); } });
         });
-        cards.forEach(card => card.addEventListener('click', event => { if (!event.target.closest('summary, a, button, input, select')) selectComponent(card.dataset.component); }));
+        cards.forEach(card => {
+          const title = card.querySelector('h3')?.textContent || card.dataset.component;
+          card.insertAdjacentHTML('afterbegin', `<div class="component-select-row"><button class="component-select" type="button" aria-pressed="false" data-select-component="${card.dataset.component}">Chọn ${escapeHtml(title)}</button><span class="relationship-state">Trạng thái quan hệ: trung lập</span></div>`);
+          card.querySelector('.component-select').addEventListener('click', () => selectComponent(card.dataset.component));
+          card.addEventListener('click', event => { if (!event.target.closest('summary, a, button, input, select')) selectComponent(card.dataset.component); });
+        });
         byId('map-mode').addEventListener('change', event => setMapMode(event.target.value));
         ['component-search','trust-zone-filter','durability-filter'].forEach(id => byId(id).addEventListener(id === 'component-search' ? 'input' : 'change', () => setFilters()));
         byId('component-filter-reset').addEventListener('click', () => setFilters({ search: '', trust: 'all', durability: 'all' }));
@@ -668,10 +728,23 @@
         byId('trace-previous').addEventListener('click', () => selectTraceStep(state.traceStep - 1));
         byId('trace-next').addEventListener('click', () => selectTraceStep(state.traceStep + 1));
         byId('trace-restart').addEventListener('click', () => selectTraceStep(0));
-        byId('trace-steps').addEventListener('click', event => { const button = event.target.closest('[data-trace-step]'); if (button) selectTraceStep(button.dataset.traceStep); });
+        byId('trace-steps').addEventListener('click', event => { const button = event.target.closest('[data-trace-step]'); if (button) selectTraceStep(button.dataset.traceStep, true); });
         byId('quiz-questions').addEventListener('click', event => { const button = event.target.closest('[data-question]'); if (button) answerQuestion(button.dataset.question, button.dataset.answer); });
         byId('quiz-scope').addEventListener('change', event => { state.quizScope = event.target.value; renderQuiz(); });
         byId('quiz-reset').addEventListener('click', resetQuiz);
+        byId('nav-drawer-toggle').addEventListener('click', () => setDrawer('nav', !state.drawers.nav));
+        byId('evidence-drawer-toggle').addEventListener('click', () => setDrawer('evidence', !state.drawers.evidence));
+        byId('nav-drawer-close').addEventListener('click', () => setDrawer('nav', false, true));
+        byId('evidence-drawer-close').addEventListener('click', () => setDrawer('evidence', false, true));
+        byId('atlas-nav').addEventListener('click', event => { if (event.target.closest('a') && window.matchMedia('(max-width: 760px)').matches) setDrawer('nav', false); });
+        document.addEventListener('keydown', event => {
+          if (event.key === 'Escape') {
+            if (window.matchMedia('(max-width: 760px)').matches && state.drawers.nav) setDrawer('nav', false, true);
+            if (window.matchMedia('(max-width: 1100px)').matches && state.drawers.evidence) setDrawer('evidence', false, true);
+          }
+        });
+        window.addEventListener('resize', syncDrawerLayout);
+        syncDrawerLayout();
         setMapMode('trust'); setFilters(); selectScenario(TRACE_SCENARIOS[0].id); loadQuiz(); renderQuiz();
       }
 
