@@ -312,7 +312,7 @@ class McpGateway:
             try:
                 await self._connect_one(stack, spec, log, open_session)
             except BaseException as exc:  # noqa: BLE001 — additive; never fatal
-                if _is_fatal(exc):
+                if _is_fatal(exc) and not _is_spurious_cancel(exc):
                     raise
                 _log(log, f"[agent] !mcp '{spec.name}' skipped: {_describe_exc(exc)}")
 
@@ -441,6 +441,33 @@ def _is_fatal(exc: BaseException) -> bool:
     return False
 
 
+def _is_spurious_cancel(exc: BaseException) -> bool:
+    """A `CancelledError` leaked by a failed optional server's own anyio cancel
+    scope — NOT a real cancellation of our task.
+
+    anyio cancels its internal scope when a streamable-HTTP transport cannot
+    connect and lets a bare ``CancelledError`` ("Cancelled via cancel scope …")
+    escape. `_is_fatal` treats every `CancelledError` as fatal, so that one dead
+    optional server would re-raise out of `connect_external` and abort the whole
+    run — surfacing, confusingly, as "agent exceeded N cycles" because the model
+    loop never even started. The tell is that our task is not actually being
+    cancelled: a genuine external cancel (Ctrl-C, a parent timeout) increments
+    ``current_task().cancelling()``, while the anyio scope's cancel unwinds back
+    to zero. `KeyboardInterrupt`/`SystemExit` are never spurious.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return False
+    if isinstance(exc, BaseExceptionGroup):
+        if exc.subgroup((KeyboardInterrupt, SystemExit)) is not None:
+            return False
+        if exc.subgroup(asyncio.CancelledError) is None:
+            return False
+    elif not isinstance(exc, asyncio.CancelledError):
+        return False
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() == 0
+
+
 def _describe_exc(exc: BaseException) -> str:
     """One-line cause for the skip log, unwrapping an anyio group to its leaf."""
     if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -459,5 +486,5 @@ async def _aclose_quietly(stack: AsyncExitStack) -> None:
     try:
         await stack.aclose()
     except BaseException as exc:  # noqa: BLE001 — teardown of optional server
-        if _is_fatal(exc):
+        if _is_fatal(exc) and not _is_spurious_cancel(exc):
             raise

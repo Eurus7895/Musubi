@@ -19,6 +19,24 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   and never fires on a run that is actually producing. It caps wasted spend;
   it is not a substitute for a driver model that can converge.
 
+### Unreachable external MCP server no longer aborts the run
+
+- An external MCP server declared with a `url:` (streamable-HTTP) in
+  `.musubi/mcp.json` that is unreachable from the host makes anyio cancel its
+  internal scope and leak a bare `CancelledError` ("Cancelled via cancel
+  scope …") at connect time. `_is_fatal` treats every `CancelledError` as a real
+  cancel, so `connect_external` re-raised it and aborted the whole turn —
+  before the model loop even started — which surfaced as the misleading
+  `agent exceeded N cycles without a final answer` (a zero-cycle "exhaustion",
+  with no `vendor=`/`scope=`/cycle logs). Optional *stdio* servers already
+  failed open; only the HTTP transport tripped this.
+- `_is_spurious_cancel` distinguishes an anyio scope's leaked cancel — our task
+  is not actually cancelling (`current_task().cancelling() == 0`) — from a
+  genuine external cancel (Ctrl-C / parent timeout, which increments it;
+  `KeyboardInterrupt`/`SystemExit` are never spurious). `connect_external` and
+  `_aclose_quietly` now skip a spurious cancel like any other dead optional
+  server, so one unreachable MCP endpoint can never take down the run.
+
 ### Read-only requests route to a single explorer
 
 - The scope classifier had no notion of a read-only inspection: "reach to

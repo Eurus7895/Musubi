@@ -19,6 +19,7 @@ import pytest
 from agent.mcp_gateway import (
     McpGateway,
     McpServerSpec,
+    _is_spurious_cancel,
     find_mcp_config_path,
     load_mcp_servers,
     mcp_config_candidates,
@@ -410,3 +411,82 @@ def test_connect_external_skips_server_failing_at_teardown_only() -> None:
     log = _connect(gw, [McpServerSpec(name="remote", command="x")], opener)
     assert gw.tools() == []
     assert any("skipped" in line for line in log)
+
+
+def test_connect_external_skips_spurious_anyio_scope_cancel() -> None:
+    """Regression: an unreachable streamable-HTTP server's anyio cancel scope
+    leaks a bare `CancelledError` ("Cancelled via cancel scope …") when it can't
+    connect. `_is_fatal` treats every `CancelledError` as fatal, so before this
+    guard that one dead optional server re-raised out of `connect_external` and
+    aborted the whole run — surfacing to the user as "agent exceeded N cycles"
+    because the model loop never started. Our task is not actually cancelled, so
+    it must be skipped like any other unreachable server."""
+    gw = McpGateway()
+    good = FakeSession([_tool("ls")])
+
+    async def opener(_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        if spec.name == "dead":
+            raise asyncio.CancelledError("Cancelled via cancel scope 0xdeadbeef")
+        return good
+
+    specs = [
+        McpServerSpec(name="dead", command="x"),
+        McpServerSpec(name="good", command="y"),
+    ]
+    # Must NOT raise, and the reachable server after the dead one still registers.
+    log = _connect(gw, specs, opener)
+    assert gw.route("good__ls") == (good, "ls")
+    assert any("dead" in line and "skipped" in line for line in log)
+
+
+def test_connect_external_still_propagates_keyboard_interrupt() -> None:
+    """A real interrupt during connect is never spurious — it must abort."""
+    gw = McpGateway()
+
+    async def opener(_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _connect(gw, [McpServerSpec(name="x", command="z")], opener)
+
+
+def test_is_spurious_cancel_discriminates() -> None:
+    async def _check() -> None:
+        # A bare scope cancel with our task uncancelled is spurious.
+        assert _is_spurious_cancel(asyncio.CancelledError("via cancel scope"))
+        # An exception group of only cancels is spurious...
+        assert _is_spurious_cancel(
+            BaseExceptionGroup("g", [asyncio.CancelledError("scope")])
+        )
+        # ...but a group that also carries a real interrupt is not.
+        assert not _is_spurious_cancel(
+            BaseExceptionGroup("g", [KeyboardInterrupt(), asyncio.CancelledError()])
+        )
+        # Non-cancel errors are handled by the ordinary fail-open path.
+        assert not _is_spurious_cancel(RuntimeError("boom"))
+        assert not _is_spurious_cancel(KeyboardInterrupt())
+
+    asyncio.run(_check())
+
+
+def test_is_spurious_cancel_false_when_task_genuinely_cancelling() -> None:
+    """When our task is actually being cancelled, a `CancelledError` is real and
+    must propagate — `cancelling()` is non-zero."""
+    seen: list[bool] = []
+
+    async def _inner() -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError as exc:
+            seen.append(_is_spurious_cancel(exc))
+            raise
+
+    async def _drive() -> None:
+        task = asyncio.ensure_future(_inner())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_drive())
+    assert seen == [False]
