@@ -54,6 +54,35 @@ def test_bare_intent_without_a_path_is_not_inspection() -> None:
     assert hint.kind is not ScopeKind.INSPECT
 
 
+def test_directory_named_after_a_verb_is_still_inspection() -> None:
+    # A directory named after a mutation verb ("build", "run") is a target, not
+    # an action — reading it must not be knocked out of the inspect route.
+    for task in ("open build directory", "show run folder", "list the build directory"):
+        hint = classify_task(task)
+        assert hint.kind is ScopeKind.INSPECT, task
+        assert hint.route == "single_explorer", task
+
+
+def test_diagnostic_find_is_not_read_only_inspection() -> None:
+    # "find why X is failing" needs an investigator (Bash/tests), not a
+    # read-only explorer, so it must fall through the inspect route.
+    for task in (
+        "find why pytest is failing in the auth module",
+        "show why the build folder is broken and fails",
+    ):
+        assert classify_task(task).kind is not ScopeKind.INSPECT, task
+
+
+def test_find_and_move_or_copy_is_a_mutation_not_inspection() -> None:
+    # A filesystem move/copy is a change; pairing it with a read-only verb must
+    # not intercept it into the read-only explorer route.
+    for task in (
+        "find and move src/foo.py to src/bar.py",
+        "find and copy config.py to backup.py",
+    ):
+        assert classify_task(task).kind is not ScopeKind.INSPECT, task
+
+
 def test_classifies_known_file_edit_as_simple_edit() -> None:
     hint = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
 

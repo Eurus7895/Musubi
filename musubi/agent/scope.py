@@ -100,10 +100,26 @@ _INSPECT_RE = re.compile(
 )
 # Any verb that would change state — its presence disqualifies the read-only
 # route so an explicit edit/create/run request is never sent to an explorer.
+# Filesystem-move verbs (move/copy/mv/cp) are mutations too: "find and move
+# src/foo to src/bar" is a change, not an inspection.
 _MUTATION_RE = re.compile(
     r"(?i)\b(create|make|generate|write|build|add|update|change|modify|replace|"
     r"rename|fix|tweak|adjust|set|delete|remove|erase|refactor|implement|"
-    r"install|run|execute|deploy|commit|push|edit|migrate|rewrite|append)\b"
+    r"install|run|execute|deploy|commit|push|edit|migrate|rewrite|append|"
+    r"move|copy|mv|cp)\b"
+)
+# Diagnostic intent ("find why X is failing") needs an investigator with
+# Bash/test access, not a read-only explorer — route it away from inspection so
+# the root can reproduce the failure. Kept tight (strong failure/why signals
+# only) so a plain file read like "read the error log" is not swept up.
+_DIAGNOSTIC_RE = re.compile(
+    r"(?i)\b(why|failing|fails|failed|not working|does(?:n'?t| not) work)\b"
+)
+# A directory named after a mutation verb ("build directory", "run folder") is
+# a *target*, not an action. Stripped before the mutation check so a read-only
+# "open build directory" is not disqualified by the embedded verb.
+_DIR_TARGET_RE = re.compile(
+    r"(?i)\b[\w.\-]+\s+(?:folders?|directory|directories|dir)\b"
 )
 # A concrete path/dir/file target, so bare intent ("open a PR") does not route
 # to inspection. Matches a drive-letter path, a slashed path segment, or an
@@ -125,7 +141,8 @@ _PATH_TOKEN_RE = re.compile(
 
 
 def _mutation_intent(text: str) -> bool:
-    return _MUTATION_RE.search(_PATH_TOKEN_RE.sub(" ", text)) is not None
+    without_targets = _DIR_TARGET_RE.sub(" ", _PATH_TOKEN_RE.sub(" ", text))
+    return _MUTATION_RE.search(without_targets) is not None
 
 
 _SIMPLE_EDIT_RE = re.compile(
@@ -186,10 +203,13 @@ def classify_task(task: str) -> ScopeHint:
     # routes to a single explorer BEFORE the risk/medium heuristics: reading a
     # sensitive area is still just reading, so it must not be scoped as a
     # planner→coder change. Gated on a concrete path/dir target and the absence
-    # of any mutation verb, so explicit edits/creates are never intercepted.
+    # of any mutation verb, so explicit edits/creates are never intercepted; a
+    # diagnostic ("find why X is failing") is excluded so it can keep the
+    # investigator's Bash/test access instead of a read-only explorer.
     if (
         _INSPECT_RE.search(text)
         and not _mutation_intent(text)
+        and not _DIAGNOSTIC_RE.search(text)
         and (_PATH_RE.search(text) or _PATHISH_RE.search(text))
     ):
         return ScopeHint(
