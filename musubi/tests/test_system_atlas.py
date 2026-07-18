@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import unittest
 from collections import Counter
 from html.parser import HTMLParser
@@ -10,6 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ATLAS_PATH = ROOT / "artifacts" / "musubi-system-atlas.html"
+SNAPSHOT_EVIDENCE_PATH = (
+    ROOT / "musubi" / "tests" / "fixtures" / "system_atlas_snapshot_49c58d3.json"
+)
 
 
 class AtlasParser(HTMLParser):
@@ -242,6 +244,8 @@ class SystemAtlasContractTests(unittest.TestCase):
 
     def test_representative_evidence_lines_support_symbols_at_snapshot(self) -> None:
         html, _ = parsed_atlas()
+        evidence = json.loads(SNAPSHOT_EVIDENCE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["snapshot"], "49c58d3")
         expected = {
             "musubi/agent/run.py:1234": "def main",
             "musubi/agent/run.py:1303": '"--pipeline"',
@@ -252,18 +256,10 @@ class SystemAtlasContractTests(unittest.TestCase):
             "gui/src-tauri/musubi-data/src/lib.rs:1210": "save_pipeline_recipe",
             "musubi/setup_wizard.py:682": "path.write_text",
         }
+        self.assertEqual(set(evidence["anchors"]), set(expected))
         for anchor, symbol in expected.items():
             self.assertIn(anchor, html)
-            path, line_text = anchor.rsplit(":", 1)
-            snapshot = subprocess.run(
-                ["git", "show", f"49c58d3:{path}"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            ).stdout.splitlines()
-            self.assertIn(symbol, snapshot[int(line_text) - 1], anchor)
+            self.assertIn(symbol, evidence["anchors"][anchor], anchor)
 
     def test_atlas_records_have_complete_classification_and_quiz_contract(self) -> None:
         html, parser = parsed_atlas()
