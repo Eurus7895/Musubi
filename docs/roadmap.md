@@ -166,6 +166,16 @@ for the same dimension.
 
 ## Completed Tracks
 
+- Musubi System Atlas — a self-contained Vietnamese maintainer guide maps the
+  driver, zero-LLM governance substrate, operator projection, and external
+  boundaries; documents component rationale, invariants, token economics, and
+  architecture evolution; and includes 13 interactive execution traces plus a
+  24-question scored review. The artifact uses an explicit light palette so
+  host dark-mode settings cannot obscure the content. [Open the atlas](../artifacts/musubi-system-atlas.html).
+  Design and plan:
+  [`2026-07-16-musubi-system-atlas-design.md`](./superpowers/specs/2026-07-16-musubi-system-atlas-design.md) and
+  [`2026-07-16-musubi-system-atlas.md`](./superpowers/plans/2026-07-16-musubi-system-atlas.md)
+
 - GUI/CLI orchestrator token economics — every logical root, child, pipeline,
   retry, and forced-final LM cycle records input, cached-input subset, output,
   LM time, usage source, worker identity, and tool names. The CLI and

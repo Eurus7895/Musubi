@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musubi System Atlas — Maintainer Edition</title>
+  <style>
+    :root { color-scheme: light; --page-bg: #f7f3ea; --page-fg: #152238; --surface: #fffdfa; --surface-muted: #edf2f7; --border: #8491a3; --trust-driver: #cfe0ff; --trust-substrate: #ffe1b8; --trust-projection: #ccebdc; --trust-external: #dce1e8; --state-selected: #b45309; --state-related: #1d4ed8; --state-error: #b42318; --state-success: #18794e; --focus-ring: #8a3ffc; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.55; }
+    body { background: var(--page-bg); color: var(--page-fg); display: grid; gap: 1.25rem; grid-template-areas: "header header header" "nav main evidence" "fallback fallback fallback"; grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr) minmax(16rem, 22rem); margin: auto; max-width: 110rem; min-width: 18rem; padding: 1.5rem; }
+    #orientation { grid-area: header; }
+    #atlas-nav { align-self: start; grid-area: nav; position: sticky; top: 1rem; }
+    main { grid-area: main; min-width: 0; }
+    #evidence-drawer { align-self: start; grid-area: evidence; position: sticky; top: 1rem; }
+    noscript { grid-area: fallback; }
+    nav ul, .records, .questions { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
+    section { border-block-start: 1px solid var(--border); margin-block: 2rem; padding-block: 1rem; }
+    article, li, .callout { padding: .8rem; }
+    article { background: var(--surface); border: 1px solid var(--border); border-radius: .5rem; }
+    article h3 { margin-block: 0 .35rem; }
+    details { margin-block-start: .5rem; }
+    code { overflow-wrap: anywhere; }
+    .axes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+    .callout { background: #e8f0ff; border-inline-start: .35rem solid var(--state-related); }
+    .badges span { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; display: inline-block; font-size: .8rem; margin: .2rem; padding: .15rem .45rem; }
+    svg { background: var(--surface); border: 1px solid var(--border); color: var(--page-fg); height: auto; max-width: 100%; }
+    .node rect, .node ellipse, .node circle, .node polygon { stroke: var(--page-fg); stroke-width: 2; }
+    .node[data-trust-zone="model-calling driver"] rect { fill: var(--trust-driver); }
+    .node[data-trust-zone="zero-LLM governance substrate"] rect, .node[data-trust-zone="zero-LLM governance substrate"] polygon { fill: var(--trust-substrate); }
+    .node[data-trust-zone="read-only operator projection"] ellipse { fill: var(--trust-projection); }
+    .node[data-trust-zone="external system"] circle { fill: var(--trust-external); }
+    .node[data-durability="ephemeral"] rect, .node[data-durability="ephemeral"] ellipse, .node[data-durability="ephemeral"] circle, .node[data-durability="ephemeral"] polygon { stroke-dasharray: 7 4; }
+    .node.projection rect { rx: 14; }
+    .node.storage polygon { stroke-width: 4; }
+    .edge { fill: none; stroke: var(--page-fg); stroke-width: 1.4; marker-end: url(#arrow); }
+    .edge-label { font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+    .node-label { font-size: 12px; font-weight: 650; text-anchor: middle; }
+    button, input, select { background: var(--surface); border: 1px solid var(--border); color: var(--page-fg); font: inherit; min-height: 44px; }
+    button, select { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .65; }
+    a { color: #174ea6; }
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
+    .atlas-controls { align-items: end; display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); margin-block: 1rem; }
+    .atlas-controls label { display: grid; font-weight: 650; gap: .25rem; }
+    .map-scroll, .trace-scroll { overflow-x: auto; }
+    .map-scroll svg { min-width: 760px; }
+    [data-map-mode="runtime"] .edge[data-relation-kind="control"], [data-map-mode="control"] .edge[data-relation-kind="runtime"] { opacity: .14; }
+    [data-map-mode="runtime"] .edge[data-relation-kind="runtime"], [data-map-mode="control"] .edge[data-relation-kind="control"] { stroke: var(--state-selected); stroke-width: 3; }
+    [data-map-mode="runtime"] .edge[data-relation-kind="runtime"].is-muted, [data-map-mode="control"] .edge[data-relation-kind="control"].is-muted { opacity: .62; }
+    .node { cursor: pointer; transition: opacity .18s ease, filter .18s ease; }
+    .node.is-related { opacity: 1; filter: drop-shadow(0 0 5px var(--state-related)); }
+    .node.is-muted { opacity: .25; }
+    .node.is-selected { filter: drop-shadow(0 0 8px var(--state-selected)); }
+    .edge { transition: opacity .18s ease, stroke-width .18s ease; }
+    .edge.is-related { stroke: var(--state-selected); stroke-width: 4; }
+    .edge.is-muted { opacity: .16; }
+    article[data-component] { transition: border-color .18s ease, opacity .18s ease; }
+    article[data-component].is-selected { border-color: var(--state-selected); box-shadow: 0 0 0 2px #fed7aa; }
+    article[data-component].is-related { border-style: dashed; border-color: var(--state-related); }
+    article[data-component].is-muted { opacity: .58; }
+    article[data-component][hidden] { display: none; }
+    .component-select-row { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: space-between; }
+    .relationship-state { font-size: .875rem; font-weight: 650; }
+    .relationship-list, .trace-panel, .quiz-card { background: var(--surface); border: 1px solid var(--border); border-radius: .6rem; padding: 1rem; }
+    .maintainer-record { display: grid; gap: .25rem .75rem; grid-template-columns: minmax(8rem, auto) 1fr; }
+    .maintainer-record dt { font-weight: 750; }
+    .maintainer-record dd { margin: 0; overflow-wrap: anywhere; }
+    .trace-actions, .trace-step-buttons, .quiz-options, .quiz-toolbar { display: flex; flex-wrap: wrap; gap: .6rem; }
+    .trace-step-buttons button[aria-current="step"] { background: #ffedd5; border-color: var(--state-selected); color: var(--page-fg); font-weight: 750; }
+    .trace-grid { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+    .lm-badge { background: var(--surface-muted); border: 1px solid var(--border); border-radius: 999px; display: inline-block; font-weight: 750; padding: .25rem .6rem; }
+    .quiz-card { margin-block: 1rem; }
+    .quiz-card fieldset { border: 0; margin: 0; padding: 0; }
+    .quiz-option { align-items: center; display: flex; min-height: 44px; text-align: start; }
+    .quiz-option.is-correct { background: #e5f6ed; border: 2px solid var(--state-success); color: #0b5132; }
+    .quiz-option.is-wrong { background: #ffebe9; border: 2px solid var(--state-error); color: #7a1a14; }
+    .quiz-result { background: #e8f0ff; border-inline-start: .35rem solid var(--state-related); color: var(--page-fg); margin-block: .8rem; padding: .7rem; }
+    .quiz-summary { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+    .drawer-controls { display: flex; flex-wrap: wrap; gap: .6rem; }
+    .drawer-toggle, .drawer-close { display: none; }
+    .sr-only { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
+    @media (max-width: 1100px) {
+      body { grid-template-areas: "header header" "nav main" "evidence evidence" "fallback fallback"; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); }
+      html[data-javascript="enabled"] body { grid-template-areas: "header header" "nav main" "fallback fallback"; }
+      html[data-javascript="enabled"] #evidence-drawer { background: var(--surface); border: 1px solid var(--border); color: var(--page-fg); height: 100dvh; inset-block: 0; inset-inline-end: 0; max-width: min(28rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      html[data-javascript="enabled"] #evidence-drawer.is-open { transform: translateX(0); }
+      html[data-javascript="enabled"] #evidence-drawer-toggle, html[data-javascript="enabled"] #evidence-drawer-close { display: inline-flex; }
+    }
+    @media (max-width: 760px) {
+      body { grid-template-areas: "header" "nav" "main" "evidence" "fallback"; grid-template-columns: minmax(0, 1fr); padding: .75rem; }
+      html[data-javascript="enabled"] body { grid-template-areas: "header" "main" "fallback"; }
+      html[data-javascript="enabled"] #atlas-nav { background: var(--surface); border: 1px solid var(--border); color: var(--page-fg); height: 100dvh; inset-block: 0; inset-inline-start: 0; max-width: min(24rem, 90vw); overflow: auto; padding: 1rem; position: fixed; transform: translateX(-105%); transition: transform .18s ease; width: 100%; z-index: 20; }
+      html[data-javascript="enabled"] #atlas-nav.is-open { transform: translateX(0); }
+      html[data-javascript="enabled"] #nav-drawer-toggle, html[data-javascript="enabled"] #nav-drawer-close { display: inline-flex; }
+      nav ul { grid-template-columns: 1fr 1fr; }
+      .records, .questions { grid-template-columns: 1fr; }
+      .map-scroll, .trace-scroll { margin-inline: -.75rem; padding-inline: .75rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+      .edge { animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header id="orientation" data-snapshot="49c58d3" data-generated="2026-07-16">
+    <h1>Musubi System Atlas</h1>
+    <div class="drawer-controls" aria-label="Điều khiển vùng phụ">
+      <button id="nav-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="atlas-nav">Mở mục lục</button>
+      <button id="evidence-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="evidence-drawer">Mở bằng chứng</button>
+    </div>
+    <p>Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time datetime="2026-07-16">2026-07-16</time>.</p>
+    <p class="callout"><strong>Snapshot drift:</strong> các liên kết source bên dưới trỏ tới đường dẫn repository và số dòng đã audit tại <code>49c58d3</code>. Nếu checkout hiện tại khác snapshot, nội dung hoặc số dòng có thể đã dịch chuyển; dùng <code>git show 49c58d3:&lt;path&gt;</code> để đối chiếu chính xác.</p>
+    <p class="callout"><strong>Mental model đầu tiên:</strong> The driver reasons. Musubi controls the environment. Model tạo reasoning, text và tool request; driver sở hữu model call, goal state và orchestration; substrate kiểm soát deterministic action, context, validation, persistence và evidence mà không gọi model.</p>
+    <div class="axes">
+      <div><h2>Trục 1 — trust boundary</h2><p><strong>Model-calling driver</strong> gọi model qua <code>LMRouter</code>; <strong>zero-LLM governance substrate</strong> gate và ghi evidence; <strong>read-only operator projection</strong> chỉ đọc trạng thái an toàn; <strong>operator control</strong> là mutation/authoring do người dùng chủ động như Setup và Pipeline Studio; <strong>external system</strong> nằm ngoài quyền kiểm soát của Musubi.</p></div>
+      <div><h2>Trục 2 — lifecycle</h2><p><strong>Durable investment</strong> là primitive đáng duy trì; <strong>ephemeral compensation</strong> phải có removal trigger. Trục này độc lập với trust: worker loop là <em>durable driver</em>, không phải <em>zero-LLM substrate</em>. <code>musubi-tier</code> chỉ là metadata triển khai riêng.</p></div>
+    </div>
+    <p><strong>Thuật ngữ:</strong> surface là cửa vào của operator; worker là một vòng <code>run_unit</code>; pipeline là recipe nhiều stage xác định; skill là capability/prompt được inject hoặc tải; audit evidence là record bền; fail-closed nghĩa là không có allowlist thì deny; substrate là governance không gọi LLM; ephemeral là scaffolding có ngày hết hạn.</p>
+    <p><strong>Unified worker model</strong> chỉ có nghĩa root và child dùng chung primitive <code>run_unit</code>. Root giữ goal state, phase routing, recovery và quyền đọc rộng hơn; child nhận brief đóng băng, pushed skill và tool/spawn bị giới hạn.</p>
+  </header>
+  <nav id="atlas-nav" aria-label="Mục lục"><button id="nav-drawer-close" class="drawer-close" type="button" aria-controls="atlas-nav">Đóng mục lục</button><ul>
+    <li><a href="#system-map">Bản đồ hệ thống</a></li><li><a href="#components">Thành phần</a></li><li><a href="#traces">Luồng chạy</a></li>
+    <li><a href="#invariants">Bất biến</a></li><li><a href="#economics">Kinh tế token</a></li><li><a href="#evolution">Tiến hóa</a></li><li><a href="#quiz">Kiểm tra</a></li>
+  </ul></nav>
+  <main>
+    <section id="system-map">
+      <h2>Bản đồ hệ thống</h2>
+      <p>Hình dạng và màu luôn biểu thị trust zone: chữ nhật = model-calling driver, lục giác = zero-LLM substrate, ellipse = read-only projection, hình tròn = external system. Viền lifecycle cũng luôn hiện: liền = durable, đứt = ephemeral. Overlay <strong>Runtime flow</strong> nhấn mạnh request/context/tool/result/audit/model-call paths; <strong>Control boundary</strong> nhấn mạnh allow/deny/validate/persist boundaries. <code>musubi-tier</code> là metadata source riêng.</p>
+      <div class="atlas-controls">
+        <label>Chế độ bản đồ
+          <select id="map-mode"><option value="runtime">Runtime flow</option><option value="control">Control boundary</option></select>
+        </label>
+      </div>
+      <div class="map-scroll" tabindex="0" aria-label="Bản đồ có thể cuộn ngang">
+      <svg viewBox="0 0 1200 720" role="img" aria-labelledby="map-title map-desc">
+        <title id="map-title">Bản đồ runtime và governance Musubi</title>
+        <desc id="map-desc">Trust-zone shape và lifecycle border luôn hiện. Runtime overlay theo request, context, tool, result, audit và model-call paths từ CLI hoặc Console qua driver, provider và MCP. Control overlay theo allow, deny, validate và persist boundaries từ MCP qua policy, evaluator, state, audit và safe projection.</desc>
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="currentColor"/></marker></defs>
+        <g class="node" data-map-component="cli" data-trust-zone="model-calling driver" data-map-shape="rect" data-durability="durable"><rect x="30" y="35" width="150" height="54"/><text class="node-label" x="105" y="67">CLI</text></g>
+        <g class="node projection" data-map-component="console" data-trust-zone="read-only operator projection" data-map-shape="ellipse" data-durability="durable"><ellipse cx="285" cy="62" rx="75" ry="27"/><text class="node-label" x="285" y="67">Console</text></g>
+        <g class="node" data-map-component="goal-state" data-trust-zone="model-calling driver" data-map-shape="rect" data-durability="durable"><rect x="30" y="155" width="170" height="60"/><text class="node-label" x="115" y="181">GoalState</text><text class="node-label" x="115" y="198">root controller</text></g>
+        <g class="node" data-map-component="worker-loop" data-trust-zone="model-calling driver" data-map-shape="rect" data-durability="durable"><rect x="235" y="155" width="170" height="60"/><text class="node-label" x="320" y="181">run_unit</text><text class="node-label" x="320" y="198">worker loop</text></g>
+        <g class="node" data-map-component="pipeline-runner" data-trust-zone="model-calling driver" data-map-shape="rect" data-durability="ephemeral"><rect x="440" y="155" width="180" height="60"/><text class="node-label" x="530" y="181">Deterministic</text><text class="node-label" x="530" y="198">pipeline runner</text></g>
+        <g class="node" data-map-component="lm-router" data-trust-zone="model-calling driver" data-map-shape="rect" data-durability="durable"><rect x="655" y="155" width="150" height="60"/><text class="node-label" x="730" y="190">LMRouter</text></g>
+        <g class="node external" data-map-component="model-provider" data-trust-zone="external system" data-map-shape="circle" data-durability="durable"><circle cx="930" cy="185" r="45"/><text class="node-label" x="930" y="181">Model</text><text class="node-label" x="930" y="198">provider</text></g>
+        <g class="node" data-map-component="mcp-server" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="250,305 390,305 410,335 390,365 250,365 230,335"/><text class="node-label" x="320" y="340">Musubi MCP server</text></g>
+        <g class="node" data-map-component="policy" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="30,305 180,305 200,335 180,365 30,365 10,335"/><text class="node-label" x="105" y="340">Fail-closed policy</text></g>
+        <g class="node" data-map-component="evaluator-firewall" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="450,305 610,305 630,335 610,365 450,365 430,335"/><text class="node-label" x="530" y="332">Evaluator</text><text class="node-label" x="530" y="348">firewall</text></g>
+        <g class="node" data-map-component="skills" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="45,440 155,440 170,467 155,495 45,495 30,467"/><text class="node-label" x="100" y="472">Skills</text></g>
+        <g class="node" data-map-component="memory" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="210,440 320,440 335,467 320,495 210,495 195,467"/><text class="node-label" x="265" y="472">Memory</text></g>
+        <g class="node" data-map-component="compression" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="375,440 525,440 540,467 525,495 375,495 360,467"/><text class="node-label" x="450" y="464">Compression /</text><text class="node-label" x="450" y="481">context fit</text></g>
+        <g class="node storage" data-map-component="state-db" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="610,440 720,440 735,467 720,495 610,495 595,467"/><text class="node-label" x="665" y="472">musubi.db</text></g>
+        <g class="node storage" data-map-component="audit-db" data-trust-zone="zero-LLM governance substrate" data-map-shape="polygon" data-durability="durable"><polygon points="775,440 885,440 900,467 885,495 775,495 760,467"/><text class="node-label" x="830" y="472">audit.db</text></g>
+        <g class="node projection" data-map-component="rust-projection" data-trust-zone="read-only operator projection" data-map-shape="ellipse" data-durability="durable"><ellipse cx="745" cy="615" rx="95" ry="30"/><text class="node-label" x="745" y="610">Rust safe evidence</text><text class="node-label" x="745" y="627">boundary</text></g>
+        <g class="node projection" data-map-component="react-view-model" data-trust-zone="read-only operator projection" data-map-shape="ellipse" data-durability="durable"><ellipse cx="965" cy="615" rx="90" ry="30"/><text class="node-label" x="965" y="610">React</text><text class="node-label" x="965" y="627">view model</text></g>
+        <g class="node external" data-map-component="external-mcp" data-trust-zone="external system" data-map-shape="circle" data-durability="durable"><circle cx="1087" cy="335" r="50"/><text class="node-label" x="1087" y="332">External MCP</text><text class="node-label" x="1087" y="348">federation</text></g>
+        <path class="edge" d="M105 89 V155"/><text class="edge-label" x="111" y="128">launches</text>
+        <path class="edge" d="M285 89 C285 120 530 115 530 155"/><text class="edge-label" x="390" y="119">launches --pipeline</text>
+        <path class="edge" d="M200 185 H235"/><text class="edge-label" x="203" y="178">routes</text>
+        <path class="edge" d="M405 185 H440"/><text class="edge-label" x="408" y="178">dispatches</text>
+        <path class="edge" d="M405 170 C500 110 600 110 655 170"/><text class="edge-label" x="500" y="128">calls</text>
+        <path class="edge" d="M805 185 H885"/><text class="edge-label" x="810" y="178">requests</text>
+        <path class="edge" d="M320 215 V305"/><text class="edge-label" x="326" y="263">calls tools</text>
+        <path class="edge" d="M230 335 H200"/><text class="edge-label" x="194" y="326">gates</text>
+        <path class="edge" d="M410 335 H430"/><text class="edge-label" x="402" y="326">limits context</text>
+        <path class="edge" d="M270 365 C245 405 160 405 100 440"/><text class="edge-label" x="170" y="405">injects</text>
+        <path class="edge" d="M320 365 V440"/><text class="edge-label" x="326" y="407">loads</text>
+        <path class="edge" d="M380 365 L430 440"/><text class="edge-label" x="398" y="407">compresses</text>
+        <path class="edge" d="M350 365 C430 415 565 405 635 440"/><text class="edge-label" x="490" y="398">persists state</text>
+        <path class="edge" d="M390 365 C500 420 700 395 805 440"/><text class="edge-label" x="640" y="394">records audit</text>
+        <path class="edge" d="M405 200 C650 255 850 270 1038 330"/><text class="edge-label" x="720" y="260">routes namespaced calls</text>
+        <path class="edge" d="M665 495 L720 585"/><text class="edge-label" x="677" y="548">reads state</text>
+        <path class="edge" d="M830 495 L775 585"/><text class="edge-label" x="800" y="548">reads audit</text>
+        <path class="edge" d="M840 615 H875"/><text class="edge-label" x="840" y="606">projects</text>
+        <path class="edge" d="M965 585 C920 520 400 100 330 89"/><text class="edge-label" x="800" y="390">renders to Console</text>
+      </svg></div>
+      <div id="map-relationships" class="relationship-list" aria-live="polite"><strong>Quan hệ dạng văn bản:</strong> Chọn một node hoặc component card để xem cạnh incoming và outgoing.</div>
+      <div class="callout"><strong>Routing/boundary correction đã verify:</strong> model-visible root và child không thấy musubi_spawn_pipeline. Whole pipeline chỉ do CLI <code>--pipeline</code> hoặc Orchestrator Pipeline mode khởi chạy. Sibling workers trong cùng một model turn chạy <strong>same-turn</strong> bằng concurrent dispatch. <strong>external MCP</strong> đi thẳng tới server sở hữu tool, <strong>ngoài Musubi-owned policy/audit boundary</strong>. Worker loop là <strong>durable driver</strong>, không thuộc <strong>zero-LLM substrate</strong>.</div>
+    </section>
+    <section id="components">
+      <h2>Component atlas</h2>
+      <p>Mỗi card giữ cùng record shape. Phần tóm tắt cho biết trách nhiệm; mở “Chi tiết maintainer” để xem rationale, interface, enforcement, failure, economics và evidence.</p>
+      <div class="atlas-controls" aria-label="Tìm và lọc component">
+        <label>Tìm component
+          <input id="component-search" type="search" placeholder="Tên, trách nhiệm, source, invariant, failure…" autocomplete="off">
+        </label>
+        <label>Trust zone
+          <select id="trust-zone-filter"><option value="all">Tất cả trust zone</option><option value="model-calling driver">Model-calling driver</option><option value="zero-LLM governance substrate">Zero-LLM governance substrate</option><option value="read-only operator projection">Read-only operator projection</option><option value="operator control">Operator control</option><option value="external system">External system</option></select>
+        </label>
+        <label>Durability
+          <select id="durability-filter"><option value="all">Tất cả lifecycle</option><option value="durable">Durable</option><option value="ephemeral">Ephemeral</option></select>
+        </label>
+        <button id="component-filter-reset" type="button">Xóa bộ lọc</button>
+      </div>
+      <p id="component-filter-status" aria-live="polite">Hiển thị toàn bộ component.</p>
+      <div class="badges" aria-label="Phân loại evidence"><span data-evidence-kind="verified">verified</span><span data-evidence-kind="rationale">rationale</span><span data-evidence-kind="historical">historical</span><span data-evidence-kind="open">open</span><span data-evidence-kind="stale">stale</span></div>
+      <div class="records">
+        <article data-component="cli" data-responsibility="Nhận task và chọn direct hoặc pipeline run" data-why="Một host rõ ràng cho operator" data-inputs="argv, profile, pipeline" data-outputs="driver invocation" data-called-by="operator" data-depends-on="agent.run, setup wizard" data-enforces="explicit pipeline selection" data-failure-modes="invalid args fail before run" data-economics="process startup; zero token trực tiếp" data-source="musubi/agent/run.py:1234" data-related-source="musubi/agent/run.py:1303" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>CLI entry</h3><p>Surface chính của standalone host.</p><details><summary>Chi tiết maintainer</summary><p><b>Boundary:</b> pipeline là lựa chọn explicit của caller, không phải route ẩn của model.</p></details></article>
+        <article data-component="console" data-responsibility="Hiển thị và khởi chạy phiên operator" data-why="Cho operator một native evidence surface" data-inputs="safe projected state, submission" data-outputs="views, explicit launch" data-called-by="desktop operator" data-depends-on="Rust commands, React views" data-enforces="no implicit model call" data-failure-modes="missing DB degrades view" data-economics="UI refresh và process launch" data-source="gui/src-tauri/src/lib.rs:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Console shell &amp; Orchestrator</h3><p>Đọc evidence; chỉ submission rõ ràng mới launch driver.</p><details><summary>Chi tiết maintainer</summary><p>Projection không phải governance owner.</p></details></article>
+        <article data-component="goal-state" data-responsibility="Điều khiển goal state của root" data-why="Root cần quyết định continue, recover hoặc stop" data-inputs="intent, worker outcomes, budget" data-outputs="phase và next action" data-called-by="root run" data-depends-on="worker evidence" data-enforces="root-only routing authority" data-failure-modes="bad evidence can misroute recovery" data-economics="thêm root decision cycles" data-source="musubi/agent/goal_state.py:95" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>GoalState root controller</h3><p>Quyền root, không truyền ngang cho child.</p><details><summary>Chi tiết maintainer</summary><p>Child chỉ trả outcome; root sở hữu terminal decision.</p></details></article>
+        <article data-component="worker-loop" data-responsibility="Chạy một reasoning/tool loop thống nhất" data-why="Một primitive cho root và child" data-inputs="brief, tools, router, budget" data-outputs="assistant result và tool effects" data-called-by="root, nested dispatch, pipeline stages" data-depends-on="LMRouter, MCP session" data-enforces="turn and fan-out guards" data-failure-modes="model, tool hoặc budget failure" data-economics="LM tokens, cycles, wall-clock" data-source="musubi/agent/run.py:1139" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>run_unit worker loop</h3><p>Durable driver; không phải zero-LLM substrate.</p><details><summary>Chi tiết maintainer</summary><p>Siblings emitted trong một turn chạy same-turn qua <code>asyncio.gather</code>.</p></details></article>
+        <article data-component="pipeline-runner" data-responsibility="Chạy recipe stage theo thứ tự xác định" data-why="Pipeline cần deterministic stage chain" data-inputs="pipeline name, task, stage contracts" data-outputs="stage attempts và terminal result" data-called-by="CLI --pipeline, Orchestrator Pipeline mode" data-depends-on="composer, worker loop, MCP" data-enforces="last-stage brief and stage order" data-failure-modes="unknown recipe hoặc failed stage stops run" data-economics="tổng LM call của mọi stage" data-source="musubi/agent/pipeline_runner.py:178" data-evidence-kind="verified" data-musubi-tier="ephemeral" data-expires-when="models orchestrate multi-step pipelines natively" data-cost-lever="deletes the driver-side stage sequencer (~90 lines)" data-trust-zone="model-calling driver" data-durability="ephemeral"><h3>Deterministic pipeline runner</h3><p>Runner machinery có spawn support, nhưng model surface không expose whole-pipeline tool.</p><details><summary>Chi tiết maintainer</summary><p>Entry hiện tại là explicit operator route.</p></details></article>
+        <article data-component="lm-router" data-responsibility="Điểm inject model vendor-agnostic" data-why="Cô lập provider khỏi orchestration" data-inputs="messages, tools, token limit" data-outputs="LMResponse" data-called-by="worker loop" data-depends-on="vendor implementation" data-enforces="single driver-side model boundary" data-failure-modes="provider error propagates to driver" data-economics="model latency và billed tokens" data-source="musubi/agent/vendors/base.py:44" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>LMRouter</h3><p>Điểm model call duy nhất của driver.</p><details><summary>Chi tiết maintainer</summary><p>Substrate không import router hay SDK.</p></details></article>
+        <article data-component="model-provider" data-responsibility="Thực thi inference bên ngoài" data-why="Reasoning được cung cấp qua vendor" data-inputs="provider request" data-outputs="model response và usage" data-called-by="LMRouter implementation" data-depends-on="network hoặc local runtime" data-enforces="provider-specific limits" data-failure-modes="timeout, quota, malformed response" data-economics="token charge và latency" data-source="musubi/agent/vendors/curl_router.py:1" data-evidence-kind="verified" data-trust-zone="external system" data-durability="durable"><h3>Model provider</h3><p>Không do Musubi sở hữu.</p><details><summary>Chi tiết maintainer</summary><p>Provider availability không thay đổi HI #1.</p></details></article>
+        <article data-component="mcp-server" data-responsibility="Cung cấp các tool musubi_* deterministic" data-why="Một governance interface cho driver" data-inputs="MCP tool calls" data-outputs="validated result và mutations" data-called-by="driver MCP client" data-depends-on="policy, storage, capabilities" data-enforces="startup validation and tool contracts" data-failure-modes="bad policy/catalog aborts boot" data-economics="local dispatch và SQLite I/O" data-source="musubi/server.py:87" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Musubi MCP server</h3><p>Zero model calls; tập hợp control surface.</p><details><summary>Chi tiết maintainer</summary><p>Registered tool không đồng nghĩa tool được model nhìn thấy.</p></details></article>
+        <article data-component="policy" data-responsibility="Deny hoặc allow role/tool theo allowlist" data-why="Unknown authority phải fail closed" data-inputs="pipeline, role, tool" data-outputs="allow/deny decision" data-called-by="server and hooks" data-depends-on="composer catalogs" data-enforces="HI #5" data-failure-modes="unknown member denied; invalid tables abort boot" data-economics="constant local lookup" data-source="scripts/policy_engine.py:359" data-evidence-kind="verified" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Fail-closed policy</h3><p>Membership và tool policy đều deny-by-default.</p><details><summary>Chi tiết maintainer</summary><p>External MCP không đi qua gate này.</p></details></article>
+        <article data-component="evaluator-firewall" data-responsibility="Giới hạn artifact evaluator được đọc" data-why="Judge không được thấy intent/plan gây bias" data-inputs="stage identity, requested artifact" data-outputs="allowed context hoặc denial" data-called-by="pipeline runner, read_stage" data-depends-on="context builder" data-enforces="HI #3" data-failure-modes="forbidden read denied" data-economics="giảm model input và leakage" data-source="musubi/validation/context_builder.py:227" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Evaluator firewall</h3><p>Final stage chỉ nhận artifact ngay trước.</p><details><summary>Chi tiết maintainer</summary><p>Enforcement nằm ở runner và substrate read gate.</p></details></article>
+        <article data-component="skills" data-responsibility="Catalog, recommend, load và inject skill" data-why="Capability guidance cần reusable và có policy" data-inputs="role, query, skill id" data-outputs="role skill hoặc selected skill" data-called-by="spawn path, agent tools" data-depends-on="skill files and recommender" data-enforces="pushed role skill cannot opt out" data-failure-modes="unknown skill returns deterministic error" data-economics="prompt input characters" data-source="musubi/skills/recommender.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Skills</h3><p>Push cho worker; pull theo nhu cầu cho agent.</p><details><summary>Chi tiết maintainer</summary><p>Injection path được nối qua subagent context.</p></details></article>
+        <article data-component="memory" data-responsibility="Nạp memory ba tầng và distill session" data-why="Giữ kiến thức qua phiên mà không nhồi toàn bộ lịch sử" data-inputs="memory files, session evidence" data-outputs="bounded context và distilled entries" data-called-by="server memory tools" data-depends-on="memory loader, distiller" data-enforces="tiered loading" data-failure-modes="missing optional memory degrades context" data-economics="input characters và file I/O" data-source="musubi/memory/memory_loader.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Memory</h3><p>Ba tầng context có chọn lọc.</p><details><summary>Chi tiết maintainer</summary><p>Distillation là deterministic storage path, không tự gọi model.</p></details></article>
+        <article data-component="compression" data-responsibility="Nén reversible và fit model input" data-why="Giữ request dưới context ceiling" data-inputs="text, hints, model limits" data-outputs="compressed payload và retrieval ref" data-called-by="agent context path, MCP tools" data-depends-on="compression router" data-enforces="reversibility and size guards" data-failure-modes="oversize abort hoặc elision có evidence" data-economics="giảm input token; thêm CPU/storage" data-source="musubi/compression/router.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Compression/context fit</h3><p>Không “shrink-and-pray”; giữ đường retrieve.</p><details><summary>Chi tiết maintainer</summary><p>Driver fitting và substrate compression là owners khác nhau nhưng cùng map node.</p></details></article>
+        <article data-component="state-db" data-responsibility="Lưu operational driver state" data-why="Lifecycle cần join độc lập audit ledger" data-inputs="session, turn, pipeline rows" data-outputs="queryable current state" data-called-by="server and driver" data-depends-on="SQLite schema" data-enforces="typed lifecycle records" data-failure-modes="write failure blocks state transition" data-economics="SQLite storage" data-source="musubi/storage/schema.sql:34" data-evidence-kind="verified" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>musubi.db</h3><p>Operational state, gồm pipeline_runs và agent turns.</p><details><summary>Chi tiết maintainer</summary><p>Không suy đoán pipeline lifecycle từ audit rows khi DB này thiếu.</p></details></article>
+        <article data-component="audit-db" data-responsibility="Lưu append-only governance evidence" data-why="Mọi action cần forensic trail" data-inputs="tool, stage, subagent events" data-outputs="immutable historical rows" data-called-by="hooks and substrate stores" data-depends-on="SQLite" data-enforces="HI #7 and HI #8 evidence" data-failure-modes="audit write failure must surface" data-economics="durable row growth" data-source="musubi/storage/subagent_audit.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>audit.db</h3><p>Ledger append-only cho policy/tool/worker evidence.</p><details><summary>Chi tiết maintainer</summary><p>Console đọc nhưng không sở hữu rows.</p></details></article>
+        <article data-component="rust-projection" data-responsibility="Đọc hai DB và xuất safe runtime state" data-why="UI không được đọc raw secrets hoặc đoán ancestry" data-inputs="audit.db, musubi.db" data-outputs="safe serialized state" data-called-by="Tauri commands" data-depends-on="musubi-data reader" data-enforces="privacy and exact joins" data-failure-modes="missing state DB yields empty run cards" data-economics="SQLite query and projection" data-source="gui/src-tauri/musubi-data/src/lib.rs:1542" data-evidence-kind="verified" data-musubi-tier="substrate" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Rust safe evidence boundary</h3><p>Join state với audit ancestry, không mutation governance.</p><details><summary>Chi tiết maintainer</summary><p>Đây là projection boundary, không phải substrate gate.</p></details></article>
+        <article data-component="react-view-model" data-responsibility="Chuẩn hóa safe state cho React views" data-why="Tách transport shape khỏi presentation" data-inputs="projected runtime state" data-outputs="view-ready model" data-called-by="Console views" data-depends-on="TauriSource" data-enforces="presentation-only transformations" data-failure-modes="unknown fields degrade display" data-economics="browser render cost" data-source="gui/src/model/viewModel.js:1" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>React view model</h3><p>Projection tới Audit, Policy, Models, Skills và Settings.</p><details><summary>Chi tiết maintainer</summary><p>Không phát policy decision.</p></details></article>
+        <article data-component="external-mcp" data-responsibility="Liên kết tool bên thứ ba bằng namespace" data-why="Host cần tool ecosystem ngoài Musubi" data-inputs="mcp.json specs and external catalogs" data-outputs="namespaced model-visible tools" data-called-by="top-level driver" data-depends-on="external MCP sessions" data-enforces="namespace collision avoidance only" data-failure-modes="connection fail-open: log and skip" data-economics="external latency and service cost" data-source="musubi/agent/mcp_gateway.py:45" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="external system" data-durability="durable"><h3>External MCP federation</h3><p>Ngoài Musubi-owned policy/audit boundary; child không nhận external tools.</p><details><summary>Chi tiết maintainer</summary><p>Call đi thẳng về owning server.</p></details></article>
+        <article data-component="setup-wizard" data-responsibility="Khởi tạo environment và profiles" data-why="First run cần doctor có hướng dẫn" data-inputs="operator choices and environment" data-outputs="llm and MCP config" data-called-by="musubi setup" data-depends-on="config writers" data-enforces="validated setup inputs" data-failure-modes="invalid endpoint/config reported" data-economics="one-time operator time" data-source="musubi/setup_wizard.py:682" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="operator control" data-durability="durable"><h3>Setup wizard</h3><p>Bootstrap, không gọi model.</p><details><summary>Chi tiết maintainer</summary><p>Credentials không thuộc atlas.</p></details></article>
+        <article data-component="nested-dispatch" data-responsibility="Spawn child worker có giới hạn" data-why="Offload bounded work và giữ root context nhỏ" data-inputs="role, brief, budget, allowlist" data-outputs="worker outcome and audit events" data-called-by="worker-loop tool dispatch" data-depends-on="subagent prompt and policy" data-enforces="depth, width, role limits" data-failure-modes="denied spawn returns typed failure" data-economics="parallel LM calls and child budget" data-source="musubi/agent/subagent.py:182" data-evidence-kind="rationale" data-musubi-tier="ephemeral" data-expires-when="models gain reliable native multi-agent tool-use" data-cost-lever="deletes the standalone spawn→run→complete driver (~120 lines)" data-trust-zone="model-calling driver" data-durability="ephemeral"><h3>Nested worker dispatch</h3><p>Siblings cùng turn overlap; authority vẫn bất đối xứng.</p><details><summary>Chi tiết maintainer</summary><p>Scaffolding phải giảm khi model tự xử lý tốt hơn.</p></details></article>
+        <article data-component="composer" data-responsibility="Resolve recipe và khóa vị trí evaluator" data-why="Pipeline catalogs phải hợp lệ trước runtime" data-inputs="pipeline YAML and presets" data-outputs="validated composed stages" data-called-by="server boot and runner" data-depends-on="agent catalog" data-enforces="known stages, evaluator last" data-failure-modes="invalid composition aborts boot/run" data-economics="startup filesystem parse" data-source="musubi/composer.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Pipeline composer</h3><p>Fail-closed recipe validation.</p><details><summary>Chi tiết maintainer</summary><p>Stage recipes là data; composer là durable enforcement.</p></details></article>
+        <article data-component="context-fit" data-responsibility="Fit, replay và bound messages trước model call" data-why="Provider window là hữu hạn" data-inputs="conversation, tool results, char ceilings" data-outputs="bounded message list" data-called-by="worker loop" data-depends-on="context utilities" data-enforces="warn and abort ceilings" data-failure-modes="oversize request aborts before provider" data-economics="model input characters" data-source="musubi/agent/context.py:430" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>Model input fitting</h3><p>Sở hữu driver-side request sizing.</p><details><summary>Chi tiết maintainer</summary><p>Không lẫn với storage compression record.</p></details></article>
+        <article data-component="tool-surface" data-responsibility="Lọc registered tools thành catalog theo surface" data-why="Registered capability không nên tự động model-visible" data-inputs="full tool catalog and surface name" data-outputs="filtered catalog" data-called-by="server startup and driver" data-depends-on="named allowsets" data-enforces="root/operator/pipeline visibility" data-failure-modes="unknown surface raises" data-economics="small catalog filtering" data-source="musubi/tool_surface.py:28" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Tool dispatch boundary</h3><p>Root và child không thấy <code>musubi_spawn_pipeline</code>.</p><details><summary>Chi tiết maintainer</summary><p>Tool vẫn registered trong full surface cho internal machinery.</p></details></article>
+        <article data-component="budget" data-responsibility="Theo dõi token và cycle budgets" data-why="Fan-out và retries cần hard ceilings" data-inputs="usage, allocation, turn count" data-outputs="remaining budget or stop" data-called-by="worker loop and spawn path" data-depends-on="usage records" data-enforces="per-call and child allocations" data-failure-modes="limit reached returns terminal evidence" data-economics="controls token spend" data-source="musubi/agent/budget.py:84" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>Budget &amp; cycle enforcement</h3><p>Attribution theo actual call, không theo prose.</p><details><summary>Chi tiết maintainer</summary><p>Budget fields cũ không được coi là source of truth.</p></details></article>
+        <article data-component="validator" data-responsibility="Chạy lint, typecheck và tests deterministic" data-why="Không gửi LLM làm việc của linter" data-inputs="paths and validation request" data-outputs="structured pass/fail evidence" data-called-by="MCP validation tools" data-depends-on="execution layer" data-enforces="bounded commands" data-failure-modes="tool failure reported, not invented" data-economics="CPU and wall-clock" data-source="musubi/execution/executor.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Validation/execution layer</h3><p>Evidence deterministic cho evaluator và operator.</p><details><summary>Chi tiết maintainer</summary><p>Không gọi model.</p></details></article>
+        <article data-component="workspace-discovery" data-responsibility="Xác định workspace và project facts" data-why="Path operations cần canonical root" data-inputs="cwd and filesystem" data-outputs="workspace descriptor" data-called-by="setup and runtime helpers" data-depends-on="filesystem" data-enforces="bounded project root" data-failure-modes="ambiguous workspace reported" data-economics="filesystem scan" data-source="musubi/workspace/detector.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Workspace discovery</h3><p>Grounding deterministic cho path boundary.</p><details><summary>Chi tiết maintainer</summary><p>Không suy diễn từ model output.</p></details></article>
+        <article data-component="session-distillation" data-responsibility="Chưng cất session evidence thành memory" data-why="Raw history không thể tăng vô hạn" data-inputs="session records" data-outputs="bounded durable memory" data-called-by="memory tools" data-depends-on="session store" data-enforces="deterministic selection" data-failure-modes="missing session returns no entry" data-economics="storage reduction" data-source="musubi/memory/session_distiller.py:1" data-evidence-kind="verified" data-musubi-tier="ephemeral" data-expires-when="the 4-stage pipeline is dissolved" data-cost-lever="deletes ~250 lines tied to the planner-designer-coder-reviewer shape" data-trust-zone="zero-LLM governance substrate" data-durability="ephemeral"><h3>Session distillation</h3><p>Lifecycle bridge từ evidence sang memory.</p><details><summary>Chi tiết maintainer</summary><p>Không tự tạo facts ngoài stored evidence.</p></details></article>
+        <article data-component="subagent-audit" data-responsibility="Ghi spawn và completion của mọi child" data-why="Không được có silent sub-agent" data-inputs="handle, parent, role, outcome" data-outputs="append-only subagent_audit rows" data-called-by="server spawn/complete paths" data-depends-on="audit.db" data-enforces="HI #8" data-failure-modes="write error surfaces run risk" data-economics="hai hoặc nhiều rows mỗi worker" data-source="musubi/storage/subagent_audit.py:1" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Subagent audit persistence</h3><p>Parentage và pushed skill đều queryable.</p><details><summary>Chi tiết maintainer</summary><p>Pipeline envelopes được phân biệt với actual workers.</p></details></article>
+        <article data-component="pipeline-studio" data-responsibility="Author và validate deterministic recipes" data-why="Operator cần chỉnh pipeline an toàn" data-inputs="pipeline form and preset catalog" data-outputs="atomic pipeline.yaml write" data-called-by="Console operator" data-depends-on="Rust recipe validator" data-enforces="safe names, canonical paths, valid stages" data-failure-modes="validation failure prevents write" data-economics="operator authoring time" data-source="gui/src-tauri/musubi-data/src/lib.rs:1210" data-evidence-kind="verified" data-musubi-tier="substrate" data-trust-zone="operator control" data-durability="durable"><h3>Pipeline Studio</h3><p>Authoring surface; không phải autonomous orchestration.</p><details><summary>Chi tiết maintainer</summary><p>Pipeline mode launch vẫn là explicit operator action.</p></details></article>
+        <article data-component="compression-eval" data-responsibility="Đánh giá chất lượng compression reversible bằng fixture deterministic" data-why="Compression phải giữ được retrieval và semantic evidence" data-inputs="Synthetic corpus và compression database" data-outputs="Báo cáo evaluation pass/fail" data-called-by="Maintainer CLI và CI" data-depends-on="Compression eval harness" data-enforces="Quality threshold trước khi nhận compressor" data-failure-modes="Regression làm evaluation gate thất bại" data-economics="Chỉ CPU, storage và wall-clock local; không gọi LM" data-source="musubi/agent/compression_eval.py:81" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Đánh giá compression</h3><p>Deterministic gate tách khỏi runtime context fitting.</p></article>
+        <article data-component="prompt-catalog" data-responsibility="Resolve canonical worker prompt theo mục đích runtime" data-why="Root và stage caller cần một prompt lookup contract" data-inputs="Agent name, purpose và catalog root" data-outputs="Prompt path và text đã validate" data-called-by="Direct worker và pipeline runner" data-depends-on="Agent prompt files" data-enforces="Thiếu role prompt thì fail trước spawn" data-failure-modes="Prompt lạ trả typed resolution error" data-economics="Filesystem read và model-input characters ở call sau" data-source="musubi/agent/prompt_resolver.py:21" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>Bộ resolve prompt catalog</h3><p>Prompt scaffolding là driver concern, không phải policy.</p></article>
+        <article data-component="vendor-implementations" data-responsibility="Dịch LMRouter request sang protocol của provider" data-why="Wire format của vendor không được rò vào orchestration" data-inputs="Messages, tools, limits và credentials" data-outputs="LMResponse và usage đã normalize" data-called-by="LMRouter selection" data-depends-on="Provider SDK hoặc transport" data-enforces="Normalize request và usage theo provider" data-failure-modes="Provider failure được propagate về driver" data-economics="Provider token thật và LM time" data-source="musubi/agent/vendors/anthropic_router.py:17" data-evidence-kind="verified" data-musubi-tier="substrate" data-expires-when="never" data-trust-zone="model-calling driver" data-durability="durable"><h3>Các vendor implementation</h3><p>Anthropic, OpenAI-compatible, Ollama và on-prem adapter đều ở driver side.</p></article>
+        <article data-component="conversation-store" data-responsibility="Lưu bền raw operator conversation message" data-why="CLI session cần bounded replay độc lập với pipeline artifact" data-inputs="Chat ID, role, content và timestamp" data-outputs="Conversation history có thứ tự" data-called-by="Driver conversation adapter" data-depends-on="Bảng conversation_messages" data-enforces="Valid role và chat scope" data-failure-modes="Append hoặc replay lỗi được surface về driver" data-economics="Append-only message growth và replay input" data-source="musubi/storage/schema.sql:128" data-evidence-kind="verified" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Conversation persistence</h3><p>Raw chat history khác stage artifact và audit evidence.</p></article>
+        <article data-component="stage-attempt-store" data-responsibility="Lưu bền mọi stage attempt mà không overwrite" data-why="Retry cần provenance có thể tái dựng" data-inputs="Session, stage, chunk và attempt" data-outputs="Attempt row và artifact append-only" data-called-by="Pipeline stage store" data-depends-on="Stage_outputs schema" data-enforces="HI #7 attempt identity" data-failure-modes="Duplicate hoặc write lỗi chặn transition" data-economics="Mỗi attempt tăng một artifact và một row" data-source="musubi/storage/schema.sql:34" data-evidence-kind="verified" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Stage-attempt persistence</h3><p>Retry tạo attempt mới; không overwrite evidence cũ.</p></article>
+        <article data-component="agent-cycle-store" data-responsibility="Lưu bền provider usage và tool name theo từng cycle" data-why="Token economics phải attributable tới call thật" data-inputs="Cycle identity, usage, LM time và tools" data-outputs="Agent_cycles row có thể query" data-called-by="Driver cycle recorder" data-depends-on="Agent_cycles schema" data-enforces="Token-only usage contract" data-failure-modes="Thiếu provider usage thì đánh dấu estimated" data-economics="Mỗi logical cycle tăng một row" data-source="musubi/storage/schema.sql:211" data-evidence-kind="verified" data-trust-zone="zero-LLM governance substrate" data-durability="durable"><h3>Agent-cycle persistence</h3><p>Input, cached subset, output và LM time được ghi theo cycle.</p></article>
+        <article data-component="audit-projection" data-responsibility="Hiển thị tool và subagent evidence" data-why="Operator cần forensic event surface" data-inputs="Projected audit rows" data-outputs="Audit view có filter" data-called-by="Console navigation" data-depends-on="React view model" data-enforces="Chỉ presentation" data-failure-modes="Thiếu row thì render empty state" data-economics="Browser CPU và rendering" data-source="gui/src/views/Audit.jsx:1" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Audit projection</h3><p>Hiển thị ledger; không ghi ledger.</p></article>
+        <article data-component="policy-projection" data-responsibility="Hiển thị allow/deny decision và evaluator boundary" data-why="Policy evidence phải giải thích được cho operator" data-inputs="Projected policy rows" data-outputs="Policy view" data-called-by="Console navigation" data-depends-on="React view model" data-enforces="Chỉ presentation" data-failure-modes="Verdict lạ degrade theo cách nhìn thấy được" data-economics="Browser CPU và rendering" data-source="gui/src/views/Policy.jsx:41" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Policy projection</h3><p>Giải thích boundary; không phát verdict.</p></article>
+        <article data-component="models-projection" data-responsibility="Hiển thị model profile đã cấu hình mà không lộ secret" data-why="Operator cần provider visibility tại safe boundary" data-inputs="Safe model profile projection" data-outputs="Models view" data-called-by="Console navigation" data-depends-on="Profile reader" data-enforces="Presentation không chứa secret" data-failure-modes="Profile sai được báo rõ" data-economics="Browser CPU và rendering" data-source="gui/src/views/Models.jsx:1" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Models projection</h3><p>Hiển thị configuration; không gọi model.</p></article>
+        <article data-component="skills-projection" data-responsibility="Hiển thị skill catalog và availability metadata" data-why="Operator cần inspect capability được push hoặc pull" data-inputs="Safe skill catalog" data-outputs="Skills view" data-called-by="Console navigation" data-depends-on="Skill projection" data-enforces="Read-only catalog presentation" data-failure-modes="Thiếu catalog thì render diagnostic" data-economics="Browser CPU và rendering" data-source="gui/src/views/Skills.jsx:1" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Skills projection</h3><p>Không inject skill; chỉ hiển thị catalog.</p></article>
+        <article data-component="settings-projection" data-responsibility="Hiển thị operator setting và setup status" data-why="Runtime configuration cần một safe surface riêng" data-inputs="Projected settings state" data-outputs="Settings view" data-called-by="Console navigation" data-depends-on="Tauri settings commands" data-enforces="Presentation và explicit operator action" data-failure-modes="Setting sai không được save" data-economics="Browser CPU và operator time" data-source="gui/src/views/Settings.jsx:1" data-evidence-kind="verified" data-trust-zone="read-only operator projection" data-durability="durable"><h3>Settings projection</h3><p>Configuration surface rõ ràng; không autonomous mutation.</p></article>
+      </div>
+      <noscript><section class="maintainer-record-fallback" aria-labelledby="maintainer-record-fallback-title"><h3 id="maintainer-record-fallback-title">Hồ sơ maintainer đầy đủ (không JavaScript)</h3><p>Mỗi hàng giữ nguyên trust, lifecycle, expiry/cost và evidence của component.</p><div class="map-scroll"><table><thead><tr><th>Component</th><th>Responsibility</th><th>Why</th><th>Inputs</th><th>Outputs</th><th>Called by</th><th>Depends on</th><th>Enforces</th><th>Failure modes</th><th>Economics</th><th>Trust boundary</th><th>Lifecycle</th><th>Expiry</th><th>Cost lever</th><th>Evidence</th></tr></thead><tbody>
+            <tr data-component-record="cli"><th scope="row">CLI entry</th><td>Nhận task và chọn direct hoặc pipeline run</td><td>Một host rõ ràng cho operator</td><td>argv, profile, pipeline</td><td>driver invocation</td><td>operator</td><td>agent.run, setup wizard</td><td>explicit pipeline selection</td><td>invalid args fail before run</td><td>process startup; zero token trực tiếp</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/run.py#L1234">musubi/agent/run.py:1234</a></td></tr>
+            <tr data-component-record="console"><th scope="row">Console shell &amp; Orchestrator</th><td>Hiển thị và khởi chạy phiên operator</td><td>Cho operator một native evidence surface</td><td>safe projected state, submission</td><td>views, explicit launch</td><td>desktop operator</td><td>Rust commands, React views</td><td>no implicit model call</td><td>missing DB degrades view</td><td>UI refresh và process launch</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src-tauri/src/lib.rs#L1">gui/src-tauri/src/lib.rs:1</a></td></tr>
+            <tr data-component-record="goal-state"><th scope="row">GoalState root controller</th><td>Điều khiển goal state của root</td><td>Root cần quyết định continue, recover hoặc stop</td><td>intent, worker outcomes, budget</td><td>phase và next action</td><td>root run</td><td>worker evidence</td><td>root-only routing authority</td><td>bad evidence can misroute recovery</td><td>thêm root decision cycles</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/goal_state.py#L95">musubi/agent/goal_state.py:95</a></td></tr>
+            <tr data-component-record="worker-loop"><th scope="row">run_unit worker loop</th><td>Chạy một reasoning/tool loop thống nhất</td><td>Một primitive cho root và child</td><td>brief, tools, router, budget</td><td>assistant result và tool effects</td><td>root, nested dispatch, pipeline stages</td><td>LMRouter, MCP session</td><td>turn and fan-out guards</td><td>model, tool hoặc budget failure</td><td>LM tokens, cycles, wall-clock</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/run.py#L1139">musubi/agent/run.py:1139</a></td></tr>
+            <tr data-component-record="pipeline-runner"><th scope="row">Deterministic pipeline runner</th><td>Chạy recipe stage theo thứ tự xác định</td><td>Pipeline cần deterministic stage chain</td><td>pipeline name, task, stage contracts</td><td>stage attempts và terminal result</td><td>CLI --pipeline, Orchestrator Pipeline mode</td><td>composer, worker loop, MCP</td><td>last-stage brief and stage order</td><td>unknown recipe hoặc failed stage stops run</td><td>tổng LM call của mọi stage</td><td>model-calling driver</td><td>ephemeral</td><td>models orchestrate multi-step pipelines natively</td><td>deletes the driver-side stage sequencer (~90 lines)</td><td><a class="source-link" href="../musubi/agent/pipeline_runner.py#L178">musubi/agent/pipeline_runner.py:178</a></td></tr>
+            <tr data-component-record="lm-router"><th scope="row">LMRouter</th><td>Điểm inject model vendor-agnostic</td><td>Cô lập provider khỏi orchestration</td><td>messages, tools, token limit</td><td>LMResponse</td><td>worker loop</td><td>vendor implementation</td><td>single driver-side model boundary</td><td>provider error propagates to driver</td><td>model latency và billed tokens</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/vendors/base.py#L44">musubi/agent/vendors/base.py:44</a></td></tr>
+            <tr data-component-record="model-provider"><th scope="row">Model provider</th><td>Thực thi inference bên ngoài</td><td>Reasoning được cung cấp qua vendor</td><td>provider request</td><td>model response và usage</td><td>LMRouter implementation</td><td>network hoặc local runtime</td><td>provider-specific limits</td><td>timeout, quota, malformed response</td><td>token charge và latency</td><td>external system</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/vendors/curl_router.py#L1">musubi/agent/vendors/curl_router.py:1</a></td></tr>
+            <tr data-component-record="mcp-server"><th scope="row">Musubi MCP server</th><td>Cung cấp các tool musubi_* deterministic</td><td>Một governance interface cho driver</td><td>MCP tool calls</td><td>validated result và mutations</td><td>driver MCP client</td><td>policy, storage, capabilities</td><td>startup validation and tool contracts</td><td>bad policy/catalog aborts boot</td><td>local dispatch và SQLite I/O</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/server.py#L87">musubi/server.py:87</a></td></tr>
+            <tr data-component-record="policy"><th scope="row">Fail-closed policy</th><td>Deny hoặc allow role/tool theo allowlist</td><td>Unknown authority phải fail closed</td><td>pipeline, role, tool</td><td>allow/deny decision</td><td>server and hooks</td><td>composer catalogs</td><td>HI #5</td><td>unknown member denied; invalid tables abort boot</td><td>constant local lookup</td><td>zero-LLM governance substrate</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../scripts/policy_engine.py#L359">scripts/policy_engine.py:359</a></td></tr>
+            <tr data-component-record="evaluator-firewall"><th scope="row">Evaluator firewall</th><td>Giới hạn artifact evaluator được đọc</td><td>Judge không được thấy intent/plan gây bias</td><td>stage identity, requested artifact</td><td>allowed context hoặc denial</td><td>pipeline runner, read_stage</td><td>context builder</td><td>HI #3</td><td>forbidden read denied</td><td>giảm model input và leakage</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/validation/context_builder.py#L227">musubi/validation/context_builder.py:227</a></td></tr>
+            <tr data-component-record="skills"><th scope="row">Skills</th><td>Catalog, recommend, load và inject skill</td><td>Capability guidance cần reusable và có policy</td><td>role, query, skill id</td><td>role skill hoặc selected skill</td><td>spawn path, agent tools</td><td>skill files and recommender</td><td>pushed role skill cannot opt out</td><td>unknown skill returns deterministic error</td><td>prompt input characters</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/skills/recommender.py#L1">musubi/skills/recommender.py:1</a></td></tr>
+            <tr data-component-record="memory"><th scope="row">Memory</th><td>Nạp memory ba tầng và distill session</td><td>Giữ kiến thức qua phiên mà không nhồi toàn bộ lịch sử</td><td>memory files, session evidence</td><td>bounded context và distilled entries</td><td>server memory tools</td><td>memory loader, distiller</td><td>tiered loading</td><td>missing optional memory degrades context</td><td>input characters và file I/O</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/memory/memory_loader.py#L1">musubi/memory/memory_loader.py:1</a></td></tr>
+            <tr data-component-record="compression"><th scope="row">Compression/context fit</th><td>Nén reversible và fit model input</td><td>Giữ request dưới context ceiling</td><td>text, hints, model limits</td><td>compressed payload và retrieval ref</td><td>agent context path, MCP tools</td><td>compression router</td><td>reversibility and size guards</td><td>oversize abort hoặc elision có evidence</td><td>giảm input token; thêm CPU/storage</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/compression/router.py#L1">musubi/compression/router.py:1</a></td></tr>
+            <tr data-component-record="state-db"><th scope="row">musubi.db</th><td>Lưu operational driver state</td><td>Lifecycle cần join độc lập audit ledger</td><td>session, turn, pipeline rows</td><td>queryable current state</td><td>server and driver</td><td>SQLite schema</td><td>typed lifecycle records</td><td>write failure blocks state transition</td><td>SQLite storage</td><td>zero-LLM governance substrate</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/schema.sql#L34">musubi/storage/schema.sql:34</a></td></tr>
+            <tr data-component-record="audit-db"><th scope="row">audit.db</th><td>Lưu append-only governance evidence</td><td>Mọi action cần forensic trail</td><td>tool, stage, subagent events</td><td>immutable historical rows</td><td>hooks and substrate stores</td><td>SQLite</td><td>HI #7 and HI #8 evidence</td><td>audit write failure must surface</td><td>durable row growth</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/subagent_audit.py#L1">musubi/storage/subagent_audit.py:1</a></td></tr>
+            <tr data-component-record="rust-projection"><th scope="row">Rust safe evidence boundary</th><td>Đọc hai DB và xuất safe runtime state</td><td>UI không được đọc raw secrets hoặc đoán ancestry</td><td>audit.db, musubi.db</td><td>safe serialized state</td><td>Tauri commands</td><td>musubi-data reader</td><td>privacy and exact joins</td><td>missing state DB yields empty run cards</td><td>SQLite query and projection</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src-tauri/musubi-data/src/lib.rs#L1542">gui/src-tauri/musubi-data/src/lib.rs:1542</a></td></tr>
+            <tr data-component-record="react-view-model"><th scope="row">React view model</th><td>Chuẩn hóa safe state cho React views</td><td>Tách transport shape khỏi presentation</td><td>projected runtime state</td><td>view-ready model</td><td>Console views</td><td>TauriSource</td><td>presentation-only transformations</td><td>unknown fields degrade display</td><td>browser render cost</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/model/viewModel.js#L1">gui/src/model/viewModel.js:1</a></td></tr>
+            <tr data-component-record="external-mcp"><th scope="row">External MCP federation</th><td>Liên kết tool bên thứ ba bằng namespace</td><td>Host cần tool ecosystem ngoài Musubi</td><td>mcp.json specs and external catalogs</td><td>namespaced model-visible tools</td><td>top-level driver</td><td>external MCP sessions</td><td>namespace collision avoidance only</td><td>connection fail-open: log and skip</td><td>external latency and service cost</td><td>external system</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/mcp_gateway.py#L45">musubi/agent/mcp_gateway.py:45</a></td></tr>
+            <tr data-component-record="setup-wizard"><th scope="row">Setup wizard</th><td>Khởi tạo environment và profiles</td><td>First run cần doctor có hướng dẫn</td><td>operator choices and environment</td><td>llm and MCP config</td><td>musubi setup</td><td>config writers</td><td>validated setup inputs</td><td>invalid endpoint/config reported</td><td>one-time operator time</td><td>operator control</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/setup_wizard.py#L682">musubi/setup_wizard.py:682</a></td></tr>
+            <tr data-component-record="nested-dispatch"><th scope="row">Nested worker dispatch</th><td>Spawn child worker có giới hạn</td><td>Offload bounded work và giữ root context nhỏ</td><td>role, brief, budget, allowlist</td><td>worker outcome and audit events</td><td>worker-loop tool dispatch</td><td>subagent prompt and policy</td><td>depth, width, role limits</td><td>denied spawn returns typed failure</td><td>parallel LM calls and child budget</td><td>model-calling driver</td><td>ephemeral</td><td>models gain reliable native multi-agent tool-use</td><td>deletes the standalone spawn→run→complete driver (~120 lines)</td><td><a class="source-link" href="../musubi/agent/subagent.py#L182">musubi/agent/subagent.py:182</a></td></tr>
+            <tr data-component-record="composer"><th scope="row">Pipeline composer</th><td>Resolve recipe và khóa vị trí evaluator</td><td>Pipeline catalogs phải hợp lệ trước runtime</td><td>pipeline YAML and presets</td><td>validated composed stages</td><td>server boot and runner</td><td>agent catalog</td><td>known stages, evaluator last</td><td>invalid composition aborts boot/run</td><td>startup filesystem parse</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/composer.py#L1">musubi/composer.py:1</a></td></tr>
+            <tr data-component-record="context-fit"><th scope="row">Model input fitting</th><td>Fit, replay và bound messages trước model call</td><td>Provider window là hữu hạn</td><td>conversation, tool results, char ceilings</td><td>bounded message list</td><td>worker loop</td><td>context utilities</td><td>warn and abort ceilings</td><td>oversize request aborts before provider</td><td>model input characters</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/context.py#L430">musubi/agent/context.py:430</a></td></tr>
+            <tr data-component-record="tool-surface"><th scope="row">Tool dispatch boundary</th><td>Lọc registered tools thành catalog theo surface</td><td>Registered capability không nên tự động model-visible</td><td>full tool catalog and surface name</td><td>filtered catalog</td><td>server startup and driver</td><td>named allowsets</td><td>root/operator/pipeline visibility</td><td>unknown surface raises</td><td>small catalog filtering</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/tool_surface.py#L28">musubi/tool_surface.py:28</a></td></tr>
+            <tr data-component-record="budget"><th scope="row">Budget &amp; cycle enforcement</th><td>Theo dõi token và cycle budgets</td><td>Fan-out và retries cần hard ceilings</td><td>usage, allocation, turn count</td><td>remaining budget or stop</td><td>worker loop and spawn path</td><td>usage records</td><td>per-call and child allocations</td><td>limit reached returns terminal evidence</td><td>controls token spend</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/budget.py#L84">musubi/agent/budget.py:84</a></td></tr>
+            <tr data-component-record="validator"><th scope="row">Validation/execution layer</th><td>Chạy lint, typecheck và tests deterministic</td><td>Không gửi LLM làm việc của linter</td><td>paths and validation request</td><td>structured pass/fail evidence</td><td>MCP validation tools</td><td>execution layer</td><td>bounded commands</td><td>tool failure reported, not invented</td><td>CPU and wall-clock</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/execution/executor.py#L1">musubi/execution/executor.py:1</a></td></tr>
+            <tr data-component-record="workspace-discovery"><th scope="row">Workspace discovery</th><td>Xác định workspace và project facts</td><td>Path operations cần canonical root</td><td>cwd and filesystem</td><td>workspace descriptor</td><td>setup and runtime helpers</td><td>filesystem</td><td>bounded project root</td><td>ambiguous workspace reported</td><td>filesystem scan</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/workspace/detector.py#L1">musubi/workspace/detector.py:1</a></td></tr>
+            <tr data-component-record="session-distillation"><th scope="row">Session distillation</th><td>Chưng cất session evidence thành memory</td><td>Raw history không thể tăng vô hạn</td><td>session records</td><td>bounded durable memory</td><td>memory tools</td><td>session store</td><td>deterministic selection</td><td>missing session returns no entry</td><td>storage reduction</td><td>zero-LLM governance substrate</td><td>ephemeral</td><td>the 4-stage pipeline is dissolved</td><td>deletes ~250 lines tied to the planner-designer-coder-reviewer shape</td><td><a class="source-link" href="../musubi/memory/session_distiller.py#L1">musubi/memory/session_distiller.py:1</a></td></tr>
+            <tr data-component-record="subagent-audit"><th scope="row">Subagent audit persistence</th><td>Ghi spawn và completion của mọi child</td><td>Không được có silent sub-agent</td><td>handle, parent, role, outcome</td><td>append-only subagent_audit rows</td><td>server spawn/complete paths</td><td>audit.db</td><td>HI #8</td><td>write error surfaces run risk</td><td>hai hoặc nhiều rows mỗi worker</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/subagent_audit.py#L1">musubi/storage/subagent_audit.py:1</a></td></tr>
+            <tr data-component-record="pipeline-studio"><th scope="row">Pipeline Studio</th><td>Author và validate deterministic recipes</td><td>Operator cần chỉnh pipeline an toàn</td><td>pipeline form and preset catalog</td><td>atomic pipeline.yaml write</td><td>Console operator</td><td>Rust recipe validator</td><td>safe names, canonical paths, valid stages</td><td>validation failure prevents write</td><td>operator authoring time</td><td>operator control</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src-tauri/musubi-data/src/lib.rs#L1210">gui/src-tauri/musubi-data/src/lib.rs:1210</a></td></tr>
+            <tr data-component-record="compression-eval"><th scope="row">Đánh giá compression</th><td>Đánh giá chất lượng compression reversible bằng fixture deterministic</td><td>Compression phải giữ được retrieval và semantic evidence</td><td>Synthetic corpus và compression database</td><td>Báo cáo evaluation pass/fail</td><td>Maintainer CLI và CI</td><td>Compression eval harness</td><td>Quality threshold trước khi nhận compressor</td><td>Regression làm evaluation gate thất bại</td><td>Chỉ CPU, storage và wall-clock local; không gọi LM</td><td>zero-LLM governance substrate</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/compression_eval.py#L81">musubi/agent/compression_eval.py:81</a></td></tr>
+            <tr data-component-record="prompt-catalog"><th scope="row">Bộ resolve prompt catalog</th><td>Resolve canonical worker prompt theo mục đích runtime</td><td>Root và stage caller cần một prompt lookup contract</td><td>Agent name, purpose và catalog root</td><td>Prompt path và text đã validate</td><td>Direct worker và pipeline runner</td><td>Agent prompt files</td><td>Thiếu role prompt thì fail trước spawn</td><td>Prompt lạ trả typed resolution error</td><td>Filesystem read và model-input characters ở call sau</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/prompt_resolver.py#L21">musubi/agent/prompt_resolver.py:21</a></td></tr>
+            <tr data-component-record="vendor-implementations"><th scope="row">Các vendor implementation</th><td>Dịch LMRouter request sang protocol của provider</td><td>Wire format của vendor không được rò vào orchestration</td><td>Messages, tools, limits và credentials</td><td>LMResponse và usage đã normalize</td><td>LMRouter selection</td><td>Provider SDK hoặc transport</td><td>Normalize request và usage theo provider</td><td>Provider failure được propagate về driver</td><td>Provider token thật và LM time</td><td>model-calling driver</td><td>durable</td><td>never</td><td>not applicable</td><td><a class="source-link" href="../musubi/agent/vendors/anthropic_router.py#L17">musubi/agent/vendors/anthropic_router.py:17</a></td></tr>
+            <tr data-component-record="conversation-store"><th scope="row">Conversation persistence</th><td>Lưu bền raw operator conversation message</td><td>CLI session cần bounded replay độc lập với pipeline artifact</td><td>Chat ID, role, content và timestamp</td><td>Conversation history có thứ tự</td><td>Driver conversation adapter</td><td>Bảng conversation_messages</td><td>Valid role và chat scope</td><td>Append hoặc replay lỗi được surface về driver</td><td>Append-only message growth và replay input</td><td>zero-LLM governance substrate</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/schema.sql#L128">musubi/storage/schema.sql:128</a></td></tr>
+            <tr data-component-record="stage-attempt-store"><th scope="row">Stage-attempt persistence</th><td>Lưu bền mọi stage attempt mà không overwrite</td><td>Retry cần provenance có thể tái dựng</td><td>Session, stage, chunk và attempt</td><td>Attempt row và artifact append-only</td><td>Pipeline stage store</td><td>Stage_outputs schema</td><td>HI #7 attempt identity</td><td>Duplicate hoặc write lỗi chặn transition</td><td>Mỗi attempt tăng một artifact và một row</td><td>zero-LLM governance substrate</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/schema.sql#L34">musubi/storage/schema.sql:34</a></td></tr>
+            <tr data-component-record="agent-cycle-store"><th scope="row">Agent-cycle persistence</th><td>Lưu bền provider usage và tool name theo từng cycle</td><td>Token economics phải attributable tới call thật</td><td>Cycle identity, usage, LM time và tools</td><td>Agent_cycles row có thể query</td><td>Driver cycle recorder</td><td>Agent_cycles schema</td><td>Token-only usage contract</td><td>Thiếu provider usage thì đánh dấu estimated</td><td>Mỗi logical cycle tăng một row</td><td>zero-LLM governance substrate</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../musubi/storage/schema.sql#L211">musubi/storage/schema.sql:211</a></td></tr>
+            <tr data-component-record="audit-projection"><th scope="row">Audit projection</th><td>Hiển thị tool và subagent evidence</td><td>Operator cần forensic event surface</td><td>Projected audit rows</td><td>Audit view có filter</td><td>Console navigation</td><td>React view model</td><td>Chỉ presentation</td><td>Thiếu row thì render empty state</td><td>Browser CPU và rendering</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Audit.jsx#L1">gui/src/views/Audit.jsx:1</a></td></tr>
+            <tr data-component-record="policy-projection"><th scope="row">Policy projection</th><td>Hiển thị allow/deny decision và evaluator boundary</td><td>Policy evidence phải giải thích được cho operator</td><td>Projected policy rows</td><td>Policy view</td><td>Console navigation</td><td>React view model</td><td>Chỉ presentation</td><td>Verdict lạ degrade theo cách nhìn thấy được</td><td>Browser CPU và rendering</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Policy.jsx#L41">gui/src/views/Policy.jsx:41</a></td></tr>
+            <tr data-component-record="models-projection"><th scope="row">Models projection</th><td>Hiển thị model profile đã cấu hình mà không lộ secret</td><td>Operator cần provider visibility tại safe boundary</td><td>Safe model profile projection</td><td>Models view</td><td>Console navigation</td><td>Profile reader</td><td>Presentation không chứa secret</td><td>Profile sai được báo rõ</td><td>Browser CPU và rendering</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Models.jsx#L1">gui/src/views/Models.jsx:1</a></td></tr>
+            <tr data-component-record="skills-projection"><th scope="row">Skills projection</th><td>Hiển thị skill catalog và availability metadata</td><td>Operator cần inspect capability được push hoặc pull</td><td>Safe skill catalog</td><td>Skills view</td><td>Console navigation</td><td>Skill projection</td><td>Read-only catalog presentation</td><td>Thiếu catalog thì render diagnostic</td><td>Browser CPU và rendering</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Skills.jsx#L1">gui/src/views/Skills.jsx:1</a></td></tr>
+            <tr data-component-record="settings-projection"><th scope="row">Settings projection</th><td>Hiển thị operator setting và setup status</td><td>Runtime configuration cần một safe surface riêng</td><td>Projected settings state</td><td>Settings view</td><td>Console navigation</td><td>Tauri settings commands</td><td>Presentation và explicit operator action</td><td>Setting sai không được save</td><td>Browser CPU và operator time</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Settings.jsx#L1">gui/src/views/Settings.jsx:1</a></td></tr>
+          </tbody></table></div></section></noscript>
+      <aside class="callout" data-evidence-kind="open" data-source="musubi/agent/boundary.py:297"><h3>Open question</h3><p><strong>Pipeline-spawn compatibility:</strong> <code>boundary.py</code> vẫn có driver-only pipeline authorization machinery trong khi effective model-visible root/child surface ẩn whole-pipeline tool. Khi nào internal compatibility path này có thể xóa hẳn?</p><p>Spawn payload contract được verify ở <code>musubi/validation/subagent_context.py:99</code>; routing regression có representative evidence ở <code>musubi/tests/test_agent_context.py:130</code> và budget ownership ở <code>musubi/tests/test_agent_budget.py:91</code>.</p></aside>
+      <p data-evidence-kind="verified" data-source="gui/src/views/Orchestrator.jsx:90"><strong>Orchestrator evidence:</strong> direct/pipeline mode là explicit operator selection; saved recipe chỉ hiện khi pipeline mode được chọn.</p>
+      <p data-evidence-kind="verified" data-source="gui/src/views/Pipeline.jsx:32"><strong>Pipeline Studio evidence:</strong> view hiện tại là builder với New, Save và Validate recipe actions.</p>
+    </section>
+    <section id="traces"><h2>Luồng chạy có thể kiểm chứng</h2><p>Mỗi tóm tắt dưới đây là progressive enhancement: nội dung vẫn đọc được khi JavaScript tắt; dataset inline cung cấp input, output, decision, economics, evidence và fail-closed outcome cho trace navigator.</p>
+      <div class="atlas-controls">
+        <label>Kịch bản trace
+          <select id="trace-scenario"></select>
+        </label>
+      </div>
+      <div class="trace-panel" aria-live="polite">
+        <h3 id="trace-title">Đang tải trace…</h3><p id="trace-summary"></p>
+        <div class="trace-actions"><button id="trace-previous" type="button">Bước trước</button><button id="trace-next" type="button">Bước kế</button><button id="trace-restart" type="button">Chạy lại</button></div>
+        <div id="trace-steps" class="trace-step-buttons trace-scroll" aria-label="Chọn trực tiếp bước trace"><button type="button" aria-current="step">Bước 1</button></div>
+        <p><span id="trace-progress"></span> <span id="trace-lm" class="lm-badge"></span></p><p id="trace-status" aria-live="polite"></p>
+        <div class="trace-grid"><p><strong>Component:</strong> <span id="trace-component"></span></p><p><strong>Input:</strong> <span id="trace-input"></span></p><p><strong>Output:</strong> <span id="trace-output"></span></p><p><strong>Quyết định:</strong> <span id="trace-decision"></span></p><p><strong>Kinh tế:</strong> <span id="trace-economics"></span></p><p><strong>Evidence:</strong> <code id="trace-evidence"></code></p><p><strong>Failure:</strong> <span id="trace-failure"></span></p></div>
+      </div>
+      <h3>Bản tóm tắt tĩnh của 13 kịch bản</h3><ol>
+      <li data-scenario="direct-worker"><strong>Direct request → one worker.</strong> Root giữ GoalState, chọn một bounded worker; worker mới là nơi mutation xảy ra.</li>
+      <li data-scenario="pushed-skill"><strong>Root-selected pushed skill.</strong> Root chọn role; substrate inject role skill vào frozen brief trước LM call của worker.</li>
+      <li data-scenario="parallel-workers"><strong>Same-turn siblings.</strong> Nhiều tool uses được phát trong cùng model turn chạy concurrent; kết quả trở lại theo thứ tự tool use.</li>
+      <li data-scenario="nested-helper"><strong>Nested helper.</strong> Worker được phép summon helper trong depth cap; spawn và completion đều có audit.</li>
+      <li data-scenario="operator-pipeline"><strong>Explicit deterministic pipeline.</strong> Operator chọn <code>--pipeline</code>; primary stages chạy sequential theo recipe, không do model tự route.</li>
+      <li data-scenario="pipeline-helpers"><strong>Declared stage helpers.</strong> Một primary stage có thể fan out helpers khi <code>pipeline.yaml</code> khai báo <code>spawns:</code>; backbone stages vẫn sequential.</li>
+      <li data-scenario="policy-denial"><strong>Policy denial.</strong> Unknown hoặc disallowed role/tool bị deny trước execution.</li>
+      <li data-scenario="evaluator-denial"><strong>Evaluator firewall.</strong> Reviewer yêu cầu request, plan hay memory bị chặn; chỉ artifact cần judge được lộ.</li>
+      <li data-scenario="budget-limit"><strong>Budget stop.</strong> Cycle, output hoặc total-run ceiling dừng worker với terminal evidence thay vì chi tiêu tiếp.</li>
+      <li data-scenario="context-elision"><strong>Reversible context fitting.</strong> Replay data được nén hoặc elide, còn original dispatch được bảo toàn.</li>
+      <li data-scenario="console-projection"><strong>Safe Console projection.</strong> Rust đọc state/audit DB và React render evidence; không có LM call.</li>
+      <li data-scenario="historical-console"><strong>Viewed versus active session.</strong> Console có thể xem session cũ trong khi shared driver process thuộc session khác; viewing không chuyển ownership.</li>
+      <li data-scenario="external-mcp"><strong>External MCP isolation.</strong> Connection failure được log và skip; namespaced call đi tới owning server, ngoài Musubi-owned policy/audit boundary.</li>
+    </ol></section>
+    <section id="invariants"><h2>Bất biến và chuỗi nhân quả</h2><p>Phân loại failure: model failure là kết quả reasoning kém; driver failure là orchestration/context/recovery sai; substrate denial là boundary cố ý chặn; substrate defect là chính boundary vi phạm contract.</p><div class="cards">
+      <article data-invariant="HI #1" data-evidence-kind="verified" data-source="musubi/agent/vendors/base.py:20"><h3>HI #1 — zero LLM calls in substrate</h3><p><strong>Risk:</strong> governance tự reasoning và không còn deterministic. <strong>Assumption:</strong> driver là layer duy nhất cần model. <strong>Enforcement:</strong> model access qua <code>LMRouter</code>; server, validation, policy và audit không import SDK. <strong>Evidence:</strong> router usage và zero-LLM substrate source boundary. <strong>Violation:</strong> gọi OpenAI từ policy engine. Bỏ enforcement sẽ biến allow/deny thành nondeterministic và phá control boundary.</p></article>
+      <article data-invariant="HI #2" data-evidence-kind="verified" data-source="musubi/validation/subagent_context.py:99"><h3>HI #2 — push skills, pull on demand</h3><p><strong>Risk:</strong> worker thiếu role contract hoặc tự bỏ qua skill. <strong>Assumption:</strong> root/composer biết role trước worker. <strong>Enforcement:</strong> spawn context trả <code>role_skill</code>, system prompt nhúng nó; agent chỉ pull skill phụ qua <code>musubi_get_skill</code>. <strong>Evidence:</strong> frozen spawn prompt. <strong>Violation:</strong> gửi chỉ skill ID tùy chọn. Bỏ push path làm direct worker và pipeline stage có contract khác nhau.</p></article>
+      <article data-invariant="HI #3" data-evidence-kind="verified" data-source="musubi/validation/context_builder.py:227"><h3>HI #3 — evaluator firewall</h3><p><strong>Risk:</strong> judge bị bias bởi intent, plan, design hoặc memory. <strong>Assumption:</strong> evaluator chỉ cần artifact nó judge. <strong>Enforcement:</strong> reviewer stage permissions chỉ cho <code>code</code>; final-stage brief chỉ mang output ngay trước. <strong>Evidence:</strong> denied read và last-stage brief. <strong>Violation:</strong> reviewer đọc plan. Bỏ một trong hai gate tạo leakage qua MCP hoặc runner.</p></article>
+      <article data-invariant="HI #5" data-evidence-kind="verified" data-source="scripts/policy_engine.py:359"><h3>HI #5 — fail-closed policy</h3><p><strong>Risk:</strong> unknown authority nhận tool hoặc stage execution. <strong>Assumption:</strong> chỉ membership và allowlist rõ ràng mới hợp lệ. <strong>Enforcement:</strong> catalog validation khi boot, membership re-check khi spawn, role/pipeline tool intersection. <strong>Evidence:</strong> policy verdict và denied tool event. <strong>Violation:</strong> unknown reviewer được shell. Bỏ deny default biến lỗi config thành authority escalation.</p></article>
+      <article data-invariant="HI #7" data-evidence-kind="verified" data-source="musubi/storage/schema.sql:34"><h3>HI #7 — append-only stage store</h3><p><strong>Risk:</strong> retry xóa provenance của attempt trước. <strong>Assumption:</strong> maintainer cần toàn bộ chuỗi evidence. <strong>Enforcement:</strong> retry ghi <code>&lt;stage&gt;.attemptN.md</code>, read path chọn attempt rõ ràng. <strong>Evidence:</strong> immutable attempt artifacts. <strong>Violation:</strong> overwrite <code>code.md</code>. Bỏ suffix attempt làm review và recovery không thể tái dựng.</p></article>
+      <article data-invariant="HI #8" data-evidence-kind="verified" data-source="musubi/storage/subagent_audit.py:1"><h3>HI #8 — no silent sub-agents</h3><p><strong>Risk:</strong> fan-out không có accountability. <strong>Assumption:</strong> mỗi child có parentage và terminal outcome. <strong>Enforcement:</strong> spawn và completion append rows vào <code>subagent_audit</code>. <strong>Evidence:</strong> queryable handle, parent, role, status. <strong>Violation:</strong> helper chạy mà không có row. Bỏ completion write tạo orphan không phân biệt running với lost.</p></article>
+      <article data-invariant="HI #9" data-evidence-kind="verified" data-source="CLAUDE.md:67"><h3>HI #9 — tag and expire</h3><p><strong>Risk:</strong> ephemeral scaffolding trở thành permanent accidental architecture. <strong>Assumption:</strong> model capability tăng sẽ làm một số compensation hết cần. <strong>Enforcement:</strong> card phản ánh <code>musubi-tier</code> khi source header khai báo; source tier ephemeral mang đúng <code>expires-when</code> và <code>cost-lever</code> của file. <strong>Evidence:</strong> source metadata và PR review. <strong>Violation:</strong> thêm prompt scaffold không expiry. Bỏ metadata làm dissolution không có trigger.</p></article>
+    </div></section>
+    <section id="economics"><h2>Kinh tế token và runtime: mỗi giới hạn một owner</h2><table><thead><tr><th>Dimension</th><th>Single owner</th><th>Cách đọc</th></tr></thead><tbody>
+      <tr><td>Per-call output tokens</td><td>Per-worker effort/output budget</td><td>Ceiling được resolve cho từng router call.</td></tr>
+      <tr><td>Worker turns/cycles</td><td>Worker or pipeline-stage contract</td><td>Turn guard dừng loop; prompt metadata không thay thế executable guard.</td></tr>
+      <tr><td>Model-input characters</td><td>Context fitting boundary</td><td>Nén, warn hoặc abort trước provider request.</td></tr>
+      <tr><td>Total pipeline stage allowance</td><td>Parent ChildTokenBudget allocation</td><td>Stage sau nhận phần còn lại từ parent.</td></tr>
+      <tr><td>Root worker count and recovery</td><td>Root routing/goal-state controller</td><td>GoalState sở hữu continue, recover và stop.</td></tr>
+      <tr><td>LM time</td><td>Each actual router call</td><td>Chỉ thời gian inference được quy vào LM.</td></tr>
+      <tr><td>Audit/storage growth</td><td>Append-only persistence boundaries</td><td>Stage attempts, tool audit, cycles và subagent events tăng theo write.</td></tr>
+    </tbody></table><p>Provider usage gồm input tokens, cached input là tập con của input, output tokens và LM time. Estimated usage được gắn nhãn; giá trị âm hoặc cached vượt input bị clamp. Replay/context chỉ tốn model input khi được gửi lại. Không có credit hay pricing abstraction. Policy, validation, database reads, persistence và Console projection là zero-LLM nhưng vẫn dùng CPU, I/O và wall-clock.</p></section>
+    <section id="evolution"><h2>Tiến hóa và dissolution</h2><p>Mỗi record theo chuỗi <em>previous shape → observed problem → design decision → current shape → future removal trigger</em>. <strong>Historical interpretation:</strong> các chuyển tiếp dưới đây giải thích lịch sử; current runtime cards phía trên vẫn là evidence cho hiện trạng.</p><ol>
+      <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-16-musubi-system-atlas-design.md:311"><strong>Fixed pipelines:</strong> fixed four-stage pipeline → khó tái dùng topology → tách preset và recipe → user-defined worker recipes → bỏ scaffolding khi model có thể tự thỏa contract an toàn.</li>
+      <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-16-musubi-system-atlas-design.md:312"><strong>Unified execution primitive:</strong> main/sub-agent distinction → duplicated loops và semantics → hợp nhất execution → root, child và stage dùng <code>run_unit</code> với authority khác nhau → xóa compatibility wrappers khi caller cũ biến mất.</li>
+      <li data-evidence-kind="historical" data-source="docs/superpowers/plans/2026-07-12-stage-nesting-worker-unification-extension-removal.md:29"><strong>VS Code removal:</strong> embedded VS Code host → ownership và model access bị chia đôi → giữ một standalone host → standalone CLI plus native Console → xóa extension residue khi schema/comment compatibility hết cần.</li>
+      <li data-evidence-kind="historical" data-source="docs/roadmap.md:179"><strong>Builder-only Studio:</strong> Pipeline Studio execution surface → chat/session ownership trùng Orchestrator → tách authoring khỏi execution → builder-only workspace và explicit Orchestrator launch → xóa legacy read fields khi migration window đóng.</li>
+      <li data-evidence-kind="historical" data-source="docs/roadmap.md:62"><strong>GoalState:</strong> accumulated root transcripts → context phình và recovery mập mờ → giữ exact intent cùng bounded feedback → current-run GoalState và OutcomePacket → thu nhỏ scaffold khi provider reasoning đủ tin cậy.</li>
+      <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-16-musubi-system-atlas-design.md:317"><strong>Pushed skills:</strong> skill-only reachability gap → worker có thể không pull role contract → root chọn và spawn path inject → pushed role skill plus on-demand pull → gộp metadata khi tool protocol mang contract native.</li>
+      <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-13-orchestrator-token-economics-design.md:46"><strong>Token-only accounting:</strong> unbounded or duplicated limits → nhiều owner và credit semantics không quy vế → mỗi dimension một executable owner → provider/estimated token-only accounting → xóa compatibility fields sau khi reader cũ hết hạn.</li>
+      <li data-evidence-kind="historical" data-source="docs/roadmap.md:150"><strong>Thinner prompts:</strong> fixed prompt scaffolding → ephemeral compensation tích tụ → tag expiry và cost lever → frozen brief nhỏ hơn và pushed skills → delete khi model capability đáp ứng failure threshold.</li>
+      <li data-evidence-kind="historical" data-source="docs/roadmap.md:152"><strong>Catalog relocation:</strong> platform-neutral catalogs under <code>.github/</code> → storage path ngụ ý platform ownership → lên kế hoạch relocation → catalog vẫn ở <code>.github/</code> trong current repo → move khi compatibility readers và migration được ship.</li>
+    </ol><aside class="callout"><h3>Documentation archaeology</h3><p><span>Stale or contradicted</span> — residue này không phải active behavior:</p><ul>
+      <li data-evidence-kind="stale" data-source="musubi/tool_surface.py:28"><strong>worker-summoned whole pipelines</strong> trong AGENTS.md/docs guide; superseded bởi model-visible tool surface không có <code>musubi_spawn_pipeline</code> và explicit operator launch.</li>
+      <li data-evidence-kind="stale" data-source="musubi/agent/run.py:137"><strong>one-level leaf wording</strong> trong subagent.py; runtime cho phép nested worker đến configured depth cap.</li>
+      <li data-evidence-kind="stale" data-source="musubi/tests/test_agent_loop.py:684"><strong>max_credits/warn_at compatibility fields</strong>; live economics là token-only và compatibility readers bỏ qua legacy credit values.</li>
+      <li data-evidence-kind="stale" data-source="musubi/tests/test_code_review_standalone.py:130"><strong>extension-side runner comments</strong>; VS Code host đã bị standalone CLI và native Console thay thế.</li>
+      <li data-evidence-kind="stale" data-source="gui/src/views/Pipeline.test.mjs:27"><strong>legacy Pipeline Studio chat/session fields</strong>; Studio hiện là builder-only workspace.</li>
+      <li data-evidence-kind="stale" data-source="musubi/agent/pipeline_runner.py:78"><strong>root prompt maxTurns</strong> như enforced cap; executable budget resolution, không phải prompt prose, sở hữu limit.</li>
+    </ul><p><strong>HI #4 retired:</strong> zero-cost routing trở thành trivial trong single-host shape. <strong>HI #6 retired:</strong> flat catalog là code-organization decision, không phải safety property.</p></aside></section>
+    <section id="quiz"><h2>Tự kiểm tra có chấm điểm</h2><p>Chọn một chương hoặc bài tổng hợp 12 câu. Mỗi câu khóa sau lần trả lời đầu tiên; explanation giải thích chuỗi nhân quả và dẫn về phần liên quan.</p>
+      <div class="quiz-toolbar"><label>Phạm vi quiz <select id="quiz-scope"><option value="all">Toàn bộ 24 câu</option><option value="orientation">Định hướng</option><option value="components">Component</option><option value="traces">Trace</option><option value="invariants">Bất biến</option><option value="economics">Kinh tế</option><option value="evolution">Tiến hóa</option><option value="cumulative">Tổng hợp 12 câu</option></select></label><button id="quiz-reset" type="button">Xóa điểm và làm lại</button></div>
+      <div class="quiz-summary"><p><strong>Tổng điểm:</strong> <span id="quiz-total-score">0 / 24</span></p><p><strong>Đã trả lời:</strong> <span id="quiz-answered-count">0 / 24</span></p><p><strong>Điểm chương:</strong> <span id="quiz-chapter-score">0 / 4</span></p></div>
+      <p id="quiz-announcer" aria-live="polite"></p>
+      <div id="quiz-questions"></div>
+      <ol class="sr-only" aria-label="Chỉ mục câu hỏi quiz">
+        <li data-question-id="boundary-01">Câu 1</li><li data-question-id="boundary-02">Câu 2</li><li data-question-id="boundary-03">Câu 3</li><li data-question-id="boundary-04">Câu 4</li><li data-question-id="component-01">Câu 5</li><li data-question-id="component-02">Câu 6</li><li data-question-id="component-03">Câu 7</li><li data-question-id="component-04">Câu 8</li><li data-question-id="trace-01">Câu 9</li><li data-question-id="trace-02">Câu 10</li><li data-question-id="trace-03">Câu 11</li><li data-question-id="trace-04">Câu 12</li><li data-question-id="invariant-01">Câu 13</li><li data-question-id="invariant-02">Câu 14</li><li data-question-id="invariant-03">Câu 15</li><li data-question-id="invariant-04">Câu 16</li><li data-question-id="economics-01">Câu 17</li><li data-question-id="economics-02">Câu 18</li><li data-question-id="economics-03">Câu 19</li><li data-question-id="economics-04">Câu 20</li><li data-question-id="evolution-01">Câu 21</li><li data-question-id="evolution-02">Câu 22</li><li data-question-id="evolution-03">Câu 23</li><li data-question-id="evolution-04">Câu 24</li>
+      </ol>
+    </section>
+  </main>
+  <aside id="evidence-drawer" aria-label="Bằng chứng nguồn">
+    <button id="evidence-drawer-close" class="drawer-close" type="button" aria-controls="evidence-drawer">Đóng bằng chứng</button>
+    <h2>Text equivalent của map edges</h2>
+    <div id="relationship-summary" class="relationship-list" aria-live="polite"><strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.</div>
+    <ol><li>CLI launches GoalState root controller.</li><li>Console launches deterministic pipeline bằng <code>--pipeline</code>.</li><li>GoalState routes sang worker loop; worker dispatches pipeline stages khi caller đã chọn pipeline.</li><li>Worker loop calls LMRouter; LMRouter requests model provider.</li><li>Worker calls Musubi MCP tools; MCP server delegates gates cho fail-closed policy và evaluator firewall.</li><li>MCP server injects skills, loads memory, compresses context, persists state vào musubi.db và records audit vào audit.db.</li><li>Top-level driver routes namespaced calls tới external MCP; đường này không qua Musubi gate/audit.</li><li>Rust projection reads state và audit, projects sang React view model, rồi renders Console.</li></ol>
+    <p><strong>Verified sources:</strong> <code>musubi/tool_surface.py</code>, <code>musubi/agent/run.py</code>, <code>musubi/agent/mcp_gateway.py</code>, <code>gui/src-tauri/musubi-data/src/lib.rs</code>.</p>
+  </aside>
+  <noscript><section aria-label="Nội dung cốt lõi khi JavaScript bị tắt"><h2>Atlas vẫn dùng được khi JavaScript tắt</h2><p>The driver reasons. Musubi controls the environment. Model tạo reasoning và tool request. Driver giữ model call, GoalState, worker loop, deterministic pipeline runner và LMRouter. Governance substrate gồm Musubi MCP server, fail-closed policy, evaluator firewall, validation, memory, compression và persistence; lớp này không gọi LLM. Console là read-only operator projection. External MCP là external system và mọi call federated nằm ngoài Musubi-owned policy/audit boundary.</p><p>Hai trục phải đọc độc lập: trust boundary cho biết ai gọi model, ai gate, ai chỉ đọc và ai ở ngoài; lifecycle cho biết component là durable investment hay ephemeral compensation. Vì vậy run_unit là durable driver nhưng không thuộc zero-LLM substrate. Root và child dùng cùng primitive nhưng khác authority. Root sở hữu goal state và recovery; child nhận frozen brief, pushed skill và restricted tools. Model-visible root và child không thấy musubi_spawn_pipeline. Whole pipeline chỉ khởi chạy từ CLI --pipeline hoặc Orchestrator Pipeline mode. Worker siblings được phát trong cùng model turn chạy same-turn và kết quả quay về đúng thứ tự tool use.</p><p>Map edge text: CLI launches root; Console launches explicit pipeline; root routes worker; worker calls LMRouter; LMRouter requests provider; worker calls Musubi MCP; policy gates; evaluator firewall limits context; server injects skills, loads memory, compresses input, persists state và records audit; Rust reads both databases, projects React model và renders Console; external MCP receives namespaced calls directly. Mỗi component card phía trên ghi responsibility, rationale, inputs, outputs, callers, dependencies, enforcement, failure, economics, source, trust zone và durability để maintainer có thể kiểm tra mà không cần script.</p>
+    <h2>Đáp án quiz khi JavaScript bị tắt</h2><p>Phần này không chấm điểm nhưng giữ nguyên prompt, đáp án đúng, explanation và section link.</p><ol>
+      <li><strong>Vì sao vendor neutrality không đặt governance vào từng router?</strong><br>Đáp án đúng: Governance phải nằm trong substrate dùng chung để mọi vendor đi qua cùng boundary.<br>Explanation: Router chỉ chuẩn hóa model access phía driver; policy, validation và audit ở substrate chung nên đổi vendor không đổi quyền hạn. <a href="#orientation">Đọc phần định hướng</a>.</li>
+      <li><strong>Một worker cần gọi provider. Đường hợp lệ duy nhất là gì?</strong><br>Đáp án đúng: Worker loop gọi LMRouter phía driver, rồi LMRouter gọi provider.<br>Explanation: HI #1 giữ model call tại inject point LMRouter của driver; MCP server và policy vẫn zero-LLM. <a href="#orientation">Đọc phần định hướng</a>.</li>
+      <li><strong>Root muốn sửa file trực tiếp để tiết kiệm một spawn. Hệ thống nên làm gì?</strong><br>Đáp án đúng: Chặn mutation ở root và giao brief có giới hạn cho mutate worker.<br>Explanation: Root sở hữu goal state và routing, còn quyền mutation được cấp cho worker phù hợp để scope và audit vẫn rõ. <a href="#orientation">Đọc phần định hướng</a>.</li>
+      <li><strong>Một role lạ yêu cầu tool không có trong allowlist. Kết quả đúng là gì?</strong><br>Đáp án đúng: Deny trước execution và ghi verdict, không tạo side effect.<br>Explanation: Fail-closed biến thiếu membership hoặc allowlist thành substrate denial, không thành authority ngầm. <a href="#orientation">Đọc phần định hướng</a>.</li>
+      <li><strong>Hai spawn request xuất hiện trong cùng một model turn. Khi nào chúng có thể chạy đồng thời?</strong><br>Đáp án đúng: Khi chúng là sibling của cùng turn và driver dispatch bằng một batch gather.<br>Explanation: Same-turn sibling dispatch chứng minh parallelism; quan hệ summoned tự nó không nói lên lịch chạy. <a href="#components">Đọc component atlas</a>.</li>
+      <li><strong>Vì sao hai spawn ở hai model turn liên tiếp không tạo thành một parallel batch?</strong><br>Đáp án đúng: Turn sau chỉ được tạo sau khi kết quả turn trước đã quay lại vòng reasoning.<br>Explanation: Batch concurrency được chốt từ tool uses của một response; cross-turn có dependency tuần tự qua model state. <a href="#components">Đọc component atlas</a>.</li>
+      <li><strong>Evaluator yêu cầu plan để hiểu intent trước khi chấm code. Boundary đúng làm gì?</strong><br>Đáp án đúng: Từ chối plan và chỉ cung cấp artifact đang được đánh giá.<br>Explanation: Artifact-only context ngăn intent, plan và memory bias evaluator; cả stage permission lẫn final-stage brief đều enforce. <a href="#components">Đọc component atlas</a>.</li>
+      <li><strong>Nếu bỏ gate final-stage brief nhưng giữ MCP read permission, evaluator còn độc lập không?</strong><br>Đáp án đúng: Không; runner vẫn có thể đưa context ngoài artifact vào brief.<br>Explanation: HI #3 cần hai điểm enforce vì leakage có thể đến từ MCP read hoặc từ brief do runner dựng. <a href="#components">Đọc component atlas</a>.</li>
+      <li><strong>Một pushed skill đi qua chuỗi nào trước model call của child?</strong><br>Đáp án đúng: Root chọn; spawn path revalidate, ghi provenance, load nội dung và inject vào system prompt.<br>Explanation: Revalidation khóa skill vào role allowlist, audit giữ provenance và prompt injection khiến worker không thể bỏ qua contract. <a href="#traces">Đọc trace lab</a>.</li>
+      <li><strong>Stage pipeline yêu cầu helper role không có trong spawns đã khai báo. Điều gì xảy ra?</strong><br>Đáp án đúng: Role firewall reject trước khi helper được launch.<br>Explanation: Effective spawn roles là giao của khai báo pipeline và role firewall; role ngoài membership không nhận quyền. <a href="#traces">Đọc trace lab</a>.</li>
+      <li><strong>Ở final turn, worker đã ghi artifact và validator xác nhận. Completion nào hợp lệ?</strong><br>Đáp án đúng: Hoàn tất bằng verified artifact evidence dù không còn model turn để diễn giải thêm.<br>Explanation: Artifact đã tồn tại và deterministic validation là evidence đủ; recovery không nên xóa thành quả chỉ vì hết turn. <a href="#traces">Đọc trace lab</a>.</li>
+      <li><strong>Worker chỉ nói “đã xong” nhưng không có artifact hoặc tool evidence. Root nên làm gì?</strong><br>Đáp án đúng: Giữ trạng thái escalated hoặc recovery, không công nhận completion.<br>Explanation: Text-only claim không chứng minh side effect; terminal controller cần evidence được hỗ trợ để tránh success giả. <a href="#traces">Đọc trace lab</a>.</li>
+      <li><strong>Vì sao ChildTokenBudget chia fair-share thay vì để stage đầu dùng hết?</strong><br>Đáp án đúng: Để bảo vệ allowance tối thiểu cho các stage sau trong pipeline tuần tự.<br>Explanation: Parent phân bổ phần còn lại theo số stage chưa chạy; nếu stage đầu chiếm hết thì recipe không thể hoàn thành causal chain. <a href="#invariants">Đọc phần bất biến</a>.</li>
+      <li><strong>Worker chạm output ceiling trong một call. Owner nào phải dừng call đó?</strong><br>Đáp án đúng: Per-worker effort/output budget tại router-call boundary.<br>Explanation: Mỗi budget dimension có một executable owner; prompt prose không thay thế ceiling được resolve cho call. <a href="#invariants">Đọc phần bất biến</a>.</li>
+      <li><strong>Elision marker hợp lệ ở đâu?</strong><br>Đáp án đúng: Trong replay history khi marker giữ reference có thể phục hồi tới dispatch gốc.<br>Explanation: Context fitting có thể giảm replay được gửi lại nhưng phải bảo toàn system prompt, goal đầu và đường phục hồi nội dung. <a href="#invariants">Đọc phần bất biến</a>.</li>
+      <li><strong>Vì sao elision marker không được dùng làm toàn bộ filesystem tool argument?</strong><br>Đáp án đúng: Tool cần payload đầy đủ để side effect deterministic và kiểm chứng được.<br>Explanation: Replay marker là representation cho model context; thay complete tool argument bằng marker sẽ đổi hành động thực thi và phá contract. <a href="#invariants">Đọc phần bất biến</a>.</li>
+      <li><strong>Console nên hiển thị pushed-skill evidence nào?</strong><br>Đáp án đúng: Provenance đã sanitize như skill ID, role và assignment; không lộ raw tool args/results.<br>Explanation: Operator cần truy được capability injection nhưng projection boundary phải tránh đưa payload nhạy cảm thô vào UI. <a href="#economics">Đọc phần kinh tế</a>.</li>
+      <li><strong>Khi audit row chưa nối chắc chắn được với session nào, Console nên làm gì?</strong><br>Đáp án đúng: Giữ evidence ở nhóm unassigned và không tự bịa quan hệ.<br>Explanation: Unassigned là trạng thái evidence trung thực; gán suy đoán sẽ biến projection thành nguồn dữ liệu sai. <a href="#economics">Đọc phần kinh tế</a>.</li>
+      <li><strong>Vì sao Console phải join musubi.db và audit.db?</strong><br>Đáp án đúng: State DB cho lifecycle/identity, audit DB cho event evidence; cần cả hai để dựng projection có ngữ cảnh.<br>Explanation: Không database nào một mình chứa cả trạng thái điều phối lẫn chuỗi tool/subagent evidence cần cho operator. <a href="#economics">Đọc phần kinh tế</a>.</li>
+      <li><strong>Console đọc và join hai database có tạo LM cost không?</strong><br>Đáp án đúng: Không; đó là SQLite I/O và CPU zero-LLM, dù vẫn tốn wall-clock.<br>Explanation: Chỉ actual router call tính LM time và token; projection, policy, validation và persistence không gọi model. <a href="#economics">Đọc phần kinh tế</a>.</li>
+      <li><strong>Một external MCP tùy chọn không kết nối được khi startup. Run có nhất thiết abort không?</strong><br>Đáp án đúng: Không; driver log và skip server lỗi, catalog còn lại vẫn hoạt động.<br>Explanation: Connection failure được cô lập để optional federation không hạ toàn bộ host; chỉ tool của server đó vắng mặt. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
+      <li><strong>Một external MCP tool chạy thành công. Musubi policy/audit có sở hữu call đó không?</strong><br>Đáp án đúng: Không; driver route trực tiếp tới owning server ngoài Musubi-owned boundary.<br>Explanation: Namespacing giải quyết discovery và collision, không tự đưa external call qua Musubi policy hoặc audit. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
+      <li><strong>Vì sao kiến trúc đổi từ main/sub-agent distinction sang unified worker model?</strong><br>Đáp án đúng: Để dùng chung run_unit primitive nhưng vẫn cấp authority khác nhau theo depth và role.<br>Explanation: Hợp nhất execution giảm loop trùng lặp; root vẫn giữ goal state còn child nhận brief và tools giới hạn. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
+      <li><strong>Một prompt scaffold được gắn ephemeral. Điều gì ngăn nó thành kiến trúc vĩnh viễn?</strong><br>Đáp án đúng: expires-when và cost-lever rõ ràng, được review theo HI #9.<br>Explanation: Ephemeral compensation chỉ hợp lệ khi có removal trigger đo được; durable investment và trust zone là trục khác. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
+    </ol></section></noscript>
+  <script>
+    const TRACE_SCENARIOS = [
+      {
+        id: 'direct-worker', title: 'Yêu cầu trực tiếp tới một worker', summary: 'Root định tuyến việc có giới hạn, worker suy luận qua LMRouter, rồi mutation đi qua boundary được quản trị.',
+        steps: [
+          { component: 'goal-state', title: 'Giữ và định tuyến intent', input: 'Yêu cầu synthetic: cập nhật một parser test', output: 'Worker dispatch đã đóng băng', decision: 'Chọn một worker và giữ quyền quyết định cuối tại root', lmCall: false, economics: 'Chỉ định tuyến local; không tốn provider token', evidence: 'musubi/agent/goal_state.py:95', failure: 'Scope sai sẽ dừng trước khi worker mutation' },
+          { component: 'lm-router', title: 'Worker thực hiện suy luận', input: 'Brief đóng băng, tool bị giới hạn và role contract đã push', output: 'Tool request musubi_write_file', decision: 'Gọi provider một lần qua inject point của driver', lmCall: true, economics: 'Tính một worker cycle cùng input, cached subset, output và LM time', evidence: 'musubi/agent/run.py:734', failure: 'Provider lỗi thì driver trả lỗi và chưa có mutation' },
+          { component: 'policy', title: 'Kiểm tra quyền ghi', input: 'Role worker và tên musubi_write_file', output: 'Policy decision đã được audit', decision: 'Đánh giá Musubi-owned tool trước khi dispatch', lmCall: false, economics: 'Chỉ lookup local và audit I/O', evidence: 'musubi/agent/run.py:2150', failure: 'Deny sẽ trả kết quả typed mà không gọi write tool' },
+          { component: 'mcp-server', title: 'Áp dụng mutation đã được phép', input: 'Arguments synthetic của musubi_write_file', output: 'Workspace file mới và tool audit evidence', decision: 'Thực thi deterministic write sau khi policy đã allow', lmCall: false, economics: 'Chỉ filesystem và audit I/O', evidence: 'musubi/server.py:2475', failure: 'Path hoặc arguments sai sẽ không tạo write' }
+        ]
+      },
+      {
+        id: 'pushed-skill', title: 'Root chọn và push một skill', summary: 'Role skill được revalidate và inject trước model call của child.',
+        steps: [
+          { component: 'skills', title: 'Tạo spawn context bất biến', input: 'Reviewer role và skill ID synthetic', output: 'Context đóng băng có role_skill và allowed_tools', decision: 'Chỉ revalidate và load skill nằm trong allowlist', lmCall: false, economics: 'Chỉ đọc file local; prompt characters chỉ tính khi gửi', evidence: 'musubi/validation/subagent_context.py:92', failure: 'Role hoặc skill lạ sẽ fail closed trước inference' },
+          { component: 'worker-loop', title: 'Suy luận với contract đã push', input: 'Child system prompt chứa role_skill', output: 'Phản hồi worker theo đúng role', decision: 'Gọi provider với prompt đã inject', lmCall: true, economics: 'Tính một child cycle và provider token của nó', evidence: 'musubi/agent/run.py:734', failure: 'Provider lỗi làm spawn được audit ở trạng thái failed hoặc incomplete' }
+        ]
+      },
+      {
+        id: 'parallel-workers', title: 'Các sibling worker trong cùng turn', summary: 'Root tạo sibling trong một turn; mỗi child gọi provider trong khi gather chồng lấp wall-clock.',
+        steps: [
+          { component: 'lm-router', title: 'Root phát các sibling tool use', input: 'Phân rã synthetic thành finder-a và finder-b', output: 'Hai spawn request trong một response', decision: 'Yêu cầu các sibling có giới hạn trong cùng model turn', lmCall: true, economics: 'Tính một root cycle', evidence: 'musubi/agent/run.py:734', failure: 'Call sai sẽ trở thành tool error riêng' },
+          { component: 'nested-dispatch', title: 'Dispatch sibling đồng thời', input: 'Hai spawn request có thứ tự', output: 'Kết quả settled theo đúng thứ tự tool use', decision: 'Chỉ dùng asyncio.gather cho sibling phát trong turn này', lmCall: false, economics: 'Wall-clock của child chồng lấp nhưng usage vẫn tách biệt', evidence: 'musubi/agent/run.py:1940', failure: 'Một child exception không làm mất thầm lặng kết quả còn lại' },
+          { component: 'worker-loop', title: 'Mỗi child tự suy luận', input: 'Các frozen brief và catalog giới hạn độc lập', output: 'Hai child outcome có giới hạn', decision: 'Mỗi child thực hiện provider call của chính nó', lmCall: true, economics: 'Tính hai child cycle; token không nhập vào ownership của root', evidence: 'musubi/agent/run.py:734', failure: 'Child lỗi trả terminal evidence rõ ràng' }
+        ]
+      },
+      {
+        id: 'nested-helper', title: 'Worker gọi một helper lồng nhau', summary: 'Policy cấp quyền cho worker sâu hơn, helper suy luận và completion được append vào audit.',
+        steps: [
+          { component: 'policy', title: 'Cấp quyền cho nested role', input: 'Child request synthetic tại depth 1', output: 'Helper handle có tool bị giới hạn', decision: 'Chỉ allow khi role, depth và cumulative ceiling đều hợp lệ', lmCall: false, economics: 'Chỉ policy lookup và audit I/O local', evidence: 'musubi/server.py:1489', failure: 'Role lạ hoặc quá depth sẽ không launch gì' },
+          { component: 'worker-loop', title: 'Helper thực hiện suy luận', input: 'Nested frozen brief', output: 'Helper outcome cô đọng', decision: 'Gọi provider trong child allocation', lmCall: true, economics: 'Tính một nested cycle vào child budget', evidence: 'musubi/agent/run.py:734', failure: 'Budget hoặc provider lỗi trở thành failed completion' },
+          { component: 'subagent-audit', title: 'Ghi nhận completion', input: 'Helper handle, turns và outcome', output: 'Completion row append-only', decision: 'Làm nested work queryable trước khi trả kết quả', lmCall: false, economics: 'Tăng một durable audit write', evidence: 'musubi/storage/subagent_audit.py:187', failure: 'Audit lỗi phải lộ ra thay vì tạo silent helper' }
+        ]
+      },
+      {
+        id: 'operator-pipeline', title: 'Operator khởi chạy pipeline xác định', summary: 'CLI host parse lựa chọn rõ ràng; các primary stage gọi model tuần tự.',
+        steps: [
+          { component: 'cli', title: 'Vào standalone CLI host', input: 'Argv synthetic của agent CLI', output: 'Parsed host command', decision: 'Dùng một host entry point cho direct và pipeline mode', lmCall: false, economics: 'Chỉ process startup và argument parsing', evidence: 'musubi/agent/run.py:1234', failure: 'Arguments sai trả lỗi trước khi tạo run' },
+          { component: 'cli', title: 'Parse lựa chọn pipeline', input: 'Flag --pipeline dev-lite', output: 'Pipeline name rõ ràng', decision: 'Operator chọn whole pipeline; model không tự route', lmCall: false, economics: 'Không tốn provider token', evidence: 'musubi/agent/run.py:1303', failure: 'Recipe thiếu hoặc sai sẽ chặn launch' },
+          { component: 'pipeline-runner', title: 'Vào vòng stage tuần tự', input: 'Plan đã validate và có thứ tự', output: 'Primary stage đầu tiên', decision: 'Await từng step trong plan trước khi đi tiếp', lmCall: false, economics: 'Chỉ runner setup local', evidence: 'musubi/agent/pipeline_runner.py:179', failure: 'Stage bị reject sẽ abort backbone' },
+          { component: 'worker-loop', title: 'Chạy model của primary stage', input: 'Stage brief và stage tool catalog', output: 'Stage result được persist trước stage sau', decision: 'Gọi provider riêng cho stage hiện tại', lmCall: true, economics: 'Cycle được tính vào allowance của stage hiện tại', evidence: 'musubi/agent/pipeline_runner.py:314', failure: 'Stage failed sẽ chặn các primary stage sau' },
+          { component: 'pipeline-runner', title: 'Tiến sau completion', input: 'Stage summary đã persist', output: 'Stage tuần tự kế tiếp hoặc finalized run', decision: 'Không bao giờ overlap primary backbone stage', lmCall: false, economics: 'Tăng append-only stage và lifecycle write', evidence: 'musubi/agent/pipeline_runner.py:390', failure: 'Completion lỗi sẽ finalize trạng thái aborted' }
+        ]
+      },
+      {
+        id: 'pipeline-helpers', title: 'Pipeline stage gọi các helper đã khai báo', summary: 'Spawn gate intersect role đã khai báo; helper có thể overlap bên trong một stage trong khi backbone chờ.',
+        steps: [
+          { component: 'pipeline-runner', title: 'Gate fan-out đã khai báo', input: 'Stage synthetic có spawns: reviewer-aux', output: 'Effective spawn_roles từ server', decision: 'Intersect pipeline YAML spawns với firewall', lmCall: false, economics: 'Chỉ catalog và policy check local', evidence: 'musubi/agent/pipeline_runner.py:268', failure: 'Khai báo thiếu hoặc bị deny sẽ không có helper catalog' },
+          { component: 'lm-router', title: 'Stage phát helper request', input: 'Active stage brief và allowed spawn catalog', output: 'Same-turn helper tool use', decision: 'Chỉ active stage model được yêu cầu role đã khai báo', lmCall: true, economics: 'Tính current primary-stage cycle', evidence: 'musubi/agent/pipeline_runner.py:314', failure: 'Helper call sai bị deny mà chưa advance stage' },
+          { component: 'nested-dispatch', title: 'Dispatch helper của stage', input: 'Các helper request đã khai báo', output: 'Các child run được xếp lịch cùng turn', decision: 'Overlap sibling cùng turn nhưng vẫn giữ primary stage tuần tự', lmCall: false, economics: 'Chỉ orchestration wall-clock; chưa ghi provider token ở bước này', evidence: 'musubi/agent/run.py:1940', failure: 'Dispatch lỗi được trả rõ ràng cho active stage' },
+          { component: 'worker-loop', title: 'Child helper thực hiện inference', input: 'Frozen helper brief và restricted tools', output: 'Compact helper result về active stage', decision: 'Mỗi helper gọi provider qua worker loop của nó', lmCall: true, economics: 'Provider call của helper tiêu child allocation', evidence: 'musubi/agent/run.py:734', failure: 'Helper lỗi trả terminal evidence trong budget còn lại' }
+        ]
+      },
+      {
+        id: 'policy-denial', title: 'Policy deny tool trước execution', summary: 'Model có thể request tool, nhưng deterministic boundary deny trước side effect.',
+        steps: [
+          { component: 'lm-router', title: 'Model yêu cầu tool bị cấm', input: 'Reviewer brief synthetic', output: 'Tool request run_command', decision: 'Trả model output mà không cấp authority', lmCall: true, economics: 'Tính một reviewer cycle', evidence: 'musubi/agent/run.py:734', failure: 'Chọn tool kém là model failure, không phải policy defect' },
+          { component: 'policy', title: 'Deny trước execution', input: 'Reviewer role và run_command', output: 'DENY verdict và không có command result', decision: 'Fail closed vì tool vắng trong effective allowlist', lmCall: false, economics: 'Chỉ lookup local và audit I/O', evidence: 'scripts/policy_engine.py:359', failure: 'Allow request này sẽ là substrate defect' }
+        ]
+      },
+      {
+        id: 'evaluator-denial', title: 'Evaluator yêu cầu context bị cấm', summary: 'Evaluator model request plan context; firewall chỉ lộ artifact đang được judge.',
+        steps: [
+          { component: 'lm-router', title: 'Evaluator hỏi plan', input: 'Reviewer brief chỉ có code', output: 'Request musubi_read_stage cho plan', decision: 'Trả tool request nhưng không bypass substrate', lmCall: true, economics: 'Tính một evaluator cycle', evidence: 'musubi/agent/run.py:734', failure: 'Request thiên lệch bị boundary kế tiếp containment' },
+          { component: 'evaluator-firewall', title: 'Chặn forbidden read', input: 'Reviewer identity và requested plan stage', output: 'Access denial không chứa plan', decision: 'Áp reviewer stage permission và last-stage brief boundary', lmCall: false, economics: 'Chỉ validation local; không tốn provider token', evidence: 'musubi/validation/context_builder.py:227', failure: 'Bỏ một gate sẽ vi phạm HI #3' }
+        ]
+      },
+      {
+        id: 'budget-limit', title: 'Worker chạm runtime limit', summary: 'Một cycle thật tiêu usage; executable preflight chặn call bổ sung.',
+        steps: [
+          { component: 'lm-router', title: 'Tiêu allowance còn lại', input: 'Worker request synthetic còn trong budget', output: 'Provider response và measured usage', decision: 'Thực hiện call hiện vẫn được phép', lmCall: true, economics: 'Ghi input, cached subset, output và LM time', evidence: 'musubi/agent/run.py:734', failure: 'Usage bất thường được normalize hoặc đánh dấu estimated' },
+          { component: 'budget', title: 'Dừng trước call kế tiếp', input: 'Projected input vượt allowance còn lại', output: 'Terminal budget outcome', decision: 'Không phát thêm router call', lmCall: false, economics: 'Không tăng token; cycle trước vẫn attributable', evidence: 'musubi/agent/run.py:705', failure: 'Prompt maxTurns không override executable guard' }
+        ]
+      },
+      {
+        id: 'context-elision', title: 'Context fitting giữ nguyên dispatch', summary: 'Driver fit replay tại local rồi gửi request có giới hạn qua LMRouter.',
+        steps: [
+          { component: 'context-fit', title: 'Fit model input có giới hạn', input: 'Replay synthetic quá lớn cùng original dispatch', output: 'Messages có giới hạn và reversible reference', decision: 'Giữ system prompt và first user goal khi giảm replay', lmCall: false, economics: 'Chỉ CPU và storage; giảm input token ở call sau', evidence: 'musubi/agent/context.py:430', failure: 'Vượt hard ceiling sẽ abort trước inference' },
+          { component: 'lm-router', title: 'Gửi context đã fit', input: 'Fitted messages và tool definitions', output: 'Provider response', decision: 'Chỉ call sau khi fitting và budget preflight pass', lmCall: true, economics: 'Tính một cycle theo fitted input size', evidence: 'musubi/agent/run.py:734', failure: 'Provider lỗi không phá original dispatch reference' }
+        ]
+      },
+      {
+        id: 'console-projection', title: 'Console project runtime evidence an toàn', summary: 'Rust đọc hai database và React render read-only projection mà không gọi model.',
+        steps: [
+          { component: 'rust-projection', title: 'Đọc durable evidence', input: 'Kết nối synthetic tới musubi.db và audit.db', output: 'Safe joined state', decision: 'Xem state DB thiếu như danh sách run rỗng', lmCall: false, economics: 'Chỉ SQLite read và CPU', evidence: 'gui/src-tauri/musubi-data/src/lib.rs:1542', failure: 'Dữ liệu optional thiếu sẽ degrade thay vì bị bịa' },
+          { component: 'react-view-model', title: 'Render các operator view', input: 'Safe serialized state', output: 'Audit, Policy, Models, Skills và Settings projection', decision: 'Chỉ thực hiện presentation transform', lmCall: false, economics: 'Chỉ browser render wall-clock', evidence: 'gui/src/model/viewModel.js:1', failure: 'Field lạ sẽ degrade theo cách nhìn thấy được' }
+        ]
+      },
+      {
+        id: 'historical-console', title: 'Xem session lịch sử cạnh active driver', summary: 'Viewed identity scope database evidence trong khi active identity vẫn sở hữu shared process.',
+        steps: [
+          { component: 'console', title: 'Chọn historical session', input: 'Viewed session old-17 và active run-22 synthetic', output: 'Viewed session ID', decision: 'Không chuyển driver ownership khi selection thay đổi', lmCall: false, economics: 'Chỉ đổi UI state', evidence: 'gui/src/views/Orchestrator.jsx:90', failure: 'Trộn hai ID có thể target sai session' },
+          { component: 'rust-projection', title: 'Load cycle của session cũ', input: 'Viewed session ID old-17', output: 'Historical cycles khi run-22 vẫn active', decision: 'Scope query theo viewed identity đã chọn', lmCall: false, economics: 'Chỉ SQLite read', evidence: 'gui/src-tauri/musubi-data/src/lib.rs:3230', failure: 'Không có historical row thì render projection rỗng' }
+        ]
+      },
+      {
+        id: 'external-mcp', title: 'Kết nối hoặc gọi external MCP', summary: 'Top-level model chọn namespaced tool; driver route tới owning server ngoài governance của Musubi.',
+        steps: [
+          { component: 'external-mcp', title: 'Hợp nhất external catalog', input: 'External server specs và tool catalog', output: 'Namespaced tool không collision', decision: 'Chỉ thêm tool external hợp lệ vào top-level catalog', lmCall: false, economics: 'Chỉ discovery I/O và local sorting', evidence: 'musubi/agent/mcp_gateway.py:280', failure: 'Name collision làm tool external bị omit' },
+          { component: 'lm-router', title: 'Model chọn namespaced tool', input: 'Top-level catalog có weather__forecast', output: 'Namespaced external tool request', decision: 'Chỉ top-level driver thấy external tool', lmCall: true, economics: 'Tính một root cycle', evidence: 'musubi/agent/run.py:734', failure: 'Model chọn tên không có owner sẽ nhận tool error' },
+          { component: 'external-mcp', title: 'Resolve owning server bên ngoài', input: 'Tên tool weather__forecast', output: 'Tuple session và original tool name', decision: 'Lookup route đã đăng ký mà không qua Musubi policy', lmCall: false, economics: 'Chỉ map lookup local', evidence: 'musubi/agent/mcp_gateway.py:363', failure: 'Không có route thì không server nào được gọi' },
+          { component: 'external-mcp', title: 'Dispatch tới target session', input: 'Resolved route và tool arguments', output: 'External tool result', decision: 'Driver gọi trực tiếp session sở hữu tool', lmCall: false, economics: 'Tính external service latency, không thuộc Musubi audit', evidence: 'musubi/agent/run.py:2234', failure: 'Call lỗi được surface như external tool error' },
+          { component: 'external-mcp', title: 'Cô lập connection failure', input: 'External server không kết nối được', output: 'Logged skip; catalog còn lại vẫn dùng được', decision: 'Fail open khi optional connection bị lỗi', lmCall: false, economics: 'Chỉ connection wall-clock; không tốn provider token', evidence: 'musubi/agent/mcp_gateway.py:290', failure: 'Successful call vẫn ngoài Musubi-owned policy/audit boundary' }
+        ]
+      }
+    ];
+    const TRACE_STEP_FIELDS = ['component', 'title', 'input', 'output', 'decision', 'lmCall', 'economics', 'evidence', 'failure'];
+    const QUIZ_QUESTIONS = [
+      {"id":"boundary-01","chapter":"orientation","difficulty":"boundary","prompt":"Vì sao vendor neutrality không đặt governance vào từng router?","options":["Mỗi router tự triển khai policy riêng cho vendor","Governance phải nằm trong substrate dùng chung để mọi vendor đi qua cùng boundary","Console quyết định policy theo model đang chọn","Provider chịu trách nhiệm audit tool"],"answer":1,"explanation":"Router chỉ chuẩn hóa model access phía driver; policy, validation và audit ở substrate chung nên đổi vendor không đổi quyền hạn.","section":"orientation"},
+      {"id":"boundary-02","chapter":"orientation","difficulty":"boundary","prompt":"Một worker cần gọi provider. Đường hợp lệ duy nhất là gì?","options":["MCP server gọi SDK của vendor","Policy engine gọi provider sau khi allow","Worker loop gọi LMRouter phía driver, rồi LMRouter gọi provider","Console gửi prompt trực tiếp"],"answer":2,"explanation":"HI #1 giữ model call tại inject point LMRouter của driver; MCP server và policy vẫn zero-LLM.","section":"orientation"},
+      {"id":"boundary-03","chapter":"orientation","difficulty":"failure","prompt":"Root muốn sửa file trực tiếp để tiết kiệm một spawn. Hệ thống nên làm gì?","options":["Cho root ghi vì root có goal state","Chặn mutation ở root và giao brief có giới hạn cho mutate worker","Đưa quyền ghi vào LMRouter","Chỉ ghi nếu Console đang mở"],"answer":1,"explanation":"Root sở hữu goal state và routing, còn quyền mutation được cấp cho worker phù hợp để scope và audit vẫn rõ.","section":"orientation"},
+      {"id":"boundary-04","chapter":"orientation","difficulty":"failure","prompt":"Một role lạ yêu cầu tool không có trong allowlist. Kết quả đúng là gì?","options":["Allow nếu model giải thích hợp lý","Deny trước execution và ghi verdict, không tạo side effect","Cho chạy rồi audit sau","Hỏi provider chọn policy"],"answer":1,"explanation":"Fail-closed biến thiếu membership hoặc allowlist thành substrate denial, không thành authority ngầm.","section":"orientation"},
+      {"id":"component-01","chapter":"components","difficulty":"trace","prompt":"Hai spawn request xuất hiện trong cùng một model turn. Khi nào chúng có thể chạy đồng thời?","options":["Mọi quan hệ summoned đều luôn song song","Khi chúng là sibling của cùng turn và driver dispatch bằng một batch gather","Chỉ khi thuộc hai pipeline khác nhau","Khi audit DB trống"],"answer":1,"explanation":"Same-turn sibling dispatch chứng minh parallelism; quan hệ summoned tự nó không nói lên lịch chạy.","section":"components"},
+      {"id":"component-02","chapter":"components","difficulty":"trace","prompt":"Vì sao hai spawn ở hai model turn liên tiếp không tạo thành một parallel batch?","options":["Turn sau chỉ được tạo sau khi kết quả turn trước đã quay lại vòng reasoning","SQLite không cho phép concurrency","Child không bao giờ gọi model","Pipeline luôn chạy song song"],"answer":0,"explanation":"Batch concurrency được chốt từ tool uses của một response; cross-turn có dependency tuần tự qua model state.","section":"components"},
+      {"id":"component-03","chapter":"components","difficulty":"boundary","prompt":"Evaluator yêu cầu plan để hiểu intent trước khi chấm code. Boundary đúng làm gì?","options":["Cung cấp plan nhưng ẩn tên tác giả","Từ chối plan và chỉ cung cấp artifact đang được đánh giá","Để evaluator tự đọc memory","Đưa toàn bộ transcript để tăng accuracy"],"answer":1,"explanation":"Artifact-only context ngăn intent, plan và memory bias evaluator; cả stage permission lẫn final-stage brief đều enforce.","section":"components"},
+      {"id":"component-04","chapter":"components","difficulty":"failure","prompt":"Nếu bỏ gate final-stage brief nhưng giữ MCP read permission, evaluator còn độc lập không?","options":["Có, vì chỉ MCP permission mới quan trọng","Có, nếu model hứa không đọc context","Không; runner vẫn có thể đưa context ngoài artifact vào brief","Không, vì evaluator không được gọi model"],"answer":2,"explanation":"HI #3 cần hai điểm enforce vì leakage có thể đến từ MCP read hoặc từ brief do runner dựng.","section":"components"},
+      {"id":"trace-01","chapter":"traces","difficulty":"trace","prompt":"Một pushed skill đi qua chuỗi nào trước model call của child?","options":["Child tự đoán skill từ tên role","Root chọn; spawn path revalidate, ghi provenance, load nội dung và inject vào system prompt","Provider tải skill từ audit DB","Console chèn skill sau inference"],"answer":1,"explanation":"Revalidation khóa skill vào role allowlist, audit giữ provenance và prompt injection khiến worker không thể bỏ qua contract.","section":"traces"},
+      {"id":"trace-02","chapter":"traces","difficulty":"failure","prompt":"Stage pipeline yêu cầu helper role không có trong spawns đã khai báo. Điều gì xảy ra?","options":["Role firewall reject trước khi helper được launch","Helper chạy với tool catalog đầy đủ","Pipeline tự thêm role vào YAML","LMRouter quyết định có allow hay không"],"answer":0,"explanation":"Effective spawn roles là giao của khai báo pipeline và role firewall; role ngoài membership không nhận quyền.","section":"traces"},
+      {"id":"trace-03","chapter":"traces","difficulty":"trace","prompt":"Ở final turn, worker đã ghi artifact và validator xác nhận. Completion nào hợp lệ?","options":["Luôn fail vì không còn turn để viết lời kết","Hoàn tất bằng verified artifact evidence dù không còn model turn để diễn giải thêm","Xóa artifact và chạy lại từ đầu","Tin mọi text claim trước đó"],"answer":1,"explanation":"Artifact đã tồn tại và deterministic validation là evidence đủ; recovery không nên xóa thành quả chỉ vì hết turn.","section":"traces"},
+      {"id":"trace-04","chapter":"traces","difficulty":"failure","prompt":"Worker chỉ nói “đã xong” nhưng không có artifact hoặc tool evidence. Root nên làm gì?","options":["Đánh dấu complete vì model đã xác nhận","Giữ trạng thái escalated hoặc recovery, không công nhận completion","Ghi một artifact giả từ câu trả lời","Bỏ qua goal state"],"answer":1,"explanation":"Text-only claim không chứng minh side effect; terminal controller cần evidence được hỗ trợ để tránh success giả.","section":"traces"},
+      {"id":"invariant-01","chapter":"invariants","difficulty":"economics","prompt":"Vì sao ChildTokenBudget chia fair-share thay vì để stage đầu dùng hết?","options":["Để mọi stage có cùng số ký tự input","Để bảo vệ allowance tối thiểu cho các stage sau trong pipeline tuần tự","Để Console render nhanh hơn","Để provider dùng cached input"],"answer":1,"explanation":"Parent phân bổ phần còn lại theo số stage chưa chạy; nếu stage đầu chiếm hết thì recipe không thể hoàn thành causal chain.","section":"invariants"},
+      {"id":"invariant-02","chapter":"invariants","difficulty":"economics","prompt":"Worker chạm output ceiling trong một call. Owner nào phải dừng call đó?","options":["Per-worker effort/output budget tại router-call boundary","Pipeline Studio","Audit DB","Prompt prose của root"],"answer":0,"explanation":"Mỗi budget dimension có một executable owner; prompt prose không thay thế ceiling được resolve cho call.","section":"invariants"},
+      {"id":"invariant-03","chapter":"invariants","difficulty":"boundary","prompt":"Elision marker hợp lệ ở đâu?","options":["Thay toàn bộ path của write tool","Trong replay history khi marker giữ reference có thể phục hồi tới dispatch gốc","Thay policy verdict","Thay answer index của quiz"],"answer":1,"explanation":"Context fitting có thể giảm replay được gửi lại nhưng phải bảo toàn system prompt, goal đầu và đường phục hồi nội dung.","section":"invariants"},
+      {"id":"invariant-04","chapter":"invariants","difficulty":"failure","prompt":"Vì sao elision marker không được dùng làm toàn bộ filesystem tool argument?","options":["Vì marker luôn tốn nhiều token hơn","Tool cần payload đầy đủ để side effect deterministic và kiểm chứng được","Vì SQLite không lưu được marker","Vì LMRouter sẽ gọi hai lần"],"answer":1,"explanation":"Replay marker là representation cho model context; thay complete tool argument bằng marker sẽ đổi hành động thực thi và phá contract.","section":"invariants"},
+      {"id":"economics-01","chapter":"economics","difficulty":"boundary","prompt":"Console nên hiển thị pushed-skill evidence nào?","options":["Toàn bộ raw tool arguments và results","Provenance đã sanitize như skill ID, role và assignment; không lộ raw tool args/results","API key của provider","System prompt đầy đủ của child"],"answer":1,"explanation":"Operator cần truy được capability injection nhưng projection boundary phải tránh đưa payload nhạy cảm thô vào UI.","section":"economics"},
+      {"id":"economics-02","chapter":"economics","difficulty":"failure","prompt":"Khi audit row chưa nối chắc chắn được với session nào, Console nên làm gì?","options":["Gán vào session mới nhất","Xóa row khỏi audit DB","Giữ evidence ở nhóm unassigned và không tự bịa quan hệ","Nhờ model suy đoán owner"],"answer":2,"explanation":"Unassigned là trạng thái evidence trung thực; gán suy đoán sẽ biến projection thành nguồn dữ liệu sai.","section":"economics"},
+      {"id":"economics-03","chapter":"economics","difficulty":"boundary","prompt":"Vì sao Console phải join musubi.db và audit.db?","options":["State DB cho lifecycle/identity, audit DB cho event evidence; cần cả hai để dựng projection có ngữ cảnh","Để gọi hai model provider cùng lúc","Vì hai DB luôn chứa dữ liệu giống nhau","Để cho Pipeline Studio mutation"],"answer":0,"explanation":"Không database nào một mình chứa cả trạng thái điều phối lẫn chuỗi tool/subagent evidence cần cho operator.","section":"economics"},
+      {"id":"economics-04","chapter":"economics","difficulty":"economics","prompt":"Console đọc và join hai database có tạo LM cost không?","options":["Có, mỗi SQLite query là một model call","Không; đó là SQLite I/O và CPU zero-LLM, dù vẫn tốn wall-clock","Chỉ audit.db tạo token","Chỉ khi viewport dưới 760px"],"answer":1,"explanation":"Chỉ actual router call tính LM time và token; projection, policy, validation và persistence không gọi model.","section":"economics"},
+      {"id":"evolution-01","chapter":"evolution","difficulty":"failure","prompt":"Một external MCP tùy chọn không kết nối được khi startup. Run có nhất thiết abort không?","options":["Có, mọi federation failure phải hạ host","Không; driver log và skip server lỗi, catalog còn lại vẫn hoạt động","Có, policy engine không thể khởi động","Không, vì Musubi tự giả kết quả tool"],"answer":1,"explanation":"Connection failure được cô lập để optional federation không hạ toàn bộ host; chỉ tool của server đó vắng mặt.","section":"evolution"},
+      {"id":"evolution-02","chapter":"evolution","difficulty":"boundary","prompt":"Một external MCP tool chạy thành công. Musubi policy/audit có sở hữu call đó không?","options":["Có, mọi namespaced tool tự động thuộc Musubi","Không; driver route trực tiếp tới owning server ngoài Musubi-owned boundary","Có, nếu tool trả JSON","Không, vì external MCP không bao giờ chạy"],"answer":1,"explanation":"Namespacing giải quyết discovery và collision, không tự đưa external call qua Musubi policy hoặc audit.","section":"evolution"},
+      {"id":"evolution-03","chapter":"evolution","difficulty":"evolution","prompt":"Vì sao kiến trúc đổi từ main/sub-agent distinction sang unified worker model?","options":["Để mọi worker có root authority","Để dùng chung run_unit primitive nhưng vẫn cấp authority khác nhau theo depth và role","Để xóa audit DB","Để chuyển governance vào router"],"answer":1,"explanation":"Hợp nhất execution giảm loop trùng lặp; root vẫn giữ goal state còn child nhận brief và tools giới hạn.","section":"evolution"},
+      {"id":"evolution-04","chapter":"evolution","difficulty":"evolution","prompt":"Một prompt scaffold được gắn ephemeral. Điều gì ngăn nó thành kiến trúc vĩnh viễn?","options":["Tên file ngắn","expires-when và cost-lever rõ ràng, được review theo HI #9","Nó nằm trong .github","Nó không có test"],"answer":1,"explanation":"Ephemeral compensation chỉ hợp lệ khi có removal trigger đo được; durable investment và trust zone là trục khác.","section":"evolution"}
+    ];
+    const QUIZ_STORAGE_KEY = 'musubi-system-atlas.quiz.v1';
+    const AtlasApp = (() => {
+      const cards = [...document.querySelectorAll('[data-component]')];
+      const nodes = [...document.querySelectorAll('[data-map-component]')];
+      const edges = [...document.querySelectorAll('.edge')];
+      const MAP_RELATIONSHIPS = [
+        ['cli','goal-state','launches request','runtime'], ['console','pipeline-runner','launches pipeline request','runtime'], ['goal-state','worker-loop','routes context','runtime'],
+        ['worker-loop','pipeline-runner','dispatches stage result','runtime'], ['worker-loop','lm-router','model call','runtime'], ['lm-router','model-provider','model request/result','runtime'],
+        ['worker-loop','mcp-server','tool request/result','runtime'], ['mcp-server','policy','allow/deny gate','control'], ['mcp-server','evaluator-firewall','validates context boundary','control'],
+        ['mcp-server','skills','injects context','runtime'], ['mcp-server','memory','loads context','runtime'], ['mcp-server','compression','fits context','runtime'],
+        ['mcp-server','state-db','persists state','control'], ['mcp-server','audit-db','persists audit','control'], ['worker-loop','external-mcp','routes tool request/result','runtime'],
+        ['state-db','rust-projection','reads persisted state','control'], ['audit-db','rust-projection','reads persisted audit','control'], ['rust-projection','react-view-model','validates safe projection','control'],
+        ['react-view-model','console','renders result','runtime']
+      ];
+      const state = {
+        selectedComponent: '', mapMode: 'runtime', filters: { search: '', trust: 'all', durability: 'all' },
+        scenario: TRACE_SCENARIOS[0].id, traceStep: 0, quiz: { version: 1, answers: {} }, quizScope: 'all',
+        drawers: { nav: false, evidence: false }
+      };
+      const byId = id => document.getElementById(id);
+      const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+      const sourceHref = source => {
+        const split = String(source || '').lastIndexOf(':');
+        if (split < 1) return '#components';
+        return `../${String(source).slice(0, split)}#L${String(source).slice(split + 1)}`;
+      };
+      const maintainerRecordMarkup = card => {
+        const fields = [
+          ['Responsibility','responsibility'], ['Why','why'], ['Inputs','inputs'], ['Outputs','outputs'],
+          ['Called by','calledBy'], ['Depends on','dependsOn'], ['Enforces','enforces'], ['Failure modes','failureModes'],
+          ['Economics','economics'], ['Trust boundary','trustZone'], ['Lifecycle','durability'],
+          ['Expiry','expiresWhen'], ['Cost lever','costLever']
+        ];
+        const rows = fields.map(([label, key]) => `<dt>${label}</dt><dd>${escapeHtml(card.dataset[key] || 'not applicable')}</dd>`).join('');
+        const source = card.dataset.source || '';
+        return `<dl class="maintainer-record">${rows}<dt>Evidence</dt><dd><a class="source-link" href="${escapeHtml(sourceHref(source))}">${escapeHtml(source)}</a></dd></dl>`;
+      };
+
+      function applyFilters() {
+        const query = state.filters.search.trim().toLocaleLowerCase('vi');
+        let visible = 0;
+        cards.forEach(card => {
+          const haystack = [card.querySelector('h3')?.textContent, card.dataset.responsibility, card.dataset.source, card.dataset.enforces, card.dataset.failureModes].join(' ').toLocaleLowerCase('vi');
+          const matches = (!query || haystack.includes(query)) && (state.filters.trust === 'all' || card.dataset.trustZone === state.filters.trust) && (state.filters.durability === 'all' || card.dataset.durability === state.filters.durability);
+          const keepSelected = card.dataset.component === state.selectedComponent;
+          card.hidden = !(matches || keepSelected);
+          if (!card.hidden) visible += 1;
+        });
+        byId('component-filter-status').textContent = `Hiển thị ${visible} component${state.selectedComponent ? '; selection hiện tại luôn được giữ lại.' : '.'}`;
+      }
+
+      function selectComponent(componentId) {
+        state.selectedComponent = componentId || '';
+        const related = MAP_RELATIONSHIPS.filter(([from, to]) => from === componentId || to === componentId);
+        const relatedIds = new Set(related.flatMap(([from, to]) => [from, to]));
+        nodes.forEach(node => {
+          const id = node.dataset.mapComponent;
+          node.classList.toggle('is-selected', id === componentId);
+          node.classList.toggle('is-related', id !== componentId && relatedIds.has(id));
+          node.classList.toggle('is-muted', Boolean(componentId) && !relatedIds.has(id));
+          node.setAttribute('aria-pressed', String(id === componentId));
+        });
+        edges.forEach((edge, index) => {
+          const relation = MAP_RELATIONSHIPS[index];
+          const matches = relation && (relation[0] === componentId || relation[1] === componentId);
+          edge.classList.toggle('is-related', Boolean(matches));
+          edge.classList.toggle('is-muted', Boolean(componentId) && !matches);
+        });
+        cards.forEach(card => {
+          const selected = card.dataset.component === componentId;
+          const relatedCard = !selected && relatedIds.has(card.dataset.component);
+          const mutedCard = Boolean(componentId) && !selected && !relatedCard;
+          card.classList.toggle('is-selected', selected);
+          card.classList.toggle('is-related', relatedCard);
+          card.classList.toggle('is-muted', mutedCard);
+          card.setAttribute('data-relationship-state', selected ? 'selected' : relatedCard ? 'related' : mutedCard ? 'muted' : 'neutral');
+          const selectButton = card.querySelector('.component-select');
+          if (selectButton) selectButton.setAttribute('aria-pressed', String(selected));
+          const relationState = card.querySelector('.relationship-state');
+          if (relationState) relationState.textContent = `Trạng thái quan hệ: ${selected ? 'đang chọn' : relatedCard ? 'có quan hệ trực tiếp' : mutedCard ? 'không có quan hệ trực tiếp' : 'trung lập'}`;
+          if (selected) card.querySelector('details')?.setAttribute('open', '');
+        });
+        const card = cards.find(item => item.dataset.component === componentId);
+        const incoming = related.filter(([, to]) => to === componentId).map(([from,, label, kind]) => `[${kind}] ${from} → ${componentId}: ${label}`);
+        const outgoing = related.filter(([from]) => from === componentId).map(([, to, label, kind]) => `[${kind}] ${componentId} → ${to}: ${label}`);
+        const relationHtml = componentId ? `<strong>${escapeHtml(card?.querySelector('h3')?.textContent || componentId)}</strong><p><b>incoming:</b> ${incoming.length ? incoming.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>outgoing:</b> ${outgoing.length ? outgoing.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>Evidence:</b> <code>${escapeHtml(card?.dataset.source || 'xem trace dataset')}</code></p>` : '<strong>Quan hệ dạng văn bản:</strong> Chọn một node hoặc component card để xem cạnh incoming và outgoing.';
+        byId('map-relationships').innerHTML = relationHtml;
+        byId('relationship-summary').innerHTML = componentId ? `<strong>Component đang chọn:</strong> ${relationHtml}<p><b>Called by:</b> ${escapeHtml(card?.dataset.calledBy || 'xem map')}</p><p><b>Depends on:</b> ${escapeHtml(card?.dataset.dependsOn || 'xem map')}</p>` : '<strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.';
+        applyFilters();
+      }
+
+      function setMapMode(mode) {
+        state.mapMode = mode === 'control' ? 'control' : 'runtime';
+        byId('system-map').dataset.mapMode = state.mapMode;
+        byId('map-mode').value = state.mapMode;
+      }
+
+      function setFilters(next = {}) {
+        state.filters = {
+          search: next.search ?? byId('component-search').value,
+          trust: next.trust ?? byId('trust-zone-filter').value,
+          durability: next.durability ?? byId('durability-filter').value
+        };
+        byId('component-search').value = state.filters.search;
+        byId('trust-zone-filter').value = state.filters.trust;
+        byId('durability-filter').value = state.filters.durability;
+        applyFilters();
+      }
+
+      function renderTrace(focusActiveStep = false) {
+        const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
+        const step = scenario.steps[state.traceStep];
+        byId('trace-title').textContent = scenario.title;
+        byId('trace-summary').textContent = scenario.summary;
+        byId('trace-progress').textContent = `Bước ${state.traceStep + 1} / ${scenario.steps.length}: ${step.title}`;
+        byId('trace-lm').textContent = step.lmCall ? 'Có LM call' : 'Không có LM call';
+        byId('trace-component').textContent = step.component;
+        byId('trace-input').textContent = step.input;
+        byId('trace-output').textContent = step.output;
+        byId('trace-decision').textContent = step.decision;
+        byId('trace-economics').textContent = step.economics;
+        byId('trace-evidence').innerHTML = `<a class="source-link" href="${escapeHtml(sourceHref(step.evidence))}">${escapeHtml(step.evidence)}</a>`;
+        byId('trace-failure').textContent = step.failure;
+        byId('trace-status').textContent = `Đã chọn bước ${state.traceStep + 1}: ${step.title}. ${step.lmCall ? 'Có LM call.' : 'Không có LM call.'}`;
+        byId('trace-previous').disabled = state.traceStep === 0;
+        byId('trace-next').disabled = state.traceStep === scenario.steps.length - 1;
+        byId('trace-steps').innerHTML = scenario.steps.map((item, index) => `<button type="button" data-trace-step="${index}"${index === state.traceStep ? ' aria-current="step"' : ''}>Bước ${index + 1}: ${escapeHtml(item.title)}</button>`).join('');
+        selectComponent(step.component);
+        if (focusActiveStep) {
+          const activeStepButton = byId('trace-steps').querySelector(`[data-trace-step="${state.traceStep}"]`);
+          activeStepButton.focus();
+        }
+      }
+
+      function selectScenario(scenarioId) {
+        state.scenario = TRACE_SCENARIOS.some(item => item.id === scenarioId) ? scenarioId : TRACE_SCENARIOS[0].id;
+        state.traceStep = 0;
+        byId('trace-scenario').value = state.scenario;
+        renderTrace();
+      }
+
+      function selectTraceStep(index, focusActiveStep = false) {
+        const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
+        state.traceStep = Math.max(0, Math.min(Number(index) || 0, scenario.steps.length - 1));
+        renderTrace(focusActiveStep);
+      }
+
+      function isValidQuizPayload(payload) {
+        if (!payload || payload.version !== 1 || !payload.answers || typeof payload.answers !== 'object' || Array.isArray(payload.answers)) return false;
+        return Object.entries(payload.answers).every(([id, answer]) => {
+          const question = QUIZ_QUESTIONS.find(item => item.id === id);
+          return question && Number.isInteger(answer) && answer >= 0 && answer < question.options.length;
+        });
+      }
+
+      function loadQuiz() {
+        try {
+          const saved = window.localStorage.getItem(QUIZ_STORAGE_KEY);
+          const payload = saved ? JSON.parse(saved) : null;
+          if (isValidQuizPayload(payload)) state.quiz = payload;
+          else if (saved) window.localStorage.removeItem(QUIZ_STORAGE_KEY);
+        } catch (error) {
+          state.quiz = { version: 1, answers: {} };
+          try {
+            window.localStorage.removeItem(QUIZ_STORAGE_KEY);
+          } catch (storageError) {
+            /* Blocked storage keeps the clean in-memory state. */
+          }
+        }
+      }
+
+      function saveQuiz() {
+        try {
+          window.localStorage.setItem(QUIZ_STORAGE_KEY, JSON.stringify(state.quiz));
+        } catch (error) {
+          /* state.quiz remains the in-memory source of truth. */
+        }
+      }
+
+      function visibleQuizQuestions() {
+        if (state.quizScope === 'all') return QUIZ_QUESTIONS;
+        if (state.quizScope === 'cumulative') return QUIZ_QUESTIONS.filter((_, index) => index % 2 === 0).slice(0, 12);
+        return QUIZ_QUESTIONS.filter(question => question.chapter === state.quizScope);
+      }
+
+      function renderQuiz(focusQuestionId = '') {
+        const visible = visibleQuizQuestions();
+        const entries = Object.entries(state.quiz.answers);
+        const totalCorrect = entries.filter(([id, answer]) => QUIZ_QUESTIONS.find(item => item.id === id)?.answer === answer).length;
+        const visibleAnswered = visible.filter(question => Object.hasOwn(state.quiz.answers, question.id));
+        const visibleCorrect = visibleAnswered.filter(question => state.quiz.answers[question.id] === question.answer).length;
+        byId('quiz-total-score').textContent = `${totalCorrect} / ${QUIZ_QUESTIONS.length}`;
+        byId('quiz-answered-count').textContent = `${entries.length} / ${QUIZ_QUESTIONS.length}`;
+        byId('quiz-chapter-score').textContent = `${visibleCorrect} / ${visible.length}`;
+        byId('quiz-questions').innerHTML = visible.map((question, index) => {
+          const answered = Object.hasOwn(state.quiz.answers, question.id);
+          const selected = state.quiz.answers[question.id];
+          const options = question.options.map((option, optionIndex) => {
+            const status = answered && optionIndex === question.answer ? ' is-correct' : answered && optionIndex === selected ? ' is-wrong' : '';
+            return `<button class="quiz-option${status}" type="button" data-question="${question.id}" data-answer="${optionIndex}"${answered ? ' disabled' : ''}>${String.fromCharCode(65 + optionIndex)}. ${escapeHtml(option)}</button>`;
+          }).join('');
+          const result = answered ? `<div class="quiz-result" tabindex="-1" data-question-result="${question.id}"><strong>${selected === question.answer ? 'Đúng.' : 'Chưa đúng.'}</strong> ${escapeHtml(question.explanation)} <a href="#${question.section}">Đọc lại phần liên quan</a>.</div>` : '';
+          return `<article class="quiz-card" data-rendered-question="${question.id}"><fieldset><legend><strong>Câu ${index + 1} · ${escapeHtml(question.difficulty)}</strong><br>${escapeHtml(question.prompt)}</legend><div class="quiz-options">${options}</div></fieldset>${result}</article>`;
+        }).join('');
+        if (focusQuestionId) {
+          const quizResult = byId('quiz-questions').querySelector(`[data-question-result="${focusQuestionId}"]`);
+          quizResult?.focus();
+        }
+      }
+
+      function answerQuestion(questionId, answerIndex) {
+        const question = QUIZ_QUESTIONS.find(item => item.id === questionId);
+        if (!question || Object.hasOwn(state.quiz.answers, questionId)) return;
+        const answer = Number(answerIndex);
+        if (!Number.isInteger(answer) || answer < 0 || answer >= question.options.length) return;
+        state.quiz.answers[questionId] = answer;
+        saveQuiz();
+        byId('quiz-announcer').textContent = answer === question.answer ? `Đúng: ${question.explanation}` : `Chưa đúng: ${question.explanation}`;
+        renderQuiz(questionId);
+      }
+
+      function resetQuiz() {
+        state.quiz = { version: 1, answers: {} };
+        try {
+          window.localStorage.removeItem(QUIZ_STORAGE_KEY);
+        } catch (error) {
+          /* Reset in memory still succeeds when storage is blocked. */
+        }
+        byId('quiz-announcer').textContent = 'Đã xóa toàn bộ điểm quiz.';
+        renderQuiz();
+      }
+
+      function setDrawer(name, open, returnFocus = false) {
+        const isNav = name === 'nav';
+        const target = byId(isNav ? 'atlas-nav' : 'evidence-drawer');
+        const toggle = byId(isNav ? 'nav-drawer-toggle' : 'evidence-drawer-toggle');
+        const drawerMode = window.matchMedia(isNav ? '(max-width: 760px)' : '(max-width: 1100px)').matches;
+        state.drawers[name] = Boolean(open);
+        target.classList.toggle('is-open', state.drawers[name]);
+        target.setAttribute('aria-hidden', String(drawerMode && !state.drawers[name]));
+        target.inert = drawerMode && !state.drawers[name];
+        toggle.setAttribute('aria-expanded', String(state.drawers[name]));
+        toggle.textContent = `${state.drawers[name] ? 'Đóng' : 'Mở'} ${isNav ? 'mục lục' : 'bằng chứng'}`;
+        if (returnFocus) toggle.focus();
+      }
+
+      function syncDrawerLayout() {
+        setDrawer('nav', !window.matchMedia('(max-width: 760px)').matches);
+        setDrawer('evidence', !window.matchMedia('(max-width: 1100px)').matches);
+      }
+
+      function init() {
+        document.documentElement.dataset.javascript = 'enabled';
+        edges.forEach((edge, index) => { edge.dataset.relationKind = MAP_RELATIONSHIPS[index]?.[3] || 'runtime'; });
+        nodes.forEach(node => {
+          node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', `Chọn component ${node.dataset.mapComponent}`);
+          node.addEventListener('click', () => selectComponent(node.dataset.mapComponent));
+          node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectComponent(node.dataset.mapComponent); } });
+        });
+        cards.forEach(card => {
+          const title = card.querySelector('h3')?.textContent || card.dataset.component;
+          card.insertAdjacentHTML('afterbegin', `<div class="component-select-row"><button class="component-select" type="button" aria-pressed="false" data-select-component="${card.dataset.component}">Chọn ${escapeHtml(title)}</button><span class="relationship-state">Trạng thái quan hệ: trung lập</span></div>`);
+          const details = card.querySelector('details') || card.appendChild(document.createElement('details'));
+          if (!details.querySelector('summary')) details.insertAdjacentHTML('afterbegin', '<summary>Chi tiết maintainer</summary>');
+          details.insertAdjacentHTML('beforeend', maintainerRecordMarkup(card));
+          card.querySelector('.component-select').addEventListener('click', () => selectComponent(card.dataset.component));
+          card.addEventListener('click', event => { if (!event.target.closest('summary, a, button, input, select')) selectComponent(card.dataset.component); });
+        });
+        document.querySelectorAll('[data-source]').forEach(item => {
+          if (item.querySelector('.source-link')) return;
+          const source = item.dataset.source;
+          item.insertAdjacentHTML('beforeend', `<p class="source-reference"><strong>Source:</strong> <a class="source-link" href="${escapeHtml(sourceHref(source))}">${escapeHtml(source)}</a></p>`);
+        });
+        byId('map-mode').addEventListener('change', event => setMapMode(event.target.value));
+        ['component-search','trust-zone-filter','durability-filter'].forEach(id => byId(id).addEventListener(id === 'component-search' ? 'input' : 'change', () => setFilters()));
+        byId('component-filter-reset').addEventListener('click', () => setFilters({ search: '', trust: 'all', durability: 'all' }));
+        byId('trace-scenario').innerHTML = TRACE_SCENARIOS.map(scenario => `<option value="${scenario.id}">${escapeHtml(scenario.title)}</option>`).join('');
+        byId('trace-scenario').addEventListener('change', event => selectScenario(event.target.value));
+        byId('trace-previous').addEventListener('click', () => selectTraceStep(state.traceStep - 1));
+        byId('trace-next').addEventListener('click', () => selectTraceStep(state.traceStep + 1));
+        byId('trace-restart').addEventListener('click', () => selectTraceStep(0));
+        byId('trace-steps').addEventListener('click', event => { const button = event.target.closest('[data-trace-step]'); if (button) selectTraceStep(button.dataset.traceStep, true); });
+        byId('quiz-questions').addEventListener('click', event => { const button = event.target.closest('[data-question]'); if (button) answerQuestion(button.dataset.question, button.dataset.answer); });
+        byId('quiz-scope').addEventListener('change', event => { state.quizScope = event.target.value; renderQuiz(); });
+        byId('quiz-reset').addEventListener('click', resetQuiz);
+        byId('nav-drawer-toggle').addEventListener('click', () => setDrawer('nav', !state.drawers.nav));
+        byId('evidence-drawer-toggle').addEventListener('click', () => setDrawer('evidence', !state.drawers.evidence));
+        byId('nav-drawer-close').addEventListener('click', () => setDrawer('nav', false, true));
+        byId('evidence-drawer-close').addEventListener('click', () => setDrawer('evidence', false, true));
+        byId('atlas-nav').addEventListener('click', event => {
+          const link = event.target.closest('a[href^="#"]');
+          if (link && window.matchMedia('(max-width: 760px)').matches) {
+            const destination = document.querySelector(link.getAttribute('href'));
+            setDrawer('nav', false);
+            if (destination) {
+              if (!destination.hasAttribute('tabindex')) destination.setAttribute('tabindex', '-1');
+              destination.focus();
+            }
+          }
+        });
+        document.addEventListener('keydown', event => {
+          if (event.key === 'Escape') {
+            if (window.matchMedia('(max-width: 760px)').matches && state.drawers.nav) setDrawer('nav', false, true);
+            if (window.matchMedia('(max-width: 1100px)').matches && state.drawers.evidence) setDrawer('evidence', false, true);
+          }
+        });
+        window.addEventListener('resize', syncDrawerLayout);
+        syncDrawerLayout();
+        setMapMode('runtime'); setFilters(); selectScenario(TRACE_SCENARIOS[0].id); loadQuiz(); renderQuiz();
+      }
+
+      init();
+      return { selectComponent, setMapMode, setFilters, selectScenario, selectTraceStep, answerQuestion, resetQuiz };
+    })();
+  </script>
+</body>
+</html>

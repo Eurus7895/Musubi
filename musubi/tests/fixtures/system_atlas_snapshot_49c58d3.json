@@ -1,0 +1,13 @@
+{
+  "snapshot": "49c58d3",
+  "anchors": {
+    "musubi/agent/run.py:1234": "def main(argv: list[str] | None = None) -> int:",
+    "musubi/agent/run.py:1303": "        \"--pipeline\",",
+    "musubi/agent/vendors/base.py:44": "class LMRouter(ABC):",
+    "musubi/agent/run.py:705": "            _check_budget_preflight(budget, input_tokens_est, log)",
+    "musubi/agent/run.py:734": "            _call_with_effort,",
+    "musubi/agent/run.py:2234": "        result = await target_session.call_tool(original_name, arguments=args)",
+    "gui/src-tauri/musubi-data/src/lib.rs:1210": "pub fn save_pipeline_recipe(project_root: &Path, recipe: &PipelineRecipe) -> PipelineSaveResult {",
+    "musubi/setup_wizard.py:682": "    path.write_text(text, encoding=\"utf-8\")"
+  }
+}
