@@ -37,57 +37,33 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Bounded standalone pipeline runtime.** Use one stage turn cap across
-   runtime/state/audit, enforce a hard 16k-character model-input cap including
-   tool definitions, and reserve token capacity so planner/designer cannot
-   consume coder/reviewer shares. Plan:
-   [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md).
-   Landed: a validated `PipelineWorkerSpec` resolves each stage's contract
-   before spawn, so its declared `maxTurns` (clamped to [1, 12]) is the single
-   cap flowing through the spawn row, `run_unit`, and the completion audit — the
-   stage tool echoes `max_turns` and the driver fails closed on divergence.
-   `fit_model_input` gives every explicit-budget worker (each pipeline stage) a
-   hard input cap that counts tool definitions and raises before the model call
-   rather than sending an over-budget request; the root keeps soft best-effort
-   fitting. `ChildTokenBudget` + `pipeline_stage_allowance` give each stage a
-   fair-share slice of the run budget charged through to the parent, so an early
-   stage cannot spend a later stage's reserve, and allowance exhaustion
-   finalizes the run once as `escalated`. The one-cap rule also covers direct
-   workers: a role's `maxTurns:` frontmatter clamps the spawn's turn budget
-   (the model may request fewer turns, never more), and a stage or worker that
-   finishes on its last allowed turn attaches a substrate-verified artifact
-   manifest so the audit records done instead of a false escalation.
+1. **Skill catalog growth.** Skills remain the cheapest optimization surface.
+   Each new skill should carry useful metadata such as `applies-to`, `triggers`,
+   and relevant tools.
+   First batch landed: `debugging`, `refactoring`, `git-workflow`, and `web-ui`
+   (universal procedures) plus `typescript` (router-gated to JS/TS workspaces).
+   Coder gains all five; the dispatcher agent gains only the read-safe pair
+   (`debugging`, `git-workflow`) so the generator boundary holds. `web-ui` is
+   deliberately universal so an HTML/CSS artifact emitted from a non-JS repo
+   still matches it — closing the dashboard case where no catalog skill applied.
+   Every prior catalog entry was backfilled with `triggers:` so the recommender
+   can rank the whole catalog, not just the newest skills.
+   Reachability closed: a direct worker carries no skill tool, so grown catalog
+   entries were previously unreachable by workers. The root now selects a skill
+   per spawned worker and pushes it (option 3, see Completed track below), so
+   catalog growth reaches workers without adding a skill tool to their lean
+   surface. Extended to pipeline stages: the deterministic runner recommends a
+   skill per stage (`musubi_recommend_skills(for_role=…)`, zero-LLM) and pushes
+   it through `musubi_spawn_pipeline_stage` so feature-dev stages
+   (designer/coder/reviewer) carry role-appropriate procedure instead of showing
+   "no skill evidence"; `planner` has an empty skill allowlist and remains
+   skill-less by design.
 
-2. **Root goal-state controller and token economics.** The root now owns a
-   current-run-only `GoalState` containing the exact user intent, deterministic
-   scope/route, root usage, and bounded `OutcomePacket` feedback. After a worker
-   terminates, the driver retains the stable system contract but replaces raw
-   tool transcripts with one decision delta; model-visible root tools are
-   reduced by phase (spawn plus skill *selection* in every scope, the
-   content-loading skill tools added for broader work, recovery tools only
-   inside the bounded recovery window, and **no tools once the worker ceiling
-   is spent** — a root that all-succeeded into its `max_root_workers` cap is
-   forced to conclude from the evidence it has instead of spinning refused
-   spawns to the cycle limit, which previously wasted the whole budget and, on
-   pre-salvage builds, surfaced as an `exceeded N cycles` failure). Skill selection is deliberately
-   available even for simple artifacts: the root ranks a worker's skills with
-   `musubi_recommend_skills(for_role=…)` and pushes the chosen `pushed_skill_id`
-   into the spawn, so a direct worker (which carries no skill tool of its own)
-   still receives role-appropriate procedure. The spawn re-validates the id
-   against the worker role's `AGENT_SKILL_ALLOWLIST` entry (HI #3), so the root
-   can never push a skill the role could not itself load. Adding the selection
-   tool to a simple root costs ~1k tokens across the two-call projection, so the
-   simple-root guard moved from 3k to ~4.5k; 20k remains the hard regression
-   guard, not a normal budget. Plans:
-   [`2026-07-15-root-goal-state-controller.md`](./superpowers/plans/2026-07-15-root-goal-state-controller.md)
-   and design
-   [`2026-07-15-root-goal-state-controller-design.md`](./superpowers/specs/2026-07-15-root-goal-state-controller-design.md).
-
-Runtime limits have one owner per dimension: this track owns pipeline-stage
-turn caps, model-input characters, and total stage allowances; per-worker
-effort owns output tokens for one LM call; root routing owns worker-count and
-continuation-spawn policy. Do not introduce a second parser or enforcement path
-for the same dimension.
+Runtime limits have one owner per dimension: the bounded runtime track owns
+pipeline-stage turn caps, model-input characters, and total stage allowances;
+per-worker effort owns output tokens for one LM call; root routing owns
+worker-count and continuation-spawn policy. Do not introduce a second parser or
+enforcement path for the same dimension.
 
 ### Backlog
 
@@ -97,26 +73,6 @@ for the same dimension.
   builds.
 - **Signing and release hardening.** Sign the Windows installer and document
   the expected Defender / SmartScreen path for non-developer installs.
-- **Skill catalog growth.** Skills remain the cheapest optimization surface.
-  Each new skill should carry useful metadata such as `applies-to`, `triggers`,
-  and relevant tools.
-  First batch landed: `debugging`, `refactoring`, `git-workflow`, and `web-ui`
-  (universal procedures) plus `typescript` (router-gated to JS/TS workspaces).
-  Coder gains all five; the dispatcher agent gains only the read-safe pair
-  (`debugging`, `git-workflow`) so the generator boundary holds. `web-ui` is
-  deliberately universal so an HTML/CSS artifact emitted from a non-JS repo
-  still matches it — closing the dashboard case where no catalog skill applied.
-  Every prior catalog entry was backfilled with `triggers:` so the recommender
-  can rank the whole catalog, not just the newest skills.
-  Reachability closed: a direct worker carries no skill tool, so grown catalog
-  entries were previously unreachable by workers. The root now selects a skill
-  per spawned worker and pushes it (option 3, see Active track 2), so catalog
-  growth reaches workers without adding a skill tool to their lean surface.
-  Extended to pipeline stages: the deterministic runner recommends a skill per
-  stage (`musubi_recommend_skills(for_role=…)`, zero-LLM) and pushes it through
-  `musubi_spawn_pipeline_stage` so feature-dev stages (designer/coder/reviewer)
-  carry role-appropriate procedure instead of showing "no skill evidence";
-  `planner` has an empty skill allowlist and remains skill-less by design.
 - **Stage extension by user grant.** When a pipeline stage exhausts its cycle
   cap it currently fails closed (`[stage <x>] exceeded N cycles`). Reuse the
   existing budget-grant gate (`pause_reason='budget_exhausted'`,
@@ -169,6 +125,51 @@ for the same dimension.
 ---
 
 ## Completed Tracks
+
+- Bounded standalone pipeline runtime — one stage turn cap across
+  runtime/state/audit, a hard 16k-character model-input cap including tool
+  definitions, and reserved token capacity so planner/designer cannot consume
+  coder/reviewer shares. A validated `PipelineWorkerSpec` resolves each stage's
+  contract before spawn, so its declared `maxTurns` (clamped to [1, 12]) is the
+  single cap flowing through the spawn row, `run_unit`, and the completion audit
+  — the stage tool echoes `max_turns` and the driver fails closed on divergence.
+  `fit_model_input` gives every explicit-budget worker (each pipeline stage) a
+  hard input cap that counts tool definitions and raises before the model call
+  rather than sending an over-budget request; the root keeps soft best-effort
+  fitting. `ChildTokenBudget` + `pipeline_stage_allowance` give each stage a
+  fair-share slice of the run budget charged through to the parent, so an early
+  stage cannot spend a later stage's reserve, and allowance exhaustion finalizes
+  the run once as `escalated`. The one-cap rule also covers direct workers: a
+  role's `maxTurns:` frontmatter clamps the spawn's turn budget (the model may
+  request fewer turns, never more), and a stage or worker that finishes on its
+  last allowed turn attaches a substrate-verified artifact manifest so the
+  audit records done instead of a false escalation. Plan:
+  [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md)
+
+- Root goal-state controller and token economics — the root now owns a
+  current-run-only `GoalState` containing the exact user intent, deterministic
+  scope/route, root usage, and bounded `OutcomePacket` feedback. After a worker
+  terminates, the driver retains the stable system contract but replaces raw
+  tool transcripts with one decision delta; model-visible root tools are
+  reduced by phase (spawn plus skill *selection* in every scope, the
+  content-loading skill tools added for broader work, recovery tools only
+  inside the bounded recovery window, and **no tools once the worker ceiling
+  is spent** — a root that all-succeeded into its `max_root_workers` cap is
+  forced to conclude from the evidence it has instead of spinning refused
+  spawns to the cycle limit, which previously wasted the whole budget and, on
+  pre-salvage builds, surfaced as an `exceeded N cycles` failure). Skill
+  selection is deliberately
+  available even for simple artifacts: the root ranks a worker's skills with
+  `musubi_recommend_skills(for_role=…)` and pushes the chosen `pushed_skill_id`
+  into the spawn, so a direct worker (which carries no skill tool of its own)
+  still receives role-appropriate procedure. The spawn re-validates the id
+  against the worker role's `AGENT_SKILL_ALLOWLIST` entry (HI #3), so the root
+  can never push a skill the role could not itself load. Adding the selection
+  tool to a simple root costs ~1k tokens across the two-call projection, so the
+  simple-root guard moved from 3k to ~4.5k; 20k remains the hard regression
+  guard, not a normal budget. Plan and design:
+  [`2026-07-15-root-goal-state-controller.md`](./superpowers/plans/2026-07-15-root-goal-state-controller.md) and
+  [`2026-07-15-root-goal-state-controller-design.md`](./superpowers/specs/2026-07-15-root-goal-state-controller-design.md)
 
 - Musubi System Atlas — a self-contained Vietnamese maintainer guide maps the
   driver, zero-LLM governance substrate, operator projection, and external
