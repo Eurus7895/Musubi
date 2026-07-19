@@ -65,7 +65,11 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    tool transcripts with one decision delta; model-visible root tools are
    reduced by phase (spawn plus skill *selection* in every scope, the
    content-loading skill tools added for broader work, recovery tools only
-   inside the bounded recovery window). Skill selection is deliberately
+   inside the bounded recovery window, and **no tools once the worker ceiling
+   is spent** — a root that all-succeeded into its `max_root_workers` cap is
+   forced to conclude from the evidence it has instead of spinning refused
+   spawns to the cycle limit, which previously wasted the whole budget and, on
+   pre-salvage builds, surfaced as an `exceeded N cycles` failure). Skill selection is deliberately
    available even for simple artifacts: the root ranks a worker's skills with
    `musubi_recommend_skills(for_role=…)` and pushes the chosen `pushed_skill_id`
    into the spawn, so a direct worker (which carries no skill tool of its own)
@@ -214,7 +218,10 @@ for the same dimension.
   advisory and planning is explicit via `--plan`. Simple artifacts start with
   one coder without imposing a lifetime classifier cap; all direct runs share
   a three-worker ceiling, structured replacement handoff, and a two-cycle root
-  recovery-analysis window. Plans:
+  recovery-analysis window. Read-only requests (reach/open/read/list/show a
+  concrete path) now classify as `inspect` and route to a single read-only
+  explorer instead of a `planner→coder` change — a mutation verb or the absence
+  of a path target keeps the old routing. Plans:
   [`2026-07-04-scope-aware-root-routing-gearbox.md`](./superpowers/plans/2026-07-04-scope-aware-root-routing-gearbox.md)
   and [`2026-07-13-simple-artifact-recovery.md`](./superpowers/plans/2026-07-13-simple-artifact-recovery.md)
 - MCP tool surface profiles — model-visible internal and external catalogs are

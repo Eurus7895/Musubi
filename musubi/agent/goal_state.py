@@ -19,7 +19,7 @@ MAX_DETAIL_CHARS = 400
 _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
-_SIMPLE_SCOPES = frozenset({"simple_edit", "simple_artifact"})
+_SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -160,10 +160,19 @@ def root_decision_tools(
     *,
     recovery_outcome: bool = False,
     decision_only: bool = False,
+    spawn_exhausted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
     if recovery_outcome and not decision_only:
         return list(tools)
+    if spawn_exhausted:
+        # The root has spent its worker budget: every further `musubi_spawn_*`
+        # is refused by the ceiling gate, so offering the spawn tool only lets
+        # the model burn the rest of its cycle budget on refused spawns before
+        # the loop salvages a placeholder. Withhold every tool so the root is
+        # forced to conclude from the worker evidence it already has, ending the
+        # turn within one cycle instead of spinning to the cycle cap.
+        return []
     # Spawn plus skill *selection* in every scope, so the root can push a
     # skill to the worker it summons even for a simple artifact.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}

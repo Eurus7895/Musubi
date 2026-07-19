@@ -697,13 +697,39 @@ async def _run_loop(
                 final_answer = budget_trip
                 break
         cycle_tools = tools
+        spawn_exhausted = False
         if root_state is not None:
+            # The root spawns workers to make progress; once it has spent its
+            # worker ceiling (and no worker failure is pending recovery, which
+            # has its own halt below) it cannot spawn again, so force it to
+            # conclude instead of spinning refused spawns to the cycle cap.
+            spawn_exhausted = (
+                recovery_outcome is None
+                and orchestration is not None
+                and orchestration.spawned_workers
+                >= orchestration.max_root_workers
+            )
             cycle_tools = root_decision_tools(
                 tools,
                 root_state,
                 recovery_outcome=recovery_outcome is not None,
                 decision_only=recovery_decision_only,
+                spawn_exhausted=spawn_exhausted,
             )
+            if spawn_exhausted and orchestration is not None:
+                # No tools are offered this cycle; make the intent explicit so
+                # the model answers the user rather than restating an intent to
+                # spawn a worker it can no longer summon.
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[worker budget spent] You have summoned all "
+                        f"{orchestration.max_root_workers} available workers and "
+                        "cannot spawn more. Give your final answer to the user "
+                        "now: summarize what the workers accomplished and state "
+                        "any remaining gap plainly."
+                    ),
+                })
         elif recovery_decision_only:
             cycle_tools = [
                 tool for tool in tools

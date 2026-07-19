@@ -425,6 +425,84 @@ def test_root_stops_immediately_when_last_replacement_exhausts_ceiling(
     assert len(router.calls) == 1
 
 
+def test_root_concludes_when_worker_ceiling_is_spent_by_successes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: workers that all report `done` never trigger the failure
+    # recovery halt, so a root that keeps wanting more work used to spin every
+    # remaining cycle on refused spawns before salvaging a placeholder. Once the
+    # worker ceiling is spent, the root must be forced to conclude within one
+    # cycle with a real, model-authored answer.
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    state = GoalState.create(
+        "could you reach to a folder", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root", goal_state=state, spawned_workers=2,
+    )
+
+    async def fake_run_subagent(session, spawn_args, *args, **kwargs):  # noqa: ANN001
+        kwargs["orchestration"].record_worker_outcome(
+            role="coder", status="done", summary="summary: reached the folder",
+            touched_files={"note.txt"},
+        )
+        return "summary: reached the folder"
+
+    monkeypatch.setattr(subagent_mod, "run_subagent", fake_run_subagent)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use", "id": "last-spawn",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "reach it"},
+            }],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "Reached the folder; here is what I found."}],
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        _FakeToolSession(),
+        router,
+        [{
+            "name": "musubi_spawn_subagent",
+            "description": "spawn",
+            "input_schema": {"type": "object"},
+        }],
+        [
+            {"role": "system", "content": "you are root"},
+            {"role": "user", "content": "could you reach to a folder"},
+        ],
+        max_cycles=16,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+        salvage_on_exhaust=True,
+        audit_db_path=tmp_path / "audit.db",
+    ))
+
+    # One spawn (hitting the 3-worker ceiling) then a forced conclusion — not a
+    # spin to max_cycles=16.
+    assert cycles == 2
+    assert answer == "Reached the folder; here is what I found."
+    assert orchestration.spawned_workers == 3
+    assert len(router.calls) == 2
+    # The concluding cycle offers no tools and states the budget is spent.
+    assert router.calls[1]["tools"] == []
+    conclude_messages = router.calls[1]["messages"]
+    assert any(
+        isinstance(message.get("content"), str)
+        and "worker budget spent" in message["content"]
+        for message in conclude_messages
+    )
+
+
 def test_root_cannot_report_success_while_worker_failure_is_unrecovered(
     tmp_path: Path,
 ) -> None:
@@ -2125,7 +2203,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
     ])
 
     answer = asyncio.run(
-        run_agent("inspect files", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
+        run_agent("debug the dashboard", router, _musubi_dir(), log=io.StringIO(), max_tokens=0)
     )
 
     assert answer == "ok"
@@ -2165,6 +2243,24 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
         "musubi_recommend_skills",
         "musubi_spawn_subagent",
     }
+
+
+def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
+    # A read-only "reach to a path" request is a simple scope: the root gets the
+    # spawn + skill-selection surface but NOT the skill-reading tools it would
+    # only need for its own broader work.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    asyncio.run(run_agent(
+        r"could you reach to C:\Workspace\21_A2lPatcher\a2l-patcher-stla",
+        router, _musubi_dir(), log=io.StringIO(), max_tokens=0,
+    ))
+
+    names = {tool["name"] for tool in router.calls[0]["tools"]}
+    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
+    assert "musubi_get_skill" not in names
 
 
 def test_run_agent_persists_and_replays_chat_history(

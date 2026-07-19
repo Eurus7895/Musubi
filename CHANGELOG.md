@@ -19,6 +19,59 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   and never fires on a run that is actually producing. It caps wasted spend;
   it is not a substitute for a driver model that can converge.
 
+### Unreachable external MCP server no longer aborts the run
+
+- An external MCP server declared with a `url:` (streamable-HTTP) in
+  `.musubi/mcp.json` that is unreachable from the host makes anyio cancel its
+  internal scope and leak a bare `CancelledError` ("Cancelled via cancel
+  scope …") at connect time. `_is_fatal` treats every `CancelledError` as a real
+  cancel, so `connect_external` re-raised it and aborted the whole turn —
+  before the model loop even started — which surfaced as the misleading
+  `agent exceeded N cycles without a final answer` (a zero-cycle "exhaustion",
+  with no `vendor=`/`scope=`/cycle logs). Optional *stdio* servers already
+  failed open; only the HTTP transport tripped this.
+- `_is_spurious_cancel` distinguishes an anyio scope's leaked cancel — our task
+  is not actually cancelling (`current_task().cancelling() == 0`) — from a
+  genuine external cancel (Ctrl-C / parent timeout, which increments it;
+  `KeyboardInterrupt`/`SystemExit` are never spurious). `connect_external` and
+  `_aclose_quietly` now skip a spurious cancel like any other dead optional
+  server, so one unreachable MCP endpoint can never take down the run.
+
+### Read-only requests route to a single explorer
+
+- The scope classifier had no notion of a read-only inspection: "reach to
+  `C:\…\a2l-patcher-stla`", "open the src folder", "read run.py", "show me
+  what's in ./musubi/agent" all fell through to `medium_change`, so the root
+  was told to spawn a **planner then a coder** — a mutation workflow — just to
+  look at a path. Combined with the worker-ceiling spin that meant multiple
+  workers and a burned cycle budget for a request that only needed one read.
+- New `ScopeKind.INSPECT` / `single_explorer` route: a read-only verb (reach,
+  open, show, read, list, look at, explore, …) with a concrete path/dir target
+  and no mutation verb now routes to **one read-only explorer** worker. The
+  mutation guard strips path/filename tokens first, so a filename like `run.py`
+  (which embeds "run") is not misread as intent to change, while an explicit
+  edit ("find and replace TODO in run.py") still routes to the coder. Bare
+  intent without a path ("open a PR") is left alone. `inspect` counts as a
+  simple scope, so the root keeps its lean spawn + skill-selection surface.
+
+### Root concludes when its worker budget is spent (cycle-limit fix)
+
+- A root that keeps wanting more work but has exhausted its worker ceiling
+  (`DEFAULT_MAX_ROOT_WORKERS = 3`) used to spin every remaining cycle on
+  refused `musubi_spawn_subagent` calls before salvaging a placeholder — up to
+  13 wasted LLM cycles for a single prompt, and on builds predating the
+  cycle-exhaustion salvage a hard `agent exceeded N cycles without a final
+  answer` failure surfaced in the Console. The failure-recovery halt only fires
+  when the *last* worker failed; workers that all report `done` never tripped
+  it.
+- `root_decision_tools` now takes `spawn_exhausted`: once the ceiling is spent
+  and no worker failure is pending recovery, the root is offered **no** tools
+  and a `[worker budget spent]` directive, forcing it to conclude from the
+  evidence it already has. A runaway spin (16 cycles) collapses to spawn-ceiling
+  + one conclusion cycle, and the user gets a real, model-authored answer
+  instead of a salvaged fragment. Active failure recovery still keeps its full
+  analysis surface — that path has its own ceiling-driven halt.
+
 ### Root-selected skill injection into workers
 
 - The root now chooses a catalog skill for each worker it spawns and pushes
