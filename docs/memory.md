@@ -74,24 +74,23 @@ Tier 1 is "the map." Tier 2 is the chapters. Tier 3 is the historical archive.
 `failure-patterns.md` (Tier 2) gets new entries from up to four triggers. All
 shipped triggers funnel through
 `session_distiller.append_pattern(pattern, source)` which deduplicates at
-append time, and through the `musubi_append_failure_pattern` MCP tool from
-the extension side.
+append time; drivers reach it through the `musubi_append_failure_pattern`
+MCP tool.
 
 | Trigger | When it fires | Status | Captures |
 |---|---|---|---|
 | **Reviewer fail** | A `reviewer` / `reviewer-aux` sub-agent returns `final_status='failed'` | ✅ shipped (Phase C.2) | Role + failure cause |
 | **User frustration** | Deterministic regex match on negative-sentiment patterns in the user message — no LLM | ✅ shipped (Phase C.2) | `frustration:<label>` pattern keyed off the matched phrase |
 | **Per-turn (gated)** | After every agent reply, only if a noteworthy event happened (sub-agent failed, retry occurred, spawn cap hit) | ⏳ deferred — overlaps with reviewer-fail | Turn summary + flagged event |
-| **Chat closed** | User runs `/clear` or chat panel is closed | ⏳ deferred — needs a VS Code chat lifecycle API not in 1.93 | Final sweep — anything not yet distilled |
+| **Chat closed** | Chat/session ends | ❌ retired — it targeted the VS Code chat lifecycle, and the extension host was removed | Final sweep — anything not yet distilled |
 
-Per-turn dedup runs through `TriggerDedup` in
-`agentCore.ts`; persistent dedup runs through
+Persistent dedup runs through
 `session_distiller._load_existing_patterns`.
 
 **Why deterministic frustration detection.** Hard Invariant #1: zero LLM calls
 inside the harness. Frustration patterns live in
-`.github/memory/sentiment-patterns.json` as a configurable regex list and are
-mirrored in `agentCore.detectFrustration`.
+`.github/memory/sentiment-patterns.json` as a configurable regex list, matched
+by `musubi/memory/pattern_detector.py`.
 
 ### Compact
 
@@ -107,12 +106,13 @@ instead of writing a duplicate. `frequency` feeds the compaction ranking.
 
 ---
 
-## Agent integration (frozen — May 2026)
+## Agent integration
 
-> The agent is feature-frozen as of May 2026 — the integration
-> below still works, but no new development lands against it. New
-> memory work targets pipeline mode. Decision context:
-> [`docs/roadmap.md`](./roadmap.md) § Phase F.
+> This section originally described the embedded VS Code extension agent
+> (feature-frozen May 2026, then removed — see
+> [`docs/roadmap.md`](./roadmap.md) § Completed Tracks, "VS Code extension
+> removal"). It now describes the standalone `agent` host, which reuses the
+> same storage contract.
 
 The agent runs as a continuous conversation. "Session" is redefined for
 this mode:
@@ -122,9 +122,9 @@ this mode:
 This keeps best-practice 8 ("one task per session") honest: each user turn is
 one task. The agent's persistent context across turns is held by the
 `conversation_messages` SQLite table (Phase C.1), keyed by `chat_id`, not by
-extending the session abstraction. The `chat_id` is a stable
-`sha256(participant + first user prompt + workspace path)` truncated to
-16 hex — best-effort until VS Code ships a real chat-thread id.
+extending the session abstraction. The `chat_id` is user-supplied: pass
+`--chat-id <id>` to the standalone CLI to persist turns and replay bounded
+history on the next run.
 
 **Tier 1 is auto-injected into the agent on every turn** — same path as
 pipeline agents.
@@ -147,7 +147,7 @@ Separate from memory; documented here because they are easily confused.
 | Persists across | All sessions, all chats | One chat (one `chat_id`) |
 | Granularity | Distilled patterns, decisions | Full message history (`user` / `assistant` / `tool` / `system`) |
 | Loaded into | Agent context as injected fields | LLM call as message array via `musubi_get_conversation` (token-budgeted, newest-first truncation) |
-| Compacted by | `musubi_compact_memory` (5 KB cap) | Reactive: 80% drops `tool` rows from per-turn render; 90% spawns the summarizer sub-agent and persists the verified summary as `system`; 99% hard-truncates to 50% of model window |
+| Compacted by | `musubi_compact_memory` (5 KB cap) | `musubi_get_conversation` newest-first truncation (token-budgeted, default 50k — `session/conversations.py::DEFAULT_MAX_TOKENS`) plus driver-side `fit_context` under `MUSUBI_CONTEXT_BUDGET` |
 
 The transcript is replayed verbatim (subject to compaction) to give the
 agent continuity. Memory is consulted for cross-conversation knowledge.
@@ -159,7 +159,7 @@ agent continuity. Memory is consulted for cross-conversation knowledge.
 - **Caching answers to user questions** — that's the conversation transcript.
 - **Storing user preferences for tone/style** — those go in `.github/instructions/` (always-loaded), not memory (failure-pattern-shaped).
 - **Project documentation** — that's `docs/`. Memory is *operational learnings*, not reference material.
-- **Per-session scratch space** — that's `.harness/sessions/<sid>/`. Memory persists across sessions.
+- **Per-session scratch space** — that's the session's own DB rows (`stage_outputs` attempts). Memory persists across sessions.
 
 ---
 
