@@ -144,15 +144,23 @@ class SystemAtlasContractTests(unittest.TestCase):
 
     def test_map_overlays_distinguish_runtime_flow_from_control_boundaries(self) -> None:
         html, _ = parsed_atlas()
-        self.assertIn('<option value="runtime">Runtime flow</option>', html)
-        self.assertIn('<option value="control">Control boundary</option>', html)
+        self.assertIn(
+            '<option value="runtime" data-i18n="map.mode.runtime">Runtime flow</option>',
+            html,
+        )
+        self.assertIn(
+            '<option value="control" data-i18n="map.mode.control">Control boundary</option>',
+            html,
+        )
         self.assertNotIn('<option value="trust">Trust zone</option>', html)
         self.assertNotIn('<option value="durability">Durability</option>', html)
         self.assertIn('[data-map-mode="runtime"]', html)
         self.assertIn('[data-map-mode="control"]', html)
         self.assertIn('[data-relation-kind="control"].is-muted { opacity: .62; }', html)
-        self.assertIn("request/context/tool/result/audit/model-call", html)
-        self.assertIn("allow/deny/validate/persist", html)
+        self.assertIn("Runtime flow nhấn mạnh request và result", html)
+        self.assertIn(
+            "Control boundary nhấn mạnh allow, deny, validate và persist", html
+        )
         relationship_block = re.search(
             r"const MAP_RELATIONSHIPS = \[(.*?)\];\s*const state", html, re.S
         )
@@ -593,9 +601,7 @@ class SystemAtlasContractTests(unittest.TestCase):
 
     def test_current_routing_and_boundary_corrections_are_explicit(self) -> None:
         html, _ = parsed_atlas()
-        self.assertIn(
-            "model-visible root và child không thấy musubi_spawn_pipeline", html
-        )
+        self.assertIn("root và child không thấy musubi_spawn_pipeline", html)
         self.assertIn("same-turn", html)
         self.assertIn("external MCP", html)
         self.assertIn("ngoài Musubi-owned policy/audit boundary", html)

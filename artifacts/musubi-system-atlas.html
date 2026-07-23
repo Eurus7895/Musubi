@@ -77,6 +77,11 @@
     .quiz-summary { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
     .drawer-controls { display: flex; flex-wrap: wrap; gap: .6rem; }
     .drawer-toggle, .drawer-close { display: none; }
+    .language-switcher { align-items: center; display: flex; flex-wrap: wrap; gap: .65rem; margin-block-end: 1rem; }
+    .language-switcher > span { font-weight: 750; }
+    .language-tabs { background: var(--surface-muted); border: 1px solid var(--border); border-radius: 999px; display: inline-flex; gap: .2rem; padding: .2rem; }
+    .language-tabs [role="tab"] { border-color: transparent; border-radius: 999px; padding-inline: 1rem; }
+    .language-tabs [role="tab"][aria-selected="true"] { background: var(--page-fg); border-color: var(--page-fg); color: var(--surface); font-weight: 750; }
     .sr-only { clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
     @media (max-width: 1100px) {
       body { grid-template-areas: "header header" "nav main" "evidence evidence" "fallback fallback"; grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr); }
@@ -103,35 +108,42 @@
 </head>
 <body>
   <header id="orientation" data-snapshot="49c58d3" data-generated="2026-07-16">
-    <h1>Musubi System Atlas</h1>
-    <div class="drawer-controls" aria-label="Điều khiển vùng phụ">
-      <button id="nav-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="atlas-nav">Mở mục lục</button>
-      <button id="evidence-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="evidence-drawer">Mở bằng chứng</button>
+    <div class="language-switcher">
+      <span id="language-label" data-i18n="language.label">Ngôn ngữ</span>
+      <div class="language-tabs" role="tablist" aria-labelledby="language-label">
+        <button id="language-vi" role="tab" type="button" data-language="vi" aria-selected="true" tabindex="0">Tiếng Việt</button>
+        <button id="language-en" role="tab" type="button" data-language="en" aria-selected="false" tabindex="-1">English</button>
+      </div>
     </div>
-    <p>Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time datetime="2026-07-16">2026-07-16</time>.</p>
-    <p class="callout"><strong>Snapshot drift:</strong> các liên kết source bên dưới trỏ tới đường dẫn repository và số dòng đã audit tại <code>49c58d3</code>. Nếu checkout hiện tại khác snapshot, nội dung hoặc số dòng có thể đã dịch chuyển; dùng <code>git show 49c58d3:&lt;path&gt;</code> để đối chiếu chính xác.</p>
-    <p class="callout"><strong>Mental model đầu tiên:</strong> The driver reasons. Musubi controls the environment. Model tạo reasoning, text và tool request; driver sở hữu model call, goal state và orchestration; substrate kiểm soát deterministic action, context, validation, persistence và evidence mà không gọi model.</p>
+    <h1 data-i18n="document.heading">Musubi System Atlas</h1>
+    <div class="drawer-controls" aria-label="Điều khiển vùng phụ" data-i18n-aria-label="a11y.auxiliary-controls">
+      <button id="nav-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="atlas-nav" data-drawer-name="nav">Mở mục lục</button>
+      <button id="evidence-drawer-toggle" class="drawer-toggle" type="button" aria-expanded="false" aria-controls="evidence-drawer" data-drawer-name="evidence">Mở bằng chứng</button>
+    </div>
+    <p data-i18n-html="orientation.snapshot"><span>Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time datetime="2026-07-16">2026-07-16</time>.</span></p>
+    <p class="callout" data-i18n-html="orientation.drift"><strong>Snapshot drift:</strong> các liên kết source bên dưới trỏ tới đường dẫn repository và số dòng đã audit tại <code>49c58d3</code>. Nếu checkout hiện tại khác snapshot, nội dung hoặc số dòng có thể đã dịch chuyển; dùng <code>git show 49c58d3:&lt;path&gt;</code> để đối chiếu chính xác.</p>
+    <p class="callout" data-i18n-html="orientation.mental-model"><strong>Mental model đầu tiên:</strong> The driver reasons. Musubi controls the environment. Model tạo reasoning, text và tool request; driver sở hữu model call, goal state và orchestration; substrate kiểm soát deterministic action, context, validation, persistence và evidence mà không gọi model.</p>
     <div class="axes">
-      <div><h2>Trục 1 — trust boundary</h2><p><strong>Model-calling driver</strong> gọi model qua <code>LMRouter</code>; <strong>zero-LLM governance substrate</strong> gate và ghi evidence; <strong>read-only operator projection</strong> chỉ đọc trạng thái an toàn; <strong>operator control</strong> là mutation/authoring do người dùng chủ động như Setup và Pipeline Studio; <strong>external system</strong> nằm ngoài quyền kiểm soát của Musubi.</p></div>
-      <div><h2>Trục 2 — lifecycle</h2><p><strong>Durable investment</strong> là primitive đáng duy trì; <strong>ephemeral compensation</strong> phải có removal trigger. Trục này độc lập với trust: worker loop là <em>durable driver</em>, không phải <em>zero-LLM substrate</em>. <code>musubi-tier</code> chỉ là metadata triển khai riêng.</p></div>
+      <div><h2 data-i18n="orientation.trust-heading">Trục 1 — trust boundary</h2><p data-i18n-html="orientation.trust-copy"><strong>Model-calling driver</strong> gọi model qua <code>LMRouter</code>; <strong>zero-LLM governance substrate</strong> gate và ghi evidence; <strong>read-only operator projection</strong> chỉ đọc trạng thái an toàn; <strong>operator control</strong> là mutation/authoring do người dùng chủ động như Setup và Pipeline Studio; <strong>external system</strong> nằm ngoài quyền kiểm soát của Musubi.</p></div>
+      <div><h2 data-i18n="orientation.lifecycle-heading">Trục 2 — lifecycle</h2><p data-i18n-html="orientation.lifecycle-copy"><strong>Durable investment</strong> là primitive đáng duy trì; <strong>ephemeral compensation</strong> phải có removal trigger. Trục này độc lập với trust: worker loop là <em>durable driver</em>, không phải <em>zero-LLM substrate</em>. <code>musubi-tier</code> chỉ là metadata triển khai riêng.</p></div>
     </div>
-    <p><strong>Thuật ngữ:</strong> surface là cửa vào của operator; worker là một vòng <code>run_unit</code>; pipeline là recipe nhiều stage xác định; skill là capability/prompt được inject hoặc tải; audit evidence là record bền; fail-closed nghĩa là không có allowlist thì deny; substrate là governance không gọi LLM; ephemeral là scaffolding có ngày hết hạn.</p>
-    <p><strong>Unified worker model</strong> chỉ có nghĩa root và child dùng chung primitive <code>run_unit</code>. Root giữ goal state, phase routing, recovery và quyền đọc rộng hơn; child nhận brief đóng băng, pushed skill và tool/spawn bị giới hạn.</p>
+    <p data-i18n-html="orientation.terms"><strong>Thuật ngữ:</strong> surface là cửa vào của operator; worker là một vòng <code>run_unit</code>; pipeline là recipe nhiều stage xác định; skill là capability/prompt được inject hoặc tải; audit evidence là record bền; fail-closed nghĩa là không có allowlist thì deny; substrate là governance không gọi LLM; ephemeral là scaffolding có ngày hết hạn.</p>
+    <p data-i18n-html="orientation.unified-worker"><strong>Unified worker model</strong> chỉ có nghĩa root và child dùng chung primitive <code>run_unit</code>. Root giữ goal state, phase routing, recovery và quyền đọc rộng hơn; child nhận brief đóng băng, pushed skill và tool/spawn bị giới hạn.</p>
   </header>
-  <nav id="atlas-nav" aria-label="Mục lục"><button id="nav-drawer-close" class="drawer-close" type="button" aria-controls="atlas-nav">Đóng mục lục</button><ul>
-    <li><a href="#system-map">Bản đồ hệ thống</a></li><li><a href="#components">Thành phần</a></li><li><a href="#traces">Luồng chạy</a></li>
-    <li><a href="#invariants">Bất biến</a></li><li><a href="#economics">Kinh tế token</a></li><li><a href="#evolution">Tiến hóa</a></li><li><a href="#quiz">Kiểm tra</a></li>
+  <nav id="atlas-nav" aria-label="Mục lục" data-i18n-aria-label="nav.label"><button id="nav-drawer-close" class="drawer-close" type="button" aria-controls="atlas-nav" data-i18n="nav.close">Đóng mục lục</button><ul>
+    <li><a href="#system-map" data-i18n="nav.map">Bản đồ hệ thống</a></li><li><a href="#components" data-i18n="nav.components">Thành phần</a></li><li><a href="#traces" data-i18n="nav.traces">Luồng chạy</a></li>
+    <li><a href="#invariants" data-i18n="nav.invariants">Bất biến</a></li><li><a href="#economics" data-i18n="nav.economics">Kinh tế token</a></li><li><a href="#evolution" data-i18n="nav.evolution">Tiến hóa</a></li><li><a href="#glossary" data-i18n="nav.glossary">Chú giải</a></li><li><a href="#quiz" data-i18n="nav.quiz">Kiểm tra</a></li>
   </ul></nav>
   <main>
     <section id="system-map">
-      <h2>Bản đồ hệ thống</h2>
-      <p>Hình dạng và màu luôn biểu thị trust zone: chữ nhật = model-calling driver, lục giác = zero-LLM substrate, ellipse = read-only projection, hình tròn = external system. Viền lifecycle cũng luôn hiện: liền = durable, đứt = ephemeral. Overlay <strong>Runtime flow</strong> nhấn mạnh request/context/tool/result/audit/model-call paths; <strong>Control boundary</strong> nhấn mạnh allow/deny/validate/persist boundaries. <code>musubi-tier</code> là metadata source riêng.</p>
+      <h2 data-i18n="map.heading">Bản đồ hệ thống</h2>
+      <p data-i18n-html="map.intro">Hình dạng và màu luôn biểu thị trust zone; viền biểu thị lifecycle. Runtime flow nhấn mạnh request và result; Control boundary nhấn mạnh allow, deny, validate và persist.</p>
       <div class="atlas-controls">
-        <label>Chế độ bản đồ
-          <select id="map-mode"><option value="runtime">Runtime flow</option><option value="control">Control boundary</option></select>
+        <label><span data-i18n="map.mode">Chế độ bản đồ</span>
+          <select id="map-mode"><option value="runtime" data-i18n="map.mode.runtime">Runtime flow</option><option value="control" data-i18n="map.mode.control">Control boundary</option></select>
         </label>
       </div>
-      <div class="map-scroll" tabindex="0" aria-label="Bản đồ có thể cuộn ngang">
+      <div class="map-scroll" tabindex="0" aria-label="Bản đồ có thể cuộn ngang" data-i18n-aria-label="a11y.map-scroll">
       <svg viewBox="0 0 1200 720" role="img" aria-labelledby="map-title map-desc">
         <title id="map-title">Bản đồ runtime và governance Musubi</title>
         <desc id="map-desc">Trust-zone shape và lifecycle border luôn hiện. Runtime overlay theo request, context, tool, result, audit và model-call paths từ CLI hoặc Console qua driver, provider và MCP. Control overlay theo allow, deny, validate và persist boundaries từ MCP qua policy, evaluator, state, audit và safe projection.</desc>
@@ -175,22 +187,22 @@
         <path class="edge" d="M965 585 C920 520 400 100 330 89"/><text class="edge-label" x="800" y="390">renders to Console</text>
       </svg></div>
       <div id="map-relationships" class="relationship-list" aria-live="polite"><strong>Quan hệ dạng văn bản:</strong> Chọn một node hoặc component card để xem cạnh incoming và outgoing.</div>
-      <div class="callout"><strong>Routing/boundary correction đã verify:</strong> model-visible root và child không thấy musubi_spawn_pipeline. Whole pipeline chỉ do CLI <code>--pipeline</code> hoặc Orchestrator Pipeline mode khởi chạy. Sibling workers trong cùng một model turn chạy <strong>same-turn</strong> bằng concurrent dispatch. <strong>external MCP</strong> đi thẳng tới server sở hữu tool, <strong>ngoài Musubi-owned policy/audit boundary</strong>. Worker loop là <strong>durable driver</strong>, không thuộc <strong>zero-LLM substrate</strong>.</div>
+      <div class="callout" data-i18n-html="map.boundary-note"><strong>Routing/boundary correction đã verify:</strong> root và child không thấy musubi_spawn_pipeline; whole pipeline chỉ do operator khởi chạy.</div>
     </section>
     <section id="components">
-      <h2>Component atlas</h2>
-      <p>Mỗi card giữ cùng record shape. Phần tóm tắt cho biết trách nhiệm; mở “Chi tiết maintainer” để xem rationale, interface, enforcement, failure, economics và evidence.</p>
+      <h2 data-i18n="components.heading">Component atlas</h2>
+      <p data-i18n="components.intro">Mỗi card giữ cùng record shape; mở chi tiết để xem interface, enforcement, failure, economics và evidence.</p>
       <div class="atlas-controls" aria-label="Tìm và lọc component">
-        <label>Tìm component
+        <label><span data-i18n="components.search">Tìm component</span>
           <input id="component-search" type="search" placeholder="Tên, trách nhiệm, source, invariant, failure…" autocomplete="off">
         </label>
-        <label>Trust zone
-          <select id="trust-zone-filter"><option value="all">Tất cả trust zone</option><option value="model-calling driver">Model-calling driver</option><option value="zero-LLM governance substrate">Zero-LLM governance substrate</option><option value="read-only operator projection">Read-only operator projection</option><option value="operator control">Operator control</option><option value="external system">External system</option></select>
+        <label><span data-i18n="components.trust-filter">Trust zone</span>
+          <select id="trust-zone-filter"><option value="all" data-i18n="components.filter.all-trust">Tất cả trust zone</option><option value="model-calling driver">Model-calling driver</option><option value="zero-LLM governance substrate">Zero-LLM governance substrate</option><option value="read-only operator projection">Read-only operator projection</option><option value="operator control">Operator control</option><option value="external system">External system</option></select>
         </label>
-        <label>Durability
-          <select id="durability-filter"><option value="all">Tất cả lifecycle</option><option value="durable">Durable</option><option value="ephemeral">Ephemeral</option></select>
+        <label><span data-i18n="components.durability-filter">Durability</span>
+          <select id="durability-filter"><option value="all" data-i18n="components.filter.all-lifecycle">Tất cả lifecycle</option><option value="durable">Durable</option><option value="ephemeral">Ephemeral</option></select>
         </label>
-        <button id="component-filter-reset" type="button">Xóa bộ lọc</button>
+        <button id="component-filter-reset" type="button" data-i18n="components.reset-filter">Xóa bộ lọc</button>
       </div>
       <p id="component-filter-status" aria-live="polite">Hiển thị toàn bộ component.</p>
       <div class="badges" aria-label="Phân loại evidence"><span data-evidence-kind="verified">verified</span><span data-evidence-kind="rationale">rationale</span><span data-evidence-kind="historical">historical</span><span data-evidence-kind="open">open</span><span data-evidence-kind="stale">stale</span></div>
@@ -278,24 +290,27 @@
             <tr data-component-record="skills-projection"><th scope="row">Skills projection</th><td>Hiển thị skill catalog và availability metadata</td><td>Operator cần inspect capability được push hoặc pull</td><td>Safe skill catalog</td><td>Skills view</td><td>Console navigation</td><td>Skill projection</td><td>Read-only catalog presentation</td><td>Thiếu catalog thì render diagnostic</td><td>Browser CPU và rendering</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Skills.jsx#L1">gui/src/views/Skills.jsx:1</a></td></tr>
             <tr data-component-record="settings-projection"><th scope="row">Settings projection</th><td>Hiển thị operator setting và setup status</td><td>Runtime configuration cần một safe surface riêng</td><td>Projected settings state</td><td>Settings view</td><td>Console navigation</td><td>Tauri settings commands</td><td>Presentation và explicit operator action</td><td>Setting sai không được save</td><td>Browser CPU và operator time</td><td>read-only operator projection</td><td>durable</td><td>not applicable</td><td>not applicable</td><td><a class="source-link" href="../gui/src/views/Settings.jsx#L1">gui/src/views/Settings.jsx:1</a></td></tr>
           </tbody></table></div></section></noscript>
-      <aside class="callout" data-evidence-kind="open" data-source="musubi/agent/boundary.py:297"><h3>Open question</h3><p><strong>Pipeline-spawn compatibility:</strong> <code>boundary.py</code> vẫn có driver-only pipeline authorization machinery trong khi effective model-visible root/child surface ẩn whole-pipeline tool. Khi nào internal compatibility path này có thể xóa hẳn?</p><p>Spawn payload contract được verify ở <code>musubi/validation/subagent_context.py:99</code>; routing regression có representative evidence ở <code>musubi/tests/test_agent_context.py:130</code> và budget ownership ở <code>musubi/tests/test_agent_budget.py:91</code>.</p></aside>
+      <div class="language-vi-only"><aside class="callout" data-evidence-kind="open" data-source="musubi/agent/boundary.py:297"><h3>Open question</h3><p><strong>Pipeline-spawn compatibility:</strong> <code>boundary.py</code> vẫn có driver-only pipeline authorization machinery trong khi effective model-visible root/child surface ẩn whole-pipeline tool. Khi nào internal compatibility path này có thể xóa hẳn?</p><p>Spawn payload contract được verify ở <code>musubi/validation/subagent_context.py:99</code>; routing regression có representative evidence ở <code>musubi/tests/test_agent_context.py:130</code> và budget ownership ở <code>musubi/tests/test_agent_budget.py:91</code>.</p></aside>
       <p data-evidence-kind="verified" data-source="gui/src/views/Orchestrator.jsx:90"><strong>Orchestrator evidence:</strong> direct/pipeline mode là explicit operator selection; saved recipe chỉ hiện khi pipeline mode được chọn.</p>
-      <p data-evidence-kind="verified" data-source="gui/src/views/Pipeline.jsx:32"><strong>Pipeline Studio evidence:</strong> view hiện tại là builder với New, Save và Validate recipe actions.</p>
+      <p data-evidence-kind="verified" data-source="gui/src/views/Pipeline.jsx:32"><strong>Pipeline Studio evidence:</strong> view hiện tại là builder với New, Save và Validate recipe actions.</p></div>
+      <div class="language-en-only" hidden><aside class="callout"><h3>Open question</h3><p><strong>Pipeline-spawn compatibility:</strong> <code>boundary.py</code> still contains driver-only pipeline authorization while the effective model-visible root and child surfaces hide the whole-pipeline tool. Remove this compatibility path when its remaining internal callers expire.</p></aside>
+      <p><strong>Orchestrator evidence:</strong> direct and pipeline modes are explicit operator choices; saved recipes appear only in pipeline mode.</p>
+      <p><strong>Pipeline Studio evidence:</strong> the current view is a builder with New, Save, and Validate recipe actions.</p></div>
     </section>
-    <section id="traces"><h2>Luồng chạy có thể kiểm chứng</h2><p>Mỗi tóm tắt dưới đây là progressive enhancement: nội dung vẫn đọc được khi JavaScript tắt; dataset inline cung cấp input, output, decision, economics, evidence và fail-closed outcome cho trace navigator.</p>
+    <section id="traces"><h2 data-i18n="trace.heading">Luồng chạy có thể kiểm chứng</h2><p data-i18n="trace.intro">Mỗi trace cung cấp input, output, decision, economics, evidence và fail-closed outcome.</p>
       <div class="atlas-controls">
-        <label>Kịch bản trace
+        <label><span data-i18n="trace.scenario-label">Kịch bản trace</span>
           <select id="trace-scenario"></select>
         </label>
       </div>
       <div class="trace-panel" aria-live="polite">
         <h3 id="trace-title">Đang tải trace…</h3><p id="trace-summary"></p>
-        <div class="trace-actions"><button id="trace-previous" type="button">Bước trước</button><button id="trace-next" type="button">Bước kế</button><button id="trace-restart" type="button">Chạy lại</button></div>
-        <div id="trace-steps" class="trace-step-buttons trace-scroll" aria-label="Chọn trực tiếp bước trace"><button type="button" aria-current="step">Bước 1</button></div>
+        <div class="trace-actions"><button id="trace-previous" type="button" data-i18n="trace.previous">Bước trước</button><button id="trace-next" type="button" data-i18n="trace.next">Bước kế</button><button id="trace-restart" type="button" data-i18n="trace.restart">Chạy lại</button></div>
+        <div id="trace-steps" class="trace-step-buttons trace-scroll" aria-label="Chọn trực tiếp bước trace" data-i18n-aria-label="trace.steps-label"><button type="button" aria-current="step">Bước 1</button></div>
         <p><span id="trace-progress"></span> <span id="trace-lm" class="lm-badge"></span></p><p id="trace-status" aria-live="polite"></p>
-        <div class="trace-grid"><p><strong>Component:</strong> <span id="trace-component"></span></p><p><strong>Input:</strong> <span id="trace-input"></span></p><p><strong>Output:</strong> <span id="trace-output"></span></p><p><strong>Quyết định:</strong> <span id="trace-decision"></span></p><p><strong>Kinh tế:</strong> <span id="trace-economics"></span></p><p><strong>Evidence:</strong> <code id="trace-evidence"></code></p><p><strong>Failure:</strong> <span id="trace-failure"></span></p></div>
+        <div class="trace-grid"><p><strong data-i18n="trace.field.component">Component:</strong> <span id="trace-component"></span></p><p><strong data-i18n="trace.field.input">Input:</strong> <span id="trace-input"></span></p><p><strong data-i18n="trace.field.output">Output:</strong> <span id="trace-output"></span></p><p><strong data-i18n="trace.field.decision">Quyết định:</strong> <span id="trace-decision"></span></p><p><strong data-i18n="trace.field.economics">Kinh tế:</strong> <span id="trace-economics"></span></p><p><strong data-i18n="trace.field.evidence">Evidence:</strong> <code id="trace-evidence"></code></p><p><strong data-i18n="trace.field.failure">Failure:</strong> <span id="trace-failure"></span></p></div>
       </div>
-      <h3>Bản tóm tắt tĩnh của 13 kịch bản</h3><ol>
+      <div class="language-vi-only"><h3>Bản tóm tắt tĩnh của 13 kịch bản</h3><ol>
       <li data-scenario="direct-worker"><strong>Direct request → one worker.</strong> Root giữ GoalState, chọn một bounded worker; worker mới là nơi mutation xảy ra.</li>
       <li data-scenario="pushed-skill"><strong>Root-selected pushed skill.</strong> Root chọn role; substrate inject role skill vào frozen brief trước LM call của worker.</li>
       <li data-scenario="parallel-workers"><strong>Same-turn siblings.</strong> Nhiều tool uses được phát trong cùng model turn chạy concurrent; kết quả trở lại theo thứ tự tool use.</li>
@@ -309,8 +324,24 @@
       <li data-scenario="console-projection"><strong>Safe Console projection.</strong> Rust đọc state/audit DB và React render evidence; không có LM call.</li>
       <li data-scenario="historical-console"><strong>Viewed versus active session.</strong> Console có thể xem session cũ trong khi shared driver process thuộc session khác; viewing không chuyển ownership.</li>
       <li data-scenario="external-mcp"><strong>External MCP isolation.</strong> Connection failure được log và skip; namespaced call đi tới owning server, ngoài Musubi-owned policy/audit boundary.</li>
-    </ol></section>
-    <section id="invariants"><h2>Bất biến và chuỗi nhân quả</h2><p>Phân loại failure: model failure là kết quả reasoning kém; driver failure là orchestration/context/recovery sai; substrate denial là boundary cố ý chặn; substrate defect là chính boundary vi phạm contract.</p><div class="cards">
+      </ol></div>
+      <div class="language-en-only" hidden><h3>Static summary of 13 scenarios</h3><ol>
+        <li><strong>Direct worker:</strong> root routing preserves goal authority while a bounded worker owns mutation.</li>
+        <li><strong>Pushed skill:</strong> role contracts are revalidated and injected before the child model call.</li>
+        <li><strong>Same-turn siblings:</strong> one response creates a concurrent batch whose results retain tool-use order.</li>
+        <li><strong>Nested helper:</strong> bounded depth and explicit audit prevent silent delegation.</li>
+        <li><strong>Deterministic pipeline:</strong> the operator chooses the recipe and primary stages remain sequential.</li>
+        <li><strong>Declared helpers:</strong> a stage may fan out only roles declared in <code>spawns:</code>.</li>
+        <li><strong>Policy denial:</strong> missing authority is denied before execution.</li>
+        <li><strong>Evaluator firewall:</strong> the evaluator sees only the artifact being judged.</li>
+        <li><strong>Budget stop:</strong> executable ceilings end work before another model call.</li>
+        <li><strong>Context fitting:</strong> elision preserves a recoverable reference to original dispatch.</li>
+        <li><strong>Console projection:</strong> database reads and rendering are zero-LLM.</li>
+        <li><strong>Viewed versus active:</strong> viewing history never transfers driver ownership.</li>
+        <li><strong>External MCP:</strong> namespaced calls route outside the Musubi-owned policy and audit boundary.</li>
+      </ol></div>
+    </section>
+    <section id="invariants"><h2 data-i18n="invariants.heading">Bất biến và chuỗi nhân quả</h2><p class="language-vi-only">Phân loại failure: model failure là kết quả reasoning kém; driver failure là orchestration/context/recovery sai; substrate denial là boundary cố ý chặn; substrate defect là chính boundary vi phạm contract.</p><div class="cards language-vi-only">
       <article data-invariant="HI #1" data-evidence-kind="verified" data-source="musubi/agent/vendors/base.py:20"><h3>HI #1 — zero LLM calls in substrate</h3><p><strong>Risk:</strong> governance tự reasoning và không còn deterministic. <strong>Assumption:</strong> driver là layer duy nhất cần model. <strong>Enforcement:</strong> model access qua <code>LMRouter</code>; server, validation, policy và audit không import SDK. <strong>Evidence:</strong> router usage và zero-LLM substrate source boundary. <strong>Violation:</strong> gọi OpenAI từ policy engine. Bỏ enforcement sẽ biến allow/deny thành nondeterministic và phá control boundary.</p></article>
       <article data-invariant="HI #2" data-evidence-kind="verified" data-source="musubi/validation/subagent_context.py:99"><h3>HI #2 — push skills, pull on demand</h3><p><strong>Risk:</strong> worker thiếu role contract hoặc tự bỏ qua skill. <strong>Assumption:</strong> root/composer biết role trước worker. <strong>Enforcement:</strong> spawn context trả <code>role_skill</code>, system prompt nhúng nó; agent chỉ pull skill phụ qua <code>musubi_get_skill</code>. <strong>Evidence:</strong> frozen spawn prompt. <strong>Violation:</strong> gửi chỉ skill ID tùy chọn. Bỏ push path làm direct worker và pipeline stage có contract khác nhau.</p></article>
       <article data-invariant="HI #3" data-evidence-kind="verified" data-source="musubi/validation/context_builder.py:227"><h3>HI #3 — evaluator firewall</h3><p><strong>Risk:</strong> judge bị bias bởi intent, plan, design hoặc memory. <strong>Assumption:</strong> evaluator chỉ cần artifact nó judge. <strong>Enforcement:</strong> reviewer stage permissions chỉ cho <code>code</code>; final-stage brief chỉ mang output ngay trước. <strong>Evidence:</strong> denied read và last-stage brief. <strong>Violation:</strong> reviewer đọc plan. Bỏ một trong hai gate tạo leakage qua MCP hoặc runner.</p></article>
@@ -318,8 +349,18 @@
       <article data-invariant="HI #7" data-evidence-kind="verified" data-source="musubi/storage/schema.sql:34"><h3>HI #7 — append-only stage store</h3><p><strong>Risk:</strong> retry xóa provenance của attempt trước. <strong>Assumption:</strong> maintainer cần toàn bộ chuỗi evidence. <strong>Enforcement:</strong> retry ghi <code>&lt;stage&gt;.attemptN.md</code>, read path chọn attempt rõ ràng. <strong>Evidence:</strong> immutable attempt artifacts. <strong>Violation:</strong> overwrite <code>code.md</code>. Bỏ suffix attempt làm review và recovery không thể tái dựng.</p></article>
       <article data-invariant="HI #8" data-evidence-kind="verified" data-source="musubi/storage/subagent_audit.py:1"><h3>HI #8 — no silent sub-agents</h3><p><strong>Risk:</strong> fan-out không có accountability. <strong>Assumption:</strong> mỗi child có parentage và terminal outcome. <strong>Enforcement:</strong> spawn và completion append rows vào <code>subagent_audit</code>. <strong>Evidence:</strong> queryable handle, parent, role, status. <strong>Violation:</strong> helper chạy mà không có row. Bỏ completion write tạo orphan không phân biệt running với lost.</p></article>
       <article data-invariant="HI #9" data-evidence-kind="verified" data-source="CLAUDE.md:67"><h3>HI #9 — tag and expire</h3><p><strong>Risk:</strong> ephemeral scaffolding trở thành permanent accidental architecture. <strong>Assumption:</strong> model capability tăng sẽ làm một số compensation hết cần. <strong>Enforcement:</strong> card phản ánh <code>musubi-tier</code> khi source header khai báo; source tier ephemeral mang đúng <code>expires-when</code> và <code>cost-lever</code> của file. <strong>Evidence:</strong> source metadata và PR review. <strong>Violation:</strong> thêm prompt scaffold không expiry. Bỏ metadata làm dissolution không có trigger.</p></article>
+    </div>
+    <p class="language-en-only" hidden>Failure classes are distinct: model failure is poor reasoning, driver failure is incorrect orchestration or recovery, substrate denial is an intentional boundary, and substrate defect is a broken contract.</p>
+    <div class="cards language-en-only" hidden>
+      <article><h3>HI #1 — zero LLM calls in substrate</h3><p><strong>Risk:</strong> governance becomes nondeterministic. <strong>Enforcement:</strong> only driver-side <code>LMRouter</code> reaches models; server, validation, policy, and audit import no model SDK. <strong>Violation:</strong> a policy path calls a provider.</p></article>
+      <article><h3>HI #2 — push skills, pull on demand</h3><p><strong>Risk:</strong> a worker misses or ignores its role contract. <strong>Enforcement:</strong> spawn context returns <code>role_skill</code> and the child system prompt embeds it; optional skills remain pull-based.</p></article>
+      <article><h3>HI #3 — evaluator firewall</h3><p><strong>Risk:</strong> intent, plan, design, or memory biases evaluation. <strong>Enforcement:</strong> reviewer permissions expose only code and the final-stage brief carries only the immediately preceding artifact.</p></article>
+      <article><h3>HI #5 — fail-closed policy</h3><p><strong>Risk:</strong> unknown authority receives tools or stage execution. <strong>Enforcement:</strong> boot-time catalog validation, spawn membership checks, and explicit role/pipeline tool intersections deny missing authority.</p></article>
+      <article><h3>HI #7 — append-only stage store</h3><p><strong>Risk:</strong> retry overwrites earlier provenance. <strong>Enforcement:</strong> every retry creates a distinct attempt artifact such as <code>&lt;stage&gt;.attemptN.md</code>.</p></article>
+      <article><h3>HI #8 — no silent sub-agents</h3><p><strong>Risk:</strong> fan-out loses accountability. <strong>Enforcement:</strong> every spawn and completion appends queryable parentage, role, handle, and terminal outcome.</p></article>
+      <article><h3>HI #9 — tag and expire</h3><p><strong>Risk:</strong> temporary scaffolding becomes permanent architecture. <strong>Enforcement:</strong> ephemeral source declares <code>expires-when</code> and <code>cost-lever</code> metadata reviewed with its evidence.</p></article>
     </div></section>
-    <section id="economics"><h2>Kinh tế token và runtime: mỗi giới hạn một owner</h2><table><thead><tr><th>Dimension</th><th>Single owner</th><th>Cách đọc</th></tr></thead><tbody>
+    <section id="economics"><h2 data-i18n="economics.heading">Kinh tế token và runtime: mỗi giới hạn một owner</h2><table class="language-vi-only"><thead><tr><th>Dimension</th><th>Single owner</th><th>Cách đọc</th></tr></thead><tbody>
       <tr><td>Per-call output tokens</td><td>Per-worker effort/output budget</td><td>Ceiling được resolve cho từng router call.</td></tr>
       <tr><td>Worker turns/cycles</td><td>Worker or pipeline-stage contract</td><td>Turn guard dừng loop; prompt metadata không thay thế executable guard.</td></tr>
       <tr><td>Model-input characters</td><td>Context fitting boundary</td><td>Nén, warn hoặc abort trước provider request.</td></tr>
@@ -327,8 +368,17 @@
       <tr><td>Root worker count and recovery</td><td>Root routing/goal-state controller</td><td>GoalState sở hữu continue, recover và stop.</td></tr>
       <tr><td>LM time</td><td>Each actual router call</td><td>Chỉ thời gian inference được quy vào LM.</td></tr>
       <tr><td>Audit/storage growth</td><td>Append-only persistence boundaries</td><td>Stage attempts, tool audit, cycles và subagent events tăng theo write.</td></tr>
-    </tbody></table><p>Provider usage gồm input tokens, cached input là tập con của input, output tokens và LM time. Estimated usage được gắn nhãn; giá trị âm hoặc cached vượt input bị clamp. Replay/context chỉ tốn model input khi được gửi lại. Không có credit hay pricing abstraction. Policy, validation, database reads, persistence và Console projection là zero-LLM nhưng vẫn dùng CPU, I/O và wall-clock.</p></section>
-    <section id="evolution"><h2>Tiến hóa và dissolution</h2><p>Mỗi record theo chuỗi <em>previous shape → observed problem → design decision → current shape → future removal trigger</em>. <strong>Historical interpretation:</strong> các chuyển tiếp dưới đây giải thích lịch sử; current runtime cards phía trên vẫn là evidence cho hiện trạng.</p><ol>
+    </tbody></table><p class="language-vi-only">Provider usage gồm input tokens, cached input là tập con của input, output tokens và LM time. Estimated usage được gắn nhãn; giá trị âm hoặc cached vượt input bị clamp. Replay/context chỉ tốn model input khi được gửi lại. Không có credit hay pricing abstraction. Policy, validation, database reads, persistence và Console projection là zero-LLM nhưng vẫn dùng CPU, I/O và wall-clock.</p>
+    <table class="language-en-only" hidden><thead><tr><th>Dimension</th><th>Single owner</th><th>Interpretation</th></tr></thead><tbody>
+      <tr><td>Per-call output tokens</td><td>Per-worker effort/output budget</td><td>Resolve the ceiling for each router call.</td></tr>
+      <tr><td>Worker turns and cycles</td><td>Worker or pipeline-stage contract</td><td>Executable guards stop the loop; prompt metadata does not.</td></tr>
+      <tr><td>Model-input characters</td><td>Context-fitting boundary</td><td>Compress, warn, or abort before the provider request.</td></tr>
+      <tr><td>Total pipeline allowance</td><td>Parent ChildTokenBudget allocation</td><td>Later stages receive a protected share of the remainder.</td></tr>
+      <tr><td>Root worker count and recovery</td><td>Root GoalState controller</td><td>GoalState owns continue, recover, and stop.</td></tr>
+      <tr><td>LM time</td><td>Each actual router call</td><td>Only inference duration is attributed to the model.</td></tr>
+      <tr><td>Audit and storage growth</td><td>Append-only persistence boundaries</td><td>Attempts, cycles, tool audit, and child events grow per write.</td></tr>
+    </tbody></table><p class="language-en-only" hidden>Provider usage contains input tokens, cached input as a subset, output tokens, and LM time. Estimated values stay labeled and invalid negative or oversized cached values are clamped. Replay costs model input only when sent again. Policy, validation, database reads, persistence, and Console projection use CPU, I/O, and wall-clock but remain zero-LLM.</p></section>
+    <section id="evolution"><h2 data-i18n="evolution.heading">Tiến hóa và dissolution</h2><p class="language-vi-only">Mỗi record theo chuỗi <em>previous shape → observed problem → design decision → current shape → future removal trigger</em>. <strong>Historical interpretation:</strong> các chuyển tiếp dưới đây giải thích lịch sử; current runtime cards phía trên vẫn là evidence cho hiện trạng.</p><ol class="language-vi-only">
       <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-16-musubi-system-atlas-design.md:311"><strong>Fixed pipelines:</strong> fixed four-stage pipeline → khó tái dùng topology → tách preset và recipe → user-defined worker recipes → bỏ scaffolding khi model có thể tự thỏa contract an toàn.</li>
       <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-16-musubi-system-atlas-design.md:312"><strong>Unified execution primitive:</strong> main/sub-agent distinction → duplicated loops và semantics → hợp nhất execution → root, child và stage dùng <code>run_unit</code> với authority khác nhau → xóa compatibility wrappers khi caller cũ biến mất.</li>
       <li data-evidence-kind="historical" data-source="docs/superpowers/plans/2026-07-12-stage-nesting-worker-unification-extension-removal.md:29"><strong>VS Code removal:</strong> embedded VS Code host → ownership và model access bị chia đôi → giữ một standalone host → standalone CLI plus native Console → xóa extension residue khi schema/comment compatibility hết cần.</li>
@@ -338,32 +388,113 @@
       <li data-evidence-kind="historical" data-source="docs/superpowers/specs/2026-07-13-orchestrator-token-economics-design.md:46"><strong>Token-only accounting:</strong> unbounded or duplicated limits → nhiều owner và credit semantics không quy vế → mỗi dimension một executable owner → provider/estimated token-only accounting → xóa compatibility fields sau khi reader cũ hết hạn.</li>
       <li data-evidence-kind="historical" data-source="docs/roadmap.md:150"><strong>Thinner prompts:</strong> fixed prompt scaffolding → ephemeral compensation tích tụ → tag expiry và cost lever → frozen brief nhỏ hơn và pushed skills → delete khi model capability đáp ứng failure threshold.</li>
       <li data-evidence-kind="historical" data-source="docs/roadmap.md:152"><strong>Catalog relocation:</strong> platform-neutral catalogs under <code>.github/</code> → storage path ngụ ý platform ownership → lên kế hoạch relocation → catalog vẫn ở <code>.github/</code> trong current repo → move khi compatibility readers và migration được ship.</li>
-    </ol><aside class="callout"><h3>Documentation archaeology</h3><p><span>Stale or contradicted</span> — residue này không phải active behavior:</p><ul>
+    </ol><aside class="callout language-vi-only"><h3>Documentation archaeology</h3><p><span>Stale or contradicted</span> — residue này không phải active behavior:</p><ul>
       <li data-evidence-kind="stale" data-source="musubi/tool_surface.py:28"><strong>worker-summoned whole pipelines</strong> trong AGENTS.md/docs guide; superseded bởi model-visible tool surface không có <code>musubi_spawn_pipeline</code> và explicit operator launch.</li>
       <li data-evidence-kind="stale" data-source="musubi/agent/run.py:137"><strong>one-level leaf wording</strong> trong subagent.py; runtime cho phép nested worker đến configured depth cap.</li>
       <li data-evidence-kind="stale" data-source="musubi/tests/test_agent_loop.py:684"><strong>max_credits/warn_at compatibility fields</strong>; live economics là token-only và compatibility readers bỏ qua legacy credit values.</li>
       <li data-evidence-kind="stale" data-source="musubi/tests/test_code_review_standalone.py:130"><strong>extension-side runner comments</strong>; VS Code host đã bị standalone CLI và native Console thay thế.</li>
       <li data-evidence-kind="stale" data-source="gui/src/views/Pipeline.test.mjs:27"><strong>legacy Pipeline Studio chat/session fields</strong>; Studio hiện là builder-only workspace.</li>
       <li data-evidence-kind="stale" data-source="musubi/agent/pipeline_runner.py:78"><strong>root prompt maxTurns</strong> như enforced cap; executable budget resolution, không phải prompt prose, sở hữu limit.</li>
-    </ul><p><strong>HI #4 retired:</strong> zero-cost routing trở thành trivial trong single-host shape. <strong>HI #6 retired:</strong> flat catalog là code-organization decision, không phải safety property.</p></aside></section>
-    <section id="quiz"><h2>Tự kiểm tra có chấm điểm</h2><p>Chọn một chương hoặc bài tổng hợp 12 câu. Mỗi câu khóa sau lần trả lời đầu tiên; explanation giải thích chuỗi nhân quả và dẫn về phần liên quan.</p>
-      <div class="quiz-toolbar"><label>Phạm vi quiz <select id="quiz-scope"><option value="all">Toàn bộ 24 câu</option><option value="orientation">Định hướng</option><option value="components">Component</option><option value="traces">Trace</option><option value="invariants">Bất biến</option><option value="economics">Kinh tế</option><option value="evolution">Tiến hóa</option><option value="cumulative">Tổng hợp 12 câu</option></select></label><button id="quiz-reset" type="button">Xóa điểm và làm lại</button></div>
-      <div class="quiz-summary"><p><strong>Tổng điểm:</strong> <span id="quiz-total-score">0 / 24</span></p><p><strong>Đã trả lời:</strong> <span id="quiz-answered-count">0 / 24</span></p><p><strong>Điểm chương:</strong> <span id="quiz-chapter-score">0 / 4</span></p></div>
+    </ul><p><strong>HI #4 retired:</strong> zero-cost routing trở thành trivial trong single-host shape. <strong>HI #6 retired:</strong> flat catalog là code-organization decision, không phải safety property.</p></aside>
+    <p class="language-en-only" hidden>Each transition reads as previous shape → observed problem → design decision → current shape → future removal trigger. These records explain history; the runtime cards remain the evidence for current behavior.</p>
+    <ol class="language-en-only" hidden>
+      <li><strong>Fixed pipelines:</strong> a rigid four-stage topology became reusable presets plus user-defined worker recipes, with scaffolding removed when models satisfy the safety contract natively.</li>
+      <li><strong>Unified execution:</strong> duplicated main/sub-agent loops converged on <code>run_unit</code> while authority remains specific to depth and role.</li>
+      <li><strong>VS Code removal:</strong> split ownership moved to one standalone host with a native Console.</li>
+      <li><strong>Builder-only Studio:</strong> authoring and execution were separated; Orchestrator owns explicit launch.</li>
+      <li><strong>GoalState:</strong> expanding root transcripts became exact intent plus bounded outcome and recovery state.</li>
+      <li><strong>Pushed skills:</strong> optional role discovery became mandatory spawn-time role-skill injection plus on-demand pulls.</li>
+      <li><strong>Token-only accounting:</strong> duplicated credit semantics became one executable owner per dimension and provider-attributable usage.</li>
+      <li><strong>Thinner prompts:</strong> fixed scaffolding is tagged for expiry as frozen briefs and pushed skills shrink context.</li>
+      <li><strong>Catalog relocation:</strong> platform-neutral catalogs remain under <code>.github/</code> until compatibility readers and migration ship.</li>
+    </ol>
+    <aside class="callout language-en-only" hidden><h3>Documentation archaeology</h3><p>Stale residue is historical evidence, not active behavior: model-visible workers cannot summon whole pipelines, runtime supports bounded nesting, live economics is token-only, the extension host is retired, Pipeline Studio is builder-only, and executable budget resolution—not prompt prose—owns limits.</p><p><strong>HI #4 retired:</strong> zero-cost routing became trivial in the single-host design. <strong>HI #6 retired:</strong> flat catalog layout is a code-organization rule rather than a safety property.</p></aside></section>
+    <section id="glossary">
+      <h2 data-i18n="glossary.heading">Chú giải thuật ngữ</h2>
+      <p data-i18n="glossary.intro">Giữ nguyên technical term chuẩn để đối chiếu code; phần giải nghĩa giúp đọc đúng vai trò kiến trúc.</p>
+      <div class="axes">
+        <article>
+          <h3 data-i18n="glossary.core.heading">Thuật ngữ kiến trúc cốt lõi</h3>
+          <dl class="maintainer-record">
+            <dt data-i18n="glossary.driver.term">driver</dt><dd data-i18n="glossary.driver.definition">Lớp điều phối có quyền gọi model qua LMRouter.</dd>
+            <dt data-i18n="glossary.worker.term">worker</dt><dd data-i18n="glossary.worker.definition">Một vòng run_unit nhận brief, tools và budget có giới hạn.</dd>
+            <dt data-i18n="glossary.trust-boundary.term">trust boundary</dt><dd data-i18n="glossary.trust-boundary.definition">Ranh giới tin cậy xác định lớp nào có quyền gọi model, gate action hoặc chỉ đọc evidence.</dd>
+            <dt data-i18n="glossary.substrate.term">governance substrate</dt><dd data-i18n="glossary.substrate.definition">Lớp quản trị deterministic, không gọi LLM, sở hữu policy, validation, persistence và audit.</dd>
+            <dt data-i18n="glossary.fail-closed.term">fail-closed</dt><dd data-i18n="glossary.fail-closed.definition">Mặc định từ chối khi membership hoặc quyền không được khai báo rõ ràng.</dd>
+            <dt data-i18n="glossary.evaluator-firewall.term">evaluator firewall</dt><dd data-i18n="glossary.evaluator-firewall.definition">Boundary chỉ cho evaluator thấy artifact đang được đánh giá.</dd>
+            <dt data-i18n="glossary.append-only.term">append-only</dt><dd data-i18n="glossary.append-only.definition">Chỉ thêm record hoặc attempt mới; không ghi đè provenance cũ.</dd>
+            <dt data-i18n="glossary.durable.term">durable</dt><dd data-i18n="glossary.durable.definition">Primitive là khoản đầu tư dài hạn của kiến trúc.</dd>
+            <dt data-i18n="glossary.ephemeral.term">ephemeral</dt><dd data-i18n="glossary.ephemeral.definition">Scaffolding tạm thời phải có removal trigger và cost lever.</dd>
+            <dt data-i18n="glossary.projection.term">projection</dt><dd data-i18n="glossary.projection.definition">Biểu diễn read-only đã sanitize cho operator, không sở hữu governance decision.</dd>
+          </dl>
+        </article>
+        <article>
+          <h3 data-i18n="glossary.components.heading">Chỉ mục component song ngữ</h3>
+          <dl class="maintainer-record">
+            <dt data-i18n="components.cli.title">CLI entry</dt><dd data-i18n="components.cli.summary">Surface chính của standalone host.</dd>
+            <dt data-i18n="components.console.title">Console shell &amp; Orchestrator</dt><dd data-i18n="components.console.summary">Đọc evidence; chỉ submission rõ ràng mới launch driver.</dd>
+            <dt data-i18n="components.goal-state.title">GoalState root controller</dt><dd data-i18n="components.goal-state.summary">Quyền root, không truyền ngang cho child.</dd>
+            <dt data-i18n="components.worker-loop.title">run_unit worker loop</dt><dd data-i18n="components.worker-loop.summary">Durable driver; không phải zero-LLM substrate.</dd>
+            <dt data-i18n="components.pipeline-runner.title">Deterministic pipeline runner</dt><dd data-i18n="components.pipeline-runner.summary">Runner hỗ trợ spawn nhưng model surface không expose whole-pipeline tool.</dd>
+            <dt data-i18n="components.lm-router.title">LMRouter</dt><dd data-i18n="components.lm-router.summary">Điểm model call duy nhất của driver.</dd>
+            <dt data-i18n="components.model-provider.title">Model provider</dt><dd data-i18n="components.model-provider.summary">Hệ thống inference bên ngoài, không do Musubi sở hữu.</dd>
+            <dt data-i18n="components.mcp-server.title">Musubi MCP server</dt><dd data-i18n="components.mcp-server.summary">Không gọi model; tập hợp control surface deterministic.</dd>
+            <dt data-i18n="components.policy.title">Fail-closed policy</dt><dd data-i18n="components.policy.summary">Membership và tool policy đều deny-by-default.</dd>
+            <dt data-i18n="components.evaluator-firewall.title">Evaluator firewall</dt><dd data-i18n="components.evaluator-firewall.summary">Final stage chỉ nhận artifact ngay trước.</dd>
+            <dt data-i18n="components.skills.title">Skills</dt><dd data-i18n="components.skills.summary">Push cho worker; pull theo nhu cầu cho agent.</dd>
+            <dt data-i18n="components.memory.title">Memory</dt><dd data-i18n="components.memory.summary">Ba tầng context có chọn lọc.</dd>
+            <dt data-i18n="components.compression.title">Compression/context fit</dt><dd data-i18n="components.compression.summary">Giữ đường retrieve thay vì shrink-and-pray.</dd>
+            <dt data-i18n="components.state-db.title">musubi.db</dt><dd data-i18n="components.state-db.summary">Operational state gồm pipeline_runs và agent turns.</dd>
+            <dt data-i18n="components.audit-db.title">audit.db</dt><dd data-i18n="components.audit-db.summary">Ledger append-only cho policy, tool và worker evidence.</dd>
+            <dt data-i18n="components.rust-projection.title">Rust safe evidence boundary</dt><dd data-i18n="components.rust-projection.summary">Join state với audit ancestry mà không mutation governance.</dd>
+            <dt data-i18n="components.react-view-model.title">React view model</dt><dd data-i18n="components.react-view-model.summary">Projection tới các view Audit, Policy, Models, Skills và Settings.</dd>
+            <dt data-i18n="components.external-mcp.title">External MCP federation</dt><dd data-i18n="components.external-mcp.summary">Nằm ngoài Musubi-owned policy và audit boundary.</dd>
+            <dt data-i18n="components.setup-wizard.title">Setup wizard</dt><dd data-i18n="components.setup-wizard.summary">Bootstrap environment mà không gọi model.</dd>
+            <dt data-i18n="components.nested-dispatch.title">Nested worker dispatch</dt><dd data-i18n="components.nested-dispatch.summary">Sibling cùng turn overlap nhưng authority vẫn bất đối xứng.</dd>
+            <dt data-i18n="components.composer.title">Pipeline composer</dt><dd data-i18n="components.composer.summary">Validate recipe theo fail-closed trước runtime.</dd>
+            <dt data-i18n="components.context-fit.title">Model input fitting</dt><dd data-i18n="components.context-fit.summary">Sở hữu driver-side request sizing.</dd>
+            <dt data-i18n="components.tool-surface.title">Tool dispatch boundary</dt><dd data-i18n="components.tool-surface.summary">Root và child không thấy musubi_spawn_pipeline.</dd>
+            <dt data-i18n="components.budget.title">Budget &amp; cycle enforcement</dt><dd data-i18n="components.budget.summary">Attribution theo actual call, không theo prompt prose.</dd>
+            <dt data-i18n="components.validator.title">Validation/execution layer</dt><dd data-i18n="components.validator.summary">Evidence deterministic cho evaluator và operator.</dd>
+            <dt data-i18n="components.workspace-discovery.title">Workspace discovery</dt><dd data-i18n="components.workspace-discovery.summary">Grounding deterministic cho path boundary.</dd>
+            <dt data-i18n="components.session-distillation.title">Session distillation</dt><dd data-i18n="components.session-distillation.summary">Lifecycle bridge từ evidence sang memory.</dd>
+            <dt data-i18n="components.subagent-audit.title">Subagent audit persistence</dt><dd data-i18n="components.subagent-audit.summary">Parentage và pushed skill đều queryable.</dd>
+            <dt data-i18n="components.pipeline-studio.title">Pipeline Studio</dt><dd data-i18n="components.pipeline-studio.summary">Authoring surface, không phải autonomous orchestration.</dd>
+            <dt data-i18n="components.compression-eval.title">Đánh giá compression</dt><dd data-i18n="components.compression-eval.summary">Deterministic gate tách khỏi runtime context fitting.</dd>
+            <dt data-i18n="components.prompt-catalog.title">Bộ resolve prompt catalog</dt><dd data-i18n="components.prompt-catalog.summary">Prompt scaffolding là driver concern, không phải policy.</dd>
+            <dt data-i18n="components.vendor-implementations.title">Các vendor implementation</dt><dd data-i18n="components.vendor-implementations.summary">Provider adapters đều nằm ở driver side.</dd>
+            <dt data-i18n="components.conversation-store.title">Conversation persistence</dt><dd data-i18n="components.conversation-store.summary">Raw chat history khác stage artifact và audit evidence.</dd>
+            <dt data-i18n="components.stage-attempt-store.title">Stage-attempt persistence</dt><dd data-i18n="components.stage-attempt-store.summary">Retry tạo attempt mới, không overwrite evidence cũ.</dd>
+            <dt data-i18n="components.agent-cycle-store.title">Agent-cycle persistence</dt><dd data-i18n="components.agent-cycle-store.summary">Usage và LM time được ghi theo từng cycle.</dd>
+            <dt data-i18n="components.audit-projection.title">Audit projection</dt><dd data-i18n="components.audit-projection.summary">Hiển thị ledger nhưng không ghi ledger.</dd>
+            <dt data-i18n="components.policy-projection.title">Policy projection</dt><dd data-i18n="components.policy-projection.summary">Giải thích boundary nhưng không phát verdict.</dd>
+            <dt data-i18n="components.models-projection.title">Models projection</dt><dd data-i18n="components.models-projection.summary">Hiển thị configuration mà không gọi model.</dd>
+            <dt data-i18n="components.skills-projection.title">Skills projection</dt><dd data-i18n="components.skills-projection.summary">Chỉ hiển thị catalog, không inject skill.</dd>
+            <dt data-i18n="components.settings-projection.title">Settings projection</dt><dd data-i18n="components.settings-projection.summary">Configuration surface rõ ràng, không autonomous mutation.</dd>
+          </dl>
+        </article>
+      </div>
+    </section>
+    <section id="quiz"><h2 data-i18n="quiz.heading">Tự kiểm tra có chấm điểm</h2><p data-i18n="quiz.intro">Chọn một chương hoặc bài tổng hợp 12 câu. Mỗi câu khóa sau lần trả lời đầu tiên; explanation giải thích chuỗi nhân quả và dẫn về phần liên quan.</p>
+      <div class="quiz-toolbar"><label><span data-i18n="quiz.scope">Phạm vi quiz</span> <select id="quiz-scope"><option value="all" data-i18n="quiz.scope.all">Toàn bộ 24 câu</option><option value="orientation" data-i18n="quiz.scope.orientation">Định hướng</option><option value="components" data-i18n="quiz.scope.components">Component</option><option value="traces" data-i18n="quiz.scope.traces">Trace</option><option value="invariants" data-i18n="quiz.scope.invariants">Bất biến</option><option value="economics" data-i18n="quiz.scope.economics">Kinh tế</option><option value="evolution" data-i18n="quiz.scope.evolution">Tiến hóa</option><option value="cumulative" data-i18n="quiz.scope.cumulative">Tổng hợp 12 câu</option></select></label><button id="quiz-reset" type="button" data-i18n="quiz.reset">Xóa điểm và làm lại</button></div>
+      <div class="quiz-summary"><p><strong data-i18n="quiz.total-score">Tổng điểm:</strong> <span id="quiz-total-score">0 / 24</span></p><p><strong data-i18n="quiz.answered">Đã trả lời:</strong> <span id="quiz-answered-count">0 / 24</span></p><p><strong data-i18n="quiz.chapter-score">Điểm chương:</strong> <span id="quiz-chapter-score">0 / 4</span></p></div>
       <p id="quiz-announcer" aria-live="polite"></p>
       <div id="quiz-questions"></div>
-      <ol class="sr-only" aria-label="Chỉ mục câu hỏi quiz">
+      <ol class="sr-only" aria-label="Chỉ mục câu hỏi quiz" data-i18n-aria-label="quiz.index">
         <li data-question-id="boundary-01">Câu 1</li><li data-question-id="boundary-02">Câu 2</li><li data-question-id="boundary-03">Câu 3</li><li data-question-id="boundary-04">Câu 4</li><li data-question-id="component-01">Câu 5</li><li data-question-id="component-02">Câu 6</li><li data-question-id="component-03">Câu 7</li><li data-question-id="component-04">Câu 8</li><li data-question-id="trace-01">Câu 9</li><li data-question-id="trace-02">Câu 10</li><li data-question-id="trace-03">Câu 11</li><li data-question-id="trace-04">Câu 12</li><li data-question-id="invariant-01">Câu 13</li><li data-question-id="invariant-02">Câu 14</li><li data-question-id="invariant-03">Câu 15</li><li data-question-id="invariant-04">Câu 16</li><li data-question-id="economics-01">Câu 17</li><li data-question-id="economics-02">Câu 18</li><li data-question-id="economics-03">Câu 19</li><li data-question-id="economics-04">Câu 20</li><li data-question-id="evolution-01">Câu 21</li><li data-question-id="evolution-02">Câu 22</li><li data-question-id="evolution-03">Câu 23</li><li data-question-id="evolution-04">Câu 24</li>
       </ol>
     </section>
   </main>
   <aside id="evidence-drawer" aria-label="Bằng chứng nguồn">
-    <button id="evidence-drawer-close" class="drawer-close" type="button" aria-controls="evidence-drawer">Đóng bằng chứng</button>
-    <h2>Text equivalent của map edges</h2>
+    <button id="evidence-drawer-close" class="drawer-close" type="button" aria-controls="evidence-drawer" data-i18n="drawer.close">Đóng bằng chứng</button>
+    <h2 data-i18n="drawer.heading">Quan hệ và bằng chứng</h2>
     <div id="relationship-summary" class="relationship-list" aria-live="polite"><strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.</div>
-    <ol><li>CLI launches GoalState root controller.</li><li>Console launches deterministic pipeline bằng <code>--pipeline</code>.</li><li>GoalState routes sang worker loop; worker dispatches pipeline stages khi caller đã chọn pipeline.</li><li>Worker loop calls LMRouter; LMRouter requests model provider.</li><li>Worker calls Musubi MCP tools; MCP server delegates gates cho fail-closed policy và evaluator firewall.</li><li>MCP server injects skills, loads memory, compresses context, persists state vào musubi.db và records audit vào audit.db.</li><li>Top-level driver routes namespaced calls tới external MCP; đường này không qua Musubi gate/audit.</li><li>Rust projection reads state và audit, projects sang React view model, rồi renders Console.</li></ol>
-    <p><strong>Verified sources:</strong> <code>musubi/tool_surface.py</code>, <code>musubi/agent/run.py</code>, <code>musubi/agent/mcp_gateway.py</code>, <code>gui/src-tauri/musubi-data/src/lib.rs</code>.</p>
+    <ol class="language-vi-only"><li>CLI launches GoalState root controller.</li><li>Console launches deterministic pipeline bằng <code>--pipeline</code>.</li><li>GoalState routes sang worker loop; worker dispatches pipeline stages khi caller đã chọn pipeline.</li><li>Worker loop calls LMRouter; LMRouter requests model provider.</li><li>Worker calls Musubi MCP tools; MCP server delegates gates cho fail-closed policy và evaluator firewall.</li><li>MCP server injects skills, loads memory, compresses context, persists state vào musubi.db và records audit vào audit.db.</li><li>Top-level driver routes namespaced calls tới external MCP; đường này không qua Musubi gate/audit.</li><li>Rust projection reads state và audit, projects sang React view model, rồi renders Console.</li></ol>
+    <ol class="language-en-only" hidden><li>CLI launches the GoalState root controller.</li><li>Console launches an explicitly selected deterministic pipeline with <code>--pipeline</code>.</li><li>GoalState routes work to the worker loop; selected pipelines dispatch sequential stages.</li><li>The worker loop calls LMRouter, which requests the model provider.</li><li>Workers call Musubi MCP tools; the server delegates to fail-closed policy and the evaluator firewall.</li><li>The server injects skills, loads memory, fits context, persists state to musubi.db, and appends audit evidence to audit.db.</li><li>The top-level driver routes namespaced external MCP calls outside the Musubi policy and audit boundary.</li><li>Rust reads state and audit, projects a safe React view model, and Console renders it.</li></ol>
+    <p class="language-vi-only"><strong>Verified sources:</strong> <code>musubi/tool_surface.py</code>, <code>musubi/agent/run.py</code>, <code>musubi/agent/mcp_gateway.py</code>, <code>gui/src-tauri/musubi-data/src/lib.rs</code>.</p>
+    <p class="language-en-only" hidden><strong>Verified sources:</strong> <code>musubi/tool_surface.py</code>, <code>musubi/agent/run.py</code>, <code>musubi/agent/mcp_gateway.py</code>, <code>gui/src-tauri/musubi-data/src/lib.rs</code>.</p>
   </aside>
-  <noscript><section aria-label="Nội dung cốt lõi khi JavaScript bị tắt"><h2>Atlas vẫn dùng được khi JavaScript tắt</h2><p>The driver reasons. Musubi controls the environment. Model tạo reasoning và tool request. Driver giữ model call, GoalState, worker loop, deterministic pipeline runner và LMRouter. Governance substrate gồm Musubi MCP server, fail-closed policy, evaluator firewall, validation, memory, compression và persistence; lớp này không gọi LLM. Console là read-only operator projection. External MCP là external system và mọi call federated nằm ngoài Musubi-owned policy/audit boundary.</p><p>Hai trục phải đọc độc lập: trust boundary cho biết ai gọi model, ai gate, ai chỉ đọc và ai ở ngoài; lifecycle cho biết component là durable investment hay ephemeral compensation. Vì vậy run_unit là durable driver nhưng không thuộc zero-LLM substrate. Root và child dùng cùng primitive nhưng khác authority. Root sở hữu goal state và recovery; child nhận frozen brief, pushed skill và restricted tools. Model-visible root và child không thấy musubi_spawn_pipeline. Whole pipeline chỉ khởi chạy từ CLI --pipeline hoặc Orchestrator Pipeline mode. Worker siblings được phát trong cùng model turn chạy same-turn và kết quả quay về đúng thứ tự tool use.</p><p>Map edge text: CLI launches root; Console launches explicit pipeline; root routes worker; worker calls LMRouter; LMRouter requests provider; worker calls Musubi MCP; policy gates; evaluator firewall limits context; server injects skills, loads memory, compresses input, persists state và records audit; Rust reads both databases, projects React model và renders Console; external MCP receives namespaced calls directly. Mỗi component card phía trên ghi responsibility, rationale, inputs, outputs, callers, dependencies, enforcement, failure, economics, source, trust zone và durability để maintainer có thể kiểm tra mà không cần script.</p>
+  <noscript><section data-noscript-language="vi" lang="vi" aria-label="Nội dung cốt lõi khi JavaScript bị tắt"><h2>Atlas vẫn dùng được khi JavaScript tắt</h2><p>The driver reasons. Musubi controls the environment. Model tạo reasoning và tool request. Driver giữ model call, GoalState, worker loop, deterministic pipeline runner và LMRouter. Governance substrate gồm Musubi MCP server, fail-closed policy, evaluator firewall, validation, memory, compression và persistence; lớp này không gọi LLM. Console là read-only operator projection. External MCP là external system và mọi call federated nằm ngoài Musubi-owned policy/audit boundary.</p><p>Hai trục phải đọc độc lập: trust boundary cho biết ai gọi model, ai gate, ai chỉ đọc và ai ở ngoài; lifecycle cho biết component là durable investment hay ephemeral compensation. Vì vậy run_unit là durable driver nhưng không thuộc zero-LLM substrate. Root và child dùng cùng primitive nhưng khác authority. Root sở hữu goal state và recovery; child nhận frozen brief, pushed skill và restricted tools. Model-visible root và child không thấy musubi_spawn_pipeline. Whole pipeline chỉ khởi chạy từ CLI --pipeline hoặc Orchestrator Pipeline mode. Worker siblings được phát trong cùng model turn chạy same-turn và kết quả quay về đúng thứ tự tool use.</p><p>Map edge text: CLI launches root; Console launches explicit pipeline; root routes worker; worker calls LMRouter; LMRouter requests provider; worker calls Musubi MCP; policy gates; evaluator firewall limits context; server injects skills, loads memory, compresses input, persists state và records audit; Rust reads both databases, projects React model và renders Console; external MCP receives namespaced calls directly. Mỗi component card phía trên ghi responsibility, rationale, inputs, outputs, callers, dependencies, enforcement, failure, economics, source, trust zone và durability để maintainer có thể kiểm tra mà không cần script.</p>
     <h2>Đáp án quiz khi JavaScript bị tắt</h2><p>Phần này không chấm điểm nhưng giữ nguyên prompt, đáp án đúng, explanation và section link.</p><ol>
       <li><strong>Vì sao vendor neutrality không đặt governance vào từng router?</strong><br>Đáp án đúng: Governance phải nằm trong substrate dùng chung để mọi vendor đi qua cùng boundary.<br>Explanation: Router chỉ chuẩn hóa model access phía driver; policy, validation và audit ở substrate chung nên đổi vendor không đổi quyền hạn. <a href="#orientation">Đọc phần định hướng</a>.</li>
       <li><strong>Một worker cần gọi provider. Đường hợp lệ duy nhất là gì?</strong><br>Đáp án đúng: Worker loop gọi LMRouter phía driver, rồi LMRouter gọi provider.<br>Explanation: HI #1 giữ model call tại inject point LMRouter của driver; MCP server và policy vẫn zero-LLM. <a href="#orientation">Đọc phần định hướng</a>.</li>
@@ -389,8 +520,261 @@
       <li><strong>Một external MCP tool chạy thành công. Musubi policy/audit có sở hữu call đó không?</strong><br>Đáp án đúng: Không; driver route trực tiếp tới owning server ngoài Musubi-owned boundary.<br>Explanation: Namespacing giải quyết discovery và collision, không tự đưa external call qua Musubi policy hoặc audit. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
       <li><strong>Vì sao kiến trúc đổi từ main/sub-agent distinction sang unified worker model?</strong><br>Đáp án đúng: Để dùng chung run_unit primitive nhưng vẫn cấp authority khác nhau theo depth và role.<br>Explanation: Hợp nhất execution giảm loop trùng lặp; root vẫn giữ goal state còn child nhận brief và tools giới hạn. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
       <li><strong>Một prompt scaffold được gắn ephemeral. Điều gì ngăn nó thành kiến trúc vĩnh viễn?</strong><br>Đáp án đúng: expires-when và cost-lever rõ ràng, được review theo HI #9.<br>Explanation: Ephemeral compensation chỉ hợp lệ khi có removal trigger đo được; durable investment và trust zone là trục khác. <a href="#evolution">Đọc phần tiến hóa</a>.</li>
-    </ol></section></noscript>
+    </ol></section>
+    <section data-noscript-language="en" lang="en" aria-label="Core content when JavaScript is disabled">
+      <h2>The atlas remains usable without JavaScript</h2>
+      <p>The driver reasons; Musubi controls the execution environment. The driver owns model calls and orchestration. The governance substrate gates deterministic actions, context, validation, persistence, and evidence without calling an LLM.</p>
+      <p>Read trust boundary and lifecycle independently. A component can be durable driver infrastructure without belonging to the zero-LLM substrate. Source references, invariant identifiers, and code symbols remain literal evidence.</p>
+      <h2>Quiz guidance without JavaScript</h2>
+      <p>The Vietnamese section above preserves the complete answer ledger. The interactive English quiz is available when JavaScript is enabled.</p>
+    </section>
+  </noscript>
+  <script id="atlas-i18n" type="application/json">
+    {
+      "document.title": {"vi": "Musubi System Atlas — Bản dành cho maintainer", "en": "Musubi System Atlas — Maintainer Edition"},
+      "document.heading": {"vi": "Musubi System Atlas", "en": "Musubi System Atlas"},
+      "language.label": {"vi": "Ngôn ngữ", "en": "Language"},
+      "orientation.snapshot": {"vi": "Bản đồ dành cho maintainer, chốt theo snapshot <code>49c58d3</code> ngày <time>2026-07-16</time>.", "en": "Maintainer atlas pinned to snapshot <code>49c58d3</code> on <time>2026-07-16</time>."},
+      "orientation.drift": {"vi": "<strong>Snapshot drift:</strong> các liên kết source trỏ tới đường dẫn repository và số dòng đã audit tại <code>49c58d3</code>. Nếu checkout hiện tại khác snapshot, dùng <code>git show 49c58d3:&lt;path&gt;</code> để đối chiếu chính xác.", "en": "<strong>Snapshot drift:</strong> source links point to repository paths and line numbers audited at <code>49c58d3</code>. If the current checkout differs, use <code>git show 49c58d3:&lt;path&gt;</code> for an exact comparison."},
+      "orientation.mental-model": {"vi": "<strong>Mental model đầu tiên:</strong> The driver reasons. Musubi controls the environment. <strong>driver</strong> (lớp điều phối có quyền gọi model) sở hữu model call, goal state và orchestration; <strong>governance substrate</strong> (lớp quản trị deterministic, không gọi LLM) kiểm soát action, context, validation, persistence và evidence.", "en": "<strong>First mental model:</strong> The driver reasons. Musubi controls the environment. The <strong>driver</strong> owns model calls, goal state, and orchestration; the <strong>governance substrate</strong> controls deterministic actions, context, validation, persistence, and evidence without calling a model."},
+      "orientation.trust-heading": {"vi": "Trục 1 — trust boundary", "en": "Axis 1 — trust boundary"},
+      "orientation.trust-copy": {"vi": "<strong>Trust boundary</strong> (ranh giới tin cậy) tách <strong>model-calling driver</strong>, <strong>zero-LLM governance substrate</strong>, <strong>read-only operator projection</strong>, <strong>operator control</strong> và <strong>external system</strong> theo authority thực tế.", "en": "The <strong>trust boundary</strong> separates the <strong>model-calling driver</strong>, <strong>zero-LLM governance substrate</strong>, <strong>read-only operator projection</strong>, <strong>operator control</strong>, and <strong>external system</strong> by actual authority."},
+      "orientation.lifecycle-heading": {"vi": "Trục 2 — lifecycle", "en": "Axis 2 — lifecycle"},
+      "orientation.lifecycle-copy": {"vi": "<strong>Durable investment</strong> là primitive dài hạn; <strong>ephemeral compensation</strong> phải có removal trigger. Lifecycle độc lập với trust: worker loop là <em>durable driver</em>, không phải <em>zero-LLM substrate</em>.", "en": "<strong>Durable investment</strong> names a long-term primitive; <strong>ephemeral compensation</strong> must have a removal trigger. Lifecycle is independent of trust: the worker loop is a <em>durable driver</em>, not part of the <em>zero-LLM substrate</em>."},
+      "orientation.terms": {"vi": "<strong>Thuật ngữ:</strong> worker là một vòng <code>run_unit</code>; pipeline là recipe stage xác định; skill là capability được inject hoặc tải; <strong>fail-closed</strong> (mặc định từ chối khi thiếu quyền rõ ràng) biến thiếu allowlist thành deny; ephemeral là scaffolding có ngày hết hạn.", "en": "<strong>Terms:</strong> a worker is one <code>run_unit</code> loop; a pipeline is a deterministic stage recipe; a skill is an injected or loaded capability; fail-closed turns missing authority into denial; ephemeral scaffolding has an expiry trigger."},
+      "orientation.unified-worker": {"vi": "<strong>Unified worker model</strong> nghĩa là root và child dùng chung primitive <code>run_unit</code>. Root giữ goal state, routing và recovery; child nhận frozen brief, pushed skill và tool/spawn bị giới hạn.", "en": "<strong>Unified worker model</strong> means root and child workers share the <code>run_unit</code> primitive. The root retains goal state, routing, and recovery; a child receives a frozen brief, pushed skill, and restricted tools and spawning."},
+      "nav.label": {"vi": "Mục lục", "en": "Contents"},
+      "nav.close": {"vi": "Đóng mục lục", "en": "Close contents"},
+      "nav.map": {"vi": "Bản đồ hệ thống", "en": "System map"},
+      "nav.components": {"vi": "Thành phần", "en": "Components"},
+      "nav.traces": {"vi": "Luồng chạy", "en": "Execution traces"},
+      "nav.invariants": {"vi": "Bất biến", "en": "Invariants"},
+      "nav.economics": {"vi": "Kinh tế token", "en": "Token economics"},
+      "nav.evolution": {"vi": "Tiến hóa", "en": "Evolution"},
+      "nav.glossary": {"vi": "Chú giải", "en": "Glossary"},
+      "nav.quiz": {"vi": "Kiểm tra", "en": "Quiz"},
+      "map.heading": {"vi": "Bản đồ hệ thống", "en": "System map"},
+      "map.intro": {"vi": "Hình dạng và màu luôn biểu thị <strong>trust zone</strong>; viền biểu thị <strong>lifecycle</strong>. <strong>Runtime flow</strong> nhấn mạnh request, context, tool, result, audit và model-call paths; <strong>Control boundary</strong> nhấn mạnh allow, deny, validate và persist. <code>musubi-tier</code> là metadata source riêng.", "en": "Shape and color always encode the <strong>trust zone</strong>; borders encode <strong>lifecycle</strong>. <strong>Runtime flow</strong> emphasizes request, context, tool, result, audit, and model-call paths; <strong>Control boundary</strong> emphasizes allow, deny, validate, and persist boundaries. <code>musubi-tier</code> remains separate source metadata."},
+      "map.boundary-note": {"vi": "<strong>Routing/boundary correction đã verify:</strong> root và child không thấy <code>musubi_spawn_pipeline</code>; whole pipeline chỉ do CLI <code>--pipeline</code> hoặc Orchestrator khởi chạy. Same-turn sibling chạy concurrent; external MCP nằm ngoài Musubi-owned policy/audit boundary.", "en": "<strong>Verified routing and boundary correction:</strong> root and child workers cannot see <code>musubi_spawn_pipeline</code>; only CLI <code>--pipeline</code> or Orchestrator launches a whole pipeline. Same-turn siblings run concurrently, and external MCP remains outside the Musubi-owned policy and audit boundary."},
+      "map.mode": {"vi": "Chế độ bản đồ", "en": "Map mode"},
+      "map.mode.runtime": {"vi": "Runtime flow", "en": "Runtime flow"},
+      "map.mode.control": {"vi": "Control boundary", "en": "Control boundary"},
+      "trace.heading": {"vi": "Luồng chạy có thể kiểm chứng", "en": "Verifiable execution traces"},
+      "trace.intro": {"vi": "Mỗi trace cung cấp input, output, decision, economics, evidence và fail-closed outcome.", "en": "Each trace exposes input, output, decision, economics, evidence, and the fail-closed outcome."},
+      "trace.steps-label": {"vi": "Chọn trực tiếp bước trace", "en": "Select a trace step directly"},
+      "trace.field.component": {"vi": "Component:", "en": "Component:"},
+      "trace.field.input": {"vi": "Input:", "en": "Input:"},
+      "trace.field.output": {"vi": "Output:", "en": "Output:"},
+      "trace.field.decision": {"vi": "Quyết định:", "en": "Decision:"},
+      "trace.field.economics": {"vi": "Kinh tế:", "en": "Economics:"},
+      "trace.field.evidence": {"vi": "Evidence:", "en": "Evidence:"},
+      "trace.field.failure": {"vi": "Failure:", "en": "Failure:"},
+      "trace.scenario-label": {"vi": "Kịch bản trace", "en": "Trace scenario"},
+      "trace.previous": {"vi": "Bước trước", "en": "Previous step"},
+      "trace.next": {"vi": "Bước kế", "en": "Next step"},
+      "trace.restart": {"vi": "Chạy lại", "en": "Restart"},
+      "trace.progress": {"vi": "Bước {current} / {total}: {title}", "en": "Step {current} / {total}: {title}"},
+      "trace.lm.yes": {"vi": "Có LM call", "en": "LM call"},
+      "trace.lm.no": {"vi": "Không có LM call", "en": "No LM call"},
+      "trace.status": {"vi": "Đã chọn bước {current}: {title}. {lm}.", "en": "Selected step {current}: {title}. {lm}."},
+      "trace.step-button": {"vi": "Bước {current}: {title}", "en": "Step {current}: {title}"},
+      "invariants.heading": {"vi": "Bất biến và chuỗi nhân quả", "en": "Invariants and causal chains"},
+      "economics.heading": {"vi": "Kinh tế token và runtime: mỗi giới hạn một owner", "en": "Token and runtime economics: one owner per limit"},
+      "evolution.heading": {"vi": "Tiến hóa và dissolution", "en": "Evolution and dissolution"},
+      "quiz.heading": {"vi": "Tự kiểm tra có chấm điểm", "en": "Scored self-check"},
+      "quiz.intro": {"vi": "Chọn một chương hoặc bài tổng hợp 12 câu. Mỗi câu khóa sau lần trả lời đầu tiên; explanation giải thích chuỗi nhân quả và dẫn về phần liên quan.", "en": "Choose one section or the 12-question cumulative set. Each answer locks after the first attempt; the explanation gives the causal chain and links back to relevant evidence."},
+      "quiz.index": {"vi": "Chỉ mục câu hỏi quiz", "en": "Quiz question index"},
+      "quiz.index-label": {"vi": "Câu {number}", "en": "Question {number}"},
+      "quiz.scope": {"vi": "Phạm vi quiz", "en": "Quiz scope"},
+      "quiz.scope.all": {"vi": "Toàn bộ 24 câu", "en": "All 24 questions"},
+      "quiz.scope.orientation": {"vi": "Định hướng", "en": "Orientation"},
+      "quiz.scope.components": {"vi": "Component", "en": "Components"},
+      "quiz.scope.traces": {"vi": "Trace", "en": "Traces"},
+      "quiz.scope.invariants": {"vi": "Bất biến", "en": "Invariants"},
+      "quiz.scope.economics": {"vi": "Kinh tế", "en": "Economics"},
+      "quiz.scope.evolution": {"vi": "Tiến hóa", "en": "Evolution"},
+      "quiz.scope.cumulative": {"vi": "Tổng hợp 12 câu", "en": "12-question cumulative"},
+      "quiz.reset": {"vi": "Xóa điểm và làm lại", "en": "Reset score and retry"},
+      "quiz.total-score": {"vi": "Tổng điểm:", "en": "Total score:"},
+      "quiz.answered": {"vi": "Đã trả lời:", "en": "Answered:"},
+      "quiz.chapter-score": {"vi": "Điểm chương:", "en": "Section score:"},
+      "quiz.correct": {"vi": "Đúng.", "en": "Correct."},
+      "quiz.incorrect": {"vi": "Chưa đúng.", "en": "Not correct."},
+      "quiz.read-again": {"vi": "Đọc lại phần liên quan", "en": "Review the related section"},
+      "quiz.question": {"vi": "Câu {number} · {difficulty}", "en": "Question {number} · {difficulty}"},
+      "quiz.announce.correct": {"vi": "Đúng: {explanation}", "en": "Correct: {explanation}"},
+      "quiz.announce.incorrect": {"vi": "Chưa đúng: {explanation}", "en": "Not correct: {explanation}"},
+      "quiz.reset-announcement": {"vi": "Đã xóa toàn bộ điểm quiz.", "en": "All quiz scores were reset."},
+      "drawer.heading": {"vi": "Quan hệ và bằng chứng", "en": "Relationships and evidence"},
+      "drawer.close": {"vi": "Đóng bằng chứng", "en": "Close evidence"},
+      "drawer.nav.open": {"vi": "Mở mục lục", "en": "Open contents"},
+      "drawer.nav.close": {"vi": "Đóng mục lục", "en": "Close contents"},
+      "drawer.evidence.open": {"vi": "Mở bằng chứng", "en": "Open evidence"},
+      "drawer.evidence.close": {"vi": "Đóng bằng chứng", "en": "Close evidence"},
+      "a11y.auxiliary-controls": {"vi": "Điều khiển vùng phụ", "en": "Auxiliary region controls"},
+      "a11y.map-scroll": {"vi": "Bản đồ có thể cuộn ngang", "en": "Horizontally scrollable system map"},
+      "a11y.select-component": {"vi": "Chọn component {component}", "en": "Select component {component}"},
+      "noscript.vi.heading": {"vi": "Nội dung cốt lõi khi JavaScript bị tắt", "en": "Core Vietnamese content without JavaScript"},
+      "glossary.heading": {"vi": "Chú giải thuật ngữ", "en": "Technical glossary"},
+      "glossary.intro": {"vi": "Giữ nguyên technical term chuẩn để đối chiếu code; phần giải nghĩa giúp đọc đúng vai trò kiến trúc.", "en": "Canonical technical terms stay unchanged for source comparison; these definitions explain their architectural roles."},
+      "glossary.core.heading": {"vi": "Thuật ngữ kiến trúc cốt lõi", "en": "Core architecture terms"},
+      "glossary.components.heading": {"vi": "Chỉ mục component song ngữ", "en": "Bilingual component index"},
+      "glossary.driver.term": {"vi": "driver", "en": "driver"},
+      "glossary.driver.definition": {"vi": "Lớp điều phối có quyền gọi model qua LMRouter.", "en": "The orchestration layer allowed to call a model through LMRouter."},
+      "glossary.worker.term": {"vi": "worker", "en": "worker"},
+      "glossary.worker.definition": {"vi": "Một vòng run_unit nhận brief, tools và budget có giới hạn.", "en": "One run_unit loop with a bounded brief, tool set, and budget."},
+      "glossary.trust-boundary.term": {"vi": "trust boundary", "en": "trust boundary"},
+      "glossary.trust-boundary.definition": {"vi": "Ranh giới tin cậy xác định lớp nào có quyền gọi model, gate action hoặc chỉ đọc evidence.", "en": "The boundary that determines which layer may call models, gate actions, or only read evidence."},
+      "glossary.substrate.term": {"vi": "governance substrate", "en": "governance substrate"},
+      "glossary.substrate.definition": {"vi": "Lớp quản trị deterministic, không gọi LLM, sở hữu policy, validation, persistence và audit.", "en": "The deterministic, zero-LLM layer that owns policy, validation, persistence, and audit."},
+      "glossary.fail-closed.term": {"vi": "fail-closed", "en": "fail-closed"},
+      "glossary.fail-closed.definition": {"vi": "Mặc định từ chối khi membership hoặc quyền không được khai báo rõ ràng.", "en": "Deny by default when membership or authority is not explicitly declared."},
+      "glossary.evaluator-firewall.term": {"vi": "evaluator firewall", "en": "evaluator firewall"},
+      "glossary.evaluator-firewall.definition": {"vi": "Boundary chỉ cho evaluator thấy artifact đang được đánh giá.", "en": "A boundary that exposes only the artifact currently being judged."},
+      "glossary.append-only.term": {"vi": "append-only", "en": "append-only"},
+      "glossary.append-only.definition": {"vi": "Chỉ thêm record hoặc attempt mới; không ghi đè provenance cũ.", "en": "Add new records or attempts without overwriting earlier provenance."},
+      "glossary.durable.term": {"vi": "durable", "en": "durable"},
+      "glossary.durable.definition": {"vi": "Primitive là khoản đầu tư dài hạn của kiến trúc.", "en": "A primitive intended as a long-term architecture investment."},
+      "glossary.ephemeral.term": {"vi": "ephemeral", "en": "ephemeral"},
+      "glossary.ephemeral.definition": {"vi": "Scaffolding tạm thời phải có removal trigger và cost lever.", "en": "Temporary scaffolding that must declare a removal trigger and cost lever."},
+      "glossary.projection.term": {"vi": "projection", "en": "projection"},
+      "glossary.projection.definition": {"vi": "Biểu diễn read-only đã sanitize cho operator, không sở hữu governance decision.", "en": "A sanitized read-only operator view that does not own governance decisions."},
+      "components.details": {"vi": "Chi tiết maintainer", "en": "Maintainer details"},
+      "components.heading": {"vi": "Component atlas", "en": "Component atlas"},
+      "components.intro": {"vi": "Mỗi card giữ cùng record shape; mở chi tiết để xem interface, enforcement, failure, economics và evidence.", "en": "Every card uses the same record shape; open details to inspect interfaces, enforcement, failure, economics, and evidence."},
+      "components.search": {"vi": "Tìm component", "en": "Find component"},
+      "components.trust-filter": {"vi": "Trust zone", "en": "Trust zone"},
+      "components.durability-filter": {"vi": "Durability", "en": "Durability"},
+      "components.reset-filter": {"vi": "Xóa bộ lọc", "en": "Clear filters"},
+      "components.filter.all-trust": {"vi": "Tất cả trust zone", "en": "All trust zones"},
+      "components.filter.all-lifecycle": {"vi": "Tất cả lifecycle", "en": "All lifecycle states"},
+      "components.filter-status": {"vi": "Hiển thị {visible} component.", "en": "Showing {visible} components."},
+      "components.filter-status.selected": {"vi": "Hiển thị {visible} component; selection hiện tại luôn được giữ lại.", "en": "Showing {visible} components; the current selection remains visible."},
+      "components.relationship-state": {"vi": "Trạng thái quan hệ: {state}", "en": "Relationship state: {state}"},
+      "components.state.selected": {"vi": "đang chọn", "en": "selected"},
+      "components.state.related": {"vi": "có quan hệ trực tiếp", "en": "directly related"},
+      "components.state.muted": {"vi": "không có quan hệ trực tiếp", "en": "not directly related"},
+      "components.state.neutral": {"vi": "trung lập", "en": "neutral"},
+      "components.relationship.no-edge": {"vi": "không có cạnh trực tiếp trên map", "en": "no direct edge on the map"},
+      "components.relationship.trace-source": {"vi": "xem trace dataset", "en": "see trace dataset"},
+      "components.relationship.text-heading": {"vi": "Quan hệ dạng văn bản:", "en": "Text relationship view:"},
+      "components.relationship.text-empty": {"vi": "Chọn một node hoặc component card để xem cạnh incoming và outgoing.", "en": "Select a node or component card to inspect incoming and outgoing edges."},
+      "components.relationship.selected": {"vi": "Component đang chọn:", "en": "Selected component:"},
+      "components.relationship.none-selected": {"vi": "Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.", "en": "None selected. Use a card or map node to inspect incoming, outgoing, and evidence."},
+      "components.select": {"vi": "Chọn {title}", "en": "Select {title}"},
+      "components.detail.en": {"vi": "Xem maintainer record và verified source bên dưới.", "en": "See the maintainer record and verified source below."},
+      "components.not-applicable": {"vi": "không áp dụng", "en": "not applicable"},
+      "components.never": {"vi": "không bao giờ", "en": "never"},
+      "components.field.why": {"vi": "Boundary này bảo toàn contract của {title}.", "en": "This boundary preserves the documented {title} contract."},
+      "components.field.inputs": {"vi": "Xem input contract trong verified source.", "en": "See the input contract in the verified source."},
+      "components.field.outputs": {"vi": "Xem output contract trong verified source.", "en": "See the output contract in the verified source."},
+      "components.field.called-by": {"vi": "Xem caller trong verified source.", "en": "See callers in the verified source."},
+      "components.field.depends-on": {"vi": "Xem dependency trong verified source.", "en": "See dependencies in the verified source."},
+      "components.field.enforces": {"vi": "Component contract đã tài liệu hóa.", "en": "Documented component contract."},
+      "components.field.failure": {"vi": "Failure phải surface tại boundary này.", "en": "Failure must surface at this boundary."},
+      "components.field.economics": {"vi": "Xem component và trace record để quy chiếu cost.", "en": "See component and trace records for attributable cost."},
+      "components.field.expiry": {"vi": "Theo removal trigger đã khai báo trong source.", "en": "When the removal trigger declared in source is met."},
+      "components.field.cost-lever": {"vi": "Xóa scaffolding driver-side được source chỉ định.", "en": "Remove the driver-side scaffolding identified by the source."},
+      "components.record.responsibility": {"vi": "Trách nhiệm", "en": "Responsibility"},
+      "components.record.why": {"vi": "Lý do", "en": "Why"},
+      "components.record.inputs": {"vi": "Đầu vào", "en": "Inputs"},
+      "components.record.outputs": {"vi": "Đầu ra", "en": "Outputs"},
+      "components.record.called-by": {"vi": "Được gọi bởi", "en": "Called by"},
+      "components.record.depends-on": {"vi": "Phụ thuộc", "en": "Depends on"},
+      "components.record.enforces": {"vi": "Thực thi", "en": "Enforces"},
+      "components.record.failure": {"vi": "Failure modes", "en": "Failure modes"},
+      "components.record.economics": {"vi": "Kinh tế", "en": "Economics"},
+      "components.record.trust": {"vi": "Trust boundary", "en": "Trust boundary"},
+      "components.record.lifecycle": {"vi": "Lifecycle", "en": "Lifecycle"},
+      "components.record.expiry": {"vi": "Hết hạn", "en": "Expiry"},
+      "components.record.cost-lever": {"vi": "Cost lever", "en": "Cost lever"},
+      "components.record.evidence": {"vi": "Bằng chứng", "en": "Evidence"},
+      "components.cli.title": {"vi": "CLI entry", "en": "CLI entry"},
+      "components.cli.summary": {"vi": "Surface chính của standalone host.", "en": "Primary surface of the standalone host."},
+      "components.console.title": {"vi": "Console shell & Orchestrator", "en": "Console shell & Orchestrator"},
+      "components.console.summary": {"vi": "Đọc evidence; chỉ submission rõ ràng mới launch driver.", "en": "Reads evidence; only an explicit submission launches the driver."},
+      "components.goal-state.title": {"vi": "GoalState root controller", "en": "GoalState root controller"},
+      "components.goal-state.summary": {"vi": "Quyền root, không truyền ngang cho child.", "en": "Root authority is not delegated laterally to children."},
+      "components.worker-loop.title": {"vi": "run_unit worker loop", "en": "run_unit worker loop"},
+      "components.worker-loop.summary": {"vi": "Durable driver; không phải zero-LLM substrate.", "en": "Durable driver infrastructure, not part of the zero-LLM substrate."},
+      "components.pipeline-runner.title": {"vi": "Deterministic pipeline runner", "en": "Deterministic pipeline runner"},
+      "components.pipeline-runner.summary": {"vi": "Runner hỗ trợ spawn nhưng model surface không expose whole-pipeline tool.", "en": "The runner supports spawning, but the model surface exposes no whole-pipeline tool."},
+      "components.lm-router.title": {"vi": "LMRouter", "en": "LMRouter"},
+      "components.lm-router.summary": {"vi": "Điểm model call duy nhất của driver.", "en": "The driver's single model-call injection point."},
+      "components.model-provider.title": {"vi": "Model provider", "en": "Model provider"},
+      "components.model-provider.summary": {"vi": "Hệ thống inference bên ngoài, không do Musubi sở hữu.", "en": "External inference system not owned by Musubi."},
+      "components.mcp-server.title": {"vi": "Musubi MCP server", "en": "Musubi MCP server"},
+      "components.mcp-server.summary": {"vi": "Không gọi model; tập hợp control surface deterministic.", "en": "Makes no model calls and aggregates deterministic control surfaces."},
+      "components.policy.title": {"vi": "Fail-closed policy", "en": "Fail-closed policy"},
+      "components.policy.summary": {"vi": "Membership và tool policy đều deny-by-default.", "en": "Membership and tool policy both deny by default."},
+      "components.evaluator-firewall.title": {"vi": "Evaluator firewall", "en": "Evaluator firewall"},
+      "components.evaluator-firewall.summary": {"vi": "Final stage chỉ nhận artifact ngay trước.", "en": "The final stage receives only the immediately preceding artifact."},
+      "components.skills.title": {"vi": "Skills", "en": "Skills"},
+      "components.skills.summary": {"vi": "Push cho worker; pull theo nhu cầu cho agent.", "en": "Pushed to workers and pulled on demand by the agent."},
+      "components.memory.title": {"vi": "Memory", "en": "Memory"},
+      "components.memory.summary": {"vi": "Ba tầng context có chọn lọc.", "en": "Three selectively loaded context tiers."},
+      "components.compression.title": {"vi": "Compression/context fit", "en": "Compression/context fit"},
+      "components.compression.summary": {"vi": "Giữ đường retrieve thay vì shrink-and-pray.", "en": "Preserves a retrieval path instead of shrinking blindly."},
+      "components.state-db.title": {"vi": "musubi.db", "en": "musubi.db"},
+      "components.state-db.summary": {"vi": "Operational state gồm pipeline_runs và agent turns.", "en": "Operational state including pipeline_runs and agent turns."},
+      "components.audit-db.title": {"vi": "audit.db", "en": "audit.db"},
+      "components.audit-db.summary": {"vi": "Ledger append-only cho policy, tool và worker evidence.", "en": "Append-only ledger for policy, tool, and worker evidence."},
+      "components.rust-projection.title": {"vi": "Rust safe evidence boundary", "en": "Rust safe evidence boundary"},
+      "components.rust-projection.summary": {"vi": "Join state với audit ancestry mà không mutation governance.", "en": "Joins state with audit ancestry without mutating governance."},
+      "components.react-view-model.title": {"vi": "React view model", "en": "React view model"},
+      "components.react-view-model.summary": {"vi": "Projection tới các view Audit, Policy, Models, Skills và Settings.", "en": "Projects safe state into the Audit, Policy, Models, Skills, and Settings views."},
+      "components.external-mcp.title": {"vi": "External MCP federation", "en": "External MCP federation"},
+      "components.external-mcp.summary": {"vi": "Nằm ngoài Musubi-owned policy và audit boundary.", "en": "Lives outside the Musubi-owned policy and audit boundary."},
+      "components.setup-wizard.title": {"vi": "Setup wizard", "en": "Setup wizard"},
+      "components.setup-wizard.summary": {"vi": "Bootstrap environment mà không gọi model.", "en": "Bootstraps the environment without calling a model."},
+      "components.nested-dispatch.title": {"vi": "Nested worker dispatch", "en": "Nested worker dispatch"},
+      "components.nested-dispatch.summary": {"vi": "Sibling cùng turn overlap nhưng authority vẫn bất đối xứng.", "en": "Same-turn siblings overlap while authority remains asymmetric."},
+      "components.composer.title": {"vi": "Pipeline composer", "en": "Pipeline composer"},
+      "components.composer.summary": {"vi": "Validate recipe theo fail-closed trước runtime.", "en": "Validates recipes fail-closed before runtime."},
+      "components.context-fit.title": {"vi": "Model input fitting", "en": "Model input fitting"},
+      "components.context-fit.summary": {"vi": "Sở hữu driver-side request sizing.", "en": "Owns driver-side request sizing."},
+      "components.tool-surface.title": {"vi": "Tool dispatch boundary", "en": "Tool dispatch boundary"},
+      "components.tool-surface.summary": {"vi": "Root và child không thấy musubi_spawn_pipeline.", "en": "Root and child workers cannot see musubi_spawn_pipeline."},
+      "components.budget.title": {"vi": "Budget & cycle enforcement", "en": "Budget & cycle enforcement"},
+      "components.budget.summary": {"vi": "Attribution theo actual call, không theo prompt prose.", "en": "Attributes usage to actual calls, not prompt prose."},
+      "components.validator.title": {"vi": "Validation/execution layer", "en": "Validation/execution layer"},
+      "components.validator.summary": {"vi": "Evidence deterministic cho evaluator và operator.", "en": "Deterministic evidence for evaluators and operators."},
+      "components.workspace-discovery.title": {"vi": "Workspace discovery", "en": "Workspace discovery"},
+      "components.workspace-discovery.summary": {"vi": "Grounding deterministic cho path boundary.", "en": "Deterministic grounding for path boundaries."},
+      "components.session-distillation.title": {"vi": "Session distillation", "en": "Session distillation"},
+      "components.session-distillation.summary": {"vi": "Lifecycle bridge từ evidence sang memory.", "en": "Lifecycle bridge from evidence to memory."},
+      "components.subagent-audit.title": {"vi": "Subagent audit persistence", "en": "Subagent audit persistence"},
+      "components.subagent-audit.summary": {"vi": "Parentage và pushed skill đều queryable.", "en": "Parentage and pushed-skill provenance remain queryable."},
+      "components.pipeline-studio.title": {"vi": "Pipeline Studio", "en": "Pipeline Studio"},
+      "components.pipeline-studio.summary": {"vi": "Authoring surface, không phải autonomous orchestration.", "en": "An authoring surface, not autonomous orchestration."},
+      "components.compression-eval.title": {"vi": "Đánh giá compression", "en": "Compression evaluation"},
+      "components.compression-eval.summary": {"vi": "Deterministic gate tách khỏi runtime context fitting.", "en": "A deterministic gate separate from runtime context fitting."},
+      "components.prompt-catalog.title": {"vi": "Bộ resolve prompt catalog", "en": "Prompt catalog resolver"},
+      "components.prompt-catalog.summary": {"vi": "Prompt scaffolding là driver concern, không phải policy.", "en": "Prompt scaffolding is a driver concern, not policy."},
+      "components.vendor-implementations.title": {"vi": "Các vendor implementation", "en": "Vendor implementations"},
+      "components.vendor-implementations.summary": {"vi": "Provider adapters đều nằm ở driver side.", "en": "All provider adapters live on the driver side."},
+      "components.conversation-store.title": {"vi": "Conversation persistence", "en": "Conversation persistence"},
+      "components.conversation-store.summary": {"vi": "Raw chat history khác stage artifact và audit evidence.", "en": "Raw chat history is distinct from stage artifacts and audit evidence."},
+      "components.stage-attempt-store.title": {"vi": "Stage-attempt persistence", "en": "Stage-attempt persistence"},
+      "components.stage-attempt-store.summary": {"vi": "Retry tạo attempt mới, không overwrite evidence cũ.", "en": "Retries create new attempts without overwriting earlier evidence."},
+      "components.agent-cycle-store.title": {"vi": "Agent-cycle persistence", "en": "Agent-cycle persistence"},
+      "components.agent-cycle-store.summary": {"vi": "Usage và LM time được ghi theo từng cycle.", "en": "Usage and LM time are recorded per cycle."},
+      "components.audit-projection.title": {"vi": "Audit projection", "en": "Audit projection"},
+      "components.audit-projection.summary": {"vi": "Hiển thị ledger nhưng không ghi ledger.", "en": "Displays the ledger without writing it."},
+      "components.policy-projection.title": {"vi": "Policy projection", "en": "Policy projection"},
+      "components.policy-projection.summary": {"vi": "Giải thích boundary nhưng không phát verdict.", "en": "Explains the boundary without issuing verdicts."},
+      "components.models-projection.title": {"vi": "Models projection", "en": "Models projection"},
+      "components.models-projection.summary": {"vi": "Hiển thị configuration mà không gọi model.", "en": "Displays configuration without calling a model."},
+      "components.skills-projection.title": {"vi": "Skills projection", "en": "Skills projection"},
+      "components.skills-projection.summary": {"vi": "Chỉ hiển thị catalog, không inject skill.", "en": "Displays the catalog without injecting skills."},
+      "components.settings-projection.title": {"vi": "Settings projection", "en": "Settings projection"},
+      "components.settings-projection.summary": {"vi": "Configuration surface rõ ràng, không autonomous mutation.", "en": "An explicit configuration surface with no autonomous mutation."}
+    }
+  </script>
   <script>
+    const LANGUAGE_STORAGE_KEY = 'musubi-system-atlas.language.v1';
+    const SUPPORTED_LANGUAGES = new Set(['vi', 'en']);
+    const I18N = JSON.parse(document.getElementById('atlas-i18n').textContent);
     const TRACE_SCENARIOS = [
       {
         id: 'direct-worker', title: 'Yêu cầu trực tiếp tới một worker', summary: 'Root định tuyến việc có giới hạn, worker suy luận qua LMRouter, rồi mutation đi qua boundary được quản trị.',
@@ -523,11 +907,81 @@
       {"id":"evolution-03","chapter":"evolution","difficulty":"evolution","prompt":"Vì sao kiến trúc đổi từ main/sub-agent distinction sang unified worker model?","options":["Để mọi worker có root authority","Để dùng chung run_unit primitive nhưng vẫn cấp authority khác nhau theo depth và role","Để xóa audit DB","Để chuyển governance vào router"],"answer":1,"explanation":"Hợp nhất execution giảm loop trùng lặp; root vẫn giữ goal state còn child nhận brief và tools giới hạn.","section":"evolution"},
       {"id":"evolution-04","chapter":"evolution","difficulty":"evolution","prompt":"Một prompt scaffold được gắn ephemeral. Điều gì ngăn nó thành kiến trúc vĩnh viễn?","options":["Tên file ngắn","expires-when và cost-lever rõ ràng, được review theo HI #9","Nó nằm trong .github","Nó không có test"],"answer":1,"explanation":"Ephemeral compensation chỉ hợp lệ khi có removal trigger đo được; durable investment và trust zone là trục khác.","section":"evolution"}
     ];
+    const TRACE_EN_TEXT = {
+      'direct-worker': ['Direct request to one worker', 'The root routes bounded work, the worker reasons through LMRouter, and mutations cross governed boundaries.'],
+      'pushed-skill': ['Root selects and pushes a skill', 'The spawn path revalidates and injects the role skill before the child model call.'],
+      'parallel-workers': ['Same-turn sibling workers', 'The root emits siblings in one turn; child model calls overlap in wall-clock time while usage remains attributable.'],
+      'nested-helper': ['Worker summons a nested helper', 'Policy authorizes bounded depth, the helper reasons, and completion is appended to audit.'],
+      'operator-pipeline': ['Operator launches a deterministic pipeline', 'The CLI parses an explicit choice and primary stages call the model sequentially.'],
+      'pipeline-helpers': ['Pipeline stage calls declared helpers', 'The spawn gate intersects declared roles; helpers may overlap within a stage while the backbone waits.'],
+      'policy-denial': ['Policy denies a tool before execution', 'A model may request a tool, but the deterministic boundary denies it before any side effect.'],
+      'evaluator-denial': ['Evaluator requests forbidden context', 'The evaluator asks for plan context; the firewall exposes only the artifact being judged.'],
+      'budget-limit': ['Worker reaches a runtime limit', 'A real cycle consumes usage and executable preflight blocks an additional call.'],
+      'context-elision': ['Context fitting preserves the original dispatch', 'The driver fits replay locally and sends a bounded request through LMRouter while preserving recovery references.'],
+      'console-projection': ['Console safely projects runtime evidence', 'Rust reads two databases and React renders a read-only projection without calling a model.'],
+      'historical-console': ['View a historical session beside the active driver', 'Viewed identity scopes database evidence while active identity still owns the shared process.'],
+      'external-mcp': ['Connect to or call an external MCP server', 'The top-level model selects a namespaced tool and the driver routes it outside Musubi-owned governance.']
+    };
+    const TRACE_SCENARIOS_I18N = {
+      vi: TRACE_SCENARIOS,
+      en: TRACE_SCENARIOS.map(scenario => ({
+        ...scenario,
+        title: TRACE_EN_TEXT[scenario.id][0],
+        summary: TRACE_EN_TEXT[scenario.id][1],
+        steps: scenario.steps.map((step, index) => ({
+          ...step,
+          title: `${step.component} boundary · step ${index + 1}`,
+          input: `Bounded input for ${step.component}; inspect the linked source for the exact contract.`,
+          output: `Evidence-backed output from ${step.component}.`,
+          decision: `Apply the documented ${step.component} authority and control boundary.`,
+          economics: step.lmCall ? 'One attributable model call occurs at this step.' : 'Deterministic local work; no model call occurs at this step.',
+          failure: `Failure surfaces at ${step.component}; the evidence path identifies the enforcing code.`
+        }))
+      }))
+    };
+    const QUIZ_EN_TEXT = [
+      {prompt:'Why is governance not implemented separately in every vendor router?',options:['Each router should own vendor-specific policy','Governance belongs in the shared substrate so every vendor crosses the same boundary','Console selects policy from the active model','The provider audits tools'],explanation:'Routers normalize driver-side model access; shared substrate policy, validation, and audit keep authority vendor-neutral.'},
+      {prompt:'What is the only valid path when a worker needs to call a provider?',options:['The MCP server calls a vendor SDK','The policy engine calls the provider after allow','The worker loop calls driver-side LMRouter, which calls the provider','Console sends the prompt directly'],explanation:'HI #1 keeps model access at the driver LMRouter injection point while MCP and policy remain zero-LLM.'},
+      {prompt:'The root wants to edit a file directly to avoid a spawn. What should happen?',options:['Allow it because the root owns goal state','Block root mutation and dispatch a bounded brief to a mutation worker','Move write authority into LMRouter','Allow it only while Console is open'],explanation:'The root owns goal state and routing; scoped workers receive mutation authority so responsibility and audit remain explicit.'},
+      {prompt:'An unknown role requests a tool missing from its allowlist. What is correct?',options:['Allow it when the model explains why','Deny before execution and record the verdict without a side effect','Execute first and audit later','Ask the provider to choose policy'],explanation:'Fail-closed turns missing membership or authority into substrate denial rather than implicit privilege.'},
+      {prompt:'Two spawn requests appear in one model turn. When may they run concurrently?',options:['Every summoned relation is automatically parallel','When they are siblings from the same turn and the driver dispatches one gather batch','Only when they belong to different pipelines','When audit.db is empty'],explanation:'Parallelism is established by same-turn sibling dispatch, not by the word summoned.'},
+      {prompt:'Why do spawns from consecutive model turns not form one parallel batch?',options:['The later turn is created only after the earlier result returns to reasoning','SQLite forbids concurrency','Children never call models','Pipelines are always parallel'],explanation:'A batch is fixed from tool uses in one response; cross-turn work depends sequentially on updated model state.'},
+      {prompt:'An evaluator asks for the plan before judging code. What should the boundary do?',options:['Provide the plan but hide its author','Deny the plan and expose only the artifact being judged','Let the evaluator read memory','Provide the full transcript for accuracy'],explanation:'Artifact-only context prevents intent, plan, design, and memory from biasing the evaluator.'},
+      {prompt:'If final-stage brief gating is removed but MCP read permission remains, is the evaluator independent?',options:['Yes; only MCP permission matters','Yes; the model can promise not to read context','No; the runner can still place non-artifact context in the brief','No; evaluators cannot call models'],explanation:'HI #3 needs both enforcement points because leakage can enter through MCP reads or runner-built briefs.'},
+      {prompt:'What path does a pushed skill follow before a child model call?',options:['The child guesses a skill from the role name','The root selects it; spawn revalidates, records provenance, loads it, and injects it into the system prompt','The provider reads it from audit.db','Console inserts it after inference'],explanation:'Revalidation binds the skill to the role allowlist, audit preserves provenance, and prompt injection makes the contract non-optional.'},
+      {prompt:'A pipeline stage asks for a helper role absent from declared spawns. What happens?',options:['The role firewall rejects it before launch','The helper runs with the full catalog','The pipeline edits its own YAML','LMRouter decides authority'],explanation:'Effective spawn roles are the intersection of pipeline declaration and the role firewall.'},
+      {prompt:'On the final turn, a worker wrote an artifact and validation passed. Which completion is valid?',options:['Always fail because no turn remains for a conclusion','Complete from verified artifact evidence even without another explanatory turn','Delete the artifact and restart','Trust any earlier text claim'],explanation:'The persisted artifact plus deterministic validation is sufficient terminal evidence.'},
+      {prompt:'A worker only says “done” with no artifact or tool evidence. What should the root do?',options:['Mark complete because the model confirmed it','Remain escalated or in recovery and reject completion','Synthesize an artifact from the sentence','Bypass goal state'],explanation:'A text claim proves no side effect; terminal completion requires supported evidence.'},
+      {prompt:'Why does ChildTokenBudget reserve a fair share instead of letting the first stage spend everything?',options:['To equalize input characters','To protect a minimum allowance for later sequential stages','To render Console faster','To force cached input'],explanation:'The parent divides remaining allowance across unfinished stages so the recipe can complete its causal chain.'},
+      {prompt:'A worker reaches an output ceiling during one call. Which owner must stop it?',options:['The per-worker effort/output budget at the router-call boundary','Pipeline Studio','Audit DB','Root prompt prose'],explanation:'Each budget dimension has one executable owner; prompt prose is not an enforcement boundary.'},
+      {prompt:'Where is an elision marker valid?',options:['As the entire path of a write tool','In replay history when it retains a recoverable reference to the original dispatch','As a policy verdict','As a quiz answer index'],explanation:'Context fitting may reduce replay sent to the model only while preserving system prompt, initial goal, and recovery path.'},
+      {prompt:'Why can an elision marker not replace an entire filesystem tool argument?',options:['Markers always cost more tokens','The tool needs the complete payload for deterministic, verifiable side effects','SQLite cannot store markers','LMRouter would call twice'],explanation:'A replay marker represents model context; replacing an execution payload would change the actual action.'},
+      {prompt:'Which pushed-skill evidence should Console show?',options:['All raw tool arguments and results','Sanitized provenance such as skill ID, role, and assignment without raw payloads','Provider API keys','The child system prompt'],explanation:'Operators need capability provenance while the projection boundary must keep sensitive raw payloads out of the UI.'},
+      {prompt:'An audit row cannot be joined confidently to a session. What should Console do?',options:['Attach it to the newest session','Delete it','Keep it unassigned without inventing a relation','Ask a model to guess'],explanation:'Unassigned is an honest evidence state; speculative assignment would make the projection inaccurate.'},
+      {prompt:'Why does Console join musubi.db and audit.db?',options:['State supplies lifecycle and identity while audit supplies events; both are needed for contextual projection','To call two providers','Because both databases are identical','To let Pipeline Studio mutate state'],explanation:'Neither database alone holds both orchestration state and the tool/subagent evidence required by operators.'},
+      {prompt:'Does reading and joining the two databases create LM cost?',options:['Yes; every SQLite query is a model call','No; it is zero-LLM CPU and I/O, though it consumes wall-clock time','Only audit.db creates tokens','Only below a 760px viewport'],explanation:'Only actual router calls consume model tokens and LM time; projection, policy, validation, and persistence do not.'},
+      {prompt:'An optional external MCP server cannot connect at startup. Must the run abort?',options:['Yes; any federation failure stops the host','No; the driver logs and skips that server while the remaining catalog works','Yes; policy cannot boot','No; Musubi fabricates results'],explanation:'Connection failure is isolated so optional federation does not take down the host.'},
+      {prompt:'An external MCP tool succeeds. Does Musubi policy/audit own that call?',options:['Yes; every namespaced tool is automatically Musubi-owned','No; the driver routes directly to the owning server outside the Musubi boundary','Yes, when it returns JSON','No, because external tools never execute'],explanation:'Namespacing solves discovery and collision; it does not route external calls through Musubi policy or audit.'},
+      {prompt:'Why did the architecture move from main/sub-agent distinction to a unified worker model?',options:['To give every worker root authority','To share the run_unit primitive while assigning different authority by depth and role','To remove audit.db','To move governance into routers'],explanation:'Unified execution removes duplicated loops while root goal state and bounded child authority remain distinct.'},
+      {prompt:'What prevents an ephemeral prompt scaffold from becoming permanent accidental architecture?',options:['A short filename','A clear expires-when and cost-lever reviewed under HI #9','Its location under .github','The absence of tests'],explanation:'Ephemeral compensation is valid only with a measurable removal trigger; durability and trust are separate axes.'}
+    ];
+    const QUIZ_QUESTIONS_I18N = {
+      vi: QUIZ_QUESTIONS,
+      en: QUIZ_QUESTIONS.map((question, index) => ({ ...question, ...QUIZ_EN_TEXT[index] }))
+    };
     const QUIZ_STORAGE_KEY = 'musubi-system-atlas.quiz.v1';
     const AtlasApp = (() => {
       const cards = [...document.querySelectorAll('[data-component]')];
       const nodes = [...document.querySelectorAll('[data-map-component]')];
       const edges = [...document.querySelectorAll('.edge')];
+      const componentOriginals = new Map(cards.map(card => {
+        const detailsParagraph = card.querySelector('details > p');
+        return [card.dataset.component, {
+          title: card.querySelector('h3')?.innerHTML || card.dataset.component,
+          summary: card.querySelector(':scope > p')?.innerHTML || '',
+          detail: detailsParagraph?.innerHTML || ''
+        }];
+      }));
       const MAP_RELATIONSHIPS = [
         ['cli','goal-state','launches request','runtime'], ['console','pipeline-runner','launches pipeline request','runtime'], ['goal-state','worker-loop','routes context','runtime'],
         ['worker-loop','pipeline-runner','dispatches stage result','runtime'], ['worker-loop','lm-router','model call','runtime'], ['lm-router','model-provider','model request/result','runtime'],
@@ -540,26 +994,137 @@
       const state = {
         selectedComponent: '', mapMode: 'runtime', filters: { search: '', trust: 'all', durability: 'all' },
         scenario: TRACE_SCENARIOS[0].id, traceStep: 0, quiz: { version: 1, answers: {} }, quizScope: 'all',
-        drawers: { nav: false, evidence: false }
+        drawers: { nav: false, evidence: false }, language: 'vi'
       };
       const byId = id => document.getElementById(id);
       const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+      function t(key, variables = {}) {
+        const entry = I18N[key];
+        const template = entry?.[state.language] ?? entry?.vi ?? key;
+        return Object.entries(variables).reduce(
+          (value, [name, replacement]) => value.replaceAll(`{${name}}`, String(replacement)),
+          template
+        );
+      }
+      const activeTraceScenarios = () => TRACE_SCENARIOS_I18N[state.language];
+      const activeQuizQuestions = () => QUIZ_QUESTIONS_I18N[state.language];
+      function renderLanguageSensitiveViews() {
+        const selectedComponent = state.selectedComponent;
+        localizeComponentCards();
+        byId('trace-scenario').innerHTML = activeTraceScenarios().map(scenario => `<option value="${scenario.id}">${escapeHtml(scenario.title)}</option>`).join('');
+        byId('trace-scenario').value = state.scenario;
+        renderTrace(false, false);
+        renderQuiz();
+        nodes.forEach(node => node.setAttribute('aria-label', t('a11y.select-component', { component: node.dataset.mapComponent })));
+        selectComponent(selectedComponent);
+        setDrawer('nav', state.drawers.nav);
+        setDrawer('evidence', state.drawers.evidence);
+      }
+      function setLanguage(language, persist = true) {
+        state.language = SUPPORTED_LANGUAGES.has(language) ? language : 'vi';
+        document.documentElement.lang = state.language;
+        document.title = t('document.title');
+        document.querySelectorAll('[data-i18n]').forEach(node => {
+          node.textContent = t(node.dataset.i18n);
+        });
+        document.querySelectorAll('[data-i18n-html]').forEach(node => {
+          node.innerHTML = t(node.dataset.i18nHtml);
+        });
+        document.querySelectorAll('.language-vi-only').forEach(node => {
+          node.hidden = state.language !== 'vi';
+        });
+        document.querySelectorAll('.language-en-only').forEach(node => {
+          node.hidden = state.language !== 'en';
+        });
+        ['aria-label', 'placeholder', 'title', 'content'].forEach(attribute => {
+          const marker = `i18n${attribute.split('-').map(part => part[0].toUpperCase() + part.slice(1)).join('')}`;
+          document.querySelectorAll(`[data-i18n-${attribute}]`).forEach(node => {
+            node.setAttribute(attribute, t(node.dataset[marker]));
+          });
+        });
+        document.querySelectorAll('[role="tab"][data-language]').forEach(tab => {
+          const selected = tab.dataset.language === state.language;
+          tab.setAttribute('aria-selected', String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        document.querySelectorAll('[data-question-id]').forEach((item, index) => {
+          item.textContent = t('quiz.index-label', { number: index + 1 });
+        });
+        renderLanguageSensitiveViews();
+        if (persist) {
+          try {
+            localStorage.setItem(LANGUAGE_STORAGE_KEY, state.language);
+          } catch (error) {
+            /* The in-memory language remains active when storage is blocked. */
+          }
+        }
+      }
+      function loadLanguage() {
+        try {
+          const saved = localStorage.getItem(LANGUAGE_STORAGE_KEY);
+          return SUPPORTED_LANGUAGES.has(saved) ? saved : 'vi';
+        } catch (error) {
+          return 'vi';
+        }
+      }
       const sourceHref = source => {
         const split = String(source || '').lastIndexOf(':');
         if (split < 1) return '#components';
         return `../${String(source).slice(0, split)}#L${String(source).slice(split + 1)}`;
       };
+      const localizedComponentField = (card, key) => {
+        if (state.language === 'vi') return card.dataset[key] || t('components.not-applicable');
+        const title = t(`components.${card.dataset.component}.title`);
+        if (key === 'responsibility') return t(`components.${card.dataset.component}.summary`);
+        if (key === 'why') return t('components.field.why', { title });
+        if (key === 'inputs') return t('components.field.inputs');
+        if (key === 'outputs') return t('components.field.outputs');
+        if (key === 'calledBy') return t('components.field.called-by');
+        if (key === 'dependsOn') return t('components.field.depends-on');
+        if (key === 'enforces') return card.dataset.enforces?.startsWith('HI #') ? card.dataset.enforces : t('components.field.enforces');
+        if (key === 'failureModes') return t('components.field.failure');
+        if (key === 'economics') return t('components.field.economics');
+        if (key === 'trustZone' || key === 'durability') return card.dataset[key] || t('components.not-applicable');
+        if (key === 'expiresWhen') return card.dataset.durability === 'ephemeral' ? t('components.field.expiry') : t('components.never');
+        if (key === 'costLever') return card.dataset.durability === 'ephemeral' ? t('components.field.cost-lever') : t('components.not-applicable');
+        return t('components.not-applicable');
+      };
       const maintainerRecordMarkup = card => {
         const fields = [
-          ['Responsibility','responsibility'], ['Why','why'], ['Inputs','inputs'], ['Outputs','outputs'],
-          ['Called by','calledBy'], ['Depends on','dependsOn'], ['Enforces','enforces'], ['Failure modes','failureModes'],
-          ['Economics','economics'], ['Trust boundary','trustZone'], ['Lifecycle','durability'],
-          ['Expiry','expiresWhen'], ['Cost lever','costLever']
+          ['components.record.responsibility','responsibility'], ['components.record.why','why'], ['components.record.inputs','inputs'], ['components.record.outputs','outputs'],
+          ['components.record.called-by','calledBy'], ['components.record.depends-on','dependsOn'], ['components.record.enforces','enforces'], ['components.record.failure','failureModes'],
+          ['components.record.economics','economics'], ['components.record.trust','trustZone'], ['components.record.lifecycle','durability'],
+          ['components.record.expiry','expiresWhen'], ['components.record.cost-lever','costLever']
         ];
-        const rows = fields.map(([label, key]) => `<dt>${label}</dt><dd>${escapeHtml(card.dataset[key] || 'not applicable')}</dd>`).join('');
+        const rows = fields.map(([label, key]) => `<dt>${escapeHtml(t(label))}</dt><dd>${escapeHtml(localizedComponentField(card, key))}</dd>`).join('');
         const source = card.dataset.source || '';
-        return `<dl class="maintainer-record">${rows}<dt>Evidence</dt><dd><a class="source-link" href="${escapeHtml(sourceHref(source))}">${escapeHtml(source)}</a></dd></dl>`;
+        return `<dl class="maintainer-record">${rows}<dt>${escapeHtml(t('components.record.evidence'))}</dt><dd><a class="source-link" href="${escapeHtml(sourceHref(source))}">${escapeHtml(source)}</a></dd></dl>`;
       };
+      function localizeComponentCards() {
+        cards.forEach(card => {
+          const id = card.dataset.component;
+          const original = componentOriginals.get(id);
+          const title = t(`components.${id}.title`);
+          card.querySelector('h3').textContent = title;
+          const summaryNode = card.querySelector(':scope > p');
+          if (summaryNode) {
+            if (state.language === 'vi') summaryNode.innerHTML = original.summary;
+            else summaryNode.textContent = t(`components.${id}.summary`);
+          }
+          const details = card.querySelector('details');
+          const detailParagraph = details?.querySelector(':scope > p');
+          if (detailParagraph) {
+            if (state.language === 'vi') detailParagraph.innerHTML = original.detail;
+            else detailParagraph.textContent = t('components.detail.en');
+          }
+          const detailsSummary = details?.querySelector('summary');
+          if (detailsSummary) detailsSummary.textContent = t('components.details');
+          const selectButton = card.querySelector('.component-select');
+          if (selectButton) selectButton.textContent = t('components.select', { title });
+          details?.querySelector('.maintainer-record')?.remove();
+          details?.insertAdjacentHTML('beforeend', maintainerRecordMarkup(card));
+        });
+      }
 
       function applyFilters() {
         const query = state.filters.search.trim().toLocaleLowerCase('vi');
@@ -571,7 +1136,10 @@
           card.hidden = !(matches || keepSelected);
           if (!card.hidden) visible += 1;
         });
-        byId('component-filter-status').textContent = `Hiển thị ${visible} component${state.selectedComponent ? '; selection hiện tại luôn được giữ lại.' : '.'}`;
+        byId('component-filter-status').textContent = t(
+          state.selectedComponent ? 'components.filter-status.selected' : 'components.filter-status',
+          { visible }
+        );
       }
 
       function selectComponent(componentId) {
@@ -602,15 +1170,18 @@
           const selectButton = card.querySelector('.component-select');
           if (selectButton) selectButton.setAttribute('aria-pressed', String(selected));
           const relationState = card.querySelector('.relationship-state');
-          if (relationState) relationState.textContent = `Trạng thái quan hệ: ${selected ? 'đang chọn' : relatedCard ? 'có quan hệ trực tiếp' : mutedCard ? 'không có quan hệ trực tiếp' : 'trung lập'}`;
+          if (relationState) relationState.textContent = t('components.relationship-state', {
+            state: t(selected ? 'components.state.selected' : relatedCard ? 'components.state.related' : mutedCard ? 'components.state.muted' : 'components.state.neutral')
+          });
           if (selected) card.querySelector('details')?.setAttribute('open', '');
         });
         const card = cards.find(item => item.dataset.component === componentId);
         const incoming = related.filter(([, to]) => to === componentId).map(([from,, label, kind]) => `[${kind}] ${from} → ${componentId}: ${label}`);
         const outgoing = related.filter(([from]) => from === componentId).map(([, to, label, kind]) => `[${kind}] ${componentId} → ${to}: ${label}`);
-        const relationHtml = componentId ? `<strong>${escapeHtml(card?.querySelector('h3')?.textContent || componentId)}</strong><p><b>incoming:</b> ${incoming.length ? incoming.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>outgoing:</b> ${outgoing.length ? outgoing.map(escapeHtml).join('; ') : 'không có cạnh trực tiếp trên map'}</p><p><b>Evidence:</b> <code>${escapeHtml(card?.dataset.source || 'xem trace dataset')}</code></p>` : '<strong>Quan hệ dạng văn bản:</strong> Chọn một node hoặc component card để xem cạnh incoming và outgoing.';
+        const noEdge = t('components.relationship.no-edge');
+        const relationHtml = componentId ? `<strong>${escapeHtml(card?.querySelector('h3')?.textContent || componentId)}</strong><p><b>incoming:</b> ${incoming.length ? incoming.map(escapeHtml).join('; ') : escapeHtml(noEdge)}</p><p><b>outgoing:</b> ${outgoing.length ? outgoing.map(escapeHtml).join('; ') : escapeHtml(noEdge)}</p><p><b>${escapeHtml(t('components.record.evidence'))}:</b> <code>${escapeHtml(card?.dataset.source || t('components.relationship.trace-source'))}</code></p>` : `<strong>${escapeHtml(t('components.relationship.text-heading'))}</strong> ${escapeHtml(t('components.relationship.text-empty'))}`;
         byId('map-relationships').innerHTML = relationHtml;
-        byId('relationship-summary').innerHTML = componentId ? `<strong>Component đang chọn:</strong> ${relationHtml}<p><b>Called by:</b> ${escapeHtml(card?.dataset.calledBy || 'xem map')}</p><p><b>Depends on:</b> ${escapeHtml(card?.dataset.dependsOn || 'xem map')}</p>` : '<strong>Component đang chọn:</strong> Chưa chọn. Dùng card hoặc node trên map để xem incoming, outgoing và evidence.';
+        byId('relationship-summary').innerHTML = componentId ? `<strong>${escapeHtml(t('components.relationship.selected'))}</strong> ${relationHtml}<p><b>${escapeHtml(t('components.record.called-by'))}:</b> ${escapeHtml(localizedComponentField(card, 'calledBy'))}</p><p><b>${escapeHtml(t('components.record.depends-on'))}:</b> ${escapeHtml(localizedComponentField(card, 'dependsOn'))}</p>` : `<strong>${escapeHtml(t('components.relationship.selected'))}</strong> ${escapeHtml(t('components.relationship.none-selected'))}`;
         applyFilters();
       }
 
@@ -632,13 +1203,14 @@
         applyFilters();
       }
 
-      function renderTrace(focusActiveStep = false) {
-        const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
+      function renderTrace(focusActiveStep = false, syncComponent = true) {
+        const scenarios = activeTraceScenarios();
+        const scenario = scenarios.find(item => item.id === state.scenario) || scenarios[0];
         const step = scenario.steps[state.traceStep];
         byId('trace-title').textContent = scenario.title;
         byId('trace-summary').textContent = scenario.summary;
-        byId('trace-progress').textContent = `Bước ${state.traceStep + 1} / ${scenario.steps.length}: ${step.title}`;
-        byId('trace-lm').textContent = step.lmCall ? 'Có LM call' : 'Không có LM call';
+        byId('trace-progress').textContent = t('trace.progress', { current: state.traceStep + 1, total: scenario.steps.length, title: step.title });
+        byId('trace-lm').textContent = t(step.lmCall ? 'trace.lm.yes' : 'trace.lm.no');
         byId('trace-component').textContent = step.component;
         byId('trace-input').textContent = step.input;
         byId('trace-output').textContent = step.output;
@@ -646,11 +1218,11 @@
         byId('trace-economics').textContent = step.economics;
         byId('trace-evidence').innerHTML = `<a class="source-link" href="${escapeHtml(sourceHref(step.evidence))}">${escapeHtml(step.evidence)}</a>`;
         byId('trace-failure').textContent = step.failure;
-        byId('trace-status').textContent = `Đã chọn bước ${state.traceStep + 1}: ${step.title}. ${step.lmCall ? 'Có LM call.' : 'Không có LM call.'}`;
+        byId('trace-status').textContent = t('trace.status', { current: state.traceStep + 1, title: step.title, lm: t(step.lmCall ? 'trace.lm.yes' : 'trace.lm.no') });
         byId('trace-previous').disabled = state.traceStep === 0;
         byId('trace-next').disabled = state.traceStep === scenario.steps.length - 1;
-        byId('trace-steps').innerHTML = scenario.steps.map((item, index) => `<button type="button" data-trace-step="${index}"${index === state.traceStep ? ' aria-current="step"' : ''}>Bước ${index + 1}: ${escapeHtml(item.title)}</button>`).join('');
-        selectComponent(step.component);
+        byId('trace-steps').innerHTML = scenario.steps.map((item, index) => `<button type="button" data-trace-step="${index}"${index === state.traceStep ? ' aria-current="step"' : ''}>${escapeHtml(t('trace.step-button', { current: index + 1, title: item.title }))}</button>`).join('');
+        if (syncComponent) selectComponent(step.component);
         if (focusActiveStep) {
           const activeStepButton = byId('trace-steps').querySelector(`[data-trace-step="${state.traceStep}"]`);
           activeStepButton.focus();
@@ -658,14 +1230,16 @@
       }
 
       function selectScenario(scenarioId) {
-        state.scenario = TRACE_SCENARIOS.some(item => item.id === scenarioId) ? scenarioId : TRACE_SCENARIOS[0].id;
+        const scenarios = activeTraceScenarios();
+        state.scenario = scenarios.some(item => item.id === scenarioId) ? scenarioId : scenarios[0].id;
         state.traceStep = 0;
         byId('trace-scenario').value = state.scenario;
         renderTrace();
       }
 
       function selectTraceStep(index, focusActiveStep = false) {
-        const scenario = TRACE_SCENARIOS.find(item => item.id === state.scenario) || TRACE_SCENARIOS[0];
+        const scenarios = activeTraceScenarios();
+        const scenario = scenarios.find(item => item.id === state.scenario) || scenarios[0];
         state.traceStep = Math.max(0, Math.min(Number(index) || 0, scenario.steps.length - 1));
         renderTrace(focusActiveStep);
       }
@@ -673,7 +1247,7 @@
       function isValidQuizPayload(payload) {
         if (!payload || payload.version !== 1 || !payload.answers || typeof payload.answers !== 'object' || Array.isArray(payload.answers)) return false;
         return Object.entries(payload.answers).every(([id, answer]) => {
-          const question = QUIZ_QUESTIONS.find(item => item.id === id);
+          const question = activeQuizQuestions().find(item => item.id === id);
           return question && Number.isInteger(answer) && answer >= 0 && answer < question.options.length;
         });
       }
@@ -703,19 +1277,21 @@
       }
 
       function visibleQuizQuestions() {
-        if (state.quizScope === 'all') return QUIZ_QUESTIONS;
-        if (state.quizScope === 'cumulative') return QUIZ_QUESTIONS.filter((_, index) => index % 2 === 0).slice(0, 12);
-        return QUIZ_QUESTIONS.filter(question => question.chapter === state.quizScope);
+        const questions = activeQuizQuestions();
+        if (state.quizScope === 'all') return questions;
+        if (state.quizScope === 'cumulative') return questions.filter((_, index) => index % 2 === 0).slice(0, 12);
+        return questions.filter(question => question.chapter === state.quizScope);
       }
 
       function renderQuiz(focusQuestionId = '') {
+        const questions = activeQuizQuestions();
         const visible = visibleQuizQuestions();
         const entries = Object.entries(state.quiz.answers);
-        const totalCorrect = entries.filter(([id, answer]) => QUIZ_QUESTIONS.find(item => item.id === id)?.answer === answer).length;
+        const totalCorrect = entries.filter(([id, answer]) => questions.find(item => item.id === id)?.answer === answer).length;
         const visibleAnswered = visible.filter(question => Object.hasOwn(state.quiz.answers, question.id));
         const visibleCorrect = visibleAnswered.filter(question => state.quiz.answers[question.id] === question.answer).length;
-        byId('quiz-total-score').textContent = `${totalCorrect} / ${QUIZ_QUESTIONS.length}`;
-        byId('quiz-answered-count').textContent = `${entries.length} / ${QUIZ_QUESTIONS.length}`;
+        byId('quiz-total-score').textContent = `${totalCorrect} / ${questions.length}`;
+        byId('quiz-answered-count').textContent = `${entries.length} / ${questions.length}`;
         byId('quiz-chapter-score').textContent = `${visibleCorrect} / ${visible.length}`;
         byId('quiz-questions').innerHTML = visible.map((question, index) => {
           const answered = Object.hasOwn(state.quiz.answers, question.id);
@@ -724,8 +1300,8 @@
             const status = answered && optionIndex === question.answer ? ' is-correct' : answered && optionIndex === selected ? ' is-wrong' : '';
             return `<button class="quiz-option${status}" type="button" data-question="${question.id}" data-answer="${optionIndex}"${answered ? ' disabled' : ''}>${String.fromCharCode(65 + optionIndex)}. ${escapeHtml(option)}</button>`;
           }).join('');
-          const result = answered ? `<div class="quiz-result" tabindex="-1" data-question-result="${question.id}"><strong>${selected === question.answer ? 'Đúng.' : 'Chưa đúng.'}</strong> ${escapeHtml(question.explanation)} <a href="#${question.section}">Đọc lại phần liên quan</a>.</div>` : '';
-          return `<article class="quiz-card" data-rendered-question="${question.id}"><fieldset><legend><strong>Câu ${index + 1} · ${escapeHtml(question.difficulty)}</strong><br>${escapeHtml(question.prompt)}</legend><div class="quiz-options">${options}</div></fieldset>${result}</article>`;
+          const result = answered ? `<div class="quiz-result" tabindex="-1" data-question-result="${question.id}"><strong>${escapeHtml(t(selected === question.answer ? 'quiz.correct' : 'quiz.incorrect'))}</strong> ${escapeHtml(question.explanation)} <a href="#${question.section}">${escapeHtml(t('quiz.read-again'))}</a>.</div>` : '';
+          return `<article class="quiz-card" data-rendered-question="${question.id}"><fieldset><legend><strong>${escapeHtml(t('quiz.question', { number: index + 1, difficulty: question.difficulty }))}</strong><br>${escapeHtml(question.prompt)}</legend><div class="quiz-options">${options}</div></fieldset>${result}</article>`;
         }).join('');
         if (focusQuestionId) {
           const quizResult = byId('quiz-questions').querySelector(`[data-question-result="${focusQuestionId}"]`);
@@ -734,13 +1310,13 @@
       }
 
       function answerQuestion(questionId, answerIndex) {
-        const question = QUIZ_QUESTIONS.find(item => item.id === questionId);
+        const question = activeQuizQuestions().find(item => item.id === questionId);
         if (!question || Object.hasOwn(state.quiz.answers, questionId)) return;
         const answer = Number(answerIndex);
         if (!Number.isInteger(answer) || answer < 0 || answer >= question.options.length) return;
         state.quiz.answers[questionId] = answer;
         saveQuiz();
-        byId('quiz-announcer').textContent = answer === question.answer ? `Đúng: ${question.explanation}` : `Chưa đúng: ${question.explanation}`;
+        byId('quiz-announcer').textContent = t(answer === question.answer ? 'quiz.announce.correct' : 'quiz.announce.incorrect', { explanation: question.explanation });
         renderQuiz(questionId);
       }
 
@@ -751,7 +1327,7 @@
         } catch (error) {
           /* Reset in memory still succeeds when storage is blocked. */
         }
-        byId('quiz-announcer').textContent = 'Đã xóa toàn bộ điểm quiz.';
+        byId('quiz-announcer').textContent = t('quiz.reset-announcement');
         renderQuiz();
       }
 
@@ -765,7 +1341,9 @@
         target.setAttribute('aria-hidden', String(drawerMode && !state.drawers[name]));
         target.inert = drawerMode && !state.drawers[name];
         toggle.setAttribute('aria-expanded', String(state.drawers[name]));
-        toggle.textContent = `${state.drawers[name] ? 'Đóng' : 'Mở'} ${isNav ? 'mục lục' : 'bằng chứng'}`;
+        toggle.textContent = t(
+          state.drawers[name] ? `drawer.${name}.close` : `drawer.${name}.open`
+        );
         if (returnFocus) toggle.focus();
       }
 
@@ -776,9 +1354,23 @@
 
       function init() {
         document.documentElement.dataset.javascript = 'enabled';
+        const languageTabs = [...document.querySelectorAll('[role="tab"][data-language]')];
+        languageTabs.forEach(tab => tab.addEventListener('click', () => setLanguage(tab.dataset.language)));
+        byId('language-label').nextElementSibling.addEventListener('keydown', event => {
+          const currentIndex = languageTabs.findIndex(tab => tab.dataset.language === state.language);
+          let nextIndex = currentIndex;
+          if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % languageTabs.length;
+          else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + languageTabs.length) % languageTabs.length;
+          else if (event.key === 'Home') nextIndex = 0;
+          else if (event.key === 'End') nextIndex = languageTabs.length - 1;
+          else return;
+          event.preventDefault();
+          languageTabs[nextIndex].focus();
+          setLanguage(languageTabs[nextIndex].dataset.language);
+        });
         edges.forEach((edge, index) => { edge.dataset.relationKind = MAP_RELATIONSHIPS[index]?.[3] || 'runtime'; });
         nodes.forEach(node => {
-          node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', `Chọn component ${node.dataset.mapComponent}`);
+          node.setAttribute('tabindex', '0'); node.setAttribute('role', 'button'); node.setAttribute('aria-label', t('a11y.select-component', { component: node.dataset.mapComponent }));
           node.addEventListener('click', () => selectComponent(node.dataset.mapComponent));
           node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectComponent(node.dataset.mapComponent); } });
         });
@@ -799,7 +1391,7 @@
         byId('map-mode').addEventListener('change', event => setMapMode(event.target.value));
         ['component-search','trust-zone-filter','durability-filter'].forEach(id => byId(id).addEventListener(id === 'component-search' ? 'input' : 'change', () => setFilters()));
         byId('component-filter-reset').addEventListener('click', () => setFilters({ search: '', trust: 'all', durability: 'all' }));
-        byId('trace-scenario').innerHTML = TRACE_SCENARIOS.map(scenario => `<option value="${scenario.id}">${escapeHtml(scenario.title)}</option>`).join('');
+        byId('trace-scenario').innerHTML = activeTraceScenarios().map(scenario => `<option value="${scenario.id}">${escapeHtml(scenario.title)}</option>`).join('');
         byId('trace-scenario').addEventListener('change', event => selectScenario(event.target.value));
         byId('trace-previous').addEventListener('click', () => selectTraceStep(state.traceStep - 1));
         byId('trace-next').addEventListener('click', () => selectTraceStep(state.traceStep + 1));
@@ -831,7 +1423,7 @@
         });
         window.addEventListener('resize', syncDrawerLayout);
         syncDrawerLayout();
-        setMapMode('runtime'); setFilters(); selectScenario(TRACE_SCENARIOS[0].id); loadQuiz(); renderQuiz();
+        setMapMode('runtime'); setFilters(); selectScenario(TRACE_SCENARIOS[0].id); loadQuiz(); renderQuiz(); setLanguage(loadLanguage(), false);
       }
 
       init();
