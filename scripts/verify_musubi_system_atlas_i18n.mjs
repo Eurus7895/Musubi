@@ -22,15 +22,55 @@ for (const key of keyedFields) {
   assert.ok(catalog[key].en.trim(), `${key}.en must not be empty`);
 }
 
+for (const requiredPrefix of [
+  'document.',
+  'language.',
+  'orientation.',
+  'nav.',
+  'map.',
+  'components.',
+  'trace.',
+  'invariants.',
+  'economics.',
+  'evolution.',
+  'glossary.',
+  'quiz.',
+  'drawer.',
+  'a11y.',
+  'noscript.',
+]) {
+  assert.ok(
+    Object.keys(catalog).some((key) => key.startsWith(requiredPrefix)),
+    `missing catalog area: ${requiredPrefix}`,
+  );
+}
+assert.ok(
+  keyedFields.length >= 120,
+  `expected broad static coverage, found ${keyedFields.length}`,
+);
+assert.match(html, /const TRACE_SCENARIOS_I18N = /);
+assert.match(html, /const QUIZ_QUESTIONS_I18N = /);
+
 assert.match(html, /role="tablist"/);
-assert.equal((html.match(/role="tab"/g) || []).length, 2);
+assert.equal(
+  (html.match(/<button\b[^>]*\brole="tab"[^>]*>/g) || []).length,
+  2,
+);
 assert.match(html, /id="language-vi"/);
 assert.match(html, /id="language-en"/);
 assert.match(
   html,
   /const LANGUAGE_STORAGE_KEY = 'musubi-system-atlas\.language\.v1'/,
 );
+assert.match(html, /const SUPPORTED_LANGUAGES = new Set\(\['vi', 'en'\]\)/);
+assert.match(html, /function t\(key, variables = \{\}\)/);
 assert.match(html, /function setLanguage\(language/);
+assert.match(html, /document\.documentElement\.lang = state\.language/);
+assert.match(html, /renderLanguageSensitiveViews\(\)/);
+assert.match(
+  html,
+  /localStorage\.setItem\(LANGUAGE_STORAGE_KEY, state\.language\)/,
+);
 assert.match(html, /id="glossary"/);
 assert.match(html, /data-noscript-language="vi"/);
 assert.match(html, /data-noscript-language="en"/);
