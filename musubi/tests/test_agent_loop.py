@@ -2592,6 +2592,23 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 
 
+def test_initial_critical_risk_returns_pipeline_recommendation_without_model() -> None:
+    router = FakeRouter([])
+    answer = asyncio.run(
+        run_agent(
+            "Add authentication to the app",
+            router,
+            _musubi_dir(),
+            log=io.StringIO(),
+            max_tokens=0,
+        )
+    )
+
+    assert router.calls == []
+    assert "--pipeline feature-dev" in answer
+    assert "No pipeline was launched" in answer
+
+
 def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     tmp_path: Path,
 ) -> None:

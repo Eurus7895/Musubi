@@ -124,7 +124,13 @@ class GoalState:
     pending_clarification: str | None = None
 
     @classmethod
-    def create(cls, intent: str, scope: str, route: str) -> "GoalState":
+    def create(
+        cls,
+        intent: str,
+        scope: str,
+        route: str,
+        assessment: ChangeAssessment | None = None,
+    ) -> "GoalState":
         target = (
             SIMPLE_ROOT_TOKEN_TARGET
             if scope in _SIMPLE_SCOPES
@@ -135,6 +141,7 @@ class GoalState:
             scope=scope,
             route=route,
             root_token_target=target,
+            assessment=assessment,
             # Medium routes are planner-led: the coder gate opens only after
             # the planner's manifest reclassifies the blast radius.
             next_role="planner" if route == "planner_then_coder_check" else None,

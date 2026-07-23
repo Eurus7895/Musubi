@@ -110,3 +110,65 @@ def test_duplicate_manifest_blocks_fail_closed() -> None:
         '</change_manifest>'
     )
     assert parse_change_manifest(small + "\n" + large) is None
+
+def _manifest(payload: str) -> str:
+    return f"<change_manifest>{payload}</change_manifest>"
+
+
+VALID_MANIFEST = (
+    '{"files_expected":1,"subsystems":[" routes ","routes"],'
+    '"public_contract":false,"data_migration":false,'
+    '"security_sensitive":false,"external_side_effects":false,'
+    '"destructive":false,"unknowns":[" deployment "],'
+    '"validation_commands":1}'
+)
+
+
+
+def test_manifest_requires_exact_schema_and_exact_json_types() -> None:
+    manifest = parse_change_manifest(_manifest(VALID_MANIFEST))
+    assert manifest is not None
+    assert manifest.subsystems == ("routes",)
+    assert manifest.unknowns == ("deployment",)
+
+    malformed = (
+        VALID_MANIFEST.replace('"validation_commands":1', '"extra":0,"validation_commands":1'),
+        VALID_MANIFEST.replace('"validation_commands":1', ''),
+        VALID_MANIFEST.replace('"files_expected":1', '"files_expected":true'),
+        VALID_MANIFEST.replace('"validation_commands":1', '"validation_commands":1.0'),
+        VALID_MANIFEST.replace('[" routes ","routes"]', '"routes"'),
+        VALID_MANIFEST.replace('[" deployment "]', '["   "]'),
+        VALID_MANIFEST.replace('"public_contract":false', '"public_contract":0'),
+    )
+    for payload in malformed:
+        assert parse_change_manifest(_manifest(payload)) is None, payload
+
+
+def test_manifest_rejects_duplicate_json_keys_and_non_finite_numbers() -> None:
+    duplicate_key = VALID_MANIFEST.replace(
+        '"files_expected":1,', '"files_expected":1,"files_expected":2,',
+    )
+    non_finite = VALID_MANIFEST.replace('"files_expected":1', '"files_expected":NaN')
+
+    assert parse_change_manifest(_manifest(duplicate_key)) is None
+    assert parse_change_manifest(_manifest(non_finite)) is None
+
+
+def test_manifest_requires_one_well_formed_literal_tag_pair() -> None:
+    assert parse_change_manifest(
+        f"<change_manifest>{_manifest(VALID_MANIFEST)}</change_manifest>"
+    ) is None
+    assert parse_change_manifest(
+        f"<change_manifest>{VALID_MANIFEST}</change_manifest></change_manifest>"
+    ) is None
+
+
+def test_manifest_byte_limit_is_utf8_not_character_count() -> None:
+    # 1,365 three-byte characters plus JSON syntax exceeds the 4,096-byte
+    # boundary while remaining below it in Python character count.
+    oversized_utf8 = VALID_MANIFEST.replace(
+        '" deployment "', f'"{chr(0x20AC) * 1365}"',
+    )
+    assert len(oversized_utf8) < 4096
+    assert len(oversized_utf8.encode("utf-8")) > 4096
+    assert parse_change_manifest(_manifest(oversized_utf8)) is None

@@ -48,8 +48,9 @@ _MULTIPART_RE = re.compile(
     r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
 )
 _CRITICAL_RISK_RE = re.compile(
-    r"(?i)\b(auth|authentication|authorization|payment|billing|database|"
-    r"migration|oauth|rbac|security)\b"
+    r"(?i)\b(auth|authentication|authorization|login|permissions?|"
+    r"access control|payments?|billing|databases?|migrations?|oauth|rbac|"
+    r"security|public api|api contract|breaking api)\b"
 )
 
 
@@ -106,10 +107,12 @@ def assess_request(task: str) -> ChangeAssessment:
 #: Hard byte bound on the manifest JSON — a planner cannot smuggle a plan-sized
 #: payload through the reclassification channel; an oversized block parses as
 #: missing and the caller fails closed to one clarification.
-MAX_MANIFEST_CHARS = 4096
-_MANIFEST_RE = re.compile(
-    r"(?s)<change_manifest>\s*(\{.*?\})\s*</change_manifest>"
-)
+MAX_MANIFEST_BYTES = 4096
+#: Compatibility name for callers that imported the original constant. The
+#: bound is deliberately measured in UTF-8 bytes, not Python characters.
+MAX_MANIFEST_CHARS = MAX_MANIFEST_BYTES
+_MANIFEST_OPEN = "<change_manifest>"
+_MANIFEST_CLOSE = "</change_manifest>"
 
 #: Manifest impact thresholds: above either, a "medium" plan is actually a
 #: large change and must not escape through a direct coder.
@@ -124,6 +127,18 @@ _CRITICAL_FLAGS = (
     "external_side_effects",
     "destructive",
 )
+_MANIFEST_FIELDS = {
+    "files_expected",
+    "subsystems",
+    "public_contract",
+    "data_migration",
+    "security_sensitive",
+    "external_side_effects",
+    "destructive",
+    "unknowns",
+    "validation_commands",
+}
+
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,40 @@ class ChangeManifest:
     destructive: bool
     unknowns: tuple[str, ...]
     validation_commands: int
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate manifest key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _require_count(raw: dict[str, Any], key: str) -> int:
+    value = raw[key]
+    if type(value) is not int or value < 0:
+        raise TypeError(f"manifest count {key!r} must be a non-negative integer")
+    return value
+
+
+def _require_strings(raw: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = raw[key]
+    if not isinstance(value, list):
+        raise TypeError(f"manifest field {key!r} must be an array")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise TypeError(
+                f"manifest field {key!r} must contain non-blank strings"
+            )
+        normalized.append(item.strip())
+    return tuple(sorted(set(normalized)))
+
+
 
 
 def _require_bool(raw: dict[str, Any], key: str) -> bool:
@@ -149,7 +198,7 @@ def _require_bool(raw: dict[str, Any], key: str) -> bool:
     fails closed to one clarification instead.
     """
     value = raw[key]
-    if not isinstance(value, bool):
+    if type(value) is not bool:
         raise TypeError(f"manifest flag {key!r} must be a boolean")
     return value
 
@@ -164,28 +213,43 @@ def parse_change_manifest(text: str) -> ChangeManifest | None:
     the caller treats that as "the planner could not commit to a blast radius"
     and asks for scope instead of guessing.
     """
-    blocks = _MANIFEST_RE.findall(text or "")
-    if len(blocks) != 1:
+    source = text or ""
+    if source.count(_MANIFEST_OPEN) != 1 or source.count(_MANIFEST_CLOSE) != 1:
         return None
-    block = blocks[0]
-    if len(block) > MAX_MANIFEST_CHARS:
+    start = source.find(_MANIFEST_OPEN) + len(_MANIFEST_OPEN)
+    end = source.find(_MANIFEST_CLOSE)
+    if end < start:
         return None
+    block = source[start:end].strip()
     try:
-        raw: dict[str, Any] = json.loads(block)
+        if len(block.encode("utf-8")) > MAX_MANIFEST_BYTES:
+            return None
+        raw = json.loads(
+            block,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+        if not isinstance(raw, dict) or set(raw) != _MANIFEST_FIELDS:
+            return None
         result = ChangeManifest(
-            files_expected=int(raw["files_expected"]),
-            subsystems=tuple(sorted(set(map(str, raw["subsystems"])))),
+            files_expected=_require_count(raw, "files_expected"),
+            subsystems=_require_strings(raw, "subsystems"),
             public_contract=_require_bool(raw, "public_contract"),
             data_migration=_require_bool(raw, "data_migration"),
             security_sensitive=_require_bool(raw, "security_sensitive"),
             external_side_effects=_require_bool(raw, "external_side_effects"),
             destructive=_require_bool(raw, "destructive"),
-            unknowns=tuple(sorted(set(map(str, raw["unknowns"])))),
-            validation_commands=int(raw["validation_commands"]),
+            unknowns=_require_strings(raw, "unknowns"),
+            validation_commands=_require_count(raw, "validation_commands"),
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if result.files_expected < 0 or result.validation_commands < 0:
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeEncodeError,
+        RecursionError,
+        json.JSONDecodeError,
+    ):
         return None
     return result
 

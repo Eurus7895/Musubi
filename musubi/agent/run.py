@@ -465,7 +465,7 @@ async def _auto_recovery_transition(
 
 
 def _pipeline_recommendation(state: GoalState) -> str:
-    """Deterministic final answer when a manifest reclassifies the goal large.
+    """Deterministic final answer when request or manifest assessment is large.
 
     Large workflows stay user-invoked (policy locked decision #4): the root
     never auto-launches a pipeline, it hands the decision back with the exact
@@ -476,8 +476,8 @@ def _pipeline_recommendation(state: GoalState) -> str:
         ", ".join(assessment.evidence) if assessment is not None else "manifest"
     )
     return (
-        "[scope] The planner's change manifest reclassified this request as a "
-        f"large change ({evidence}).\n"
+        "[scope] The deterministic change assessment classified this request "
+        f"as a large change ({evidence}).\n"
         "Large workflows are user-invoked and never auto-launched. To run it "
         "under the governed pipeline (plan → design → code → review with the "
         "evaluator firewall), start it explicitly:\n\n"
@@ -581,8 +581,9 @@ async def run_agent(
         intent=task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
+        assessment=scope_hint.assessment,
     )
-    direct_answer = _deterministic_scope_answer(task, scope_hint)
+    direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
         print(
@@ -1814,7 +1815,11 @@ def _build_token_budget(
     return budget
 
 
-def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
+def _deterministic_scope_answer(
+    task: str,
+    scope_hint: ScopeHint,
+    goal_state: GoalState | None = None,
+) -> str | None:
     if scope_hint.route == "direct_answer":
         return "Hi! How can I help?"
     if scope_hint.route == "ask_scope":
@@ -1824,6 +1829,15 @@ def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
         if assessment is not None and assessment.clarifying_question:
             return assessment.clarifying_question
         return "What exact target and acceptance criteria should this change satisfy?"
+    if scope_hint.route == "plan_design_workflow":
+        state = goal_state or GoalState.create(
+            intent=task,
+            scope=scope_hint.kind.value,
+            route=scope_hint.route,
+            assessment=scope_hint.assessment,
+        )
+        return _pipeline_recommendation(state)
+
     if scope_hint.route == "manual_destructive":
         return (
             "I cannot safely delete files from this route because deletion is "

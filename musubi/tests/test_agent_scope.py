@@ -199,3 +199,21 @@ def test_single_critical_term_routes_to_plan_design_workflow() -> None:
     assert hint.kind is ScopeKind.LARGE_FEATURE
     assert hint.route == "plan_design_workflow"
     assert "plan" in hint.requires and "review" in hint.requires
+
+
+def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
+    requests = (
+        "Add login to the app",
+        "Change user permissions",
+        "Add payments to the checkout",
+        "Create customer databases",
+        "Run data migrations",
+        "Change the public API contract",
+    )
+    for request in requests:
+        assessment = assess_request(request)
+        assert assessment.risk is Band.HIGH, request
+        assert assessment.route == "plan_design_workflow", request
+        hint = classify_task(request)
+        assert hint.kind is ScopeKind.LARGE_FEATURE, request
+        assert hint.route == "plan_design_workflow", request
