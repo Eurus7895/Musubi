@@ -1,6 +1,6 @@
 # Governed Scope, Worker Budget, and Recovery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace lexical-only scope routing and model-owned worker/recovery choices with deterministic ambiguity-impact-risk assessment, role-owned worker turn budgets, and one audited continuation for genuinely unfinished mutate workers.
 
@@ -50,7 +50,7 @@
 - `ChangeAssessment.route` is one of `ask_scope`, `single_coder`, `planner_then_coder_check`, `plan_design_workflow`.
 - `ChangeAssessment.clarifying_question` is non-null only for `ask_scope`.
 
-- [ ] **Step 1: Write failing request-assessment tests**
+- [x] **Step 1: Write failing request-assessment tests**
 
 Append to `musubi/tests/test_agent_scope.py`:
 
@@ -114,7 +114,7 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_agent_scope.py musubi/tests/test_agent_loop.py -k "website or high_ambiguity" -q
@@ -122,7 +122,7 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
 
 Expected: FAIL because `change_assessment` does not exist and `ask_scope` still reaches the model loop.
 
-- [ ] **Step 3: Implement the pure assessment types**
+- [x] **Step 3: Implement the pure assessment types**
 
 Create `musubi/agent/change_assessment.py`:
 
@@ -219,7 +219,7 @@ def assess_request(task: str) -> ChangeAssessment:
     )
 ```
 
-- [ ] **Step 4: Integrate without replacing inspect/destructive detection**
+- [x] **Step 4: Integrate without replacing inspect/destructive detection**
 
 Add `assessment: ChangeAssessment | None = None` to `ScopeHint`. Keep casual, destructive, and read-only branches unchanged. For mutation requests, map `assess_request()` into the existing `ScopeKind`, `route`, `reason`, and `requires` fields.
 
@@ -233,7 +233,7 @@ if scope_hint.route == "ask_scope":
     return "What exact target and acceptance criteria should this change satisfy?"
 ```
 
-- [ ] **Step 5: Verify GREEN and existing routes**
+- [x] **Step 5: Verify GREEN and existing routes**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_agent_scope.py musubi/tests/test_agent_loop.py -k "scope or website or ambiguity" -q
@@ -241,7 +241,7 @@ if scope_hint.route == "ask_scope":
 
 Expected: PASS; bare website creation costs zero model/worker calls.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```powershell
 git add musubi/agent/change_assessment.py musubi/agent/scope.py musubi/agent/run.py musubi/tests/test_agent_scope.py musubi/tests/test_agent_loop.py
@@ -266,7 +266,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(ag
 - Produces `GoalState.next_role` and `GoalState.pending_clarification`.
 - Enforces planner before coder for medium routes; large manifests cannot escape through a direct coder.
 
-- [ ] **Step 1: Write failing manifest tests**
+- [x] **Step 1: Write failing manifest tests**
 
 Create `musubi/tests/test_change_assessment.py`:
 
@@ -311,7 +311,7 @@ def test_missing_or_oversized_manifest_fails_closed() -> None:
     ) is None
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_change_assessment.py -q
@@ -319,7 +319,7 @@ def test_missing_or_oversized_manifest_fails_closed() -> None:
 
 Expected: FAIL because manifest interfaces do not exist.
 
-- [ ] **Step 3: Implement bounded manifest parsing**
+- [x] **Step 3: Implement bounded manifest parsing**
 
 Add to `change_assessment.py`:
 
@@ -379,7 +379,7 @@ Implement `assess_manifest()` with this precedence:
 
 Update the planner Output Contract to require exactly one compact JSON object between `<change_manifest>` tags with all nine fields. Missing evidence goes into `unknowns`; it must never be guessed.
 
-- [ ] **Step 4: Store and enforce planner assessment**
+- [x] **Step 4: Store and enforce planner assessment**
 
 Add to `GoalState`:
 
@@ -425,7 +425,7 @@ In `run.py`:
 - return a deterministic Pipeline-mode recommendation when the manifest route is large;
 - never auto-launch the pipeline.
 
-- [ ] **Step 5: Add goal-state and role-order tests**
+- [x] **Step 5: Add goal-state and role-order tests**
 
 ```python
 def test_medium_goal_requires_planner_before_coder() -> None:
@@ -443,7 +443,7 @@ def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
 
 Add an agent-loop test where root attempts coder before planner; assert refusal, zero coder audit rows, and a tool result naming `planner` as the legal next role.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_change_assessment.py musubi/tests/test_goal_state.py musubi/tests/test_agent_scope.py musubi/tests/test_agent_loop.py -q
@@ -451,7 +451,7 @@ Add an agent-loop test where root attempts coder before planner; assert refusal,
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```powershell
 git add musubi/agent/change_assessment.py .github/agents/workers/planner.agent.md musubi/agent/goal_state.py musubi/agent/run.py musubi/tests/test_change_assessment.py musubi/tests/test_goal_state.py musubi/tests/test_agent_loop.py
@@ -472,7 +472,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "feat(a
 - Produces one effective turn cap sourced from role frontmatter and propagated unchanged through spawn, `run_unit`, and completion audit.
 - Roles without `maxTurns:` retain existing server defaults.
 
-- [ ] **Step 1: Write failing role-ownership tests**
+- [x] **Step 1: Write failing role-ownership tests**
 
 Replace `test_model_spawn_request_may_ask_for_fewer_turns` with:
 
@@ -501,7 +501,7 @@ def test_replacement_receives_full_role_turn_budget(
     assert run_kwargs["max_cycles"] == 8
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_subagent_orchestrator.py -k "maxturns or full_role_turn_budget" -q
@@ -509,7 +509,7 @@ def test_replacement_receives_full_role_turn_budget(
 
 Expected: FAIL because `min(requested, declared_turns)` resolves 2 and 1.
 
-- [ ] **Step 3: Make role frontmatter authoritative**
+- [x] **Step 3: Make role frontmatter authoritative**
 
 Replace the cap block in `subagent.py`:
 
@@ -528,11 +528,11 @@ if declared_turns is not None:
 
 Do not modify pipeline `PipelineWorkerSpec`.
 
-- [ ] **Step 4: Correct roadmap history**
+- [x] **Step 4: Correct roadmap history**
 
 In the bounded-runtime completed track, replace “the model may request fewer turns, never more” with “direct-worker role frontmatter is authoritative; model-supplied turn counts are ignored.”
 
-- [ ] **Step 5: Verify direct and pipeline caps**
+- [x] **Step 5: Verify direct and pipeline caps**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_subagent_orchestrator.py musubi/tests/test_sub_sessions.py musubi/tests/test_pipeline_yaml.py musubi/tests/test_spawn_pipeline.py -q
@@ -540,7 +540,7 @@ In the bounded-runtime completed track, replace “the model may request fewer t
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```powershell
 git add musubi/agent/subagent.py musubi/tests/test_subagent_orchestrator.py docs/roadmap.md
@@ -565,7 +565,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(ag
 - Produces at most one automatic same-role replacement through normal `_dispatch`.
 - Preserves the current two-cycle root analysis window for unknown failures.
 
-- [ ] **Step 1: Write failing pure decision tests**
+- [x] **Step 1: Write failing pure decision tests**
 
 Append to `musubi/tests/test_goal_state.py`:
 
@@ -609,7 +609,7 @@ def test_exhausted_worker_slots_halt() -> None:
     ) is RecoveryAction.HALT
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_goal_state.py -k "turn_cap or worker_slots" -q
@@ -617,7 +617,7 @@ def test_exhausted_worker_slots_halt() -> None:
 
 Expected: FAIL because typed recovery interfaces do not exist.
 
-- [ ] **Step 3: Add typed failure evidence**
+- [x] **Step 3: Add typed failure evidence**
 
 In `run.py`:
 
@@ -670,7 +670,7 @@ In `subagent.py`, derive failure kind from control flow, not summary text:
 
 Record the firewalled brief and typed kind with the outcome.
 
-- [ ] **Step 4: Write failing automatic-continuation integration test**
+- [x] **Step 4: Write failing automatic-continuation integration test**
 
 Add `test_turn_cap_failure_auto_spawns_one_audited_replacement` to `test_agent_loop.py`. Its canned sequence must prove:
 
@@ -684,7 +684,7 @@ Add `test_turn_cap_failure_auto_spawns_one_audited_replacement` to `test_agent_l
 
 Expected initial failure: current code asks the root model again and may emit the old `[incomplete] root ended recovery...` marker.
 
-- [ ] **Step 5: Dispatch automatic continuation through `_dispatch`**
+- [x] **Step 5: Dispatch automatic continuation through `_dispatch`**
 
 Before `cycles_used` is incremented and before a root LM call, evaluate the
 newest unrecovered failure in a small deterministic loop. For `AUTO_REPLACE`,
@@ -718,7 +718,7 @@ occurred.
 
 Never auto-replace `BLOCKED`, `BUDGET`, `POLICY`, missing touched files, or the second same-role failure.
 
-- [ ] **Step 6: Add audit assertions**
+- [x] **Step 6: Add audit assertions**
 
 Extend `test_subagent_audit.py`:
 
@@ -734,7 +734,7 @@ assert "[worker-replacement]" in coder_rows[2]["brief"]
 
 Also assert no third coder spawn after a second escalation.
 
-- [ ] **Step 7: Verify recovery and economics**
+- [x] **Step 7: Verify recovery and economics**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_goal_state.py musubi/tests/test_agent_loop.py musubi/tests/test_subagent_orchestrator.py musubi/tests/test_subagent_audit.py musubi/tests/test_agent_budget.py -q
@@ -742,7 +742,7 @@ Also assert no third coder spawn after a second escalation.
 
 Expected: PASS; recoverable continuation is deterministic/audited and budget/policy failures remain fail-closed.
 
-- [ ] **Step 8: Commit Task 4**
+- [x] **Step 8: Commit Task 4**
 
 ```powershell
 git add musubi/agent/run.py musubi/agent/subagent.py musubi/agent/goal_state.py musubi/tests/test_agent_loop.py musubi/tests/test_goal_state.py musubi/tests/test_subagent_audit.py
@@ -763,7 +763,7 @@ git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit -m "fix(ag
 - Consumes all Task 1–4 interfaces.
 - Produces end-to-end regressions for the attached website failure.
 
-- [ ] **Step 1: Add incident regressions**
+- [x] **Step 1: Add incident regressions**
 
 Append to `musubi/tests/test_subagent_orchestrator.py`:
 
@@ -814,7 +814,7 @@ The Task 4 loop integration test must also assert:
 assert "root ended recovery without a successful replacement worker" not in answer
 ```
 
-- [ ] **Step 2: Run all affected suites**
+- [x] **Step 2: Run all affected suites**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest musubi/tests/test_agent_scope.py musubi/tests/test_change_assessment.py musubi/tests/test_goal_state.py musubi/tests/test_agent_loop.py musubi/tests/test_subagent_orchestrator.py musubi/tests/test_subagent_audit.py -q
@@ -822,11 +822,11 @@ assert "root ended recovery without a successful replacement worker" not in answ
 
 Expected: PASS.
 
-- [ ] **Step 3: Move the roadmap entry only after verification**
+- [x] **Step 3: Move the roadmap entry only after verification**
 
 Move “Governed change assessment and recovery liveness” from Active to Completed Tracks only after every check passes. Summarize the ambiguity gate, planner manifest, role-owned cap, one audited continuation, and unchanged worker/token/policy ceilings.
 
-- [ ] **Step 4: Run full repository verification**
+- [x] **Step 4: Run full repository verification**
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_musubi_tier.py
@@ -839,11 +839,11 @@ git diff --check
 
 Expected: tier check `0`, all Python tests pass, GUI build `0`, and `git diff --check` prints nothing.
 
-- [ ] **Step 5: Review audit economics**
+- [x] **Step 5: Review audit economics**
 
 Confirm separate primary/replacement worker ids, primary escalated, replacement done, no hidden third worker, and no root LM charge for the deterministic recovery transition.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```powershell
 git add musubi/tests/test_agent_loop.py musubi/tests/test_subagent_orchestrator.py docs/roadmap.md docs/superpowers/plans/2026-07-22-governed-scope-budget-recovery.md

@@ -673,3 +673,51 @@ def test_run_subagent_threads_frontmatter_output_budget(
     assert seen["audit_session_id"] == "parent-1"
     assert seen["audit_worker_id"] == "h1"
     assert seen["audit_stage"] == "coder"
+
+
+# ── incident regressions (governed scope, budget, recovery) ──────────────────
+
+
+def test_bare_new_website_request_stops_at_clarification() -> None:
+    # The originating incident: "create a new website" must halt at one
+    # deterministic clarification — no parent session, no model call, no worker.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("create a new website")
+    answer = run_mod._deterministic_scope_answer("create a new website", hint)
+
+    assert hint.route == "ask_scope"
+    assert answer == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )
+
+
+def test_bounded_scaffold_cannot_be_starved_or_abandon_recovery(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    # A bounded scaffold coder cannot be starved below its role budget, and a
+    # turn-cap failure with surviving files is an automatic replacement, never
+    # an abandoned recovery.
+    from agent.run import FailureKind, RecoveryAction, WorkerOutcome, decide_recovery
+
+    spawn, run_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 6},
+    )
+    outcome = WorkerOutcome(
+        role="coder",
+        status="escalated",
+        summary="Next.js scaffold unfinished",
+        touched_files=("app/page.tsx", "app/layout.tsx"),
+        brief="create the bounded scaffold",
+        failure_kind=FailureKind.TURN_CAP,
+    )
+
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
+    assert decide_recovery(
+        outcome, same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.AUTO_REPLACE
