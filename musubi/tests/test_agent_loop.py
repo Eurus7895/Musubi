@@ -2592,7 +2592,15 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 
 
-def test_initial_critical_risk_returns_pipeline_recommendation_without_model() -> None:
+def test_initial_critical_risk_returns_pipeline_recommendation_without_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from storage import subagent_audit
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    audit_db = tmp_path / "data" / "audit.db"
+    subagent_audit.init_db(audit_db)
     router = FakeRouter([])
     answer = asyncio.run(
         run_agent(
@@ -2605,6 +2613,7 @@ def test_initial_critical_risk_returns_pipeline_recommendation_without_model() -
     )
 
     assert router.calls == []
+    assert subagent_audit.query_events(db_path=audit_db) == []
     assert "--pipeline feature-dev" in answer
     assert "No pipeline was launched" in answer
 

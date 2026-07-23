@@ -208,6 +208,7 @@ def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
         "Add payments to the checkout",
         "Create customer databases",
         "Run data migrations",
+        "Change security settings",
         "Change the public API contract",
     )
     for request in requests:

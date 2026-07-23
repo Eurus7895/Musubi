@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
+from agent.scope import classify_task
 
 
 def test_outcome_packet_projects_worker_contract() -> None:
@@ -167,6 +168,20 @@ def test_medium_goal_requires_planner_before_coder() -> None:
 def test_simple_goal_has_no_role_order_constraint() -> None:
     state = GoalState.create("create page", "simple_artifact", "single_coder")
     assert state.next_role is None
+
+
+def test_goal_state_retains_initial_request_assessment() -> None:
+    hint = classify_task("Add authentication to the app")
+    state = GoalState.create(
+        "Add authentication to the app",
+        hint.kind.value,
+        hint.route,
+        assessment=hint.assessment,
+    )
+
+    assert state.assessment is hint.assessment
+    assert state.route == "plan_design_workflow"
+
 
 
 def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
