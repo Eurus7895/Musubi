@@ -93,8 +93,8 @@ async def run_subagent(
     # let the root starve a worker below its role budget (max_turns=2 for a
     # coder whose contract declares 8 guarantees a turn-cap escalation), and
     # a replacement worker re-spawned with the failed run's leftover count
-    # inherited that starvation. Roles without `maxTurns:` keep the server
-    # default via the untouched request.
+    # inherited that starvation. Roles without a valid `maxTurns:` omit any
+    # model-supplied cap so the server default is the sole owner.
     role_hint = str(spawn_args.get("role", ""))
     agent_md = _read_agent_md(role_hint, agents_dir)
     declared_turns = _frontmatter_max_turns(agent_md)
@@ -565,9 +565,8 @@ def _frontmatter_max_output_tokens(agent_md: str) -> int | None:
 def _frontmatter_max_turns(agent_md: str) -> int | None:
     """Positive per-role turn cap declared as `maxTurns:` frontmatter.
 
-    None when absent or invalid (non-int, bool, <= 0) — the caller falls back
-    to the spawning model's request / the server default, i.e. an undeclared
-    or broken contract grants nothing extra and removes nothing.
+    None when absent or invalid (non-int, bool, <= 0) — the caller omits any
+    model-supplied `max_turns`, leaving the server default as sole owner.
     """
     value = frontmatter_dict(agent_md).get("maxTurns")
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
