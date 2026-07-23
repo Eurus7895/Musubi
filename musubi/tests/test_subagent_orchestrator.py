@@ -199,13 +199,19 @@ def test_disallowed_role_surfaces_error_without_running_child() -> None:
 
 
 def test_child_max_turns_requires_recovery_before_root_success() -> None:
+    # The model asks for max_turns=1 but explorer.agent.md owns the cap (6):
+    # the child runs its full role budget, exhausts it on tool calls, and the
+    # escalation still blocks root success until recovered.
     router = FakeRouter([
         _spawn("explorer", "loop", max_turns=1),
-        # child cycle 0: keeps asking for a tool → exhausts max_turns=1
+    ] + [
+        # child cycles 0-5: keeps asking for a tool → exhausts the role cap
         LMResponse(stop_reason="tool_use", content=[{
-            "type": "tool_use", "id": "r1", "name": "musubi_read_file",
+            "type": "tool_use", "id": f"r{index}", "name": "musubi_read_file",
             "input": {"path": "README.md"},
-        }]),
+        }])
+        for index in range(6)
+    ] + [
         _text("[incomplete] reached the turn limit after reading README.md"),
         _text("done"),  # parent final
     ])
@@ -213,11 +219,11 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
-    assert router.calls[2]["tools"] == []
-    fed_back = str(router.calls[3]["messages"])
+    assert router.calls[7]["tools"] == []
+    fed_back = str(router.calls[8]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
-    assert "max_turns=1 reached" in fed_back
+    assert "max_turns=6 reached" in fed_back
 
 
 def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
@@ -494,15 +500,32 @@ def test_model_spawn_request_cannot_exceed_frontmatter_maxturns(
     assert run_unit_kwargs["max_cycles"] == 8
 
 
-def test_model_spawn_request_may_ask_for_fewer_turns(
+def test_model_spawn_request_cannot_reduce_frontmatter_maxturns(
     monkeypatch, tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    spawn, run_unit_kwargs = _run_direct_spawn(
+    """Role frontmatter is the SOLE owner of a direct worker's turn cap: the
+    spawning model can no longer starve a coder below its declared budget
+    (the observed failure handed max_turns=2 to a role whose contract
+    declares 8, guaranteeing a turn-cap escalation)."""
+    spawn, run_kwargs = _run_direct_spawn(
         monkeypatch, tmp_path,
-        agent_md=_CODER_MD_8, spawn_args={"max_turns": 2},
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 2},
     )
-    assert spawn["max_turns"] == 2
-    assert run_unit_kwargs["max_cycles"] == 2
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
+
+
+def test_replacement_receives_full_role_turn_budget(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, run_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 1, "brief": "[worker-replacement] continue"},
+    )
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
 
 
 def test_absent_spawn_request_uses_frontmatter_maxturns(

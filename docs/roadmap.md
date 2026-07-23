@@ -140,8 +140,9 @@ enforcement path for the same dimension.
   fair-share slice of the run budget charged through to the parent, so an early
   stage cannot spend a later stage's reserve, and allowance exhaustion finalizes
   the run once as `escalated`. The one-cap rule also covers direct workers: a
-  role's `maxTurns:` frontmatter clamps the spawn's turn budget (the model may
-  request fewer turns, never more), and a stage or worker that finishes on its
+  role's `maxTurns:` frontmatter clamps the spawn's turn budget
+  (direct-worker role frontmatter is authoritative; model-supplied turn
+  counts are ignored), and a stage or worker that finishes on its
   last allowed turn attaches a substrate-verified artifact manifest so the
   audit records done instead of a false escalation. Plan:
   [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md)
