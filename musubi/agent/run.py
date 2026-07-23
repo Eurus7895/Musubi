@@ -39,6 +39,7 @@ import sys
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,24 @@ _worker_log_label: contextvars.ContextVar[str] = (
 DEFAULT_MAX_DEPTH = 2
 
 
+class FailureKind(StrEnum):
+    """Typed cause of a worker's terminal failure, derived from control flow
+    (turn counters, marker branches, raised exceptions) — never from parsing
+    summary prose."""
+
+    TURN_CAP = "turn_cap"
+    BLOCKED = "blocked"
+    BUDGET = "budget"
+    POLICY = "policy"
+    UNKNOWN = "unknown"
+
+
+class RecoveryAction(StrEnum):
+    AUTO_REPLACE = "auto_replace"
+    ROOT_ANALYZE = "root_analyze"
+    HALT = "halt"
+
+
 @dataclass(frozen=True)
 class WorkerOutcome:
     """Terminal state retained by the parent for a possible replacement."""
@@ -148,6 +167,36 @@ class WorkerOutcome:
     status: str
     summary: str
     touched_files: tuple[str, ...] = ()
+    #: The firewalled brief this worker ran on — an automatic replacement
+    #: re-runs the same contract, not a paraphrase of it.
+    brief: str = ""
+    #: None on success or on a legacy/untyped failure (which keeps the
+    #: root-analysis path); set from control flow for typed failures.
+    failure_kind: FailureKind | None = None
+
+
+def decide_recovery(
+    outcome: WorkerOutcome,
+    *,
+    same_role_failures: int,
+    worker_slots: int,
+) -> RecoveryAction:
+    """Deterministic verdict for one terminal worker failure.
+
+    Exhausted worker slots or a second same-role failure always halt —
+    one audited continuation is the limit, never a replacement loop. A first
+    turn-cap failure that left real artifacts behind is genuinely unfinished
+    work: replace it automatically. Budget/policy failures stay fail-closed.
+    Everything else (blocked, unknown, no surviving evidence) goes to the
+    root's bounded analysis window.
+    """
+    if worker_slots <= 0 or same_role_failures >= 2:
+        return RecoveryAction.HALT
+    if outcome.failure_kind is FailureKind.TURN_CAP and outcome.touched_files:
+        return RecoveryAction.AUTO_REPLACE
+    if outcome.failure_kind in {FailureKind.BUDGET, FailureKind.POLICY}:
+        return RecoveryAction.HALT
+    return RecoveryAction.ROOT_ANALYZE
 
 
 @dataclass
@@ -212,6 +261,8 @@ class Orchestration:
         status: str,
         summary: str,
         touched_files: set[str] | tuple[str, ...] | list[str],
+        brief: str = "",
+        failure_kind: FailureKind | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -219,6 +270,8 @@ class Orchestration:
             status=status,
             summary=summary,
             touched_files=tuple(sorted(set(touched_files))),
+            brief=brief,
+            failure_kind=failure_kind,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -274,6 +327,114 @@ def _replacement_brief(original_brief: str, outcome: WorkerOutcome) -> str:
         "Complete missing acceptance criteria before optional enhancement.\n"
         "[/worker-replacement]"
     )
+
+
+async def _auto_recovery_transition(
+    session: ClientSession,
+    log: Any,
+    *,
+    vendor: LMRouter | None,
+    tools: list[dict[str, Any]],
+    spawn_catalog: list[dict[str, Any]] | None,
+    orchestration: Orchestration,
+    gateway: McpGateway | None,
+    compression_db_path: Path | None,
+    budget: TokenBudgetEnforcer | None,
+    stats: AgentRunStats | None,
+    audit_db_path: Path | None,
+    scope_hint: ScopeHint | None,
+) -> str | None:
+    """Deterministic recovery transitions before a root LM cycle.
+
+    Evaluates the newest unrecovered TYPED failure in a small loop:
+    AUTO_REPLACE synthesizes one `musubi_spawn_subagent` call and passes it
+    through `_dispatch` — never straight to `run_subagent` — so the root
+    worker ceiling, replacement brief injection, policy check, tool audit,
+    subagent audit, and touched-file tracking all apply (HI #8). HALT returns
+    the final `[incomplete]` text. ROOT_ANALYZE (and every untyped failure)
+    returns None, leaving the legacy bounded analysis window untouched.
+
+    Runs before the cycle counter and any model call: the transition itself
+    never increments `cycles_used` and never writes an `agent_cycles` row,
+    because no LM call occurred.
+    """
+    while True:
+        outcome = orchestration.latest_unrecovered_failure()
+        if outcome is None or outcome.failure_kind is None:
+            return None
+        same_role_failures = sum(
+            1 for prior in orchestration.worker_outcomes
+            if prior.role == outcome.role
+            and prior.status in {"failed", "escalated"}
+        )
+        worker_slots = (
+            orchestration.max_root_workers - orchestration.spawned_workers
+        )
+        action = decide_recovery(
+            outcome,
+            same_role_failures=same_role_failures,
+            worker_slots=worker_slots,
+        )
+        if action is RecoveryAction.ROOT_ANALYZE:
+            return None
+        if action is RecoveryAction.HALT:
+            if worker_slots <= 0:
+                reason = (
+                    f"root worker ceiling ({orchestration.max_root_workers}) "
+                    "was exhausted before the artifact could be completed"
+                )
+            elif same_role_failures >= 2:
+                reason = (
+                    f"a second {outcome.role} failure "
+                    f"({outcome.failure_kind.value}) ended the bounded "
+                    "recovery — one audited continuation is the limit"
+                )
+            else:
+                reason = (
+                    f"{outcome.role} failed with a non-recoverable "
+                    f"{outcome.failure_kind.value} failure"
+                )
+            print(f"[agent] recovery halt: {reason}", file=log)
+            return _recovery_incomplete(outcome, reason)
+        # AUTO_REPLACE — the model did not make this tool call, so no
+        # synthetic assistant message is appended; the spawn is synthesized
+        # and dispatched through the exact path a model call would take.
+        auto_tool_use = {
+            "type": "tool_use",
+            "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
+            "name": "musubi_spawn_subagent",
+            "input": {
+                "role": outcome.role,
+                "brief": outcome.brief,
+            },
+        }
+        print(
+            f"[agent] automatic recovery: {outcome.role} "
+            f"{outcome.failure_kind.value} -> audited replacement",
+            file=log,
+        )
+        outcomes_before = len(orchestration.worker_outcomes)
+        await _dispatch(
+            session, [auto_tool_use], log,
+            vendor=vendor, tools=(spawn_catalog or tools),
+            orchestration=orchestration, gateway=gateway,
+            compression_db_path=compression_db_path,
+            role="agent",
+            scope_hint=scope_hint,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
+        )
+        if len(orchestration.worker_outcomes) == outcomes_before:
+            # The spawn was refused or errored without producing a terminal
+            # outcome — retrying deterministically would loop, so fail closed.
+            return _recovery_incomplete(
+                outcome,
+                "the automatic replacement worker could not be started",
+            )
+        # Loop: a done replacement clears the failure (return None next
+        # pass); a failed one re-enters decide_recovery, where the second
+        # same-role failure halts.
 
 
 def _pipeline_recommendation(state: GoalState) -> str:
@@ -690,6 +851,39 @@ async def _run_loop(
     )
     effort_escalated = False
     for cycle in range(max_cycles):
+        # Deterministic recovery transition (root only), BEFORE the cycle
+        # counter and any LM cost: a typed recoverable failure gets its one
+        # audited same-role continuation through `_dispatch`; a typed
+        # non-recoverable one halts. No LM call happens in the transition, so
+        # it neither increments `cycles_used` nor writes an `agent_cycles` row.
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+        ):
+            transition_outcomes_before = len(orchestration.worker_outcomes)
+            transition_halt = await _auto_recovery_transition(
+                session, log,
+                vendor=vendor, tools=tools, spawn_catalog=spawn_catalog,
+                orchestration=orchestration, gateway=gateway,
+                compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
+                scope_hint=scope_hint,
+            )
+            if transition_halt is not None:
+                final_answer = transition_halt
+                break
+            if (
+                orchestration.goal_state is not None
+                and len(orchestration.worker_outcomes)
+                > transition_outcomes_before
+            ):
+                # A replacement ran: rebuild the compact goal-state delta from
+                # the newly recorded outcome so the SAME root LM cycle can
+                # conclude from fresh evidence.
+                messages = _compact_root_goal_messages(
+                    messages, orchestration.goal_state,
+                )
         cycles_used = cycle + 1
         root_state = (
             orchestration.goal_state

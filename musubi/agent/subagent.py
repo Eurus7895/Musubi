@@ -77,6 +77,7 @@ async def run_subagent(
     """
     # Lazy import avoids the run↔subagent module cycle.
     from agent.run import (
+        FailureKind,
         _call_tool_text,
         _worker_log_label,
         _worker_touched_files,
@@ -204,22 +205,45 @@ async def run_subagent(
             "BudgetExhaustedError",
             "TokenBudgetExhaustedError",
         }:
+            budget_summary = f"[subagent {role}] budget exhausted: {exc}"
             await _safe_complete(
                 session, handle_id, status="escalated",
-                summary=f"[subagent {role}] budget exhausted: {exc}",
+                summary=budget_summary,
             )
+            # Typed BUDGET evidence: the raise skips the normal recording
+            # below, and a budget failure must reach the parent as a
+            # fail-closed terminal, never as recoverable unfinished work.
+            if orchestration is not None:
+                orchestration.record_worker_outcome(
+                    role=role,
+                    status="escalated",
+                    summary=budget_summary,
+                    touched_files=touched,
+                    brief=brief,
+                    failure_kind=FailureKind.BUDGET,
+                )
         raise
     finally:
         _worker_touched_files.reset(token)
         _worker_log_label.reset(label_token)
+    # Typed failure evidence, derived from CONTROL FLOW (which branch
+    # terminated the worker), never from parsing summary prose (HI #1-adjacent:
+    # deterministic, no judgement call).
+    failure_kind = None
     done_artifacts: list[str] | None = None
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
+        failure_kind = FailureKind.TURN_CAP
     elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
         # A typed incomplete/blocked marker (e.g. a truncated tool call caught
         # mid-mutation) is always an escalation, even at the turn cap.
         summary, status = answer, "escalated"
+        failure_kind = (
+            FailureKind.BLOCKED
+            if answer.lstrip().lower().startswith("[blocked]")
+            else FailureKind.UNKNOWN
+        )
     elif turns >= max_turns:
         # Force-concluded at the turn cap. That is a real escalation ONLY if the
         # deliverable is not already produced. If the forced-final answer
@@ -237,6 +261,7 @@ async def run_subagent(
             summary, status = answer, "done"
         else:
             summary, status = answer, "escalated"
+            failure_kind = FailureKind.TURN_CAP
     else:
         summary, status = answer, "done"
 
@@ -273,12 +298,22 @@ async def run_subagent(
         in {"done", "failed", "escalated", "abandoned"}
         else status
     )
+    # Keep the typed kind consistent with the status the substrate actually
+    # recorded: a success carries no failure kind, and a harness-side
+    # turn-cap coercion (driver said done, substrate re-verified and said
+    # escalated at the cap) is still control-flow-derivable as TURN_CAP.
+    if recorded_status == "done":
+        failure_kind = None
+    elif failure_kind is None and turns >= max_turns:
+        failure_kind = FailureKind.TURN_CAP
     if orchestration is not None:
         orchestration.record_worker_outcome(
             role=role,
             status=recorded_status,
             summary=returned_summary,
             touched_files=touched,
+            brief=brief,
+            failure_kind=failure_kind,
         )
     return returned_summary
 

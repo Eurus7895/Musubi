@@ -100,6 +100,8 @@ def test_run_subagent_records_terminal_outcome_for_parent_recovery(
         status="failed",
         summary="[incomplete] verified partial",
         touched_files=("dashboard.html",),
+        brief="finish it",
+        failure_kind=run_mod.FailureKind.UNKNOWN,
     )
 
 

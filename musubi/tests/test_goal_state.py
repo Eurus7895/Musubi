@@ -215,3 +215,66 @@ def test_manifest_unknowns_set_pending_clarification() -> None:
     assert state.route == "ask_scope"
     assert state.pending_clarification is not None
     assert "deployment target" in state.pending_clarification
+
+
+# ── typed recovery decisions ─────────────────────────────────────────────────
+
+from agent.run import FailureKind, RecoveryAction, WorkerOutcome, decide_recovery  # noqa: E402
+
+
+def _turn_cap_outcome(*, files: tuple[str, ...]) -> WorkerOutcome:
+    return WorkerOutcome(
+        role="coder", status="escalated", summary="unfinished scaffold",
+        touched_files=files, brief="create the scaffold",
+        failure_kind=FailureKind.TURN_CAP,
+    )
+
+
+def test_first_turn_cap_with_files_auto_replaces() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.AUTO_REPLACE
+
+
+def test_repeated_turn_cap_halts_instead_of_looping() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=2, worker_slots=1,
+    ) is RecoveryAction.HALT
+
+
+def test_turn_cap_without_files_needs_root_analysis() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=()),
+        same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.ROOT_ANALYZE
+
+
+def test_exhausted_worker_slots_halt() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=1, worker_slots=0,
+    ) is RecoveryAction.HALT
+
+
+def test_budget_and_policy_failures_halt_fail_closed() -> None:
+    for kind in (FailureKind.BUDGET, FailureKind.POLICY):
+        outcome = WorkerOutcome(
+            role="coder", status="escalated", summary="stopped",
+            touched_files=("app/page.tsx",), brief="b", failure_kind=kind,
+        )
+        assert decide_recovery(
+            outcome, same_role_failures=1, worker_slots=1,
+        ) is RecoveryAction.HALT
+
+
+def test_blocked_failure_routes_to_root_analysis() -> None:
+    outcome = WorkerOutcome(
+        role="coder", status="escalated", summary="[blocked] too large",
+        touched_files=("app/page.tsx",), brief="b",
+        failure_kind=FailureKind.BLOCKED,
+    )
+    assert decide_recovery(
+        outcome, same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.ROOT_ANALYZE

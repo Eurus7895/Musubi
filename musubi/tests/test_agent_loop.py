@@ -2713,3 +2713,147 @@ def test_manifest_clarification_returns_before_any_model_call() -> None:
     assert router.calls == []
     assert answer is not None
     assert "deployment target" in answer
+
+
+def test_turn_cap_failure_auto_spawns_one_audited_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A typed TURN_CAP coder failure with surviving files triggers exactly ONE
+    # automatic same-role replacement through _dispatch (the audited path),
+    # BEFORE the next root LM call. The replacement completes done, the root
+    # concludes success, and it never emits the recovery-incomplete marker.
+    from agent import run as run_mod
+    from agent.run import FailureKind
+
+    state = GoalState.create(
+        "build the scaffold", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root", goal_state=state, spawned_workers=1,
+    )
+    # Primary coder already failed at its turn cap with a real artifact.
+    orchestration.record_worker_outcome(
+        role="coder",
+        status="escalated",
+        summary="[incomplete] scaffold unfinished at turn cap",
+        touched_files={"app/page.tsx"},
+        brief="build the scaffold",
+        failure_kind=FailureKind.TURN_CAP,
+    )
+
+    dispatched: list[dict[str, Any]] = []
+
+    async def fake_dispatch(session, tool_uses, log, **kwargs):  # noqa: ANN001
+        # The synthesized auto-recovery spawn: record a done replacement so the
+        # failure clears, and prove it flowed through _dispatch with the spawn.
+        dispatched.append(tool_uses[0])
+        kwargs["orchestration"].spawned_workers += 1
+        kwargs["orchestration"].record_worker_outcome(
+            role="coder",
+            status="done",
+            summary="summary: scaffold completed",
+            touched_files={"app/page.tsx"},
+            brief="build the scaffold",
+        )
+        return [{
+            "type": "tool_result",
+            "tool_use_id": tool_uses[0]["id"],
+            "content": "scaffold completed",
+        }]
+
+    monkeypatch.setattr(run_mod, "_dispatch", fake_dispatch)
+    spawn_tool = {
+        "name": "musubi_spawn_subagent",
+        "description": "spawn",
+        "input_schema": {"type": "object"},
+    }
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "scaffold delivered"}],
+        ),
+    ])
+    log = io.StringIO()
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [spawn_tool],
+        [
+            {"role": "system", "content": "stable root prompt"},
+            {"role": "user", "content": "build the scaffold"},
+        ],
+        max_cycles=3,
+        log=log,
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    # Exactly one synthesized replacement spawn, through _dispatch.
+    assert len(dispatched) == 1
+    assert dispatched[0]["name"] == "musubi_spawn_subagent"
+    assert dispatched[0]["input"] == {"role": "coder", "brief": "build the scaffold"}
+    # The root then made ONE LM call and concluded from fresh evidence.
+    assert cycles == 1
+    assert answer == "scaffold delivered"
+    assert "root ended recovery without a successful replacement worker" not in answer
+    assert "automatic recovery: coder turn_cap -> audited replacement" in log.getvalue()
+    # Two coder outcomes total: the failed primary and the done replacement.
+    coder = [o for o in orchestration.worker_outcomes if o.role == "coder"]
+    assert [o.status for o in coder] == ["escalated", "done"]
+
+
+def test_second_turn_cap_failure_halts_without_third_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If the automatic replacement ALSO fails at its turn cap, the bounded
+    # recovery halts fail-closed: no third worker, a deterministic
+    # [incomplete] result, and zero root LM calls.
+    from agent import run as run_mod
+    from agent.run import FailureKind
+
+    state = GoalState.create(
+        "build the scaffold", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root", goal_state=state, spawned_workers=1,
+    )
+    orchestration.record_worker_outcome(
+        role="coder", status="escalated",
+        summary="[incomplete] first cap", touched_files={"app/page.tsx"},
+        brief="build the scaffold", failure_kind=FailureKind.TURN_CAP,
+    )
+
+    replacements: list[dict[str, Any]] = []
+
+    async def fake_dispatch(session, tool_uses, log, **kwargs):  # noqa: ANN001
+        replacements.append(tool_uses[0])
+        kwargs["orchestration"].spawned_workers += 1
+        kwargs["orchestration"].record_worker_outcome(
+            role="coder", status="escalated",
+            summary="[incomplete] second cap", touched_files={"app/page.tsx"},
+            brief="build the scaffold", failure_kind=FailureKind.TURN_CAP,
+        )
+        return [{"type": "tool_result", "tool_use_id": tool_uses[0]["id"],
+                 "content": "still unfinished"}]
+
+    monkeypatch.setattr(run_mod, "_dispatch", fake_dispatch)
+    router = FakeRouter([])
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [{"name": "musubi_spawn_subagent", "description": "spawn",
+          "input_schema": {"type": "object"}}],
+        [{"role": "user", "content": "build the scaffold"}],
+        max_cycles=3,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    # Exactly one automatic replacement attempt, then halt — no third worker.
+    assert len(replacements) == 1
+    assert router.calls == []
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "one audited continuation is the limit" in answer
