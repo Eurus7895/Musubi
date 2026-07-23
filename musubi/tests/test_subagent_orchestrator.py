@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -305,6 +306,115 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
     assert "max_turns=6 reached" in fed_back
+
+
+def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root_cycle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    primary_summary = (
+        "status: incomplete\n"
+        "files_changed:\n- recovery.html\n"
+        "summary: primary coder left recovery.html ready for continuation\n"
+    )
+    router = FakeRouter([
+        _spawn("coder", "create recovery.html"),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use", "id": "write-recovery",
+            "name": "musubi_write_file", "input": {
+                "path": "recovery.html",
+                "content": "<!doctype html><title>Recovery</title>",
+            },
+        }]),
+        *[
+            LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": f"read-recovery-{index}",
+                "name": "musubi_read_file", "input": {"path": "recovery.html"},
+            }])
+            for index in range(7)
+        ],
+        _text(primary_summary),
+        _text(
+            "status: done\n"
+            "files_changed:\n- recovery.html\n"
+            "summary: replacement coder completed recovery.html\n"
+        ),
+        _text("done"),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "create recovery.html", router, _musubi_dir(), log=io.StringIO(),
+    ))
+
+    assert answer == "done"
+    assert (tmp_path / "recovery.html").read_text(encoding="utf-8") == (
+        "<!doctype html><title>Recovery</title>"
+    )
+    assert len(router.calls) == 12
+
+    audit_db = tmp_path / "data" / "audit.db"
+    with sqlite3.connect(audit_db) as conn:
+        conn.row_factory = sqlite3.Row
+        audit_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT handle_id, event, brief, final_status, escalated, turns "
+                "FROM subagent_audit WHERE role = 'coder' ORDER BY id"
+            )
+        ]
+
+    assert len(audit_rows) == 4
+    primary_handle = audit_rows[0]["handle_id"]
+    replacement_handle = audit_rows[2]["handle_id"]
+    assert primary_handle != replacement_handle
+    assert [(row["handle_id"], row["event"]) for row in audit_rows] == [
+        (primary_handle, "spawned"), (primary_handle, "completed"),
+        (replacement_handle, "spawned"), (replacement_handle, "completed"),
+    ]
+    assert audit_rows[1]["final_status"] == "escalated"
+    assert audit_rows[1]["escalated"] == 1
+    assert audit_rows[1]["turns"] == 8
+    assert audit_rows[3]["final_status"] == "done"
+    assert audit_rows[3]["escalated"] == 0
+    assert audit_rows[3]["turns"] == 1
+    replacement_brief = audit_rows[2]["brief"]
+    assert "[worker-replacement]" in replacement_brief
+    assert "Touched files: recovery.html" in replacement_brief
+    assert f"Prior summary: {primary_summary}" in replacement_brief
+
+    state_db = tmp_path / "data" / "musubi.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.row_factory = sqlite3.Row
+        sub_sessions = [
+            dict(row) for row in conn.execute(
+                "SELECT handle_id, parent_session_id, brief, status, escalated, turns "
+                "FROM sub_sessions WHERE role = 'coder' ORDER BY rowid"
+            )
+        ]
+        assert len(sub_sessions) == 2
+        parent_session_id = sub_sessions[0]["parent_session_id"]
+        cycle_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT worker_id, stage, cycle_idx FROM agent_cycles "
+                "WHERE session_id = ? ORDER BY id", (parent_session_id,),
+            )
+        ]
+
+    assert [row["handle_id"] for row in sub_sessions] == [primary_handle, replacement_handle]
+    assert [(row["status"], row["escalated"], row["turns"]) for row in sub_sessions] == [
+        ("escalated", 1, 8), ("done", 0, 1),
+    ]
+    assert "[worker-replacement]" in sub_sessions[1]["brief"]
+    assert "Touched files: recovery.html" in sub_sessions[1]["brief"]
+    assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
+
+    assert len(cycle_rows) == len(router.calls) == 12
+    assert [row["worker_id"] for row in cycle_rows].count("root") == 2
+    assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
+    assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
+    assert {row["worker_id"] for row in cycle_rows} == {
+        "root", primary_handle, replacement_handle,
+    }
 
 
 def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
