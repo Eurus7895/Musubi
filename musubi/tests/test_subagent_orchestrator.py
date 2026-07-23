@@ -541,13 +541,14 @@ def test_absent_spawn_request_uses_frontmatter_maxturns(
     assert run_unit_kwargs["max_cycles"] == 5
 
 
-def test_undeclared_frontmatter_leaves_spawn_request_untouched(
+def test_role_without_maxturns_uses_server_default(
     monkeypatch, tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    spawn, _ = _run_direct_spawn(
-        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={},
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={"max_turns": 1},
     )
     assert "max_turns" not in spawn
+    assert run_unit_kwargs["max_cycles"] == 8
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────

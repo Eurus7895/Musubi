@@ -107,6 +107,12 @@ async def run_subagent(
                 file=log,
             )
         spawn_args = {**spawn_args, "max_turns": declared_turns}
+    else:
+        # With no role-owned declaration, omit any model-supplied value so
+        # the substrate's server default remains the sole owner of the cap.
+        spawn_args = {**spawn_args}
+        spawn_args.pop("max_turns", None)
+
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
