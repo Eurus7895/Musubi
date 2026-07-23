@@ -19,8 +19,7 @@ native operator surfaces:
   azure-on-prem (via curl) / genai_farm (on-prem; SDK by default, curl
   fallback) / ollama, selected by `.musubi/llm.json` profiles. One **worker
   model** (`agent/run.py::run_unit`): no main-vs-sub split — only workers at
-  a depth, run **in parallel**, nesting to depth 2, able to **summon
-  pipelines** (incl. user-defined preset pipelines); pipeline stages nest
+  a depth, run **in parallel**, nesting to depth 2; pipeline stages nest
   when their pipeline.yaml declares `spawns:`. Workers offload bounded work
   and return compact summaries so the orchestrator's context stays small.
   First run: `musubi setup`.
@@ -43,7 +42,9 @@ native operator surfaces:
 
 Pipelines are recipes of workers composed from presets
 (`.github/pipelines/presets/`), run deterministically via `--pipeline` or
-summoned by a worker via `musubi_spawn_pipeline`. Stages nest (spawn helper
+launched from Console Orchestrator Pipeline mode — user-invoked only;
+`musubi_spawn_pipeline` stays off the agent tool surface (policy locked
+decision #4, `musubi/tool_surface.py`). Stages nest (spawn helper
 workers) only when their pipeline.yaml declares `spawns:` for the role.
 
 ---
@@ -68,7 +69,7 @@ musubi setup
 agent "add a login endpoint and a test"
 agent "<task>" --profile azure.work          # on-prem endpoint
 agent "<task>" --profile deepseek.cloud      # DeepSeek API
-agent "<task>" --vendor ollama --model llama3.1
+agent "<task>" --profile ollama.local        # local Ollama, no key
 
 # Deterministic staged run (governed pipeline + evaluator firewall)
 agent "add a login endpoint" --pipeline feature-dev

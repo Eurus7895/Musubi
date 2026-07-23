@@ -33,7 +33,7 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 
 | Surface | When | What you get |
 |---|---|---|
-| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers, depth-2 nesting, and summonable pipelines (incl. user-defined preset pipelines); any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic. Configure with `musubi setup`. |
+| `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers with depth-2 nesting; any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic. Configure with `musubi setup`. |
 | `agent "<brief>" --pipeline <name>` | deterministic staged runs | the governed pipeline recipes (`feature-dev`, `code-review`, `dev-lite`, or your own presets) with the evaluator firewall and stage audit |
 | Console (GUI) | start, observe, and resume governed sessions | native Tauri operator surface; launches the standalone driver on explicit submission and reads orchestration/audit state from `audit.db` |
 
@@ -306,11 +306,14 @@ lean.
   per-role width cap.
 - **Nesting.** A role that declares a `spawn_allowlist:` may summon its own
   workers, up to a depth cap (default 2); leaf roles never gain the spawn tool.
-- **Pipelines.** `musubi_spawn_pipeline(name, brief)` runs an ordered recipe of
-  workers — each stage's summary feeds the next, the evaluator sees only the
-  prior stage. Users define their own pipelines by composing **presets**
-  (`.github/pipelines/presets/`), validated fail-closed at boot. See
-  `.github/pipelines/presets/README.md`.
+- **Pipelines.** A pipeline is an ordered recipe of workers — each stage's
+  summary feeds the next, the evaluator sees only the prior stage. Pipelines
+  are **user-invoked** (`agent "<brief>" --pipeline <name>` or Console
+  Orchestrator Pipeline mode); `musubi_spawn_pipeline` is deliberately off the
+  root agent surface (policy locked decision #4, `musubi/tool_surface.py`) so
+  the driver cannot silently route a task into a multi-stage run. Users define
+  their own pipelines by composing **presets** (`.github/pipelines/presets/`),
+  validated fail-closed at boot. See `.github/pipelines/presets/README.md`.
 
 ## Console (GUI — operator view)
 

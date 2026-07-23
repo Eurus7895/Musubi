@@ -59,6 +59,19 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    "no skill evidence"; `planner` has an empty skill allowlist and remains
    skill-less by design.
 
+2. **Governed change assessment and recovery liveness.** Replace lexical-only
+   mutation scope guesses with a two-phase ambiguity/impact/risk assessment:
+   broad underspecified product requests stop at one deterministic clarification,
+   while a bounded planner `ChangeManifest` reclassifies blast radius before
+   mutation. Make direct-worker role frontmatter the sole turn-cap owner and
+   give a genuinely unfinished turn-capped mutate worker exactly one audited
+   same-role continuation through the normal firewall/spawn path; repeated
+   failure and exhausted worker/token budgets remain fail-closed. This corrects
+   the current gap where the model may shrink a worker below its role budget and
+   recovery liveness depends on the root voluntarily selecting the spawn tool.
+   Plan:
+   [`2026-07-22-governed-scope-budget-recovery.md`](./superpowers/plans/2026-07-22-governed-scope-budget-recovery.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
@@ -92,19 +105,6 @@ enforcement path for the same dimension.
   run that is actually producing, and the remaining budget would not fund a
   fresh successful worker anyway. This does not fix a weak model — the real fix
   is a stronger driver — it only caps the wasted spend fail-fast.
-- **Incomplete-artifact continuation policy.** Decide whether an exhausted
-  mutate worker may receive exactly one audited continuation spawn without
-  weakening the cumulative root-run worker ceiling. Root routing owns this
-  policy; it is design-gated and is not part of per-call output-token sizing.
-  The continuation brief must remain firewalled and bounded to audited artifact
-  state such as path, bytes, and digest.
-  Narrowed: a worker force-concluded at its turn cap that self-declares done
-  now completes as done when its surviving mutated files verify non-empty —
-  claimed by the driver as an `artifacts` manifest and independently re-checked
-  on disk by the substrate (`sub_sessions.complete`), which otherwise keeps its
-  fail-closed turn-cap coercion; the wall-clock rule is never waived. So
-  continuation is only for genuinely unfinished artifacts, not for runs that
-  merely spent their last turns on post-write verification.
 - **Lines-of-substrate vs lines-of-skill ratio.** Track whether capability
   growth is moving into durable substrate and reusable skills rather than
   one-off prompt scaffolding.

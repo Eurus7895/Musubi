@@ -291,7 +291,8 @@ returns only a compact summary, so the orchestrator's context stays small.
   back. Every spawn is policy-checked and audited (`musubi_query_subagent_events`).
 - **Catalog modes.** Root, direct worker, pipeline-stage, and meta-agent prompts
   live under separate `.github/agents/` purpose directories. Direct standalone
-  workers use `workers/<role>.agent.md`; pipeline slash commands use
+  workers use `workers/<role>.agent.md`; pipeline stages resolve
+  `workers/<role>.agent.md` first, then
   `pipeline-stages/<pipeline>/<role>.agent.md`; legacy flat files remain as
   fallback during migration.
 - **Tool catalogs.** The root model sees the small `agent` surface. Workers are
@@ -304,10 +305,14 @@ returns only a compact summary, so the orchestrator's context stays small.
 - **Nesting.** A worker whose prompt declares a `spawn_allowlist` may summon its
   own workers, up to a depth cap (default 2). Direct worker prompts are leaves
   by default.
-- **Pipelines.** A worker can summon a whole **pipeline** —
-  `musubi_spawn_pipeline(pipeline_name, brief)` — an ordered recipe of workers
-  where each stage's summary feeds the next and the evaluator (last stage) sees
-  only the prior stage (the firewall, generalised). Each stage receives its
+- **Pipelines.** A pipeline is an ordered recipe of workers where each stage's
+  summary feeds the next and the evaluator (last stage) sees only the prior
+  stage (the firewall, generalised). Pipelines are **user-invoked** — `agent
+  "<brief>" --pipeline <name>` or Console Orchestrator Pipeline mode;
+  `musubi_spawn_pipeline` stays registered in the full surface but is
+  deliberately off the root agent surface (policy locked decision #4,
+  `musubi/tool_surface.py`), so the driver cannot silently route a task into a
+  multi-stage run. Each stage receives its
   role skill through the spawn context (HI #2, same push path as a direct
   worker) and resolves its prompt from `workers/<role>.agent.md`, falling back
   to `pipeline-stages/<pipeline>/<role>.agent.md`; a role with **no prompt in
