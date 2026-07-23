@@ -1491,6 +1491,7 @@ def musubi_spawn_subagent(
     ):
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": _policy.subagent_deny_reason(
                 parent_agent_name, role, pipeline_name=pipeline_name,
             ),
@@ -1516,6 +1517,7 @@ def musubi_spawn_subagent(
     if not effective_tools:
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": (
                 f"No tools available for sub-agent role {role!r} after "
                 f"intersecting with caller's allow-list. "
@@ -1532,6 +1534,7 @@ def musubi_spawn_subagent(
         if skill_choice not in role_skills:
             return json.dumps({
                 "status": "error",
+                "error_kind": "policy_denied",
                 "error": (
                     f"Skill {skill_choice!r} is not permitted for worker role "
                     f"{role!r}."
@@ -1629,6 +1632,7 @@ def musubi_spawn_pipeline(
     if len(plan) < 2:
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": (
                 f"pipeline {pipeline_name!r} is not a registered multi-stage "
                 f"pipeline (resolved stages: {[p['stage'] for p in plan]})"
@@ -1686,12 +1690,14 @@ def musubi_spawn_pipeline_stage(
     if stage not in composer.active_stages(pipeline_name):
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": f"stage {stage!r} is not active in pipeline {pipeline_name!r}",
         })
     role = composer.agent_for_stage(pipeline_name, stage)
     if not role:
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": f"no agent for stage {stage!r} in pipeline {pipeline_name!r}",
         })
     if state.get_session(pipeline_session_id) is None:

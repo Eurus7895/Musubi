@@ -141,6 +141,23 @@ _worker_log_label: contextvars.ContextVar[str] = (
 DEFAULT_MAX_DEPTH = 2
 
 
+class PolicyDeniedError(RuntimeError):
+    """Terminal policy control flow; never expose it as a tool-result string."""
+
+    def __init__(self, *, role: str, tool: str, reason: str) -> None:
+        self.role = role
+        self.tool = tool
+        self.reason = reason
+        super().__init__(f"{role} denied {tool}: {reason}")
+
+
+def _policy_incomplete(error: PolicyDeniedError) -> str:
+    return (
+        f"[incomplete] policy denied for role {error.role!r} while calling "
+        f"{error.tool!r}: {error.reason}"
+    )
+
+
 class FailureKind(StrEnum):
     """Typed cause of a worker's terminal failure, derived from control flow
     (turn counters, marker branches, raised exceptions) — never from parsing
@@ -776,6 +793,8 @@ async def run_agent(
                     audit_worker_id="root",
                     audit_stage="agent",
                 )
+        except PolicyDeniedError as exc:
+            final_answer = _policy_incomplete(exc)
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
 
@@ -1236,18 +1255,43 @@ async def _run_loop(
             break
 
         outcomes_before = len(root_state.outcomes) if root_state is not None else 0
-        tool_results = await _dispatch(
-            session, tool_uses, log,
-            vendor=vendor, tools=(spawn_catalog or tools),
-            orchestration=orchestration, gateway=gateway,
-            compression_db_path=compression_db_path,
-            role=role,
-            scope_hint=scope_hint,
-            cycle_index=cycle,
-            budget=budget,
-            stats=stats,
-            audit_db_path=audit_db_path,
-        )
+        try:
+            tool_results = await _dispatch(
+                session, tool_uses, log,
+                vendor=vendor, tools=(spawn_catalog or tools),
+                orchestration=orchestration, gateway=gateway,
+                compression_db_path=compression_db_path,
+                role=role,
+                scope_hint=scope_hint,
+                cycle_index=cycle,
+                budget=budget,
+                stats=stats,
+                audit_db_path=audit_db_path,
+            )
+        except PolicyDeniedError as exc:
+            is_root = (
+                role == "agent"
+                and (orchestration is None or orchestration.depth == 0)
+            )
+            if not is_root:
+                raise
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=time.time(),
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[str(tu.get("name", "")) for tu in tool_uses],
+                text_chars=len(text),
+                cycle_status="policy_halt",
+                log=log,
+            )
+            final_answer = _policy_incomplete(exc)
+            break
         recovery_halt: str | None = None
         if role == "agent" and orchestration is not None and orchestration.depth == 0:
             requested_replacement = any(
@@ -2250,6 +2294,52 @@ def _charge_budget_postflight(
         )
 
 
+def _preflight_policy_batch(
+    tool_uses: list[dict[str, Any]],
+    *,
+    role: str,
+    orchestration: Orchestration | None,
+    audit_db_path: Path | None,
+    log: Any,
+) -> None:
+    call_role = (
+        orchestration.parent_agent_name
+        if orchestration is not None and orchestration.parent_agent_name
+        else role
+    )
+    session_id = orchestration.parent_session_id if orchestration else None
+    audit_path = audit_db_path or _default_audit_db_path()
+    for tu in tool_uses:
+        name = str(tu.get("name", ""))
+        if not is_musubi_tool(name):
+            continue
+        decision = evaluate_tool_call(call_role, name)
+        if decision.allowed:
+            continue
+        args = tu.get("input") or {}
+        denied = (
+            f"[policy denied] {decision.reason}"
+            f"{denied_tool_guidance(call_role, name)}"
+        )
+        print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_tool_audit(
+            session_id=session_id,
+            role=call_role,
+            tool=name,
+            args=json_args(args),
+            status="denied",
+            db_path=audit_path,
+            result_text=denied,
+            log=log,
+        )
+        raise PolicyDeniedError(
+            role=call_role,
+            tool=name,
+            reason=decision.reason,
+        )
+
+
 async def _dispatch(
     session: ClientSession,
     tool_uses: list[dict[str, Any]],
@@ -2280,6 +2370,13 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound. Direct
     root runs also share a classifier-independent cumulative worker ceiling.
     """
+    _preflight_policy_batch(
+        tool_uses,
+        role=role,
+        orchestration=orchestration,
+        audit_db_path=audit_db_path,
+        log=log,
+    )
     refused = _spawn_overflow_reasons(
         tool_uses,
         log,
@@ -2303,6 +2400,8 @@ async def _dispatch(
                     stats=stats,
                     audit_db_path=audit_db_path,
                 ))
+            except PolicyDeniedError:
+                raise
             except Exception as exc:  # noqa: BLE001 - match gather semantics
                 settled.append(exc)
     else:
@@ -2324,6 +2423,8 @@ async def _dispatch(
 
     results: list[dict[str, Any]] = []
     for tu, outcome in zip(tool_uses, settled):
+        if isinstance(outcome, PolicyDeniedError):
+            raise outcome
         if isinstance(outcome, BaseException):
             content = f"[dispatch error] {type(outcome).__name__}: {outcome}"
         else:
@@ -2513,7 +2614,11 @@ async def _dispatch_one(
                 result_text=denied,
                 log=log,
             )
-            return denied
+            raise PolicyDeniedError(
+                role=call_role,
+                tool=name,
+                reason=decision.reason,
+            )
 
     arg_error = _file_tool_argument_error(name, args)
     if arg_error is not None:
@@ -2560,6 +2665,8 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
             result = f"[pipeline error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(
@@ -2617,6 +2724,8 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
             result = f"[subagent error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(

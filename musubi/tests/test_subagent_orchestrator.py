@@ -105,6 +105,77 @@ def test_run_subagent_records_terminal_outcome_for_parent_recovery(
     )
 
 
+def test_run_subagent_records_policy_failure_without_replacement(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    completed: dict[str, Any] = {}
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_spawn_subagent":
+                payload = (
+                    '{"status":"spawned","handle_id":"h-policy",'
+                    '"role":"coder","max_turns":8}'
+                )
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"finish it",'
+                    '"role_skill":null,"allowed_tools":[]}'
+                )
+            elif name == "musubi_complete_subagent":
+                completed.update(arguments)
+                payload = json.dumps({
+                    "status": "recorded",
+                    "final_status": arguments["status"],
+                    "summary": arguments["summary"],
+                })
+            else:
+                raise AssertionError(name)
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        raise run_mod.PolicyDeniedError(
+            role="coder",
+            tool="musubi_new_session",
+            reason="session-management tool is reserved for the root agent",
+        )
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "finish it", "parent_session_id": "parent"},
+        FakeRouter([]),
+        [],
+        io.StringIO(),
+        agents_dir=tmp_path,
+        orchestration=orchestration,
+    ))
+
+    assert result.startswith("[incomplete]")
+    assert completed["status"] == "escalated"
+    outcome = orchestration.latest_unrecovered_failure()
+    assert outcome is not None
+    assert outcome.failure_kind is run_mod.FailureKind.POLICY
+    assert run_mod.decide_recovery(
+        outcome,
+        same_role_failures=1,
+        worker_slots=1,
+    ) is run_mod.RecoveryAction.HALT
+
 def _text(s: str) -> LMResponse:
     return LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": s}])
 
@@ -180,21 +251,29 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
 # ── deny path: an un-spawnable role surfaces the harness error verbatim ─────
 
 
-def test_disallowed_role_surfaces_error_without_running_child() -> None:
+def test_disallowed_role_policy_denial_is_terminal_without_running_child() -> None:
     router = FakeRouter([
-        _spawn("saboteur", "do something"),  # unknown role → fail-closed deny
-        _text("acknowledged"),
+        _spawn("saboteur", "do something"),
+        _text("this response must not be consumed"),
     ])
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
-    assert answer == "acknowledged"
-    # Only two LM calls — the harness rejected the spawn, no child loop ran.
-    assert len(router.calls) == 2
-    fed_back = "".join(
-        b["content"] for m in router.calls[1]["messages"]
-        if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
-    )
-    assert '"status": "error"' in fed_back and "saboteur" in fed_back
+    assert answer.startswith("[incomplete]")
+    assert "saboteur" in answer
+    assert len(router.calls) == 1
+
+
+def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> None:
+    import server
+
+    denied = json.loads(server.musubi_spawn_subagent(
+        parent_session_id="not-created",
+        parent_agent_name="agent",
+        role="saboteur",
+        brief="do something",
+    ))
+
+    assert denied["status"] == "error"
+    assert denied["error_kind"] == "policy_denied"
 
 
 # ── escalation: child that won't stop is killed, parent still completes ─────

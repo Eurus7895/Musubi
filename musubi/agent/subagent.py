@@ -78,7 +78,9 @@ async def run_subagent(
     # Lazy import avoids the run↔subagent module cycle.
     from agent.run import (
         FailureKind,
+        PolicyDeniedError,
         _call_tool_text,
+        _policy_incomplete,
         _worker_log_label,
         _worker_touched_files,
         run_unit,
@@ -117,6 +119,12 @@ async def run_subagent(
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
     if spawn.get("status") != "spawned":
+        if spawn.get("error_kind") == "policy_denied":
+            raise PolicyDeniedError(
+                role=str(spawn_args.get("parent_agent_name") or "agent"),
+                tool="musubi_spawn_subagent",
+                reason=str(spawn.get("error") or "subagent spawn denied"),
+            )
         return raw
     handle_id = str(spawn.get("handle_id", ""))
     role = str(spawn.get("role") or role_hint)
@@ -206,6 +214,25 @@ async def run_subagent(
             audit_worker_id=handle_id,
             audit_stage=role,
         )
+    except PolicyDeniedError as exc:
+        policy_summary = _policy_incomplete(exc)
+        await _safe_complete(
+            session,
+            handle_id,
+            status="escalated",
+            summary=policy_summary,
+        )
+        if orchestration is not None:
+            orchestration.record_worker_outcome(
+                role=role,
+                status="escalated",
+                summary=policy_summary,
+                touched_files=touched,
+                brief=brief,
+                failure_kind=FailureKind.POLICY,
+                pushed_skill_id=spawn_args.get("pushed_skill_id"),
+            )
+        return policy_summary
     except Exception as exc:
         if type(exc).__name__ in {
             "BudgetExhaustedError",

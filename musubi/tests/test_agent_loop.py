@@ -815,7 +815,8 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
     session = _FakeToolSession()
     audit_db = tmp_path / "audit.db"
 
-    result = asyncio.run(
+    with pytest.raises(run_mod.PolicyDeniedError) as denied:
+        asyncio.run(
         run_mod._dispatch_one(
             {
                 "id": "call-denied",
@@ -832,11 +833,11 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
             compression_db_path=None,
             audit_db_path=audit_db,
         )
-    )
+        )
 
-    assert "[policy denied]" in result
-    assert "spawn `coder`" in result
-    assert "do not retry" in result
+    assert denied.value.role == "agent"
+    assert denied.value.tool == "musubi_write_file"
+    assert "capability Write is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
         ("DENY", "agent", "musubi_write_file")
@@ -846,6 +847,95 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
     ]
 
 
+def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    session = _FakeToolSession("read result")
+    audit_db = tmp_path / "audit.db"
+    tool_uses = [
+        {
+            "id": "allowed-read",
+            "name": "musubi_read_file",
+            "input": {"path": "README.md"},
+        },
+        {
+            "id": "denied-driver-only",
+            "name": "musubi_complete_subagent",
+            "input": {"handle_id": "h", "summary": "forged"},
+        },
+    ]
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(
+            run_mod._dispatch(
+                session,
+                tool_uses,
+                io.StringIO(),
+                vendor=None,
+                tools=[],
+                orchestration=Orchestration(
+                    parent_session_id="parent",
+                    parent_agent_name="agent",
+                ),
+                gateway=None,
+                audit_db_path=audit_db,
+            )
+        )
+
+    assert type(caught.value).__name__ == "PolicyDeniedError"
+    assert session.calls == []
+    assert _read_policy_rows(audit_db) == [
+        ("DENY", "agent", "musubi_complete_subagent")
+    ]
+    assert _read_tool_rows(audit_db) == [
+        ("agent", "musubi_complete_subagent", "denied")
+    ]
+
+
+def test_root_policy_denial_is_terminal_after_one_lm_response(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "denied-write",
+            "name": "musubi_write_file",
+            "input": {"path": "x.py", "content": "print('x')"},
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": "this response must not be consumed",
+        }]),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [],
+            [{"role": "user", "content": "write x.py"}],
+            max_cycles=4,
+            log=io.StringIO(),
+            orchestration=Orchestration(
+                parent_session_id="parent",
+                parent_agent_name="agent",
+            ),
+            role="agent",
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "musubi_write_file" in answer
+    assert cycles == 1
+    assert len(router.calls) == 1
+    assert session.calls == []
+
 def test_dispatch_denies_root_command_with_investigator_hint(
     tmp_path: Path,
 ) -> None:
@@ -854,7 +944,8 @@ def test_dispatch_denies_root_command_with_investigator_hint(
     session = _FakeToolSession()
     audit_db = tmp_path / "audit.db"
 
-    result = asyncio.run(
+    with pytest.raises(run_mod.PolicyDeniedError) as denied:
+        asyncio.run(
         run_mod._dispatch_one(
             {
                 "id": "call-denied",
@@ -871,11 +962,11 @@ def test_dispatch_denies_root_command_with_investigator_hint(
             compression_db_path=None,
             audit_db_path=audit_db,
         )
-    )
+        )
 
-    assert "[policy denied]" in result
-    assert "spawn `investigator`" in result
-    assert "do not retry" in result
+    assert denied.value.role == "agent"
+    assert denied.value.tool == "musubi_run_command"
+    assert "capability Bash is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
         ("DENY", "agent", "musubi_run_command")
@@ -976,7 +1067,8 @@ def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
     session = _FakeToolSession()
     audit_db = tmp_path / "audit.db"
 
-    result = asyncio.run(
+    with pytest.raises(run_mod.PolicyDeniedError) as denied:
+        asyncio.run(
         run_mod._dispatch_one(
             {
                 "id": "call-denied",
@@ -993,10 +1085,10 @@ def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
             compression_db_path=None,
             audit_db_path=audit_db,
         )
-    )
+        )
 
-    assert "[policy denied]" in result
-    assert "spawn `coder`" in result
+    assert denied.value.role == "agent"
+    assert denied.value.tool == "musubi_append_file"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
         ("DENY", "agent", "musubi_append_file")

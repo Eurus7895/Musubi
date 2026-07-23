@@ -224,6 +224,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
     from agent import pipeline_runner
 
     finalizations: list[dict[str, Any]] = []
+    stage_attempts: list[str] = []
 
     async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
         if name == "musubi_spawn_pipeline":
@@ -237,7 +238,12 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
-            return json.dumps({"status": "error", "error": "policy denied"})
+            stage_attempts.append(args["stage"])
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": "stage policy denied",
+            })
         if name == "musubi_finalize_pipeline_run":
             finalizations.append(args)
             return json.dumps({"status": "ok"})
@@ -245,7 +251,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
 
-    with pytest.raises(RuntimeError, match="could not start"):
+    with pytest.raises(Exception) as caught:
         asyncio.run(pipeline_runner.run_pipeline(
             None,
             {
@@ -260,11 +266,26 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
             strict=True,
         ))
 
+    assert type(caught.value).__name__ == "PolicyDeniedError"
+    assert stage_attempts == ["plan"]
     assert finalizations == [{
         "session_id": "pipe-2",
         "final_status": "aborted",
         "escalated": False,
     }]
+def test_spawn_pipeline_stage_policy_rejection_has_machine_readable_error_kind() -> None:
+    import server
+
+    denied = json.loads(server.musubi_spawn_pipeline_stage(
+        pipeline_session_id="not-created",
+        pipeline_name="feature-dev",
+        stage="not-a-stage",
+        brief="ship it",
+    ))
+
+    assert denied["status"] == "error"
+    assert denied["error_kind"] == "policy_denied"
+
 
 
 def test_stage_without_role_prompt_fails_closed(
