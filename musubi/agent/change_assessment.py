@@ -7,9 +7,11 @@ expires-when: never - ambiguity, blast radius, and risk gates remain useful
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 
 class Band(StrEnum):
@@ -96,4 +98,129 @@ def assess_request(task: str) -> ChangeAssessment:
     return ChangeAssessment(
         Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
         "planner_then_coder_check", ("insufficient-deterministic-evidence",),
+    )
+
+
+# ── bounded planner change manifest ──────────────────────────────────────────
+
+#: Hard byte bound on the manifest JSON — a planner cannot smuggle a plan-sized
+#: payload through the reclassification channel; an oversized block parses as
+#: missing and the caller fails closed to one clarification.
+MAX_MANIFEST_CHARS = 4096
+_MANIFEST_RE = re.compile(
+    r"(?s)<change_manifest>\s*(\{.*?\})\s*</change_manifest>"
+)
+
+#: Manifest impact thresholds: above either, a "medium" plan is actually a
+#: large change and must not escape through a direct coder.
+MAX_SIMPLE_FILES = 1
+MAX_MEDIUM_FILES = 5
+MAX_MEDIUM_SUBSYSTEMS = 1
+
+_CRITICAL_FLAGS = (
+    "public_contract",
+    "data_migration",
+    "security_sensitive",
+    "external_side_effects",
+    "destructive",
+)
+
+
+@dataclass(frozen=True)
+class ChangeManifest:
+    files_expected: int
+    subsystems: tuple[str, ...]
+    public_contract: bool
+    data_migration: bool
+    security_sensitive: bool
+    external_side_effects: bool
+    destructive: bool
+    unknowns: tuple[str, ...]
+    validation_commands: int
+
+
+def parse_change_manifest(text: str) -> ChangeManifest | None:
+    """Extract one bounded `<change_manifest>` JSON block, or None.
+
+    Fail-closed on every malformation: no block, JSON over
+    `MAX_MANIFEST_CHARS`, missing keys, wrong types, or negative counts all
+    return None — the caller treats that as "the planner could not commit to
+    a blast radius" and asks for scope instead of guessing.
+    """
+    match = _MANIFEST_RE.search(text or "")
+    if match is None or len(match.group(1)) > MAX_MANIFEST_CHARS:
+        return None
+    try:
+        raw: dict[str, Any] = json.loads(match.group(1))
+        result = ChangeManifest(
+            files_expected=int(raw["files_expected"]),
+            subsystems=tuple(sorted(set(map(str, raw["subsystems"])))),
+            public_contract=raw["public_contract"] is True,
+            data_migration=raw["data_migration"] is True,
+            security_sensitive=raw["security_sensitive"] is True,
+            external_side_effects=raw["external_side_effects"] is True,
+            destructive=raw["destructive"] is True,
+            unknowns=tuple(sorted(set(map(str, raw["unknowns"])))),
+            validation_commands=int(raw["validation_commands"]),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if result.files_expected < 0 or result.validation_commands < 0:
+        return None
+    return result
+
+
+def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
+    """Re-band a planned change from the planner's own manifest.
+
+    Precedence:
+      1. Any `unknowns` → ask_scope: an open decision must go back to the
+         user, never be guessed by the next worker.
+      2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
+         `MAX_MEDIUM_SUBSYSTEMS` subsystem → plan_design_workflow: a large
+         blast radius cannot escape through a direct coder.
+      3. At most one file and one subsystem → single_coder.
+      4. Otherwise → planner_then_coder_check.
+    """
+    if manifest.unknowns:
+        listed = ", ".join(manifest.unknowns)
+        return ChangeAssessment(
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            tuple(f"unknown:{item}" for item in manifest.unknowns),
+            f"The plan leaves open: {listed}. "
+            "Please decide before implementation starts.",
+        )
+    flags = tuple(
+        flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
+    )
+    if (
+        flags
+        or manifest.files_expected > MAX_MEDIUM_FILES
+        or len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+    ):
+        evidence = tuple(f"critical:{flag}" for flag in flags) + (
+            f"files_expected:{manifest.files_expected}",
+            f"subsystems:{len(manifest.subsystems)}",
+        )
+        return ChangeAssessment(
+            Band.LOW,
+            Band.HIGH,
+            Band.HIGH if flags else Band.MEDIUM,
+            "plan_design_workflow",
+            evidence,
+        )
+    if (
+        manifest.files_expected <= MAX_SIMPLE_FILES
+        and len(manifest.subsystems) <= 1
+    ):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            (f"files_expected:{manifest.files_expected}",),
+        )
+    return ChangeAssessment(
+        Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+        (
+            f"files_expected:{manifest.files_expected}",
+            f"subsystems:{len(manifest.subsystems)}",
+        ),
     )

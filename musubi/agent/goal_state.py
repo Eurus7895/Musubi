@@ -11,6 +11,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from agent.change_assessment import (
+    Band,
+    ChangeAssessment,
+    assess_manifest,
+    parse_change_manifest,
+)
+
 SIMPLE_ROOT_TOKEN_TARGET = 3_000
 DEFAULT_ROOT_TOKEN_TARGET = 8_000
 MAX_SUMMARY_CHARS = 800
@@ -103,6 +110,18 @@ class GoalState:
     root_tokens_in: int = 0
     root_tokens_out: int = 0
     outcomes: list[OutcomePacket] = field(default_factory=list)
+    #: Post-plan reassessment from the planner's bounded change manifest —
+    #: None until `apply_planner_manifest` runs. Its route supersedes the
+    #: lexical route for every later root decision.
+    assessment: ChangeAssessment | None = None
+    #: The only role the root may summon into mutation next. "planner" on a
+    #: medium route until a manifest lands; "coder" once the manifest clears
+    #: it; None when no deterministic order applies (or the route left the
+    #: direct-worker path entirely).
+    next_role: str | None = None
+    #: One deterministic question the driver must return to the user before
+    #: any further model call (set when the manifest routes to ask_scope).
+    pending_clarification: str | None = None
 
     @classmethod
     def create(cls, intent: str, scope: str, route: str) -> "GoalState":
@@ -116,7 +135,46 @@ class GoalState:
             scope=scope,
             route=route,
             root_token_target=target,
+            # Medium routes are planner-led: the coder gate opens only after
+            # the planner's manifest reclassifies the blast radius.
+            next_role="planner" if route == "planner_then_coder_check" else None,
         )
+
+    def apply_planner_manifest(self, text: str) -> ChangeAssessment:
+        """Reclassify this goal from the planner's bounded change manifest.
+
+        A missing or invalid manifest fails CLOSED to one clarification — the
+        planner could not commit to a blast radius, so no mutation role is
+        legal until the user answers. The manifest verdict overwrites the
+        lexical scope/route so an "11 files, 4 subsystems" plan can never
+        proceed as a medium change.
+        """
+        manifest = parse_change_manifest(text)
+        assessment = (
+            assess_manifest(manifest)
+            if manifest is not None
+            else ChangeAssessment(
+                Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+                ("missing-or-invalid-change-manifest",),
+                "The planner could not produce a valid change manifest. "
+                "Which files or deliverables should this change include?",
+            )
+        )
+        self.assessment = assessment
+        self.route = assessment.route
+        self.scope = {
+            "single_coder": "simple_artifact",
+            "planner_then_coder_check": "medium_change",
+            "plan_design_workflow": "large_feature",
+            "ask_scope": "unknown",
+        }[assessment.route]
+        self.next_role = (
+            "coder"
+            if assessment.route in {"single_coder", "planner_then_coder_check"}
+            else None
+        )
+        self.pending_clarification = assessment.clarifying_question
+        return assessment
 
     def record_root_usage(self, *, tokens_in: int, tokens_out: int) -> None:
         self.root_calls += 1
@@ -139,11 +197,23 @@ class GoalState:
                 f"verification={latest.verification or 'none'}; "
                 f"remaining_gap={latest.remaining_gap or 'none'}"
             )
+        order = ""
+        if self.next_role is not None:
+            order = f"next_role={self.next_role}\n"
+        bands = ""
+        if self.assessment is not None:
+            bands = (
+                f"assessment=ambiguity:{self.assessment.ambiguity.value},"
+                f"impact:{self.assessment.impact.value},"
+                f"risk:{self.assessment.risk.value},"
+                f"route:{self.assessment.route}\n"
+            )
         return (
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
+            f"{order}{bands}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"

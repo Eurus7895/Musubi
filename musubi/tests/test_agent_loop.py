@@ -2590,3 +2590,126 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
         "What should the website do, and should it be a static page or use "
         "a specific framework?"
     )
+
+
+def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
+    tmp_path: Path,
+) -> None:
+    # Role order is goal-state enforcement of the assessed route: on a
+    # planner-led medium goal the coder gate stays shut, the refusal names
+    # `planner` as the legal next role, and the spawn never reaches the
+    # substrate (zero subagent audit rows).
+    from agent import run as run_mod
+
+    state = GoalState.create(
+        "add an /about route", "medium_change", "planner_then_coder_check",
+    )
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    session = _FakeToolSession("unused")
+    spawn_tool = {
+        "name": "musubi_spawn_subagent",
+        "description": "spawn",
+        "input_schema": {"type": "object"},
+    }
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[{
+                "type": "tool_use", "id": "c1",
+                "name": "musubi_spawn_subagent",
+                "input": {"role": "coder", "brief": "implement the route"},
+            }],
+        ),
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "understood"}],
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        session,
+        router,
+        [spawn_tool],
+        [{"role": "user", "content": "add an /about route"}],
+        max_cycles=2,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+        audit_db_path=tmp_path / "audit.db",
+    ))
+
+    assert answer == "understood"
+    assert cycles == 2
+    # The refused spawn never reached the MCP substrate: no spawn row, no
+    # coder subagent_audit rows, and the worker ceiling was not consumed.
+    assert session.calls == []
+    assert orchestration.spawned_workers == 0
+    replay = str(router.calls[1]["messages"])
+    assert "refused" in replay
+    assert "planner" in replay
+
+
+def test_manifest_reclassified_large_goal_halts_with_pipeline_recommendation() -> None:
+    from agent import run as run_mod
+
+    state = GoalState.create(
+        "create site", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":11,"subsystems":'
+        '["config","routes","components","styles"],"public_contract":false,'
+        '"data_migration":false,"security_sensitive":false,'
+        '"external_side_effects":false,"destructive":false,"unknowns":[],'
+        '"validation_commands":2}</change_manifest>'
+    )
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    router = FakeRouter([])
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [],
+        [{"role": "user", "content": "create site"}],
+        max_cycles=2,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    # Deterministic: zero model calls, no auto-launched pipeline.
+    assert router.calls == []
+    assert answer is not None
+    assert "--pipeline feature-dev" in answer
+    assert "No pipeline was launched" in answer
+
+
+def test_manifest_clarification_returns_before_any_model_call() -> None:
+    from agent import run as run_mod
+
+    state = GoalState.create(
+        "add route", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["deployment target"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    router = FakeRouter([])
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [],
+        [{"role": "user", "content": "add route"}],
+        max_cycles=2,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    assert router.calls == []
+    assert answer is not None
+    assert "deployment target" in answer

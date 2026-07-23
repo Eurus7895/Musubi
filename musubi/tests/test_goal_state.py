@@ -146,3 +146,72 @@ def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
     assert root_decision_tools(
         tools, state, recovery_outcome=True, spawn_exhausted=True,
     ) == tools
+
+
+# ── planner manifest reclassification ────────────────────────────────────────
+
+ELEVEN_FILE_MANIFEST = (
+    '<change_manifest>{"files_expected":11,"subsystems":'
+    '["config","routes","components","styles"],"public_contract":false,'
+    '"data_migration":false,"security_sensitive":false,'
+    '"external_side_effects":false,"destructive":false,"unknowns":[],'
+    '"validation_commands":2}</change_manifest>'
+)
+
+
+def test_medium_goal_requires_planner_before_coder() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    assert state.next_role == "planner"
+
+
+def test_simple_goal_has_no_role_order_constraint() -> None:
+    state = GoalState.create("create page", "simple_artifact", "single_coder")
+    assert state.next_role is None
+
+
+def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
+    state = GoalState.create("create site", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(ELEVEN_FILE_MANIFEST)
+    assert state.scope == "large_feature"
+    assert state.route == "plan_design_workflow"
+    assert state.next_role is None
+
+
+def test_small_manifest_opens_the_coder_gate() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(
+        'status: done\n'
+        '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    assert state.next_role == "coder"
+    assert state.pending_clarification is None
+    block = state.render_decision_block()
+    assert "next_role=coder" in block
+    assert "assessment=" in block
+
+
+def test_missing_manifest_fails_closed_to_clarification() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest("status: done\nsummary: did some planning")
+    assert state.route == "ask_scope"
+    assert state.next_role is None
+    assert state.pending_clarification is not None
+    assert "change manifest" in state.pending_clarification
+
+
+def test_manifest_unknowns_set_pending_clarification() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["deployment target"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    assert state.route == "ask_scope"
+    assert state.pending_clarification is not None
+    assert "deployment target" in state.pending_clarification
