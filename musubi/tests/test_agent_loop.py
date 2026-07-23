@@ -2716,7 +2716,7 @@ def test_manifest_clarification_returns_before_any_model_call() -> None:
 
 
 def test_turn_cap_failure_auto_spawns_one_audited_replacement(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     # A typed TURN_CAP coder failure with surviving files triggers exactly ONE
     # automatic same-role replacement through _dispatch (the audited path),
@@ -2725,13 +2725,21 @@ def test_turn_cap_failure_auto_spawns_one_audited_replacement(
     from agent import run as run_mod
     from agent.run import FailureKind
 
+    # A real, non-empty artifact on disk — the surviving-files guard requires
+    # the touched path to still exist before it will auto-replace.
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "app" / "page.tsx"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("export default () => null;", encoding="utf-8")
+
     state = GoalState.create(
         "build the scaffold", "simple_artifact", "single_coder",
     )
     orchestration = Orchestration(
         parent_session_id="root", goal_state=state, spawned_workers=1,
     )
-    # Primary coder already failed at its turn cap with a real artifact.
+    # Primary coder already failed at its turn cap with a real artifact and a
+    # pushed skill that must be replayed on the continuation.
     orchestration.record_worker_outcome(
         role="coder",
         status="escalated",
@@ -2739,6 +2747,7 @@ def test_turn_cap_failure_auto_spawns_one_audited_replacement(
         touched_files={"app/page.tsx"},
         brief="build the scaffold",
         failure_kind=FailureKind.TURN_CAP,
+        pushed_skill_id="web-ui",
     )
 
     dispatched: list[dict[str, Any]] = []
@@ -2789,10 +2798,14 @@ def test_turn_cap_failure_auto_spawns_one_audited_replacement(
         role="agent",
     ))
 
-    # Exactly one synthesized replacement spawn, through _dispatch.
+    # Exactly one synthesized replacement spawn, through _dispatch, replaying
+    # the pushed skill so the continuation reruns the same worker contract.
     assert len(dispatched) == 1
     assert dispatched[0]["name"] == "musubi_spawn_subagent"
-    assert dispatched[0]["input"] == {"role": "coder", "brief": "build the scaffold"}
+    assert dispatched[0]["input"] == {
+        "role": "coder", "brief": "build the scaffold",
+        "pushed_skill_id": "web-ui",
+    }
     # The root then made ONE LM call and concluded from fresh evidence.
     assert cycles == 1
     assert answer == "scaffold delivered"
@@ -2804,13 +2817,18 @@ def test_turn_cap_failure_auto_spawns_one_audited_replacement(
 
 
 def test_second_turn_cap_failure_halts_without_third_worker(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     # If the automatic replacement ALSO fails at its turn cap, the bounded
     # recovery halts fail-closed: no third worker, a deterministic
     # [incomplete] result, and zero root LM calls.
     from agent import run as run_mod
     from agent.run import FailureKind
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    artifact = tmp_path / "app" / "page.tsx"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("export default () => null;", encoding="utf-8")
 
     state = GoalState.create(
         "build the scaffold", "simple_artifact", "single_coder",
@@ -2857,3 +2875,61 @@ def test_second_turn_cap_failure_halts_without_third_worker(
     assert router.calls == []
     assert answer is not None and answer.startswith("[incomplete]")
     assert "one audited continuation is the limit" in answer
+
+
+def test_turn_cap_without_surviving_files_defers_to_root_analysis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # touched_files is a write history, not disk truth: if the worker's file
+    # no longer survives (e.g. deleted via Bash), the one automatic
+    # continuation is NOT spent on an empty replacement — the transition
+    # defers to the bounded root-analysis path instead.
+    from agent import run as run_mod
+    from agent.run import FailureKind
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))  # app/page.tsx never written
+
+    state = GoalState.create(
+        "build the scaffold", "simple_artifact", "single_coder",
+    )
+    orchestration = Orchestration(
+        parent_session_id="root", goal_state=state, spawned_workers=1,
+    )
+    orchestration.record_worker_outcome(
+        role="coder", status="escalated",
+        summary="[incomplete] wrote then removed the scratch file",
+        touched_files={"app/page.tsx"},
+        brief="build the scaffold", failure_kind=FailureKind.TURN_CAP,
+    )
+
+    auto_dispatched: list[dict[str, Any]] = []
+
+    async def fake_dispatch(session, tool_uses, log, **kwargs):  # noqa: ANN001
+        auto_dispatched.append(tool_uses[0])
+        return [{"type": "tool_result", "tool_use_id": tool_uses[0]["id"],
+                 "content": "unexpected"}]
+
+    monkeypatch.setattr(run_mod, "_dispatch", fake_dispatch)
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn",
+                   content=[{"type": "text", "text": "analysis"}]),
+    ])
+    log = io.StringIO()
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [{"name": "musubi_spawn_subagent", "description": "spawn",
+          "input_schema": {"type": "object"}}],
+        [{"role": "user", "content": "build the scaffold"}],
+        max_cycles=3,
+        log=log,
+        orchestration=orchestration,
+        role="agent",
+    ))
+
+    # No automatic replacement was dispatched; the legacy recovery path ran.
+    assert auto_dispatched == []
+    assert "deferring to root analysis" in log.getvalue()
+    assert "automatic recovery: coder" not in log.getvalue()
+    assert answer is not None and answer.startswith("[incomplete]")

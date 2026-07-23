@@ -173,6 +173,11 @@ class WorkerOutcome:
     #: None on success or on a legacy/untyped failure (which keeps the
     #: root-analysis path); set from control flow for typed failures.
     failure_kind: FailureKind | None = None
+    #: The skill id the root pushed into this worker's spawn, if any. Replayed
+    #: on an automatic replacement so the continuation runs the SAME worker
+    #: contract — a direct worker carries no native skill tool, so dropping it
+    #: would resume the artifact without the pushed procedure.
+    pushed_skill_id: str | None = None
 
 
 def decide_recovery(
@@ -263,6 +268,7 @@ class Orchestration:
         touched_files: set[str] | tuple[str, ...] | list[str],
         brief: str = "",
         failure_kind: FailureKind | None = None,
+        pushed_skill_id: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -272,6 +278,7 @@ class Orchestration:
             touched_files=tuple(sorted(set(touched_files))),
             brief=brief,
             failure_kind=failure_kind,
+            pushed_skill_id=pushed_skill_id,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -396,17 +403,37 @@ async def _auto_recovery_transition(
                 )
             print(f"[agent] recovery halt: {reason}", file=log)
             return _recovery_incomplete(outcome, reason)
-        # AUTO_REPLACE — the model did not make this tool call, so no
-        # synthetic assistant message is appended; the spawn is synthesized
-        # and dispatched through the exact path a model call would take.
+        # AUTO_REPLACE, but `touched_files` is only a write HISTORY — it is not
+        # pruned when a worker later removes a file (e.g. a Bash `rm` of a
+        # scratch generator). Confirm at least one recorded path still exists
+        # non-empty on disk before spending the single continuation on a
+        # replacement whose brief says "continue from current state". If
+        # nothing survives, defer to the bounded root-analysis window instead.
+        from agent.subagent import surviving_nonempty_files
+
+        if surviving_nonempty_files(set(outcome.touched_files)) is None:
+            print(
+                f"[agent] recovery: {outcome.role} turn_cap left no surviving "
+                "artifact on disk; deferring to root analysis",
+                file=log,
+            )
+            return None
+        # The model did not make this tool call, so no synthetic assistant
+        # message is appended; the spawn is synthesized and dispatched through
+        # the exact path a model call would take. The pushed skill is replayed
+        # so the replacement reruns the same worker contract (a direct worker
+        # has no native skill tool to reload it otherwise).
+        recovery_input: dict[str, Any] = {
+            "role": outcome.role,
+            "brief": outcome.brief,
+        }
+        if outcome.pushed_skill_id:
+            recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
             "name": "musubi_spawn_subagent",
-            "input": {
-                "role": outcome.role,
-                "brief": outcome.brief,
-            },
+            "input": recovery_input,
         }
         print(
             f"[agent] automatic recovery: {outcome.role} "

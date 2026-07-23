@@ -78,3 +78,35 @@ def test_negative_counts_fail_closed() -> None:
         '"destructive":false,"unknowns":[],"validation_commands":0}'
         '</change_manifest>'
     ) is None
+
+
+def test_non_boolean_critical_flag_fails_closed() -> None:
+    # A truthy-looking string flag must NOT coerce to False and slip a critical
+    # change past the gate — it fails closed to a rejected manifest.
+    assert parse_change_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["auth"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":"true","external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    ) is None
+
+
+def test_duplicate_manifest_blocks_fail_closed() -> None:
+    # Two blocks (small then corrected-large) are ambiguous: reject rather than
+    # silently resolving to the first, smaller manifest.
+    small = (
+        '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    large = (
+        '<change_manifest>{"files_expected":9,"subsystems":["a","b","c"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":2}'
+        '</change_manifest>'
+    )
+    assert parse_change_manifest(small + "\n" + large) is None

@@ -221,6 +221,7 @@ async def run_subagent(
                     touched_files=touched,
                     brief=brief,
                     failure_kind=FailureKind.BUDGET,
+                    pushed_skill_id=spawn_args.get("pushed_skill_id"),
                 )
         raise
     finally:
@@ -314,6 +315,7 @@ async def run_subagent(
             touched_files=touched,
             brief=brief,
             failure_kind=failure_kind,
+            pushed_skill_id=spawn_args.get("pushed_skill_id"),
         )
     return returned_summary
 

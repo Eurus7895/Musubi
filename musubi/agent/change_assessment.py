@@ -139,27 +139,47 @@ class ChangeManifest:
     validation_commands: int
 
 
-def parse_change_manifest(text: str) -> ChangeManifest | None:
-    """Extract one bounded `<change_manifest>` JSON block, or None.
+def _require_bool(raw: dict[str, Any], key: str) -> bool:
+    """Return a manifest flag only when it is a real JSON boolean.
 
-    Fail-closed on every malformation: no block, JSON over
-    `MAX_MANIFEST_CHARS`, missing keys, wrong types, or negative counts all
-    return None — the caller treats that as "the planner could not commit to
-    a blast radius" and asks for scope instead of guessing.
+    The planner contract declares each critical flag as a bool. A wrong-typed
+    value (e.g. the string ``"true"``) is NOT silently coerced — that would
+    let a truthy-looking `security_sensitive: "true"` read as ``False`` and
+    slip a critical change past the large-workflow gate. Raise so the caller
+    fails closed to one clarification instead.
     """
-    match = _MANIFEST_RE.search(text or "")
-    if match is None or len(match.group(1)) > MAX_MANIFEST_CHARS:
+    value = raw[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"manifest flag {key!r} must be a boolean")
+    return value
+
+
+def parse_change_manifest(text: str) -> ChangeManifest | None:
+    """Extract the single bounded `<change_manifest>` JSON block, or None.
+
+    Fail-closed on every malformation: no block, MORE THAN ONE block (an
+    ambiguous small-then-large planner emission must not resolve to the first,
+    smaller one), JSON over `MAX_MANIFEST_CHARS`, missing keys, non-boolean
+    critical flags, other wrong types, or negative counts all return None —
+    the caller treats that as "the planner could not commit to a blast radius"
+    and asks for scope instead of guessing.
+    """
+    blocks = _MANIFEST_RE.findall(text or "")
+    if len(blocks) != 1:
+        return None
+    block = blocks[0]
+    if len(block) > MAX_MANIFEST_CHARS:
         return None
     try:
-        raw: dict[str, Any] = json.loads(match.group(1))
+        raw: dict[str, Any] = json.loads(block)
         result = ChangeManifest(
             files_expected=int(raw["files_expected"]),
             subsystems=tuple(sorted(set(map(str, raw["subsystems"])))),
-            public_contract=raw["public_contract"] is True,
-            data_migration=raw["data_migration"] is True,
-            security_sensitive=raw["security_sensitive"] is True,
-            external_side_effects=raw["external_side_effects"] is True,
-            destructive=raw["destructive"] is True,
+            public_contract=_require_bool(raw, "public_contract"),
+            data_migration=_require_bool(raw, "data_migration"),
+            security_sensitive=_require_bool(raw, "security_sensitive"),
+            external_side_effects=_require_bool(raw, "external_side_effects"),
+            destructive=_require_bool(raw, "destructive"),
             unknowns=tuple(sorted(set(map(str, raw["unknowns"])))),
             validation_commands=int(raw["validation_commands"]),
         )

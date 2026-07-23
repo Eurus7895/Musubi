@@ -189,3 +189,13 @@ def test_auth_database_payment_site_is_large() -> None:
     )
     assert result.risk is Band.HIGH
     assert result.route == "plan_design_workflow"
+
+
+def test_single_critical_term_routes_to_plan_design_workflow() -> None:
+    # The deterministic critical-risk gate must fire on ONE token: "add
+    # authentication" was previously downgraded to a medium change because the
+    # legacy _LARGE_RISK_RE threshold needs two tokens.
+    hint = classify_task("Add authentication to the app")
+    assert hint.kind is ScopeKind.LARGE_FEATURE
+    assert hint.route == "plan_design_workflow"
+    assert "plan" in hint.requires and "review" in hint.requires

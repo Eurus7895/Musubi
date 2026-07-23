@@ -240,6 +240,19 @@ def classify_task(task: str) -> ScopeHint:
             requires=("clarification",),
             assessment=assessment,
         )
+    if assessment.route == "plan_design_workflow":
+        # The deterministic critical-risk gate fired (auth/payment/database/
+        # migration/…). Honor it directly — the legacy `_LARGE_RISK_RE`
+        # threshold needs TWO tokens, so a single critical term ("add
+        # authentication") would otherwise silently downgrade to a medium
+        # planner→coder change and skip the plan/design/review structure.
+        return ScopeHint(
+            kind=ScopeKind.LARGE_FEATURE,
+            route="plan_design_workflow",
+            reason="critical-risk change requires plan/design/review",
+            requires=("plan", "design", "implementation", "review"),
+            assessment=assessment,
+        )
 
     risk_hits = sorted(set(match.group(1).lower() for match in _LARGE_RISK_RE.finditer(text)))
     if len(risk_hits) >= 2 or _mentions_large_workflow(low):
