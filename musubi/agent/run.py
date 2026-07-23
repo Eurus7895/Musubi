@@ -1541,6 +1541,13 @@ def _build_token_budget(
 def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
     if scope_hint.route == "direct_answer":
         return "Hi! How can I help?"
+    if scope_hint.route == "ask_scope":
+        # High ambiguity halts BEFORE any parent session, model call, or worker
+        # spawn: one deterministic clarifying question, zero tokens spent.
+        assessment = scope_hint.assessment
+        if assessment is not None and assessment.clarifying_question:
+            return assessment.clarifying_question
+        return "What exact target and acceptance criteria should this change satisfy?"
     if scope_hint.route == "manual_destructive":
         return (
             "I cannot safely delete files from this route because deletion is "

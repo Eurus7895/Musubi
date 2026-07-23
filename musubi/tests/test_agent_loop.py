@@ -2577,3 +2577,16 @@ def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
         )
     # The message is a clean one-liner, not a nested group dump.
     assert not isinstance(ei.value, BaseExceptionGroup)
+
+
+def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("create a new website")
+    answer = run_mod._deterministic_scope_answer("create a new website", hint)
+    assert hint.route == "ask_scope"
+    assert answer == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )

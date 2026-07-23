@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent.change_assessment import Band, assess_request
 from agent.scope import ScopeKind, classify_task
 
 
@@ -145,3 +146,46 @@ def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
     assert hint.kind is ScopeKind.UNKNOWN
     assert hint.route == "manual_destructive"
     assert not hasattr(hint, "max_workers")
+
+
+# ── deterministic ambiguity/impact/risk assessment ──────────────────────────
+
+
+def test_bare_website_creation_requires_clarification() -> None:
+    result = assess_request("create a new website")
+    assert (result.ambiguity, result.impact, result.risk) == (
+        Band.HIGH, Band.UNKNOWN, Band.UNKNOWN,
+    )
+    assert result.route == "ask_scope"
+    assert result.clarifying_question == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )
+
+
+def test_constrained_single_file_website_is_simple() -> None:
+    result = assess_request(
+        "Create a static single-file website at landing.html with hero, "
+        "features, and contact sections"
+    )
+    assert result.ambiguity is Band.LOW
+    assert result.impact is Band.LOW
+    assert result.risk is Band.LOW
+    assert result.route == "single_coder"
+
+
+def test_specific_framework_scaffold_is_medium() -> None:
+    result = assess_request(
+        "Create a Next.js app-router scaffold with home/about routes, shared "
+        "navbar/footer, TypeScript, and a production build check"
+    )
+    assert result.impact is Band.MEDIUM
+    assert result.route == "planner_then_coder_check"
+
+
+def test_auth_database_payment_site_is_large() -> None:
+    result = assess_request(
+        "Build a website with authentication, a customer database, and payments"
+    )
+    assert result.risk is Band.HIGH
+    assert result.route == "plan_design_workflow"
