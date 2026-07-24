@@ -277,6 +277,49 @@ def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> No
     assert denied["error_kind"] == "policy_denied"
 
 
+def test_worker_runtime_policy_denial_halts_root_without_replacement(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+
+    recorded: list[run_mod.WorkerOutcome] = []
+    original_record = Orchestration.record_worker_outcome
+
+    def record_outcome(self, **kwargs):  # noqa: ANN001
+        outcome = original_record(self, **kwargs)
+        recorded.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    router = FakeRouter([
+        _spawn("coder", "attempt a forbidden session operation"),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "worker-policy-denial",
+            "name": "musubi_new_session",
+            "input": {"request": "forged nested root"},
+        }]),
+        _text("this root response must not be consumed"),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "create one policy test artifact",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+    ))
+
+    assert answer.startswith("[incomplete]")
+    assert "non-recoverable policy failure" in answer
+    assert len(router.calls) == 2
+    coder_outcomes = [outcome for outcome in recorded if outcome.role == "coder"]
+    assert len(coder_outcomes) == 1
+    assert coder_outcomes[0].status == "escalated"
+    assert coder_outcomes[0].failure_kind is run_mod.FailureKind.POLICY
+
+
 # ── escalation: child that won't stop is killed, parent still completes ─────
 
 

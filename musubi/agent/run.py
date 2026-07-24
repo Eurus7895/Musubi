@@ -66,6 +66,7 @@ from agent.budget import (
 from agent.boundary import (
     denied_tool_guidance,
     evaluate_tool_call,
+    evaluate_argument_policy,
     is_musubi_tool,
     json_args,
     record_policy_decision,
@@ -241,6 +242,7 @@ class Orchestration:
     root_recovery_analysis_cycles: int = 0
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
+    pipeline_name: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -252,11 +254,15 @@ class Orchestration:
         return Orchestration(
             parent_session_id=self.parent_session_id,
             parent_agent_name=role,
+            pipeline_name=self.pipeline_name,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
 
-    def stage_child(self, role: str, pipeline_session_id: str) -> "Orchestration":
+    def stage_child(
+        self, role: str, pipeline_session_id: str,
+        pipeline_name: str | None = None,
+    ) -> "Orchestration":
         """Orchestration for one pipeline stage worker. Unlike `child`, the
         parentage moves to the PIPELINE session: the server resolves the
         pipeline from `parent_session_id` and narrows the stage's spawnable
@@ -267,6 +273,7 @@ class Orchestration:
         return Orchestration(
             parent_session_id=pipeline_session_id,
             parent_agent_name=role,
+            pipeline_name=pipeline_name,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
@@ -2313,10 +2320,22 @@ def _preflight_policy_batch(
         name = str(tu.get("name", ""))
         if not is_musubi_tool(name):
             continue
+        raw_args = tu.get("input") or {}
+        args = raw_args if isinstance(raw_args, dict) else {}
         decision = evaluate_tool_call(call_role, name)
         if decision.allowed:
+            argument_decision = evaluate_argument_policy(
+                call_role,
+                name,
+                args,
+                pipeline_name=(
+                    orchestration.pipeline_name if orchestration else None
+                ),
+            )
+            if argument_decision is not None:
+                decision = argument_decision
+        if decision.allowed:
             continue
-        args = tu.get("input") or {}
         denied = (
             f"[policy denied] {decision.reason}"
             f"{denied_tool_guidance(call_role, name)}"

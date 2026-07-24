@@ -44,6 +44,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
+from agent.boundary import evaluate_argument_policy
 
 import composer
 from execution import executor
@@ -1485,16 +1486,22 @@ def musubi_spawn_subagent(
     except Exception:
         pipeline_name = None
 
-    # 1. Role + main allow-list intersection.
-    if not _policy.check_subagent_allowed(
-        parent_agent_name, role, pipeline_name=pipeline_name,
-    ):
+    # 1. Shared pure argument firewall (also used by driver batch preflight).
+    argument_policy = evaluate_argument_policy(
+        parent_agent_name,
+        "musubi_spawn_subagent",
+        {
+            "role": role,
+            "allowed_tools": allowed_tools,
+            "pushed_skill_id": pushed_skill_id,
+        },
+        pipeline_name=pipeline_name,
+    )
+    if argument_policy is not None:
         return json.dumps({
             "status": "error",
             "error_kind": "policy_denied",
-            "error": _policy.subagent_deny_reason(
-                parent_agent_name, role, pipeline_name=pipeline_name,
-            ),
+            "error": argument_policy.reason,
         })
 
     # 2. Parent session must exist (foreign-key safety + clearer error).
@@ -1632,7 +1639,6 @@ def musubi_spawn_pipeline(
     if len(plan) < 2:
         return json.dumps({
             "status": "error",
-            "error_kind": "policy_denied",
             "error": (
                 f"pipeline {pipeline_name!r} is not a registered multi-stage "
                 f"pipeline (resolved stages: {[p['stage'] for p in plan]})"
@@ -1690,14 +1696,12 @@ def musubi_spawn_pipeline_stage(
     if stage not in composer.active_stages(pipeline_name):
         return json.dumps({
             "status": "error",
-            "error_kind": "policy_denied",
             "error": f"stage {stage!r} is not active in pipeline {pipeline_name!r}",
         })
     role = composer.agent_for_stage(pipeline_name, stage)
     if not role:
         return json.dumps({
             "status": "error",
-            "error_kind": "policy_denied",
             "error": f"no agent for stage {stage!r} in pipeline {pipeline_name!r}",
         })
     if state.get_session(pipeline_session_id) is None:

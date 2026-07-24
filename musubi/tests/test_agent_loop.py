@@ -861,9 +861,9 @@ def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
             "input": {"path": "README.md"},
         },
         {
-            "id": "denied-driver-only",
-            "name": "musubi_complete_subagent",
-            "input": {"handle_id": "h", "summary": "forged"},
+            "id": "denied-spawn-role",
+            "name": "musubi_spawn_subagent",
+            "input": {"role": "saboteur", "brief": "forged"},
         },
     ]
 
@@ -887,10 +887,10 @@ def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
     assert type(caught.value).__name__ == "PolicyDeniedError"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_complete_subagent")
+        ("DENY", "agent", "musubi_spawn_subagent")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_complete_subagent", "denied")
+        ("agent", "musubi_spawn_subagent", "denied")
     ]
 
 

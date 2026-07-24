@@ -302,7 +302,7 @@ async def run_pipeline(
             ]
             if spawn_tool:
                 child_tools = child_tools + spawn_tool
-                stage_orch = orchestration.stage_child(role, psid)
+                stage_orch = orchestration.stage_child(role, psid, pname)
                 stage_spawn_catalog = tools
 
         # Each stage runs against its own fair-share allowance of the shared run
