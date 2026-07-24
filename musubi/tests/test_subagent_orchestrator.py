@@ -395,14 +395,31 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         "<!doctype html><title>Recovery</title>"
     )
     assert len(router.calls) == 12
+    forced_final_call = router.calls[9]
+    assert forced_final_call["tools"] == []
+    forced_final_tool_uses = [
+        block
+        for message in forced_final_call["messages"]
+        for block in (
+            message.get("content")
+            if isinstance(message.get("content"), list)
+            else []
+        )
+        if block.get("type") == "tool_use"
+    ]
+    assert [block["id"] for block in forced_final_tool_uses] == [
+        "write-recovery", *[f"read-recovery-{index}" for index in range(7)],
+    ]
 
     audit_db = tmp_path / "data" / "audit.db"
     with sqlite3.connect(audit_db) as conn:
         conn.row_factory = sqlite3.Row
         audit_rows = [
             dict(row) for row in conn.execute(
-                "SELECT handle_id, event, brief, final_status, escalated, turns "
-                "FROM subagent_audit WHERE role = 'coder' ORDER BY id"
+                "SELECT handle_id, parent_session_id, role, event, brief, "
+                "final_status, escalated, turns FROM subagent_audit "
+                "WHERE parent_session_id = (SELECT parent_session_id "
+                "FROM subagent_audit ORDER BY id LIMIT 1) ORDER BY id"
             )
         ]
 
@@ -414,6 +431,10 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         (primary_handle, "spawned"), (primary_handle, "completed"),
         (replacement_handle, "spawned"), (replacement_handle, "completed"),
     ]
+    parent_session_id = audit_rows[0]["parent_session_id"]
+    assert audit_rows[2]["parent_session_id"] == parent_session_id
+    assert {row["parent_session_id"] for row in audit_rows} == {parent_session_id}
+    assert {row["role"] for row in audit_rows} == {"coder"}
     assert audit_rows[1]["final_status"] == "escalated"
     assert audit_rows[1]["escalated"] == 1
     assert audit_rows[1]["turns"] == 8
@@ -423,6 +444,7 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     replacement_brief = audit_rows[2]["brief"]
     assert "[worker-replacement]" in replacement_brief
     assert "Touched files: recovery.html" in replacement_brief
+    assert "Prior status: escalated" in replacement_brief
     assert f"Prior summary: {primary_summary}" in replacement_brief
 
     state_db = tmp_path / "data" / "musubi.db"
@@ -430,12 +452,13 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         conn.row_factory = sqlite3.Row
         sub_sessions = [
             dict(row) for row in conn.execute(
-                "SELECT handle_id, parent_session_id, brief, status, escalated, turns "
-                "FROM sub_sessions WHERE role = 'coder' ORDER BY rowid"
+                "SELECT handle_id, parent_session_id, role, brief, status, "
+                "escalated, turns FROM sub_sessions "
+                "WHERE parent_session_id = ? ORDER BY rowid",
+                (parent_session_id,),
             )
         ]
         assert len(sub_sessions) == 2
-        parent_session_id = sub_sessions[0]["parent_session_id"]
         cycle_rows = [
             dict(row) for row in conn.execute(
                 "SELECT worker_id, stage, cycle_idx FROM agent_cycles "
@@ -447,17 +470,34 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert [(row["status"], row["escalated"], row["turns"]) for row in sub_sessions] == [
         ("escalated", 1, 8), ("done", 0, 1),
     ]
+    assert {row["parent_session_id"] for row in sub_sessions} == {parent_session_id}
+    assert sub_sessions[1]["parent_session_id"] == sub_sessions[0]["parent_session_id"]
+    assert {row["role"] for row in sub_sessions} == {"coder"}
     assert "[worker-replacement]" in sub_sessions[1]["brief"]
     assert "Touched files: recovery.html" in sub_sessions[1]["brief"]
+    assert "Prior status: escalated" in sub_sessions[1]["brief"]
     assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
 
     assert len(cycle_rows) == len(router.calls) == 12
     assert [row["worker_id"] for row in cycle_rows].count("root") == 2
     assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
     assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
-    assert {row["worker_id"] for row in cycle_rows} == {
-        "root", primary_handle, replacement_handle,
-    }
+    assert [row["worker_id"] for row in cycle_rows] == [
+        *[primary_handle] * 9, "root", replacement_handle, "root",
+    ]
+    assert [
+        row["cycle_idx"] for row in cycle_rows if row["worker_id"] == "root"
+    ] == [0, 1]
+    assert [
+        row["cycle_idx"]
+        for row in cycle_rows
+        if row["worker_id"] == primary_handle
+    ] == list(range(9))
+    assert [
+        row["cycle_idx"]
+        for row in cycle_rows
+        if row["worker_id"] == replacement_handle
+    ] == [0]
 
 
 def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
