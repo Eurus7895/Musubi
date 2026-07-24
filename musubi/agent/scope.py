@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from agent.change_assessment import ChangeAssessment, assess_request
+
 
 class ScopeKind(StrEnum):
     INSPECT = "inspect"
@@ -27,6 +29,11 @@ class ScopeHint:
     route: str
     reason: str
     requires: tuple[str, ...] = field(default_factory=tuple)
+    #: Ambiguity/impact/risk bands for a mutation request (None on the casual,
+    #: destructive, vague, and read-only branches, which return before the
+    #: assessment runs). Carries the one deterministic clarifying question the
+    #: driver returns without a model call when route == "ask_scope".
+    assessment: ChangeAssessment | None = None
 
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
@@ -218,6 +225,35 @@ def classify_task(task: str) -> ScopeHint:
             reason="read-only inspection of a path or files",
         )
 
+    # Deterministic ambiguity/impact/risk bands for the mutation branches
+    # below. Only the high-ambiguity verdict changes the route here — a broad
+    # product request without deliverable constraints stops at one
+    # clarification instead of guessing a lexical scope; every other verdict
+    # rides along on the hint so the goal-state controller can reclassify
+    # after a planner manifest lands.
+    assessment = assess_request(text)
+    if assessment.route == "ask_scope":
+        return ScopeHint(
+            kind=ScopeKind.UNKNOWN,
+            route="ask_scope",
+            reason="broad product request without deliverable constraints",
+            requires=("clarification",),
+            assessment=assessment,
+        )
+    if assessment.route == "plan_design_workflow":
+        # The deterministic critical-risk gate fired (auth/payment/database/
+        # migration/…). Honor it directly — the legacy `_LARGE_RISK_RE`
+        # threshold needs TWO tokens, so a single critical term ("add
+        # authentication") would otherwise silently downgrade to a medium
+        # planner→coder change and skip the plan/design/review structure.
+        return ScopeHint(
+            kind=ScopeKind.LARGE_FEATURE,
+            route="plan_design_workflow",
+            reason="critical-risk change requires plan/design/review",
+            requires=("plan", "design", "implementation", "review"),
+            assessment=assessment,
+        )
+
     risk_hits = sorted(set(match.group(1).lower() for match in _LARGE_RISK_RE.finditer(text)))
     if len(risk_hits) >= 2 or _mentions_large_workflow(low):
         return ScopeHint(
@@ -225,6 +261,7 @@ def classify_task(task: str) -> ScopeHint:
             route="plan_design_workflow",
             reason="high-risk or multi-surface change",
             requires=("plan", "design", "implementation", "review"),
+            assessment=assessment,
         )
 
     has_path = _PATH_RE.search(text) is not None
@@ -233,6 +270,7 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.SIMPLE_EDIT,
             route="single_coder",
             reason="known file and low-risk edit",
+            assessment=assessment,
         )
 
     if _ARTIFACT_RE.search(text) and not risk_hits:
@@ -240,6 +278,7 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.SIMPLE_ARTIFACT,
             route="single_coder",
             reason="concrete low-risk artifact request",
+            assessment=assessment,
         )
 
     if risk_hits:
@@ -248,6 +287,7 @@ def classify_task(task: str) -> ScopeHint:
             route="planner_then_coder_check",
             reason="concrete change with some risk signals",
             requires=("plan", "implementation", "verification"),
+            assessment=assessment,
         )
 
     return ScopeHint(
@@ -255,6 +295,7 @@ def classify_task(task: str) -> ScopeHint:
         route="planner_then_coder_check",
         reason="concrete change but scope is not obviously tiny",
         requires=("plan", "implementation", "verification"),
+        assessment=assessment,
     )
 
 

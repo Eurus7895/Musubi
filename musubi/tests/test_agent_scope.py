@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent.change_assessment import Band, assess_request
 from agent.scope import ScopeKind, classify_task
 
 
@@ -145,3 +146,75 @@ def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
     assert hint.kind is ScopeKind.UNKNOWN
     assert hint.route == "manual_destructive"
     assert not hasattr(hint, "max_workers")
+
+
+# ── deterministic ambiguity/impact/risk assessment ──────────────────────────
+
+
+def test_bare_website_creation_requires_clarification() -> None:
+    result = assess_request("create a new website")
+    assert (result.ambiguity, result.impact, result.risk) == (
+        Band.HIGH, Band.UNKNOWN, Band.UNKNOWN,
+    )
+    assert result.route == "ask_scope"
+    assert result.clarifying_question == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )
+
+
+def test_constrained_single_file_website_is_simple() -> None:
+    result = assess_request(
+        "Create a static single-file website at landing.html with hero, "
+        "features, and contact sections"
+    )
+    assert result.ambiguity is Band.LOW
+    assert result.impact is Band.LOW
+    assert result.risk is Band.LOW
+    assert result.route == "single_coder"
+
+
+def test_specific_framework_scaffold_is_medium() -> None:
+    result = assess_request(
+        "Create a Next.js app-router scaffold with home/about routes, shared "
+        "navbar/footer, TypeScript, and a production build check"
+    )
+    assert result.impact is Band.MEDIUM
+    assert result.route == "planner_then_coder_check"
+
+
+def test_auth_database_payment_site_is_large() -> None:
+    result = assess_request(
+        "Build a website with authentication, a customer database, and payments"
+    )
+    assert result.risk is Band.HIGH
+    assert result.route == "plan_design_workflow"
+
+
+def test_single_critical_term_routes_to_plan_design_workflow() -> None:
+    # The deterministic critical-risk gate must fire on ONE token: "add
+    # authentication" was previously downgraded to a medium change because the
+    # legacy _LARGE_RISK_RE threshold needs two tokens.
+    hint = classify_task("Add authentication to the app")
+    assert hint.kind is ScopeKind.LARGE_FEATURE
+    assert hint.route == "plan_design_workflow"
+    assert "plan" in hint.requires and "review" in hint.requires
+
+
+def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
+    requests = (
+        "Add login to the app",
+        "Change user permissions",
+        "Add payments to the checkout",
+        "Create customer databases",
+        "Run data migrations",
+        "Change security settings",
+        "Change the public API contract",
+    )
+    for request in requests:
+        assessment = assess_request(request)
+        assert assessment.risk is Band.HIGH, request
+        assert assessment.route == "plan_design_workflow", request
+        hint = classify_task(request)
+        assert hint.kind is ScopeKind.LARGE_FEATURE, request
+        assert hint.route == "plan_design_workflow", request

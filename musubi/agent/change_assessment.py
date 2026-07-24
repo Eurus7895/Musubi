@@ -1,0 +1,310 @@
+"""Deterministic request and change-manifest assessment.
+
+musubi-tier: substrate
+expires-when: never - ambiguity, blast radius, and risk gates remain useful
+  independently of model quality.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+
+class Band(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ChangeAssessment:
+    ambiguity: Band
+    impact: Band
+    risk: Band
+    route: str
+    evidence: tuple[str, ...]
+    clarifying_question: str | None = None
+
+
+_BROAD_PRODUCT_RE = re.compile(
+    r"(?i)\b(create|make|build|generate|implement)\b.*\b"
+    r"(website|site|web app|application|app|platform|system)\b"
+)
+_STATIC_FILE_RE = re.compile(
+    r"(?i)\b(static|single[- ]file)\b.*\b(html|website|page)\b|"
+    r"\b[\w.-]+\.html\b"
+)
+_BOUNDED_ARTIFACT_RE = re.compile(
+    r"(?i)\b(create|make|generate|write|build)\b.*\b"
+    r"(file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc)\b"
+)
+_FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
+_MULTIPART_RE = re.compile(
+    r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
+)
+_CRITICAL_RISK_RE = re.compile(
+    r"(?i)\b(auth|authentication|authorization|login|permissions?|"
+    r"access control|payments?|billing|databases?|migrations?|oauth|rbac|"
+    r"security|public api|api contract|breaking api)\b"
+)
+
+
+def assess_request(task: str) -> ChangeAssessment:
+    """Bands + route for one raw user request. Pure text analysis, zero LLM.
+
+    Precedence: critical risk terms dominate (a payment/auth/database change
+    is never "simple" no matter how short the sentence); then a broad product
+    request without deliverable constraints stops for ONE clarification;
+    bounded static/named artifacts route to a single coder; a framework
+    scaffold with multiple parts is a planned medium change; anything left is
+    a medium change on insufficient evidence — never silently large.
+    """
+    text = " ".join((task or "").split())
+    risks = tuple(sorted(set(
+        match.group(1).lower() for match in _CRITICAL_RISK_RE.finditer(text)
+    )))
+    if risks:
+        return ChangeAssessment(
+            Band.LOW, Band.HIGH, Band.HIGH, "plan_design_workflow",
+            tuple(f"critical-risk:{item}" for item in risks),
+        )
+    if _BROAD_PRODUCT_RE.search(text) and not (
+        _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
+    ):
+        return ChangeAssessment(
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            ("broad-product-without-deliverable-constraints",),
+            "What should the website do, and should it be a static page or use a specific framework?",
+        )
+    if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            ("bounded-static-artifact",),
+        )
+    if _BOUNDED_ARTIFACT_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            ("bounded-named-artifact",),
+        )
+    if _FRAMEWORK_RE.search(text) and _MULTIPART_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+            ("framework-multifile-change",),
+        )
+    return ChangeAssessment(
+        Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
+        "planner_then_coder_check", ("insufficient-deterministic-evidence",),
+    )
+
+
+# ── bounded planner change manifest ──────────────────────────────────────────
+
+#: Hard byte bound on the manifest JSON — a planner cannot smuggle a plan-sized
+#: payload through the reclassification channel; an oversized block parses as
+#: missing and the caller fails closed to one clarification.
+MAX_MANIFEST_BYTES = 4096
+#: Compatibility name for callers that imported the original constant. The
+#: bound is deliberately measured in UTF-8 bytes, not Python characters.
+MAX_MANIFEST_CHARS = MAX_MANIFEST_BYTES
+_MANIFEST_OPEN = "<change_manifest>"
+_MANIFEST_CLOSE = "</change_manifest>"
+
+#: Manifest impact thresholds: above either, a "medium" plan is actually a
+#: large change and must not escape through a direct coder.
+MAX_SIMPLE_FILES = 1
+MAX_MEDIUM_FILES = 5
+MAX_MEDIUM_SUBSYSTEMS = 1
+
+_CRITICAL_FLAGS = (
+    "public_contract",
+    "data_migration",
+    "security_sensitive",
+    "external_side_effects",
+    "destructive",
+)
+_MANIFEST_FIELDS = {
+    "files_expected",
+    "subsystems",
+    "public_contract",
+    "data_migration",
+    "security_sensitive",
+    "external_side_effects",
+    "destructive",
+    "unknowns",
+    "validation_commands",
+}
+
+
+
+@dataclass(frozen=True)
+class ChangeManifest:
+    files_expected: int
+    subsystems: tuple[str, ...]
+    public_contract: bool
+    data_migration: bool
+    security_sensitive: bool
+    external_side_effects: bool
+    destructive: bool
+    unknowns: tuple[str, ...]
+    validation_commands: int
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate manifest key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _require_count(raw: dict[str, Any], key: str) -> int:
+    value = raw[key]
+    if type(value) is not int or value < 0:
+        raise TypeError(f"manifest count {key!r} must be a non-negative integer")
+    return value
+
+
+def _require_strings(raw: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = raw[key]
+    if not isinstance(value, list):
+        raise TypeError(f"manifest field {key!r} must be an array")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise TypeError(
+                f"manifest field {key!r} must contain non-blank strings"
+            )
+        normalized.append(item.strip())
+    return tuple(sorted(set(normalized)))
+
+
+
+
+def _require_bool(raw: dict[str, Any], key: str) -> bool:
+    """Return a manifest flag only when it is a real JSON boolean.
+
+    The planner contract declares each critical flag as a bool. A wrong-typed
+    value (e.g. the string ``"true"``) is NOT silently coerced — that would
+    let a truthy-looking `security_sensitive: "true"` read as ``False`` and
+    slip a critical change past the large-workflow gate. Raise so the caller
+    fails closed to one clarification instead.
+    """
+    value = raw[key]
+    if type(value) is not bool:
+        raise TypeError(f"manifest flag {key!r} must be a boolean")
+    return value
+
+
+def parse_change_manifest(text: str) -> ChangeManifest | None:
+    """Extract the single bounded `<change_manifest>` JSON block, or None.
+
+    Fail-closed on every malformation: no block, MORE THAN ONE block (an
+    ambiguous small-then-large planner emission must not resolve to the first,
+    smaller one), JSON over `MAX_MANIFEST_CHARS`, missing keys, non-boolean
+    critical flags, other wrong types, or negative counts all return None —
+    the caller treats that as "the planner could not commit to a blast radius"
+    and asks for scope instead of guessing.
+    """
+    source = text or ""
+    if source.count(_MANIFEST_OPEN) != 1 or source.count(_MANIFEST_CLOSE) != 1:
+        return None
+    start = source.find(_MANIFEST_OPEN) + len(_MANIFEST_OPEN)
+    end = source.find(_MANIFEST_CLOSE)
+    if end < start:
+        return None
+    block = source[start:end].strip()
+    try:
+        if len(block.encode("utf-8")) > MAX_MANIFEST_BYTES:
+            return None
+        raw = json.loads(
+            block,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+        if not isinstance(raw, dict) or set(raw) != _MANIFEST_FIELDS:
+            return None
+        result = ChangeManifest(
+            files_expected=_require_count(raw, "files_expected"),
+            subsystems=_require_strings(raw, "subsystems"),
+            public_contract=_require_bool(raw, "public_contract"),
+            data_migration=_require_bool(raw, "data_migration"),
+            security_sensitive=_require_bool(raw, "security_sensitive"),
+            external_side_effects=_require_bool(raw, "external_side_effects"),
+            destructive=_require_bool(raw, "destructive"),
+            unknowns=_require_strings(raw, "unknowns"),
+            validation_commands=_require_count(raw, "validation_commands"),
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeEncodeError,
+        RecursionError,
+        json.JSONDecodeError,
+    ):
+        return None
+    return result
+
+
+def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
+    """Re-band a planned change from the planner's own manifest.
+
+    Precedence:
+      1. Any `unknowns` → ask_scope: an open decision must go back to the
+         user, never be guessed by the next worker.
+      2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
+         `MAX_MEDIUM_SUBSYSTEMS` subsystem → plan_design_workflow: a large
+         blast radius cannot escape through a direct coder.
+      3. At most one file and one subsystem → single_coder.
+      4. Otherwise → planner_then_coder_check.
+    """
+    if manifest.unknowns:
+        listed = ", ".join(manifest.unknowns)
+        return ChangeAssessment(
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            tuple(f"unknown:{item}" for item in manifest.unknowns),
+            f"The plan leaves open: {listed}. "
+            "Please decide before implementation starts.",
+        )
+    flags = tuple(
+        flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
+    )
+    if (
+        flags
+        or manifest.files_expected > MAX_MEDIUM_FILES
+        or len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+    ):
+        evidence = tuple(f"critical:{flag}" for flag in flags) + (
+            f"files_expected:{manifest.files_expected}",
+            f"subsystems:{len(manifest.subsystems)}",
+        )
+        return ChangeAssessment(
+            Band.LOW,
+            Band.HIGH,
+            Band.HIGH if flags else Band.MEDIUM,
+            "plan_design_workflow",
+            evidence,
+        )
+    if (
+        manifest.files_expected <= MAX_SIMPLE_FILES
+        and len(manifest.subsystems) <= 1
+    ):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            (f"files_expected:{manifest.files_expected}",),
+        )
+    return ChangeAssessment(
+        Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+        (
+            f"files_expected:{manifest.files_expected}",
+            f"subsystems:{len(manifest.subsystems)}",
+        ),
+    )

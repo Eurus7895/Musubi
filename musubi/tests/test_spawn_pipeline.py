@@ -224,6 +224,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
     from agent import pipeline_runner
 
     finalizations: list[dict[str, Any]] = []
+    stage_attempts: list[str] = []
 
     async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
         if name == "musubi_spawn_pipeline":
@@ -237,7 +238,12 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
-            return json.dumps({"status": "error", "error": "policy denied"})
+            stage_attempts.append(args["stage"])
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": "stage policy denied",
+            })
         if name == "musubi_finalize_pipeline_run":
             finalizations.append(args)
             return json.dumps({"status": "ok"})
@@ -245,7 +251,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
 
-    with pytest.raises(RuntimeError, match="could not start"):
+    with pytest.raises(Exception) as caught:
         asyncio.run(pipeline_runner.run_pipeline(
             None,
             {
@@ -260,11 +266,132 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
             strict=True,
         ))
 
+    assert type(caught.value).__name__ == "PolicyDeniedError"
+    assert stage_attempts == ["plan"]
     assert finalizations == [{
         "session_id": "pipe-2",
         "final_status": "aborted",
         "escalated": False,
     }]
+def test_spawn_pipeline_stage_topology_rejection_has_no_policy_error_kind() -> None:
+    import server
+
+    denied = json.loads(server.musubi_spawn_pipeline_stage(
+        pipeline_session_id="not-created",
+        pipeline_name="feature-dev",
+        stage="not-a-stage",
+        brief="ship it",
+    ))
+
+    assert denied["status"] == "error"
+    assert "error_kind" not in denied
+
+def test_spawn_pipeline_topology_rejection_has_no_policy_error_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    monkeypatch.setattr(server.composer, "active_stages", lambda name: [])
+    denied = json.loads(server.musubi_spawn_pipeline(
+        parent_session_id="not-created",
+        parent_agent_name="agent",
+        pipeline_name="missing-pipeline",
+        brief="ship it",
+    ))
+
+    assert denied["status"] == "error"
+    assert "error_kind" not in denied
+
+
+def test_spawn_pipeline_stage_missing_agent_has_no_policy_error_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server
+
+    monkeypatch.setattr(server.composer, "active_stages", lambda name: ["ghost-stage"])
+    monkeypatch.setattr(server.composer, "agent_for_stage", lambda *args: None)
+    denied = json.loads(server.musubi_spawn_pipeline_stage(
+        pipeline_session_id="not-created",
+        pipeline_name="broken-pipeline",
+        stage="ghost-stage",
+        brief="ship it",
+    ))
+
+    assert denied["status"] == "error"
+    assert "error_kind" not in denied
+
+
+def test_run_pipeline_runtime_policy_denial_aborts_before_later_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+    from agent import run as run_mod
+
+    completions: list[dict[str, Any]] = []
+    finalizations: list[dict[str, Any]] = []
+    stage_attempts: list[str] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-runtime-policy",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "check", "role": "reviewer"},
+                ],
+            })
+        if name == "musubi_recommend_skills":
+            return json.dumps({"recommended": []})
+        if name == "musubi_spawn_pipeline_stage":
+            stage_attempts.append(args["stage"])
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-runtime-policy",
+                "role": "planner", "allowed_tools": [],
+                "max_turns": args["max_turns"], "spawn_roles": [],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "ship it",
+                "role_skill": None, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "recorded"})
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def denied_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        raise run_mod.PolicyDeniedError(
+            role="planner", tool="musubi_write_file",
+            reason="capability Write is not allowed for role planner",
+        )
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", denied_run_unit)
+
+    with pytest.raises(run_mod.PolicyDeniedError):
+        asyncio.run(pipeline_runner.run_pipeline(
+            None,
+            {
+                "parent_session_id": "outer", "parent_agent_name": "agent",
+                "pipeline_name": "feature-dev", "brief": "ship it",
+            },
+            PipelineRouter(), [], io.StringIO(), strict=True,
+        ))
+
+    assert stage_attempts == ["plan"]
+    assert len(completions) == 1
+    assert completions[0]["status"] == "escalated"
+    assert completions[0]["handle_id"] == "h-runtime-policy"
+    assert finalizations == [{
+        "session_id": "pipe-runtime-policy",
+        "final_status": "aborted",
+        "escalated": False,
+    }]
+
+
 
 
 def test_stage_without_role_prompt_fails_closed(

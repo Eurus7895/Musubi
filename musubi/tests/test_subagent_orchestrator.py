@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -100,8 +101,81 @@ def test_run_subagent_records_terminal_outcome_for_parent_recovery(
         status="failed",
         summary="[incomplete] verified partial",
         touched_files=("dashboard.html",),
+        brief="finish it",
+        failure_kind=run_mod.FailureKind.UNKNOWN,
     )
 
+
+def test_run_subagent_records_policy_failure_without_replacement(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    completed: dict[str, Any] = {}
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_spawn_subagent":
+                payload = (
+                    '{"status":"spawned","handle_id":"h-policy",'
+                    '"role":"coder","max_turns":8}'
+                )
+            elif name == "musubi_get_subagent_context":
+                payload = (
+                    '{"status":"ok","brief":"finish it",'
+                    '"role_skill":null,"allowed_tools":[]}'
+                )
+            elif name == "musubi_complete_subagent":
+                completed.update(arguments)
+                payload = json.dumps({
+                    "status": "recorded",
+                    "final_status": arguments["status"],
+                    "summary": arguments["summary"],
+                })
+            else:
+                raise AssertionError(name)
+
+            class Chunk:
+                text = payload
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        raise run_mod.PolicyDeniedError(
+            role="coder",
+            tool="musubi_new_session",
+            reason="session-management tool is reserved for the root agent",
+        )
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "finish it", "parent_session_id": "parent"},
+        FakeRouter([]),
+        [],
+        io.StringIO(),
+        agents_dir=tmp_path,
+        orchestration=orchestration,
+    ))
+
+    assert result.startswith("[incomplete]")
+    assert completed["status"] == "escalated"
+    outcome = orchestration.latest_unrecovered_failure()
+    assert outcome is not None
+    assert outcome.failure_kind is run_mod.FailureKind.POLICY
+    assert run_mod.decide_recovery(
+        outcome,
+        same_role_failures=1,
+        worker_slots=1,
+    ) is run_mod.RecoveryAction.HALT
 
 def _text(s: str) -> LMResponse:
     return LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": s}])
@@ -178,34 +252,91 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
 # ── deny path: an un-spawnable role surfaces the harness error verbatim ─────
 
 
-def test_disallowed_role_surfaces_error_without_running_child() -> None:
+def test_disallowed_role_policy_denial_is_terminal_without_running_child() -> None:
     router = FakeRouter([
-        _spawn("saboteur", "do something"),  # unknown role → fail-closed deny
-        _text("acknowledged"),
+        _spawn("saboteur", "do something"),
+        _text("this response must not be consumed"),
     ])
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
-    assert answer == "acknowledged"
-    # Only two LM calls — the harness rejected the spawn, no child loop ran.
+    assert answer.startswith("[incomplete]")
+    assert "saboteur" in answer
+    assert len(router.calls) == 1
+
+
+def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> None:
+    import server
+
+    denied = json.loads(server.musubi_spawn_subagent(
+        parent_session_id="not-created",
+        parent_agent_name="agent",
+        role="saboteur",
+        brief="do something",
+    ))
+
+    assert denied["status"] == "error"
+    assert denied["error_kind"] == "policy_denied"
+
+
+def test_worker_runtime_policy_denial_halts_root_without_replacement(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+
+    recorded: list[run_mod.WorkerOutcome] = []
+    original_record = Orchestration.record_worker_outcome
+
+    def record_outcome(self, **kwargs):  # noqa: ANN001
+        outcome = original_record(self, **kwargs)
+        recorded.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    router = FakeRouter([
+        _spawn("coder", "attempt a forbidden session operation"),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "worker-policy-denial",
+            "name": "musubi_new_session",
+            "input": {"request": "forged nested root"},
+        }]),
+        _text("this root response must not be consumed"),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "create one policy test artifact",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+    ))
+
+    assert answer.startswith("[incomplete]")
+    assert "non-recoverable policy failure" in answer
     assert len(router.calls) == 2
-    fed_back = "".join(
-        b["content"] for m in router.calls[1]["messages"]
-        if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
-    )
-    assert '"status": "error"' in fed_back and "saboteur" in fed_back
+    coder_outcomes = [outcome for outcome in recorded if outcome.role == "coder"]
+    assert len(coder_outcomes) == 1
+    assert coder_outcomes[0].status == "escalated"
+    assert coder_outcomes[0].failure_kind is run_mod.FailureKind.POLICY
 
 
 # ── escalation: child that won't stop is killed, parent still completes ─────
 
 
 def test_child_max_turns_requires_recovery_before_root_success() -> None:
+    # The model asks for max_turns=1 but explorer.agent.md owns the cap (6):
+    # the child runs its full role budget, exhausts it on tool calls, and the
+    # escalation still blocks root success until recovered.
     router = FakeRouter([
         _spawn("explorer", "loop", max_turns=1),
-        # child cycle 0: keeps asking for a tool → exhausts max_turns=1
+    ] + [
+        # child cycles 0-5: keeps asking for a tool → exhausts the role cap
         LMResponse(stop_reason="tool_use", content=[{
-            "type": "tool_use", "id": "r1", "name": "musubi_read_file",
+            "type": "tool_use", "id": f"r{index}", "name": "musubi_read_file",
             "input": {"path": "README.md"},
-        }]),
+        }])
+        for index in range(6)
+    ] + [
         _text("[incomplete] reached the turn limit after reading README.md"),
         _text("done"),  # parent final
     ])
@@ -213,11 +344,160 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
-    assert router.calls[2]["tools"] == []
-    fed_back = str(router.calls[3]["messages"])
+    assert router.calls[7]["tools"] == []
+    fed_back = str(router.calls[8]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
-    assert "max_turns=1 reached" in fed_back
+    assert "max_turns=6 reached" in fed_back
+
+
+def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root_cycle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    primary_summary = (
+        "status: incomplete\n"
+        "files_changed:\n- recovery.html\n"
+        "summary: primary coder left recovery.html ready for continuation\n"
+    )
+    router = FakeRouter([
+        _spawn("coder", "create recovery.html"),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use", "id": "write-recovery",
+            "name": "musubi_write_file", "input": {
+                "path": "recovery.html",
+                "content": "<!doctype html><title>Recovery</title>",
+            },
+        }]),
+        *[
+            LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": f"read-recovery-{index}",
+                "name": "musubi_read_file", "input": {"path": "recovery.html"},
+            }])
+            for index in range(7)
+        ],
+        _text(primary_summary),
+        _text(
+            "status: done\n"
+            "files_changed:\n- recovery.html\n"
+            "summary: replacement coder completed recovery.html\n"
+        ),
+        _text("done"),
+    ])
+
+    answer = asyncio.run(run_agent(
+        "create recovery.html", router, _musubi_dir(), log=io.StringIO(),
+    ))
+
+    assert answer == "done"
+    assert (tmp_path / "recovery.html").read_text(encoding="utf-8") == (
+        "<!doctype html><title>Recovery</title>"
+    )
+    assert len(router.calls) == 12
+    forced_final_call = router.calls[9]
+    assert forced_final_call["tools"] == []
+    forced_final_tool_uses = [
+        block
+        for message in forced_final_call["messages"]
+        for block in (
+            message.get("content")
+            if isinstance(message.get("content"), list)
+            else []
+        )
+        if block.get("type") == "tool_use"
+    ]
+    assert [block["id"] for block in forced_final_tool_uses] == [
+        "write-recovery", *[f"read-recovery-{index}" for index in range(7)],
+    ]
+
+    audit_db = tmp_path / "data" / "audit.db"
+    with sqlite3.connect(audit_db) as conn:
+        conn.row_factory = sqlite3.Row
+        audit_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT handle_id, parent_session_id, role, event, brief, "
+                "final_status, escalated, turns FROM subagent_audit "
+                "WHERE parent_session_id = (SELECT parent_session_id "
+                "FROM subagent_audit ORDER BY id LIMIT 1) ORDER BY id"
+            )
+        ]
+
+    assert len(audit_rows) == 4
+    primary_handle = audit_rows[0]["handle_id"]
+    replacement_handle = audit_rows[2]["handle_id"]
+    assert primary_handle != replacement_handle
+    assert [(row["handle_id"], row["event"]) for row in audit_rows] == [
+        (primary_handle, "spawned"), (primary_handle, "completed"),
+        (replacement_handle, "spawned"), (replacement_handle, "completed"),
+    ]
+    parent_session_id = audit_rows[0]["parent_session_id"]
+    assert audit_rows[2]["parent_session_id"] == parent_session_id
+    assert {row["parent_session_id"] for row in audit_rows} == {parent_session_id}
+    assert {row["role"] for row in audit_rows} == {"coder"}
+    assert audit_rows[1]["final_status"] == "escalated"
+    assert audit_rows[1]["escalated"] == 1
+    assert audit_rows[1]["turns"] == 8
+    assert audit_rows[3]["final_status"] == "done"
+    assert audit_rows[3]["escalated"] == 0
+    assert audit_rows[3]["turns"] == 1
+    replacement_brief = audit_rows[2]["brief"]
+    assert "[worker-replacement]" in replacement_brief
+    assert "Touched files: recovery.html" in replacement_brief
+    assert "Prior status: escalated" in replacement_brief
+    assert f"Prior summary: {primary_summary}" in replacement_brief
+
+    state_db = tmp_path / "data" / "musubi.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.row_factory = sqlite3.Row
+        sub_sessions = [
+            dict(row) for row in conn.execute(
+                "SELECT handle_id, parent_session_id, role, brief, status, "
+                "escalated, turns FROM sub_sessions "
+                "WHERE parent_session_id = ? ORDER BY rowid",
+                (parent_session_id,),
+            )
+        ]
+        assert len(sub_sessions) == 2
+        cycle_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT worker_id, stage, cycle_idx FROM agent_cycles "
+                "WHERE session_id = ? ORDER BY id", (parent_session_id,),
+            )
+        ]
+
+    assert [row["handle_id"] for row in sub_sessions] == [primary_handle, replacement_handle]
+    assert [(row["status"], row["escalated"], row["turns"]) for row in sub_sessions] == [
+        ("escalated", 1, 8), ("done", 0, 1),
+    ]
+    assert {row["parent_session_id"] for row in sub_sessions} == {parent_session_id}
+    assert sub_sessions[1]["parent_session_id"] == sub_sessions[0]["parent_session_id"]
+    assert {row["role"] for row in sub_sessions} == {"coder"}
+    assert "[worker-replacement]" in sub_sessions[1]["brief"]
+    assert "Touched files: recovery.html" in sub_sessions[1]["brief"]
+    assert "Prior status: escalated" in sub_sessions[1]["brief"]
+    assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
+
+    assert len(cycle_rows) == len(router.calls) == 12
+    assert [row["worker_id"] for row in cycle_rows].count("root") == 2
+    assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
+    assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
+    assert [row["worker_id"] for row in cycle_rows] == [
+        *[primary_handle] * 9, "root", replacement_handle, "root",
+    ]
+    assert [
+        row["cycle_idx"] for row in cycle_rows if row["worker_id"] == "root"
+    ] == [0, 1]
+    assert [
+        row["cycle_idx"]
+        for row in cycle_rows
+        if row["worker_id"] == primary_handle
+    ] == list(range(9))
+    assert [
+        row["cycle_idx"]
+        for row in cycle_rows
+        if row["worker_id"] == replacement_handle
+    ] == [0]
 
 
 def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
@@ -494,15 +774,32 @@ def test_model_spawn_request_cannot_exceed_frontmatter_maxturns(
     assert run_unit_kwargs["max_cycles"] == 8
 
 
-def test_model_spawn_request_may_ask_for_fewer_turns(
+def test_model_spawn_request_cannot_reduce_frontmatter_maxturns(
     monkeypatch, tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    spawn, run_unit_kwargs = _run_direct_spawn(
+    """Role frontmatter is the SOLE owner of a direct worker's turn cap: the
+    spawning model can no longer starve a coder below its declared budget
+    (the observed failure handed max_turns=2 to a role whose contract
+    declares 8, guaranteeing a turn-cap escalation)."""
+    spawn, run_kwargs = _run_direct_spawn(
         monkeypatch, tmp_path,
-        agent_md=_CODER_MD_8, spawn_args={"max_turns": 2},
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 2},
     )
-    assert spawn["max_turns"] == 2
-    assert run_unit_kwargs["max_cycles"] == 2
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
+
+
+def test_replacement_receives_full_role_turn_budget(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    spawn, run_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 1, "brief": "[worker-replacement] continue"},
+    )
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
 
 
 def test_absent_spawn_request_uses_frontmatter_maxturns(
@@ -516,13 +813,14 @@ def test_absent_spawn_request_uses_frontmatter_maxturns(
     assert run_unit_kwargs["max_cycles"] == 5
 
 
-def test_undeclared_frontmatter_leaves_spawn_request_untouched(
+def test_role_without_maxturns_uses_server_default(
     monkeypatch, tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    spawn, _ = _run_direct_spawn(
-        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={},
+    spawn, run_unit_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path, agent_md="# Coder", spawn_args={"max_turns": 1},
     )
     assert "max_turns" not in spawn
+    assert run_unit_kwargs["max_cycles"] == 8
 
 
 # ── pure helpers ────────────────────────────────────────────────────────────
@@ -648,3 +946,51 @@ def test_run_subagent_threads_frontmatter_output_budget(
     assert seen["audit_session_id"] == "parent-1"
     assert seen["audit_worker_id"] == "h1"
     assert seen["audit_stage"] == "coder"
+
+
+# ── incident regressions (governed scope, budget, recovery) ──────────────────
+
+
+def test_bare_new_website_request_stops_at_clarification() -> None:
+    # The originating incident: "create a new website" must halt at one
+    # deterministic clarification — no parent session, no model call, no worker.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("create a new website")
+    answer = run_mod._deterministic_scope_answer("create a new website", hint)
+
+    assert hint.route == "ask_scope"
+    assert answer == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )
+
+
+def test_bounded_scaffold_cannot_be_starved_or_abandon_recovery(
+    monkeypatch, tmp_path: Path,
+) -> None:  # noqa: ANN001
+    # A bounded scaffold coder cannot be starved below its role budget, and a
+    # turn-cap failure with surviving files is an automatic replacement, never
+    # an abandoned recovery.
+    from agent.run import FailureKind, RecoveryAction, WorkerOutcome, decide_recovery
+
+    spawn, run_kwargs = _run_direct_spawn(
+        monkeypatch, tmp_path,
+        agent_md=_CODER_MD_8,
+        spawn_args={"max_turns": 6},
+    )
+    outcome = WorkerOutcome(
+        role="coder",
+        status="escalated",
+        summary="Next.js scaffold unfinished",
+        touched_files=("app/page.tsx", "app/layout.tsx"),
+        brief="create the bounded scaffold",
+        failure_kind=FailureKind.TURN_CAP,
+    )
+
+    assert spawn["max_turns"] == 8
+    assert run_kwargs["max_cycles"] == 8
+    assert decide_recovery(
+        outcome, same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.AUTO_REPLACE

@@ -77,7 +77,10 @@ async def run_subagent(
     """
     # Lazy import avoids the run↔subagent module cycle.
     from agent.run import (
+        FailureKind,
+        PolicyDeniedError,
         _call_tool_text,
+        _policy_incomplete,
         _worker_log_label,
         _worker_touched_files,
         run_unit,
@@ -85,29 +88,43 @@ async def run_subagent(
 
     # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
     # _spec): the role prompt is resolved BEFORE the spawn so its declared
-    # `maxTurns:` frontmatter caps the turn budget recorded in the spawn row —
+    # `maxTurns:` frontmatter IS the turn budget recorded in the spawn row —
     # the same value then drives the runtime loop and the completion audit.
-    # The spawning model may request FEWER turns, never more: without this, a
-    # root model could hand a worker any budget it liked (e.g. 10 for a coder
-    # whose contract declares 8) and the role contract was silently ignored.
+    # Role frontmatter is the SOLE owner of the cap: a model-supplied
+    # max_turns is ignored in both directions. Allowing "fewer, never more"
+    # let the root starve a worker below its role budget (max_turns=2 for a
+    # coder whose contract declares 8 guarantees a turn-cap escalation), and
+    # a replacement worker re-spawned with the failed run's leftover count
+    # inherited that starvation. Roles without a valid `maxTurns:` omit any
+    # model-supplied cap so the server default is the sole owner.
     role_hint = str(spawn_args.get("role", ""))
     agent_md = _read_agent_md(role_hint, agents_dir)
     declared_turns = _frontmatter_max_turns(agent_md)
-    if declared_turns:
-        requested = spawn_args.get("max_turns")
-        spawn_args = dict(spawn_args)
-        if (
-            isinstance(requested, int)
-            and not isinstance(requested, bool)
-            and requested > 0
-        ):
-            spawn_args["max_turns"] = min(requested, declared_turns)
-        else:
-            spawn_args["max_turns"] = declared_turns
+    if declared_turns is not None:
+        requested_turns = spawn_args.get("max_turns")
+        if requested_turns is not None and requested_turns != declared_turns:
+            print(
+                f"[agent] ignored model max_turns={requested_turns}; "
+                f"role {role_hint} owns max_turns={declared_turns}",
+                file=log,
+            )
+        spawn_args = {**spawn_args, "max_turns": declared_turns}
+    else:
+        # With no role-owned declaration, omit any model-supplied value so
+        # the substrate's server default remains the sole owner of the cap.
+        spawn_args = {**spawn_args}
+        spawn_args.pop("max_turns", None)
+
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
     spawn = _loads(raw)
     if spawn.get("status") != "spawned":
+        if spawn.get("error_kind") == "policy_denied":
+            raise PolicyDeniedError(
+                role=str(spawn_args.get("parent_agent_name") or "agent"),
+                tool="musubi_spawn_subagent",
+                reason=str(spawn.get("error") or "subagent spawn denied"),
+            )
         return raw
     handle_id = str(spawn.get("handle_id", ""))
     role = str(spawn.get("role") or role_hint)
@@ -197,27 +214,70 @@ async def run_subagent(
             audit_worker_id=handle_id,
             audit_stage=role,
         )
+    except PolicyDeniedError as exc:
+        policy_summary = _policy_incomplete(exc)
+        await _safe_complete(
+            session,
+            handle_id,
+            status="escalated",
+            summary=policy_summary,
+        )
+        if orchestration is not None:
+            orchestration.record_worker_outcome(
+                role=role,
+                status="escalated",
+                summary=policy_summary,
+                touched_files=touched,
+                brief=brief,
+                failure_kind=FailureKind.POLICY,
+                pushed_skill_id=spawn_args.get("pushed_skill_id"),
+            )
+        return policy_summary
     except Exception as exc:
         if type(exc).__name__ in {
             "BudgetExhaustedError",
             "TokenBudgetExhaustedError",
         }:
+            budget_summary = f"[subagent {role}] budget exhausted: {exc}"
             await _safe_complete(
                 session, handle_id, status="escalated",
-                summary=f"[subagent {role}] budget exhausted: {exc}",
+                summary=budget_summary,
             )
+            # Typed BUDGET evidence: the raise skips the normal recording
+            # below, and a budget failure must reach the parent as a
+            # fail-closed terminal, never as recoverable unfinished work.
+            if orchestration is not None:
+                orchestration.record_worker_outcome(
+                    role=role,
+                    status="escalated",
+                    summary=budget_summary,
+                    touched_files=touched,
+                    brief=brief,
+                    failure_kind=FailureKind.BUDGET,
+                    pushed_skill_id=spawn_args.get("pushed_skill_id"),
+                )
         raise
     finally:
         _worker_touched_files.reset(token)
         _worker_log_label.reset(label_token)
+    # Typed failure evidence, derived from CONTROL FLOW (which branch
+    # terminated the worker), never from parsing summary prose (HI #1-adjacent:
+    # deterministic, no judgement call).
+    failure_kind = None
     done_artifacts: list[str] | None = None
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
+        failure_kind = FailureKind.TURN_CAP
     elif answer.lstrip().lower().startswith(("[incomplete]", "[blocked]")):
         # A typed incomplete/blocked marker (e.g. a truncated tool call caught
         # mid-mutation) is always an escalation, even at the turn cap.
         summary, status = answer, "escalated"
+        failure_kind = (
+            FailureKind.BLOCKED
+            if answer.lstrip().lower().startswith("[blocked]")
+            else FailureKind.UNKNOWN
+        )
     elif turns >= max_turns:
         # Force-concluded at the turn cap. That is a real escalation ONLY if the
         # deliverable is not already produced. If the forced-final answer
@@ -235,6 +295,7 @@ async def run_subagent(
             summary, status = answer, "done"
         else:
             summary, status = answer, "escalated"
+            failure_kind = FailureKind.TURN_CAP
     else:
         summary, status = answer, "done"
 
@@ -271,12 +332,23 @@ async def run_subagent(
         in {"done", "failed", "escalated", "abandoned"}
         else status
     )
+    # Keep the typed kind consistent with the status the substrate actually
+    # recorded: a success carries no failure kind, and a harness-side
+    # turn-cap coercion (driver said done, substrate re-verified and said
+    # escalated at the cap) is still control-flow-derivable as TURN_CAP.
+    if recorded_status == "done":
+        failure_kind = None
+    elif failure_kind is None and turns >= max_turns:
+        failure_kind = FailureKind.TURN_CAP
     if orchestration is not None:
         orchestration.record_worker_outcome(
             role=role,
             status=recorded_status,
             summary=returned_summary,
             touched_files=touched,
+            brief=brief,
+            failure_kind=failure_kind,
+            pushed_skill_id=spawn_args.get("pushed_skill_id"),
         )
     return returned_summary
 
@@ -520,9 +592,8 @@ def _frontmatter_max_output_tokens(agent_md: str) -> int | None:
 def _frontmatter_max_turns(agent_md: str) -> int | None:
     """Positive per-role turn cap declared as `maxTurns:` frontmatter.
 
-    None when absent or invalid (non-int, bool, <= 0) — the caller falls back
-    to the spawning model's request / the server default, i.e. an undeclared
-    or broken contract grants nothing extra and removes nothing.
+    None when absent or invalid (non-int, bool, <= 0) — the caller omits any
+    model-supplied `max_turns`, leaving the server default as sole owner.
     """
     value = frontmatter_dict(agent_md).get("maxTurns")
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:

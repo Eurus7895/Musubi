@@ -59,19 +59,6 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    "no skill evidence"; `planner` has an empty skill allowlist and remains
    skill-less by design.
 
-2. **Governed change assessment and recovery liveness.** Replace lexical-only
-   mutation scope guesses with a two-phase ambiguity/impact/risk assessment:
-   broad underspecified product requests stop at one deterministic clarification,
-   while a bounded planner `ChangeManifest` reclassifies blast radius before
-   mutation. Make direct-worker role frontmatter the sole turn-cap owner and
-   give a genuinely unfinished turn-capped mutate worker exactly one audited
-   same-role continuation through the normal firewall/spawn path; repeated
-   failure and exhausted worker/token budgets remain fail-closed. This corrects
-   the current gap where the model may shrink a worker below its role budget and
-   recovery liveness depends on the root voluntarily selecting the spawn tool.
-   Plan:
-   [`2026-07-22-governed-scope-budget-recovery.md`](./superpowers/plans/2026-07-22-governed-scope-budget-recovery.md)
-
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
@@ -126,6 +113,25 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Governed change assessment and recovery liveness — lexical-only mutation
+  scope guesses are replaced by a deterministic ambiguity/impact/risk
+  assessment (`agent/change_assessment.py`). A broad product request without
+  deliverable constraints (`create a new website`) stops at one clarification
+  before any parent session, model call, or worker spawn; a bounded nine-field
+  planner `<change_manifest>` (4 KiB cap, fail-closed parse) reclassifies blast
+  radius after planning, so an eleven-file/four-subsystem plan can no longer
+  proceed as a medium change through a direct coder — it halts with a
+  user-invoked `--pipeline feature-dev` recommendation and never auto-launches.
+  Direct-worker role frontmatter is the sole owner of the turn cap
+  (model-supplied `max_turns` is ignored, closing the starve-below-role-budget
+  gap), and a genuinely unfinished turn-capped mutate worker with surviving
+  files gets exactly one audited same-role continuation through the normal
+  `_dispatch`/firewall/audit path (typed `FailureKind` + `decide_recovery`) —
+  a second same-role failure, a spent worker slot, or a BUDGET/POLICY failure
+  halts fail-closed. Recovery liveness no longer depends on the root
+  voluntarily re-selecting the spawn tool. Plan:
+  [`2026-07-22-governed-scope-budget-recovery.md`](./superpowers/plans/2026-07-22-governed-scope-budget-recovery.md)
+
 - Bounded standalone pipeline runtime — one stage turn cap across
   runtime/state/audit, a hard 16k-character model-input cap including tool
   definitions, and reserved token capacity so planner/designer cannot consume
@@ -140,8 +146,9 @@ enforcement path for the same dimension.
   fair-share slice of the run budget charged through to the parent, so an early
   stage cannot spend a later stage's reserve, and allowance exhaustion finalizes
   the run once as `escalated`. The one-cap rule also covers direct workers: a
-  role's `maxTurns:` frontmatter clamps the spawn's turn budget (the model may
-  request fewer turns, never more), and a stage or worker that finishes on its
+  role's `maxTurns:` frontmatter clamps the spawn's turn budget
+  (direct-worker role frontmatter is authoritative; model-supplied turn
+  counts are ignored), and a stage or worker that finishes on its
   last allowed turn attaches a substrate-verified artifact manifest so the
   audit records done instead of a false escalation. Plan:
   [`2026-07-12-bounded-standalone-pipeline-runtime.md`](./superpowers/plans/2026-07-12-bounded-standalone-pipeline-runtime.md)

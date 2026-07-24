@@ -39,6 +39,7 @@ import sys
 import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,7 @@ from agent.budget import (
 from agent.boundary import (
     denied_tool_guidance,
     evaluate_tool_call,
+    evaluate_argument_policy,
     is_musubi_tool,
     json_args,
     record_policy_decision,
@@ -140,6 +142,41 @@ _worker_log_label: contextvars.ContextVar[str] = (
 DEFAULT_MAX_DEPTH = 2
 
 
+class PolicyDeniedError(RuntimeError):
+    """Terminal policy control flow; never expose it as a tool-result string."""
+
+    def __init__(self, *, role: str, tool: str, reason: str) -> None:
+        self.role = role
+        self.tool = tool
+        self.reason = reason
+        super().__init__(f"{role} denied {tool}: {reason}")
+
+
+def _policy_incomplete(error: PolicyDeniedError) -> str:
+    return (
+        f"[incomplete] policy denied for role {error.role!r} while calling "
+        f"{error.tool!r}: {error.reason}"
+    )
+
+
+class FailureKind(StrEnum):
+    """Typed cause of a worker's terminal failure, derived from control flow
+    (turn counters, marker branches, raised exceptions) — never from parsing
+    summary prose."""
+
+    TURN_CAP = "turn_cap"
+    BLOCKED = "blocked"
+    BUDGET = "budget"
+    POLICY = "policy"
+    UNKNOWN = "unknown"
+
+
+class RecoveryAction(StrEnum):
+    AUTO_REPLACE = "auto_replace"
+    ROOT_ANALYZE = "root_analyze"
+    HALT = "halt"
+
+
 @dataclass(frozen=True)
 class WorkerOutcome:
     """Terminal state retained by the parent for a possible replacement."""
@@ -148,6 +185,41 @@ class WorkerOutcome:
     status: str
     summary: str
     touched_files: tuple[str, ...] = ()
+    #: The firewalled brief this worker ran on — an automatic replacement
+    #: re-runs the same contract, not a paraphrase of it.
+    brief: str = ""
+    #: None on success or on a legacy/untyped failure (which keeps the
+    #: root-analysis path); set from control flow for typed failures.
+    failure_kind: FailureKind | None = None
+    #: The skill id the root pushed into this worker's spawn, if any. Replayed
+    #: on an automatic replacement so the continuation runs the SAME worker
+    #: contract — a direct worker carries no native skill tool, so dropping it
+    #: would resume the artifact without the pushed procedure.
+    pushed_skill_id: str | None = None
+
+
+def decide_recovery(
+    outcome: WorkerOutcome,
+    *,
+    same_role_failures: int,
+    worker_slots: int,
+) -> RecoveryAction:
+    """Deterministic verdict for one terminal worker failure.
+
+    Exhausted worker slots or a second same-role failure always halt —
+    one audited continuation is the limit, never a replacement loop. A first
+    turn-cap failure that left real artifacts behind is genuinely unfinished
+    work: replace it automatically. Budget/policy failures stay fail-closed.
+    Everything else (blocked, unknown, no surviving evidence) goes to the
+    root's bounded analysis window.
+    """
+    if worker_slots <= 0 or same_role_failures >= 2:
+        return RecoveryAction.HALT
+    if outcome.failure_kind is FailureKind.TURN_CAP and outcome.touched_files:
+        return RecoveryAction.AUTO_REPLACE
+    if outcome.failure_kind in {FailureKind.BUDGET, FailureKind.POLICY}:
+        return RecoveryAction.HALT
+    return RecoveryAction.ROOT_ANALYZE
 
 
 @dataclass
@@ -170,6 +242,7 @@ class Orchestration:
     root_recovery_analysis_cycles: int = 0
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
+    pipeline_name: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -181,11 +254,15 @@ class Orchestration:
         return Orchestration(
             parent_session_id=self.parent_session_id,
             parent_agent_name=role,
+            pipeline_name=self.pipeline_name,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
 
-    def stage_child(self, role: str, pipeline_session_id: str) -> "Orchestration":
+    def stage_child(
+        self, role: str, pipeline_session_id: str,
+        pipeline_name: str | None = None,
+    ) -> "Orchestration":
         """Orchestration for one pipeline stage worker. Unlike `child`, the
         parentage moves to the PIPELINE session: the server resolves the
         pipeline from `parent_session_id` and narrows the stage's spawnable
@@ -196,6 +273,7 @@ class Orchestration:
         return Orchestration(
             parent_session_id=pipeline_session_id,
             parent_agent_name=role,
+            pipeline_name=pipeline_name,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
@@ -212,6 +290,9 @@ class Orchestration:
         status: str,
         summary: str,
         touched_files: set[str] | tuple[str, ...] | list[str],
+        brief: str = "",
+        failure_kind: FailureKind | None = None,
+        pushed_skill_id: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -219,6 +300,9 @@ class Orchestration:
             status=status,
             summary=summary,
             touched_files=tuple(sorted(set(touched_files))),
+            brief=brief,
+            failure_kind=failure_kind,
+            pushed_skill_id=pushed_skill_id,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -228,6 +312,15 @@ class Orchestration:
                 summary=summary,
                 touched_files=touched_files,
             )
+            # Post-plan reclassification: a planner-led goal consumes the
+            # planner's bounded change manifest the moment it lands. The
+            # manifest verdict (not the lexical guess) then owns route, scope,
+            # and the legal next mutation role; a missing/invalid manifest
+            # fails closed to one clarification inside apply_planner_manifest.
+            if role == "planner" and status == "done" and (
+                self.goal_state.next_role == "planner"
+            ):
+                self.goal_state.apply_planner_manifest(summary)
         return outcome
 
     def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
@@ -264,6 +357,156 @@ def _replacement_brief(original_brief: str, outcome: WorkerOutcome) -> str:
         f"Prior summary: {outcome.summary}\n"
         "Complete missing acceptance criteria before optional enhancement.\n"
         "[/worker-replacement]"
+    )
+
+
+async def _auto_recovery_transition(
+    session: ClientSession,
+    log: Any,
+    *,
+    vendor: LMRouter | None,
+    tools: list[dict[str, Any]],
+    spawn_catalog: list[dict[str, Any]] | None,
+    orchestration: Orchestration,
+    gateway: McpGateway | None,
+    compression_db_path: Path | None,
+    budget: TokenBudgetEnforcer | None,
+    stats: AgentRunStats | None,
+    audit_db_path: Path | None,
+    scope_hint: ScopeHint | None,
+) -> str | None:
+    """Deterministic recovery transitions before a root LM cycle.
+
+    Evaluates the newest unrecovered TYPED failure in a small loop:
+    AUTO_REPLACE synthesizes one `musubi_spawn_subagent` call and passes it
+    through `_dispatch` — never straight to `run_subagent` — so the root
+    worker ceiling, replacement brief injection, policy check, tool audit,
+    subagent audit, and touched-file tracking all apply (HI #8). HALT returns
+    the final `[incomplete]` text. ROOT_ANALYZE (and every untyped failure)
+    returns None, leaving the legacy bounded analysis window untouched.
+
+    Runs before the cycle counter and any model call: the transition itself
+    never increments `cycles_used` and never writes an `agent_cycles` row,
+    because no LM call occurred.
+    """
+    while True:
+        outcome = orchestration.latest_unrecovered_failure()
+        if outcome is None or outcome.failure_kind is None:
+            return None
+        same_role_failures = sum(
+            1 for prior in orchestration.worker_outcomes
+            if prior.role == outcome.role
+            and prior.status in {"failed", "escalated"}
+        )
+        worker_slots = (
+            orchestration.max_root_workers - orchestration.spawned_workers
+        )
+        action = decide_recovery(
+            outcome,
+            same_role_failures=same_role_failures,
+            worker_slots=worker_slots,
+        )
+        if action is RecoveryAction.ROOT_ANALYZE:
+            return None
+        if action is RecoveryAction.HALT:
+            if worker_slots <= 0:
+                reason = (
+                    f"root worker ceiling ({orchestration.max_root_workers}) "
+                    "was exhausted before the artifact could be completed"
+                )
+            elif same_role_failures >= 2:
+                reason = (
+                    f"a second {outcome.role} failure "
+                    f"({outcome.failure_kind.value}) ended the bounded "
+                    "recovery — one audited continuation is the limit"
+                )
+            else:
+                reason = (
+                    f"{outcome.role} failed with a non-recoverable "
+                    f"{outcome.failure_kind.value} failure"
+                )
+            print(f"[agent] recovery halt: {reason}", file=log)
+            return _recovery_incomplete(outcome, reason)
+        # AUTO_REPLACE, but `touched_files` is only a write HISTORY — it is not
+        # pruned when a worker later removes a file (e.g. a Bash `rm` of a
+        # scratch generator). Confirm at least one recorded path still exists
+        # non-empty on disk before spending the single continuation on a
+        # replacement whose brief says "continue from current state". If
+        # nothing survives, defer to the bounded root-analysis window instead.
+        from agent.subagent import surviving_nonempty_files
+
+        if surviving_nonempty_files(set(outcome.touched_files)) is None:
+            print(
+                f"[agent] recovery: {outcome.role} turn_cap left no surviving "
+                "artifact on disk; deferring to root analysis",
+                file=log,
+            )
+            return None
+        # The model did not make this tool call, so no synthetic assistant
+        # message is appended; the spawn is synthesized and dispatched through
+        # the exact path a model call would take. The pushed skill is replayed
+        # so the replacement reruns the same worker contract (a direct worker
+        # has no native skill tool to reload it otherwise).
+        recovery_input: dict[str, Any] = {
+            "role": outcome.role,
+            "brief": outcome.brief,
+        }
+        if outcome.pushed_skill_id:
+            recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
+        auto_tool_use = {
+            "type": "tool_use",
+            "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
+            "name": "musubi_spawn_subagent",
+            "input": recovery_input,
+        }
+        print(
+            f"[agent] automatic recovery: {outcome.role} "
+            f"{outcome.failure_kind.value} -> audited replacement",
+            file=log,
+        )
+        outcomes_before = len(orchestration.worker_outcomes)
+        await _dispatch(
+            session, [auto_tool_use], log,
+            vendor=vendor, tools=(spawn_catalog or tools),
+            orchestration=orchestration, gateway=gateway,
+            compression_db_path=compression_db_path,
+            role="agent",
+            scope_hint=scope_hint,
+            budget=budget,
+            stats=stats,
+            audit_db_path=audit_db_path,
+        )
+        if len(orchestration.worker_outcomes) == outcomes_before:
+            # The spawn was refused or errored without producing a terminal
+            # outcome — retrying deterministically would loop, so fail closed.
+            return _recovery_incomplete(
+                outcome,
+                "the automatic replacement worker could not be started",
+            )
+        # Loop: a done replacement clears the failure (return None next
+        # pass); a failed one re-enters decide_recovery, where the second
+        # same-role failure halts.
+
+
+def _pipeline_recommendation(state: GoalState) -> str:
+    """Deterministic final answer when request or manifest assessment is large.
+
+    Large workflows stay user-invoked (policy locked decision #4): the root
+    never auto-launches a pipeline, it hands the decision back with the exact
+    command. Emitted with zero further model calls or worker spawns.
+    """
+    assessment = state.assessment
+    evidence = (
+        ", ".join(assessment.evidence) if assessment is not None else "manifest"
+    )
+    return (
+        "[scope] The deterministic change assessment classified this request "
+        f"as a large change ({evidence}).\n"
+        "Large workflows are user-invoked and never auto-launched. To run it "
+        "under the governed pipeline (plan → design → code → review with the "
+        "evaluator firewall), start it explicitly:\n\n"
+        '    agent "<your brief>" --pipeline feature-dev\n\n'
+        "No pipeline was launched and no further workers were spawned."
     )
 
 
@@ -362,8 +605,9 @@ async def run_agent(
         intent=task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
+        assessment=scope_hint.assessment,
     )
-    direct_answer = _deterministic_scope_answer(task, scope_hint)
+    direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
         print(
@@ -556,6 +800,8 @@ async def run_agent(
                     audit_worker_id="root",
                     audit_stage="agent",
                 )
+        except PolicyDeniedError as exc:
+            final_answer = _policy_incomplete(exc)
         except Exception as exc:  # noqa: BLE001 — surfaced cleanly outside
             loop_error = exc
 
@@ -659,6 +905,39 @@ async def _run_loop(
     )
     effort_escalated = False
     for cycle in range(max_cycles):
+        # Deterministic recovery transition (root only), BEFORE the cycle
+        # counter and any LM cost: a typed recoverable failure gets its one
+        # audited same-role continuation through `_dispatch`; a typed
+        # non-recoverable one halts. No LM call happens in the transition, so
+        # it neither increments `cycles_used` nor writes an `agent_cycles` row.
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+        ):
+            transition_outcomes_before = len(orchestration.worker_outcomes)
+            transition_halt = await _auto_recovery_transition(
+                session, log,
+                vendor=vendor, tools=tools, spawn_catalog=spawn_catalog,
+                orchestration=orchestration, gateway=gateway,
+                compression_db_path=compression_db_path,
+                budget=budget, stats=stats, audit_db_path=audit_db_path,
+                scope_hint=scope_hint,
+            )
+            if transition_halt is not None:
+                final_answer = transition_halt
+                break
+            if (
+                orchestration.goal_state is not None
+                and len(orchestration.worker_outcomes)
+                > transition_outcomes_before
+            ):
+                # A replacement ran: rebuild the compact goal-state delta from
+                # the newly recorded outcome so the SAME root LM cycle can
+                # conclude from fresh evidence.
+                messages = _compact_root_goal_messages(
+                    messages, orchestration.goal_state,
+                )
         cycles_used = cycle + 1
         root_state = (
             orchestration.goal_state
@@ -680,6 +959,30 @@ async def _run_loop(
             and orchestration.root_recovery_analysis_cycles
             >= DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES
         )
+        # Manifest-driven halts (root only), BEFORE any budget or model call:
+        # a pending clarification goes straight back to the user, and a
+        # manifest-reclassified large change ends with the pipeline
+        # recommendation — both deterministic, zero further tokens.
+        if root_state is not None:
+            if root_state.pending_clarification:
+                print(
+                    "[agent] planner manifest requires clarification; "
+                    "no model call",
+                    file=log,
+                )
+                final_answer = root_state.pending_clarification
+                break
+            if (
+                root_state.assessment is not None
+                and root_state.route == "plan_design_workflow"
+            ):
+                print(
+                    "[agent] planner manifest reclassified the goal as large; "
+                    "recommending a user-invoked pipeline",
+                    file=log,
+                )
+                final_answer = _pipeline_recommendation(root_state)
+                break
         # No-progress budget breaker (root only). Checked between workers, so a
         # mid-flight worker is never interrupted: it fires when the completed
         # workers have failed and most of the run budget is already gone, before
@@ -959,18 +1262,43 @@ async def _run_loop(
             break
 
         outcomes_before = len(root_state.outcomes) if root_state is not None else 0
-        tool_results = await _dispatch(
-            session, tool_uses, log,
-            vendor=vendor, tools=(spawn_catalog or tools),
-            orchestration=orchestration, gateway=gateway,
-            compression_db_path=compression_db_path,
-            role=role,
-            scope_hint=scope_hint,
-            cycle_index=cycle,
-            budget=budget,
-            stats=stats,
-            audit_db_path=audit_db_path,
-        )
+        try:
+            tool_results = await _dispatch(
+                session, tool_uses, log,
+                vendor=vendor, tools=(spawn_catalog or tools),
+                orchestration=orchestration, gateway=gateway,
+                compression_db_path=compression_db_path,
+                role=role,
+                scope_hint=scope_hint,
+                cycle_index=cycle,
+                budget=budget,
+                stats=stats,
+                audit_db_path=audit_db_path,
+            )
+        except PolicyDeniedError as exc:
+            is_root = (
+                role == "agent"
+                and (orchestration is None or orchestration.depth == 0)
+            )
+            if not is_root:
+                raise
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=time.time(),
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[str(tu.get("name", "")) for tu in tool_uses],
+                text_chars=len(text),
+                cycle_status="policy_halt",
+                log=log,
+            )
+            final_answer = _policy_incomplete(exc)
+            break
         recovery_halt: str | None = None
         if role == "agent" and orchestration is not None and orchestration.depth == 0:
             requested_replacement = any(
@@ -1538,9 +1866,29 @@ def _build_token_budget(
     return budget
 
 
-def _deterministic_scope_answer(task: str, scope_hint: ScopeHint) -> str | None:
+def _deterministic_scope_answer(
+    task: str,
+    scope_hint: ScopeHint,
+    goal_state: GoalState | None = None,
+) -> str | None:
     if scope_hint.route == "direct_answer":
         return "Hi! How can I help?"
+    if scope_hint.route == "ask_scope":
+        # High ambiguity halts BEFORE any parent session, model call, or worker
+        # spawn: one deterministic clarifying question, zero tokens spent.
+        assessment = scope_hint.assessment
+        if assessment is not None and assessment.clarifying_question:
+            return assessment.clarifying_question
+        return "What exact target and acceptance criteria should this change satisfy?"
+    if scope_hint.route == "plan_design_workflow":
+        state = goal_state or GoalState.create(
+            intent=task,
+            scope=scope_hint.kind.value,
+            route=scope_hint.route,
+            assessment=scope_hint.assessment,
+        )
+        return _pipeline_recommendation(state)
+
     if scope_hint.route == "manual_destructive":
         return (
             "I cannot safely delete files from this route because deletion is "
@@ -1953,6 +2301,64 @@ def _charge_budget_postflight(
         )
 
 
+def _preflight_policy_batch(
+    tool_uses: list[dict[str, Any]],
+    *,
+    role: str,
+    orchestration: Orchestration | None,
+    audit_db_path: Path | None,
+    log: Any,
+) -> None:
+    call_role = (
+        orchestration.parent_agent_name
+        if orchestration is not None and orchestration.parent_agent_name
+        else role
+    )
+    session_id = orchestration.parent_session_id if orchestration else None
+    audit_path = audit_db_path or _default_audit_db_path()
+    for tu in tool_uses:
+        name = str(tu.get("name", ""))
+        if not is_musubi_tool(name):
+            continue
+        raw_args = tu.get("input") or {}
+        args = raw_args if isinstance(raw_args, dict) else {}
+        decision = evaluate_tool_call(call_role, name)
+        if decision.allowed:
+            argument_decision = evaluate_argument_policy(
+                call_role,
+                name,
+                args,
+                pipeline_name=(
+                    orchestration.pipeline_name if orchestration else None
+                ),
+            )
+            if argument_decision is not None:
+                decision = argument_decision
+        if decision.allowed:
+            continue
+        denied = (
+            f"[policy denied] {decision.reason}"
+            f"{denied_tool_guidance(call_role, name)}"
+        )
+        print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_tool_audit(
+            session_id=session_id,
+            role=call_role,
+            tool=name,
+            args=json_args(args),
+            status="denied",
+            db_path=audit_path,
+            result_text=denied,
+            log=log,
+        )
+        raise PolicyDeniedError(
+            role=call_role,
+            tool=name,
+            reason=decision.reason,
+        )
+
+
 async def _dispatch(
     session: ClientSession,
     tool_uses: list[dict[str, Any]],
@@ -1983,6 +2389,13 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound. Direct
     root runs also share a classifier-independent cumulative worker ceiling.
     """
+    _preflight_policy_batch(
+        tool_uses,
+        role=role,
+        orchestration=orchestration,
+        audit_db_path=audit_db_path,
+        log=log,
+    )
     refused = _spawn_overflow_reasons(
         tool_uses,
         log,
@@ -2006,6 +2419,8 @@ async def _dispatch(
                     stats=stats,
                     audit_db_path=audit_db_path,
                 ))
+            except PolicyDeniedError:
+                raise
             except Exception as exc:  # noqa: BLE001 - match gather semantics
                 settled.append(exc)
     else:
@@ -2027,6 +2442,8 @@ async def _dispatch(
 
     results: list[dict[str, Any]] = []
     for tu, outcome in zip(tool_uses, settled):
+        if isinstance(outcome, PolicyDeniedError):
+            raise outcome
         if isinstance(outcome, BaseException):
             content = f"[dispatch error] {type(outcome).__name__}: {outcome}"
         else:
@@ -2107,6 +2524,31 @@ def _spawn_overflow_reasons(
             print(
                 f"[agent]   ⨯ refused extra worker(role={spawn_role!r}): "
                 f"{reason}",
+                file=log,
+            )
+            continue
+        # Deterministic role order (root only): on a planner-led goal the
+        # coder gate opens ONLY after the planner's manifest reclassifies the
+        # change. This is goal-state enforcement of an assessed route, not the
+        # retired keyword guess — next_role comes from the assessment cascade,
+        # and the refusal names the legal next role so the model can comply.
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            and orchestration.goal_state is not None
+            and spawn_role == "coder"
+            and orchestration.goal_state.next_role not in (None, "coder")
+        ):
+            legal = orchestration.goal_state.next_role
+            reason = (
+                f"role order: {legal!r} is the legal next role on this route; "
+                f"spawn {legal!r} first — its change manifest decides whether "
+                "a coder may follow"
+            )
+            overflow[tu.get("id", "")] = reason
+            print(
+                f"[agent]   ⨯ refused worker(role={spawn_role!r}): {reason}",
                 file=log,
             )
             continue
@@ -2191,7 +2633,11 @@ async def _dispatch_one(
                 result_text=denied,
                 log=log,
             )
-            return denied
+            raise PolicyDeniedError(
+                role=call_role,
+                tool=name,
+                reason=decision.reason,
+            )
 
     arg_error = _file_tool_argument_error(name, args)
     if arg_error is not None:
@@ -2238,6 +2684,8 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
             result = f"[pipeline error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(
@@ -2295,6 +2743,8 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        except PolicyDeniedError:
+            raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
             result = f"[subagent error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(

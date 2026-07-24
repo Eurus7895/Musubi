@@ -44,6 +44,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
+from agent.boundary import evaluate_argument_policy
 
 import composer
 from execution import executor
@@ -1485,15 +1486,22 @@ def musubi_spawn_subagent(
     except Exception:
         pipeline_name = None
 
-    # 1. Role + main allow-list intersection.
-    if not _policy.check_subagent_allowed(
-        parent_agent_name, role, pipeline_name=pipeline_name,
-    ):
+    # 1. Shared pure argument firewall (also used by driver batch preflight).
+    argument_policy = evaluate_argument_policy(
+        parent_agent_name,
+        "musubi_spawn_subagent",
+        {
+            "role": role,
+            "allowed_tools": allowed_tools,
+            "pushed_skill_id": pushed_skill_id,
+        },
+        pipeline_name=pipeline_name,
+    )
+    if argument_policy is not None:
         return json.dumps({
             "status": "error",
-            "error": _policy.subagent_deny_reason(
-                parent_agent_name, role, pipeline_name=pipeline_name,
-            ),
+            "error_kind": "policy_denied",
+            "error": argument_policy.reason,
         })
 
     # 2. Parent session must exist (foreign-key safety + clearer error).
@@ -1516,6 +1524,7 @@ def musubi_spawn_subagent(
     if not effective_tools:
         return json.dumps({
             "status": "error",
+            "error_kind": "policy_denied",
             "error": (
                 f"No tools available for sub-agent role {role!r} after "
                 f"intersecting with caller's allow-list. "
@@ -1532,6 +1541,7 @@ def musubi_spawn_subagent(
         if skill_choice not in role_skills:
             return json.dumps({
                 "status": "error",
+                "error_kind": "policy_denied",
                 "error": (
                     f"Skill {skill_choice!r} is not permitted for worker role "
                     f"{role!r}."

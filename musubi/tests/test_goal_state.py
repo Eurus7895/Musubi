@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
+from agent.scope import classify_task
 
 
 def test_outcome_packet_projects_worker_contract() -> None:
@@ -146,3 +147,149 @@ def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
     assert root_decision_tools(
         tools, state, recovery_outcome=True, spawn_exhausted=True,
     ) == tools
+
+
+# ── planner manifest reclassification ────────────────────────────────────────
+
+ELEVEN_FILE_MANIFEST = (
+    '<change_manifest>{"files_expected":11,"subsystems":'
+    '["config","routes","components","styles"],"public_contract":false,'
+    '"data_migration":false,"security_sensitive":false,'
+    '"external_side_effects":false,"destructive":false,"unknowns":[],'
+    '"validation_commands":2}</change_manifest>'
+)
+
+
+def test_medium_goal_requires_planner_before_coder() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    assert state.next_role == "planner"
+
+
+def test_simple_goal_has_no_role_order_constraint() -> None:
+    state = GoalState.create("create page", "simple_artifact", "single_coder")
+    assert state.next_role is None
+
+
+def test_goal_state_retains_initial_request_assessment() -> None:
+    hint = classify_task("Add authentication to the app")
+    state = GoalState.create(
+        "Add authentication to the app",
+        hint.kind.value,
+        hint.route,
+        assessment=hint.assessment,
+    )
+
+    assert state.assessment is hint.assessment
+    assert state.route == "plan_design_workflow"
+
+
+
+def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
+    state = GoalState.create("create site", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(ELEVEN_FILE_MANIFEST)
+    assert state.scope == "large_feature"
+    assert state.route == "plan_design_workflow"
+    assert state.next_role is None
+
+
+def test_small_manifest_opens_the_coder_gate() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(
+        'status: done\n'
+        '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    assert state.next_role == "coder"
+    assert state.pending_clarification is None
+    block = state.render_decision_block()
+    assert "next_role=coder" in block
+    assert "assessment=" in block
+
+
+def test_missing_manifest_fails_closed_to_clarification() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest("status: done\nsummary: did some planning")
+    assert state.route == "ask_scope"
+    assert state.next_role is None
+    assert state.pending_clarification is not None
+    assert "change manifest" in state.pending_clarification
+
+
+def test_manifest_unknowns_set_pending_clarification() -> None:
+    state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["deployment target"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    assert state.route == "ask_scope"
+    assert state.pending_clarification is not None
+    assert "deployment target" in state.pending_clarification
+
+
+# ── typed recovery decisions ─────────────────────────────────────────────────
+
+from agent.run import FailureKind, RecoveryAction, WorkerOutcome, decide_recovery  # noqa: E402
+
+
+def _turn_cap_outcome(*, files: tuple[str, ...]) -> WorkerOutcome:
+    return WorkerOutcome(
+        role="coder", status="escalated", summary="unfinished scaffold",
+        touched_files=files, brief="create the scaffold",
+        failure_kind=FailureKind.TURN_CAP,
+    )
+
+
+def test_first_turn_cap_with_files_auto_replaces() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.AUTO_REPLACE
+
+
+def test_repeated_turn_cap_halts_instead_of_looping() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=2, worker_slots=1,
+    ) is RecoveryAction.HALT
+
+
+def test_turn_cap_without_files_needs_root_analysis() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=()),
+        same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.ROOT_ANALYZE
+
+
+def test_exhausted_worker_slots_halt() -> None:
+    assert decide_recovery(
+        _turn_cap_outcome(files=("app/page.tsx",)),
+        same_role_failures=1, worker_slots=0,
+    ) is RecoveryAction.HALT
+
+
+def test_budget_and_policy_failures_halt_fail_closed() -> None:
+    for kind in (FailureKind.BUDGET, FailureKind.POLICY):
+        outcome = WorkerOutcome(
+            role="coder", status="escalated", summary="stopped",
+            touched_files=("app/page.tsx",), brief="b", failure_kind=kind,
+        )
+        assert decide_recovery(
+            outcome, same_role_failures=1, worker_slots=1,
+        ) is RecoveryAction.HALT
+
+
+def test_blocked_failure_routes_to_root_analysis() -> None:
+    outcome = WorkerOutcome(
+        role="coder", status="escalated", summary="[blocked] too large",
+        touched_files=("app/page.tsx",), brief="b",
+        failure_kind=FailureKind.BLOCKED,
+    )
+    assert decide_recovery(
+        outcome, same_role_failures=1, worker_slots=1,
+    ) is RecoveryAction.ROOT_ANALYZE

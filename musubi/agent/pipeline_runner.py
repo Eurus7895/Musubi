@@ -154,7 +154,13 @@ async def run_pipeline(
     may nest (see module docstring). `None` keeps every stage a strict leaf.
     """
     from agent.budget import ChildTokenBudget, pipeline_stage_allowance
-    from agent.run import _call_tool_text, _worker_touched_files, run_unit
+    from agent.run import (
+        PolicyDeniedError,
+        _call_tool_text,
+        _policy_incomplete,
+        _worker_touched_files,
+        run_unit,
+    )
     from agent.subagent import (
         build_subagent_system_prompt,
         select_child_tools,
@@ -164,6 +170,12 @@ async def run_pipeline(
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
     spawned = _loads(raw)
     if spawned.get("status") != "spawned":
+        if spawned.get("error_kind") == "policy_denied":
+            raise PolicyDeniedError(
+                role=str(spawn_args.get("parent_agent_name") or "agent"),
+                tool="musubi_spawn_pipeline",
+                reason=str(spawned.get("error") or "pipeline spawn denied"),
+            )
         if strict:
             raise RuntimeError(f"pipeline spawn rejected: {raw}")
         return raw
@@ -212,6 +224,12 @@ async def run_pipeline(
         if st.get("status") != "spawned":
             msg = f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
             await _finalize_pipeline(session, psid, "aborted", False)
+            if st.get("error_kind") == "policy_denied":
+                raise PolicyDeniedError(
+                    role=role,
+                    tool="musubi_spawn_pipeline_stage",
+                    reason=str(st.get("error") or "pipeline stage denied"),
+                )
             if strict:
                 raise RuntimeError(msg)
             return msg
@@ -284,7 +302,7 @@ async def run_pipeline(
             ]
             if spawn_tool:
                 child_tools = child_tools + spawn_tool
-                stage_orch = orchestration.stage_child(role, psid)
+                stage_orch = orchestration.stage_child(role, psid, pname)
                 stage_spawn_catalog = tools
 
         # Each stage runs against its own fair-share allowance of the shared run
@@ -328,6 +346,16 @@ async def run_pipeline(
                 audit_worker_id=handle_id,
                 audit_stage=stage,
             )
+        except PolicyDeniedError as exc:
+            policy_summary = _policy_incomplete(exc)
+            await _call_tool_text(session, "musubi_complete_subagent", {
+                "handle_id": handle_id,
+                "summary": policy_summary,
+                "turns": 0,
+                "status": "escalated",
+            })
+            await _finalize_pipeline(session, psid, "aborted", False)
+            raise
         except Exception as exc:
             is_budget = type(exc).__name__ in {
                 "BudgetExhaustedError",

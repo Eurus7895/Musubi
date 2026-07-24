@@ -226,6 +226,78 @@ def evaluate_tool_call(role: str, tool_name: str) -> PolicyDecision:
     )
 
 
+def evaluate_argument_policy(
+    role: str,
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    pipeline_name: str | None = None,
+) -> PolicyDecision | None:
+    """Return an argument-dependent firewall denial without side effects.
+
+    Base role/tool policy remains in evaluate_tool_call. This second, pure
+    boundary mirrors spawn authorization before substrate state mutation.
+    """
+    clean_role = (role or "agent").lower()
+    if tool_name != "musubi_spawn_subagent":
+        return None
+
+    _ensure_scripts_path()
+    import policy_engine  # type: ignore[import-not-found]
+    from validation.context_builder import check_skill_permission
+
+    spawn_role = args.get("role")
+    target_role = spawn_role.strip() if isinstance(spawn_role, str) else ""
+    if not policy_engine.check_subagent_allowed(
+        clean_role,
+        target_role,
+        pipeline_name=pipeline_name,
+    ):
+        return PolicyDecision(
+            "DENY",
+            clean_role,
+            tool_name,
+            policy_engine.subagent_deny_reason(
+                clean_role,
+                target_role,
+                pipeline_name=pipeline_name,
+            ),
+        )
+
+    requested = args.get("allowed_tools")
+    if isinstance(requested, list):
+        role_tools = policy_engine.get_subagent_tools(target_role)
+        effective = [
+            tool for tool in role_tools
+            if isinstance(tool, str) and tool in requested
+        ]
+        if not effective:
+            return PolicyDecision(
+                "DENY",
+                clean_role,
+                tool_name,
+                (
+                    f"No tools available for sub-agent role {target_role!r} "
+                    "after intersecting with caller's allow-list."
+                ),
+            )
+
+    pushed_skill = args.get("pushed_skill_id")
+    if isinstance(pushed_skill, str) and pushed_skill.strip():
+        skill_id = pushed_skill.strip()
+        if not check_skill_permission(target_role, skill_id):
+            return PolicyDecision(
+                "DENY",
+                clean_role,
+                tool_name,
+                (
+                    f"Skill {skill_id!r} is not permitted for worker role "
+                    f"{target_role!r}."
+                ),
+            )
+    return None
+
+
 def denied_tool_guidance(role: str, tool_name: str) -> str:
     """Return a short model-facing recovery hint for denied root tool calls."""
     clean_role = (role or "agent").lower()
