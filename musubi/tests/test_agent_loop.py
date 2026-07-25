@@ -2613,6 +2613,43 @@ def test_greeting_returns_direct_answer_without_llm_calls() -> None:
     assert "direct_answer" in log.getvalue()
 
 
+def test_advisory_request_answers_with_one_model_call_and_no_spawn() -> None:
+    # An advisory turn is NOT a deterministic canned answer: the model still
+    # runs, because the whole deliverable is its reasoning. What it does not
+    # get is a tool catalog, so it cannot spawn a planner or burn a
+    # `musubi_recommend_skills` round trip before answering.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("choose the best for me")
+    assert hint.route == "advisory"
+    assert run_mod._deterministic_scope_answer("choose the best for me", hint) is None
+
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{
+                "type": "text",
+                "text": "OIDC with an email/password fallback.",
+            }],
+        ),
+    ])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "choose the best for me",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert len(router.calls) == 1
+    assert router.calls[0]["tools"] == []  # no tool catalog offered
+    assert "OIDC" in answer
+    assert "route=advisory" in log.getvalue()
+
+
 class _ExplodingRouter(LMRouter):
     """A vendor whose call fails like a real network/proxy error would."""
 

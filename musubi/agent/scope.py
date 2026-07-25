@@ -15,6 +15,7 @@ from agent.change_assessment import ChangeAssessment, assess_request
 
 
 class ScopeKind(StrEnum):
+    ADVISORY = "advisory"
     INSPECT = "inspect"
     SIMPLE_EDIT = "simple_edit"
     SIMPLE_ARTIFACT = "simple_artifact"
@@ -38,6 +39,13 @@ class ScopeHint:
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
+            "advisory": (
+                "Advisory route: the user asked to be ADVISED, not for a "
+                "change. Answer directly from your own reasoning in ONE turn. "
+                "Do NOT spawn a worker: the request names no file, so no "
+                "read-only worker can add evidence, and a planner would "
+                "return a change manifest the user never asked for."
+            ),
             "single_explorer": (
                 "Read-only route: the user wants to inspect, not change. Spawn "
                 "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
@@ -104,6 +112,17 @@ _INSPECT_RE = re.compile(
     r"\bread\b|\blist\b|\bbrowse\b|\bexplore\b|\binspect\b|\bexamine\b|"
     r"\blook(?:\s+(?:at|into|in))?\b|\bfind\b|\blocate\b|\bcat\b|\bdisplay\b|"
     r"\bdescribe\b|\btell me about\b|\bwhat(?:'?s| is) in\b|\bwhere(?:'?s| is)\b)"
+)
+# Consultative intent: the user wants to be ADVISED, not to have something
+# changed or read — "explain each", "which is better", "choose the best for
+# me". These carry no deliverable and name no target, so every mutation branch
+# below reads them as a change on insufficient evidence and sends a planner to
+# produce a change manifest nobody asked for.
+_ADVISORY_RE = re.compile(
+    r"(?i)(\bexplain\b|\bcompare\b|\bversus\b|\bvs\.?\b|\bpros and cons\b|"
+    r"\btrade[- ]?offs?\b|\brecommend\b|\bsuggest\b|\badvise\b|\bchoose\b|"
+    r"\bpick\b|\bshould i\b|\bwhich (?:one|is|are|should|would)\b|"
+    r"\bwhat(?:'?s| is) (?:the )?(?:best|better|difference)\b|\bbest for\b)"
 )
 # Any verb that would change state — its presence disqualifies the read-only
 # route so an explicit edit/create/run request is never sent to an explorer.
@@ -204,6 +223,28 @@ def classify_task(task: str) -> ScopeHint:
             route="ask_scope",
             reason="request lacks a concrete target",
             requires=("clarification",),
+        )
+
+    # Consultative turn: advise, don't change. Runs BEFORE the mutation
+    # branches (including the critical-risk gate) because "which auth provider
+    # should I choose?" is a question about auth, not a change to auth — the
+    # risk gate would otherwise force a plan/design/review workflow onto a
+    # request that mutates nothing. Three exclusions keep it narrow: a mutation
+    # verb ("compare these and fix the drift"), a diagnostic signal, or ANY
+    # concrete path/filesystem target. The last one matters most — "explain
+    # run.py" is a codebase question that needs a worker to actually read the
+    # file, so it must not be answered from the root's own memory. What
+    # survives is an abstract question the root is the cheapest answerer for.
+    if (
+        _ADVISORY_RE.search(text)
+        and not _mutation_intent(text)
+        and not _DIAGNOSTIC_RE.search(text)
+        and not (_PATH_RE.search(text) or _PATHISH_RE.search(text))
+    ):
+        return ScopeHint(
+            kind=ScopeKind.ADVISORY,
+            route="advisory",
+            reason="consultative question with no deliverable or path target",
         )
 
     # Read-only inspection ("reach to / open / show / read / list <path>")

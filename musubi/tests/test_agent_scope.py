@@ -6,6 +6,54 @@ from agent.change_assessment import Band, assess_request
 from agent.scope import ScopeKind, classify_task
 
 
+def test_consultative_question_routes_to_advisory_without_workers() -> None:
+    # A request to be ADVISED carries no deliverable, so it must not fall
+    # through to the mutation catch-all and summon a planner.
+    for task in (
+        "explain each",
+        "choose the best for me",
+        "which one is better",
+        "what is the difference",
+        "compare these approaches",
+        "should i use a managed provider",
+        "recommend an approach",
+    ):
+        hint = classify_task(task)
+        assert hint.kind is ScopeKind.ADVISORY, task
+        assert hint.route == "advisory", task
+        assert hint.requires == (), task
+
+    block = classify_task("explain each").prompt_block().lower()
+    assert "answer directly" in block
+    assert "do not spawn a worker" in block
+
+
+def test_advisory_beats_critical_risk_gate_for_a_pure_question() -> None:
+    # "which auth provider should I choose?" is a question ABOUT auth, not a
+    # change TO auth. The critical-risk gate must not force a
+    # plan/design/review workflow onto a request that mutates nothing.
+    hint = classify_task("which auth provider should i choose")
+
+    assert hint.kind is ScopeKind.ADVISORY
+    assert hint.route == "advisory"
+
+
+def test_advisory_never_swallows_a_mutation_or_a_path_question() -> None:
+    # Three exclusions keep the advisory branch narrow. A mutation verb, a
+    # diagnostic, or any concrete path target all disqualify it — notably
+    # "explain <file>" needs a worker that actually reads the file.
+    for task in (
+        "compare the two configs and update the stale one",
+        "explain why the build is failing",
+        "explain musubi/agent/run.py",
+        "explain the codebase",
+        "choose a name and rename the module",
+    ):
+        hint = classify_task(task)
+        assert hint.kind is not ScopeKind.ADVISORY, task
+        assert hint.route != "advisory", task
+
+
 def test_reach_to_path_routes_to_read_only_single_explorer() -> None:
     hint = classify_task(
         r"could you reach to C:\Workspace\09_CD_Team\21_A2lPatcher\a2l-patcher-stla"

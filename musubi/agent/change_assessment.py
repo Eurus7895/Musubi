@@ -114,8 +114,9 @@ MAX_MANIFEST_CHARS = MAX_MANIFEST_BYTES
 _MANIFEST_OPEN = "<change_manifest>"
 _MANIFEST_CLOSE = "</change_manifest>"
 
-#: Manifest impact thresholds: above either, a "medium" plan is actually a
-#: large change and must not escape through a direct coder.
+#: Manifest impact thresholds: above the file ceiling — or above the subsystem
+#: ceiling once the change spans more than one file — a "medium" plan is
+#: actually a large change and must not escape through a direct coder.
 MAX_SIMPLE_FILES = 1
 MAX_MEDIUM_FILES = 5
 MAX_MEDIUM_SUBSYSTEMS = 1
@@ -261,8 +262,14 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
       1. Any `unknowns` → ask_scope: an open decision must go back to the
          user, never be guessed by the next worker.
       2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
-         `MAX_MEDIUM_SUBSYSTEMS` subsystem → plan_design_workflow: a large
-         blast radius cannot escape through a direct coder.
+         `MAX_MEDIUM_SUBSYSTEMS` subsystem spread across more than
+         `MAX_SIMPLE_FILES` file → plan_design_workflow: a large blast radius
+         cannot escape through a direct coder. The subsystem count ALONE
+         cannot escalate a single-file change: one file is not a large blast
+         radius however many subsystems the planner names inside it (a single
+         HTML page is routinely "markup + styling + content"). Critical flags
+         are unaffected, so a one-file security or migration change stays
+         large.
       3. At most one file and one subsystem → single_coder.
       4. Otherwise → planner_then_coder_check.
     """
@@ -280,7 +287,10 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     if (
         flags
         or manifest.files_expected > MAX_MEDIUM_FILES
-        or len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+        or (
+            manifest.files_expected > MAX_SIMPLE_FILES
+            and len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+        )
     ):
         evidence = tuple(f"critical:{flag}" for flag in flags) + (
             f"files_expected:{manifest.files_expected}",

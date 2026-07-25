@@ -113,6 +113,23 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Advisory routing and single-file manifest precedence — a consultative
+  request ("explain each", "choose the best for me", "which auth provider
+  should I choose?") is now its own scope kind instead of falling through two
+  catch-alls into `medium_change`/`planner_then_coder_check`. The root answers
+  it in one model call with an empty tool catalog: no planner spawn for a
+  question that names no file, and no `musubi_recommend_skills` round trip.
+  The branch is gated on the absence of a mutation verb, a diagnostic signal,
+  and any path target, so edits, failure diagnosis, and codebase questions
+  still route to workers. It is deliberately not routed through
+  `_deterministic_scope_answer` — the model still reasons, it just gets no
+  tools. Separately, the manifest subsystem ceiling now applies only above
+  `MAX_SIMPLE_FILES`, so a one-file plan can no longer be escalated to the
+  large workflow by subsystem count alone (which stranded the change: the
+  orchestrator may not launch a pipeline, so no coder ever wrote the file).
+  Critical flags and the file ceiling keep absolute precedence. Plan:
+  [`2026-07-25-advisory-route-and-manifest-precedence.md`](./superpowers/plans/2026-07-25-advisory-route-and-manifest-precedence.md)
+
 - Governed change assessment and recovery liveness — lexical-only mutation
   scope guesses are replaced by a deterministic ambiguity/impact/risk
   assessment (`agent/change_assessment.py`). A broad product request without

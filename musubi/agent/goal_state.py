@@ -27,6 +27,10 @@ _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
 _SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
+#: The consultative route (`agent/scope.py`): the user asked to be advised,
+#: not for a change. The root is the whole answer, so its decision phase gets
+#: no tools at all.
+ADVISORY_ROUTE = "advisory"
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -240,6 +244,13 @@ def root_decision_tools(
     spawn_exhausted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
+    if state.route == ADVISORY_ROUTE:
+        # Checked before every other phase: an advisory turn must never reach
+        # a tool. No worker can add evidence to "which auth model should I
+        # pick?" — it names no file to read — so a spawn buys a multi-cycle
+        # round trip that ends in a change manifest the user never asked for.
+        # Withholding the catalog forces the root to answer in ONE cycle.
+        return []
     if recovery_outcome and not decision_only:
         return list(tools)
     if spawn_exhausted:

@@ -6,6 +6,27 @@ from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
 from agent.scope import classify_task
 
 
+def test_advisory_root_surface_offers_no_tools() -> None:
+    # An advisory turn is answered by the root itself. Withholding the whole
+    # catalog is what keeps it to one cycle: no spawn, and no
+    # `musubi_recommend_skills` round trip either.
+    tools = [
+        {"name": name}
+        for name in (
+            "musubi_spawn_subagent",
+            "musubi_recommend_skills",
+            "musubi_get_skill",
+            "musubi_get_reference",
+        )
+    ]
+    state = GoalState.create("explain each", "advisory", "advisory")
+
+    assert state.next_role is None
+    assert root_decision_tools(tools, state) == []
+    # Defensive: not even a recovery phase may hand an advisory turn a tool.
+    assert root_decision_tools(tools, state, recovery_outcome=True) == []
+
+
 def test_outcome_packet_projects_worker_contract() -> None:
     packet = OutcomePacket.from_worker(
         role="coder",
