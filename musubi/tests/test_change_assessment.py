@@ -56,6 +56,52 @@ def test_single_file_single_subsystem_manifest_is_simple() -> None:
     assert result.impact is Band.LOW
 
 
+def test_unknowns_on_a_one_file_change_are_deferred_not_blocking() -> None:
+    # Halting to ask about a palette on a one-file page discards the plan the
+    # planner just spent its whole budget producing. The coder defaults them
+    # instead; a wrong default costs one turn to redirect.
+    manifest = parse_change_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,'
+        '"unknowns":["color palette","typography scale"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    assert manifest is not None
+    result = assess_manifest(manifest)
+
+    assert result.route == "single_coder"
+    assert result.clarifying_question is None
+    assert result.deferred_unknowns == ("color palette", "typography scale")
+
+
+def test_unknowns_still_block_a_critical_or_multi_file_change() -> None:
+    # The relaxation is scoped to small, cheap-to-redo changes. A critical
+    # flag or a multi-file blast radius keeps the fail-closed halt.
+    critical = parse_change_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["auth"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":true,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["token lifetime"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    multi_file = parse_change_manifest(
+        '<change_manifest>{"files_expected":4,"subsystems":["routes"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["deployment target"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+    assert critical is not None and multi_file is not None
+
+    for manifest in (critical, multi_file):
+        result = assess_manifest(manifest)
+        assert result.route == "ask_scope"
+        assert result.clarifying_question is not None
+        assert result.deferred_unknowns == ()
+
+
 def test_single_file_many_subsystems_is_not_large() -> None:
     # One file is not a large blast radius however many subsystems the planner
     # names inside it — a single HTML page is routinely "markup + styling +

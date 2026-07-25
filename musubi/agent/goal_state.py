@@ -31,6 +31,10 @@ _SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
 #: not for a change. The root is the whole answer, so its decision phase gets
 #: no tools at all.
 ADVISORY_ROUTE = "advisory"
+#: Trailing barren turns before the root is told to stop planning. Three is
+#: the point at which the traced conversation had already spent two planner
+#: round trips and two question walls without a single file on disk.
+NO_PROGRESS_TURN_THRESHOLD = 3
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -126,6 +130,16 @@ class GoalState:
     #: One deterministic question the driver must return to the user before
     #: any further model call (set when the manifest routes to ask_scope).
     pending_clarification: str | None = None
+    #: Conversation-scoped cost, loaded from `agent_turns` at turn start. The
+    #: per-turn budget is process-scoped and resets on every chat message, so
+    #: these are the only numbers that can see a multi-turn spend loop.
+    chat_turns: int = 0
+    chat_tokens: int = 0
+    #: Trailing count of prior turns that ended without writing a file.
+    chat_barren_turns: int = 0
+    #: Planner unknowns small enough for the next worker to settle with a
+    #: sensible default instead of halting the conversation to ask.
+    deferred_unknowns: tuple[str, ...] = ()
 
     @classmethod
     def create(
@@ -185,6 +199,7 @@ class GoalState:
             else None
         )
         self.pending_clarification = assessment.clarifying_question
+        self.deferred_unknowns = assessment.deferred_unknowns
         return assessment
 
     def record_root_usage(self, *, tokens_in: int, tokens_out: int) -> None:
@@ -219,12 +234,38 @@ class GoalState:
                 f"risk:{self.assessment.risk.value},"
                 f"route:{self.assessment.route}\n"
             )
+        conversation = ""
+        if self.chat_turns:
+            conversation = (
+                f"conversation_usage=turns:{self.chat_turns},"
+                f"tokens:{self.chat_tokens},"
+                f"turns_without_a_file:{self.chat_barren_turns}\n"
+            )
+        stall = ""
+        if self.chat_barren_turns >= NO_PROGRESS_TURN_THRESHOLD:
+            stall = (
+                f"conversation_warning=The last {self.chat_barren_turns} turns "
+                "of this conversation ended without writing a file. More "
+                "planning is not the gap. Either summon a worker that "
+                "produces the artifact, or ask ONE question — do not spawn "
+                "another planner.\n"
+            )
+        defaults = ""
+        if self.deferred_unknowns:
+            listed = ", ".join(self.deferred_unknowns)
+            defaults = (
+                f"choose_sensible_defaults={listed}\n"
+                "Pass these to the worker as decisions IT should make with a "
+                "reasonable default. Do NOT ask the user about them — on a "
+                "change this small a wrong default costs one turn to "
+                "redirect.\n"
+            )
         return (
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
-            f"{order}{bands}"
+            f"{order}{bands}{conversation}{stall}{defaults}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"

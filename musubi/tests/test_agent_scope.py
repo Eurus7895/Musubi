@@ -38,6 +38,32 @@ def test_advisory_beats_critical_risk_gate_for_a_pure_question() -> None:
     assert hint.route == "advisory"
 
 
+def test_bare_follow_up_is_advisory_only_with_conversation_history() -> None:
+    # `classify_task` sees ONE message, so a bare noun carries no signal and
+    # falls to the mutation catch-all. With prior turns on record it reads as
+    # conversation instead — the traced "Okta" turn cost a 96s planner round
+    # trip to answer a question that named no file.
+    for task in ("Okta", "skill?", "these are complicated", "the second one"):
+        assert classify_task(task, has_history=True).route == "advisory", task
+        # Without history the classification is unchanged from before.
+        assert classify_task(task).route != "advisory", task
+
+
+def test_follow_up_inheritance_only_moves_toward_the_cheaper_route() -> None:
+    # A follow-up carrying real work must keep its own classification: history
+    # may never be used to escalate, only to answer more cheaply.
+    for task in (
+        "add auth to the app",
+        "fix the login bug",
+        "delete all *-dashboard.html files",
+        "open C:\\Workspace\\Musubi",
+        "a simple front end page first, prepare a file for the plan",
+    ):
+        with_history = classify_task(task, has_history=True)
+        assert with_history.route != "advisory", task
+        assert with_history.route == classify_task(task).route, task
+
+
 def test_advisory_never_swallows_a_mutation_or_a_path_question() -> None:
     # Three exclusions keep the advisory branch narrow. A mutation verb, a
     # diagnostic, or any concrete path target all disqualify it — notably

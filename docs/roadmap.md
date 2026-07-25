@@ -113,6 +113,26 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Conversation-aware routing, progress accounting, and deferred unknowns —
+  four follow-ups to the advisory route. (1) `classify_task` takes a
+  `has_history` boolean so a bare follow-up ("Okta", "skill?") is answered
+  rather than planned; the flag says only that prior turns exist and is used
+  only to route toward the cheaper answer, so it can never open a mutation
+  path. (2) `agent_turns` gains `delivered_artifact`, and `chat_turn_usage`
+  aggregates a conversation's turns, tokens, and trailing run of turns that
+  wrote no file — the per-turn budget is process-scoped and resets on every
+  message, so nothing could previously see a multi-turn spend loop. The root
+  is warned at three barren turns and told to deliver or ask, not to plan
+  again; it steers rather than halts. (3) Planner `unknowns` still block,
+  except on a change with no critical flag and at most one file, where they
+  ride to the next worker as `choose_sensible_defaults` — a wrong palette
+  costs one turn to redo, while halting discarded the whole plan. (4) The
+  chat surface accepts the pipeline command after conversational filler
+  ("ok then run pipeline"), and the recommendation names that in-chat phrase
+  before the shell command; the picker still requires the user to send, so
+  locked decision #4 is untouched. Plan:
+  [`2026-07-25-conversation-aware-routing-and-progress.md`](./superpowers/plans/2026-07-25-conversation-aware-routing-and-progress.md)
+
 - Advisory routing and single-file manifest precedence — a consultative
   request ("explain each", "choose the best for me", "which auth provider
   should I choose?") is now its own scope kind instead of falling through two

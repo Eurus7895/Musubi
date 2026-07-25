@@ -57,7 +57,11 @@ from agent.context import (
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
-from agent.goal_state import GoalState, root_decision_tools
+from agent.goal_state import (
+    NO_PROGRESS_TURN_THRESHOLD,
+    GoalState,
+    root_decision_tools,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -284,6 +288,18 @@ class Orchestration:
         """True if a worker at this depth is still allowed to nest."""
         return self.enabled and self.depth < self.max_depth
 
+    @property
+    def delivered_artifact(self) -> bool:
+        """True when some worker this turn finished with files on disk.
+
+        Persisted per turn so a LATER turn in the same conversation can see a
+        run of turns that spent tokens and produced nothing.
+        """
+        return any(
+            outcome.status == "done" and outcome.touched_files
+            for outcome in self.worker_outcomes
+        )
+
     def record_worker_outcome(
         self,
         *,
@@ -505,7 +521,9 @@ def _pipeline_recommendation(state: GoalState) -> str:
         f"as a large change ({evidence}).\n"
         "Large workflows are user-invoked and never auto-launched. To run it "
         "under the governed pipeline (plan → design → code → review with the "
-        "evaluator firewall), start it explicitly:\n\n"
+        "evaluator firewall), start it explicitly — in chat, send:\n\n"
+        "    run pipeline feature-dev\n\n"
+        "or from a shell:\n\n"
         '    agent "<your brief>" --pipeline feature-dev\n\n'
         "No pipeline was launched and no further workers were spawned."
     )
@@ -602,13 +620,37 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
-    scope_hint = classify_task(task)
+    scope_hint = classify_task(
+        task,
+        has_history=_chat_has_history(
+            chat_id, db_path=context_compression_db_path, log=log,
+        ),
+    )
     goal_state = GoalState.create(
         intent=task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
     )
+    chat_usage = _chat_turn_usage(
+        chat_id, db_path=context_compression_db_path, log=log,
+    )
+    goal_state.chat_turns = chat_usage["turns"]
+    goal_state.chat_tokens = chat_usage["tokens"]
+    goal_state.chat_barren_turns = chat_usage["barren_turns"]
+    if chat_usage["turns"]:
+        print(
+            f"[agent] conversation usage: turns={chat_usage['turns']} "
+            f"tokens={chat_usage['tokens']} "
+            f"turns_without_a_file={chat_usage['barren_turns']}",
+            file=log,
+        )
+    if chat_usage["barren_turns"] >= NO_PROGRESS_TURN_THRESHOLD:
+        print(
+            "[agent] conversation no-progress warning: "
+            f"{chat_usage['barren_turns']} turns without a file",
+            file=log,
+        )
     direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
@@ -651,6 +693,7 @@ async def run_agent(
     final_answer: str | None = None
     loop_error: BaseException | None = None
     parent_session_id: str | None = None
+    orchestration: Orchestration | None = None
 
     # One AsyncExitStack owns Musubi's session AND every federated external
     # session, so they all open in order and tear down (LIFO) together. This
@@ -833,6 +876,9 @@ async def run_agent(
             stats=stats,
             db_path=context_compression_db_path,
             log=log,
+            delivered_artifact=(
+                orchestration is not None and orchestration.delivered_artifact
+            ),
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -1967,6 +2013,55 @@ def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, An
         return {"messages": [], "total_tokens": 0, "truncated": False}
 
 
+def _chat_has_history(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> bool:
+    """True when this chat already has prior turns on record.
+
+    Probed BEFORE `classify_task` so a bare follow-up ("Okta") is read as
+    conversation rather than as a standalone work order. Fails to False, which
+    is the pre-existing behaviour — a missing DB must never block a turn.
+    """
+    if not chat_id:
+        return False
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        return conversations.has_history(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] chat history probe failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return False
+
+
+def _chat_turn_usage(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> dict[str, int]:
+    """Conversation-scoped cost so far, or zeros when unavailable."""
+    empty = {"turns": 0, "tokens": 0, "barren_turns": 0}
+    if not chat_id:
+        return empty
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.chat_turn_usage(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - telemetry must not break the turn
+        print(
+            f"[agent] conversation usage read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return empty
+
+
 def _chat_history_tokens() -> int:
     raw = os.environ.get("MUSUBI_CHAT_HISTORY_TOKENS", "").strip()
     if raw.isdigit():
@@ -2027,6 +2122,7 @@ def _record_agent_turn(
     stats: AgentRunStats,
     db_path: Path,
     log: Any,
+    delivered_artifact: bool = False,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2046,6 +2142,7 @@ def _record_agent_turn(
             lm_ms=stats.lm_ms,
             total_ms=int((ended_at - started_at) * 1000),
             db_path=db_path,
+            delivered_artifact=delivered_artifact,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(

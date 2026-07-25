@@ -171,6 +171,32 @@ def _mutation_intent(text: str) -> bool:
     return _MUTATION_RE.search(without_targets) is not None
 
 
+#: Word ceiling for a message to read as conversational rather than as a work
+#: order. "Okta" and "skill?" are one word; "these are complicated" is three.
+_FOLLOW_UP_MAX_WORDS = 6
+
+
+def _is_bare_follow_up(text: str) -> bool:
+    """True when `text` is a short message carrying no actionable signal.
+
+    Deliberately narrow: a message under the word ceiling with no mutation
+    verb, no inspection verb, no diagnostic signal, and no path target gives a
+    worker nothing to act on. "Okta" and "skill?" are a choice and a question
+    inside a conversation; "add auth to the app" and "fix the login bug" carry
+    a mutation verb and are excluded here, keeping their own classification.
+    """
+    words = text.split()
+    if not words or len(words) > _FOLLOW_UP_MAX_WORDS:
+        return False
+    return not (
+        _mutation_intent(text)
+        or _INSPECT_RE.search(text)
+        or _DIAGNOSTIC_RE.search(text)
+        or _PATH_RE.search(text)
+        or _PATHISH_RE.search(text)
+    )
+
+
 _SIMPLE_EDIT_RE = re.compile(
     r"(?i)\b(update|change|modify|replace|rename|fix|tweak|adjust|set|add)\b"
 )
@@ -201,7 +227,14 @@ _DESTRUCTIVE_FILE_RE = re.compile(
 )
 
 
-def classify_task(task: str) -> ScopeHint:
+def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
+    """Classify ONE user message.
+
+    `has_history` says only that this `chat_id` already has prior turns — not
+    what they were about. It is used in exactly one direction: to route a bare
+    conversational follow-up to the cheap advisory answer. Nothing may use it
+    to escalate, so a stale or wrong flag can never open a mutation path.
+    """
     text = " ".join((task or "").strip().split())
     low = text.lower()
     if _CASUAL_RE.match(text):
@@ -245,6 +278,22 @@ def classify_task(task: str) -> ScopeHint:
             kind=ScopeKind.ADVISORY,
             route="advisory",
             reason="consultative question with no deliverable or path target",
+        )
+
+    # Conversational follow-up. `classify_task` sees ONE message, so a bare
+    # noun ("Okta") or a one-word question ("skill?") carries no signal at all
+    # and falls to the mutation catch-all below — in the traced conversation
+    # that bought a 96s / 27k-token planner round trip to answer a question
+    # that named no file. With prior turns on record, the cheapest correct
+    # reading is that the user is still talking, so it gets the same advisory
+    # answer. Inheritance moves only TOWARD the cheaper route: anything
+    # carrying a mutation verb, a path, or an inspect verb is excluded by
+    # `_is_bare_follow_up` and keeps its own classification.
+    if has_history and _is_bare_follow_up(text):
+        return ScopeHint(
+            kind=ScopeKind.ADVISORY,
+            route="advisory",
+            reason="bare follow-up in an ongoing conversation",
         )
 
     # Read-only inspection ("reach to / open / show / read / list <path>")

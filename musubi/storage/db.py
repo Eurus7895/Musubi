@@ -263,12 +263,17 @@ _AGENT_CYCLE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("schema_version", "TEXT NOT NULL DEFAULT 'v1'"),
 )
 
-_AGENT_TURN_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("request_id", "TEXT"),
-)
-
 _PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("chat_id", "TEXT"),
+)
+
+# `request_id` groups the turns of one Orchestrator launch.
+# `delivered_artifact` records whether a turn ended with files on disk;
+# pre-existing rows default to 0, which reads as "delivered nothing" — safe,
+# because the flag only ever makes the root MORE conservative about planning.
+_AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("request_id", "TEXT"),
+    ("delivered_artifact", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 # Root-selected skill injection (option 3): the root may name a catalog
@@ -305,7 +310,7 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "stage_outputs", _STAGE_OUTPUT_COLUMNS)
         _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
         _migrate_columns(conn, "agent_cycles", _AGENT_CYCLE_COLUMNS)
-        _migrate_columns(conn, "agent_turns", _AGENT_TURN_COLUMNS)
+        _migrate_columns(conn, "agent_turns", _AGENT_TURNS_COLUMNS)
         _migrate_columns(conn, "pipeline_runs", _PIPELINE_RUNS_COLUMNS)
         _migrate_columns(conn, "sub_sessions", _SUB_SESSIONS_COLUMNS)
 
@@ -990,6 +995,24 @@ def get_conversation_messages(
     return [dict(r) for r in rows]
 
 
+def count_conversation_messages(
+    chat_id: str,
+    db_path: Path | None = None,
+) -> int:
+    """Return how many messages `chat_id` has on record.
+
+    A COUNT rather than a fetch: the scope classifier only needs to know
+    whether a conversation already exists, and must not pay a full replay
+    read to learn it.
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM conversation_messages WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+    return int(row["n"] if row else 0)
+
+
 # ── sub-session housekeeping (Phase C.2) ──────────────────────────────────
 
 def delete_terminal_sub_sessions_for_parent(
@@ -1286,24 +1309,71 @@ def insert_agent_turn(
     total_ms: int,
     request_id: str | None = None,
     db_path: Path | None = None,
+    delivered_artifact: bool = False,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
     Caller (TS runner via the musubi_record_agent_turn MCP
     tool) passes the pre-measured wall-clock + token estimates
-    collected over all sendRequest cycles of the turn."""
+    collected over all sendRequest cycles of the turn.
+
+    `delivered_artifact` records whether the turn ended with files on disk,
+    which is what a later turn in the same conversation reads to notice that
+    spend is accumulating without progress."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO agent_turns"
             " (chat_id, request_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
-            "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,"
+            "  delivered_artifact)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id, request_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
                 tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,
+                1 if delivered_artifact else 0,
             ),
         )
+
+
+def chat_turn_usage(chat_id: str, db_path: Path | None = None) -> dict:
+    """Aggregate what one CONVERSATION has spent across its agent turns.
+
+    Per-turn budgets are process-scoped — every chat message runs in a fresh
+    agent process with a fresh allowance — so without this aggregate nothing
+    in the substrate can observe a conversation that has spent six turns and
+    delivered nothing. `barren_turns` is the TRAILING run of turns that ended
+    without writing a file; it resets to 0 the moment one delivers.
+
+    Returns ``{turns, tokens, barren_turns}``.
+    """
+    if not chat_id:
+        return {"turns": 0, "tokens": 0, "barren_turns": 0}
+    with _connect(db_path) as conn:
+        totals = conn.execute(
+            "SELECT COUNT(*) AS turns,"
+            " COALESCE(SUM(tokens_in_estimate), 0) AS tokens_in,"
+            " COALESCE(SUM(tokens_out_estimate), 0) AS tokens_out"
+            " FROM agent_turns WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        recent = conn.execute(
+            "SELECT delivered_artifact FROM agent_turns"
+            " WHERE chat_id = ? ORDER BY started_at DESC, id DESC",
+            (chat_id,),
+        ).fetchall()
+    barren = 0
+    for row in recent:
+        if int(row["delivered_artifact"] or 0):
+            break
+        barren += 1
+    tokens_in = int(totals["tokens_in"]) if totals else 0
+    tokens_out = int(totals["tokens_out"]) if totals else 0
+    return {
+        "turns": int(totals["turns"]) if totals else 0,
+        "tokens": tokens_in + tokens_out,
+        "barren_turns": barren,
+    }
 
 
 def query_agent_turns(

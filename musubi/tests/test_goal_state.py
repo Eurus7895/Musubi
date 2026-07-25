@@ -6,6 +6,53 @@ from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
 from agent.scope import classify_task
 
 
+def test_deferred_unknowns_reach_the_worker_instead_of_halting() -> None:
+    state = GoalState.create(
+        "a simple front end page", "medium_change", "planner_then_coder_check",
+    )
+    assessment = state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["color palette"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+
+    assert assessment.route == "single_coder"
+    assert state.pending_clarification is None  # no halt
+    assert state.next_role == "coder"
+    assert state.deferred_unknowns == ("color palette",)
+    block = state.render_decision_block()
+    assert "choose_sensible_defaults=color palette" in block
+    assert "do not ask the user" in block.lower()
+
+
+def test_decision_block_surfaces_conversation_cost_and_stall() -> None:
+    # The per-turn budget resets on every chat message, so without these
+    # numbers the root cannot tell turn six from turn one.
+    state = GoalState.create(
+        "build the page", "medium_change", "planner_then_coder_check",
+    )
+    state.chat_turns = 6
+    state.chat_tokens = 109_494
+    state.chat_barren_turns = 3
+
+    block = state.render_decision_block()
+    assert "conversation_usage=turns:6,tokens:109494,turns_without_a_file:3" in block
+    assert "conversation_warning=" in block
+    assert "do not spawn another planner" in block.lower()
+
+
+def test_decision_block_omits_conversation_lines_on_a_fresh_chat() -> None:
+    state = GoalState.create(
+        "build the page", "medium_change", "planner_then_coder_check",
+    )
+
+    block = state.render_decision_block()
+    assert "conversation_usage=" not in block
+    assert "conversation_warning=" not in block
+
+
 def test_advisory_root_surface_offers_no_tools() -> None:
     # An advisory turn is answered by the root itself. Withholding the whole
     # catalog is what keeps it to one cycle: no spawn, and no

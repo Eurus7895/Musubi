@@ -253,6 +253,10 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     tokens_out_estimate  INTEGER NOT NULL DEFAULT 0,
     lm_ms                INTEGER NOT NULL DEFAULT 0,
     total_ms             INTEGER NOT NULL DEFAULT 0,
+    -- 1 when some worker in this turn finished with files on disk. Per-turn
+    -- budgets are process-scoped, so this is what lets a LATER turn see that
+    -- the conversation has been spending without delivering anything.
+    delivered_artifact   INTEGER NOT NULL DEFAULT 0,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_chat

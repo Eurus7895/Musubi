@@ -1,6 +1,6 @@
 // Native DataSource for the Tauri desktop shell. Backend domain snapshots are
 // merged with local Orchestrator composer and Pipeline Studio builder state.
-import { classifyChatCommand } from './chatCommands.js'
+import { classifyChatCommand, pipelineNameFromCommand } from './chatCommands.js'
 import {
   createPipelineDraft, addStage, moveStage, removeStage, updateStage, updateRecipe,
   setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
@@ -192,7 +192,7 @@ export default class TauriSource {
             ? ''
             : this.state.viewedOrchestratorChatId || '')
         const command = classifyChatCommand(text)
-        const namedPipeline = text.match(/^(?:\/pipeline|pipeline|run\s+pipeline)\s+([a-z0-9]+(?:-[a-z0-9]+)*)$/i)?.[1]?.toLowerCase()
+        const namedPipeline = pipelineNameFromCommand(text)
         if (command.kind === 'openPipelinePicker' || namedPipeline) {
           const selected = namedPipeline
             ? (this.state.pipelineCatalog || []).find((entry) => entry.name === namedPipeline)?.name
