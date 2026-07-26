@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.run import Orchestration, run_agent
 from agent.subagent import (
     _frontmatter_max_output_tokens,
@@ -104,6 +105,67 @@ def test_run_subagent_records_terminal_outcome_for_parent_recovery(
         brief="finish it",
         failure_kind=run_mod.FailureKind.UNKNOWN,
     )
+
+
+def test_run_subagent_attributes_child_log_lines_to_exact_handle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"worker-exact-123",'
+                    '"role":"coder","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"build it",'
+                    '"role_skill":null,"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"recorded","final_status":"done",'
+                    '"summary":"finished"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        print("[agent] child diagnostic", file=kwargs["log"])
+        return "finished", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+    raw = io.StringIO()
+    log = RuntimeLogWriter(raw, request_id="request-1")
+
+    asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "build it", "parent_session_id": "parent"},
+        FakeRouter([]),
+        [],
+        log,
+        agents_dir=tmp_path,
+        orchestration=Orchestration(parent_session_id="parent"),
+    ))
+
+    events = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in raw.getvalue().split("\n")
+        if line
+    ]
+    child = next(row for row in events if row["message"] == "[agent] child diagnostic")
+    assert child["role"] == "coder"
+    assert child["agent_handle"] == "worker-exact-123"
 
 
 def test_run_subagent_records_policy_failure_without_replacement(

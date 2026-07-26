@@ -8,10 +8,13 @@ raises `UnicodeEncodeError`.
 from __future__ import annotations
 
 import io
+import json
+from pathlib import Path
 
 import pytest
 
 from agent import run
+from agent.runtime_log import PROTOCOL_PREFIX
 
 
 class _Cp1252Stream:
@@ -81,3 +84,35 @@ def test_force_utf8_tolerates_streams_without_reconfigure(
 
     # Must not raise even though BytesIO has no `reconfigure`.
     run._force_utf8_streams()
+
+
+def test_console_launch_frames_stderr_with_request_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(run.sys, "stdout", out)
+    monkeypatch.setattr(run.sys, "stderr", err)
+    monkeypatch.setenv("MUSUBI_REQUEST_ID", "request-console-1")
+    monkeypatch.setenv("MUSUBI_RUNTIME_LOG_PROTOCOL", "1")
+    musubi_dir = tmp_path / "musubi"
+    musubi_dir.mkdir()
+    (musubi_dir / "server.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(run, "_default_musubi_dir", lambda: musubi_dir)
+    monkeypatch.setattr(run, "_resolve_vendor", lambda _profile: (object(), "test"))
+
+    async def fake_run_agent(*_args: object, **kwargs: object) -> str:
+        print("[agent] framed diagnostic", file=kwargs["log"])
+        assert kwargs["request_id"] == "request-console-1"
+        return "answer"
+
+    monkeypatch.setattr(run, "run_agent", fake_run_agent)
+
+    assert run.main(["do work"]) == 0
+    protocol_line = next(
+        line for line in err.getvalue().split("\n") if line.startswith(PROTOCOL_PREFIX)
+    )
+    event = json.loads(protocol_line.removeprefix(PROTOCOL_PREFIX))
+    assert event["request_id"] == "request-console-1"
+    assert event["message"] == "[agent] framed diagnostic"
+    assert out.getvalue().strip() == "answer"
