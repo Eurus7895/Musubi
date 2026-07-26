@@ -140,6 +140,11 @@ class GoalState:
     #: Planner unknowns small enough for the next worker to settle with a
     #: sensible default instead of halting the conversation to ask.
     deferred_unknowns: tuple[str, ...] = ()
+    #: `files_expected` from the accepted manifest. Kept so the declaration can
+    #: be CHECKED against what a later worker actually touched — with the
+    #: lexical risk gates gone, the manifest is the sole input to routing, and
+    #: a declaration nobody verifies is trusted rather than governed.
+    declared_files_expected: int | None = None
 
     @classmethod
     def create(
@@ -200,7 +205,29 @@ class GoalState:
         )
         self.pending_clarification = assessment.clarifying_question
         self.deferred_unknowns = assessment.deferred_unknowns
+        self.declared_files_expected = (
+            manifest.files_expected if manifest is not None else None
+        )
         return assessment
+
+    def manifest_overrun(self) -> tuple[int, int] | None:
+        """`(declared, actual)` when mutation exceeded the declared radius.
+
+        With the lexical risk gates removed, the manifest is the only input to
+        routing, so an unverified declaration would be *trusted* rather than
+        governed: a worker could declare one file, clear the cheap route, and
+        then touch eleven. This compares the declaration against the files
+        workers actually reported touching. Returns None while the change is
+        within its declared radius, or when no manifest was accepted.
+        """
+        if self.declared_files_expected is None:
+            return None
+        touched: set[str] = set()
+        for outcome in self.outcomes:
+            touched.update(outcome.touched_files)
+        if len(touched) > self.declared_files_expected:
+            return self.declared_files_expected, len(touched)
+        return None
 
     def record_root_usage(self, *, tokens_in: int, tokens_out: int) -> None:
         self.root_calls += 1
@@ -250,6 +277,16 @@ class GoalState:
                 "produces the artifact, or ask ONE question — do not spawn "
                 "another planner.\n"
             )
+        overrun = ""
+        breach = self.manifest_overrun()
+        if breach is not None:
+            declared, actual = breach
+            overrun = (
+                f"manifest_overrun=declared:{declared},touched:{actual}\n"
+                "The change outgrew the radius its plan was routed on. Do not "
+                "widen it further: stop and report what was touched, or "
+                "re-plan the remainder explicitly.\n"
+            )
         defaults = ""
         if self.deferred_unknowns:
             listed = ", ".join(self.deferred_unknowns)
@@ -265,7 +302,7 @@ class GoalState:
             f"intent={self.intent}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
-            f"{order}{bands}{conversation}{stall}{defaults}"
+            f"{order}{bands}{conversation}{stall}{overrun}{defaults}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"

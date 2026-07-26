@@ -113,6 +113,29 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- The manifest owns blast radius; the catalog tells the truth — two lexical
+  rules claimed to know how large a change was before anything read a line of
+  code, and both were wrong in both directions: a keyword gate refused "fix
+  the typo in the security section of the README" with zero model calls while
+  "wire up Okta" and "store user passwords" passed untouched, and a `>= 2
+  keyword` threshold scored two typos as a large feature and "migrate all 40
+  services" as zero. Both are deleted, along with `_mentions_large_workflow`,
+  so `assess_manifest` — fed by a planner that has read the code — is the only
+  component that decides "large". What survives is one narrow guard that makes
+  no size claim: it withholds the lone-coder shortcut for areas where a
+  mistake is invisible, with vocabulary widened to the SSO/Okta/password/
+  session/plural cases the old lists missed. Risk itself is now declared by
+  the planner through a pushed `request-triage` skill that reads the change
+  rather than the wording, reserves its last turn for the manifest, and sends
+  workspace surveys to an explorer. The declaration is verified, not trusted:
+  `manifest_overrun()` compares the declared radius against the files workers
+  actually touched. Recovery was narrowed to the decision it exists to make,
+  vendor tool-call markup leaking into the text channel is rejected instead of
+  stored as a plan, and the agent catalog was made truthful — four agents
+  understated the tools policy grants them, and a dead `model:` field
+  hardcoded an Anthropic id in all fourteen. Plan:
+  [`2026-07-26-manifest-owns-blast-radius.md`](./superpowers/plans/2026-07-26-manifest-owns-blast-radius.md)
+
 - Conversation-aware routing, progress accounting, and deferred unknowns —
   four follow-ups to the advisory route. (1) `classify_task` takes a
   `has_history` boolean so a bare follow-up ("Okta", "skill?") is answered

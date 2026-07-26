@@ -374,3 +374,55 @@ def test_blocked_failure_routes_to_root_analysis() -> None:
     assert decide_recovery(
         outcome, same_role_failures=1, worker_slots=1,
     ) is RecoveryAction.ROOT_ANALYZE
+
+
+def test_manifest_overrun_is_detected_and_surfaced() -> None:
+    # With the lexical risk gates gone the manifest is the ONLY input to
+    # routing, so a declaration nobody checks is trusted rather than governed.
+    # Declare one file, clear the cheap route, then touch three.
+    state = GoalState.create(
+        "add the page", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    assert state.declared_files_expected == 1
+    assert state.manifest_overrun() is None
+
+    state.record_outcome(
+        role="coder",
+        status="done",
+        summary="summary: built it",
+        touched_files={"a.html", "b.css", "c.js"},
+    )
+
+    assert state.manifest_overrun() == (1, 3)
+    block = state.render_decision_block()
+    assert "manifest_overrun=declared:1,touched:3" in block
+    assert "do not widen it further" in block.lower()
+
+
+def test_no_overrun_within_the_declared_radius() -> None:
+    state = GoalState.create(
+        "add the page", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":3,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    state.record_outcome(
+        role="coder",
+        status="done",
+        summary="summary: built it",
+        touched_files={"a.html", "b.css"},
+    )
+
+    assert state.manifest_overrun() is None
+    assert "manifest_overrun=" not in state.render_decision_block()
