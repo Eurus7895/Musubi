@@ -1982,7 +1982,7 @@ fn load_state_at_with_pipeline_runs(
     if table_exists(conn, "runtime_log_events")? {
         let mut lstmt = conn.prepare(
             "SELECT id,request_id,chat_id,seq,ts,source,stream,agent_handle,role,category,message \
-             FROM runtime_log_events ORDER BY id ASC LIMIT 10000",
+             FROM runtime_log_events ORDER BY id ASC",
         )?;
         st.runtime_log_events = lstmt
             .query_map([], |r| {

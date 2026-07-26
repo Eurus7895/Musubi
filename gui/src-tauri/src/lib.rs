@@ -146,7 +146,11 @@ fn persist_runtime_line(
         .filter(|event| event.request_id == launch_request_id);
     let (source, handle, role, category, message) = match parsed {
         Some(event) => (
-            if event.agent_handle.is_some() { "worker" } else { "root" },
+            if event.agent_handle.is_some() {
+                "worker"
+            } else {
+                "root"
+            },
             event.agent_handle,
             event.role,
             event.category,
@@ -1004,13 +1008,8 @@ fn pump_stream(
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => {
                     if !pending.is_empty() {
-                        let display = persist_runtime_line(
-                            &app,
-                            &request_id,
-                            &chat_id,
-                            which,
-                            &pending,
-                        );
+                        let display =
+                            persist_runtime_line(&app, &request_id, &chat_id, which, &pending);
                         if let Ok(mut rt) = shared.lock() {
                             let tail = match which {
                                 TailStream::Stdout => &mut rt.stdout_tail,
@@ -1027,24 +1026,15 @@ fn pump_stream(
                     while let Some(newline) = pending.find('\n') {
                         let raw_line = pending[..newline].to_string();
                         pending.drain(..=newline);
-                        let display = persist_runtime_line(
-                            &app,
-                            &request_id,
-                            &chat_id,
-                            which,
-                            &raw_line,
-                        );
+                        let display =
+                            persist_runtime_line(&app, &request_id, &chat_id, which, &raw_line);
                         eprintln!("{display}");
                         if let Ok(mut rt) = shared.lock() {
                             let tail = match which {
                                 TailStream::Stdout => &mut rt.stdout_tail,
                                 TailStream::Stderr => &mut rt.stderr_tail,
                             };
-                            musubi_data::push_bounded_tail(
-                                tail,
-                                &format!("{display}\n"),
-                                TAIL_CAP,
-                            );
+                            musubi_data::push_bounded_tail(tail, &format!("{display}\n"), TAIL_CAP);
                         }
                     }
                 }
@@ -2565,14 +2555,13 @@ mod tests {
 
         // Manifest passes the RAW (non-canonicalized) path; the answer mentions
         // the same file by name (scan canonicalizes it).
-        let text = append_artifact_links(
-            "Created `japan-dashboard.html`.",
-            &root,
-            &[file.clone()],
-        );
+        let text = append_artifact_links("Created `japan-dashboard.html`.", &root, &[file.clone()]);
 
         let occurrences = text.matches("musubi-artifact:").count();
-        assert_eq!(occurrences, 1, "artifact should be listed once, got:\n{text}");
+        assert_eq!(
+            occurrences, 1,
+            "artifact should be listed once, got:\n{text}"
+        );
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_dir(root);
     }
