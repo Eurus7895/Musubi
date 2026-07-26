@@ -1270,7 +1270,7 @@ fn start_chat_agent(
                             "host",
                             &event,
                         );
-                    }
+                    };
                 }
                 if cancelled {
                     append_driver_chat_to(

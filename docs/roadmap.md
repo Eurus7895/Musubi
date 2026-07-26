@@ -203,6 +203,17 @@ enforcement path for the same dimension.
   Design and plan:
   [`2026-07-14-console-workspace-separation-design.md`](./superpowers/specs/2026-07-14-console-workspace-separation-design.md) and
   [`2026-07-14-console-workspace-separation.md`](./superpowers/plans/2026-07-14-console-workspace-separation.md)
+- Console request runtime history — every Orchestrator launch receives one
+  durable `request_id`; host, root, and exact worker output is line-framed and
+  appended to `runtime_log_events` without replacing prior requests. A session
+  now projects `Request 01 → agents → Request 02 → agents`; selecting a request
+  opens whole-request Overview/Request log, while selecting an agent opens
+  Overview/Agent log filtered by exact handle, with one Back-to-graph path.
+  Sessions fully hides instead of collapsing, and Conversation keeps chat,
+  skills, and token economics without duplicate Summary/Verbose evidence.
+  Design and plan:
+  [`2026-07-26-console-request-runtime-history-design.md`](./superpowers/specs/2026-07-26-console-request-runtime-history-design.md) and
+  [`2026-07-26-console-request-runtime-history.md`](./superpowers/plans/2026-07-26-console-request-runtime-history.md)
 - Per-worker effort ceiling and output budget — mutate workers open at the
   shared 16,384-token per-call brake while read-only workers retain the cheap
   2,048-token floor and sticky escalation. Worker frontmatter may declare
