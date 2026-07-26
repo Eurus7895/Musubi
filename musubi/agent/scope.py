@@ -62,9 +62,15 @@ class ScopeHint:
                 "recommendation, not a lifetime worker cap."
             ),
             "planner_then_coder_check": (
-                "Medium route: spawn planner first for scope and acceptance "
-                "criteria, then spawn coder with that plan. Do not ask coder "
-                "to both plan and implement."
+                "Medium route: spawn planner first for scope, acceptance "
+                "criteria, and a change manifest; then spawn coder with that "
+                "plan. Do not ask coder to both plan and implement.\n"
+                "If the plan depends on facts about this workspace that "
+                "nobody has established yet, summon an EXPLORER for them "
+                "first and pass its findings into the planner's brief. "
+                "Surveying the workspace is the explorer's job — a planner "
+                "sent to find its own facts spends its whole turn budget "
+                "reading and returns no manifest at all."
             ),
             "plan_design_workflow": (
                 "Large route: require explicit plan/design/implementation/"
