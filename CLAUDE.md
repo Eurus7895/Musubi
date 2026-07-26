@@ -30,6 +30,21 @@ run-trace post-mortem, never a summary.
   causal chain: what triggered what, in which code path, with exact
   `file:line` references, constant values, and the log/DB evidence
   that proves it.
+- **Explain as if to someone who has never seen this codebase.** Depth
+  and plainness are not a trade-off — deliver both. Depth is *more*
+  evidence, never denser jargon. Before naming a mechanism, say in one
+  plain sentence what it does and what breaks without it. Define every
+  identifier, flag, constant, and threshold the first time it appears.
+  Prefer a concrete before/after, a worked example, or a short analogy
+  over an abstract description. A reader must be able to follow the
+  whole chain without opening a file or already knowing the design.
+  Never answer "what is X?" or "why does X exist?" with wording that
+  assumes the answer — that question means the name alone taught them
+  nothing.
+- **State the decision the reader has to make.** When there is a choice,
+  give the options, what each one costs, which one you recommend, and
+  why. Do not bury a fork inside prose, and do not ask for a decision
+  without first supplying what is needed to make it.
 - **Name the design assumption.** When a mechanism misbehaves, state
   the assumption it was built on and show where it broke — distinguish
   "the model failed" from "the design guaranteed the failure" (e.g. an
