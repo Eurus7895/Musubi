@@ -184,6 +184,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_cycles_session
 CREATE TABLE IF NOT EXISTS agent_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id              TEXT NOT NULL,
+    request_id           TEXT,
     parent_session_id    TEXT NOT NULL,
     started_at           REAL NOT NULL,
     ended_at             REAL,
@@ -262,6 +263,10 @@ _AGENT_CYCLE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("schema_version", "TEXT NOT NULL DEFAULT 'v1'"),
 )
 
+_AGENT_TURN_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("request_id", "TEXT"),
+)
+
 _PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("chat_id", "TEXT"),
 )
@@ -300,6 +305,7 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "stage_outputs", _STAGE_OUTPUT_COLUMNS)
         _migrate_columns(conn, "stage_metrics", _STAGE_METRICS_COLUMNS)
         _migrate_columns(conn, "agent_cycles", _AGENT_CYCLE_COLUMNS)
+        _migrate_columns(conn, "agent_turns", _AGENT_TURN_COLUMNS)
         _migrate_columns(conn, "pipeline_runs", _PIPELINE_RUNS_COLUMNS)
         _migrate_columns(conn, "sub_sessions", _SUB_SESSIONS_COLUMNS)
 
@@ -1278,6 +1284,7 @@ def insert_agent_turn(
     tokens_out_estimate: int,
     lm_ms: int,
     total_ms: int,
+    request_id: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
@@ -1287,12 +1294,12 @@ def insert_agent_turn(
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO agent_turns"
-            " (chat_id, parent_session_id, started_at, ended_at,"
+            " (chat_id, request_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                chat_id, parent_session_id, started_at, ended_at,
+                chat_id, request_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
                 tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,
             ),
@@ -1307,7 +1314,7 @@ def query_agent_turns(
     pulling the entire chat history."""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, chat_id, parent_session_id, started_at, ended_at,"
+            "SELECT id, chat_id, request_id, parent_session_id, started_at, ended_at,"
             " model_family, cycles, tokens_in_estimate, tokens_out_estimate,"
             " lm_ms, total_ms, schema_version FROM agent_turns WHERE chat_id = ?"
             " ORDER BY started_at DESC, id DESC LIMIT ?",

@@ -574,6 +574,7 @@ async def run_agent(
     mcp_config: str | os.PathLike[str] | None = None,
     vendor_source: str | None = None,
     chat_id: str | None = None,
+    request_id: str | None = None,
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
@@ -625,6 +626,7 @@ async def run_agent(
             )
             _record_agent_turn(
                 chat_id=chat_id,
+                request_id=request_id,
                 parent_session_id=None,
                 started_at=turn_started_at,
                 ended_at=time.time(),
@@ -822,6 +824,7 @@ async def run_agent(
         )
         _record_agent_turn(
             chat_id=chat_id,
+            request_id=request_id,
             parent_session_id=parent_session_id,
             started_at=turn_started_at,
             ended_at=time.time(),
@@ -1699,6 +1702,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    request_id = os.environ.get("MUSUBI_REQUEST_ID", "").strip() or None
 
     try:
         vendor, vendor_source = _resolve_vendor(args.profile)
@@ -1722,6 +1726,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
                 vendor_source=vendor_source,
                 chat_id=args.chat_id,
+                request_id=request_id,
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
                 pipeline=args.pipeline,
@@ -2006,6 +2011,7 @@ def _elide_replayed_tool_row(content: str) -> str:
 def _record_agent_turn(
     *,
     chat_id: str,
+    request_id: str | None,
     parent_session_id: str | None,
     started_at: float,
     ended_at: float,
@@ -2021,6 +2027,7 @@ def _record_agent_turn(
         db.init_db(db_path)
         db.insert_agent_turn(
             chat_id=chat_id,
+            request_id=request_id,
             parent_session_id=parent_session_id or "unavailable",
             started_at=started_at,
             ended_at=ended_at,

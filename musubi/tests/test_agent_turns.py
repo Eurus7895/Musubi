@@ -7,6 +7,7 @@ by pipelines, so it gets its own table and CRUD pair.
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import server
+from agent.run import AgentRunStats, _record_agent_turn
 from storage import db
 
 
@@ -32,7 +34,7 @@ def test_init_db_creates_agent_turns_table(fresh_db: Path) -> None:
     with sqlite3.connect(fresh_db) as conn:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
     expected = {
-        "chat_id", "parent_session_id",
+        "chat_id", "request_id", "parent_session_id",
         "started_at", "ended_at",
         "model_family", "cycles",
         "tokens_in_estimate", "tokens_out_estimate",
@@ -58,6 +60,7 @@ def test_init_db_creates_agent_turns_indexes(fresh_db: Path) -> None:
 def test_insert_agent_turn_persists_row(fresh_db: Path) -> None:
     db.insert_agent_turn(
         chat_id="chat-1",
+        request_id="request-1",
         parent_session_id="psess-1",
         started_at=1000.0,
         ended_at=1010.5,
@@ -72,6 +75,7 @@ def test_insert_agent_turn_persists_row(fresh_db: Path) -> None:
     assert len(rows) == 1
     r = rows[0]
     assert r["chat_id"] == "chat-1"
+    assert r["request_id"] == "request-1"
     assert r["parent_session_id"] == "psess-1"
     assert r["model_family"] == "claude-haiku-4.5"
     assert r["cycles"] == 2
@@ -79,6 +83,63 @@ def test_insert_agent_turn_persists_row(fresh_db: Path) -> None:
     assert r["tokens_out_estimate"] == 300
     assert r["lm_ms"] == 4500
     assert r["total_ms"] == 10500
+
+
+def test_init_db_migrates_request_id_without_losing_legacy_turns(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "legacy-agent-turns.db"
+    with sqlite3.connect(legacy) as conn:
+        conn.execute(
+            "CREATE TABLE agent_turns ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "chat_id TEXT NOT NULL,"
+            "parent_session_id TEXT NOT NULL,"
+            "started_at REAL NOT NULL,"
+            "ended_at REAL,"
+            "model_family TEXT NOT NULL,"
+            "cycles INTEGER NOT NULL DEFAULT 0,"
+            "tokens_in_estimate INTEGER NOT NULL DEFAULT 0,"
+            "tokens_out_estimate INTEGER NOT NULL DEFAULT 0,"
+            "lm_ms INTEGER NOT NULL DEFAULT 0,"
+            "total_ms INTEGER NOT NULL DEFAULT 0,"
+            "schema_version TEXT NOT NULL DEFAULT 'v1'"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO agent_turns"
+            " (chat_id,parent_session_id,started_at,model_family)"
+            " VALUES ('legacy-chat','legacy-parent',1.0,'deepseek')"
+        )
+
+    db.init_db(legacy)
+
+    with sqlite3.connect(legacy) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
+        row = conn.execute(
+            "SELECT chat_id, parent_session_id, request_id FROM agent_turns"
+        ).fetchone()
+    assert "request_id" in cols
+    assert row == ("legacy-chat", "legacy-parent", None)
+
+
+def test_driver_turn_recorder_preserves_console_request_identity(
+    fresh_db: Path,
+) -> None:
+    _record_agent_turn(
+        chat_id="chat-console",
+        request_id="request-console-1",
+        parent_session_id="parent-console",
+        started_at=10.0,
+        ended_at=11.0,
+        model_family="deepseek",
+        stats=AgentRunStats(cycles=1, tokens_in_estimate=20),
+        db_path=fresh_db,
+        log=io.StringIO(),
+    )
+
+    row = db.query_agent_turns("chat-console", db_path=fresh_db)[0]
+    assert row["request_id"] == "request-console-1"
 
 
 def test_init_db_tolerates_legacy_replay_columns(fresh_db: Path) -> None:
