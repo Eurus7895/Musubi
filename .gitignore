@@ -6,6 +6,9 @@ __pycache__/
 # Parallel-build step logs
 .build-logs/
 
+# Local feature worktrees
+.worktrees/
+
 # C extensions
 *.so
 
