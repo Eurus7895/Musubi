@@ -7,7 +7,6 @@ description: >
   threshold; the result is spliced back into the conversation as a
   single role:"system" message so the next LM call has the older
   context in compressed form. Text-only worker — no tools, no spawns.
-model: claude-sonnet-4.5
 maxTurns: 1
 tools: []
 disallowedTools:

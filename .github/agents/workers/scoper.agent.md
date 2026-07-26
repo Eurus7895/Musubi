@@ -4,7 +4,6 @@ version: 1.0.0
 description: >
   First code-review stage. Turns the brief (a diff, or a change description)
   into a prioritized file list so later stages spend effort where it matters.
-model: claude-haiku-4.5
 maxTurns: 4
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

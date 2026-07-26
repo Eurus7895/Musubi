@@ -8,7 +8,6 @@ description: >
   extension whenever the user message does NOT begin with a known
   pipeline slash command. Never invokes a pipeline — pipelines remain
   user-invoked.
-model: claude-sonnet-4.5
 maxTurns: 40
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

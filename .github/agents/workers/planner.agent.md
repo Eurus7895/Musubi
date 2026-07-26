@@ -4,9 +4,8 @@ version: 1.0.0
 description: >
   Direct standalone worker for scoping vague or larger tasks into acceptance
   criteria and an implementation outline.
-model: claude-sonnet-4.5
 maxTurns: 4
-tools: ["Read", "View"]
+tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools: []
 musubi-tier: ephemeral

@@ -478,3 +478,55 @@ def test_planner_context_unchanged_by_agent_addition(
     )
     assert set(ctx.keys()) == {"request"}
     assert ctx["request"] == "smoke request"
+
+
+def test_agent_files_declare_the_tool_set_policy_actually_grants() -> None:
+    """The `tools:` frontmatter is documentation, not enforcement — nothing
+    reads it, so it can drift from `SUBAGENT_POLICIES` silently, and it had.
+    Four agents understated their own surface: planner, designer and reviewer
+    each claimed `["Read","View"]` while the runtime handed them Grep and Glob
+    too, which is how a planner "restricted" on paper globbed 403 files and
+    spent its whole turn budget. A reader must be able to trust the catalog.
+    """
+    import json
+    import re
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    sys.path.insert(0, str(repo_root / "scripts"))
+    from policy_engine import SUBAGENT_POLICIES
+
+    checked = 0
+    for path in sorted((repo_root / ".github" / "agents").rglob("*.agent.md")):
+        role = path.name[: -len(".agent.md")]
+        granted = SUBAGENT_POLICIES.get(role)
+        if granted is None:
+            continue
+        match = re.search(
+            r"^tools:\s*(\[.*?\])\s*$", path.read_text(encoding="utf-8"), re.M,
+        )
+        assert match is not None, f"{role}: no tools: frontmatter"
+        assert sorted(json.loads(match.group(1))) == sorted(granted), role
+        checked += 1
+    assert checked >= 10
+
+
+def test_agent_files_do_not_hardcode_a_vendor_model() -> None:
+    """`model:` was never read by any code path — not by the direct-worker
+    spawn, not by the pipeline runner, which passes ONE vendor resolved from
+    `.musubi/llm.json` to every stage. Hardcoding `claude-sonnet-4.5` in the
+    catalog was therefore both dead and false at runtime (these runs use
+    deepseek and gpt-5-nano), and it contradicts HI #1: the vendor is data in
+    llm.json, not a constant in fourteen prompt files.
+    """
+    import re
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    offenders = [
+        path.name
+        for path in (repo_root / ".github" / "agents").rglob("*.agent.md")
+        if re.search(r"^model:", path.read_text(encoding="utf-8"), re.M)
+    ]
+    assert offenders == []

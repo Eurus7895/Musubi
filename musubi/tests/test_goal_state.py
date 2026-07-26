@@ -166,16 +166,24 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
     ]
 
 
-def test_recovery_analysis_preserves_existing_tools_until_decision_only() -> None:
+def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
+    # Recovery is a DECISION phase: a worker failed, and the root chooses
+    # whether to replace it. Handing over the read tools inverted that — the
+    # root went investigating itself (a grep across 392 files, two reads, a
+    # retrieve), burned both analysis cycles, and halted without ever spawning
+    # a replacement.
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
+        {"name": "musubi_recommend_skills"},
     ]
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
     )
 
-    assert root_decision_tools(tools, state, recovery_outcome=True) == tools
+    assert [t["name"] for t in root_decision_tools(
+        tools, state, recovery_outcome=True,
+    )] == ["musubi_spawn_subagent", "musubi_recommend_skills"]
     assert root_decision_tools(
         tools, state, recovery_outcome=True, decision_only=True,
     ) == [{"name": "musubi_spawn_subagent"}]
@@ -201,9 +209,10 @@ def test_spawn_exhausted_root_surface_offers_no_tools() -> None:
 
 
 def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
-    # A pending worker failure keeps the full analysis surface even when the
-    # worker ceiling is spent — the ceiling-driven halt is handled separately by
-    # the loop's recovery path, not by starving the root of tools mid-analysis.
+    # A pending worker failure keeps the spawn affordance even when the worker
+    # ceiling is spent — the ceiling-driven halt is handled by the loop's
+    # recovery path, not by starving the root mid-decision. What recovery does
+    # NOT restore is the read surface.
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
@@ -214,7 +223,7 @@ def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
 
     assert root_decision_tools(
         tools, state, recovery_outcome=True, spawn_exhausted=True,
-    ) == tools
+    ) == [{"name": "musubi_spawn_subagent"}]
 
 
 # ── planner manifest reclassification ────────────────────────────────────────

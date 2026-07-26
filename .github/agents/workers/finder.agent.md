@@ -5,7 +5,6 @@ description: >
   Cross-cutting code-review pass. Reads the prioritized files from the scoper
   and reports multi-file findings — architecture, contracts, intent — that
   per-file review misses.
-model: claude-sonnet-4.5
 maxTurns: 4
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

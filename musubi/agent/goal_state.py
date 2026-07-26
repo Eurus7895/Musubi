@@ -292,8 +292,23 @@ def root_decision_tools(
         # round trip that ends in a change manifest the user never asked for.
         # Withholding the catalog forces the root to answer in ONE cycle.
         return []
-    if recovery_outcome and not decision_only:
-        return list(tools)
+    if recovery_outcome:
+        # Recovery is a DECISION phase, not a work phase: a worker failed and
+        # the root has to choose whether to replace it. Handing over the whole
+        # catalog here inverted that — the root took the read tools and went
+        # investigating itself (a `grep` across 392 files, two reads, a
+        # retrieve), spent both analysis cycles, and halted with
+        # `_recovery_incomplete` having never spawned a replacement. The only
+        # affordance is the decision it exists to make; once the analysis
+        # cycles are spent, `decision_only` narrows that further to the spawn
+        # itself.
+        allowed_recovery = (
+            {_SPAWN_TOOL} if decision_only
+            else {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
+        )
+        return [
+            tool for tool in tools if tool.get("name") in allowed_recovery
+        ]
     if spawn_exhausted:
         # The root has spent its worker budget: every further `musubi_spawn_*`
         # is refused by the ceiling gate, so offering the spawn tool only lets
