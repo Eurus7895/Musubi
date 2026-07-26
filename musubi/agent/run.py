@@ -1178,6 +1178,13 @@ async def _run_loop(
         )
 
         text = _extract_text(resp.content)
+        if text and _looks_like_vendor_tool_markup(text):
+            print(
+                f"[agent] {role}: vendor tool-call markup in the text channel; "
+                "discarded (not an answer)",
+                file=log,
+            )
+            text = ""
         if text:
             last_text = text  # remember even when the model also called a tool
 
@@ -1486,6 +1493,18 @@ async def _run_loop(
                     usage.tokens_in, usage.tokens_out, budget,
                 )
                 final_candidate = _extract_text(resp.content) or None
+                if final_candidate and _looks_like_vendor_tool_markup(
+                    final_candidate
+                ):
+                    # The no-tools call did not produce prose either. Fail
+                    # closed to the "[incomplete]" message below rather than
+                    # handing markup on as this worker's plan.
+                    print(
+                        f"[agent] {role}: forced final answer was vendor "
+                        "tool-call markup; rejected",
+                        file=log,
+                    )
+                    final_candidate = None
                 cycle_ended_at = time.time()
                 try:
                     _charge_budget_postflight(
@@ -2162,6 +2181,30 @@ def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
 def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
     parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
     return "".join(parts).strip()
+
+
+#: Vendor-native tool-call syntax that leaked into the TEXT channel. When the
+#: loop exhausts its cycles it makes one final call with NO tools offered, on
+#: the assumption that a model with nothing to call will answer in words. Not
+#: every vendor honours that: DeepSeek emitted `<｜｜DSML｜｜tool_calls>…` as
+#: prose (note the FULL-WIDTH bars, U+FF5C, not ASCII pipes). Such text is not
+#: an answer — accepting it puts machine markup in front of the user, into the
+#: audit DB, and into `parse_change_manifest`, where a routing decision would
+#: then be made from garbage.
+_VENDOR_TOOL_MARKUP_RE = re.compile(
+    r"(?i)(\bDSML\b|<[|｜]+\s*tool[_▁]?calls?|<tool_call\b|"
+    r"</?function_calls?\b|<invoke\s+name\s*=|\bantml:invoke\b|"
+    r"<[|｜]python_tag[|｜]>)"
+)
+
+
+def _looks_like_vendor_tool_markup(text: str) -> bool:
+    """True when `text` is a vendor's tool-call syntax rather than prose.
+
+    Fail-closed by design: the caller discards the text and reports that the
+    worker did not answer, rather than trying to salvage a plan out of markup.
+    """
+    return _VENDOR_TOOL_MARKUP_RE.search(text or "") is not None
 
 
 def _clean_error(exc: BaseException) -> str:

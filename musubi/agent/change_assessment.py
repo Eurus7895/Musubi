@@ -52,32 +52,29 @@ _FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
 _MULTIPART_RE = re.compile(
     r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
 )
-_CRITICAL_RISK_RE = re.compile(
-    r"(?i)\b(auth|authentication|authorization|login|permissions?|"
-    r"access control|payments?|billing|databases?|migrations?|oauth|rbac|"
-    r"security|public api|api contract|breaking api)\b"
-)
+# NOTE: the lexical critical-risk gate was REMOVED. It matched a word, not a
+# change: it refused "fix the typo in the security section of the README" with
+# zero model calls, while "wire up Okta", "add SSO", and "store user passwords"
+# sailed past it. Risk is now declared by the planner in the change manifest
+# (`security_sensitive`), read from the code rather than guessed from the
+# sentence, and enforced deterministically by `assess_manifest`. The
+# sensitive-area vocabulary that remains lives in `agent/scope.py` and has one
+# narrow job: withhold the lone-coder shortcut so a planner reads first.
 
 
 def assess_request(task: str) -> ChangeAssessment:
     """Bands + route for one raw user request. Pure text analysis, zero LLM.
 
-    Precedence: critical risk terms dominate (a payment/auth/database change
-    is never "simple" no matter how short the sentence); then a broad product
-    request without deliverable constraints stops for ONE clarification;
-    bounded static/named artifacts route to a single coder; a framework
-    scaffold with multiple parts is a planned medium change; anything left is
-    a medium change on insufficient evidence — never silently large.
+    This function NEVER returns `plan_design_workflow`: nothing readable from
+    one sentence establishes blast radius, so "large" is decided in exactly one
+    place — `assess_manifest`, from what the planner declares after reading the
+    code. Precedence here: a broad product request without deliverable
+    constraints stops for ONE clarification; bounded static/named artifacts
+    route to a single coder; a framework scaffold with multiple parts is a
+    planned medium change; anything left is a medium change on insufficient
+    evidence.
     """
     text = " ".join((task or "").split())
-    risks = tuple(sorted(set(
-        match.group(1).lower() for match in _CRITICAL_RISK_RE.finditer(text)
-    )))
-    if risks:
-        return ChangeAssessment(
-            Band.LOW, Band.HIGH, Band.HIGH, "plan_design_workflow",
-            tuple(f"critical-risk:{item}" for item in risks),
-        )
     if _BROAD_PRODUCT_RE.search(text) and not (
         _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
     ):

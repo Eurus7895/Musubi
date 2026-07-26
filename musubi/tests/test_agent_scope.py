@@ -178,13 +178,16 @@ def test_classifies_small_artifact_as_simple_artifact_without_html_special_case(
     assert "artifact" in hint.reason
 
 
-def test_large_risky_feature_requires_plan_design_workflow() -> None:
+def test_sensitive_multi_area_request_is_denied_the_coder_shortcut() -> None:
+    # Lexical text cannot establish blast radius, so this no longer claims to
+    # be "large" — that verdict belongs to `assess_manifest`, after the planner
+    # has read the code. What the sentence CAN justify is withholding the
+    # single_coder shortcut so a read-only planner looks first.
     hint = classify_task("Add billing auth, database migration, and public API endpoints")
 
-    assert hint.kind is ScopeKind.LARGE_FEATURE
-    assert hint.route == "plan_design_workflow"
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
     assert "plan" in hint.requires
-    assert "design" in hint.requires
 
 
 def test_medium_change_routes_through_planner_before_coder() -> None:
@@ -257,25 +260,34 @@ def test_specific_framework_scaffold_is_medium() -> None:
     assert result.route == "planner_then_coder_check"
 
 
-def test_auth_database_payment_site_is_large() -> None:
-    result = assess_request(
-        "Build a website with authentication, a customer database, and payments"
-    )
-    assert result.risk is Band.HIGH
-    assert result.route == "plan_design_workflow"
+def test_assess_request_never_claims_a_change_is_large() -> None:
+    # "Large" has exactly one source of truth: the planner's manifest. No
+    # sentence, however alarming its vocabulary, may return the large route
+    # from pure text analysis.
+    for request in (
+        "Build a website with authentication, a customer database, and payments",
+        "Add billing auth, database migration, and public API endpoints",
+        "rewrite the entire user system",
+        "migrate all 40 services to the new runtime",
+    ):
+        assert assess_request(request).route != "plan_design_workflow", request
 
 
-def test_single_critical_term_routes_to_plan_design_workflow() -> None:
-    # The deterministic critical-risk gate must fire on ONE token: "add
-    # authentication" was previously downgraded to a medium change because the
-    # legacy _LARGE_RISK_RE threshold needs two tokens.
+def test_sensitive_request_runs_instead_of_being_refused() -> None:
+    # The old keyword gate answered "add authentication" with a canned
+    # pipeline recommendation and zero model calls. A request must never be
+    # refused on vocabulary alone; it runs, planner-first.
     hint = classify_task("Add authentication to the app")
-    assert hint.kind is ScopeKind.LARGE_FEATURE
-    assert hint.route == "plan_design_workflow"
-    assert "plan" in hint.requires and "review" in hint.requires
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
+    assert "plan" in hint.requires and "verification" in hint.requires
 
 
-def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
+def test_every_sensitive_area_loses_the_lone_coder_shortcut() -> None:
+    # A mistake in these areas is invisible — the page still renders and the
+    # tests still pass — so a read-only planner must read the code and file a
+    # manifest before anything mutates. Includes the vocabulary the old list
+    # was blind to (SSO, Okta, passwords, sessions, plural "payments").
     requests = (
         "Add login to the app",
         "Change user permissions",
@@ -284,11 +296,21 @@ def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
         "Run data migrations",
         "Change security settings",
         "Change the public API contract",
+        "wire up Okta for the web app",
+        "add SSO to the app",
+        "let users sign in with Google",
+        "store user passwords in the users table",
+        "add a session cookie so users stay signed in",
+        "create the payments dashboard page",
+        "create login.html",
     )
     for request in requests:
-        assessment = assess_request(request)
-        assert assessment.risk is Band.HIGH, request
-        assert assessment.route == "plan_design_workflow", request
         hint = classify_task(request)
-        assert hint.kind is ScopeKind.LARGE_FEATURE, request
-        assert hint.route == "plan_design_workflow", request
+        assert hint.route == "planner_then_coder_check", request
+        assert hint.kind is ScopeKind.MEDIUM_CHANGE, request
+
+
+def test_ordinary_requests_keep_the_shortcut() -> None:
+    # The guard must stay narrow: nothing sensitive, nothing withheld.
+    assert classify_task("create a dashboard page").route == "single_coder"
+    assert classify_task("update the title in index.html").route == "single_coder"

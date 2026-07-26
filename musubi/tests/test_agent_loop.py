@@ -2721,30 +2721,48 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 
 
-def test_initial_critical_risk_returns_pipeline_recommendation_without_model(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from storage import subagent_audit
+def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
+    # Observed with deepseek-v4-flash: the no-tools final call answered with
+    # DeepSeek's own tool-call syntax (FULL-WIDTH bars) as prose, and the
+    # harness stored it as the planner's plan — surfacing it to the user, into
+    # the audit DB, and into parse_change_manifest.
+    from agent.run import _looks_like_vendor_tool_markup
 
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
-    audit_db = tmp_path / "data" / "audit.db"
-    subagent_audit.init_db(audit_db)
-    router = FakeRouter([])
-    answer = asyncio.run(
-        run_agent(
-            "Add authentication to the app",
-            router,
-            _musubi_dir(),
-            log=io.StringIO(),
-            max_tokens=0,
-        )
+    leak = (
+        "<｜｜DSML｜｜tool_calls>\n"
+        '<｜｜DSML｜｜invoke name="musubi_grep">\n'
+        '<｜｜DSML｜｜parameter name="pattern" string="true">.*'
+        "</｜｜DSML｜｜parameter>\n"
+        "</｜｜DSML｜｜tool_calls>"
     )
+    assert _looks_like_vendor_tool_markup(leak)
+    for other in ('<tool_call>{"name":"x"}</tool_call>', '<invoke name="foo">'):
+        assert _looks_like_vendor_tool_markup(other), other
 
-    assert router.calls == []
-    assert subagent_audit.query_events(db_path=audit_db) == []
-    assert "--pipeline feature-dev" in answer
-    assert "No pipeline was launched" in answer
+    # Prose that merely talks about tools stays an answer.
+    for prose in (
+        "status: done\nsummary: created the dashboard",
+        "I used grep to find the function, then edited run.py",
+        "The plan calls three tools in sequence.",
+    ):
+        assert not _looks_like_vendor_tool_markup(prose), prose
+
+
+def test_sensitive_request_is_not_refused_on_vocabulary_alone() -> None:
+    # The removed keyword gate answered "add authentication" with a canned
+    # pipeline recommendation and ZERO model calls — the same treatment it gave
+    # "fix the typo in the security section of the README". A sensitive request
+    # must now actually run, planner-first, with blast radius decided from the
+    # planner's manifest rather than from the sentence.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("Add authentication to the app")
+
+    assert hint.route == "planner_then_coder_check"
+    assert run_mod._deterministic_scope_answer(
+        "Add authentication to the app", hint,
+    ) is None
 
 
 def test_root_coder_spawn_is_refused_until_planner_manifest_lands(

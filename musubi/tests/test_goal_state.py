@@ -248,7 +248,11 @@ def test_goal_state_retains_initial_request_assessment() -> None:
     )
 
     assert state.assessment is hint.assessment
-    assert state.route == "plan_design_workflow"
+    # Planner-led, not refused: "large" is no longer guessed from the sentence,
+    # so a sensitive request starts with a read-only planner whose manifest
+    # decides the blast radius.
+    assert state.route == "planner_then_coder_check"
+    assert state.next_role == "planner"
 
 
 
