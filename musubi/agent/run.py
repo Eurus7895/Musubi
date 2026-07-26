@@ -59,6 +59,7 @@ from agent.context import (
 )
 from agent.goal_state import (
     NO_PROGRESS_TURN_THRESHOLD,
+    ORDERED_ROLES,
     GoalState,
     root_decision_tools,
 )
@@ -96,6 +97,10 @@ DEFAULT_AGENT_MAX_TOKENS = 200_000
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 DEFAULT_MAX_ROOT_WORKERS = 3
+#: Ceiling once a manifest reclassifies the goal as large. The chain is
+#: planner → designer → coder → reviewer (four workers, one more than the
+#: default), plus headroom for a single recovery replacement.
+DEFAULT_MAX_ROOT_WORKERS_LARGE = 6
 DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
 #: No-progress budget breaker: if the root run has spent at least this fraction
@@ -338,6 +343,17 @@ class Orchestration:
                 self.goal_state.next_role == "planner"
             ):
                 self.goal_state.apply_planner_manifest(summary)
+                if self.goal_state.role_chain or (
+                    self.goal_state.route == "plan_design_workflow"
+                ):
+                    # A large change owes designer → coder → reviewer after the
+                    # planner. That is four workers, one more than the default
+                    # ceiling, so the chain would be refused on its last step.
+                    # Raise the ceiling to fit the chain plus headroom for one
+                    # recovery replacement.
+                    self.max_root_workers = max(
+                        self.max_root_workers, DEFAULT_MAX_ROOT_WORKERS_LARGE,
+                    )
         return outcome
 
     def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
@@ -503,30 +519,6 @@ async def _auto_recovery_transition(
         # Loop: a done replacement clears the failure (return None next
         # pass); a failed one re-enters decide_recovery, where the second
         # same-role failure halts.
-
-
-def _pipeline_recommendation(state: GoalState) -> str:
-    """Deterministic final answer when request or manifest assessment is large.
-
-    Large workflows stay user-invoked (policy locked decision #4): the root
-    never auto-launches a pipeline, it hands the decision back with the exact
-    command. Emitted with zero further model calls or worker spawns.
-    """
-    assessment = state.assessment
-    evidence = (
-        ", ".join(assessment.evidence) if assessment is not None else "manifest"
-    )
-    return (
-        "[scope] The deterministic change assessment classified this request "
-        f"as a large change ({evidence}).\n"
-        "Large workflows are user-invoked and never auto-launched. To run it "
-        "under the governed pipeline (plan → design → code → review with the "
-        "evaluator firewall), start it explicitly — in chat, send:\n\n"
-        "    run pipeline feature-dev\n\n"
-        "or from a shell:\n\n"
-        '    agent "<your brief>" --pipeline feature-dev\n\n'
-        "No pipeline was launched and no further workers were spawned."
-    )
 
 
 def _recovery_incomplete(outcome: WorkerOutcome, reason: str) -> str:
@@ -1021,17 +1013,6 @@ async def _run_loop(
                     file=log,
                 )
                 final_answer = root_state.pending_clarification
-                break
-            if (
-                root_state.assessment is not None
-                and root_state.route == "plan_design_workflow"
-            ):
-                print(
-                    "[agent] planner manifest reclassified the goal as large; "
-                    "recommending a user-invoked pipeline",
-                    file=log,
-                )
-                final_answer = _pipeline_recommendation(root_state)
                 break
         # No-progress budget breaker (root only). Checked between workers, so a
         # mid-flight worker is never interrupted: it fires when the completed
@@ -1958,15 +1939,10 @@ def _deterministic_scope_answer(
         if assessment is not None and assessment.clarifying_question:
             return assessment.clarifying_question
         return "What exact target and acceptance criteria should this change satisfy?"
-    if scope_hint.route == "plan_design_workflow":
-        state = goal_state or GoalState.create(
-            intent=task,
-            scope=scope_hint.kind.value,
-            route=scope_hint.route,
-            assessment=scope_hint.assessment,
-        )
-        return _pipeline_recommendation(state)
-
+    # No `plan_design_workflow` branch: `classify_task` can no longer produce
+    # that route from text, and when a manifest produces it the goal runs the
+    # designer → coder → reviewer chain instead of halting. A large change is
+    # more review, not a refusal handed back as a command to type.
     if scope_hint.route == "manual_destructive":
         return (
             "I cannot safely delete files from this route because deletion is "
@@ -2686,24 +2662,29 @@ def _spawn_overflow_reasons(
                 file=log,
             )
             continue
-        # Deterministic role order (root only): on a planner-led goal the
-        # coder gate opens ONLY after the planner's manifest reclassifies the
-        # change. This is goal-state enforcement of an assessed route, not the
-        # retired keyword guess — next_role comes from the assessment cascade,
-        # and the refusal names the legal next role so the model can comply.
+        # Deterministic role order (root only). On a planner-led goal the coder
+        # gate opens only after the planner's manifest reclassifies the change;
+        # on a large one the manifest also queues designer → coder → reviewer,
+        # and each step is gated the same way. Only these four roles are
+        # ordered — an explorer or investigator the root summons for evidence
+        # is never blocked. `next_role` comes from the assessment cascade, not
+        # the retired keyword guess, and the refusal names the legal role so
+        # the model can comply.
         if (
             role == "agent"
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
-            and spawn_role == "coder"
-            and orchestration.goal_state.next_role not in (None, "coder")
+            and spawn_role in ORDERED_ROLES
+            and orchestration.goal_state.next_role is not None
+            and spawn_role != orchestration.goal_state.next_role
         ):
             legal = orchestration.goal_state.next_role
+            queued = orchestration.goal_state.role_chain
+            tail = f" then {' → '.join(queued)}" if queued else ""
             reason = (
-                f"role order: {legal!r} is the legal next role on this route; "
-                f"spawn {legal!r} first — its change manifest decides whether "
-                "a coder may follow"
+                f"role order: {legal!r} is the legal next role on this route"
+                f"{tail}; spawn {legal!r} first"
             )
             overflow[tu.get("id", "")] = reason
             print(

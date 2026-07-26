@@ -270,7 +270,10 @@ def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
     state.apply_planner_manifest(ELEVEN_FILE_MANIFEST)
     assert state.scope == "large_feature"
     assert state.route == "plan_design_workflow"
-    assert state.next_role is None
+    # Large is a chain, not a halt: the remaining work owes a design and an
+    # independent review before it is done.
+    assert state.next_role == "designer"
+    assert state.role_chain == ("coder", "reviewer")
 
 
 def test_small_manifest_opens_the_coder_gate() -> None:

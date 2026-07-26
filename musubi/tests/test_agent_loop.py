@@ -2822,9 +2822,11 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     assert "planner" in replay
 
 
-def test_manifest_reclassified_large_goal_halts_with_pipeline_recommendation() -> None:
-    from agent import run as run_mod
-
+def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
+    # A large change used to end the turn with a CLI string the chat surface
+    # cannot run — the user was told to launch a pipeline themselves, and the
+    # work stopped. "Large" means MORE REVIEW, not a different launcher: the
+    # root may already spawn each of these roles ad-hoc, so it runs the chain.
     state = GoalState.create(
         "create site", "medium_change", "planner_then_coder_check",
     )
@@ -2835,25 +2837,50 @@ def test_manifest_reclassified_large_goal_halts_with_pipeline_recommendation() -
         '"external_side_effects":false,"destructive":false,"unknowns":[],'
         '"validation_commands":2}</change_manifest>'
     )
-    orchestration = Orchestration(parent_session_id="root", goal_state=state)
-    router = FakeRouter([])
 
-    answer, _ = asyncio.run(run_mod._run_loop(
-        object(),
-        router,
-        [],
-        [{"role": "user", "content": "create site"}],
-        max_cycles=2,
-        log=io.StringIO(),
-        orchestration=orchestration,
-        role="agent",
-    ))
+    assert state.route == "plan_design_workflow"
+    assert state.pending_clarification is None
+    assert state.next_role == "designer"
+    assert state.role_chain == ("coder", "reviewer")
+    block = state.render_decision_block()
+    assert "next_role=designer then coder → reviewer" in block
 
-    # Deterministic: zero model calls, no auto-launched pipeline.
-    assert router.calls == []
-    assert answer is not None
-    assert "--pipeline feature-dev" in answer
-    assert "No pipeline was launched" in answer
+
+def test_large_chain_advances_only_on_a_successful_role() -> None:
+    state = GoalState.create(
+        "create site", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":11,"subsystems":'
+        '["config","routes","components","styles"],"public_contract":false,'
+        '"data_migration":false,"security_sensitive":false,'
+        '"external_side_effects":false,"destructive":false,"unknowns":[],'
+        '"validation_commands":2}</change_manifest>'
+    )
+
+    # A failed designer must not open the coder gate.
+    state.record_outcome(
+        role="designer", status="failed", summary="summary: gave up",
+        touched_files=(),
+    )
+    assert state.next_role == "designer"
+
+    state.record_outcome(
+        role="designer", status="done", summary="summary: design ready",
+        touched_files=(),
+    )
+    assert state.next_role == "coder"
+    state.record_outcome(
+        role="coder", status="done", summary="summary: built",
+        touched_files={"a.py"},
+    )
+    assert state.next_role == "reviewer"
+    state.record_outcome(
+        role="reviewer", status="done", summary="summary: approved",
+        touched_files=(),
+    )
+    assert state.next_role is None
+    assert state.role_chain == ()
 
 
 def test_manifest_clarification_returns_before_any_model_call() -> None:

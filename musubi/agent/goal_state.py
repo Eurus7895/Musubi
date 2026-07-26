@@ -35,6 +35,17 @@ ADVISORY_ROUTE = "advisory"
 #: the point at which the traced conversation had already spent two planner
 #: round trips and two question walls without a single file on disk.
 NO_PROGRESS_TURN_THRESHOLD = 3
+#: What a large change actually requires, in order, once the planner's
+#: manifest establishes the blast radius. "Large" means MORE REVIEW, not a
+#: different launcher: the root may already spawn each of these roles ad-hoc
+#: (`MAIN_SUBAGENT_ALLOWLIST["agent"]`), so it runs the chain itself. Locked
+#: decision #4 forbids spawning an entire *pipeline*, which this never does.
+LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
+#: Roles whose order the goal state enforces. Anything else the root summons
+#: (an explorer for workspace facts, an investigator for a failure) is free.
+ORDERED_ROLES: frozenset[str] = frozenset(
+    {"planner", "designer", "coder", "reviewer"}
+)
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -140,6 +151,9 @@ class GoalState:
     #: Planner unknowns small enough for the next worker to settle with a
     #: sensible default instead of halting the conversation to ask.
     deferred_unknowns: tuple[str, ...] = ()
+    #: Roles still owed after `next_role`, in order. Non-empty only on a large
+    #: change, where the chain is the whole point of the classification.
+    role_chain: tuple[str, ...] = ()
     #: `files_expected` from the accepted manifest. Kept so the declaration can
     #: be CHECKED against what a later worker actually touched — with the
     #: lexical risk gates gone, the manifest is the sole input to routing, and
@@ -198,11 +212,20 @@ class GoalState:
             "plan_design_workflow": "large_feature",
             "ask_scope": "unknown",
         }[assessment.route]
-        self.next_role = (
-            "coder"
-            if assessment.route in {"single_coder", "planner_then_coder_check"}
-            else None
-        )
+        if assessment.route == "plan_design_workflow":
+            # A large change is not a refusal. It means the remaining work owes
+            # a design and an independent review before it is done, so the root
+            # runs that chain with the roles it is already allowed to spawn.
+            self.next_role = LARGE_ROLE_CHAIN[0]
+            self.role_chain = LARGE_ROLE_CHAIN[1:]
+        else:
+            self.next_role = (
+                "coder"
+                if assessment.route
+                in {"single_coder", "planner_then_coder_check"}
+                else None
+            )
+            self.role_chain = ()
         self.pending_clarification = assessment.clarifying_question
         self.deferred_unknowns = assessment.deferred_unknowns
         self.declared_files_expected = (
@@ -237,6 +260,21 @@ class GoalState:
     def record_outcome(self, **kwargs: Any) -> OutcomePacket:
         packet = OutcomePacket.from_worker(**kwargs)
         self.outcomes.append(packet)
+        # Advance the ordered chain only on a SUCCESSFUL run of the role that
+        # was owed. A failed designer must not open the coder gate — the
+        # recovery path gets its one same-role replacement first.
+        #
+        # `planner` is excluded on purpose: the caller runs this BEFORE
+        # `apply_planner_manifest`, and that method owns the transition out of
+        # planning. Advancing here would clear `next_role` and the manifest
+        # would never be read.
+        if (
+            packet.role != "planner"
+            and packet.role == self.next_role
+            and packet.status == "done"
+        ):
+            self.next_role = self.role_chain[0] if self.role_chain else None
+            self.role_chain = self.role_chain[1:]
         return packet
 
     def render_decision_block(self) -> str:
@@ -252,7 +290,10 @@ class GoalState:
             )
         order = ""
         if self.next_role is not None:
-            order = f"next_role={self.next_role}\n"
+            remaining = (
+                " then " + " → ".join(self.role_chain) if self.role_chain else ""
+            )
+            order = f"next_role={self.next_role}{remaining}\n"
         bands = ""
         if self.assessment is not None:
             bands = (

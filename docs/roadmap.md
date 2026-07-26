@@ -113,6 +113,22 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- A large change is more review, not a refusal — a manifest that reclassified
+  a goal as large used to end the turn with a CLI string (`agent … --pipeline
+  feature-dev`) the chat surface cannot run, so the work simply stopped; the
+  case that prompted this was a ONE-file, ONE-subsystem change escalated
+  solely because the planner set `external_side_effects`. The governance value
+  of "large" is more review, not a different launcher, and the root may
+  already spawn `designer`, `coder` and `reviewer` ad-hoc, so it now runs that
+  chain itself. `GoalState` carries an ordered `role_chain` that advances only
+  on a successful run of the role that was owed — a failed designer does not
+  open the coder gate — and the role-order gate generalises from `coder` to
+  all four ordered roles while leaving explorers and investigators free. The
+  worker ceiling rises from 3 to 6 on reclassification, since the chain is
+  four workers plus headroom for one recovery replacement. Locked decision #4
+  is untouched: individual roles are spawned, never a pipeline.
+  `_pipeline_recommendation` is deleted.
+
 - The manifest owns blast radius; the catalog tells the truth — two lexical
   rules claimed to know how large a change was before anything read a line of
   code, and both were wrong in both directions: a keyword gate refused "fix
