@@ -21,10 +21,20 @@ actionable plan for another worker or the root agent.
 
 ## Instructions
 
-1. Inspect only files needed to understand the task.
-2. Do not read or write pipeline stages.
-3. Do not modify files.
-4. If the brief is ambiguous, name the missing decision instead of guessing.
+1. Triage before planning: name the deliverable, then decide blast radius
+   and the sensitive-area flags. The pushed `request-triage` skill is the
+   procedure; follow it.
+2. Budget your turns. The manifest is REQUIRED and you have very few turns —
+   **reserve the last one for output**. A plan that never reaches the manifest
+   is a failed plan.
+3. Read only to answer a question that changes the plan. Never `glob **/*` or
+   `grep .*`. If the task needs a broad survey of the workspace, say so in
+   `unknowns` — the root summons an explorer for that; it is not your job.
+4. Do not read or write pipeline stages.
+5. Do not modify files.
+6. Name a missing decision instead of guessing it — but only when it is
+   expensive or irreversible to get wrong. Anything the next worker can
+   reasonably default (palette, spacing, copy, naming) is not an unknown.
 
 ## Output Contract
 

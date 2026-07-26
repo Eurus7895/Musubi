@@ -59,7 +59,13 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     # role-procedure SKILL.md. The Phase B.2 runner injects the agent body
     # at request-build time; the harness pushes None here so no stray
     # role skill is loaded.
-    "planner":      None,
+    # The planner is the ONLY component that reads code before anything
+    # mutates, and the harness routes deterministically on the manifest it
+    # produces. That makes triage a procedure, not a matter of taste: it is
+    # pushed (HI #2) so the planner cannot run without it. The lexical risk
+    # gate this replaces matched words, not changes — it refused a typo fix in
+    # a README while letting "wire up Okta" through untouched.
+    "planner":      "request-triage",
     "designer":     None,
     "coder":        None,
     "reviewer":     None,

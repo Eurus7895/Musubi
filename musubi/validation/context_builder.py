@@ -60,7 +60,11 @@ def scan_injection(text: str) -> bool:
 # Explicit allowlist per agent. Deny by default — unknown agents get nothing.
 # Mirrors the stage firewall: agents only load skills relevant to their role.
 AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
-    "planner":       set(),
+    # Triage only. The planner declares blast radius and the sensitive-area
+    # flags the harness routes on, so it needs the procedure for that judgment
+    # — and nothing else: generator-side skills stay with the roles that
+    # actually write code.
+    "planner":       {"request-triage"},
     "designer":      {"api-design", "database-patterns", "documentation", "docs-writing"},
     # Catalog growth — coder gains the generator-side skills it executes:
     # typescript (JS/TS workspaces, applies-to gated by the router),

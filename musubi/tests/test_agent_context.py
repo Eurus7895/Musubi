@@ -406,15 +406,17 @@ def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
     assert "investigator" in text
 
 
-def test_pipeline_roles_register_no_role_skill() -> None:
-    """B.1 ships pipeline roles in SUBAGENT_POLICIES with no role-procedure
-    SKILL.md (the agent.md body is the procedure; the runner pushes that
-    in B.2). The lockstep test in test_subagent_context.py requires every
-    role have an entry — make sure ours is `None`, not a stray skill_id."""
+def test_pipeline_roles_register_the_right_role_skill() -> None:
+    """Generator roles carry their procedure in the agent.md body, so they
+    register `None`. The planner is the exception: it is the only component
+    that reads code before anything mutates, and the harness routes
+    deterministically on the manifest it emits, so its triage procedure is
+    PUSHED (HI #2) rather than left to the role prompt."""
     from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    for role in ("planner", "coder", "reviewer"):
+    for role in ("coder", "reviewer", "designer"):
         assert role in SUBAGENT_ROLE_SKILLS, role
         assert SUBAGENT_ROLE_SKILLS[role] is None, role
+    assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
 
 
 # ── No regressions: non-agent paths unchanged ────────────────────────
