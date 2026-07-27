@@ -793,12 +793,30 @@ export function buildViewModel(s, act) {
         .flatMap((run) => run.stages || []),
     ].map((agent) => [agent.handle, agent])).values())
 
+    // Order requests oldest-first. The two available keys are not comparable:
+    // `agent_turns.started_at` is epoch seconds (~1.79e9) while
+    // `runtime_log_events.id` is an AUTOINCREMENT rowid (hundreds). Taking
+    // whichever exists and sorting the mixture ranked every turn-less request
+    // before every turn-bearing one.
+    //
+    // That is not an edge case: `_record_agent_turn` is called with
+    // `ended_at=time.time()` (agent/run.py), so the row is written when the
+    // turn *ends*. The in-flight request therefore never has a turn, always
+    // fell back to the small rowid, and was always sorted as the oldest thing
+    // in the session — mislabelled R01 and given the head of the continuation
+    // chain, on every run.
+    //
+    // So rank by tier first. A turn row exists if and only if the turn
+    // finished, which makes "has no turn" a reliable marker for "still
+    // running", and a running request is by definition the newest. Within a
+    // tier the keys are homogeneous: epoch seconds for finished requests,
+    // ledger rowid for in-flight ones.
+    const requestRank = (request) => (request.turn ? 0 : 1)
+    const requestTime = (request) => Number(
+      request.turn ? request.turn.startedAt || 0 : request.events[0]?.id || 0,
+    )
     const requestEntries = Array.from(requestMap.values())
-      .sort((a, b) => {
-        const at = Number(a.turn?.startedAt || a.events[0]?.id || 0)
-        const bt = Number(b.turn?.startedAt || b.events[0]?.id || 0)
-        return at - bt
-      })
+      .sort((a, b) => (requestRank(a) - requestRank(b)) || (requestTime(a) - requestTime(b)))
     requestEntries.forEach((request) => {
       const exactHandles = new Set(request.events.map((event) => event.agentHandle).filter(Boolean))
       request.agents = sessionAgents.filter((agent) => (

@@ -208,6 +208,39 @@ test('projects every request and its exact agents as append-only session history
   assert.equal(vm.runtimeLogs.find((row) => row.agentHandle === second.handle).message, '[agent] write ok')
 })
 
+test('the in-flight request sorts newest, not oldest, despite having no turn row', () => {
+  // agent_turns is written with ended_at=time.time(), so a running request has
+  // no turn row at all. Sorting on `turn.startedAt || events[0].id` compared
+  // epoch seconds against an AUTOINCREMENT rowid, so the running request —
+  // the only one falling back to the rowid — always ranked oldest, took the
+  // R01 label, and was handed the head of the continuation chain.
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'chat-live',
+    selectedSession: 'chat-live',
+    orchestratorSessions: [{ chatId: 'chat-live', title: 'calc', lastRequest: 'calc', rootTurns: 2, workers: 0 }],
+    agentTurns: [
+      { id: 1, requestId: 'req-old', chatId: 'chat-live', parentSession: 'root-1', request: 'first', startedAt: 1785166000 },
+      { id: 2, requestId: 'req-mid', chatId: 'chat-live', parentSession: 'root-2', request: 'second', startedAt: 1785166300 },
+    ],
+    runtimeLogEvents: [
+      { id: 1, requestId: 'req-old', chatId: 'chat-live', seq: 1, ts: '16:26:40', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'launch first' },
+      { id: 2, requestId: 'req-mid', chatId: 'chat-live', seq: 1, ts: '16:31:40', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'launch second' },
+      // Still running: ledger lines exist, the turn row does not.
+      { id: 3, requestId: 'req-live', chatId: 'chat-live', seq: 1, ts: '16:37:21', source: 'root', stream: 'stderr', agentHandle: '', role: 'root', category: 'output', message: 'worker planner' },
+    ],
+  }), actions())
+
+  assert.deepEqual(
+    vm.runtimeGraph.requests.map((request) => request.requestId),
+    ['req-old', 'req-mid', 'req-live'],
+  )
+  // Numbering is chronological, so the live request takes the highest R-number.
+  assert.equal(vm.runtimeGraph.requests[2].label, 'Request 03')
+  // And it continues the chain rather than heading it.
+  assert.equal(vm.runtimeGraph.requests[0].parentId, null)
+  assert.equal(vm.runtimeGraph.requests[2].parentId, 'request:req-mid')
+})
+
 test('includes pipeline stages launched by an Orchestrator chat in the runtime graph', () => {
   const stage = agent(40, 'pipeline-session', 'done', 'reviewer', 'gui-orchestrator-unified')
   const vm = buildViewModel(baseState({
