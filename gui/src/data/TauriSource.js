@@ -8,7 +8,7 @@ import {
 
 const DOMAIN_KEYS = [
   'subagents', 'events', 'policy', 'audit', 'chat', 'pipeChat',
-  'agentTurns', 'agentCycles', 'totalSpawned', 'totalDone', 'allowCount',
+  'agentTurns', 'agentCycles', 'runtimeLogEvents', 'totalSpawned', 'totalDone', 'allowCount',
   'denyCount', 'activeProfile', 'profiles', 'paused', 't', 'runtimeSource',
   'setupStatus', 'driverStatus', 'orchestratorChatId',
   'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
@@ -29,7 +29,7 @@ export default class TauriSource {
       view: this.props.startView || 'orchestrator',
       selected: null, selectedSession: null, paused: false, t: 0,
       auditFilter: 'all', draft: '', processOpen: false, logWindowOpen: false,
-      subagents: [], agentTurns: [], agentCycles: [], orchestratorSessions: [],
+      subagents: [], agentTurns: [], agentCycles: [], runtimeLogEvents: [], orchestratorSessions: [],
       pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '',
       pipelineCatalog: [], runMode: 'direct', selectedPipeline: '',

@@ -16,13 +16,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use serde::Deserialize;
 use tauri::{Emitter, Manager};
 
 struct AppState {
@@ -45,6 +46,7 @@ struct AppState {
 #[derive(Default)]
 struct ChatAgentRuntime {
     running: bool,
+    request_id: String,
     child: Option<Arc<Mutex<Child>>>,
     cancel_requested: bool,
     // Exact conversation session that owns this process and its retained log.
@@ -60,12 +62,15 @@ struct ChatAgentRuntime {
     terminal_status: String,
 }
 
+#[derive(Clone, Copy)]
 enum TailStream {
     Stdout,
     Stderr,
 }
 
 const TAIL_CAP: usize = 64 * 1024;
+const RUNTIME_LOG_PREFIX: &str = "\u{1e}MUSUBI_LOG ";
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
@@ -76,6 +81,108 @@ fn epoch_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn new_request_id() -> String {
+    let serial = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("request-{}-{serial}", epoch_secs())
+}
+
+#[derive(Deserialize)]
+struct FramedRuntimeLog {
+    request_id: String,
+    role: String,
+    agent_handle: Option<String>,
+    category: String,
+    message: String,
+}
+
+fn append_runtime_log_event(
+    conn: &Connection,
+    request_id: &str,
+    chat_id: &str,
+    source: &str,
+    stream: &str,
+    agent_handle: Option<&str>,
+    role: &str,
+    category: &str,
+    message: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO runtime_log_events(
+           request_id,chat_id,seq,ts,source,stream,agent_handle,role,category,message
+         ) VALUES(
+           ?1,?2,
+           COALESCE((SELECT MAX(seq)+1 FROM runtime_log_events WHERE request_id=?1),1),
+           ?3,?4,?5,?6,?7,?8,?9
+         )",
+        params![
+            request_id,
+            chat_id,
+            chat_timestamp(epoch_secs()),
+            source,
+            stream,
+            agent_handle,
+            role,
+            category,
+            message,
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+fn persist_runtime_line(
+    app: &tauri::AppHandle,
+    launch_request_id: &str,
+    chat_id: &str,
+    which: TailStream,
+    raw_line: &str,
+) -> String {
+    let raw_line = raw_line.trim_end_matches('\r');
+    let parsed = raw_line
+        .strip_prefix(RUNTIME_LOG_PREFIX)
+        .and_then(|json| serde_json::from_str::<FramedRuntimeLog>(json).ok())
+        .filter(|event| event.request_id == launch_request_id);
+    let (source, handle, role, category, message) = match parsed {
+        Some(event) => (
+            if event.agent_handle.is_some() {
+                "worker"
+            } else {
+                "root"
+            },
+            event.agent_handle,
+            event.role,
+            event.category,
+            event.message,
+        ),
+        None => (
+            "root",
+            None,
+            "root".to_string(),
+            "output".to_string(),
+            raw_line.to_string(),
+        ),
+    };
+    let stream = match which {
+        TailStream::Stdout => "stdout",
+        TailStream::Stderr => "stderr",
+    };
+    let state = app.state::<AppState>();
+    if let Ok(conn) = state.db.lock() {
+        let _ = append_runtime_log_event(
+            &conn,
+            launch_request_id,
+            chat_id,
+            source,
+            stream,
+            handle.as_deref(),
+            &role,
+            &category,
+            &message,
+        );
+    }
+    message
 }
 
 fn chat_timestamp(epoch: i64) -> String {
@@ -889,25 +996,46 @@ fn pump_stream(
     stream: impl Read + Send + 'static,
     shared: Arc<Mutex<ChatAgentRuntime>>,
     which: TailStream,
+    app: tauri::AppHandle,
+    request_id: String,
+    chat_id: String,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = stream;
         let mut buf = [0u8; 4096];
+        let mut pending = String::new();
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) | Err(_) => {
+                    if !pending.is_empty() {
+                        let display =
+                            persist_runtime_line(&app, &request_id, &chat_id, which, &pending);
+                        if let Ok(mut rt) = shared.lock() {
+                            let tail = match which {
+                                TailStream::Stdout => &mut rt.stdout_tail,
+                                TailStream::Stderr => &mut rt.stderr_tail,
+                            };
+                            musubi_data::push_bounded_tail(tail, &display, TAIL_CAP);
+                        }
+                    }
+                    break;
+                }
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    match which {
-                        TailStream::Stdout => eprint!("{chunk}"),
-                        TailStream::Stderr => eprint!("{chunk}"),
-                    }
-                    if let Ok(mut rt) = shared.lock() {
-                        let tail = match which {
-                            TailStream::Stdout => &mut rt.stdout_tail,
-                            TailStream::Stderr => &mut rt.stderr_tail,
-                        };
-                        musubi_data::push_bounded_tail(tail, &chunk, TAIL_CAP);
+                    pending.push_str(&chunk);
+                    while let Some(newline) = pending.find('\n') {
+                        let raw_line = pending[..newline].to_string();
+                        pending.drain(..=newline);
+                        let display =
+                            persist_runtime_line(&app, &request_id, &chat_id, which, &raw_line);
+                        eprintln!("{display}");
+                        if let Ok(mut rt) = shared.lock() {
+                            let tail = match which {
+                                TailStream::Stdout => &mut rt.stdout_tail,
+                                TailStream::Stderr => &mut rt.stderr_tail,
+                            };
+                            musubi_data::push_bounded_tail(tail, &format!("{display}\n"), TAIL_CAP);
+                        }
                     }
                 }
             }
@@ -923,10 +1051,12 @@ fn start_chat_agent(
     pipeline_name: Option<&str>,
 ) -> Result<(), String> {
     let started_at = epoch_secs();
+    let request_id = new_request_id();
     let launch_chat_id = chat_id.to_string();
     let launch_surface = {
-        let rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+        let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
         ensure_runtime_owner(&rt, &launch_chat_id)?;
+        rt.request_id = request_id.clone();
         surface_arg(&rt.surface).to_string()
     };
 
@@ -972,8 +1102,51 @@ fn start_chat_agent(
         musubi_data::AgentLaunchScope {
             chat_id: Some(chat_id),
             pipeline_name,
+            request_id: Some(&request_id),
         },
     )?;
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let db_path = state
+            .audit_db
+            .as_ref()
+            .map(|db| db.path.display().to_string())
+            .unwrap_or_else(|| "<memory>".into());
+        let db_source = state
+            .audit_db
+            .as_ref()
+            .map(|db| db.source.as_str())
+            .unwrap_or("memory");
+        append_runtime_log_event(
+            &conn,
+            &request_id,
+            chat_id,
+            "host",
+            "host",
+            None,
+            "host",
+            "host",
+            &format!(
+                "[musubi] reading audit.db at {db_path} ({db_source}) project_root={}",
+                launch_root.display()
+            ),
+        )?;
+        append_runtime_log_event(
+            &conn,
+            &request_id,
+            chat_id,
+            "host",
+            "host",
+            None,
+            "host",
+            "host",
+            &format!(
+                "[musubi] launching agent cwd={} args={:?}",
+                spec.cwd.display(),
+                spec.args
+            ),
+        )?;
+    }
     eprintln!(
         "[musubi] launching agent cwd={} args={:?}",
         spec.cwd.display(),
@@ -995,6 +1168,19 @@ fn start_chat_agent(
                 rt.running = false;
                 rt.child = None;
             }
+            if let Ok(conn) = state.db.lock() {
+                let _ = append_runtime_log_event(
+                    &conn,
+                    &request_id,
+                    chat_id,
+                    "host",
+                    "host",
+                    None,
+                    "host",
+                    "host",
+                    &format!("[musubi] launch failed: {e}"),
+                );
+            }
             return Err(format!("Failed to launch {}: {e}", spec.program.display()));
         }
     };
@@ -1008,8 +1194,26 @@ fn start_chat_agent(
     }
 
     let shared = state.chat_agent.clone();
-    let stdout_pump = stdout.map(|out| pump_stream(out, shared.clone(), TailStream::Stdout));
-    let stderr_pump = stderr.map(|err| pump_stream(err, shared.clone(), TailStream::Stderr));
+    let stdout_pump = stdout.map(|out| {
+        pump_stream(
+            out,
+            shared.clone(),
+            TailStream::Stdout,
+            app.clone(),
+            request_id.clone(),
+            launch_chat_id.clone(),
+        )
+    });
+    let stderr_pump = stderr.map(|err| {
+        pump_stream(
+            err,
+            shared.clone(),
+            TailStream::Stderr,
+            app.clone(),
+            request_id.clone(),
+            launch_chat_id.clone(),
+        )
+    });
 
     let artifact_root = launch_root.clone();
     std::thread::spawn(move || loop {
@@ -1047,6 +1251,27 @@ fn start_chat_agent(
                     Err(_) => (String::new(), String::new(), false),
                 };
                 let log = process_log(&stdout_tail, &stderr_tail);
+                {
+                    let state = app.state::<AppState>();
+                    if let Ok(conn) = state.db.lock() {
+                        let event = if cancelled {
+                            "[musubi] agent cancelled by user".to_string()
+                        } else {
+                            format!("[musubi] agent exited status={code}")
+                        };
+                        let _ = append_runtime_log_event(
+                            &conn,
+                            &request_id,
+                            &launch_chat_id,
+                            "host",
+                            "host",
+                            None,
+                            "host",
+                            "host",
+                            &event,
+                        );
+                    };
+                }
                 if cancelled {
                     append_driver_chat_to(
                         &app,
@@ -1344,6 +1569,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     if let Ok(rt) = state.chat_agent.lock() {
         st.driver_status = musubi_data::DriverStatus {
             running: rt.running,
+            request_id: rt.request_id.clone(),
             chat_id: rt.chat_id.clone(),
             surface: surface_arg(&rt.surface).to_string(),
             pipeline_name: rt.pipeline_name.clone(),
@@ -1662,6 +1888,46 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_ledger_assigns_monotonic_sequence_per_request() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+
+        append_runtime_log_event(
+            &conn,
+            "request-1",
+            "chat-1",
+            "host",
+            "host",
+            None,
+            "host",
+            "host",
+            "launch",
+        )
+        .unwrap();
+        append_runtime_log_event(
+            &conn,
+            "request-1",
+            "chat-1",
+            "worker",
+            "stderr",
+            Some("worker-7"),
+            "coder",
+            "tools",
+            "write ok",
+        )
+        .unwrap();
+
+        let seqs: Vec<i64> = conn
+            .prepare("SELECT seq FROM runtime_log_events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(seqs, vec![1, 2]);
+    }
 
     #[test]
     fn snapshot_session_ids_do_not_wait_for_database() {
@@ -2289,14 +2555,13 @@ mod tests {
 
         // Manifest passes the RAW (non-canonicalized) path; the answer mentions
         // the same file by name (scan canonicalizes it).
-        let text = append_artifact_links(
-            "Created `japan-dashboard.html`.",
-            &root,
-            &[file.clone()],
-        );
+        let text = append_artifact_links("Created `japan-dashboard.html`.", &root, &[file.clone()]);
 
         let occurrences = text.matches("musubi-artifact:").count();
-        assert_eq!(occurrences, 1, "artifact should be listed once, got:\n{text}");
+        assert_eq!(
+            occurrences, 1,
+            "artifact should be listed once, got:\n{text}"
+        );
         let _ = std::fs::remove_file(file);
         let _ = std::fs::remove_dir(root);
     }

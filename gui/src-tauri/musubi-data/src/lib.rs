@@ -40,6 +40,7 @@ pub struct State {
     pub subagents: Vec<Agent>,
     pub agent_turns: Vec<AgentTurn>,
     pub agent_cycles: Vec<AgentCycle>,
+    pub runtime_log_events: Vec<RuntimeLogEvent>,
     pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub pipeline_runs: Vec<PipelineRun>,
@@ -104,6 +105,7 @@ pub struct CliStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
     pub running: bool,
+    pub request_id: String,
     pub chat_id: String,
     pub surface: String,
     pub pipeline_name: String,
@@ -1319,6 +1321,7 @@ pub struct Agent {
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurn {
     pub id: i64,
+    pub request_id: String,
     pub chat_id: String,
     pub parent_session: String,
     // Root task text from the audit `sessions` row. This lets the console show
@@ -1331,6 +1334,22 @@ pub struct AgentTurn {
     pub cycles: i64,
     pub tokens_in_estimate: i64,
     pub tokens_out_estimate: i64,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogEvent {
+    pub id: i64,
+    pub request_id: String,
+    pub chat_id: String,
+    pub seq: i64,
+    pub ts: String,
+    pub source: String,
+    pub stream: String,
+    pub agent_handle: String,
+    pub role: String,
+    pub category: String,
+    pub message: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -1932,23 +1951,53 @@ fn load_state_at_with_pipeline_runs(
     // production it lives in the sibling musubi.db rather than audit.db.
     let agent_turn_conn = pipeline_state_conn.unwrap_or(conn);
     if table_exists(agent_turn_conn, "agent_turns")? {
-        let mut tstmt = agent_turn_conn.prepare(
-            "SELECT id, chat_id, parent_session_id, started_at, model_family, cycles, \
+        let request_id_expr = if column_exists(agent_turn_conn, "agent_turns", "request_id")? {
+            "COALESCE(request_id, '')"
+        } else {
+            "''"
+        };
+        let mut tstmt = agent_turn_conn.prepare(&format!(
+            "SELECT id, {request_id_expr}, chat_id, parent_session_id, started_at, model_family, cycles, \
                     tokens_in_estimate, tokens_out_estimate \
-             FROM agent_turns ORDER BY id ASC LIMIT 120",
-        )?;
+             FROM agent_turns ORDER BY id ASC LIMIT 120"
+        ))?;
         st.agent_turns = tstmt
             .query_map([], |r| {
                 Ok(AgentTurn {
                     id: r.get(0)?,
-                    chat_id: r.get(1)?,
-                    parent_session: r.get(2)?,
+                    request_id: r.get(1)?,
+                    chat_id: r.get(2)?,
+                    parent_session: r.get(3)?,
                     request: String::new(),
-                    started_at: r.get(3)?,
-                    model_family: r.get(4)?,
-                    cycles: r.get(5)?,
-                    tokens_in_estimate: r.get(6)?,
-                    tokens_out_estimate: r.get(7)?,
+                    started_at: r.get(4)?,
+                    model_family: r.get(5)?,
+                    cycles: r.get(6)?,
+                    tokens_in_estimate: r.get(7)?,
+                    tokens_out_estimate: r.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+
+    if table_exists(conn, "runtime_log_events")? {
+        let mut lstmt = conn.prepare(
+            "SELECT id,request_id,chat_id,seq,ts,source,stream,agent_handle,role,category,message \
+             FROM runtime_log_events ORDER BY id ASC",
+        )?;
+        st.runtime_log_events = lstmt
+            .query_map([], |r| {
+                Ok(RuntimeLogEvent {
+                    id: r.get(0)?,
+                    request_id: r.get(1)?,
+                    chat_id: r.get(2)?,
+                    seq: r.get(3)?,
+                    ts: r.get(4)?,
+                    source: r.get(5)?,
+                    stream: r.get(6)?,
+                    agent_handle: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                    role: r.get(8)?,
+                    category: r.get(9)?,
+                    message: r.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2514,6 +2563,7 @@ CREATE TABLE IF NOT EXISTS chat_log (
 );
 CREATE TABLE IF NOT EXISTS agent_turns (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id           TEXT,
   chat_id              TEXT NOT NULL,
   parent_session_id    TEXT NOT NULL,
   started_at           REAL NOT NULL,
@@ -2526,6 +2576,24 @@ CREATE TABLE IF NOT EXISTS agent_turns (
   total_ms             INTEGER NOT NULL DEFAULT 0,
   schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
+CREATE TABLE IF NOT EXISTS runtime_log_events (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id           TEXT NOT NULL,
+  chat_id              TEXT NOT NULL,
+  seq                   INTEGER NOT NULL,
+  ts                    TEXT NOT NULL,
+  source                TEXT NOT NULL,
+  stream                TEXT NOT NULL,
+  agent_handle          TEXT,
+  role                  TEXT NOT NULL,
+  category              TEXT NOT NULL,
+  message               TEXT NOT NULL,
+  UNIQUE(request_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_log_events_chat_request
+  ON runtime_log_events(chat_id, request_id, seq);
+CREATE INDEX IF NOT EXISTS idx_runtime_log_events_agent
+  ON runtime_log_events(request_id, agent_handle, seq);
 CREATE TABLE IF NOT EXISTS agent_cycles (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id           TEXT NOT NULL,
@@ -3864,6 +3932,7 @@ mod tests {
             AgentLaunchScope {
                 chat_id: Some("gui-pipeline-project-a"),
                 pipeline_name: Some("feature-dev"),
+                ..AgentLaunchScope::default()
             },
         )
         .unwrap();
@@ -3877,6 +3946,7 @@ mod tests {
             AgentLaunchScope {
                 chat_id: Some("gui-pipeline-project-b"),
                 pipeline_name: Some("feature-dev"),
+                ..AgentLaunchScope::default()
             },
         )
         .unwrap();
@@ -3901,6 +3971,7 @@ mod tests {
             AgentLaunchScope {
                 chat_id: Some("gui-pipeline-abc"),
                 pipeline_name: Some("feature-dev"),
+                ..AgentLaunchScope::default()
             },
         )
         .unwrap();
@@ -3917,6 +3988,52 @@ mod tests {
                 "agent"
             ]
         );
+    }
+
+    #[test]
+    fn launch_spec_forwards_request_identity_and_enables_log_protocol() {
+        let spec = build_agent_launch_spec(
+            "ship it",
+            "",
+            "",
+            None,
+            Path::new("/proj"),
+            &std::collections::HashMap::new(),
+            AgentLaunchScope {
+                chat_id: Some("gui-orchestrator-abc"),
+                request_id: Some("request-42"),
+                ..AgentLaunchScope::default()
+            },
+        )
+        .unwrap();
+
+        assert!(spec
+            .env
+            .contains(&("MUSUBI_REQUEST_ID".into(), "request-42".into())));
+        assert!(spec
+            .env
+            .contains(&("MUSUBI_RUNTIME_LOG_PROTOCOL".into(), "1".into())));
+    }
+
+    #[test]
+    fn state_loads_append_only_runtime_events_in_sequence() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO runtime_log_events(
+               request_id,chat_id,seq,ts,source,stream,agent_handle,role,category,message
+             ) VALUES
+               ('request-1','chat-1',1,'epoch:1','host','host',NULL,'host','host','launch'),
+               ('request-1','chat-1',2,'epoch:2','worker','stderr','worker-7','coder','tools','write ok')",
+            [],
+        )
+        .unwrap();
+
+        let state = load_state_at(&conn, 10).unwrap();
+
+        assert_eq!(state.runtime_log_events.len(), 2);
+        assert_eq!(state.runtime_log_events[1].agent_handle, "worker-7");
+        assert_eq!(state.runtime_log_events[1].category, "tools");
     }
 
     #[test]
@@ -4855,6 +4972,7 @@ pub struct AgentLaunchSpec {
 pub struct AgentLaunchScope<'a> {
     pub chat_id: Option<&'a str>,
     pub pipeline_name: Option<&'a str>,
+    pub request_id: Option<&'a str>,
 }
 
 /// Build the launch spec for the on-demand task launcher.
@@ -4909,7 +5027,14 @@ pub fn build_agent_launch_spec(
         program,
         args,
         cwd: project_root.to_path_buf(),
-        env: forwarded_spec_env(env),
+        env: {
+            let mut forwarded = forwarded_spec_env(env);
+            if let Some(request_id) = scope.request_id.map(str::trim).filter(|s| !s.is_empty()) {
+                forwarded.push(("MUSUBI_REQUEST_ID".into(), request_id.to_string()));
+                forwarded.push(("MUSUBI_RUNTIME_LOG_PROTOCOL".into(), "1".into()));
+            }
+            forwarded
+        },
     })
 }
 

@@ -38,6 +38,7 @@ function baseState(overrides = {}) {
     driverStatus: { running: false, chatId: '', surface: 'orchestrator', task: '', startedAt: null, stdoutTail: '', stderrTail: '' },
     agentTurns: [],
     agentCycles: [],
+    runtimeLogEvents: [],
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
@@ -171,6 +172,40 @@ test('projects evidence-backed runtime graph logs and successful skill provenanc
   assert.equal(vm.runtimeLogs.some((row) => row.category === 'policy' && row.status === 'deny'), true)
   assert.equal(vm.runtimeLogs.some((row) => row.category === 'model' && row.workerId === coder.handle), true)
   assert.equal(JSON.stringify(vm.runtimeLogs).includes('rawArgs'), false)
+})
+
+test('projects every request and its exact agents as append-only session history', () => {
+  const first = agent(1, 'root-1', 'done', 'planner', 'gui-orchestrator-history')
+  const second = agent(2, 'root-2', 'done', 'coder', 'gui-orchestrator-history')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-history',
+    selectedSession: 'gui-orchestrator-history',
+    orchestratorSessions: [{
+      chatId: 'gui-orchestrator-history', title: 'history', lastRequest: 'add export',
+      rootTurns: 2, workers: 2,
+    }],
+    subagents: [first, second],
+    agentTurns: [
+      { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-history', parentSession: 'root-1', request: 'create website', startedAt: 100 },
+      { id: 2, requestId: 'request-2', chatId: 'gui-orchestrator-history', parentSession: 'root-2', request: 'add export', startedAt: 200 },
+    ],
+    runtimeLogEvents: [
+      { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-history', seq: 1, ts: 'epoch:100', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch request 1' },
+      { id: 2, requestId: 'request-1', chatId: 'gui-orchestrator-history', seq: 2, ts: 'epoch:101', source: 'worker', stream: 'stderr', agentHandle: first.handle, role: 'planner', category: 'model', message: '[agent] planner cycle 0' },
+      { id: 3, requestId: 'request-2', chatId: 'gui-orchestrator-history', seq: 1, ts: 'epoch:200', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch request 2' },
+      { id: 4, requestId: 'request-2', chatId: 'gui-orchestrator-history', seq: 2, ts: 'epoch:201', source: 'worker', stream: 'stderr', agentHandle: second.handle, role: 'coder', category: 'tools', message: '[agent] write ok' },
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.runtimeGraph.nodes.map((node) => [node.id, node.parentId]), [
+    ['request:request-1', null],
+    [first.handle, 'request:request-1'],
+    ['request:request-2', 'request:request-1'],
+    [second.handle, 'request:request-2'],
+  ])
+  assert.equal(vm.runtimeGraph.requests.length, 2)
+  assert.equal(vm.runtimeLogs.filter((row) => row.requestId === 'request-1').length, 2)
+  assert.equal(vm.runtimeLogs.find((row) => row.agentHandle === second.handle).message, '[agent] write ok')
 })
 
 test('includes pipeline stages launched by an Orchestrator chat in the runtime graph', () => {

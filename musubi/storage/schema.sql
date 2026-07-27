@@ -243,6 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_cycles_session
 CREATE TABLE IF NOT EXISTS agent_turns (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id              TEXT NOT NULL,
+    request_id           TEXT,
     parent_session_id    TEXT NOT NULL,
     started_at           REAL NOT NULL,
     ended_at             REAL,

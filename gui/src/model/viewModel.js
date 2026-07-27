@@ -674,6 +674,165 @@ export function buildViewModel(s, act) {
     })),
   }
 
+  // New Console launches carry a durable request_id through the host, root,
+  // workers, and append-only runtime ledger. Project every request in the
+  // selected chat instead of replacing the graph with only the latest turn.
+  const sessionTurns = orchAgentTurns
+    .filter((turn) => turn.chatId === activeSessionId)
+    .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
+  const sessionLedger = (s.runtimeLogEvents || [])
+    .filter((row) => row.chatId === activeSessionId)
+    .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+  const hasRequestIdentity = sessionLedger.length > 0 || sessionTurns.some((turn) => turn.requestId)
+  let projectedRuntimeLogs = runtimeLogs
+  let projectedRuntimeGraph = runtimeGraph
+  if (hasRequestIdentity) {
+    const requestMap = new Map()
+    const ensureRequest = (requestId) => {
+      if (!requestMap.has(requestId)) {
+        requestMap.set(requestId, {
+          requestId,
+          turn: null,
+          events: [],
+          agents: [],
+        })
+      }
+      return requestMap.get(requestId)
+    }
+    sessionTurns.forEach((turn) => {
+      const requestId = turn.requestId || `legacy-${turn.parentSession || turn.id}`
+      ensureRequest(requestId).turn = turn
+    })
+    sessionLedger.forEach((event) => {
+      if (event.requestId) ensureRequest(event.requestId).events.push(event)
+    })
+
+    const sessionParentIds = new Set(sessionTurns.map((turn) => turn.parentSession).filter(Boolean))
+    const sessionAgents = Array.from(new Map([
+      ...orchSubagents.filter((agent) => (
+        agent.chatId === activeSessionId || sessionParentIds.has(agent.parentSession)
+      )),
+      ...(s.pipelineRuns || [])
+        .filter((run) => run.chatId === activeSessionId)
+        .flatMap((run) => run.stages || []),
+    ].map((agent) => [agent.handle, agent])).values())
+
+    const requestEntries = Array.from(requestMap.values())
+      .sort((a, b) => {
+        const at = Number(a.turn?.startedAt || a.events[0]?.id || 0)
+        const bt = Number(b.turn?.startedAt || b.events[0]?.id || 0)
+        return at - bt
+      })
+    requestEntries.forEach((request) => {
+      const exactHandles = new Set(request.events.map((event) => event.agentHandle).filter(Boolean))
+      request.agents = sessionAgents.filter((agent) => (
+        exactHandles.has(agent.handle)
+        || (request.turn?.parentSession && agent.parentSession === request.turn.parentSession)
+      ))
+    })
+    // Pipeline stages use their pipeline session as parent_session. Attach the
+    // pipeline envelope to the closest preceding root request in this chat.
+    ;(s.pipelineRuns || [])
+      .filter((run) => run.chatId === activeSessionId)
+      .forEach((run) => {
+        const owner = [...requestEntries]
+          .reverse()
+          .find((request) => Number(request.turn?.startedAt || 0) <= Number(run.startedAt || 0))
+        if (!owner) return
+        ;(run.stages || []).forEach((agent) => {
+          if (!owner.agents.some((entry) => entry.handle === agent.handle)) owner.agents.push(agent)
+        })
+      })
+
+    projectedRuntimeLogs = sessionLedger.map((row) => ({
+      id: `runtime-${row.id}`,
+      auditId: null,
+      requestId: row.requestId,
+      seq: Number(row.seq || 0),
+      ts: row.ts || '',
+      source: row.source || 'root',
+      stream: row.stream || 'stderr',
+      agentHandle: row.agentHandle || '',
+      workerId: row.agentHandle || `request:${row.requestId}`,
+      role: clipEvidence(row.role || (row.agentHandle ? 'worker' : 'root'), 60),
+      category: clipEvidence(row.category || 'output', 40),
+      name: clipEvidence(row.category || row.stream || 'output', 100),
+      status: clipEvidence(row.stream || row.source || 'output', 40),
+      message: row.message || '',
+      detail: row.message || '',
+    }))
+
+    const allNodes = []
+    const requestGroups = []
+    requestEntries.forEach((request, index) => {
+      const requestNodeId = `request:${request.requestId}`
+      const requestLogs = projectedRuntimeLogs.filter((row) => row.requestId === request.requestId)
+      const running = driverStatusForRuns.requestId === request.requestId && driverRunning
+      const failedAgent = request.agents.find((agent) => ['failed', 'escalated', 'abandoned'].includes(agent.status))
+      const status = running ? 'running' : (failedAgent?.status || 'done')
+      const meta = sm[status] || sm.abandoned
+      const requestNode = {
+        id: requestNodeId,
+        requestId: request.requestId,
+        parentId: index > 0 ? `request:${requestEntries[index - 1].requestId}` : null,
+        kind: 'request',
+        role: 'request',
+        label: `Request ${String(index + 1).padStart(2, '0')}`,
+        title: request.turn?.request || request.events.find((event) => event.source === 'host')?.message || 'Runtime request',
+        brief: request.turn?.request || '',
+        status,
+        statusLabel: meta.label,
+        turns: Number(request.turn?.cycles || 0),
+        maxTurns: null,
+        tools: requestLogs.filter((row) => row.category === 'tools').length,
+        skills: [],
+        tokens: Number(request.turn?.tokensInEstimate || 0) + Number(request.turn?.tokensOutEstimate || 0),
+        logCount: requestLogs.length,
+      }
+      allNodes.push(requestNode)
+      const agentNodes = request.agents.map((agent) => {
+        const agentMeta = sm[agent.status] || sm.abandoned
+        const exactParent = request.agents.some((candidate) => candidate.handle === agent.parentAgent)
+          ? agent.parentAgent
+          : requestNodeId
+        const agentLogs = projectedRuntimeLogs.filter((row) => row.agentHandle === agent.handle)
+        return {
+          id: agent.handle,
+          requestId: request.requestId,
+          parentId: exactParent,
+          kind: 'agent',
+          role: agent.role || 'worker',
+          label: prettyRole(agent.role),
+          title: `${prettyRole(agent.role)} · ${agent.handle}`,
+          brief: agent.brief || '',
+          status: agent.status,
+          statusLabel: agentMeta.label,
+          turns: Number(agent.turns || 0),
+          maxTurns: Number(agent.max || 0),
+          tools: agentLogs.filter((row) => row.category === 'tools').length,
+          skills: skillsByWorker[agent.handle] || [],
+          tokens: (s.agentCycles || [])
+            .filter((cycle) => cycle.workerId === agent.handle)
+            .reduce((sum, cycle) => sum + Number(cycle.tokensIn || 0) + Number(cycle.tokensOut || 0), 0),
+          logCount: agentLogs.length,
+        }
+      })
+      allNodes.push(...agentNodes)
+      requestGroups.push({ ...requestNode, agents: agentNodes })
+    })
+    projectedRuntimeGraph = {
+      mode: activePipelineRun ? 'pipeline' : 'direct',
+      pipelineName: activePipelineRun?.pipelineName || '',
+      requests: requestGroups,
+      nodes: allNodes,
+      edges: allNodes.filter((node) => node.parentId).map((node) => ({
+        from: node.parentId,
+        to: node.id,
+        relation: node.kind === 'request' ? 'continued' : 'summoned',
+      })),
+    }
+  }
+
   const selAgent = orchSubagents.find((a) => a.handle === s.selected)
   let detail = null
   if (selAgent) {
@@ -824,8 +983,8 @@ export function buildViewModel(s, act) {
     selectedPipelineRunnable: !!selectedPipelineEntry?.runnable,
     pipelineOptions,
     onSetRunMode: act.setRunMode,
-    runtimeGraph,
-    runtimeLogs,
+    runtimeGraph: projectedRuntimeGraph,
+    runtimeLogs: projectedRuntimeLogs,
     skillsByWorker,
     onSelectRuntimeNode: act.selectAgent,
     onOpenAuditEvidence: () => act.setView('audit'),

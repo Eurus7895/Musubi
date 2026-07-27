@@ -63,6 +63,7 @@ from agent.budget import (
     TokenBudgetExhaustedError,
     estimate_tokens_from_chars,
 )
+from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
 from agent.boundary import (
     denied_tool_guidance,
     evaluate_tool_call,
@@ -574,6 +575,7 @@ async def run_agent(
     mcp_config: str | os.PathLike[str] | None = None,
     vendor_source: str | None = None,
     chat_id: str | None = None,
+    request_id: str | None = None,
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
@@ -625,6 +627,7 @@ async def run_agent(
             )
             _record_agent_turn(
                 chat_id=chat_id,
+                request_id=request_id,
                 parent_session_id=None,
                 started_at=turn_started_at,
                 ended_at=time.time(),
@@ -822,6 +825,7 @@ async def run_agent(
         )
         _record_agent_turn(
             chat_id=chat_id,
+            request_id=request_id,
             parent_session_id=parent_session_id,
             started_at=turn_started_at,
             ended_at=time.time(),
@@ -1699,6 +1703,13 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    request_id = os.environ.get("MUSUBI_REQUEST_ID", "").strip() or None
+    runtime_log: Any = sys.stderr
+    if (
+        request_id is not None
+        and os.environ.get("MUSUBI_RUNTIME_LOG_PROTOCOL", "").strip() == "1"
+    ):
+        runtime_log = RuntimeLogWriter(sys.stderr, request_id)
 
     try:
         vendor, vendor_source = _resolve_vendor(args.profile)
@@ -1720,8 +1731,10 @@ def main(argv: list[str] | None = None) -> int:
             run_agent(
                 args.task, vendor, musubi_dir,
                 max_cycles=args.max_cycles, mcp_config=args.mcp_config,
+                log=runtime_log,
                 vendor_source=vendor_source,
                 chat_id=args.chat_id,
+                request_id=request_id,
                 max_tokens=args.max_tokens,
                 tool_surface=args.tool_surface,
                 pipeline=args.pipeline,
@@ -2006,6 +2019,7 @@ def _elide_replayed_tool_row(content: str) -> str:
 def _record_agent_turn(
     *,
     chat_id: str,
+    request_id: str | None,
     parent_session_id: str | None,
     started_at: float,
     ended_at: float,
@@ -2021,6 +2035,7 @@ def _record_agent_turn(
         db.init_db(db_path)
         db.insert_agent_turn(
             chat_id=chat_id,
+            request_id=request_id,
             parent_session_id=parent_session_id or "unavailable",
             started_at=started_at,
             ended_at=ended_at,
@@ -2340,7 +2355,11 @@ def _preflight_policy_batch(
             f"[policy denied] {decision.reason}"
             f"{denied_tool_guidance(call_role, name)}"
         )
-        print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+        emit_runtime_log(
+            log,
+            f"[agent]   policy denied {name}: {decision.reason}",
+            category="policy",
+        )
         _safe_record_policy(decision, db_path=audit_path, log=log)
         _safe_record_tool_audit(
             session_id=session_id,
@@ -2622,7 +2641,11 @@ async def _dispatch_one(
                 f"[policy denied] {decision.reason}"
                 f"{denied_tool_guidance(call_role, name)}"
             )
-            print(f"[agent]   policy denied {name}: {decision.reason}", file=log)
+            emit_runtime_log(
+                log,
+                f"[agent]   policy denied {name}: {decision.reason}",
+                category="policy",
+            )
             _safe_record_tool_audit(
                 session_id=session_id,
                 role=call_role,
@@ -2642,7 +2665,11 @@ async def _dispatch_one(
     arg_error = _file_tool_argument_error(name, args)
     if arg_error is not None:
         result = f"[tool error] invalid arguments for {name}: {arg_error}"
-        print(f"[agent]   invalid args for {name}: {arg_error}", file=log)
+        emit_runtime_log(
+            log,
+            f"[agent]   invalid args for {name}: {arg_error}",
+            category="tools",
+        )
         if should_audit:
             _safe_record_tool_audit(
                 session_id=session_id,
@@ -2668,7 +2695,11 @@ async def _dispatch_one(
             "parent_session_id": orchestration.parent_session_id,
             "parent_agent_name": orchestration.parent_agent_name,
         }
-        print(f"[agent]   → summon pipeline({args.get('pipeline_name')!r})", file=log)
+        emit_runtime_log(
+            log,
+            f"[agent]   → summon pipeline({args.get('pipeline_name')!r})",
+            category="tools",
+        )
         try:
             from agent import pipeline_runner
 
@@ -2728,7 +2759,11 @@ async def _dispatch_one(
             "parent_session_id": orchestration.parent_session_id,
             "parent_agent_name": orchestration.parent_agent_name,
         }
-        print(f"[agent]   → spawn worker(role={args.get('role')!r})", file=log)
+        emit_runtime_log(
+            log,
+            f"[agent]   → spawn worker(role={args.get('role')!r})",
+            category="tools",
+        )
         try:
             from agent import subagent
 
@@ -2754,7 +2789,11 @@ async def _dispatch_one(
             )
             return result
 
-    print(f"[agent]   → {name}({_truncate(json.dumps(args), 60)})", file=log)
+    emit_runtime_log(
+        log,
+        f"[agent]   → {name}({_truncate(json.dumps(args), 60)})",
+        category="tools",
+    )
     target = gateway.route(name) if gateway is not None else (session, name)
     if target is None:
         result = f"[tool error] no MCP server owns tool {name!r}"
@@ -2772,9 +2811,10 @@ async def _dispatch_one(
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)
-            print(
+            emit_runtime_log(
+                log,
                 f"[agent]   skill used={skill_id} agent={agent_name}",
-                file=log,
+                category="skills",
             )
         if should_audit:
             _safe_record_tool_audit(
@@ -3045,7 +3085,7 @@ def _log_cycle(
             parts.append(f"cache_read={cache_read}")
         if cache_write:
             parts.append(f"cache_write={cache_write}")
-    print(" ".join(parts), file=log)
+    emit_runtime_log(log, " ".join(parts), category="model")
 
 
 def _log_cycle_cost(
@@ -3065,7 +3105,7 @@ def _log_cycle_cost(
         parts.append(
             f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )
-    print(" ".join(parts), file=log)
+    emit_runtime_log(log, " ".join(parts), category="model")
 
 
 def _log_turn_usage(
@@ -3085,7 +3125,7 @@ def _log_turn_usage(
         parts.append(
             f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )
-    print(" ".join(parts), file=log)
+    emit_runtime_log(log, " ".join(parts), category="model")
 
 
 if __name__ == "__main__":

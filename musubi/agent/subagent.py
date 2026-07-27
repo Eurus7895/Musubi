@@ -85,6 +85,7 @@ async def run_subagent(
         _worker_touched_files,
         run_unit,
     )
+    from agent.runtime_log import runtime_worker_scope
 
     # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
     # _spec): the role prompt is resolved BEFORE the spawn so its declared
@@ -196,24 +197,25 @@ async def run_subagent(
     token = _worker_touched_files.set(touched)
     label_token = _worker_log_label.set(f"{role}#{handle_id[:8]}")
     try:
-        answer, turns = await run_unit(
-            session, vendor, child_tools,
-            system_prompt=system_prompt,
-            user_message=None,
-            max_cycles=max_turns, log=log,
-            salvage_on_exhaust=True,
-            orchestration=child_orch,
-            spawn_catalog=spawn_catalog,
-            compression_db_path=compression_db_path,
-            role=role,
-            stats=stats,
-            budget=budget,
-            audit_db_path=audit_db_path,
-            worker_max_output=worker_max_output,
-            audit_session_id=spawn_args.get("parent_session_id"),
-            audit_worker_id=handle_id,
-            audit_stage=role,
-        )
+        with runtime_worker_scope(role, handle_id):
+            answer, turns = await run_unit(
+                session, vendor, child_tools,
+                system_prompt=system_prompt,
+                user_message=None,
+                max_cycles=max_turns, log=log,
+                salvage_on_exhaust=True,
+                orchestration=child_orch,
+                spawn_catalog=spawn_catalog,
+                compression_db_path=compression_db_path,
+                role=role,
+                stats=stats,
+                budget=budget,
+                audit_db_path=audit_db_path,
+                worker_max_output=worker_max_output,
+                audit_session_id=spawn_args.get("parent_session_id"),
+                audit_worker_id=handle_id,
+                audit_stage=role,
+            )
     except PolicyDeniedError as exc:
         policy_summary = _policy_incomplete(exc)
         await _safe_complete(
