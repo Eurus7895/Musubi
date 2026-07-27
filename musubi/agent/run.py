@@ -57,7 +57,12 @@ from agent.context import (
     is_elided_tool_arg_marker,
     resolve_effort_bounds,
 )
-from agent.goal_state import GoalState, root_decision_tools
+from agent.goal_state import (
+    NO_PROGRESS_TURN_THRESHOLD,
+    ORDERED_ROLES,
+    GoalState,
+    root_decision_tools,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -92,6 +97,10 @@ DEFAULT_AGENT_MAX_TOKENS = 200_000
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
 DEFAULT_MAX_ROOT_WORKERS = 3
+#: Ceiling once a manifest reclassifies the goal as large. The chain is
+#: planner → designer → coder → reviewer (four workers, one more than the
+#: default), plus headroom for a single recovery replacement.
+DEFAULT_MAX_ROOT_WORKERS_LARGE = 6
 DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
 #: No-progress budget breaker: if the root run has spent at least this fraction
@@ -284,6 +293,18 @@ class Orchestration:
         """True if a worker at this depth is still allowed to nest."""
         return self.enabled and self.depth < self.max_depth
 
+    @property
+    def delivered_artifact(self) -> bool:
+        """True when some worker this turn finished with files on disk.
+
+        Persisted per turn so a LATER turn in the same conversation can see a
+        run of turns that spent tokens and produced nothing.
+        """
+        return any(
+            outcome.status == "done" and outcome.touched_files
+            for outcome in self.worker_outcomes
+        )
+
     def record_worker_outcome(
         self,
         *,
@@ -322,6 +343,17 @@ class Orchestration:
                 self.goal_state.next_role == "planner"
             ):
                 self.goal_state.apply_planner_manifest(summary)
+                if self.goal_state.role_chain or (
+                    self.goal_state.route == "plan_design_workflow"
+                ):
+                    # A large change owes designer → coder → reviewer after the
+                    # planner. That is four workers, one more than the default
+                    # ceiling, so the chain would be refused on its last step.
+                    # Raise the ceiling to fit the chain plus headroom for one
+                    # recovery replacement.
+                    self.max_root_workers = max(
+                        self.max_root_workers, DEFAULT_MAX_ROOT_WORKERS_LARGE,
+                    )
         return outcome
 
     def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
@@ -489,28 +521,6 @@ async def _auto_recovery_transition(
         # same-role failure halts.
 
 
-def _pipeline_recommendation(state: GoalState) -> str:
-    """Deterministic final answer when request or manifest assessment is large.
-
-    Large workflows stay user-invoked (policy locked decision #4): the root
-    never auto-launches a pipeline, it hands the decision back with the exact
-    command. Emitted with zero further model calls or worker spawns.
-    """
-    assessment = state.assessment
-    evidence = (
-        ", ".join(assessment.evidence) if assessment is not None else "manifest"
-    )
-    return (
-        "[scope] The deterministic change assessment classified this request "
-        f"as a large change ({evidence}).\n"
-        "Large workflows are user-invoked and never auto-launched. To run it "
-        "under the governed pipeline (plan → design → code → review with the "
-        "evaluator firewall), start it explicitly:\n\n"
-        '    agent "<your brief>" --pipeline feature-dev\n\n'
-        "No pipeline was launched and no further workers were spawned."
-    )
-
-
 def _recovery_incomplete(outcome: WorkerOutcome, reason: str) -> str:
     """Deterministic root result when no bounded mutation recovery remains."""
     files = ", ".join(outcome.touched_files) or "none recorded"
@@ -602,13 +612,37 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
-    scope_hint = classify_task(task)
+    scope_hint = classify_task(
+        task,
+        has_history=_chat_has_history(
+            chat_id, db_path=context_compression_db_path, log=log,
+        ),
+    )
     goal_state = GoalState.create(
         intent=task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
     )
+    chat_usage = _chat_turn_usage(
+        chat_id, db_path=context_compression_db_path, log=log,
+    )
+    goal_state.chat_turns = chat_usage["turns"]
+    goal_state.chat_tokens = chat_usage["tokens"]
+    goal_state.chat_barren_turns = chat_usage["barren_turns"]
+    if chat_usage["turns"]:
+        print(
+            f"[agent] conversation usage: turns={chat_usage['turns']} "
+            f"tokens={chat_usage['tokens']} "
+            f"turns_without_a_file={chat_usage['barren_turns']}",
+            file=log,
+        )
+    if chat_usage["barren_turns"] >= NO_PROGRESS_TURN_THRESHOLD:
+        print(
+            "[agent] conversation no-progress warning: "
+            f"{chat_usage['barren_turns']} turns without a file",
+            file=log,
+        )
     direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
@@ -651,6 +685,7 @@ async def run_agent(
     final_answer: str | None = None
     loop_error: BaseException | None = None
     parent_session_id: str | None = None
+    orchestration: Orchestration | None = None
 
     # One AsyncExitStack owns Musubi's session AND every federated external
     # session, so they all open in order and tear down (LIFO) together. This
@@ -833,6 +868,9 @@ async def run_agent(
             stats=stats,
             db_path=context_compression_db_path,
             log=log,
+            delivered_artifact=(
+                orchestration is not None and orchestration.delivered_artifact
+            ),
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -975,17 +1013,6 @@ async def _run_loop(
                     file=log,
                 )
                 final_answer = root_state.pending_clarification
-                break
-            if (
-                root_state.assessment is not None
-                and root_state.route == "plan_design_workflow"
-            ):
-                print(
-                    "[agent] planner manifest reclassified the goal as large; "
-                    "recommending a user-invoked pipeline",
-                    file=log,
-                )
-                final_answer = _pipeline_recommendation(root_state)
                 break
         # No-progress budget breaker (root only). Checked between workers, so a
         # mid-flight worker is never interrupted: it fires when the completed
@@ -1132,6 +1159,13 @@ async def _run_loop(
         )
 
         text = _extract_text(resp.content)
+        if text and _looks_like_vendor_tool_markup(text):
+            print(
+                f"[agent] {role}: vendor tool-call markup in the text channel; "
+                "discarded (not an answer)",
+                file=log,
+            )
+            text = ""
         if text:
             last_text = text  # remember even when the model also called a tool
 
@@ -1440,6 +1474,18 @@ async def _run_loop(
                     usage.tokens_in, usage.tokens_out, budget,
                 )
                 final_candidate = _extract_text(resp.content) or None
+                if final_candidate and _looks_like_vendor_tool_markup(
+                    final_candidate
+                ):
+                    # The no-tools call did not produce prose either. Fail
+                    # closed to the "[incomplete]" message below rather than
+                    # handing markup on as this worker's plan.
+                    print(
+                        f"[agent] {role}: forced final answer was vendor "
+                        "tool-call markup; rejected",
+                        file=log,
+                    )
+                    final_candidate = None
                 cycle_ended_at = time.time()
                 try:
                     _charge_budget_postflight(
@@ -1893,15 +1939,10 @@ def _deterministic_scope_answer(
         if assessment is not None and assessment.clarifying_question:
             return assessment.clarifying_question
         return "What exact target and acceptance criteria should this change satisfy?"
-    if scope_hint.route == "plan_design_workflow":
-        state = goal_state or GoalState.create(
-            intent=task,
-            scope=scope_hint.kind.value,
-            route=scope_hint.route,
-            assessment=scope_hint.assessment,
-        )
-        return _pipeline_recommendation(state)
-
+    # No `plan_design_workflow` branch: `classify_task` can no longer produce
+    # that route from text, and when a manifest produces it the goal runs the
+    # designer → coder → reviewer chain instead of halting. A large change is
+    # more review, not a refusal handed back as a command to type.
     if scope_hint.route == "manual_destructive":
         return (
             "I cannot safely delete files from this route because deletion is "
@@ -1967,6 +2008,55 @@ def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, An
         return {"messages": [], "total_tokens": 0, "truncated": False}
 
 
+def _chat_has_history(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> bool:
+    """True when this chat already has prior turns on record.
+
+    Probed BEFORE `classify_task` so a bare follow-up ("Okta") is read as
+    conversation rather than as a standalone work order. Fails to False, which
+    is the pre-existing behaviour — a missing DB must never block a turn.
+    """
+    if not chat_id:
+        return False
+    try:
+        _ensure_core_import_path()
+        from session import conversations
+        from storage import db
+
+        db.init_db(db_path)
+        return conversations.has_history(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] chat history probe failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return False
+
+
+def _chat_turn_usage(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> dict[str, int]:
+    """Conversation-scoped cost so far, or zeros when unavailable."""
+    empty = {"turns": 0, "tokens": 0, "barren_turns": 0}
+    if not chat_id:
+        return empty
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.chat_turn_usage(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - telemetry must not break the turn
+        print(
+            f"[agent] conversation usage read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return empty
+
+
 def _chat_history_tokens() -> int:
     raw = os.environ.get("MUSUBI_CHAT_HISTORY_TOKENS", "").strip()
     if raw.isdigit():
@@ -2027,6 +2117,7 @@ def _record_agent_turn(
     stats: AgentRunStats,
     db_path: Path,
     log: Any,
+    delivered_artifact: bool = False,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2046,6 +2137,7 @@ def _record_agent_turn(
             lm_ms=stats.lm_ms,
             total_ms=int((ended_at - started_at) * 1000),
             db_path=db_path,
+            delivered_artifact=delivered_artifact,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(
@@ -2065,6 +2157,30 @@ def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
 def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
     parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
     return "".join(parts).strip()
+
+
+#: Vendor-native tool-call syntax that leaked into the TEXT channel. When the
+#: loop exhausts its cycles it makes one final call with NO tools offered, on
+#: the assumption that a model with nothing to call will answer in words. Not
+#: every vendor honours that: DeepSeek emitted `<｜｜DSML｜｜tool_calls>…` as
+#: prose (note the FULL-WIDTH bars, U+FF5C, not ASCII pipes). Such text is not
+#: an answer — accepting it puts machine markup in front of the user, into the
+#: audit DB, and into `parse_change_manifest`, where a routing decision would
+#: then be made from garbage.
+_VENDOR_TOOL_MARKUP_RE = re.compile(
+    r"(?i)(\bDSML\b|<[|｜]+\s*tool[_▁]?calls?|<tool_call\b|"
+    r"</?function_calls?\b|<invoke\s+name\s*=|\bantml:invoke\b|"
+    r"<[|｜]python_tag[|｜]>)"
+)
+
+
+def _looks_like_vendor_tool_markup(text: str) -> bool:
+    """True when `text` is a vendor's tool-call syntax rather than prose.
+
+    Fail-closed by design: the caller discards the text and reports that the
+    worker did not answer, rather than trying to salvage a plan out of markup.
+    """
+    return _VENDOR_TOOL_MARKUP_RE.search(text or "") is not None
 
 
 def _clean_error(exc: BaseException) -> str:
@@ -2546,24 +2662,29 @@ def _spawn_overflow_reasons(
                 file=log,
             )
             continue
-        # Deterministic role order (root only): on a planner-led goal the
-        # coder gate opens ONLY after the planner's manifest reclassifies the
-        # change. This is goal-state enforcement of an assessed route, not the
-        # retired keyword guess — next_role comes from the assessment cascade,
-        # and the refusal names the legal next role so the model can comply.
+        # Deterministic role order (root only). On a planner-led goal the coder
+        # gate opens only after the planner's manifest reclassifies the change;
+        # on a large one the manifest also queues designer → coder → reviewer,
+        # and each step is gated the same way. Only these four roles are
+        # ordered — an explorer or investigator the root summons for evidence
+        # is never blocked. `next_role` comes from the assessment cascade, not
+        # the retired keyword guess, and the refusal names the legal role so
+        # the model can comply.
         if (
             role == "agent"
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
-            and spawn_role == "coder"
-            and orchestration.goal_state.next_role not in (None, "coder")
+            and spawn_role in ORDERED_ROLES
+            and orchestration.goal_state.next_role is not None
+            and spawn_role != orchestration.goal_state.next_role
         ):
             legal = orchestration.goal_state.next_role
+            queued = orchestration.goal_state.role_chain
+            tail = f" then {' → '.join(queued)}" if queued else ""
             reason = (
-                f"role order: {legal!r} is the legal next role on this route; "
-                f"spawn {legal!r} first — its change manifest decides whether "
-                "a coder may follow"
+                f"role order: {legal!r} is the legal next role on this route"
+                f"{tail}; spawn {legal!r} first"
             )
             overflow[tu.get("id", "")] = reason
             print(

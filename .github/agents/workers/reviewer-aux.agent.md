@@ -8,7 +8,6 @@ description: >
   e.g. the main reviewer is over-budget on context and wants a second
   opinion on one module. Returns a tight per-file verdict; the harness
   caps the summary at 2000 tokens.
-model: claude-haiku-4.5
 maxTurns: 4
 tools: ["Read", "View"]
 disallowedTools: ["Write", "Edit", "Bash", "Grep", "Glob"]

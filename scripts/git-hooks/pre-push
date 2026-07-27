@@ -1,0 +1,22 @@
+#!/bin/sh
+# Git pre-push hook. Logic lives in scripts/commit_guard.py so it can be
+# imported and tested; this file only exists because git requires the hook to
+# be an executable named exactly `pre-push`.
+#
+# Install:  python scripts/commit_guard.py --install
+# (sets core.hooksPath to scripts/git-hooks — the hook is version-controlled,
+# so it does not have to be copied into .git/hooks on every clone)
+#
+# The script is resolved relative to THIS FILE, not to the repository being
+# pushed: core.hooksPath may point at an absolute path outside that repo.
+set -e
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if command -v python3 >/dev/null 2>&1; then
+  py=python3
+else
+  py=python
+fi
+
+exec "$py" "$hook_dir/../commit_guard.py" "$@"

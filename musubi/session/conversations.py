@@ -193,6 +193,20 @@ def get_history(
     }
 
 
+def has_history(chat_id: str, *, db_path: Path | None = None) -> bool:
+    """True when `chat_id` already carries at least one prior message.
+
+    The scope classifier reads a single message, so it cannot tell a bare
+    follow-up ("Okta") from a terse first instruction. This is the cheapest
+    signal that distinguishes them, and it is deliberately a boolean: the
+    classifier may only use it to route toward a cheaper answer, never to
+    infer what the earlier turns were about.
+    """
+    if not chat_id or not chat_id.strip():
+        return False
+    return db.count_conversation_messages(chat_id, db_path=db_path) > 0
+
+
 def _empty_history() -> dict:
     return {
         "messages":      [],

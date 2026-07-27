@@ -5,7 +5,6 @@ description: >
   Final code-review stage — the evaluator. Sees only the prior stage's output
   (the finder report), optionally fans out reviewer-aux per file, and produces
   one ranked review report.
-model: claude-sonnet-4.5
 maxTurns: 4
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]

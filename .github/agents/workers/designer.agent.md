@@ -3,9 +3,8 @@ name: Designer
 version: 1.0.0
 description: >
   Direct standalone worker for architecture, API, schema, or data-flow choices.
-model: claude-sonnet-4.5
 maxTurns: 4
-tools: ["Read", "View"]
+tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools: []
 musubi-tier: ephemeral

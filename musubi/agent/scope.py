@@ -15,6 +15,7 @@ from agent.change_assessment import ChangeAssessment, assess_request
 
 
 class ScopeKind(StrEnum):
+    ADVISORY = "advisory"
     INSPECT = "inspect"
     SIMPLE_EDIT = "simple_edit"
     SIMPLE_ARTIFACT = "simple_artifact"
@@ -38,6 +39,13 @@ class ScopeHint:
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
+            "advisory": (
+                "Advisory route: the user asked to be ADVISED, not for a "
+                "change. Answer directly from your own reasoning in ONE turn. "
+                "Do NOT spawn a worker: the request names no file, so no "
+                "read-only worker can add evidence, and a planner would "
+                "return a change manifest the user never asked for."
+            ),
             "single_explorer": (
                 "Read-only route: the user wants to inspect, not change. Spawn "
                 "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
@@ -54,9 +62,15 @@ class ScopeHint:
                 "recommendation, not a lifetime worker cap."
             ),
             "planner_then_coder_check": (
-                "Medium route: spawn planner first for scope and acceptance "
-                "criteria, then spawn coder with that plan. Do not ask coder "
-                "to both plan and implement."
+                "Medium route: spawn planner first for scope, acceptance "
+                "criteria, and a change manifest; then spawn coder with that "
+                "plan. Do not ask coder to both plan and implement.\n"
+                "If the plan depends on facts about this workspace that "
+                "nobody has established yet, summon an EXPLORER for them "
+                "first and pass its findings into the planner's brief. "
+                "Surveying the workspace is the explorer's job — a planner "
+                "sent to find its own facts spends its whole turn budget "
+                "reading and returns no manifest at all."
             ),
             "plan_design_workflow": (
                 "Large route: require explicit plan/design/implementation/"
@@ -105,6 +119,17 @@ _INSPECT_RE = re.compile(
     r"\blook(?:\s+(?:at|into|in))?\b|\bfind\b|\blocate\b|\bcat\b|\bdisplay\b|"
     r"\bdescribe\b|\btell me about\b|\bwhat(?:'?s| is) in\b|\bwhere(?:'?s| is)\b)"
 )
+# Consultative intent: the user wants to be ADVISED, not to have something
+# changed or read — "explain each", "which is better", "choose the best for
+# me". These carry no deliverable and name no target, so every mutation branch
+# below reads them as a change on insufficient evidence and sends a planner to
+# produce a change manifest nobody asked for.
+_ADVISORY_RE = re.compile(
+    r"(?i)(\bexplain\b|\bcompare\b|\bversus\b|\bvs\.?\b|\bpros and cons\b|"
+    r"\btrade[- ]?offs?\b|\brecommend\b|\bsuggest\b|\badvise\b|\bchoose\b|"
+    r"\bpick\b|\bshould i\b|\bwhich (?:one|is|are|should|would)\b|"
+    r"\bwhat(?:'?s| is) (?:the )?(?:best|better|difference)\b|\bbest for\b)"
+)
 # Any verb that would change state — its presence disqualifies the read-only
 # route so an explicit edit/create/run request is never sent to an explorer.
 # Filesystem-move verbs (move/copy/mv/cp) are mutations too: "find and move
@@ -152,6 +177,32 @@ def _mutation_intent(text: str) -> bool:
     return _MUTATION_RE.search(without_targets) is not None
 
 
+#: Word ceiling for a message to read as conversational rather than as a work
+#: order. "Okta" and "skill?" are one word; "these are complicated" is three.
+_FOLLOW_UP_MAX_WORDS = 6
+
+
+def _is_bare_follow_up(text: str) -> bool:
+    """True when `text` is a short message carrying no actionable signal.
+
+    Deliberately narrow: a message under the word ceiling with no mutation
+    verb, no inspection verb, no diagnostic signal, and no path target gives a
+    worker nothing to act on. "Okta" and "skill?" are a choice and a question
+    inside a conversation; "add auth to the app" and "fix the login bug" carry
+    a mutation verb and are excluded here, keeping their own classification.
+    """
+    words = text.split()
+    if not words or len(words) > _FOLLOW_UP_MAX_WORDS:
+        return False
+    return not (
+        _mutation_intent(text)
+        or _INSPECT_RE.search(text)
+        or _DIAGNOSTIC_RE.search(text)
+        or _PATH_RE.search(text)
+        or _PATHISH_RE.search(text)
+    )
+
+
 _SIMPLE_EDIT_RE = re.compile(
     r"(?i)\b(update|change|modify|replace|rename|fix|tweak|adjust|set|add)\b"
 )
@@ -160,12 +211,28 @@ _ARTIFACT_RE = re.compile(
     r"artifact|file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc"
     r")\b"
 )
-_LARGE_RISK_RE = re.compile(
+# Areas where a mistake is INVISIBLE: the page still renders, the tests still
+# pass, and the damage surfaces later (anyone can log in as anyone; the wrong
+# amount moved; the column is gone). This list does NOT judge how big a change
+# is — text cannot know blast radius, and the old `>= 2 keywords = large` rule
+# called two typos in auth.py and payment.py a large feature while calling
+# "rewrite the entire user system" a medium one. Its ONLY job is to deny the
+# lone-coder shortcut so a read-only planner looks before anything mutates.
+# Blast radius is decided downstream from the planner's manifest.
+#
+# Vocabulary is deliberately generous, because a false positive costs exactly
+# one read-only planner run. The old list missed the plural "payments" and was
+# blind to SSO, Okta, passwords, tokens, and sessions entirely.
+_NO_SHORTCUT_RE = re.compile(
     r"(?i)\b("
-    r"auth|authentication|authorization|billing|payment|database|schema|migration|"
-    r"persistence|public api|api endpoint|architecture|multi[- ]tenant|security|"
-    r"permissions|oauth|login|rbac"
-    r")\b"
+    r"auth|authn|authz|authentication|authorization|login|logout|sign[- ]?in|"
+    r"sign[- ]?up|sso|oauth|oidc|okta|saml|jwt|token|session|cookie|"
+    r"password|passwd|credential|secret|api[- ]key|permission|role|rbac|acl|"
+    r"access control|security|encrypt|hash|"
+    r"payment|billing|invoice|charge|refund|subscription|price|checkout|"
+    r"database|schema|migration|persistence|sql|"
+    r"public api|api contract|api endpoint|breaking api"
+    r")s?\b"
 )
 _VAGUE_RE = re.compile(
     r"(?i)^\s*(fix this|refactor it|add tests|write tests|create tests|help|do it|"
@@ -182,7 +249,14 @@ _DESTRUCTIVE_FILE_RE = re.compile(
 )
 
 
-def classify_task(task: str) -> ScopeHint:
+def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
+    """Classify ONE user message.
+
+    `has_history` says only that this `chat_id` already has prior turns — not
+    what they were about. It is used in exactly one direction: to route a bare
+    conversational follow-up to the cheap advisory answer. Nothing may use it
+    to escalate, so a stale or wrong flag can never open a mutation path.
+    """
     text = " ".join((task or "").strip().split())
     low = text.lower()
     if _CASUAL_RE.match(text):
@@ -206,6 +280,44 @@ def classify_task(task: str) -> ScopeHint:
             requires=("clarification",),
         )
 
+    # Consultative turn: advise, don't change. Runs BEFORE the mutation
+    # branches (including the critical-risk gate) because "which auth provider
+    # should I choose?" is a question about auth, not a change to auth — the
+    # risk gate would otherwise force a plan/design/review workflow onto a
+    # request that mutates nothing. Three exclusions keep it narrow: a mutation
+    # verb ("compare these and fix the drift"), a diagnostic signal, or ANY
+    # concrete path/filesystem target. The last one matters most — "explain
+    # run.py" is a codebase question that needs a worker to actually read the
+    # file, so it must not be answered from the root's own memory. What
+    # survives is an abstract question the root is the cheapest answerer for.
+    if (
+        _ADVISORY_RE.search(text)
+        and not _mutation_intent(text)
+        and not _DIAGNOSTIC_RE.search(text)
+        and not (_PATH_RE.search(text) or _PATHISH_RE.search(text))
+    ):
+        return ScopeHint(
+            kind=ScopeKind.ADVISORY,
+            route="advisory",
+            reason="consultative question with no deliverable or path target",
+        )
+
+    # Conversational follow-up. `classify_task` sees ONE message, so a bare
+    # noun ("Okta") or a one-word question ("skill?") carries no signal at all
+    # and falls to the mutation catch-all below — in the traced conversation
+    # that bought a 96s / 27k-token planner round trip to answer a question
+    # that named no file. With prior turns on record, the cheapest correct
+    # reading is that the user is still talking, so it gets the same advisory
+    # answer. Inheritance moves only TOWARD the cheaper route: anything
+    # carrying a mutation verb, a path, or an inspect verb is excluded by
+    # `_is_bare_follow_up` and keeps its own classification.
+    if has_history and _is_bare_follow_up(text):
+        return ScopeHint(
+            kind=ScopeKind.ADVISORY,
+            route="advisory",
+            reason="bare follow-up in an ongoing conversation",
+        )
+
     # Read-only inspection ("reach to / open / show / read / list <path>")
     # routes to a single explorer BEFORE the risk/medium heuristics: reading a
     # sensitive area is still just reading, so it must not be scoped as a
@@ -225,12 +337,13 @@ def classify_task(task: str) -> ScopeHint:
             reason="read-only inspection of a path or files",
         )
 
-    # Deterministic ambiguity/impact/risk bands for the mutation branches
-    # below. Only the high-ambiguity verdict changes the route here — a broad
-    # product request without deliverable constraints stops at one
-    # clarification instead of guessing a lexical scope; every other verdict
-    # rides along on the hint so the goal-state controller can reclassify
-    # after a planner manifest lands.
+    # Deterministic ambiguity band for the mutation branches below. NOTE what
+    # this no longer does: it does not guess blast radius. "Large" is decided
+    # in exactly one place — `assess_manifest`, from the planner's declared
+    # `files_expected` / `subsystems` / critical flags, after it has read the
+    # code. Text cannot know blast radius, and the removed lexical rules proved
+    # it: two keywords made "fix typo in auth.py and payment.py" a large
+    # feature, while "rewrite the entire user system" scored zero.
     assessment = assess_request(text)
     if assessment.route == "ask_scope":
         return ScopeHint(
@@ -240,32 +353,15 @@ def classify_task(task: str) -> ScopeHint:
             requires=("clarification",),
             assessment=assessment,
         )
-    if assessment.route == "plan_design_workflow":
-        # The deterministic critical-risk gate fired (auth/payment/database/
-        # migration/…). Honor it directly — the legacy `_LARGE_RISK_RE`
-        # threshold needs TWO tokens, so a single critical term ("add
-        # authentication") would otherwise silently downgrade to a medium
-        # planner→coder change and skip the plan/design/review structure.
-        return ScopeHint(
-            kind=ScopeKind.LARGE_FEATURE,
-            route="plan_design_workflow",
-            reason="critical-risk change requires plan/design/review",
-            requires=("plan", "design", "implementation", "review"),
-            assessment=assessment,
-        )
 
-    risk_hits = sorted(set(match.group(1).lower() for match in _LARGE_RISK_RE.finditer(text)))
-    if len(risk_hits) >= 2 or _mentions_large_workflow(low):
-        return ScopeHint(
-            kind=ScopeKind.LARGE_FEATURE,
-            route="plan_design_workflow",
-            reason="high-risk or multi-surface change",
-            requires=("plan", "design", "implementation", "review"),
-            assessment=assessment,
-        )
+    # Sensitive-area guard. This is NOT a size judgment — its only effect is to
+    # withhold the single_coder shortcut so a read-only planner reads the code
+    # and files a manifest before anything mutates. A false positive costs one
+    # planner run; a false negative lets a lone coder change auth unreviewed.
+    no_shortcut = _NO_SHORTCUT_RE.search(text) is not None
 
     has_path = _PATH_RE.search(text) is not None
-    if has_path and _SIMPLE_EDIT_RE.search(text) and not risk_hits:
+    if has_path and _SIMPLE_EDIT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_EDIT,
             route="single_coder",
@@ -273,7 +369,7 @@ def classify_task(task: str) -> ScopeHint:
             assessment=assessment,
         )
 
-    if _ARTIFACT_RE.search(text) and not risk_hits:
+    if _ARTIFACT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_ARTIFACT,
             route="single_coder",
@@ -281,11 +377,11 @@ def classify_task(task: str) -> ScopeHint:
             assessment=assessment,
         )
 
-    if risk_hits:
+    if no_shortcut:
         return ScopeHint(
             kind=ScopeKind.MEDIUM_CHANGE,
             route="planner_then_coder_check",
-            reason="concrete change with some risk signals",
+            reason="touches a sensitive area; a planner reads before mutation",
             requires=("plan", "implementation", "verification"),
             assessment=assessment,
         )
@@ -307,16 +403,7 @@ def is_simple_scope(hint: ScopeHint | None) -> bool:
     }
 
 
-def _mentions_large_workflow(text: str) -> bool:
-    return any(
-        phrase in text
-        for phrase in (
-            "full feature",
-            "new feature",
-            "end to end",
-            "from scratch",
-            "whole app",
-            "entire app",
-            "multiple services",
-        )
-    )
+# `_mentions_large_workflow` was REMOVED with the rest of the lexical size
+# guessing. It matched phrases like "whole app" and "multiple services" — and
+# so scored zero on "rewrite the entire user system" and "migrate all 40
+# services to the new runtime". Size is decided from the planner's manifest.

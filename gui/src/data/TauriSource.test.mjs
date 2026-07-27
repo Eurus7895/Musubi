@@ -206,6 +206,55 @@ for (const [command, selectedPipeline] of [
   })
 }
 
+for (const order of [
+  'use the pipeline runner',
+  'start pipeline stages',
+  'ok pipeline design',
+  'the pipeline again',
+]) {
+  test(`unregistered inline name "${order}" reaches the agent instead of clearing the draft`, () => {
+    // classifyChatCommand parses any single token in the name position, so an
+    // ordinary work order yields a candidate name. Taking the pipeline branch
+    // on a name the catalog does not know wiped the composer and returned:
+    // nothing sent, no pipeline selected, no error shown, message lost.
+    const { source, calls } = sourceWithActionSpy()
+    source._setLocal({
+      draft: order,
+      selectedSession: 'gui-orchestrator-project-old',
+      driverStatus: { running: false },
+      pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
+    })
+
+    source.actions.sendChat()
+
+    assert.deepEqual(calls, [{
+      kind: 'send_chat',
+      args: [order, 'gui-orchestrator-project-old', 'direct', ''],
+    }])
+    assert.equal(source.state.runMode, 'direct')
+    assert.equal(source.state.selectedPipeline, '')
+  })
+}
+
+test('an inline name the catalog knows still selects the pipeline composer', () => {
+  // The catalog guard must not cost the working case: `open pipeline
+  // feature-dev` was one of the phrasings NAMED_PIPELINE used to miss.
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    draft: 'open pipeline feature-dev',
+    selectedSession: 'gui-orchestrator-project-old',
+    driverStatus: { running: false },
+    pipelineCatalog: [{ name: 'feature-dev', runnable: true, stages: ['planner', 'coder'] }],
+  })
+
+  source.actions.sendChat()
+
+  assert.deepEqual(calls, [])
+  assert.equal(source.state.runMode, 'pipeline')
+  assert.equal(source.state.selectedPipeline, 'feature-dev')
+  assert.equal(source.state.draft, '')
+})
+
 test('backend polling preserves dirty builder drafts and initializes only pristine state', () => {
   const { source } = sourceWithActionSpy()
 

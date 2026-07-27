@@ -4,9 +4,8 @@ version: 1.0.0
 description: >
   Direct standalone worker for reviewing actual changed files and verification
   output after a standalone task.
-model: claude-sonnet-4.5
 maxTurns: 4
-tools: ["Read", "View"]
+tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools: []
 musubi-tier: ephemeral

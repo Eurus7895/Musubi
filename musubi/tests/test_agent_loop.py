@@ -2613,6 +2613,43 @@ def test_greeting_returns_direct_answer_without_llm_calls() -> None:
     assert "direct_answer" in log.getvalue()
 
 
+def test_advisory_request_answers_with_one_model_call_and_no_spawn() -> None:
+    # An advisory turn is NOT a deterministic canned answer: the model still
+    # runs, because the whole deliverable is its reasoning. What it does not
+    # get is a tool catalog, so it cannot spawn a planner or burn a
+    # `musubi_recommend_skills` round trip before answering.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("choose the best for me")
+    assert hint.route == "advisory"
+    assert run_mod._deterministic_scope_answer("choose the best for me", hint) is None
+
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{
+                "type": "text",
+                "text": "OIDC with an email/password fallback.",
+            }],
+        ),
+    ])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "choose the best for me",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert len(router.calls) == 1
+    assert router.calls[0]["tools"] == []  # no tool catalog offered
+    assert "OIDC" in answer
+    assert "route=advisory" in log.getvalue()
+
+
 class _ExplodingRouter(LMRouter):
     """A vendor whose call fails like a real network/proxy error would."""
 
@@ -2684,30 +2721,48 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 
 
-def test_initial_critical_risk_returns_pipeline_recommendation_without_model(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from storage import subagent_audit
+def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
+    # Observed with deepseek-v4-flash: the no-tools final call answered with
+    # DeepSeek's own tool-call syntax (FULL-WIDTH bars) as prose, and the
+    # harness stored it as the planner's plan — surfacing it to the user, into
+    # the audit DB, and into parse_change_manifest.
+    from agent.run import _looks_like_vendor_tool_markup
 
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
-    audit_db = tmp_path / "data" / "audit.db"
-    subagent_audit.init_db(audit_db)
-    router = FakeRouter([])
-    answer = asyncio.run(
-        run_agent(
-            "Add authentication to the app",
-            router,
-            _musubi_dir(),
-            log=io.StringIO(),
-            max_tokens=0,
-        )
+    leak = (
+        "<｜｜DSML｜｜tool_calls>\n"
+        '<｜｜DSML｜｜invoke name="musubi_grep">\n'
+        '<｜｜DSML｜｜parameter name="pattern" string="true">.*'
+        "</｜｜DSML｜｜parameter>\n"
+        "</｜｜DSML｜｜tool_calls>"
     )
+    assert _looks_like_vendor_tool_markup(leak)
+    for other in ('<tool_call>{"name":"x"}</tool_call>', '<invoke name="foo">'):
+        assert _looks_like_vendor_tool_markup(other), other
 
-    assert router.calls == []
-    assert subagent_audit.query_events(db_path=audit_db) == []
-    assert "--pipeline feature-dev" in answer
-    assert "No pipeline was launched" in answer
+    # Prose that merely talks about tools stays an answer.
+    for prose in (
+        "status: done\nsummary: created the dashboard",
+        "I used grep to find the function, then edited run.py",
+        "The plan calls three tools in sequence.",
+    ):
+        assert not _looks_like_vendor_tool_markup(prose), prose
+
+
+def test_sensitive_request_is_not_refused_on_vocabulary_alone() -> None:
+    # The removed keyword gate answered "add authentication" with a canned
+    # pipeline recommendation and ZERO model calls — the same treatment it gave
+    # "fix the typo in the security section of the README". A sensitive request
+    # must now actually run, planner-first, with blast radius decided from the
+    # planner's manifest rather than from the sentence.
+    from agent import run as run_mod
+    from agent.scope import classify_task
+
+    hint = classify_task("Add authentication to the app")
+
+    assert hint.route == "planner_then_coder_check"
+    assert run_mod._deterministic_scope_answer(
+        "Add authentication to the app", hint,
+    ) is None
 
 
 def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
@@ -2767,9 +2822,11 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     assert "planner" in replay
 
 
-def test_manifest_reclassified_large_goal_halts_with_pipeline_recommendation() -> None:
-    from agent import run as run_mod
-
+def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
+    # A large change used to end the turn with a CLI string the chat surface
+    # cannot run — the user was told to launch a pipeline themselves, and the
+    # work stopped. "Large" means MORE REVIEW, not a different launcher: the
+    # root may already spawn each of these roles ad-hoc, so it runs the chain.
     state = GoalState.create(
         "create site", "medium_change", "planner_then_coder_check",
     )
@@ -2780,25 +2837,50 @@ def test_manifest_reclassified_large_goal_halts_with_pipeline_recommendation() -
         '"external_side_effects":false,"destructive":false,"unknowns":[],'
         '"validation_commands":2}</change_manifest>'
     )
-    orchestration = Orchestration(parent_session_id="root", goal_state=state)
-    router = FakeRouter([])
 
-    answer, _ = asyncio.run(run_mod._run_loop(
-        object(),
-        router,
-        [],
-        [{"role": "user", "content": "create site"}],
-        max_cycles=2,
-        log=io.StringIO(),
-        orchestration=orchestration,
-        role="agent",
-    ))
+    assert state.route == "plan_design_workflow"
+    assert state.pending_clarification is None
+    assert state.next_role == "designer"
+    assert state.role_chain == ("coder", "reviewer")
+    block = state.render_decision_block()
+    assert "next_role=designer then coder → reviewer" in block
 
-    # Deterministic: zero model calls, no auto-launched pipeline.
-    assert router.calls == []
-    assert answer is not None
-    assert "--pipeline feature-dev" in answer
-    assert "No pipeline was launched" in answer
+
+def test_large_chain_advances_only_on_a_successful_role() -> None:
+    state = GoalState.create(
+        "create site", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":11,"subsystems":'
+        '["config","routes","components","styles"],"public_contract":false,'
+        '"data_migration":false,"security_sensitive":false,'
+        '"external_side_effects":false,"destructive":false,"unknowns":[],'
+        '"validation_commands":2}</change_manifest>'
+    )
+
+    # A failed designer must not open the coder gate.
+    state.record_outcome(
+        role="designer", status="failed", summary="summary: gave up",
+        touched_files=(),
+    )
+    assert state.next_role == "designer"
+
+    state.record_outcome(
+        role="designer", status="done", summary="summary: design ready",
+        touched_files=(),
+    )
+    assert state.next_role == "coder"
+    state.record_outcome(
+        role="coder", status="done", summary="summary: built",
+        touched_files={"a.py"},
+    )
+    assert state.next_role == "reviewer"
+    state.record_outcome(
+        role="reviewer", status="done", summary="summary: approved",
+        touched_files=(),
+    )
+    assert state.next_role is None
+    assert state.role_chain == ()
 
 
 def test_manifest_clarification_returns_before_any_model_call() -> None:

@@ -6,6 +6,74 @@ from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
 from agent.scope import classify_task
 
 
+def test_deferred_unknowns_reach_the_worker_instead_of_halting() -> None:
+    state = GoalState.create(
+        "a simple front end page", "medium_change", "planner_then_coder_check",
+    )
+    assessment = state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":["color palette"],'
+        '"validation_commands":1}</change_manifest>'
+    )
+
+    assert assessment.route == "single_coder"
+    assert state.pending_clarification is None  # no halt
+    assert state.next_role == "coder"
+    assert state.deferred_unknowns == ("color palette",)
+    block = state.render_decision_block()
+    assert "choose_sensible_defaults=color palette" in block
+    assert "do not ask the user" in block.lower()
+
+
+def test_decision_block_surfaces_conversation_cost_and_stall() -> None:
+    # The per-turn budget resets on every chat message, so without these
+    # numbers the root cannot tell turn six from turn one.
+    state = GoalState.create(
+        "build the page", "medium_change", "planner_then_coder_check",
+    )
+    state.chat_turns = 6
+    state.chat_tokens = 109_494
+    state.chat_barren_turns = 3
+
+    block = state.render_decision_block()
+    assert "conversation_usage=turns:6,tokens:109494,turns_without_a_file:3" in block
+    assert "conversation_warning=" in block
+    assert "do not spawn another planner" in block.lower()
+
+
+def test_decision_block_omits_conversation_lines_on_a_fresh_chat() -> None:
+    state = GoalState.create(
+        "build the page", "medium_change", "planner_then_coder_check",
+    )
+
+    block = state.render_decision_block()
+    assert "conversation_usage=" not in block
+    assert "conversation_warning=" not in block
+
+
+def test_advisory_root_surface_offers_no_tools() -> None:
+    # An advisory turn is answered by the root itself. Withholding the whole
+    # catalog is what keeps it to one cycle: no spawn, and no
+    # `musubi_recommend_skills` round trip either.
+    tools = [
+        {"name": name}
+        for name in (
+            "musubi_spawn_subagent",
+            "musubi_recommend_skills",
+            "musubi_get_skill",
+            "musubi_get_reference",
+        )
+    ]
+    state = GoalState.create("explain each", "advisory", "advisory")
+
+    assert state.next_role is None
+    assert root_decision_tools(tools, state) == []
+    # Defensive: not even a recovery phase may hand an advisory turn a tool.
+    assert root_decision_tools(tools, state, recovery_outcome=True) == []
+
+
 def test_outcome_packet_projects_worker_contract() -> None:
     packet = OutcomePacket.from_worker(
         role="coder",
@@ -98,16 +166,24 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
     ]
 
 
-def test_recovery_analysis_preserves_existing_tools_until_decision_only() -> None:
+def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
+    # Recovery is a DECISION phase: a worker failed, and the root chooses
+    # whether to replace it. Handing over the read tools inverted that — the
+    # root went investigating itself (a grep across 392 files, two reads, a
+    # retrieve), burned both analysis cycles, and halted without ever spawning
+    # a replacement.
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
+        {"name": "musubi_recommend_skills"},
     ]
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
     )
 
-    assert root_decision_tools(tools, state, recovery_outcome=True) == tools
+    assert [t["name"] for t in root_decision_tools(
+        tools, state, recovery_outcome=True,
+    )] == ["musubi_spawn_subagent", "musubi_recommend_skills"]
     assert root_decision_tools(
         tools, state, recovery_outcome=True, decision_only=True,
     ) == [{"name": "musubi_spawn_subagent"}]
@@ -133,9 +209,10 @@ def test_spawn_exhausted_root_surface_offers_no_tools() -> None:
 
 
 def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
-    # A pending worker failure keeps the full analysis surface even when the
-    # worker ceiling is spent — the ceiling-driven halt is handled separately by
-    # the loop's recovery path, not by starving the root of tools mid-analysis.
+    # A pending worker failure keeps the spawn affordance even when the worker
+    # ceiling is spent — the ceiling-driven halt is handled by the loop's
+    # recovery path, not by starving the root mid-decision. What recovery does
+    # NOT restore is the read surface.
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
@@ -146,7 +223,7 @@ def test_active_failure_recovery_outranks_spawn_exhaustion() -> None:
 
     assert root_decision_tools(
         tools, state, recovery_outcome=True, spawn_exhausted=True,
-    ) == tools
+    ) == [{"name": "musubi_spawn_subagent"}]
 
 
 # ── planner manifest reclassification ────────────────────────────────────────
@@ -180,7 +257,11 @@ def test_goal_state_retains_initial_request_assessment() -> None:
     )
 
     assert state.assessment is hint.assessment
-    assert state.route == "plan_design_workflow"
+    # Planner-led, not refused: "large" is no longer guessed from the sentence,
+    # so a sensitive request starts with a read-only planner whose manifest
+    # decides the blast radius.
+    assert state.route == "planner_then_coder_check"
+    assert state.next_role == "planner"
 
 
 
@@ -189,7 +270,10 @@ def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
     state.apply_planner_manifest(ELEVEN_FILE_MANIFEST)
     assert state.scope == "large_feature"
     assert state.route == "plan_design_workflow"
-    assert state.next_role is None
+    # Large is a chain, not a halt: the remaining work owes a design and an
+    # independent review before it is done.
+    assert state.next_role == "designer"
+    assert state.role_chain == ("coder", "reviewer")
 
 
 def test_small_manifest_opens_the_coder_gate() -> None:
@@ -293,3 +377,55 @@ def test_blocked_failure_routes_to_root_analysis() -> None:
     assert decide_recovery(
         outcome, same_role_failures=1, worker_slots=1,
     ) is RecoveryAction.ROOT_ANALYZE
+
+
+def test_manifest_overrun_is_detected_and_surfaced() -> None:
+    # With the lexical risk gates gone the manifest is the ONLY input to
+    # routing, so a declaration nobody checks is trusted rather than governed.
+    # Declare one file, clear the cheap route, then touch three.
+    state = GoalState.create(
+        "add the page", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    assert state.declared_files_expected == 1
+    assert state.manifest_overrun() is None
+
+    state.record_outcome(
+        role="coder",
+        status="done",
+        summary="summary: built it",
+        touched_files={"a.html", "b.css", "c.js"},
+    )
+
+    assert state.manifest_overrun() == (1, 3)
+    block = state.render_decision_block()
+    assert "manifest_overrun=declared:1,touched:3" in block
+    assert "do not widen it further" in block.lower()
+
+
+def test_no_overrun_within_the_declared_radius() -> None:
+    state = GoalState.create(
+        "add the page", "medium_change", "planner_then_coder_check",
+    )
+    state.apply_planner_manifest(
+        '<change_manifest>{"files_expected":3,"subsystems":["markup"],'
+        '"public_contract":false,"data_migration":false,'
+        '"security_sensitive":false,"external_side_effects":false,'
+        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '</change_manifest>'
+    )
+    state.record_outcome(
+        role="coder",
+        status="done",
+        summary="summary: built it",
+        touched_files={"a.html", "b.css"},
+    )
+
+    assert state.manifest_overrun() is None
+    assert "manifest_overrun=" not in state.render_decision_block()

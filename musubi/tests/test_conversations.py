@@ -29,6 +29,19 @@ def db(tmp_path: Path) -> Path:
 # ── append_message ───────────────────────────────────────────────────────────
 
 
+def test_has_history_distinguishes_a_follow_up_from_a_first_turn(
+    db: Path,
+) -> None:
+    # The scope classifier reads one message; this boolean is what tells it
+    # that a bare "Okta" is conversation rather than a terse work order.
+    assert conversations.has_history("chat-A", db_path=db) is False
+    conversations.append_message("chat-A", "user", "hello", db_path=db)
+    assert conversations.has_history("chat-A", db_path=db) is True
+    # Scoped per chat, and blank ids never claim history.
+    assert conversations.has_history("chat-B", db_path=db) is False
+    assert conversations.has_history("", db_path=db) is False
+
+
 def test_append_message_returns_id_ts_tokens(db: Path) -> None:
     result = conversations.append_message(
         "chat-A", "user", "hello world", db_path=db

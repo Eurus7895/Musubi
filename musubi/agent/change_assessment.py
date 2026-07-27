@@ -29,6 +29,11 @@ class ChangeAssessment:
     route: str
     evidence: tuple[str, ...]
     clarifying_question: str | None = None
+    #: Open questions the planner raised that the next worker may settle with
+    #: a sensible default instead of halting the conversation. Non-empty only
+    #: when the change is small enough that a wrong default costs one turn to
+    #: redirect — never on a critical or multi-file change.
+    deferred_unknowns: tuple[str, ...] = ()
 
 
 _BROAD_PRODUCT_RE = re.compile(
@@ -47,32 +52,29 @@ _FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
 _MULTIPART_RE = re.compile(
     r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
 )
-_CRITICAL_RISK_RE = re.compile(
-    r"(?i)\b(auth|authentication|authorization|login|permissions?|"
-    r"access control|payments?|billing|databases?|migrations?|oauth|rbac|"
-    r"security|public api|api contract|breaking api)\b"
-)
+# NOTE: the lexical critical-risk gate was REMOVED. It matched a word, not a
+# change: it refused "fix the typo in the security section of the README" with
+# zero model calls, while "wire up Okta", "add SSO", and "store user passwords"
+# sailed past it. Risk is now declared by the planner in the change manifest
+# (`security_sensitive`), read from the code rather than guessed from the
+# sentence, and enforced deterministically by `assess_manifest`. The
+# sensitive-area vocabulary that remains lives in `agent/scope.py` and has one
+# narrow job: withhold the lone-coder shortcut so a planner reads first.
 
 
 def assess_request(task: str) -> ChangeAssessment:
     """Bands + route for one raw user request. Pure text analysis, zero LLM.
 
-    Precedence: critical risk terms dominate (a payment/auth/database change
-    is never "simple" no matter how short the sentence); then a broad product
-    request without deliverable constraints stops for ONE clarification;
-    bounded static/named artifacts route to a single coder; a framework
-    scaffold with multiple parts is a planned medium change; anything left is
-    a medium change on insufficient evidence — never silently large.
+    This function NEVER returns `plan_design_workflow`: nothing readable from
+    one sentence establishes blast radius, so "large" is decided in exactly one
+    place — `assess_manifest`, from what the planner declares after reading the
+    code. Precedence here: a broad product request without deliverable
+    constraints stops for ONE clarification; bounded static/named artifacts
+    route to a single coder; a framework scaffold with multiple parts is a
+    planned medium change; anything left is a medium change on insufficient
+    evidence.
     """
     text = " ".join((task or "").split())
-    risks = tuple(sorted(set(
-        match.group(1).lower() for match in _CRITICAL_RISK_RE.finditer(text)
-    )))
-    if risks:
-        return ChangeAssessment(
-            Band.LOW, Band.HIGH, Band.HIGH, "plan_design_workflow",
-            tuple(f"critical-risk:{item}" for item in risks),
-        )
     if _BROAD_PRODUCT_RE.search(text) and not (
         _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
     ):
@@ -114,8 +116,9 @@ MAX_MANIFEST_CHARS = MAX_MANIFEST_BYTES
 _MANIFEST_OPEN = "<change_manifest>"
 _MANIFEST_CLOSE = "</change_manifest>"
 
-#: Manifest impact thresholds: above either, a "medium" plan is actually a
-#: large change and must not escape through a direct coder.
+#: Manifest impact thresholds: above the file ceiling — or above the subsystem
+#: ceiling once the change spans more than one file — a "medium" plan is
+#: actually a large change and must not escape through a direct coder.
 MAX_SIMPLE_FILES = 1
 MAX_MEDIUM_FILES = 5
 MAX_MEDIUM_SUBSYSTEMS = 1
@@ -259,14 +262,34 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
 
     Precedence:
       1. Any `unknowns` → ask_scope: an open decision must go back to the
-         user, never be guessed by the next worker.
+         user, never be guessed by the next worker. EXCEPT on a change small
+         enough to be cheap to redo — no critical flag and at most
+         `MAX_SIMPLE_FILES` file — where the unknowns are handed to the next
+         worker as `deferred_unknowns` to settle with sensible defaults. A
+         palette or a heading on a one-file page costs one turn to redirect;
+         halting the conversation to ask about every one of them costs the
+         planner's whole plan, which this function would otherwise discard.
       2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
-         `MAX_MEDIUM_SUBSYSTEMS` subsystem → plan_design_workflow: a large
-         blast radius cannot escape through a direct coder.
+         `MAX_MEDIUM_SUBSYSTEMS` subsystem spread across more than
+         `MAX_SIMPLE_FILES` file → plan_design_workflow: a large blast radius
+         cannot escape through a direct coder. The subsystem count ALONE
+         cannot escalate a single-file change: one file is not a large blast
+         radius however many subsystems the planner names inside it (a single
+         HTML page is routinely "markup + styling + content"). Critical flags
+         are unaffected, so a one-file security or migration change stays
+         large.
       3. At most one file and one subsystem → single_coder.
       4. Otherwise → planner_then_coder_check.
     """
-    if manifest.unknowns:
+    flags = tuple(
+        flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
+    )
+    # A blocking unknown is one the next worker cannot safely default. On a
+    # one-file change with no critical flag there is none: a wrong palette or
+    # heading costs a single turn to redirect, whereas halting discards the
+    # plan the planner just spent its whole budget producing.
+    deferrable = not flags and manifest.files_expected <= MAX_SIMPLE_FILES
+    if manifest.unknowns and not deferrable:
         listed = ", ".join(manifest.unknowns)
         return ChangeAssessment(
             Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
@@ -274,13 +297,14 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             f"The plan leaves open: {listed}. "
             "Please decide before implementation starts.",
         )
-    flags = tuple(
-        flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
-    )
+    deferred = manifest.unknowns
     if (
         flags
         or manifest.files_expected > MAX_MEDIUM_FILES
-        or len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+        or (
+            manifest.files_expected > MAX_SIMPLE_FILES
+            and len(manifest.subsystems) > MAX_MEDIUM_SUBSYSTEMS
+        )
     ):
         evidence = tuple(f"critical:{flag}" for flag in flags) + (
             f"files_expected:{manifest.files_expected}",
@@ -300,6 +324,7 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
         return ChangeAssessment(
             Band.LOW, Band.LOW, Band.LOW, "single_coder",
             (f"files_expected:{manifest.files_expected}",),
+            deferred_unknowns=deferred,
         )
     return ChangeAssessment(
         Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
@@ -307,4 +332,5 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             f"files_expected:{manifest.files_expected}",
             f"subsystems:{len(manifest.subsystems)}",
         ),
+        deferred_unknowns=deferred,
     )

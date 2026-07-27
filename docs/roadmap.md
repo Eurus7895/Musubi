@@ -113,6 +113,121 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Commit identity is enforced, not remembered — the harness presets
+  `GIT_AUTHOR_*` but leaves `GIT_COMMITTER_*` empty, so any command that writes
+  a commit without explicit `-c user.*` flags silently takes the committer from
+  `~/.gitconfig`. `git commit` is easy to remember to flag; `git rebase` is not,
+  and it rewrites every commit in the branch at once — which is exactly how a
+  12-commit rebase landed with the wrong committer on all twelve. A `pre-push`
+  hook (`scripts/commit_guard.py`, installed by pointing `core.hooksPath` at the
+  version-controlled `scripts/git-hooks/`) now refuses a push carrying a wrong
+  author or committer, an AI/tool attribution trailer, or a branch name that
+  names a tool. It checks only the commits the push would publish, so a bad
+  commit already on the remote cannot wedge the branch. Deterministic, zero-LLM,
+  per the hooks rule: never send a model to do a linter's job.
+
+- The console's JS tests are run, not merely written — `gui/src/**/*.test.mjs`
+  held 99 assertions that no script and no CI job ever executed, so a feature
+  commit that reintroduced the `TokenEconomics` panel left two surface
+  assertions red for several releases with nothing to report it. A `test`
+  script now exists in both `gui/package.json` and the root workspace, and a
+  blocking `console-js` CI job runs it; the suite needs no `npm ci`, since
+  every test imports only `node:` builtins and local modules. The stale
+  assertions were flipped from "forbidden" to "required" to match the
+  deliberate reintroduction. `chatCommands.js` — the classifier that decides
+  whether a chat message opens the pipeline picker, names a pipeline inline,
+  or goes to the driver agent — went from 4 tests to 15, covering the full
+  command vocabulary, filler stripping, normalization, name shapes and
+  degenerate input. Writing them surfaced two live defects, both since fixed.
+  `NAMED_PIPELINE` was a second hand-written copy of the picker vocabulary and
+  had drifted from it — `open pipeline` opened the picker while `open pipeline
+  feature-dev` matched neither gate and shipped to the driver agent as a work
+  order — so it is now generated from `PIPELINE_COMMANDS` and cannot drift
+  again. Separately, any single token in the name position parsed as a name,
+  so "use the pipeline runner" resolved to `runner`; `TauriSource.sendChat`
+  took the pipeline branch, failed the catalog lookup, cleared the composer
+  and returned, losing the message with nothing sent and no error shown. The
+  parser keeps its contract — it cannot know which recipes exist, so it still
+  returns a candidate — and the caller now resolves that candidate against
+  `pipelineCatalog` before branching, so an unrecognised name is ordinary
+  prose and reaches the agent.
+
+- A large change is more review, not a refusal — a manifest that reclassified
+  a goal as large used to end the turn with a CLI string (`agent … --pipeline
+  feature-dev`) the chat surface cannot run, so the work simply stopped; the
+  case that prompted this was a ONE-file, ONE-subsystem change escalated
+  solely because the planner set `external_side_effects`. The governance value
+  of "large" is more review, not a different launcher, and the root may
+  already spawn `designer`, `coder` and `reviewer` ad-hoc, so it now runs that
+  chain itself. `GoalState` carries an ordered `role_chain` that advances only
+  on a successful run of the role that was owed — a failed designer does not
+  open the coder gate — and the role-order gate generalises from `coder` to
+  all four ordered roles while leaving explorers and investigators free. The
+  worker ceiling rises from 3 to 6 on reclassification, since the chain is
+  four workers plus headroom for one recovery replacement. Locked decision #4
+  is untouched: individual roles are spawned, never a pipeline.
+  `_pipeline_recommendation` is deleted.
+
+- The manifest owns blast radius; the catalog tells the truth — two lexical
+  rules claimed to know how large a change was before anything read a line of
+  code, and both were wrong in both directions: a keyword gate refused "fix
+  the typo in the security section of the README" with zero model calls while
+  "wire up Okta" and "store user passwords" passed untouched, and a `>= 2
+  keyword` threshold scored two typos as a large feature and "migrate all 40
+  services" as zero. Both are deleted, along with `_mentions_large_workflow`,
+  so `assess_manifest` — fed by a planner that has read the code — is the only
+  component that decides "large". What survives is one narrow guard that makes
+  no size claim: it withholds the lone-coder shortcut for areas where a
+  mistake is invisible, with vocabulary widened to the SSO/Okta/password/
+  session/plural cases the old lists missed. Risk itself is now declared by
+  the planner through a pushed `request-triage` skill that reads the change
+  rather than the wording, reserves its last turn for the manifest, and sends
+  workspace surveys to an explorer. The declaration is verified, not trusted:
+  `manifest_overrun()` compares the declared radius against the files workers
+  actually touched. Recovery was narrowed to the decision it exists to make,
+  vendor tool-call markup leaking into the text channel is rejected instead of
+  stored as a plan, and the agent catalog was made truthful — four agents
+  understated the tools policy grants them, and a dead `model:` field
+  hardcoded an Anthropic id in all fourteen. Plan:
+  [`2026-07-26-manifest-owns-blast-radius.md`](./superpowers/plans/2026-07-26-manifest-owns-blast-radius.md)
+
+- Conversation-aware routing, progress accounting, and deferred unknowns —
+  four follow-ups to the advisory route. (1) `classify_task` takes a
+  `has_history` boolean so a bare follow-up ("Okta", "skill?") is answered
+  rather than planned; the flag says only that prior turns exist and is used
+  only to route toward the cheaper answer, so it can never open a mutation
+  path. (2) `agent_turns` gains `delivered_artifact`, and `chat_turn_usage`
+  aggregates a conversation's turns, tokens, and trailing run of turns that
+  wrote no file — the per-turn budget is process-scoped and resets on every
+  message, so nothing could previously see a multi-turn spend loop. The root
+  is warned at three barren turns and told to deliver or ask, not to plan
+  again; it steers rather than halts. (3) Planner `unknowns` still block,
+  except on a change with no critical flag and at most one file, where they
+  ride to the next worker as `choose_sensible_defaults` — a wrong palette
+  costs one turn to redo, while halting discarded the whole plan. (4) The
+  chat surface accepts the pipeline command after conversational filler
+  ("ok then run pipeline"), and the recommendation names that in-chat phrase
+  before the shell command; the picker still requires the user to send, so
+  locked decision #4 is untouched. Plan:
+  [`2026-07-25-conversation-aware-routing-and-progress.md`](./superpowers/plans/2026-07-25-conversation-aware-routing-and-progress.md)
+
+- Advisory routing and single-file manifest precedence — a consultative
+  request ("explain each", "choose the best for me", "which auth provider
+  should I choose?") is now its own scope kind instead of falling through two
+  catch-alls into `medium_change`/`planner_then_coder_check`. The root answers
+  it in one model call with an empty tool catalog: no planner spawn for a
+  question that names no file, and no `musubi_recommend_skills` round trip.
+  The branch is gated on the absence of a mutation verb, a diagnostic signal,
+  and any path target, so edits, failure diagnosis, and codebase questions
+  still route to workers. It is deliberately not routed through
+  `_deterministic_scope_answer` — the model still reasons, it just gets no
+  tools. Separately, the manifest subsystem ceiling now applies only above
+  `MAX_SIMPLE_FILES`, so a one-file plan can no longer be escalated to the
+  large workflow by subsystem count alone (which stranded the change: the
+  orchestrator may not launch a pipeline, so no coder ever wrote the file).
+  Critical flags and the file ceiling keep absolute precedence. Plan:
+  [`2026-07-25-advisory-route-and-manifest-precedence.md`](./superpowers/plans/2026-07-25-advisory-route-and-manifest-precedence.md)
+
 - Governed change assessment and recovery liveness — lexical-only mutation
   scope guesses are replaced by a deterministic ambiguity/impact/risk
   assessment (`agent/change_assessment.py`). A broad product request without

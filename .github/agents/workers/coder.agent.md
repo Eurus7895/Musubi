@@ -5,9 +5,8 @@ description: >
   Direct standalone worker for small implementation tasks delegated by the root
   agent. Uses Musubi write/edit/command tools directly and reports the concrete
   files changed.
-model: claude-sonnet-4.5
 maxTurns: 8
-tools: ["Read", "View", "Write", "Edit", "Bash"]
+tools: ["Read", "View", "Grep", "Glob", "Write", "Edit", "Bash"]
 disallowedTools: []
 lm_tools: []
 musubi-tier: ephemeral

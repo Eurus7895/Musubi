@@ -288,10 +288,12 @@ def test_musubi_list_skills_filters_to_caller_allowlist() -> None:
     assert "code-review" not in ids
 
 
-def test_musubi_list_skills_planner_is_empty() -> None:
-    """Planner has an empty allowlist — catalog must be empty."""
+def test_musubi_list_skills_planner_is_triage_only() -> None:
+    """Planner's catalog is exactly one skill: the triage procedure it needs
+    to declare blast radius and the sensitive-area flags. Generator-side
+    skills stay with the roles that actually write code."""
     payload = json.loads(server.musubi_list_skills("planner"))
-    assert payload["skills"] == []
+    assert {s["skill_id"] for s in payload["skills"]} == {"request-triage"}
 
 
 def test_musubi_list_skills_reviewer_contains_code_review_only() -> None:

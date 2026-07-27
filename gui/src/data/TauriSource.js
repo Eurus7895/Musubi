@@ -1,6 +1,6 @@
 // Native DataSource for the Tauri desktop shell. Backend domain snapshots are
 // merged with local Orchestrator composer and Pipeline Studio builder state.
-import { classifyChatCommand } from './chatCommands.js'
+import { classifyChatCommand, pipelineNameFromCommand } from './chatCommands.js'
 import {
   createPipelineDraft, addStage, moveStage, removeStage, updateStage, updateRecipe,
   setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
@@ -192,11 +192,16 @@ export default class TauriSource {
             ? ''
             : this.state.viewedOrchestratorChatId || '')
         const command = classifyChatCommand(text)
-        const namedPipeline = text.match(/^(?:\/pipeline|pipeline|run\s+pipeline)\s+([a-z0-9]+(?:-[a-z0-9]+)*)$/i)?.[1]?.toLowerCase()
+        // The classifier returns a *candidate* name — any single token in the
+        // name position — so the catalog is what decides whether the user
+        // named a recipe. Resolving before the branch is the whole guard:
+        // "use the pipeline runner" parses as 'runner', and taking the
+        // pipeline branch on an unknown name cleared the composer and dropped
+        // the message with nothing sent and no error shown.
+        const namedPipeline = (this.state.pipelineCatalog || [])
+          .find((entry) => entry.name === pipelineNameFromCommand(text))?.name || ''
         if (command.kind === 'openPipelinePicker' || namedPipeline) {
-          const selected = namedPipeline
-            ? (this.state.pipelineCatalog || []).find((entry) => entry.name === namedPipeline)?.name
-            : this.state.selectedPipeline
+          const selected = namedPipeline || this.state.selectedPipeline
           this._setLocal({ draft: '', runMode: 'pipeline', selectedPipeline: selected || '' })
           return
         }

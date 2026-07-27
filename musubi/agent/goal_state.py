@@ -27,6 +27,25 @@ _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
 _SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
+#: The consultative route (`agent/scope.py`): the user asked to be advised,
+#: not for a change. The root is the whole answer, so its decision phase gets
+#: no tools at all.
+ADVISORY_ROUTE = "advisory"
+#: Trailing barren turns before the root is told to stop planning. Three is
+#: the point at which the traced conversation had already spent two planner
+#: round trips and two question walls without a single file on disk.
+NO_PROGRESS_TURN_THRESHOLD = 3
+#: What a large change actually requires, in order, once the planner's
+#: manifest establishes the blast radius. "Large" means MORE REVIEW, not a
+#: different launcher: the root may already spawn each of these roles ad-hoc
+#: (`MAIN_SUBAGENT_ALLOWLIST["agent"]`), so it runs the chain itself. Locked
+#: decision #4 forbids spawning an entire *pipeline*, which this never does.
+LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
+#: Roles whose order the goal state enforces. Anything else the root summons
+#: (an explorer for workspace facts, an investigator for a failure) is free.
+ORDERED_ROLES: frozenset[str] = frozenset(
+    {"planner", "designer", "coder", "reviewer"}
+)
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -122,6 +141,24 @@ class GoalState:
     #: One deterministic question the driver must return to the user before
     #: any further model call (set when the manifest routes to ask_scope).
     pending_clarification: str | None = None
+    #: Conversation-scoped cost, loaded from `agent_turns` at turn start. The
+    #: per-turn budget is process-scoped and resets on every chat message, so
+    #: these are the only numbers that can see a multi-turn spend loop.
+    chat_turns: int = 0
+    chat_tokens: int = 0
+    #: Trailing count of prior turns that ended without writing a file.
+    chat_barren_turns: int = 0
+    #: Planner unknowns small enough for the next worker to settle with a
+    #: sensible default instead of halting the conversation to ask.
+    deferred_unknowns: tuple[str, ...] = ()
+    #: Roles still owed after `next_role`, in order. Non-empty only on a large
+    #: change, where the chain is the whole point of the classification.
+    role_chain: tuple[str, ...] = ()
+    #: `files_expected` from the accepted manifest. Kept so the declaration can
+    #: be CHECKED against what a later worker actually touched — with the
+    #: lexical risk gates gone, the manifest is the sole input to routing, and
+    #: a declaration nobody verifies is trusted rather than governed.
+    declared_files_expected: int | None = None
 
     @classmethod
     def create(
@@ -175,13 +212,45 @@ class GoalState:
             "plan_design_workflow": "large_feature",
             "ask_scope": "unknown",
         }[assessment.route]
-        self.next_role = (
-            "coder"
-            if assessment.route in {"single_coder", "planner_then_coder_check"}
-            else None
-        )
+        if assessment.route == "plan_design_workflow":
+            # A large change is not a refusal. It means the remaining work owes
+            # a design and an independent review before it is done, so the root
+            # runs that chain with the roles it is already allowed to spawn.
+            self.next_role = LARGE_ROLE_CHAIN[0]
+            self.role_chain = LARGE_ROLE_CHAIN[1:]
+        else:
+            self.next_role = (
+                "coder"
+                if assessment.route
+                in {"single_coder", "planner_then_coder_check"}
+                else None
+            )
+            self.role_chain = ()
         self.pending_clarification = assessment.clarifying_question
+        self.deferred_unknowns = assessment.deferred_unknowns
+        self.declared_files_expected = (
+            manifest.files_expected if manifest is not None else None
+        )
         return assessment
+
+    def manifest_overrun(self) -> tuple[int, int] | None:
+        """`(declared, actual)` when mutation exceeded the declared radius.
+
+        With the lexical risk gates removed, the manifest is the only input to
+        routing, so an unverified declaration would be *trusted* rather than
+        governed: a worker could declare one file, clear the cheap route, and
+        then touch eleven. This compares the declaration against the files
+        workers actually reported touching. Returns None while the change is
+        within its declared radius, or when no manifest was accepted.
+        """
+        if self.declared_files_expected is None:
+            return None
+        touched: set[str] = set()
+        for outcome in self.outcomes:
+            touched.update(outcome.touched_files)
+        if len(touched) > self.declared_files_expected:
+            return self.declared_files_expected, len(touched)
+        return None
 
     def record_root_usage(self, *, tokens_in: int, tokens_out: int) -> None:
         self.root_calls += 1
@@ -191,6 +260,21 @@ class GoalState:
     def record_outcome(self, **kwargs: Any) -> OutcomePacket:
         packet = OutcomePacket.from_worker(**kwargs)
         self.outcomes.append(packet)
+        # Advance the ordered chain only on a SUCCESSFUL run of the role that
+        # was owed. A failed designer must not open the coder gate — the
+        # recovery path gets its one same-role replacement first.
+        #
+        # `planner` is excluded on purpose: the caller runs this BEFORE
+        # `apply_planner_manifest`, and that method owns the transition out of
+        # planning. Advancing here would clear `next_role` and the manifest
+        # would never be read.
+        if (
+            packet.role != "planner"
+            and packet.role == self.next_role
+            and packet.status == "done"
+        ):
+            self.next_role = self.role_chain[0] if self.role_chain else None
+            self.role_chain = self.role_chain[1:]
         return packet
 
     def render_decision_block(self) -> str:
@@ -206,7 +290,10 @@ class GoalState:
             )
         order = ""
         if self.next_role is not None:
-            order = f"next_role={self.next_role}\n"
+            remaining = (
+                " then " + " → ".join(self.role_chain) if self.role_chain else ""
+            )
+            order = f"next_role={self.next_role}{remaining}\n"
         bands = ""
         if self.assessment is not None:
             bands = (
@@ -215,12 +302,48 @@ class GoalState:
                 f"risk:{self.assessment.risk.value},"
                 f"route:{self.assessment.route}\n"
             )
+        conversation = ""
+        if self.chat_turns:
+            conversation = (
+                f"conversation_usage=turns:{self.chat_turns},"
+                f"tokens:{self.chat_tokens},"
+                f"turns_without_a_file:{self.chat_barren_turns}\n"
+            )
+        stall = ""
+        if self.chat_barren_turns >= NO_PROGRESS_TURN_THRESHOLD:
+            stall = (
+                f"conversation_warning=The last {self.chat_barren_turns} turns "
+                "of this conversation ended without writing a file. More "
+                "planning is not the gap. Either summon a worker that "
+                "produces the artifact, or ask ONE question — do not spawn "
+                "another planner.\n"
+            )
+        overrun = ""
+        breach = self.manifest_overrun()
+        if breach is not None:
+            declared, actual = breach
+            overrun = (
+                f"manifest_overrun=declared:{declared},touched:{actual}\n"
+                "The change outgrew the radius its plan was routed on. Do not "
+                "widen it further: stop and report what was touched, or "
+                "re-plan the remainder explicitly.\n"
+            )
+        defaults = ""
+        if self.deferred_unknowns:
+            listed = ", ".join(self.deferred_unknowns)
+            defaults = (
+                f"choose_sensible_defaults={listed}\n"
+                "Pass these to the worker as decisions IT should make with a "
+                "reasonable default. Do NOT ask the user about them — on a "
+                "change this small a wrong default costs one turn to "
+                "redirect.\n"
+            )
         return (
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
-            f"{order}{bands}"
+            f"{order}{bands}{conversation}{stall}{overrun}{defaults}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"
@@ -240,8 +363,30 @@ def root_decision_tools(
     spawn_exhausted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
-    if recovery_outcome and not decision_only:
-        return list(tools)
+    if state.route == ADVISORY_ROUTE:
+        # Checked before every other phase: an advisory turn must never reach
+        # a tool. No worker can add evidence to "which auth model should I
+        # pick?" — it names no file to read — so a spawn buys a multi-cycle
+        # round trip that ends in a change manifest the user never asked for.
+        # Withholding the catalog forces the root to answer in ONE cycle.
+        return []
+    if recovery_outcome:
+        # Recovery is a DECISION phase, not a work phase: a worker failed and
+        # the root has to choose whether to replace it. Handing over the whole
+        # catalog here inverted that — the root took the read tools and went
+        # investigating itself (a `grep` across 392 files, two reads, a
+        # retrieve), spent both analysis cycles, and halted with
+        # `_recovery_incomplete` having never spawned a replacement. The only
+        # affordance is the decision it exists to make; once the analysis
+        # cycles are spent, `decision_only` narrows that further to the spawn
+        # itself.
+        allowed_recovery = (
+            {_SPAWN_TOOL} if decision_only
+            else {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
+        )
+        return [
+            tool for tool in tools if tool.get("name") in allowed_recovery
+        ]
     if spawn_exhausted:
         # The root has spent its worker budget: every further `musubi_spawn_*`
         # is refused by the ceiling gate, so offering the spawn tool only lets

@@ -6,6 +6,80 @@ from agent.change_assessment import Band, assess_request
 from agent.scope import ScopeKind, classify_task
 
 
+def test_consultative_question_routes_to_advisory_without_workers() -> None:
+    # A request to be ADVISED carries no deliverable, so it must not fall
+    # through to the mutation catch-all and summon a planner.
+    for task in (
+        "explain each",
+        "choose the best for me",
+        "which one is better",
+        "what is the difference",
+        "compare these approaches",
+        "should i use a managed provider",
+        "recommend an approach",
+    ):
+        hint = classify_task(task)
+        assert hint.kind is ScopeKind.ADVISORY, task
+        assert hint.route == "advisory", task
+        assert hint.requires == (), task
+
+    block = classify_task("explain each").prompt_block().lower()
+    assert "answer directly" in block
+    assert "do not spawn a worker" in block
+
+
+def test_advisory_beats_critical_risk_gate_for_a_pure_question() -> None:
+    # "which auth provider should I choose?" is a question ABOUT auth, not a
+    # change TO auth. The critical-risk gate must not force a
+    # plan/design/review workflow onto a request that mutates nothing.
+    hint = classify_task("which auth provider should i choose")
+
+    assert hint.kind is ScopeKind.ADVISORY
+    assert hint.route == "advisory"
+
+
+def test_bare_follow_up_is_advisory_only_with_conversation_history() -> None:
+    # `classify_task` sees ONE message, so a bare noun carries no signal and
+    # falls to the mutation catch-all. With prior turns on record it reads as
+    # conversation instead — the traced "Okta" turn cost a 96s planner round
+    # trip to answer a question that named no file.
+    for task in ("Okta", "skill?", "these are complicated", "the second one"):
+        assert classify_task(task, has_history=True).route == "advisory", task
+        # Without history the classification is unchanged from before.
+        assert classify_task(task).route != "advisory", task
+
+
+def test_follow_up_inheritance_only_moves_toward_the_cheaper_route() -> None:
+    # A follow-up carrying real work must keep its own classification: history
+    # may never be used to escalate, only to answer more cheaply.
+    for task in (
+        "add auth to the app",
+        "fix the login bug",
+        "delete all *-dashboard.html files",
+        "open C:\\Workspace\\Musubi",
+        "a simple front end page first, prepare a file for the plan",
+    ):
+        with_history = classify_task(task, has_history=True)
+        assert with_history.route != "advisory", task
+        assert with_history.route == classify_task(task).route, task
+
+
+def test_advisory_never_swallows_a_mutation_or_a_path_question() -> None:
+    # Three exclusions keep the advisory branch narrow. A mutation verb, a
+    # diagnostic, or any concrete path target all disqualify it — notably
+    # "explain <file>" needs a worker that actually reads the file.
+    for task in (
+        "compare the two configs and update the stale one",
+        "explain why the build is failing",
+        "explain musubi/agent/run.py",
+        "explain the codebase",
+        "choose a name and rename the module",
+    ):
+        hint = classify_task(task)
+        assert hint.kind is not ScopeKind.ADVISORY, task
+        assert hint.route != "advisory", task
+
+
 def test_reach_to_path_routes_to_read_only_single_explorer() -> None:
     hint = classify_task(
         r"could you reach to C:\Workspace\09_CD_Team\21_A2lPatcher\a2l-patcher-stla"
@@ -104,13 +178,16 @@ def test_classifies_small_artifact_as_simple_artifact_without_html_special_case(
     assert "artifact" in hint.reason
 
 
-def test_large_risky_feature_requires_plan_design_workflow() -> None:
+def test_sensitive_multi_area_request_is_denied_the_coder_shortcut() -> None:
+    # Lexical text cannot establish blast radius, so this no longer claims to
+    # be "large" — that verdict belongs to `assess_manifest`, after the planner
+    # has read the code. What the sentence CAN justify is withholding the
+    # single_coder shortcut so a read-only planner looks first.
     hint = classify_task("Add billing auth, database migration, and public API endpoints")
 
-    assert hint.kind is ScopeKind.LARGE_FEATURE
-    assert hint.route == "plan_design_workflow"
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
     assert "plan" in hint.requires
-    assert "design" in hint.requires
 
 
 def test_medium_change_routes_through_planner_before_coder() -> None:
@@ -183,25 +260,34 @@ def test_specific_framework_scaffold_is_medium() -> None:
     assert result.route == "planner_then_coder_check"
 
 
-def test_auth_database_payment_site_is_large() -> None:
-    result = assess_request(
-        "Build a website with authentication, a customer database, and payments"
-    )
-    assert result.risk is Band.HIGH
-    assert result.route == "plan_design_workflow"
+def test_assess_request_never_claims_a_change_is_large() -> None:
+    # "Large" has exactly one source of truth: the planner's manifest. No
+    # sentence, however alarming its vocabulary, may return the large route
+    # from pure text analysis.
+    for request in (
+        "Build a website with authentication, a customer database, and payments",
+        "Add billing auth, database migration, and public API endpoints",
+        "rewrite the entire user system",
+        "migrate all 40 services to the new runtime",
+    ):
+        assert assess_request(request).route != "plan_design_workflow", request
 
 
-def test_single_critical_term_routes_to_plan_design_workflow() -> None:
-    # The deterministic critical-risk gate must fire on ONE token: "add
-    # authentication" was previously downgraded to a medium change because the
-    # legacy _LARGE_RISK_RE threshold needs two tokens.
+def test_sensitive_request_runs_instead_of_being_refused() -> None:
+    # The old keyword gate answered "add authentication" with a canned
+    # pipeline recommendation and zero model calls. A request must never be
+    # refused on vocabulary alone; it runs, planner-first.
     hint = classify_task("Add authentication to the app")
-    assert hint.kind is ScopeKind.LARGE_FEATURE
-    assert hint.route == "plan_design_workflow"
-    assert "plan" in hint.requires and "review" in hint.requires
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
+    assert "plan" in hint.requires and "verification" in hint.requires
 
 
-def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
+def test_every_sensitive_area_loses_the_lone_coder_shortcut() -> None:
+    # A mistake in these areas is invisible — the page still renders and the
+    # tests still pass — so a read-only planner must read the code and file a
+    # manifest before anything mutates. Includes the vocabulary the old list
+    # was blind to (SSO, Okta, passwords, sessions, plural "payments").
     requests = (
         "Add login to the app",
         "Change user permissions",
@@ -210,11 +296,21 @@ def test_each_critical_risk_category_routes_to_plan_design_workflow() -> None:
         "Run data migrations",
         "Change security settings",
         "Change the public API contract",
+        "wire up Okta for the web app",
+        "add SSO to the app",
+        "let users sign in with Google",
+        "store user passwords in the users table",
+        "add a session cookie so users stay signed in",
+        "create the payments dashboard page",
+        "create login.html",
     )
     for request in requests:
-        assessment = assess_request(request)
-        assert assessment.risk is Band.HIGH, request
-        assert assessment.route == "plan_design_workflow", request
         hint = classify_task(request)
-        assert hint.kind is ScopeKind.LARGE_FEATURE, request
-        assert hint.route == "plan_design_workflow", request
+        assert hint.route == "planner_then_coder_check", request
+        assert hint.kind is ScopeKind.MEDIUM_CHANGE, request
+
+
+def test_ordinary_requests_keep_the_shortcut() -> None:
+    # The guard must stay narrow: nothing sensitive, nothing withheld.
+    assert classify_task("create a dashboard page").route == "single_coder"
+    assert classify_task("update the title in index.html").route == "single_coder"

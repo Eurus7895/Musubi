@@ -44,6 +44,58 @@ def test_init_db_creates_agent_turns_table(fresh_db: Path) -> None:
     assert {"replay_messages", "replay_tokens"}.isdisjoint(cols)
 
 
+def test_chat_turn_usage_aggregates_conversation_cost(fresh_db: Path) -> None:
+    # Per-turn budgets reset on every chat message, so this aggregate is the
+    # only thing that can see a conversation spending without delivering.
+    for index, delivered in enumerate((False, False, False)):
+        db.insert_agent_turn(
+            chat_id="chat-a",
+            parent_session_id=f"s{index}",
+            started_at=float(index),
+            ended_at=float(index) + 1,
+            model_family="fake",
+            cycles=2,
+            tokens_in_estimate=100,
+            tokens_out_estimate=50,
+            lm_ms=10,
+            total_ms=20,
+            db_path=fresh_db,
+            delivered_artifact=delivered,
+        )
+
+    usage = db.chat_turn_usage("chat-a", db_path=fresh_db)
+    assert usage == {"turns": 3, "tokens": 450, "barren_turns": 3}
+
+    # A delivering turn resets the trailing barren run to zero.
+    db.insert_agent_turn(
+        chat_id="chat-a",
+        parent_session_id="s3",
+        started_at=9.0,
+        ended_at=10.0,
+        model_family="fake",
+        cycles=1,
+        tokens_in_estimate=10,
+        tokens_out_estimate=10,
+        lm_ms=1,
+        total_ms=2,
+        db_path=fresh_db,
+        delivered_artifact=True,
+    )
+    assert db.chat_turn_usage("chat-a", db_path=fresh_db)["barren_turns"] == 0
+
+
+def test_chat_turn_usage_is_scoped_per_conversation(fresh_db: Path) -> None:
+    db.insert_agent_turn(
+        chat_id="chat-a", parent_session_id="s", started_at=0.0, ended_at=1.0,
+        model_family="fake", cycles=1, tokens_in_estimate=5,
+        tokens_out_estimate=5, lm_ms=1, total_ms=1, db_path=fresh_db,
+    )
+    assert db.chat_turn_usage("chat-b", db_path=fresh_db) == {
+        "turns": 0, "tokens": 0, "barren_turns": 0,
+    }
+    assert db.chat_turn_usage("", db_path=fresh_db)["turns"] == 0
+
+
 def test_init_db_creates_agent_turns_indexes(fresh_db: Path) -> None:
     with sqlite3.connect(fresh_db) as conn:
         idx = {row[1] for row in conn.execute(

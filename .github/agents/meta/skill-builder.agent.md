@@ -6,7 +6,6 @@ description: >
   rules or new skills. Invoked automatically when pattern_detector.py detects
   3 or more sessions with the same failure type. Writes proposals to
   .github/agents/proposed/ only — never modifies active agent files directly.
-model: claude-sonnet-4.5
 maxTurns: 5
 tools: ["View", "Edit"]
 # Concrete VS Code LM tool names. Skill-Builder reads existing skills

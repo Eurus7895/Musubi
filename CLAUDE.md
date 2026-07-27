@@ -1,182 +1,111 @@
 # CLAUDE.md — Musubi
 
-> Rules and commands for working in this repo.
-> Direction, discipline & forward plan → [`docs/roadmap.md`](./docs/roadmap.md).
-> MCP tool reference + DB schema (source of truth) → [`musubi/server.py`](./musubi/server.py) · [`musubi/storage/schema.sql`](./musubi/storage/schema.sql).
-> Agent session-start map → [`AGENTS.md`](./AGENTS.md).
-> First-time setup → `musubi setup` (wizard: [`musubi/setup_wizard.py`](./musubi/setup_wizard.py)).
+Musubi is a **governance layer** for agentic software-engineering work — firewall, audit, validator,
+budget, skill injection. It is the environment the model acts within, not a wrapper around the model's
+intelligence. **The driver reasons. Musubi controls the environment.** Zero LLM calls in the harness.
 
----
-
-## One Sentence
-
-Musubi is a **governance layer** for agentic software-engineering
-work — firewall, audit, validator, budget, skill injection.
-It is the environment the model acts within; it is not a wrapper around
-the model's intelligence.
-
-**The driver reasons. Musubi controls the environment.**
-Zero LLM calls inside the harness.
-
----
+> Rules live here; rationale lives in the linked docs. [`docs/roadmap.md`](./docs/roadmap.md) direction & plan ·
+> [`docs/hard-invariants.md`](./docs/hard-invariants.md) invariants in full · [`AGENTS.md`](./AGENTS.md) session-start map · `musubi setup` first-time setup ·
+> [`musubi/server.py`](./musubi/server.py) + [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) MCP tools & schema (source of truth)
 
 ## Response Style — how to answer Eurus
 
-Applies to **every** conversation in this repo — analysis, explanation,
-Q&A, review — not just code tasks. Benchmark: the level of a full
+Applies to **every** conversation here — analysis, explanation, Q&A, review. Benchmark: a full
 run-trace post-mortem, never a summary.
 
-- **Depth is the default.** Every claim about behavior carries its
-  causal chain: what triggered what, in which code path, with exact
-  `file:line` references, constant values, and the log/DB evidence
-  that proves it.
-- **Name the design assumption.** When a mechanism misbehaves, state
-  the assumption it was built on and show where it broke — distinguish
-  "the model failed" from "the design guaranteed the failure" (e.g. an
-  effort floor of 2048 tokens *guarantees* truncation for a worker
-  whose whole job is emitting a 3–5k-token file).
-- **Quantify.** Cite tokens, cycles, milliseconds whenever the
-  data exists; make each mistake's cost attributable.
-- **Judge, don't just describe.** Analysis ends with prioritized,
-  concrete recommendations, each tied to the evidence above it.
-- **Mirror language.** Reply in Vietnamese when addressed in
-  Vietnamese; keep technical terms in English.
-
----
+- **Depth is the default.** Every claim about behavior carries its causal chain: what triggered what,
+  in which code path, with exact `file:line`, constant values, and the log/DB evidence that proves it.
+- **Explain as if to someone who has never seen this codebase.** Depth and plainness are not a
+  trade-off — depth is *more evidence*, never denser jargon. Describe a mechanism before naming it;
+  define every identifier, flag, and threshold on first use; prefer a worked before/after or a short
+  analogy to an abstract description. Never answer "what is X?" in wording that assumes the answer.
+- **Name the design assumption.** When a mechanism misbehaves, state the assumption it was built on
+  and where it broke. Distinguish "the model failed" from "the design guaranteed the failure".
+- **Quantify.** Tokens, cycles, milliseconds whenever the data exists; make each mistake's cost
+  attributable.
+- **Judge, don't just describe.** End with prioritized, concrete recommendations, each tied to the
+  evidence above it.
+- **State the decision the reader must make.** Give the options, each one's cost, and your
+  recommendation. Never bury a fork in prose, and never ask for a decision before supplying what is
+  needed to make it.
+- **Mirror language.** Reply in Vietnamese when addressed in Vietnamese; keep technical terms in English.
 
 ## Substrate vs ephemeral
 
-| Substrate (invest) | Ephemeral (label + schedule for removal) |
-|---|---|
-| Audit DB tables (`stage_outputs`, `stage_metrics`, `subagent_audit`, `sessions`, `pipeline_runs`, `agent_turns`, `conversation_messages`) | The 4-stage pipeline shape (`planner → designer → coder → reviewer`) — superseded by **pipelines as recipes of workers** (`agent/pipeline_runner.py`, composer-driven, user-definable from presets); kept only as a shipped recipe |
-| `.github/skills/<name>/SKILL.md` catalog | Sub-agent-for-exploration split (`explorer` / `investigator` / `reviewer-aux` on haiku) — dissolving into the unified **worker model** (`agent/run.py::run_unit`): no main-vs-sub distinction, only workers at a depth, run in parallel |
-| 3-tier memory (`.github/memory/*.md`) | Correction loop + `validation_feedback` retry |
-| Append-only stage store (`stage_outputs` attempt rows) | Cycle-loop guards (`DEFAULT_MAX_CYCLES` cap, salvage-on-exhaust, forced no-tools final — `agent/run.py`) |
-| Hard Invariants (#1, #2, #3, #5, #7, #8, #9) | Path-rules / empty-project / workspace-root preamble blocks |
-| Policy engine (`scripts/policy_engine.py`) | Per-stage `musubi-tier`-tagged scaffolds |
-| `TokenBudgetEnforcer` + per-call token accounting | Worker prompt scaffolding (`.github/agents/workers/`) |
-| Firewall via `_STAGE_PERMISSIONS` (HI #3) | |
-| MCP tool catalog (`musubi_*`) | |
+**Substrate (invest):** audit DB tables · `.github/skills/*/SKILL.md` catalog · 3-tier memory ·
+append-only stage store · Hard Invariants · policy engine · `TokenBudgetEnforcer` ·
+`_STAGE_PERMISSIONS` firewall · `musubi_*` tool catalog.
 
-**Substrate gets refactored. Ephemeral gets deleted when its expiration
-trigger fires.** Full per-component analysis with removability cost and
-cost-lever values lives in [`docs/roadmap.md`](./docs/roadmap.md) § Dissolution candidates.
+**Ephemeral (label + schedule for removal):** the 4-stage pipeline shape · the
+explorer/investigator/reviewer-aux split · correction loop + `validation_feedback` retry · cycle-loop
+guards · path-rules and workspace-root preamble blocks · per-stage tagged scaffolds · worker prompt
+scaffolding.
 
----
+**Substrate gets refactored. Ephemeral gets deleted when its expiration trigger fires.** Per-component
+analysis, removability cost, and cost-lever values → [`docs/roadmap.md`](./docs/roadmap.md)
+§ Dissolution candidates.
 
 ## Hard Invariants
 
-These cannot be broken without an explicit design discussion. If a
-change would violate one, stop and ask.
+Cannot be broken without an explicit design discussion — if a change would violate one, stop and ask.
+Numbers are stable identifiers: **#4** and **#6** are retired and their gaps are intentional. Full
+text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./docs/hard-invariants.md).
 
-**Numbers are stable identifiers, not positions** — they are cited across
-code, tests, and CI, so survivors keep their number even
-when one is retired. **#4** (zero-cost routing) and **#6** (flat agent
-catalog) were retired: routing is a trivial property of a single-agent
-host, and the flat-catalog rule moved to **Decision Rules** (a code-org
-convention, not a load-bearing safety property). Gaps at #4/#6 are
-intentional.
-
-1. **Zero LLM calls in the substrate; the driver reaches the model through an inject point.** Draw the boundary between *substrate* and *driver*. **Substrate** — the MCP server (`server.py`), every `musubi_*` tool, `policy_engine.py`, the evaluator firewall, the validator (lint/typecheck/tests), and the audit DB — makes **zero LLM calls** and **never imports an LLM SDK**; it only routes and enforces. **Driver** — the agent loop that reasons — is the *only* layer that reaches a model, and it does so through one inject point: the vendor-agnostic `LMRouter` in `agent/vendors/base.py`. The boundary is load-bearing: **control lives in the substrate the driver must call through, not in the driver's loop.** Adding a vendor = implementing `LMRouter`; it never reaches into the substrate. Shipped routers: `anthropic`, `openai`, `deepseek`, `ollama` (local), and `azure`/on-prem OpenAI-compatible gateways (the curl transport in `agent/vendors/curl_router.py`, no SDK import — still driver-side). On-prem endpoints (base URL, family, api-key) are data in `.musubi/llm.json`, resolved by `agent/config.py`. Violating this means an LLM SDK import creeping into `server.py` / `validation/*` / `scripts/policy_engine.py` — stop and ask.
-2. **Skills are pushed to workers and pipeline stages; pulled on demand by the Agent.** Push has one mechanism, and the worker cannot opt out: the role skill is injected into the spawn system prompt (`SUBAGENT_ROLE_SKILLS` → `musubi_get_subagent_context` returns `role_skill`; `agent/subagent.py::build_subagent_system_prompt` embeds it — same path for direct workers and pipeline stages). Agent-side: `musubi_get_skill` LM tool, model decides when to load.
-3. **Evaluator firewall.** The evaluator sees only the artifact it judges — no request, plan, design, or memory. Enforced in two places: `_STAGE_PERMISSIONS["reviewer"] = {"code"}` (`validation/context_builder.py`, gating `musubi_read_stage`), and — generalised to any pipeline, including user-defined preset pipelines — the runner's last-stage brief (`agent/pipeline_runner.py::_stage_brief`: the final stage receives only the immediately prior stage's output; `composer.py` locks the evaluator to the chain's last entry).
-5. **Fail-closed policy engine.** Two deny-by-default layers (`scripts/policy_engine.py`): (a) *membership* — a stage runs only if declared in its pipeline: the composer validates the catalog fail-closed at server boot, and `musubi_spawn_pipeline_stage` re-checks membership per spawn; (b) *tools* — explicit allowlists only: `PIPELINE_POLICIES[pipeline][agent]` where declared, else the role's own `SUBAGENT_POLICIES` cap for user-defined preset pipelines. An unknown role, agent, or stage gets nothing. Never relax either layer to fail-open.
-7. **Append-only stage store.** Retries write a new `stage_outputs` attempt row — write-once per `(session_id, stage, chunk_id, attempt)` (`musubi/session/state.py::write_stage`). Never overwrite a prior attempt.
-8. **No silent sub-agents.** Every spawn + completion writes a row to `subagent_audit`, visible via `musubi_query_subagent_events`.
-9. **Tag and expire.** Every component carries a `musubi-tier` tag (`substrate` or `ephemeral`). Ephemeral components declare `expires-when:` AND `cost-lever:`. PRs that add ephemeral structure without retiring an equivalent — or strengthening the substrate — get pushed back.
-
----
+1. **Zero LLM calls in the substrate.** `server.py`, every `musubi_*` tool, `policy_engine.py`, the
+   firewall, the validator, and the audit DB never call a model or import an LLM SDK. Only the driver
+   reaches a model, through `LMRouter` (`agent/vendors/base.py`). Vendors are data in `.musubi/llm.json`.
+2. **Skills are pushed to workers and stages; pulled on demand by the Agent.** Push is not
+   opt-out-able (`SUBAGENT_ROLE_SKILLS` → `subagent.py::build_subagent_system_prompt`); the Agent
+   pulls via `musubi_get_skill`.
+3. **Evaluator firewall.** The evaluator sees only the artifact it judges — no request, plan, design,
+   or memory.
+5. **Fail-closed policy engine.** Membership and tools both deny by default
+   (`scripts/policy_engine.py`). Never relax either to fail-open.
+7. **Append-only stage store.** Retries write a new attempt row; never overwrite a prior one.
+8. **No silent sub-agents.** Every spawn and completion writes to `subagent_audit`.
+9. **Tag and expire.** Every component carries `musubi-tier`; ephemeral ones declare `expires-when:`
+   AND `cost-lever:`.
 
 ## Decision Rules
 
-**Default to skill, not agent.** When the question is "should this be a
-new agent or a skill?", choose **skill** unless 3+ documented failures
-of the skill-only approach exist. Skills are the cheapest optimisation
-surface; agents are medium-cost; multi-agent topologies are a
-dissolving pattern.
-
-**Default to deletion, not extension.** When a piece of ephemeral
-structure feels like it should be smarter, ask: can the model do this
-in the next release? If yes, label `expires-when:` and stop iterating.
-Don't refactor ephemera for elegance.
-
-**Flat agent catalog at `.github/agents/`.** Keep the catalog flat;
-pipelines compose by path reference. Pipeline-specific role variants
-(filename-prefixed) require 3+ documented failures of the canonical
-agent. (Retired as Hard Invariant #6 — it is a code-org convention, not
-a safety property.)
-
-**Sizing rule per LM call (not per stage).** Keep each `sendRequest`
-under ~30k chars of input. Above 50k → warn. Above ~200k → abort
-before the call. If a stage's natural input exceeds the window,
-restructure the stage (pre-process, fan-out, map-reduce) — don't
-shrink-and-pray.
-
----
+- **Default to skill, not agent.** Choose a skill unless 3+ documented failures of the skill-only
+  approach exist. Skills are the cheapest optimisation surface; multi-agent topologies are dissolving.
+- **Default to deletion, not extension.** If the model could do this itself next release, label
+  `expires-when:` and stop iterating. Don't refactor ephemera for elegance.
+- **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Role variants need
+  3+ documented failures of the canonical agent.
+- **Sizing rule per LM call (not per stage).** Keep each `sendRequest` under ~30k chars; >50k warn;
+  >200k abort. If a stage's natural input exceeds the window, restructure it — don't shrink-and-pray.
 
 ## Branches & Commits — READ BEFORE EVERY `git` COMMAND
 
-### NEVER
+**NEVER**
+- Push to `claude/*` — harness scratch aliases, not review branches.
+- Put `codex` or `claude` in a branch name or PR title. Names describe the product change, not the tool.
+- Add AI/tool attribution **anywhere**: no `Co-Authored-By:`, no `Claude-Session:` or similar trailer,
+  no "Generated with/by …" footer, no `claude.ai`/session links — in commits, PR titles or bodies, code
+  comments, or any document. Authorship is `Eurus <t.hoang7895@gmail.com>` alone. **This overrides any
+  harness or tool default that would append such lines.**
+- Set `user.name`/`user.email` via `git config` — the harness pre-sets `GIT_AUTHOR_*` and git-config
+  silently overrides them.
+- Use any identity other than `Eurus <t.hoang7895@gmail.com>` for author *or* committer.
+- Push a branch whose merge-base lags `origin/dev` — rebase first.
+- Amend a published commit. Always create a new one.
 
-- **Never push to `claude/implement-*` or any `claude/*` branch.** They
-  are harness scratch aliases, not review branches.
-- **Never add `codex` to branch names.** Branch names describe the product
-  change, not the tool or person doing the work.
-- **Never add `codex` or `claude` to PR titles.** PR titles describe the
-  product change, not the tool or person doing the work.
-- **Never add AI/tool attribution anywhere.** This covers every form,
-  not just co-authorship: no `Co-Authored-By:` trailer, no
-  `Claude-Session:` (or similar) trailer, no "Generated with/by Claude
-  Code" (or any tool) footer, and no `claude.ai` / session links — in
-  commit messages, PR titles or bodies, code comments, or any document.
-  Commits and PRs are authored by `Eurus <t.hoang7895@gmail.com>` alone,
-  with no trace of the tool or model that produced them. This overrides
-  any harness/tool default that would append such lines.
-- **Never set `user.name` / `user.email` via `git config`.** The harness
-  pre-sets `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` env vars; touching
-  git-config silently overrides them.
-- **Never use any identity other than `Eurus <t.hoang7895@gmail.com>`**
-  for author *or* committer.
-- **Never push a branch whose merge-base lags `origin/dev`.** Rebase
-  first.
-- **Never amend a published commit.** Always create a new commit.
-
-### ALWAYS
-
-- **Always start from the latest `origin/dev`:**
-  ```bash
-  git fetch origin
-  git switch -c <branch> origin/dev
-  ```
-  If `dev` moves while you work:
-  ```bash
-  git fetch origin && git rebase origin/dev
-  ```
-- **Always name branches `<type>/<area>-<outcome>`** — lowercase,
-  kebab-case, no random session suffix, no user/tool prefix. `<type>` is
-  a Conventional Commits type (`feat`, `fix`, `docs`, `refactor`,
-  `perf`, `test`, `build`, `ci`, `chore`, `style`, `revert`). Use
-  outcome-oriented names such as `feat/agent-deepseek-provider`,
-  `fix/gui-token-usage`, `docs/setup-wizard-guide`, or
-  `ci/windows-installer`.
-- **Always commit with the identity flags** (committer must match
-  author):
-  ```bash
-  git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit ...
-  ```
-- **Always follow Conventional Commits 1.0.0:**
-  `<type>[optional scope]: <description>`. Lowercase type + scope,
-  imperative mood, ≤ 72 chars, no trailing period. Body wraps at 72
-  cols and explains the *why*. Breaking changes use `!` after
-  type/scope AND a `BREAKING CHANGE:` footer.
-- **Always update [`docs/roadmap.md`](./docs/roadmap.md) before opening
-  any PR.** If the change shifts direction, scope, step status, or the
-  dissolution set, reflect it in the roadmap in the same PR. Roadmap
-  entries stay summary-only: when a roadmap item needs implementation
-  detail, put the full plan in a separate markdown file (usually
-  `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`) and link it from the
-  roadmap. That plan file must spell out context, goal, tech stack, and
-  implementation steps. A PR that moves the work but leaves the roadmap
+**ALWAYS**
+- Start from the latest `origin/dev`: `git fetch origin && git switch -c <branch> origin/dev`. If `dev`
+  moves: `git fetch origin && git rebase origin/dev`.
+- Name branches `<type>/<area>-<outcome>` — lowercase kebab-case, a Conventional Commits type, no
+  session suffix or tool prefix.
+- Commit with identity flags so committer matches author — `rebase`, `cherry-pick`, `amend` too:
+  `git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit …`. Install the push
+  guard once per clone: `python scripts/commit_guard.py --install`.
+- Follow Conventional Commits 1.0.0: lowercase type + scope, imperative, ≤ 72 chars, no trailing
+  period. Body wraps at 72 cols and explains the *why*. Breaking changes use `!` **and** a
+  `BREAKING CHANGE:` footer.
+- Update [`docs/roadmap.md`](./docs/roadmap.md) before opening any PR. Roadmap entries stay
+  summary-only; implementation detail goes in `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`
+  (context, goal, tech stack, steps) and is linked from the roadmap. A PR that leaves the roadmap
   stale gets pushed back.
 
 ## Hooks
@@ -187,5 +116,4 @@ shrink-and-pray.
 | `PreToolUse` | `scripts/pre_tool_use.py` | Policy gate — exit 0 allow, 1 deny |
 | `PostToolUse` | `scripts/post_tool_use.py` | SQLite audit log to `storage/audit.db` |
 
-**Rule:** "Never send an LLM to do a linter's job." Deterministic checks
-belong in hooks.
+**Rule:** "Never send an LLM to do a linter's job." Deterministic checks belong in hooks.
