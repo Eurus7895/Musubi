@@ -113,6 +113,24 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- The console's JS tests are run, not merely written — `gui/src/**/*.test.mjs`
+  held 99 assertions that no script and no CI job ever executed, so a feature
+  commit that reintroduced the `TokenEconomics` panel left two surface
+  assertions red for several releases with nothing to report it. A `test`
+  script now exists in both `gui/package.json` and the root workspace, and a
+  blocking `console-js` CI job runs it; the suite needs no `npm ci`, since
+  every test imports only `node:` builtins and local modules. The stale
+  assertions were flipped from "forbidden" to "required" to match the
+  deliberate reintroduction. `chatCommands.js` — the classifier that decides
+  whether a chat message opens the pipeline picker, names a pipeline inline,
+  or goes to the driver agent — went from 4 tests to 15, covering the full
+  command vocabulary, filler stripping, normalization, name shapes and
+  degenerate input. Two live defects found while writing them are recorded as
+  `todo` tests asserting the intended behavior: a one-word tail after any
+  pipeline prefix resolves to a bogus name, which makes `TauriSource` clear
+  the composer and drop the message; and `NAMED_PIPELINE` omits three prefixes
+  `PIPELINE_COMMANDS` accepts. Neither is fixed here.
+
 - A large change is more review, not a refusal — a manifest that reclassified
   a goal as large used to end the turn with a CLI string (`agent … --pipeline
   feature-dev`) the chat surface cannot run, so the work simply stopped; the

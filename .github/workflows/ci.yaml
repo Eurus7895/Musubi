@@ -1,11 +1,15 @@
-# CI — Python + Rust test suites.
+# CI — Python + Rust + console JS test suites.
 #
-# Runs on every PR + push to dev / main. Two parallel jobs:
+# Runs on every PR + push to dev / main. Three parallel jobs:
 #   - python: pytest + ruff (lint, non-blocking)
 #   - rust: cargo test on the console's webkit-free audit.db reader
 #     (gui/src-tauri/musubi-data). Headless — no Tauri/webview deps, so
 #     it needs no system libs. The full desktop bundle is built separately
 #     by .github/workflows/desktop.yml (release-only / manual).
+#   - console-js: node:test over gui/src/**/*.test.mjs. These files existed
+#     unrun for several releases, which is how the Orchestrator surface
+#     assertions went stale without anyone noticing. Blocking, so that
+#     cannot recur.
 #
 # Lint runs with continue-on-error because there's pre-existing ruff debt
 # in code that pre-dates the linter config. CI surfaces the warnings on
@@ -128,3 +132,29 @@ jobs:
         # tests. Pure rusqlite + serde, no webkit, so it runs headless
         # without the Linux webview libs the desktop bundle needs.
         run: cargo test
+
+  # ────────────────────────────────────────────────────────────────────
+  # Console frontend — gui/src/
+  # ────────────────────────────────────────────────────────────────────
+  console-js:
+    name: Console JS
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test — node:test
+        # Pure logic tests over the chat command classifier, the Tauri data
+        # source contract, the pipeline builder model, and the view models.
+        # No dependencies and no DOM: the view tests read the .jsx sources as
+        # text and assert on structure, so `npm ci` and a browser are both
+        # unnecessary. Tests marked `todo` document known defects and report
+        # without failing the run.
+        run: npm test
