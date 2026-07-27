@@ -1,7 +1,15 @@
-// Top trust strip: wordmark + Hard Invariants pills + runtime status.
-const pill = (label) => (
-  <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, color: '#9b9ba2', background: 'rgba(84,199,154,0.09)', border: '1px solid rgba(84,199,154,0.22)', padding: '3px 8px', borderRadius: 20, whiteSpace: 'nowrap', flexShrink: 0 }}>
-    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#54c79a' }} />{label}
+// Top trust strip: wordmark + live evidence for each Hard Invariant.
+//
+// These were four hard-coded strings — invariants, not state — sitting in the
+// most valuable strip in the window. Because they never changed they read as
+// decoration, and they burned the success colour so a real green result had no
+// impact left. Same four claims, but each one is now a counter that moves, so
+// a deny is visible the moment it lands.
+const counter = ({ key, label, value, ok }) => (
+  <span key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0 }}>
+    <span style={{ color: ok ? 'var(--ok)' : 'var(--danger)' }}>●</span>
+    {label}{' '}
+    <b style={{ color: 'var(--text)', fontWeight: 500 }}>{value}</b>
   </span>
 )
 
@@ -9,23 +17,24 @@ export default function TrustStrip({ vals }) {
   const profiles = vals.profiles || []
   const hasActiveOption = profiles.some((p) => p.name === vals.activeProfileName)
   return (
-    <div style={{ height: 46, flexShrink: 0, background: '#111721', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', padding: '0 16px', gap: 13 }}>
+    <div style={{ height: 44, flexShrink: 0, background: '#111721', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', padding: '0 16px', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexShrink: 0 }}>
         <span style={{ fontWeight: 700, fontSize: 14, letterSpacing: '0.02em' }}>Musubi</span>
-        <span style={{ fontSize: 10.5, color: '#5a5a62', fontFamily: "'IBM Plex Mono',monospace" }}>tie agents to policy</span>
       </div>
-      <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', minWidth: 0, overflow: 'hidden' }}>
-        {['zero-LLM substrate', 'fail-closed policy', 'append-only audit', 'evaluator firewall'].map(pill)}
+      <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'nowrap', minWidth: 0, overflow: 'hidden', fontFamily: 'var(--mono)', fontSize: 'var(--fs-2)', color: 'var(--text-2)' }}>
+        {(vals.trustCounters || []).map(counter)}
       </div>
       <div style={{ flex: 1 }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#6a6a72' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, fontFamily: 'var(--mono)', fontSize: 'var(--fs-2)', color: 'var(--text-3)' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none"><path d="M4 7 L9 4 L15 7 L20 4 V17 L15 20 L9 17 L4 20 Z M9 4 V17 M15 7 V20" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
           {vals.runtimeSourceLabel}
         </span>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ff9b3d' }}>
-          <span style={{ color: '#6a6a72' }}>profile</span>
+        {/* A profile picker is a thing, not an alert — so it is no longer
+            painted in the colour reserved for "look here". */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span>profile</span>
           <select
             value={vals.activeProfileName}
             onChange={(e) => {
@@ -34,12 +43,12 @@ export default function TrustStrip({ vals }) {
             }}
             style={{
               maxWidth: 280,
-              background: '#19212f',
-              border: '1px solid rgba(255,155,61,0.35)',
-              borderRadius: 7,
-              color: '#ffbe7a',
-              fontFamily: "'IBM Plex Mono',monospace",
-              fontSize: 11,
+              background: 'var(--raised)',
+              border: '1px solid var(--line-strong)',
+              borderRadius: 'var(--r-sm)',
+              color: '#cfd6e0',
+              fontFamily: 'var(--mono)',
+              fontSize: 'var(--fs-2)',
               padding: '5px 28px 5px 8px',
               outline: 'none',
             }}

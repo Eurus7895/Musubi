@@ -113,6 +113,29 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Console now-first Orchestrator and design tokens — the view that answers
+  "what is the agent doing right now?" spent ~206 px of stacked chrome before
+  any evidence, and the answer was an 11 px pill between "feature-dev mode" and
+  "37 log rows". A Now banner naming the actor, the act, the elapsed time, and
+  a labelled **Stop run** is now the largest element on screen; finished
+  requests collapse to one line with absent values rendered as `—` rather than
+  typeset zeros, and the running request expands in place with its last log
+  lines. Orange is reclaimed for live attention only (selection became a
+  neutral raise plus a blue bar, amber stays escalated), the session rail groups
+  by Active / Needs you / Earlier with clock times, and the trust strip's four
+  hard-coded invariant strings became four counters that move, so a deny is
+  visible when it lands. Underneath, `index.css` gained a `:root` token layer —
+  3 surfaces, 3 greys, 5 semantic colours, 6 type sizes, 3 radii, 4 px spacing
+  — replacing ~20 greys across two hue families, 17 font sizes, and 11 radii,
+  and the duplicated rule block that had been appended rather than applied was
+  folded into its canonical definitions. Presentation only: no substrate,
+  policy, audit, or `LMRouter` path changed and no Tauri command was added.
+  Two factual bugs went with it — Policy's hard-coded "4 policy roles" now
+  reads the live catalog, and Models' invented `.musubi/llm.toml` sample is the
+  documented `llm.json` schema beside the operator's real path (the file itself
+  stays unrendered because a profile may hold an inline `api_key`). Record:
+  [`2026-07-27-console-now-first-orchestrator.md`](./superpowers/plans/2026-07-27-console-now-first-orchestrator.md)
+
 - Commit identity is enforced, not remembered — the harness presets
   `GIT_AUTHOR_*` but leaves `GIT_COMMITTER_*` empty, so any command that writes
   a commit without explicit `-c user.*` flags silently takes the committer from

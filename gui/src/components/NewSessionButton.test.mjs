@@ -26,8 +26,13 @@ test('Orchestrator is the only session surface and Studio is builder-only', () =
   assert.match(chatBody, /latestUserMessageIndex/)
   assert.doesNotMatch(orchestrator, /onClearDriverChat/)
   assert.match(orchestrator, />Sessions</)
-  assert.match(orchestrator, /project conversations/)
-  assert.match(orchestrator, />Runtime evidence</)
+  // The rail asserted "newest first" in a subtitle while no card carried a
+  // time. It now groups by Active / Needs you / Earlier and shows clocks, so
+  // the ordering is visible structure rather than a claim.
+  assert.match(orchestrator, /railGroups/)
+  assert.doesNotMatch(orchestrator, /project conversations/)
+  // "Runtime evidence" was one of six overlapping words for the same thing.
+  assert.doesNotMatch(orchestrator, /Runtime evidence/)
   assert.match(orchestrator, /Back to graph/)
   assert.match(orchestrator, /Request log/)
   assert.match(orchestrator, /Agent log/)

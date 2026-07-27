@@ -42,3 +42,40 @@ test('hiding Sessions removes the rail instead of collapsing it', () => {
   assert.match(source, /Show sessions/)
   assert.equal(source.includes('sessions-collapsed'), false)
 })
+
+test('the Now banner answers what the agent is doing, and offers the way out', () => {
+  assert.match(source, /function NowBanner/)
+  // Actor, act, elapsed, and stop — the four things wanted mid-run.
+  assert.match(source, /nowRun/)
+  assert.match(source, /now\.headline/)
+  assert.match(source, /now\.act/)
+  assert.match(source, /elapsedSince/)
+  assert.match(source, /Stop run/)
+  assert.match(source, /onStopRun/)
+  // The banner ticks its own clock; the data source is event-driven.
+  assert.match(source, /setInterval/)
+})
+
+test('the run status strip and run-config band no longer sit above the evidence', () => {
+  // 206px of stacked chrome came before the first data row. Run mode is a
+  // start-of-run decision and now lives with the composer instead.
+  assert.equal(source.includes('runtime-status'), false)
+  assert.equal(source.includes('audited nodes'), false)
+  assert.equal(source.includes('log rows</span>'), false)
+  assert.match(source, /composer__config/)
+  assert.match(source, /config=\{<RunConfiguration/)
+})
+
+test('finished requests collapse to one line and absent values are not zeros', () => {
+  assert.match(source, /function RequestTimeline/)
+  assert.match(source, /function RequestRow/)
+  // A sparse run typesets its noughts like real data unless they are dashed.
+  assert.match(source, /metricField/)
+  assert.match(source, /'—'/)
+  assert.match(source, /is-absent/)
+  // The running request shows its last log lines without leaving the timeline.
+  assert.match(source, /function LiveLog/)
+  assert.match(source, /LIVE_LOG_LINES/)
+  // The 980px cap wasted gutter on a wide display; the pane grows instead.
+  assert.equal(source.includes('request-graph'), false)
+})

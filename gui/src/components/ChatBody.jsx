@@ -161,35 +161,21 @@ function LogWindow({ vals }) {
   )
 }
 
+// The running state is the Now banner's job, and the banner is far larger and
+// far better placed. What is left here is a pointer: one line that says the
+// run is live and where to watch it, so the chat stays narrative.
 function ProcessMessage({ vals }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 5, padding: '7px 16px' }}>
-      <div style={{ fontSize: 9.5, color: '#6a6a72', fontFamily: "'IBM Plex Mono',monospace", paddingLeft: 3 }}>driver process</div>
+    <div style={{ padding: '6px 16px', display: 'flex', alignItems: 'center', gap: 9 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--live)', animation: 'pulse 1.4s ease-in-out infinite', flexShrink: 0 }} />
+      <span style={{ fontFamily: 'var(--sans)', fontSize: 'var(--fs-3)', color: 'var(--text-2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {vals.nowRun?.actor || 'The driver'} is working
+      </span>
       <button
-        onClick={vals.onToggleProcess}
-        style={{
-          width: '92%',
-          textAlign: 'left',
-          background: 'rgba(255,155,61,0.1)',
-          border: '1px solid rgba(255,155,61,0.32)',
-          borderRadius: 13,
-          color: '#e9e9ea',
-          padding: '11px 12px',
-          cursor: 'pointer',
-          boxShadow: '0 10px 24px rgba(0,0,0,0.25)',
-        }}
+        onClick={vals.onOpenLog}
+        style={{ marginLeft: 'auto', flexShrink: 0, padding: 0, border: 0, background: 'transparent', color: '#ffb66f', fontFamily: 'var(--sans)', fontSize: 'var(--fs-3)', cursor: 'pointer' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#ff9b3d', animation: 'pulse 1.4s ease-in-out infinite', flexShrink: 0 }} />
-          <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: '#ffbe7a', fontWeight: 650 }}>agent running</span>
-          <span style={{ marginLeft: 'auto', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#9b9ba2' }}>{vals.driverProcessOpen ? 'hide details' : 'show details'}</span>
-        </div>
-        <div style={{ fontSize: 12.5, lineHeight: 1.45, color: '#f4f4f5', marginBottom: 6, overflowWrap: 'anywhere' }}>{vals.driverStatusText || 'Working on the current request...'}</div>
-        {vals.driverProcessOpen && (
-          <pre style={{ margin: '10px 0 0', maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, lineHeight: 1.45, color: '#cfcfd4', background: 'rgba(13,17,23,0.62)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 10 }}>
-            {vals.driverProcessLog || 'No process output yet.'}
-          </pre>
-        )}
+        see the log
       </button>
     </div>
   )
@@ -197,11 +183,10 @@ function ProcessMessage({ vals }) {
 
 // Scrollable Orchestrator conversation + composer. Pipeline execution now
 // shares this durable conversation instead of owning a Studio chat surface.
-export default function ChatBody({ vals }) {
+export default function ChatBody({ vals, config = null }) {
   const scrollRef = useRef(null)
   const shouldStickRef = useRef(true)
   const lastMessageCountRef = useRef(0)
-  const isCancelling = vals.sendMode === 'cancel'
   const sendDisabled = !!vals.sendDisabled
   const inputDisabled = !!vals.inputDisabled
   const latestUserMessageIndex = vals.chat.reduce(
@@ -242,14 +227,18 @@ export default function ChatBody({ vals }) {
           </Fragment>
         ))}
       </div>
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '11px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
+      {/* Run configuration is a start-of-run decision, so it sits with the
+          composer rather than in a header band above the evidence. */}
+      <div className="composer">
+        {config}
+        <div className="composer__row">
         <input
           value={vals.draft}
           onChange={vals.onDraft}
           onKeyDown={vals.onDraftKey}
           disabled={inputDisabled}
           placeholder={vals.disabledText || (vals.driverBusy ? 'Agent is still working...' : (vals.placeholder || 'Message the driver...'))}
-          style={{ flex: 1, minWidth: 0, background: inputDisabled ? 'rgba(25,33,47,0.58)' : '#19212f', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '9px 12px', color: inputDisabled ? '#6f7685' : '#e9e9ea', fontFamily: "'IBM Plex Sans',system-ui,sans-serif", fontSize: 12.5, outline: 'none', cursor: inputDisabled ? 'not-allowed' : 'text' }}
+          style={{ flex: 1, minWidth: 0, background: inputDisabled ? 'rgba(25,33,47,0.58)' : 'var(--raised)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)', padding: '9px 12px', color: inputDisabled ? 'var(--text-3)' : '#e9e9ea', fontFamily: 'var(--sans)', fontSize: 'var(--fs-4)', outline: 'none', cursor: inputDisabled ? 'not-allowed' : 'text' }}
         />
         <Box
           as="button"
@@ -258,22 +247,18 @@ export default function ChatBody({ vals }) {
           title={vals.sendTitle || 'Send'}
           aria-label={vals.sendTitle || 'Send'}
           css={
-            'display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex-shrink:0;border-radius:9px;cursor:' + (sendDisabled ? 'not-allowed' : 'pointer') + ';' +
+            'display:flex;align-items:center;justify-content:center;width:36px;height:36px;flex-shrink:0;border-radius:var(--r-sm);cursor:' + (sendDisabled ? 'not-allowed' : 'pointer') + ';' +
             (sendDisabled
               ? 'border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);color:#5f6673;'
-              :
-            (isCancelling
-              ? 'border:1px solid rgba(232,106,95,0.5);background:rgba(232,106,95,0.14);color:#e86a5f;'
-              : 'border:1px solid rgba(255,155,61,0.4);background:rgba(255,155,61,0.14);color:#ff9b3d;'))
+              : 'border:1px solid rgba(255,155,61,0.4);background:rgba(255,155,61,0.14);color:var(--live);')
           }
-          hover={sendDisabled ? '' : (isCancelling ? 'background:rgba(232,106,95,0.24)' : 'background:rgba(255,155,61,0.24)')}
+          hover={sendDisabled ? '' : 'background:rgba(255,155,61,0.24)'}
         >
-          {isCancelling ? (
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none"><path d="M7 7 L17 17 M17 7 L7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>
-          ) : (
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none"><path d="M5 12 H18 M13 7 L18 12 L13 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          )}
+          {/* One glyph, one meaning. Stopping a run is a labelled button in
+              the Now banner, not this control wearing a different colour. */}
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none"><path d="M5 12 H18 M13 7 L18 12 L13 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </Box>
+        </div>
       </div>
       {vals.logWindowOpen && vals.hasDriverLog && <LogWindow vals={vals} />}
     </div>

@@ -759,7 +759,8 @@ test('legacy pipeline chat is not projected while Orchestrator owns process', ()
   assert.equal(vm.chat[0].text, 'orchestrator answer')
   assert.equal(vm.pipeChatBody, undefined)
   assert.equal(vm.driverBusy, true)
-  assert.equal(vm.sendMode, 'cancel')
+  // Send never becomes cancel in place; stopping is a labelled banner button.
+  assert.equal(vm.sendMode, 'send')
 })
 
 test('pipeline studio does not expose a run rail or active timeline', () => {
@@ -935,7 +936,10 @@ test('selecting a session focuses and highlights it', () => {
 
   assert.equal(vm.activeRunId, 'old-session')
   const chosen = vm.runs.find((run) => run.id === 'old-session')
-  assert.ok(chosen.cardStyle.includes('#ff9b3d'))
+  // Selection is a flag the stylesheet renders as a neutral raise plus a blue
+  // bar. Orange is reserved for the live run, which is a different session.
+  assert.equal(chosen.selected, true)
+  assert.equal(vm.runs.find((run) => run.id === 'new-session').selected, false)
 })
 
 test('historical session is read-only while another session owns the driver', () => {
@@ -997,7 +1001,7 @@ test('historical session becomes resumable after the other run finishes', () => 
   assert.equal(vm.disabledText, '')
 })
 
-test('active running session keeps cancel available', () => {
+test('active running session offers Stop in the banner, not a mutated send button', () => {
   const vm = buildViewModel(baseState({
     orchestratorChatId: 'live-session',
     selectedSession: 'live-session',
@@ -1017,6 +1021,46 @@ test('active running session keeps cancel available', () => {
   }), actions())
 
   assert.equal(vm.viewingHistoricalSession, false)
-  assert.equal(vm.sendDisabled, false)
-  assert.equal(vm.sendMode, 'cancel')
+  // The destructive control is its own labelled button in the Now banner, so
+  // the composer stops swapping glyph and colour under the cursor.
+  assert.equal(vm.sendMode, 'send')
+  assert.equal(vm.sendDisabled, true)
+  assert.match(vm.sendTitle, /stop it from the banner/)
+  assert.equal(typeof vm.onStopRun, 'function')
+
+  // And the banner has everything it needs to answer "what is it doing now".
+  assert.equal(vm.nowRun.running, true)
+  assert.equal(vm.nowRun.startedAt, 1)
+  assert.match(vm.nowRun.headline, /^Driver is /)
+})
+
+test('rail groups sessions by what the operator would do about them', () => {
+  const vm = buildViewModel(baseState({
+    subagents: [
+      agent(200, 'done-session', 'done', 'coder'),
+      agent(201, 'stuck-session', 'escalated', 'planner'),
+      agent(202, 'live-session', 'running', 'planner'),
+    ],
+  }), actions())
+
+  assert.deepEqual(vm.railGroups.map((group) => group.label), ['Active', 'Needs you', 'Earlier'])
+  assert.deepEqual(vm.railGroups.map((group) => group.runs.length), [1, 1, 1])
+  assert.equal(vm.railGroups[0].runs[0].id, 'live-session')
+  assert.equal(vm.railGroups[1].runs[0].id, 'stuck-session')
+  assert.equal(vm.railGroups[2].runs[0].id, 'done-session')
+})
+
+test('trust strip carries live counters rather than fixed claims', () => {
+  const vm = buildViewModel(baseState({ allowCount: 14, denyCount: 0 }), actions())
+  const byKey = Object.fromEntries(vm.trustCounters.map((row) => [row.key, row]))
+
+  assert.equal(byKey.policy.value, '14 allow / 0 deny')
+  assert.equal(byKey.policy.ok, true)
+  assert.equal(byKey.substrate.value, '0 LM calls')
+
+  // A deny must be visible the moment it lands — that is the whole point.
+  const denied = buildViewModel(baseState({ allowCount: 14, denyCount: 2 }), actions())
+  const policy = denied.trustCounters.find((row) => row.key === 'policy')
+  assert.equal(policy.value, '14 allow / 2 deny')
+  assert.equal(policy.ok, false)
 })

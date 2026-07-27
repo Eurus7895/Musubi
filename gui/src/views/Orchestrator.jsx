@@ -5,6 +5,25 @@ import TokenEconomics from '../components/TokenEconomics.jsx'
 
 const REQUEST_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
 const AGENT_LOG_FILTERS = ['All', 'Model', 'Tools', 'Skills', 'Policy', 'stdout', 'stderr']
+// How many log lines the running request shows without a click. Three is what
+// fits above the fold beside the banner; more and the timeline stops being one.
+const LIVE_LOG_LINES = 3
+
+const numberFormat = new Intl.NumberFormat('en-US')
+
+// Absent is not zero. A sparse run typesets three real numbers and a pile of
+// noughts identically, so the eye cannot skip the noughts — render them as an
+// em dash the scan slides past.
+function metricField(value, suffix) {
+  const n = Number(value || 0)
+  if (!n) return { value: '—', absent: true }
+  return { value: suffix ? `${numberFormat.format(n)} ${suffix}` : numberFormat.format(n), absent: false }
+}
+
+function Metric({ value, suffix }) {
+  const field = metricField(value, suffix)
+  return <span className={field.absent ? 'is-absent' : ''}>{field.value}</span>
+}
 
 export default function Orchestrator({ vals }) {
   const [sessionsHidden, setSessionsHidden] = useState(false)
@@ -53,8 +72,20 @@ export default function Orchestrator({ vals }) {
     <div className={`orchestrator-console${sessionsHidden ? ' sessions-hidden' : ''}${conversationCollapsed ? ' conversation-collapsed' : ''}`}>
       {!sessionsHidden && <SessionsRail vals={vals} onHide={() => setSessionsHidden(true)} />}
       <main className="orchestrator-workspace">
-        <RunConfiguration vals={vals} onShowSessions={sessionsHidden ? () => setSessionsHidden(false) : null} />
-        <RuntimeStatus vals={vals} />
+        <NowBanner
+          now={vals.nowRun}
+          onStop={vals.onStopRun}
+          onWatch={() => {
+            const live = (vals.runtimeGraph?.nodes || []).find((node) => node.status === 'running')
+            if (live) { onSelectNode(live); setDetailTab('log') }
+          }}
+        />
+        <div className="session-strip">
+          <div className="session-strip__id">
+            <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
+            <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
+          </div>
+        </div>
         <section className="runtime-evidence">
           {selectedNode
             ? <RuntimeDetail
@@ -68,124 +99,215 @@ export default function Orchestrator({ vals }) {
                 onQuery={setLogQuery}
                 onBack={() => setSelectedNodeId(null)}
               />
-            : <>
-                <div className="runtime-evidence__header">
-                  <div>
-                    <span className="workspace-kicker">Runtime evidence</span>
-                    <h1>{vals.sessionTitle}</h1>
-                    <p>{vals.sessionSubtitle}</p>
-                  </div>
-                </div>
-                <RuntimeGraph graph={vals.runtimeGraph} onSelectNode={onSelectNode} />
-              </>}
+            : <RequestTimeline
+                graph={vals.runtimeGraph}
+                logs={vals.runtimeLogs}
+                selectedId={selectedNodeId}
+                onSelectNode={onSelectNode}
+              />}
         </section>
       </main>
       <ConversationPanel
         vals={vals}
         collapsed={conversationCollapsed}
         onToggle={() => setConversationCollapsed((value) => !value)}
+        onShowSessions={sessionsHidden ? () => setSessionsHidden(false) : null}
       />
     </div>
   )
 }
 
+// The largest element on the screen, and the only one that answers the
+// question the operator opened the console to ask. It names the actor, the
+// act, the elapsed time, and the way out.
+function NowBanner({ now = {}, onStop, onWatch }) {
+  const startedAt = Number(now.startedAt || 0)
+  const [elapsed, setElapsed] = useState(() => elapsedSince(startedAt))
+
+  useEffect(() => {
+    if (!now.running || !startedAt) return undefined
+    setElapsed(elapsedSince(startedAt))
+    const id = setInterval(() => setElapsed(elapsedSince(startedAt)), 1000)
+    return () => clearInterval(id)
+  }, [now.running, startedAt])
+
+  if (!now.running) {
+    return (
+      <div className="now-banner is-idle">
+        <i />
+        <div className="now-banner__body"><h1>Nothing is running</h1></div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="now-banner">
+      <i />
+      <div className="now-banner__body">
+        <div className="now-banner__headline">
+          <h1>{now.headline}</h1>
+          {!!elapsed && <span className="now-banner__elapsed">{elapsed}</span>}
+        </div>
+        <p className="now-banner__act">
+          {now.turnLabel ? `${now.turnLabel} · ` : ''}<code>{now.act}</code>
+        </p>
+        <div className="now-banner__progress">
+          <div><i style={{ width: `${now.progress || 0}%` }} /></div>
+          <span>
+            {now.maxTurns ? `${now.turns} of ${now.maxTurns} turns · ` : ''}{now.modeLabel}
+          </span>
+        </div>
+      </div>
+      <div className="now-banner__actions">
+        <button className="ui-button" onClick={onWatch}>Watch log</button>
+        {/* Stop lives where you are already looking, and says what it does. */}
+        <button className="ui-button ui-button--danger" onClick={onStop}>Stop run</button>
+      </div>
+    </div>
+  )
+}
+
+function elapsedSince(startedAt) {
+  if (!startedAt) return ''
+  const total = Math.max(0, Math.round(Date.now() / 1000 - startedAt))
+  const minutes = Math.floor(total / 60)
+  const seconds = String(total % 60).padStart(2, '0')
+  if (minutes < 60) return `${minutes}m ${seconds}s`
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
+}
+
 function SessionsRail({ vals, onHide }) {
+  const groups = vals.railGroups || []
   return (
     <aside className="session-rail">
       <header>
-        <div><strong>Sessions</strong><span>project conversations · newest first</span></div>
-        <button aria-label="Hide sessions" onClick={onHide}>←</button>
+        <strong>Sessions</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>{vals.runs.length}</span>
+          <button aria-label="Hide sessions" onClick={onHide}>←</button>
+        </div>
       </header>
       <div className="session-rail__list">
-        {vals.runs.length ? vals.runs.map((run) => (
-          <button key={run.id} className={`session-card${run.id === vals.activeRunId ? ' is-active' : ''}`} onClick={run.onSelect} title={run.title}>
-            <span className="session-card__top"><b>{run.orderLabel}</b><em style={{ color: run.statusColor }}>● {run.statusLabel}</em></span>
-            <strong>{run.title}</strong><small>{run.subtitle}</small><p>{run.currentBrief}</p>
-          </button>
+        {groups.length ? groups.map((group) => (
+          <div key={group.key}>
+            <div className="session-group">{group.label}</div>
+            <div className="session-group-list">
+              {group.runs.map((run) => <SessionCard key={run.id} run={run} />)}
+            </div>
+          </div>
         )) : <div className="session-rail__empty">No sessions yet.</div>}
       </div>
     </aside>
   )
 }
 
-function RunConfiguration({ vals, onShowSessions }) {
-  const pipelineMode = vals.runMode === 'pipeline'
+function SessionCard({ run }) {
+  const tone = run.status === 'running' ? 'is-live'
+    : run.bucket === 'needsYou' ? 'is-escalated'
+      : run.status === 'done' ? 'is-done' : 'is-quiet'
   return (
-    <section className="run-config">
-      {onShowSessions && <button className="show-sessions" onClick={onShowSessions}>→ Show sessions</button>}
-      <div className="run-config__heading"><span>Execution owner</span><strong>Orchestrator</strong></div>
-      <div className="run-mode" role="group" aria-label="Execution mode">
-        <button className={!pipelineMode ? 'is-active' : ''} onClick={() => vals.onSetRunMode?.('direct')}>Direct</button>
-        <button className={pipelineMode ? 'is-active' : ''} onClick={() => vals.onSetRunMode?.('pipeline')}>Pipeline</button>
-      </div>
-      {pipelineMode && (
-        <select value={vals.selectedPipeline || ''} onChange={(event) => vals.pipelineOptions.find((option) => option.name === event.target.value)?.onSelect?.()} aria-label="Pipeline recipe">
-          <option value="">Select a governed pipeline</option>
-          {vals.pipelineOptions.map((option) => <option key={option.name} value={option.name} disabled={!option.runnable}>{option.name}{option.runnable ? '' : ' · blocked'}</option>)}
-        </select>
-      )}
-      <div className="run-config__hint">{pipelineMode ? 'Runs the selected saved recipe in this conversation.' : 'The driver chooses governed workers as evidence requires.'}</div>
-    </section>
+    <button
+      className={`session-card ${tone}${run.selected ? ' is-selected' : ''}`}
+      onClick={run.onSelect}
+      title={run.title}
+    >
+      <span className="session-card__title"><i /><strong>{run.title}</strong></span>
+      <span className="session-card__meta">
+        <span className="session-card__state">
+          {run.status === 'running' ? `running · ${run.turnsLabel}` : run.stateLabel}
+        </span>
+        {/* Duplicate titles were indistinguishable without a time. */}
+        <span className="session-card__elapsed">{run.status === 'running' ? run.age : run.clock}</span>
+      </span>
+    </button>
   )
 }
 
-function RuntimeStatus({ vals }) {
-  const graph = vals.runtimeGraph || { nodes: [], requests: [], mode: 'direct' }
-  return (
-    <div className="runtime-status">
-      <span className={vals.driverBusy ? 'status-pill is-running' : 'status-pill'}><i />{vals.driverBusy ? 'Running' : 'Idle'}</span>
-      <span><b>{graph.mode === 'pipeline' ? graph.pipelineName || 'Pipeline' : 'Direct'}</b> mode</span>
-      <span><b>{graph.requests?.length || 0}</b> requests</span>
-      <span><b>{graph.nodes.length}</b> audited nodes</span>
-      <span><b>{vals.runtimeLogs?.length || 0}</b> log rows</span>
-      <span className="runtime-status__model">{vals.activeModel}</span>
-    </div>
-  )
-}
-
-function RuntimeGraph({ graph = {}, onSelectNode }) {
+// A finished request is one line. The running one is expanded in place with
+// its last log lines, so "what is it doing" needs neither a click nor a
+// context switch away from the timeline.
+function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
   const requests = graph.requests || []
   if (!requests.length) {
     const nodes = graph.nodes || []
     if (!nodes.length) return <div className="runtime-empty">No audited runtime nodes for this session.</div>
-    return <div className="runtime-graph"><div className="runtime-graph__list">{nodes.map((node) => <GraphNode key={node.id} node={node} onSelect={onSelectNode} />)}</div></div>
+    return (
+      <div className="runtime-graph">
+        <div className="request-timeline">
+          {nodes.map((node) => (
+            <RequestRow key={node.id} node={node} selectedId={selectedId} onSelect={onSelectNode} />
+          ))}
+        </div>
+      </div>
+    )
   }
   return (
     <div className="runtime-graph">
-      <div className="runtime-graph__notice">Each arrow means “continued” or “summoned”; every prior request remains visible in this session.</div>
-      <div className="request-graph">
-        {requests.map((request, index) => (
-          <section className="request-group" key={request.id}>
-            <GraphNode node={request} onSelect={onSelectNode} order={index + 1} />
+      <div className="request-timeline">
+        {[...requests].reverse().map((request, index) => (
+          <div key={request.id}>
+            <RequestRow
+              node={request}
+              order={requests.length - index}
+              selectedId={selectedId}
+              onSelect={onSelectNode}
+            />
+            {request.status === 'running' && <LiveLog requestId={request.requestId} logs={logs} />}
             {!!request.agents?.length && (
-              <div className="request-group__agents">
-                {request.agents.map((agent) => <GraphNode key={agent.id} node={agent} onSelect={onSelectNode} />)}
+              <div className="request-agents">
+                {request.agents.map((agent) => (
+                  <RequestRow key={agent.id} node={agent} selectedId={selectedId} onSelect={onSelectNode} />
+                ))}
               </div>
             )}
-            {index < requests.length - 1 && <div className="request-group__continue"><span>↓</span><em>next request</em></div>}
-          </section>
+          </div>
         ))}
+        <div className="timeline-hint">
+          Finished requests collapse to one line. Open any row for its full log — the timeline stays.
+        </div>
       </div>
     </div>
   )
 }
 
-function GraphNode({ node, onSelect, order }) {
+function RequestRow({ node, order, selectedId, onSelect }) {
+  const live = node.status === 'running'
+  const isAgent = node.kind === 'agent'
+  const label = order
+    ? `R${String(order).padStart(2, '0')} · ${node.title || node.label}`
+    : (node.title || node.label)
   return (
-    <button className={`runtime-node kind-${node.kind}`} onClick={() => onSelect(node)}>
-      <span className="runtime-node__identity">
-        <em>{node.kind}</em>
-        <strong>{node.title || node.label}</strong>
-        <code>{node.requestId || node.id}</code>
-      </span>
-      <span className={`runtime-node__status status-${node.status}`}>● {node.statusLabel}</span>
-      <span className="runtime-node__metrics">
-        {order ? <b>R{String(order).padStart(2, '0')}</b> : <b>{node.turns}{node.maxTurns ? `/${node.maxTurns}` : ''}</b>}
-        {' · '}<b>{node.tools}</b> tools{' · '}<b>{new Intl.NumberFormat('en-US').format(node.tokens || 0)}</b> tokens
-      </span>
-      <span className="runtime-node__skills">{node.skills?.length ? node.skills.map((skill) => <i key={skill}>{skill}</i>) : <small>{node.logCount || 0} log rows</small>}</span>
-      <span className="runtime-node__open">Open details →</span>
+    <button
+      className={`request-row status-${node.status}${live ? ' is-live' : ''}${node.id === selectedId ? ' is-selected' : ''}`}
+      onClick={() => onSelect(node)}
+      title={node.title || node.label}
+    >
+      <i />
+      <strong>{label}</strong>
+      {isAgent && node.maxTurns
+        ? <span>{node.turns}/{node.maxTurns} turns</span>
+        : <Metric value={node.tools} suffix="tools" />}
+      <Metric value={node.tokens} suffix="tok" />
+      {live ? <span>now</span> : <Metric value={node.logCount} suffix="rows" />}
     </button>
+  )
+}
+
+function LiveLog({ requestId, logs }) {
+  const lines = logs
+    .filter((row) => row.requestId === requestId && (row.message || '').trim())
+    .slice(-LIVE_LOG_LINES)
+    .reverse()
+  return (
+    <div className="request-live-log">
+      {lines.length ? lines.map((row) => (
+        <div key={row.id}>
+          <time>{row.ts || '—'}</time>
+          <span className={`role-chip role-${row.role}`}>{String(row.role || row.source || 'root').toUpperCase()}</span>
+          <code>{row.message}</code>
+        </div>
+      )) : <div className="request-live-log__empty">No log lines yet for this request.</div>}
+    </div>
   )
 }
 
@@ -213,6 +335,13 @@ function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuer
 }
 
 function RuntimeOverview({ node, isRequest, onOpenLog }) {
+  const metrics = [
+    { label: 'Role', value: node.role, absent: false },
+    { label: 'Turns', value: node.turns + (node.maxTurns ? ` / ${node.maxTurns}` : ''), absent: false },
+    { label: 'Tools', ...metricField(node.tools) },
+    { label: 'Tokens', ...metricField(node.tokens) },
+    { label: 'Log rows', ...metricField(node.logCount) },
+  ]
   return (
     <div className="runtime-overview">
       <div className="runtime-overview__hero">
@@ -221,13 +350,11 @@ function RuntimeOverview({ node, isRequest, onOpenLog }) {
         <p>{isRequest ? 'Overview covers the root and every agent summoned by this request.' : 'Overview and metrics for this exact agent handle.'}</p>
       </div>
       <div className="runtime-overview__metrics">
-        <div><span>Role</span><strong>{node.role}</strong></div>
-        <div><span>Turns</span><strong>{node.turns}{node.maxTurns ? ` / ${node.maxTurns}` : ''}</strong></div>
-        <div><span>Tools</span><strong>{node.tools || 0}</strong></div>
-        <div><span>Tokens</span><strong>{new Intl.NumberFormat('en-US').format(node.tokens || 0)}</strong></div>
-        <div><span>Log rows</span><strong>{node.logCount || 0}</strong></div>
+        {metrics.map(({ label, value, absent }) => (
+          <div key={label}><span>{label}</span><strong className={absent ? 'is-absent' : ''}>{value}</strong></div>
+        ))}
       </div>
-      <button className="runtime-overview__log" onClick={onOpenLog}>Open {isRequest ? 'Request log' : 'Agent log'} →</button>
+      <button className="ui-button runtime-overview__log" onClick={onOpenLog}>Open {isRequest ? 'Request log' : 'Agent log'} →</button>
     </div>
   )
 }
@@ -254,18 +381,48 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery }) {
   )
 }
 
-function ConversationPanel({ vals, collapsed, onToggle }) {
+function ConversationPanel({ vals, collapsed, onToggle, onShowSessions }) {
   const skills = Array.from(new Set(Object.values(vals.skillsByWorker || {}).flat()))
   if (collapsed) return <aside className="conversation-panel is-collapsed"><button aria-label="Expand conversation" onClick={onToggle}>←</button><span>Conversation</span></aside>
   return (
     <aside className="conversation-panel">
       <header className="conversation-panel__header">
-        <div><strong>Conversation</strong><span>narrative and artifacts</span></div>
+        <strong>Conversation</strong>
         <div><NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} /><button className="collapse-button" aria-label="Collapse conversation" onClick={onToggle}>→</button></div>
       </header>
       <div className="skills-used"><span>Skills used</span>{skills.length ? skills.map((skill) => <i key={skill}>{skill}</i>) : <small>No successful skill calls recorded</small>}</div>
       <TokenEconomics economics={vals.driverSummary?.economics} />
-      <ChatBody vals={vals} />
+      <ChatBody vals={vals} config={<RunConfiguration vals={vals} onShowSessions={onShowSessions} />} />
     </aside>
+  )
+}
+
+// Execution mode and the pipeline recipe are start-of-run decisions, so they
+// belong with the composer rather than in a header band you stare past while
+// a run is already going. That is 56px of the chrome the banner reclaimed.
+function RunConfiguration({ vals, onShowSessions }) {
+  const pipelineMode = vals.runMode === 'pipeline'
+  return (
+    <div className="composer__config">
+      <div>
+        <div className="run-mode" role="group" aria-label="Execution mode">
+          <button className={!pipelineMode ? 'is-active' : ''} onClick={() => vals.onSetRunMode?.('direct')}>Direct</button>
+          <button className={pipelineMode ? 'is-active' : ''} onClick={() => vals.onSetRunMode?.('pipeline')}>Pipeline</button>
+        </div>
+        {pipelineMode
+          ? (
+            <select
+              value={vals.selectedPipeline || ''}
+              onChange={(event) => vals.pipelineOptions.find((option) => option.name === event.target.value)?.onSelect?.()}
+              aria-label="Pipeline recipe"
+            >
+              <option value="">Select a governed pipeline</option>
+              {vals.pipelineOptions.map((option) => <option key={option.name} value={option.name} disabled={!option.runnable}>{option.name}{option.runnable ? '' : ' · blocked'}</option>)}
+            </select>
+          )
+          : <span className="composer__hint">The driver chooses governed workers as evidence requires.</span>}
+        {onShowSessions && <button className="show-sessions" onClick={onShowSessions}>→ Show sessions</button>}
+      </div>
+    </div>
   )
 }
