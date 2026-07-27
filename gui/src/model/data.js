@@ -13,7 +13,7 @@ export const roleMeta = {
       'Map callers of LMRouter across agent/vendors',
       'Survey compression/ for entry points',
       'Index the musubi_* tool catalog in server.py',
-      'Trace .musubi/llm.toml profile resolution',
+      'Trace .musubi/llm.json profile resolution',
     ],
   },
   investigator: {

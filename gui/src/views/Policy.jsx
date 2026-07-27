@@ -10,7 +10,9 @@ export default function Policy({ vals }) {
       <div style={{ display: 'flex', gap: 12, padding: '14px 26px 4px' }}>
         <div style={{ flex: 1, background: '#141b27', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 22, fontWeight: 600, color: '#54c79a' }}>{vals.allowCount}</div><div style={{ fontSize: 11, color: '#6a6a72', marginTop: 2 }}>allowed this session</div></div>
         <div style={{ flex: 1, background: '#141b27', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 22, fontWeight: 600, color: '#e86a5f' }}>{vals.denyCount}</div><div style={{ fontSize: 11, color: '#6a6a72', marginTop: 2 }}>denied · fail-closed</div></div>
-        <div style={{ flex: 1, background: '#141b27', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 22, fontWeight: 600, color: '#e9e9ea' }}>4</div><div style={{ fontSize: 11, color: '#6a6a72', marginTop: 2 }}>policy roles defined</div></div>
+        {/* Was hard-coded to 4 while its two neighbours were live — a
+            credibility leak in the one view that sells credibility. */}
+        <div style={{ flex: 1, background: '#141b27', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '14px 16px' }}><div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 22, fontWeight: 600, color: '#e9e9ea' }}>{vals.policyRoles.length}</div><div style={{ fontSize: 11, color: '#6a6a72', marginTop: 2 }}>policy roles defined</div></div>
       </div>
       <div style={{ display: 'flex', gap: 18, padding: '14px 26px 26px', alignItems: 'flex-start', minHeight: 0 }}>
         <div style={{ flex: 1, minWidth: 0 }}>

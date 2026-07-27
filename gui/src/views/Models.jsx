@@ -5,7 +5,10 @@ export default function Models({ vals }) {
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'auto' }}>
       <div style={{ padding: '22px 26px 6px' }}>
         <div style={{ fontSize: 18, fontWeight: 600 }}>Model router · LMRouter</div>
-        <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 3, fontFamily: "'IBM Plex Mono',monospace" }}>one inject point — substrate stays zero-LLM · precedence: --vendor → --profile → default → env</div>
+        {/* The old subtitle documented a --vendor → --profile chain the README
+            retired: --profile is the only endpoint switch, and vendor, model,
+            endpoint and key all live in the chosen profile. */}
+        <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 3, fontFamily: "'IBM Plex Mono',monospace" }}>one inject point — substrate stays zero-LLM · --profile is the only endpoint switch, else `default`</div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, padding: '16px 26px 8px' }}>
         {vals.profiles.map((p) => (
@@ -27,16 +30,32 @@ export default function Models({ vals }) {
           </div>
         ))}
       </div>
+      {/* This block used to be labelled `.musubi/llm.toml` and typeset as TOML
+          while the product reads `.musubi/llm.json`, and its contents
+          (gw.corp.internal, gpt-4o) were invented with only `default` live.
+          Showing an operator config they will compare against their real file
+          is the fastest way to lose trust in a governance tool. It is now the
+          documented schema, labelled as a schema, next to their actual path —
+          the file itself is not rendered because a profile may carry an inline
+          `api_key`, and the console must not put a secret on screen. */}
       <div style={{ padding: '8px 26px 26px' }}>
-        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72', marginBottom: 9 }}>.musubi/llm.toml</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 9 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#6a6a72' }}>.musubi/llm.json · schema</div>
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#7d8b9e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {vals.setupPathHint || 'your file is not rendered — it may hold an inline api_key'}
+          </div>
+        </div>
         <div style={{ background: '#0f1620', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '16px 18px', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, lineHeight: 1.7, color: '#b8b8be', overflow: 'auto' }}>
-          <span style={{ color: '#5a5a62' }}># grouped by LLM family; [&lt;family&gt;.&lt;name&gt;] profiles inherit family defaults</span><br />
-          default = <span style={{ color: '#54c79a' }}>"{vals.activeProfileName}"</span><br /><br />
-          [azure]<br />
-          &nbsp;&nbsp;base_url = <span style={{ color: '#54c79a' }}>"https://gw.corp.internal/openai"</span>&nbsp;&nbsp;<span style={{ color: '#5a5a62' }}># curl transport · proxy / custom CA / mTLS honoured</span><br />
-          &nbsp;&nbsp;api_key_env = <span style={{ color: '#54c79a' }}>"AZURE_API_KEY"</span><br />
-          [azure.work]<br />
-          &nbsp;&nbsp;model = <span style={{ color: '#54c79a' }}>"gpt-4o"</span>
+          <span style={{ color: '#5a5a62' }}>// keyed by family; scalars are family defaults, nested objects are profiles</span><br />
+          &#123;<br />
+          &nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"default"</span>: <span style={{ color: '#54c79a' }}>"{vals.activeProfileName}"</span>,<br />
+          &nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"azure"</span>: &#123;<br />
+          &nbsp;&nbsp;&nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"transport"</span>: <span style={{ color: '#54c79a' }}>"curl"</span>,&nbsp;&nbsp;<span style={{ color: '#5a5a62' }}>// proxy / custom CA / mTLS honoured</span><br />
+          &nbsp;&nbsp;&nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"azure_endpoint"</span>: <span style={{ color: '#54c79a' }}>"https://my-resource.openai.azure.com"</span>,<br />
+          &nbsp;&nbsp;&nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"api_key_env"</span>: <span style={{ color: '#54c79a' }}>"AZURE_OPENAI_API_KEY"</span>,<br />
+          &nbsp;&nbsp;&nbsp;&nbsp;<span style={{ color: '#8ab4d8' }}>"work"</span>: &#123; <span style={{ color: '#8ab4d8' }}>"deployment"</span>: <span style={{ color: '#54c79a' }}>"gpt-4o"</span> &#125;<br />
+          &nbsp;&nbsp;&#125;<br />
+          &#125;
         </div>
       </div>
     </div>
