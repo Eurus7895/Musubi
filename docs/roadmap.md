@@ -125,11 +125,19 @@ enforcement path for the same dimension.
   whether a chat message opens the pipeline picker, names a pipeline inline,
   or goes to the driver agent — went from 4 tests to 15, covering the full
   command vocabulary, filler stripping, normalization, name shapes and
-  degenerate input. Two live defects found while writing them are recorded as
-  `todo` tests asserting the intended behavior: a one-word tail after any
-  pipeline prefix resolves to a bogus name, which makes `TauriSource` clear
-  the composer and drop the message; and `NAMED_PIPELINE` omits three prefixes
-  `PIPELINE_COMMANDS` accepts. Neither is fixed here.
+  degenerate input. Writing them surfaced two live defects, both since fixed.
+  `NAMED_PIPELINE` was a second hand-written copy of the picker vocabulary and
+  had drifted from it — `open pipeline` opened the picker while `open pipeline
+  feature-dev` matched neither gate and shipped to the driver agent as a work
+  order — so it is now generated from `PIPELINE_COMMANDS` and cannot drift
+  again. Separately, any single token in the name position parsed as a name,
+  so "use the pipeline runner" resolved to `runner`; `TauriSource.sendChat`
+  took the pipeline branch, failed the catalog lookup, cleared the composer
+  and returned, losing the message with nothing sent and no error shown. The
+  parser keeps its contract — it cannot know which recipes exist, so it still
+  returns a candidate — and the caller now resolves that candidate against
+  `pipelineCatalog` before branching, so an unrecognised name is ordinary
+  prose and reaches the agent.
 
 - A large change is more review, not a refusal — a manifest that reclassified
   a goal as large used to end the turn with a CLI string (`agent … --pipeline

@@ -27,10 +27,23 @@ const PIPELINE_COMMANDS = new Set([
   'open the pipeline',
 ])
 
+// One vocabulary, two gates: the picker matches a command exactly, the named
+// form matches the same command followed by a recipe name. Deriving the second
+// from the first is what keeps them from drifting — hand-maintained, they
+// already had: `open pipeline` opened the picker while `open pipeline
+// feature-dev` matched neither gate and shipped to the driver agent as a work
+// order. Longest-first so the generated alternation is deterministic.
+//
+// The captured name is only a *candidate*. This module cannot know which
+// recipes exist, so the caller must resolve it against the catalog and treat
+// an unknown name as ordinary prose — see TauriSource.sendChat.
 const NAMED_PIPELINE = new RegExp(
-  '^(?:/pipeline|pipeline|run the pipeline|run pipeline|'
-  + 'start the pipeline|start pipeline|use the pipeline|use pipeline)'
-  + '\\s+([a-z0-9]+(?:-[a-z0-9]+)*)$',
+  '^(?:'
+  + [...PIPELINE_COMMANDS]
+    .map((command) => command.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&'))
+    .sort((a, b) => b.length - a.length)
+    .join('|')
+  + ')\\s+([a-z0-9]+(?:-[a-z0-9]+)*)$',
 )
 
 function normalize(text) {

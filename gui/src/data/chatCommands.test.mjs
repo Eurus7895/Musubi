@@ -62,12 +62,17 @@ test('reads the pipeline named inline, with or without filler', () => {
   assert.equal(pipelineNameFromCommand('create a dashboard'), '')
 })
 
-test('every named-pipeline prefix yields the same name', () => {
+test('every picker phrasing also accepts an inline name', () => {
+  // NAMED_PIPELINE is derived from PIPELINE_COMMANDS precisely so this holds.
+  // Hand-maintained, the two lists had drifted: `open pipeline` opened the
+  // picker while `open pipeline feature-dev` matched neither gate and shipped
+  // to the driver agent as a work order.
   for (const prefix of [
-    '/pipeline', 'pipeline',
+    'pipeline', '/pipeline', 'the pipeline',
     'run pipeline', 'run the pipeline',
     'start pipeline', 'start the pipeline',
     'use pipeline', 'use the pipeline',
+    'open pipeline', 'open the pipeline',
   ]) {
     assert.equal(pipelineNameFromCommand(`${prefix} feature-dev`), 'feature-dev', prefix)
   }
@@ -127,29 +132,15 @@ test('degenerate input never reaches the pipeline path', () => {
   }
 })
 
-// ── Known defects ──────────────────────────────────────────────────────
-// These assert the behavior the module should have. They are marked `todo`
-// so the suite records the gap on every run without failing CI over a
-// pre-existing bug. Delete the `todo` marker when the fix lands.
-
-test('an unknown one-word tail is not a pipeline name', { todo: 'unfixed: TauriSource clears the draft and drops the message' }, () => {
-  // `pipelineNameFromCommand` accepts any single token after the prefix, so an
-  // ordinary work order resolves to a name that is not in the recipe catalog.
-  // TauriSource.js takes the `namedPipeline` branch on the truthy string,
-  // fails the catalog lookup, then runs _setLocal({ draft: '', ... }) and
-  // returns — the composer is wiped, nothing is sent, no error is shown.
-  assert.equal(pipelineNameFromCommand('use the pipeline runner'), '')
-  assert.equal(pipelineNameFromCommand('start pipeline stages'), '')
-  assert.equal(pipelineNameFromCommand('ok pipeline design'), '')
-  assert.equal(pipelineNameFromCommand('now pipeline again'), '')
-})
-
-test('every picker phrasing also accepts an inline name', { todo: 'unfixed: NAMED_PIPELINE omits the open/bare-the prefixes' }, () => {
-  // PIPELINE_COMMANDS and NAMED_PIPELINE are two hand-maintained lists of the
-  // same vocabulary. `open pipeline` opens the picker but `open pipeline
-  // feature-dev` matches neither gate, so it ships to the driver agent as a
-  // work order. Derive one from the other instead.
-  assert.equal(pipelineNameFromCommand('open pipeline feature-dev'), 'feature-dev')
-  assert.equal(pipelineNameFromCommand('open the pipeline feature-dev'), 'feature-dev')
-  assert.equal(pipelineNameFromCommand('the pipeline feature-dev'), 'feature-dev')
+test('the parsed name is a candidate, not a verdict', () => {
+  // This module cannot know which recipes exist, so any single token in the
+  // name position parses as a name — including ordinary nouns. That is the
+  // designed contract, not a bug: the catalog is the only thing that knows
+  // whether a name is real, and TauriSource.sendChat resolves against it
+  // before treating the message as a pipeline command. Removing that guard
+  // reinstates the failure it exists for — the composer cleared and the
+  // message dropped, nothing sent and no error shown. The behavioural
+  // guarantee is asserted in TauriSource.test.mjs, not here.
+  assert.equal(pipelineNameFromCommand('use the pipeline runner'), 'runner')
+  assert.equal(pipelineNameFromCommand('ok pipeline design'), 'design')
 })
