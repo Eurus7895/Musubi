@@ -113,6 +113,19 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Commit identity is enforced, not remembered — the harness presets
+  `GIT_AUTHOR_*` but leaves `GIT_COMMITTER_*` empty, so any command that writes
+  a commit without explicit `-c user.*` flags silently takes the committer from
+  `~/.gitconfig`. `git commit` is easy to remember to flag; `git rebase` is not,
+  and it rewrites every commit in the branch at once — which is exactly how a
+  12-commit rebase landed with the wrong committer on all twelve. A `pre-push`
+  hook (`scripts/commit_guard.py`, installed by pointing `core.hooksPath` at the
+  version-controlled `scripts/git-hooks/`) now refuses a push carrying a wrong
+  author or committer, an AI/tool attribution trailer, or a branch name that
+  names a tool. It checks only the commits the push would publish, so a bad
+  commit already on the remote cannot wedge the branch. Deterministic, zero-LLM,
+  per the hooks rule: never send a model to do a linter's job.
+
 - The console's JS tests are run, not merely written — `gui/src/**/*.test.mjs`
   held 99 assertions that no script and no CI job ever executed, so a feature
   commit that reintroduced the `TokenEconomics` panel left two surface

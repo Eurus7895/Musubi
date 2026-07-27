@@ -97,8 +97,9 @@ text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./do
   moves: `git fetch origin && git rebase origin/dev`.
 - Name branches `<type>/<area>-<outcome>` — lowercase kebab-case, a Conventional Commits type, no
   session suffix or tool prefix.
-- Commit with identity flags so committer matches author:
-  `git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit …`
+- Commit with identity flags so committer matches author — `rebase`, `cherry-pick`, `amend` too:
+  `git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit …`. Install the push
+  guard once per clone: `python scripts/commit_guard.py --install`.
 - Follow Conventional Commits 1.0.0: lowercase type + scope, imperative, ≤ 72 chars, no trailing
   period. Body wraps at 72 cols and explains the *why*. Breaking changes use `!` **and** a
   `BREAKING CHANGE:` footer.
