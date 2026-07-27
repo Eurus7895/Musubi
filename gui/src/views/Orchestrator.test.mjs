@@ -66,6 +66,23 @@ test('the run status strip and run-config band no longer sit above the evidence'
   assert.match(source, /config=\{<RunConfiguration/)
 })
 
+test('the session log is reachable without drilling into a single request', () => {
+  // The Timeline/Session log toggle had stylesheet rules but no component, so
+  // the only log surface was per-request — a run spanning several requests
+  // could not be read end to end.
+  assert.match(source, /surface-tabs/)
+  assert.match(source, />Timeline</)
+  assert.match(source, /Session log/)
+  assert.match(source, /surfaceTab/)
+  // Session scope is unscoped by construction: a lingering node selection
+  // would silently narrow it back down to that node's rows.
+  assert.match(source, /setSelectedNodeId\(null\)/)
+  // Rows carry the request that emitted them, since a row ordinal is useless
+  // once the log spans requests.
+  assert.match(source, /requestLabels/)
+  assert.equal(source.includes('workspaceTab'), false)
+})
+
 test('finished requests collapse to one line and absent values are not zeros', () => {
   assert.match(source, /function RequestTimeline/)
   assert.match(source, /function RequestRow/)

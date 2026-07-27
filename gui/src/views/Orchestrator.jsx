@@ -32,6 +32,10 @@ export default function Orchestrator({ vals }) {
   const [detailTab, setDetailTab] = useState('overview')
   const [logFilter, setLogFilter] = useState('all')
   const [logQuery, setLogQuery] = useState('')
+  // Timeline is the structure; Log is every line this session emitted, across
+  // all its requests. Without it the only way to read a log was to drill into
+  // one request, which cannot show a run that spans several.
+  const [surfaceTab, setSurfaceTab] = useState('timeline')
   const nodes = vals.runtimeGraph?.nodes || []
 
   useEffect(() => {
@@ -61,12 +65,33 @@ export default function Orchestrator({ vals }) {
 
   const onSelectNode = (node) => {
     setSelectedNodeId(node.id)
+    setSurfaceTab('timeline')
     setDetailTab('overview')
     setLogFilter('all')
     setLogQuery('')
     if (node.kind === 'request' || node.id === 'root') vals.clearSelect?.()
     else vals.onSelectRuntimeNode?.(node.id)
   }
+
+  // The session log is unscoped, so leaving a node selected would silently
+  // narrow it to that node's rows.
+  const onSurfaceTab = (tab) => {
+    setSurfaceTab(tab)
+    if (tab === 'log') {
+      setSelectedNodeId(null)
+      setLogFilter('all')
+      setLogQuery('')
+      vals.clearSelect?.()
+    }
+  }
+  const showingLog = surfaceTab === 'log' && !selectedNode
+  // R-numbers are positional, matching the labels the timeline renders.
+  const requestLabels = useMemo(() => new Map(
+    (vals.runtimeGraph?.requests || []).map((request, index) => [
+      request.requestId,
+      `R${String(index + 1).padStart(2, '0')}`,
+    ]),
+  ), [vals.runtimeGraph])
 
   return (
     <div className={`orchestrator-console${sessionsHidden ? ' sessions-hidden' : ''}${conversationCollapsed ? ' conversation-collapsed' : ''}`}>
@@ -85,6 +110,12 @@ export default function Orchestrator({ vals }) {
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
           </div>
+          <div className="surface-tabs" role="tablist" aria-label="Session surface">
+            <button className={!showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('timeline')}>Timeline</button>
+            <button className={showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('log')}>
+              Session log{vals.runtimeLogs?.length ? ` · ${vals.runtimeLogs.length}` : ''}
+            </button>
+          </div>
         </div>
         <section className="runtime-evidence">
           {selectedNode
@@ -99,12 +130,22 @@ export default function Orchestrator({ vals }) {
                 onQuery={setLogQuery}
                 onBack={() => setSelectedNodeId(null)}
               />
-            : <RequestTimeline
-                graph={vals.runtimeGraph}
-                logs={vals.runtimeLogs}
-                selectedId={selectedNodeId}
-                onSelectNode={onSelectNode}
-              />}
+            : showingLog
+              ? <RuntimeLogs
+                  node={{ kind: 'request' }}
+                  rows={matchingLogs}
+                  filter={logFilter}
+                  onFilter={setLogFilter}
+                  query={logQuery}
+                  onQuery={setLogQuery}
+                  requestLabels={requestLabels}
+                />
+              : <RequestTimeline
+                  graph={vals.runtimeGraph}
+                  logs={vals.runtimeLogs}
+                  selectedId={selectedNodeId}
+                  onSelectNode={onSelectNode}
+                />}
         </section>
       </main>
       <ConversationPanel
@@ -359,7 +400,7 @@ function RuntimeOverview({ node, isRequest, onOpenLog }) {
   )
 }
 
-function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery }) {
+function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabels = null }) {
   const filters = node.kind === 'request' ? REQUEST_LOG_FILTERS : AGENT_LOG_FILTERS
   return (
     <div className="runtime-logs">
@@ -370,7 +411,9 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery }) {
       <div className="runtime-log-list">
         {rows.length ? rows.map((row, index) => (
           <article key={row.id} className={`runtime-log-line category-${row.category}`}>
-            <b>{String(index + 1).padStart(2, '0')}</b>
+            {/* Session scope spans requests, so a row ordinal says nothing —
+                carry which request emitted the line instead. */}
+            <b>{requestLabels ? (requestLabels.get(row.requestId) || '··') : String(index + 1).padStart(2, '0')}</b>
             <time>{row.ts || '—'}</time>
             <span className={`role-${row.role}`}>{String(row.role || row.source || 'root').toUpperCase()}</span>
             <code>{row.message || row.detail || ''}</code>
