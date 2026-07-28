@@ -1,7 +1,69 @@
-/* Global styles — ported verbatim from the Musubi Console prototype helmet. */
+/* Global styles for the Musubi Console.
+   Every value a component may reach for is a token below. Adding a raw hex,
+   px size, or radius outside :root is how the three-styling-system drift
+   started; keep new values here so the panes cannot disagree. */
+:root {
+  /* Surfaces — depth is three steps, not nine near-identical navies. */
+  --bg: #0d1117;
+  --surface: #0f151f;
+  --raised: #19212f;
+  --well: #0c131c;
+
+  /* Text — one blue-tinted family, three steps. --text-3 is the contrast
+     floor: 5.1:1 on --surface, so 10px counts stay readable. */
+  --text: #eef2f7;
+  --text-2: #8e99a8;
+  --text-3: #7d8b9e;
+
+  /* Semantic. --live is attention-now and nothing else: not brand, not
+     navigation, not selection. Selection uses --select. */
+  --live: #ff9b3d;
+  --ok: #54c79a;
+  --warn: #e3b341;
+  --danger: #e86a5f;
+  --info: #8ab4d8;
+  --select: #8ab4d8;
+
+  /* Role hues — the app's best colour idea; used beyond the log line now. */
+  --role-planner: #c9a1ff;
+  --role-host: #5fd5ff;
+  --role-worker: #54d8d0;
+
+  /* Lines. Depth came almost entirely from these; two weights is enough. */
+  --line: rgba(255, 255, 255, .07);
+  --line-strong: rgba(255, 255, 255, .14);
+
+  /* Type — six steps, no half-pixels, 10px is the hard floor. */
+  --fs-1: 10px;
+  --fs-2: 11px;
+  --fs-3: 12px;
+  --fs-4: 13px;
+  --fs-5: 16px;
+  --fs-6: 22px;
+
+  /* Radius — 5..13 was indistinguishable at these sizes. */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-pill: 999px;
+
+  /* Spacing on a 4px base, so the three panes share a baseline. */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+
+  /* Sans carries language, mono carries machine output. */
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', monospace;
+}
+
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; }
+html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 #root { height: 100%; }
+
+:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; border-radius: var(--r-sm); }
 
 ::selection { background: rgba(255, 155, 61, 0.28); }
 ::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -27,10 +89,12 @@ html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; }
 .pipeline-studio__name, .pipeline-studio__dirty { padding: 3px 8px; border-radius: 6px; font: 10px/1.3 'IBM Plex Mono', monospace; border: 1px solid rgba(255,155,61,.3); color: #ffb66f; background: rgba(255,155,61,.08); }
 .pipeline-studio__dirty { color: #e3b341; border-color: rgba(227,179,65,.3); background: rgba(227,179,65,.08); }
 .pipeline-studio__actions, .pipeline-confirm__actions, .validate-toolbar > div { display: flex; gap: 8px; }
-.ui-button { border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 9px 13px; color: #d5dbe4; background: #171f2b; font: 600 11px/1 'IBM Plex Mono', monospace; cursor: pointer; }
-.ui-button:hover:not(:disabled) { border-color: rgba(255,155,61,.45); color: #fff; }
+/* The one reusable button in the app. Promoted out of Pipeline Studio so
+   every view can use it; sans, because a button label is language. */
+.ui-button { padding: 9px var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #d5dbe4; background: #171f2b; font: 600 var(--fs-2)/1 var(--sans); cursor: pointer; white-space: nowrap; }
+.ui-button:hover:not(:disabled) { border-color: rgba(255,255,255,.28); color: #fff; }
 .ui-button--primary { color: #181106; background: #f5a647; border-color: #ffbd72; }
-.ui-button--danger { color: #ff8b81; border-color: rgba(232,106,95,.36); background: rgba(232,106,95,.1); }
+.ui-button--danger { color: #ff8b81; border-color: rgba(232,106,95,.45); background: rgba(232,106,95,.12); }
 .ui-button:disabled { opacity: .42; cursor: not-allowed; }
 .pipeline-steps { max-width: 1500px; margin: 0 auto 15px; padding: 7px; display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; border: 1px solid rgba(255,255,255,.07); border-radius: 11px; background: #101721; }
 .pipeline-step { padding: 10px 12px; border: 1px solid transparent; border-radius: 8px; color: #7d8795; background: transparent; text-align: left; font-weight: 600; cursor: pointer; }
@@ -118,175 +182,227 @@ html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; }
 .pipeline-confirm__actions { margin-top: 18px; justify-content: flex-end; }
 @media (max-width: 1180px) { .stages-workspace { grid-template-columns: 220px minmax(360px, 1fr); } .stage-inspector { grid-column: 1 / -1; } }
 
-.orchestrator-console { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 238px minmax(480px, 1fr) 350px; background: radial-gradient(circle at 55% -12%, rgba(37,76,108,.12), transparent 33%), #0d1117; }
-.orchestrator-console.sessions-collapsed { grid-template-columns: 58px minmax(480px, 1fr) 350px; }
-.orchestrator-console.conversation-collapsed { grid-template-columns: 238px minmax(480px, 1fr) 48px; }
-.orchestrator-console.sessions-collapsed.conversation-collapsed { grid-template-columns: 58px minmax(480px, 1fr) 48px; }
-.session-rail, .conversation-panel { min-height: 0; display: flex; flex-direction: column; background: rgba(15,21,31,.96); }
-.session-rail { border-right: 1px solid rgba(255,255,255,.065); }
-.session-rail header, .conversation-panel__header { min-height: 64px; padding: 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.065); }
-.session-rail header > div, .conversation-panel__header > div:first-child { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.session-rail header strong, .conversation-panel__header strong { color: #eef2f7; font-size: 13px; }
-.session-rail header span, .conversation-panel__header span { color: #657183; font-size: 10px; }
-.session-rail header button, .collapse-button, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; color: #8b97a6; background: #182130; cursor: pointer; }
-.session-rail__list { flex: 1; min-height: 0; padding: 10px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
-.session-card { width: 100%; padding: 11px; display: flex; flex-direction: column; gap: 5px; border: 1px solid rgba(255,255,255,.075); border-radius: 10px; color: #dce3ec; background: #121a25; text-align: left; cursor: pointer; }
-.session-card:hover { border-color: rgba(255,155,61,.3); }
-.session-card.is-active { border-color: rgba(255,155,61,.7); background: #192333; box-shadow: inset 2px 0 #ff9b3d; }
-.session-card__top { display: flex; align-items: center; justify-content: space-between; }
-.session-card__top b { color: #ffb66f; font: 10px 'IBM Plex Mono', monospace; }
-.session-card__top em { font: 9px 'IBM Plex Mono', monospace; font-style: normal; }
-.session-card > strong { overflow: hidden; color: #ecf0f6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.session-card small { color: #6f7c8e; font: 9px 'IBM Plex Mono', monospace; }
-.session-card p { max-height: 32px; margin: 2px 0 0; overflow: hidden; color: #8e99a8; font-size: 10px; line-height: 1.45; }
-.sessions-collapsed .session-rail header { padding: 10px; }
-.sessions-collapsed .session-card { min-height: 48px; padding: 8px 6px; align-items: center; justify-content: center; }
-.sessions-collapsed .session-card__top { flex-direction: column; gap: 5px; }
-.session-rail__empty { margin-top: 8px; padding: 15px 8px; border: 1px dashed rgba(255,255,255,.1); border-radius: 8px; color: #647184; font-size: 10px; text-align: center; }
-.orchestrator-workspace { min-width: 0; min-height: 0; padding: 18px 20px 22px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
-.run-config { display: flex; align-items: center; gap: 12px; padding: 11px 12px; border: 1px solid rgba(255,255,255,.075); border-radius: 11px; background: #111925; }
-.run-config__heading { display: flex; flex-direction: column; gap: 2px; padding-right: 12px; border-right: 1px solid rgba(255,255,255,.08); }
-.run-config__heading span { color: #657183; font: 8px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
-.run-config__heading strong { color: #ecf0f6; font-size: 12px; }
-.run-mode { padding: 3px; display: flex; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: #0d141d; }
-.run-mode button, .workspace-tabs button, .conversation-tabs button, .log-filters button { border: 0; border-radius: 6px; color: #798697; background: transparent; font: 600 10px 'IBM Plex Mono', monospace; cursor: pointer; }
-.run-mode button { padding: 7px 12px; }
-.run-mode button.is-active, .workspace-tabs button.is-active, .conversation-tabs button.is-active, .log-filters button.is-active { color: #ffb66f; background: rgba(255,155,61,.12); }
-.run-config select { max-width: 220px; min-width: 150px; padding: 8px 30px 8px 10px; border: 1px solid rgba(255,155,61,.28); border-radius: 8px; color: #e5ebf3; background: #151e2a; font: 10px 'IBM Plex Mono', monospace; }
-.run-config__hint { margin-left: auto; color: #687587; font-size: 10px; }
-.runtime-status { min-height: 44px; padding: 8px 12px; display: flex; align-items: center; gap: 16px; border: 1px solid rgba(255,255,255,.065); border-radius: 10px; color: #778496; background: rgba(15,22,32,.82); font: 9px 'IBM Plex Mono', monospace; }
-.runtime-status b { color: #c9d1dc; }
-.runtime-status__model { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.status-pill { padding: 5px 8px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(84,199,154,.22); border-radius: 999px; color: #6fd0aa; background: rgba(84,199,154,.07); }
-.status-pill i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.status-pill.is-running { color: #ffb158; border-color: rgba(255,155,61,.28); background: rgba(255,155,61,.08); }
-.status-pill.is-running i { animation: pulse 1.4s ease-in-out infinite; }
-.runtime-evidence { flex: 1; min-height: 500px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid rgba(255,255,255,.075); border-radius: 12px; background: rgba(15,22,32,.91); box-shadow: 0 18px 42px rgba(0,0,0,.18); }
-.runtime-evidence__header { padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid rgba(255,255,255,.065); }
-.workspace-kicker { color: #ff9b3d; font: 8px 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .12em; }
-.runtime-evidence__header h1 { margin: 3px 0 0; color: #ecf1f7; font-size: 14px; }
-.runtime-evidence__header p { margin: 3px 0 0; color: #657183; font-size: 10px; }
-.workspace-tabs, .conversation-tabs { padding: 3px; display: flex; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: #0c131c; }
-.workspace-tabs button { padding: 7px 14px; }
+
+/* ── Orchestrator console ────────────────────────────────────────────────
+   Built around one question: what is the agent doing right now?
+   The answer is the largest element on screen (.now-banner); everything that
+   already happened collapses to one line. Sans carries language, mono carries
+   machine output — the console no longer sets mono on the whole subtree. */
+.orchestrator-console { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 240px minmax(480px, 1fr) 420px; font-family: var(--sans); background: var(--bg); }
+.orchestrator-console.sessions-hidden { grid-template-columns: minmax(480px, 1fr) 420px; }
+.orchestrator-console.conversation-collapsed { grid-template-columns: 240px minmax(480px, 1fr) 48px; }
+.orchestrator-console.sessions-hidden.conversation-collapsed { grid-template-columns: minmax(480px, 1fr) 48px; }
+
+.session-rail, .conversation-panel { min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.session-rail { border-right: 1px solid var(--line); }
+.session-rail header, .conversation-panel__header { height: 48px; flex: none; padding: 0 var(--s-3); display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); border-bottom: 1px solid var(--line); }
+.session-rail header strong, .conversation-panel__header strong { color: var(--text); font: 600 var(--fs-3) var(--sans); }
+.session-rail header span { color: var(--text-3); font: var(--fs-1) var(--mono); }
+.session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
+.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: rgba(255, 255, 255, .28); }
+.session-rail__list { flex: 1; min-height: 0; padding-bottom: var(--s-2); overflow: auto; }
+
+/* Grouped by what you would do about them, not by recency alone. */
+.session-group { padding: var(--s-3) var(--s-3) var(--s-1); color: var(--text-3); font: 600 var(--fs-1) var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+.session-group:first-child { padding-top: var(--s-2); }
+.session-group-list { padding: 0 var(--s-2); display: flex; flex-direction: column; gap: 2px; }
+
+.session-card { width: 100%; padding: var(--s-2) var(--s-3); display: flex; flex-direction: column; gap: var(--s-1); border: 0; border-radius: var(--r-md); color: var(--text-2); background: transparent; text-align: left; cursor: pointer; }
+.session-card:hover { background: rgba(255, 255, 255, .04); }
+.session-card__title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.session-card__title i { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+.session-card__title strong { min-width: 0; overflow: hidden; color: #c3ccd8; font: 500 var(--fs-3) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.session-card__meta { padding-left: 13px; display: flex; justify-content: space-between; gap: var(--s-2); color: var(--text-3); font: var(--fs-1) var(--mono); }
+/* Selection is a neutral raise plus a blue bar — orange is reserved for live. */
+.session-card.is-selected { background: #161d29; box-shadow: inset 3px 0 var(--select); }
+.session-card.is-selected .session-card__title strong { color: var(--text); }
+/* Live and escalated are the only two states that get a hue. */
+.session-card.is-live { background: #1a2333; box-shadow: inset 3px 0 var(--live); }
+.session-card.is-live .session-card__title { color: var(--live); }
+.session-card.is-live .session-card__title i { animation: pulse 1.4s ease-in-out infinite; }
+.session-card.is-live .session-card__title strong { color: #f4f7fb; font-weight: 600; }
+.session-card.is-live .session-card__elapsed { color: #ffb66f; }
+.session-card.is-escalated { background: #161d29; box-shadow: inset 3px 0 var(--warn); }
+.session-card.is-escalated .session-card__title strong { color: #e6ebf2; font-weight: 600; }
+.session-card.is-escalated .session-card__state { color: var(--warn); }
+.session-card.is-done .session-card__title { color: var(--ok); }
+.session-card.is-quiet .session-card__title { color: #4b5563; }
+.session-card.is-quiet .session-card__title strong { color: #8a94a3; }
+.session-rail__empty { margin: var(--s-2) var(--s-3); padding: 15px var(--s-2); border: 1px dashed var(--line-strong); border-radius: var(--r-sm); color: var(--text-3); font-size: var(--fs-1); text-align: center; }
+
+.orchestrator-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* The Now banner — actor, act, elapsed, and the way out, in that order. */
+.now-banner { flex: none; padding: var(--s-4) 22px; display: flex; align-items: flex-start; gap: var(--s-4); border-bottom: 1px solid rgba(255, 155, 61, .22); background: linear-gradient(180deg, rgba(255, 155, 61, .10), rgba(255, 155, 61, .03)); }
+.now-banner > i { width: 10px; height: 10px; flex: none; margin-top: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 5px rgba(255, 155, 61, .14); animation: pulse 1.4s ease-in-out infinite; }
+.now-banner__body { flex: 1; min-width: 0; }
+.now-banner__headline { display: flex; align-items: baseline; gap: var(--s-2); }
+.now-banner h1 { margin: 0; min-width: 0; overflow: hidden; color: var(--text); font: 600 var(--fs-6)/1.25 var(--sans); letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
+.now-banner__elapsed { flex: none; color: #ffb66f; font: var(--fs-3) var(--mono); }
+.now-banner__act { margin: var(--s-1) 0 0; overflow: hidden; color: var(--text-2); font: var(--fs-3)/1.5 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.now-banner__act code { color: #c3ccd8; font: var(--fs-3) var(--mono); }
+.now-banner__progress { margin-top: var(--s-3); display: flex; align-items: center; gap: var(--s-2); }
+.now-banner__progress > div { flex: 1; height: 4px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, .08); }
+.now-banner__progress > div > i { display: block; height: 4px; border-radius: 2px; background: var(--live); }
+.now-banner__progress span { flex: none; color: var(--text-2); font: var(--fs-1) var(--mono); }
+.now-banner__actions { flex: none; display: flex; align-items: center; gap: var(--s-2); }
+/* Idle counterpart — same slot, so the workspace does not reflow on start. */
+.now-banner.is-idle { border-bottom-color: var(--line); background: none; align-items: center; }
+.now-banner.is-idle > i { margin-top: 0; background: #4b5563; box-shadow: none; animation: none; }
+.now-banner.is-idle h1 { color: var(--text-2); font-size: var(--fs-5); font-weight: 500; }
+
+/* Session strip — which session the timeline below belongs to. */
+.session-strip { flex: none; padding: var(--s-3) 22px var(--s-2); display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.session-strip__id { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); }
+/* The title keeps its natural width; the meta takes what is left and is the
+   first to give it back, so the session name is not clipped while the byline
+   beside it sits at full length. */
+.session-strip__id strong { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #e6ebf2; font: 600 var(--fs-4) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.session-strip__id span { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-3); font: var(--fs-2) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.surface-tabs, .run-mode { flex: none; padding: 2px; display: flex; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
+.surface-tabs button, .run-mode button, .log-filters button { border: 0; border-radius: var(--r-sm); color: #798697; background: transparent; font: 600 var(--fs-2) var(--sans); cursor: pointer; }
+.surface-tabs button, .run-mode button { padding: 5px 11px; }
+.surface-tabs button.is-active, .run-mode button.is-active { color: #e6ebf2; background: rgba(255, 255, 255, .08); }
+
+.runtime-evidence { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .runtime-graph, .runtime-logs { flex: 1; min-height: 0; overflow: auto; }
-.runtime-graph { padding: 16px; }
-.runtime-graph__notice { margin-bottom: 14px; padding: 8px 10px; border-left: 2px solid #8ab4d8; color: #7990aa; background: rgba(138,180,216,.06); font: 9px 'IBM Plex Mono', monospace; }
-.runtime-graph__list { max-width: 880px; margin: 0 auto; }
-.runtime-node-row { display: grid; grid-template-columns: 45px minmax(0, 1fr); }
-.runtime-node-row__rail { display: flex; flex-direction: column; align-items: center; color: #627187; font: 9px 'IBM Plex Mono', monospace; }
-.runtime-node-row__rail span { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid rgba(138,180,216,.25); border-radius: 7px; background: #131c28; }
-.runtime-node-row__rail i { width: 1px; flex: 1; min-height: 18px; background: linear-gradient(#4b6078, rgba(75,96,120,.15)); }
-.runtime-node { width: 100%; min-height: 74px; margin-bottom: 11px; padding: 12px 13px; display: grid; grid-template-columns: minmax(150px, 1.2fr) auto auto minmax(110px, .8fr) auto; align-items: center; gap: 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; color: #d8e0ea; background: #151e2b; text-align: left; cursor: pointer; }
-.runtime-node:hover, .runtime-node.is-selected { border-color: rgba(255,155,61,.42); background: #192333; }
-.runtime-node.is-selected { box-shadow: inset 2px 0 #ff9b3d; }
-.runtime-node__identity { min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; align-items: center; }
-.runtime-node__identity em { padding: 3px 6px; border: 1px solid rgba(138,180,216,.2); border-radius: 5px; color: #8aa8ca; font: 8px 'IBM Plex Mono', monospace; font-style: normal; text-transform: uppercase; }
-.runtime-node__identity strong { overflow: hidden; color: #eef2f7; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-node__identity code { grid-column: 1 / -1; overflow: hidden; color: #657285; font-size: 8px; text-overflow: ellipsis; }
-.runtime-node__status, .runtime-node__metrics, .runtime-node__open { color: #7d8999; font: 9px 'IBM Plex Mono', monospace; white-space: nowrap; }
-.runtime-node__metrics b { color: #c5ceda; }
-.runtime-node__skills { display: flex; flex-wrap: wrap; gap: 4px; }
-.runtime-node__skills i, .skills-used i { padding: 3px 6px; border: 1px solid rgba(158,216,180,.22); border-radius: 999px; color: #8ed3b6; background: rgba(84,199,154,.07); font: 8px 'IBM Plex Mono', monospace; font-style: normal; }
-.runtime-node__skills small { color: #596678; font-size: 8px; }
-.runtime-node__open { color: #ffad5f; }
-.status-done, .status-ok, .status-allow, .status-final, .status-success { color: #54c79a !important; }
-.status-running { color: #ffae57 !important; }
-.status-failed, .status-error, .status-deny, .status-denied { color: #e86a5f !important; }
-.status-escalated, .status-budget_halted { color: #e3b341 !important; }
+.runtime-graph { padding: 0 22px 20px; }
+/* No max-width: on a 1920 display the pane should grow, not the gutters. */
+.request-timeline { display: flex; flex-direction: column; gap: var(--s-1); }
+
+/* A finished request earns one line. A running one earns its log. */
+.request-row { width: 100%; min-height: 42px; padding: 11px 14px; display: grid; grid-template-columns: 7px minmax(0, 1fr) repeat(3, auto); align-items: center; gap: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text-2); background: #121a25; text-align: left; cursor: pointer; }
+.request-row:hover { border-color: var(--line-strong); }
+.request-row > i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.request-row strong { min-width: 0; overflow: hidden; color: #c3ccd8; font: 500 var(--fs-4) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.request-row span { color: var(--text-3); font: var(--fs-2) var(--mono); white-space: nowrap; }
+/* Absent is not zero. Render it as an em dash the eye can skip. */
+.request-row span.is-absent { opacity: .4; }
+.request-row.status-done > i { background: var(--ok); }
+.request-row.status-failed > i, .request-row.status-denied > i { background: var(--danger); }
+.request-row.status-escalated > i, .request-row.status-budget_halted > i { background: var(--warn); }
+.request-row.is-live { border-color: rgba(255, 155, 61, .4); border-bottom: 0; border-radius: var(--r-md) var(--r-md) 0 0; background: #18212f; }
+.request-row.is-live > i { background: var(--live); animation: pulse 1.4s ease-in-out infinite; }
+.request-row.is-live strong { color: #f4f7fb; font-weight: 600; }
+.request-row.is-live span:last-child { color: #ffb66f; }
+.request-row.is-selected { border-color: var(--select); box-shadow: inset 3px 0 var(--select); }
+
+/* The last log lines, in place — the answer without a click, and without
+   leaving the timeline you clicked from. */
+.request-live-log { padding: var(--s-2) 14px var(--s-3) var(--s-6); display: flex; flex-direction: column; gap: 7px; border: 1px solid rgba(255, 155, 61, .4); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-md) var(--r-md); background: #131b26; }
+.request-live-log > div { display: flex; align-items: baseline; gap: var(--s-2); font: var(--fs-2) var(--mono); }
+.request-live-log time { flex: none; color: var(--text-3); }
+.request-live-log code { min-width: 0; overflow: hidden; color: #c3ccd8; text-overflow: ellipsis; white-space: nowrap; }
+.request-live-log__empty { color: var(--text-3); font: var(--fs-2) var(--mono); }
+
+.request-agents { margin: 2px 0 var(--s-1) var(--s-5); padding-left: 22px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid rgba(95, 139, 174, .42); }
+.request-agents .request-row { min-height: 38px; }
+.request-agents .request-row::before { content: ''; position: absolute; left: -23px; width: 22px; border-top: 1px solid rgba(95, 139, 174, .42); }
+.request-agents .request-row { position: relative; }
+
+.role-chip { padding: 1px var(--s-1); flex: none; border: 1px solid rgba(83, 199, 191, .22); border-radius: var(--r-sm); color: var(--role-worker); background: rgba(0, 154, 145, .1); font: var(--fs-1) var(--mono); text-transform: uppercase; }
+.role-chip.role-planner { color: var(--role-planner); border-color: rgba(166, 112, 220, .28); background: rgba(112, 67, 154, .14); }
+.role-chip.role-host { color: var(--role-host); border-color: rgba(52, 180, 226, .26); background: rgba(28, 126, 162, .13); }
+.role-chip.role-policy { color: var(--role-worker); }
+
+.timeline-hint { margin-top: 18px; padding: 11px 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--text-3); font: var(--fs-2) var(--sans); text-align: center; }
+.runtime-empty { min-height: 220px; display: grid; place-items: center; color: var(--text-3); font-size: var(--fs-2); }
+
+/* Drill-in keeps the timeline: detail is a pane beside it, not instead of it. */
+.runtime-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.runtime-detail__header { padding: var(--s-4) 22px 0; border-bottom: 1px solid var(--line); }
+/* Was borderless, background-less text at --text-2 — indistinguishable from
+   the labels around it, so the only way out of a detail pane did not read as
+   a control. It is a button now, and says so at rest. */
+.runtime-detail__back { padding: 5px var(--s-2) 5px 6px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #c3ccd8; background: var(--raised); font: 600 var(--fs-2) var(--sans); cursor: pointer; }
+.runtime-detail__back:hover { color: #fff; border-color: rgba(255, 255, 255, .28); }
+.runtime-detail__title { margin-top: var(--s-4); display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.runtime-detail__title h1 { margin: var(--s-1) 0 0; color: var(--text); font: 600 var(--fs-6)/1.3 var(--sans); letter-spacing: -.025em; }
+.runtime-detail__title code { max-width: 45%; padding: 7px 11px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); font: var(--fs-2) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-kicker { color: var(--text-3); font: 600 var(--fs-1) var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.runtime-detail__tabs { margin-top: var(--s-3); display: flex; gap: 22px; }
+.runtime-detail__tabs button { padding: var(--s-2) 2px 11px; border: 0; border-bottom: 2px solid transparent; color: #8996a7; background: transparent; font: 600 var(--fs-3) var(--sans); cursor: pointer; }
+.runtime-detail__tabs button.is-active { color: var(--text); border-bottom-color: var(--select); }
+
+.runtime-overview { flex: 1; min-height: 0; padding: var(--s-5); overflow: auto; }
+.runtime-overview__hero { padding: 22px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.runtime-overview__hero h2 { margin: var(--s-3) 0 7px; color: var(--text); font: 600 var(--fs-5)/1.4 var(--sans); }
+.runtime-overview__hero p { margin: 0; color: var(--text-2); font: var(--fs-3)/1.6 var(--sans); }
+.runtime-overview__metrics { margin-top: var(--s-3); display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: var(--s-2); }
+.runtime-overview__metrics div { padding: 15px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.runtime-overview__metrics span { display: block; margin-bottom: var(--s-1); color: var(--text-3); font: var(--fs-1) var(--mono); text-transform: uppercase; }
+.runtime-overview__metrics strong { color: #dce4ee; font: var(--fs-4) var(--mono); }
+.runtime-overview__metrics strong.is-absent { opacity: .4; }
+.runtime-overview__log { margin-top: var(--s-4); }
+
 .runtime-logs { display: flex; flex-direction: column; }
-.runtime-logs__controls { padding: 11px 14px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(255,255,255,.06); }
-.runtime-logs__controls > div:first-child { min-width: 135px; display: flex; flex-direction: column; gap: 2px; }
-.runtime-logs__controls strong { color: #e7ecf3; font-size: 11px; }
-.runtime-logs__controls code { color: #657285; font-size: 8px; }
-.log-filters { display: flex; gap: 2px; }
-.log-filters button { padding: 6px 8px; }
-.runtime-logs__controls input { min-width: 130px; flex: 1; padding: 8px 9px; border: 1px solid rgba(255,255,255,.09); border-radius: 7px; color: #dbe2eb; background: #0c131c; outline: none; font-size: 10px; }
-.runtime-log-list { flex: 1; min-height: 0; overflow: auto; }
-.runtime-log-row { min-height: 50px; padding: 9px 13px; display: grid; grid-template-columns: 58px 48px minmax(90px, .8fr) 60px minmax(150px, 1.5fr) auto; align-items: center; gap: 9px; border-bottom: 1px solid rgba(255,255,255,.045); font: 9px 'IBM Plex Mono', monospace; }
-.runtime-log-row:hover { background: rgba(255,255,255,.025); }
-.runtime-log-row time { color: #596678; }
-.runtime-log-row > span { color: #8aa8ca; text-transform: uppercase; }
-.runtime-log-row strong { overflow: hidden; color: #cbd4df; text-overflow: ellipsis; }
-.runtime-log-row em { font-style: normal; }
-.runtime-log-row p { margin: 0; overflow: hidden; color: #6f7c8d; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-log-row button { border: 0; color: #ffab5b; background: transparent; font: 8px 'IBM Plex Mono', monospace; cursor: pointer; }
-.runtime-empty { min-height: 220px; display: grid; place-items: center; color: #647184; font-size: 11px; }
-.conversation-panel { border-left: 1px solid rgba(255,255,255,.065); }
+.runtime-logs__controls { padding: 14px 18px; display: flex; flex-direction: row-reverse; align-items: center; justify-content: flex-end; gap: var(--s-3); border-bottom: 1px solid var(--line); }
+.runtime-logs__controls input { order: 2; flex: 0 1 270px; min-width: 190px; padding: var(--s-2) var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #dbe2eb; background: var(--well); outline: none; font: var(--fs-3) var(--sans); }
+.log-filters { order: 1; display: flex; flex-wrap: wrap; gap: 2px; }
+.log-filters button { padding: var(--s-2) 11px; border: 1px solid var(--line); font-size: var(--fs-2); }
+.log-filters button.is-active { color: var(--text); border-color: var(--select); }
+.runtime-log-list { flex: 1; min-height: 0; margin: 0 18px 18px; overflow: auto; border: 1px solid rgba(74, 104, 132, .42); border-radius: var(--r-md); background: #08131d; }
+.runtime-log-line { min-height: 45px; padding: var(--s-2) 14px; display: grid; grid-template-columns: 28px 110px 84px minmax(0, 1fr); align-items: start; gap: var(--s-2); border-bottom: 1px solid rgba(255, 255, 255, .045); font: var(--fs-3)/1.65 var(--mono); }
+.runtime-log-line:last-child { border-bottom: 0; }
+.runtime-log-line > b { color: var(--text-3); font-weight: 400; }
+.runtime-log-line time { color: var(--text-3); white-space: nowrap; }
+.runtime-log-line > span { padding: 2px 7px; overflow: hidden; border: 1px solid rgba(83, 199, 191, .22); border-radius: var(--r-sm); color: var(--role-worker); background: rgba(0, 154, 145, .1); text-align: center; text-overflow: ellipsis; font-size: var(--fs-2); }
+.runtime-log-line > span.role-planner { color: var(--role-planner); border-color: rgba(166, 112, 220, .28); background: rgba(112, 67, 154, .14); }
+.runtime-log-line > span.role-host { color: var(--role-host); border-color: rgba(52, 180, 226, .26); background: rgba(28, 126, 162, .13); }
+.runtime-log-line code { color: #d2d9e3; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+
+.conversation-panel { border-left: 1px solid var(--line); }
 .conversation-panel__header > div:last-child { display: flex; align-items: center; gap: 7px; }
 .conversation-panel.is-collapsed { align-items: center; padding-top: 14px; gap: 15px; }
-.conversation-panel.is-collapsed span { color: #6f7c8d; font: 9px 'IBM Plex Mono', monospace; writing-mode: vertical-rl; }
-.conversation-tabs { margin: 10px 12px 0; }
-.conversation-tabs button { flex: 1; padding: 7px; }
-.skills-used { margin: 8px 12px 0; padding: 8px 9px; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; border: 1px solid rgba(255,255,255,.06); border-radius: 8px; background: #0d141d; }
-.skills-used > span { margin-right: 3px; color: #657285; font: 8px 'IBM Plex Mono', monospace; text-transform: uppercase; }
-.skills-used small { color: #596678; font-size: 9px; }
-.verbose-evidence { max-height: 170px; margin: 8px 12px 0; padding: 9px; overflow: auto; border: 1px solid rgba(138,180,216,.12); border-radius: 8px; background: rgba(12,19,28,.8); }
-.verbose-evidence > strong { display: block; margin-bottom: 5px; color: #7f90a6; font: 8px 'IBM Plex Mono', monospace; text-transform: uppercase; }
-.verbose-evidence > div { padding: 4px 0; display: grid; grid-template-columns: 55px 1fr auto; gap: 7px; border-bottom: 1px solid rgba(255,255,255,.04); font: 8px 'IBM Plex Mono', monospace; }
-.verbose-evidence span { color: #657285; }.verbose-evidence b { overflow: hidden; color: #aeb9c7; text-overflow: ellipsis; }.verbose-evidence em { color: #7f8b9b; font-style: normal; }
-.verbose-evidence p { color: #647184; font-size: 9px; }
-@media (max-width: 1320px) { .orchestrator-console { grid-template-columns: 210px minmax(460px, 1fr) 320px; } .runtime-node { grid-template-columns: minmax(140px, 1fr) auto auto; } .runtime-node__skills { display: none; } .runtime-node__open { display: none; } }
-@media (max-width: 1040px) { .orchestrator-console, .orchestrator-console.conversation-collapsed { grid-template-columns: 58px minmax(430px, 1fr) 300px; } .session-rail { width: 58px; } .session-rail header > div, .session-card > strong, .session-card small, .session-card p { display: none; } .session-card { min-height: 48px; padding: 8px 6px; align-items: center; justify-content: center; } .session-card__top { flex-direction: column; gap: 5px; } .run-config__hint { display: none; } }
+.conversation-panel.is-collapsed span { color: var(--text-3); font: var(--fs-2) var(--mono); writing-mode: vertical-rl; }
+.skills-used { margin: var(--s-3) var(--s-3) 0; padding: var(--s-2) var(--s-2); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
+.skills-used > span { margin-right: 3px; color: var(--text-3); font: var(--fs-1) var(--mono); text-transform: uppercase; }
+.skills-used small { color: var(--text-3); font-size: var(--fs-1); }
+.skills-used i { padding: 3px var(--s-1); border: 1px solid rgba(158, 216, 180, .22); border-radius: var(--r-pill); color: #8ed3b6; background: rgba(84, 199, 154, .07); font: var(--fs-1) var(--mono); font-style: normal; }
 
-/* Request runtime history — one graph/detail surface, IBM Plex Mono telemetry. */
-.orchestrator-console { font-family: 'IBM Plex Mono', monospace; }
-.orchestrator-console.sessions-hidden { grid-template-columns: minmax(480px, 1fr) 350px; }
-.orchestrator-console.sessions-hidden.conversation-collapsed { grid-template-columns: minmax(480px, 1fr) 48px; }
-.show-sessions { padding: 7px 10px; border: 1px solid rgba(255,155,61,.28); border-radius: 7px; color: #ffad5f; background: rgba(255,155,61,.07); font: 600 11px 'IBM Plex Mono', monospace; cursor: pointer; }
-.request-graph { max-width: 980px; margin: 0 auto; }
-.request-group { position: relative; display: flex; flex-direction: column; align-items: stretch; }
-.request-group > .runtime-node.kind-request { border-color: rgba(255,155,61,.46); background: #182231; box-shadow: inset 3px 0 #ff9b3d; }
-.request-group__agents { position: relative; margin: 12px 0 12px 48px; padding-left: 27px; display: flex; flex-direction: column; gap: 9px; border-left: 1px solid rgba(95,139,174,.42); }
-.request-group__agents::before { content: ''; position: absolute; left: -1px; top: -12px; width: 27px; height: 12px; border-bottom: 1px solid rgba(95,139,174,.42); }
-.request-group__agents .runtime-node { min-height: 68px; margin: 0; }
-.request-group__agents .runtime-node::before { content: ''; position: absolute; left: -28px; width: 27px; border-top: 1px solid rgba(95,139,174,.42); }
-.request-group__continue { height: 48px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #60758b; font: 11px 'IBM Plex Mono', monospace; }
-.request-group__continue span { color: #ff9b3d; font-size: 18px; }
-.request-group__continue em { font-style: normal; text-transform: uppercase; letter-spacing: .08em; }
-.runtime-node { position: relative; font-family: 'IBM Plex Mono', monospace; }
-.runtime-node__identity strong { font-size: 13px; }
-.runtime-node__identity code { font-size: 10px; }
-.runtime-node__identity em, .runtime-node__skills i, .runtime-node__skills small { font-size: 10px; }
-.runtime-node__status, .runtime-node__metrics, .runtime-node__open { font-size: 11px; }
-.runtime-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.runtime-detail__header { padding: 16px 22px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
-.runtime-detail__back { padding: 0; border: 0; color: #a9b7c8; background: transparent; font: 12px 'IBM Plex Mono', monospace; cursor: pointer; }
-.runtime-detail__back:hover { color: #fff; }
-.runtime-detail__title { margin-top: 20px; display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
-.runtime-detail__title h1 { margin: 5px 0 0; color: #eef3f8; font: 700 20px/1.3 'IBM Plex Mono', monospace; letter-spacing: -.025em; }
-.runtime-detail__title code { max-width: 45%; padding: 7px 11px; overflow: hidden; border: 1px solid rgba(255,155,61,.45); border-radius: 7px; color: #ffad5f; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.runtime-detail__tabs { margin-top: 12px; display: flex; gap: 22px; }
-.runtime-detail__tabs button { padding: 10px 2px 11px; border: 0; border-bottom: 2px solid transparent; color: #8996a7; background: transparent; font: 600 12px 'IBM Plex Mono', monospace; cursor: pointer; }
-.runtime-detail__tabs button.is-active { color: #ff9b3d; border-bottom-color: #ff9b3d; }
-.runtime-overview { flex: 1; min-height: 0; padding: 28px; overflow: auto; }
-.runtime-overview__hero { padding: 22px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: #101923; }
-.runtime-overview__hero h2 { margin: 12px 0 7px; color: #edf2f7; font: 700 17px/1.4 'IBM Plex Mono', monospace; }
-.runtime-overview__hero p { margin: 0; color: #8391a3; font: 12px/1.6 'IBM Plex Mono', monospace; }
-.runtime-overview__metrics { margin-top: 14px; display: grid; grid-template-columns: repeat(5, minmax(90px, 1fr)); gap: 9px; }
-.runtime-overview__metrics div { padding: 15px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; background: #111a25; }
-.runtime-overview__metrics span { display: block; margin-bottom: 6px; color: #667588; font-size: 10px; text-transform: uppercase; }
-.runtime-overview__metrics strong { color: #dce4ee; font-size: 13px; }
-.runtime-overview__log { margin-top: 16px; padding: 10px 14px; border: 1px solid rgba(255,155,61,.42); border-radius: 8px; color: #ffad5f; background: rgba(255,155,61,.08); font: 600 12px 'IBM Plex Mono', monospace; cursor: pointer; }
-.runtime-logs__controls { flex-direction: row-reverse; justify-content: flex-end; padding: 14px 18px; }
-.runtime-logs__controls input { order: 2; flex: 0 1 270px; min-width: 190px; font: 12px 'IBM Plex Mono', monospace; }
-.log-filters { order: 1; flex-wrap: wrap; }
-.log-filters button { padding: 8px 11px; border: 1px solid rgba(255,255,255,.09); font-size: 11px; }
-.log-filters button.is-active { border-color: #ff9b3d; }
-.runtime-log-list { margin: 0 18px 18px; border: 1px solid rgba(74,104,132,.42); border-radius: 9px; background: #08131d; }
-.runtime-log-line { min-height: 45px; padding: 9px 14px; display: grid; grid-template-columns: 28px 110px 84px minmax(0,1fr); align-items: start; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.045); font: 12px/1.65 'IBM Plex Mono', monospace; }
-.runtime-log-line:last-child { border-bottom: 0; }
-.runtime-log-line > b { color: #617084; font-weight: 400; }
-.runtime-log-line time { color: #75849a; white-space: nowrap; }
-.runtime-log-line > span { padding: 2px 7px; overflow: hidden; border: 1px solid rgba(83,199,191,.22); border-radius: 5px; color: #54d8d0; background: rgba(0,154,145,.1); text-align: center; text-overflow: ellipsis; font-size: 11px; }
-.runtime-log-line > span.role-planner { color: #c9a1ff; border-color: rgba(166,112,220,.28); background: rgba(112,67,154,.14); }
-.runtime-log-line > span.role-host { color: #5fd5ff; border-color: rgba(52,180,226,.26); background: rgba(28,126,162,.13); }
-.runtime-log-line code { color: #d2d9e3; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-.workspace-kicker { font-size: 10px; }
-.runtime-evidence__header h1 { font-size: 17px; }
-.runtime-evidence__header p, .runtime-status { font-size: 11px; }
-.skills-used { margin-top: 12px; }
-@media (max-width: 1040px) {
-  .orchestrator-console.sessions-hidden { grid-template-columns: minmax(430px, 1fr) 300px; }
+/* Run configuration lives with the composer: you set it when you start a
+   run, not while you watch one. */
+.composer { flex: none; padding: var(--s-3) 14px; display: flex; flex-direction: column; gap: var(--s-2); border-top: 1px solid var(--line); }
+.composer__config { display: flex; align-items: center; gap: var(--s-2); }
+.composer__config select { min-width: 0; flex: 1; padding: 6px 26px 6px var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #e5ebf3; background: var(--raised); font: var(--fs-2) var(--mono); }
+.composer__row { display: flex; align-items: center; gap: var(--s-2); }
+.composer__row > div { flex: 1; min-width: 0; }
+.composer__hint { color: var(--text-3); font: var(--fs-1) var(--sans); }
+
+.session-economics { margin: auto var(--s-3) 0; padding: var(--s-3) 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: #111925; }
+.session-economics > strong { display: block; margin-bottom: var(--s-2); color: var(--text-3); font: 600 var(--fs-1) var(--mono); letter-spacing: .09em; text-transform: uppercase; }
+.session-economics > div { display: flex; justify-content: space-between; gap: var(--s-2); margin-bottom: var(--s-1); color: var(--text-2); font: var(--fs-2) var(--mono); }
+.session-economics > div:last-child { margin-bottom: 0; }
+.session-economics b { color: #e6ebf2; font-weight: 400; }
+.session-economics em { color: var(--ok); font-style: normal; }
+
+.status-done, .status-ok, .status-allow, .status-final, .status-success { color: var(--ok); }
+.status-running { color: var(--live); }
+.status-failed, .status-error, .status-deny, .status-denied { color: var(--danger); }
+.status-escalated, .status-budget_halted { color: var(--warn); }
+
+@media (max-width: 1440px) {
+  .orchestrator-console { grid-template-columns: 220px minmax(460px, 1fr) 360px; }
+  .orchestrator-console.sessions-hidden { grid-template-columns: minmax(460px, 1fr) 360px; }
+}
+/* Narrow windows narrow the rail; they do not delete it. `display: none` here
+   made session history unreachable — the activity-bar toggle and the strip's
+   → both kept working and produced nothing visible — so the rail drops to an
+   icon column instead, and the toggle still removes it entirely when asked.
+   The collapsed conversation also has to give its width back, or the grid
+   keeps reserving a full pane for a 48px strip. */
+@media (max-width: 1180px) {
+  .orchestrator-console { grid-template-columns: 58px minmax(430px, 1fr) 320px; }
+  .orchestrator-console.conversation-collapsed { grid-template-columns: 58px minmax(430px, 1fr) 48px; }
+  .orchestrator-console.sessions-hidden { grid-template-columns: minmax(430px, 1fr) 320px; }
   .orchestrator-console.sessions-hidden.conversation-collapsed { grid-template-columns: minmax(430px, 1fr) 48px; }
+  /* At 58px the word "Sessions" cannot fit, but the ← must survive — it is
+     the rail's own way of closing itself. Drop the label and the count. */
+  .session-rail header > strong, .session-rail header span, .session-group, .session-card__meta { display: none; }
+  .session-rail header { justify-content: center; padding: 0 6px; }
+  .session-group-list { padding: 0 6px; }
+  .session-card { min-height: 40px; padding: var(--s-2) 6px; align-items: center; }
+  .session-card__title strong { display: none; }
   .runtime-overview__metrics { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+  .now-banner h1 { font-size: var(--fs-5); }
 }

@@ -2,31 +2,31 @@ function fmt(value) {
   return new Intl.NumberFormat('en-US').format(Number(value) || 0)
 }
 
+// Was a four-column strip of bare numerals with 9px labels beneath them; on a
+// sparse run it read as four unlabelled zeros. It is a labelled ledger now:
+// each row names the quantity in language and puts the figure in mono, where
+// the eye expects to compare numbers.
 export default function TokenEconomics({ economics }) {
   const data = economics || {}
-  const metrics = [
-    ['input', fmt(data.inputTokens)],
-    ['cached input', fmt(data.cachedInputTokens)],
-    ['output', fmt(data.outputTokens)],
-    ['LM time', `${fmt(data.lmMs)} ms`],
+  const input = Number(data.inputTokens) || 0
+  const cached = Number(data.cachedInputTokens) || 0
+  const rows = [
+    ['tokens in / out', `${fmt(input)} / ${fmt(data.outputTokens)}`, null],
+    ['cached', fmt(cached), input ? `${Math.round((cached / input) * 100)}%` : null],
+    ['LM time', `${((Number(data.lmMs) || 0) / 1000).toFixed(1)} s`, null],
+    ['audited cycles', fmt(data.cycles), data.tokenSource || 'estimated'],
   ]
   return (
-    <div style={{ marginTop: 11, borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 10 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: 7 }}>
-        {metrics.map(([label, value]) => (
-          <div key={label} style={{ minWidth: 0, textAlign: 'center' }}>
-            <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: '#f4f4f5', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
-            <div style={{ marginTop: 2, fontSize: 9, color: '#6f7785', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-          </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 8, textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: '#8ab4d8' }}>
-        {fmt(data.cycles)} audited cycles · {data.tokenSource || 'estimated'} tokens
-      </div>
-      {!!data.tools?.length && (
-        <div style={{ marginTop: 5, textAlign: 'center', fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: '#7a7a82', overflowWrap: 'anywhere' }}>
-          {data.tools.map((tool) => `${tool.name}×${tool.count}`).join(' · ')}
+    <div className="session-economics">
+      <strong>This session</strong>
+      {rows.map(([label, value, note]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <span><b>{value}</b>{note ? <> <em>{note}</em></> : null}</span>
         </div>
+      ))}
+      {!!data.tools?.length && (
+        <div><span>tools</span><span><b>{data.tools.map((tool) => `${tool.name}×${tool.count}`).join(' · ')}</b></span></div>
       )}
     </div>
   )

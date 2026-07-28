@@ -154,8 +154,13 @@ function runSummary(status, logText, run) {
   return 'No worker activity for this run yet.'
 }
 
-function economicsForSession(agentCycles, sessionId) {
-  const rows = (agentCycles || []).filter((row) => row.sessionId === sessionId)
+// Takes the set of parent-session ids belonging to one conversation, not a
+// single id. A chat accumulates one parent session per root turn, so scoping
+// to the latest one and calling the result "this session" omitted every
+// earlier request's tokens, tools, and latency.
+function economicsForSession(agentCycles, sessionIds) {
+  const wanted = sessionIds instanceof Set ? sessionIds : new Set([sessionIds].filter(Boolean))
+  const rows = (agentCycles || []).filter((row) => wanted.has(row.sessionId))
   const tools = new Map()
   const summary = {
     cycles: rows.length,
@@ -197,6 +202,64 @@ function statusCountLine(steps) {
 function prettyRole(role) {
   const text = String(role || 'worker')
   return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+// "1 workers" had no plural handling anywhere in the console.
+function plural(count, noun) {
+  const n = Number(count) || 0
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+// The rail groups sessions by what the operator would do about them, not by
+// recency alone: one is running, one is blocked on you, the rest are history.
+const RAIL_BUCKETS = [
+  { key: 'active', label: 'Active' },
+  { key: 'needsYou', label: 'Needs you' },
+  { key: 'earlier', label: 'Earlier' },
+]
+
+function railBucketFor(status) {
+  if (status === 'running') return 'active'
+  if (status === 'escalated' || status === 'failed' || status === 'budget_halted') return 'needsYou'
+  return 'earlier'
+}
+
+// "Newest first" was asserted in a subtitle while no card carried a time, so
+// duplicate titles were indistinguishable. Every card gets a clock now.
+function clockLabel(epochSeconds, now = Date.now()) {
+  const seconds = Number(epochSeconds)
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const at = new Date(seconds * 1000)
+  const sameDay = new Date(now).toDateString() === at.toDateString()
+  const time = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0')
+  return sameDay ? time : `${at.getMonth() + 1}/${at.getDate()} ${time}`
+}
+
+// The banner names the act in language, not in tool-call syntax. The exact
+// call still appears below it in mono; this line is what you read at a glance.
+function actPhrase(row) {
+  const message = String(row?.message || '').toLowerCase()
+  const category = String(row?.category || '').toLowerCase()
+  if (category === 'policy') return 'waiting on a policy check'
+  if (category === 'model') return 'thinking'
+  if (category === 'skills') return 'loading a skill'
+  if (/\b(glob|grep|list_dir|read_file|read)\b/.test(message)) return 'reading your workspace'
+  if (/\b(write|edit|patch|create)\b/.test(message)) return 'writing files'
+  if (/\b(spawn|summon)\w*/.test(message)) return 'summoning workers'
+  if (/\b(test|lint|typecheck|validate)\w*/.test(message)) return 'running checks'
+  if (category === 'tools') return 'using a tool'
+  return 'working'
+}
+
+// Coarse ages only — a finished row does not need second precision.
+function ageLabel(epochSeconds, now = Date.now()) {
+  const seconds = Number(epochSeconds)
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const delta = Math.max(0, Math.round(now / 1000 - seconds))
+  if (delta < 60) return 'just now'
+  if (delta < 3600) return Math.floor(delta / 60) + 'm ago'
+  if (delta < 86400) return Math.floor(delta / 3600) + 'h ago'
+  return Math.floor(delta / 86400) + 'd ago'
 }
 
 function clipEvidence(value, max = 240) {
@@ -382,33 +445,51 @@ export function buildViewModel(s, act) {
   // active/chosen one. Chronological run number: oldest is R01, newest highest.
   const runNumberById = new Map()
   runsRaw.forEach((run, i) => runNumberById.set(run.id, runsRaw.length - i))
+  const nowMs = Date.now()
   const runs = runsRaw.map((run) => {
     const status = statusForRun(run)
     const m = sm[status] || sm.abandoned
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
     const selected = run.id === activeSessionId
     const session = run.session
+    const startedAt = Number(run.rootTurn?.startedAt || run.turn?.startedAt || 0)
+    const workerCount = hasSessionIndex ? Number(session?.workers || 0) : run.steps.length
     return {
       id: run.id,
+      startedAt,
+      bucket: railBucketFor(status),
+      selected,
+      // A running card shows elapsed; a finished one shows when it ran.
+      clock: clockLabel(startedAt, nowMs),
+      age: ageLabel(startedAt, nowMs),
+      workersLabel: plural(workerCount, 'worker'),
+      turnsLabel: plural(hasSessionIndex ? Number(session?.rootTurns || 0) : run.steps.length, 'turn'),
       title: hasSessionIndex
         ? (session?.title || ('Session ' + String(run.id).slice(-8)))
         : ('Session ' + String(run.id || 'driver').slice(0, 12)),
       subtitle: hasSessionIndex
-        ? `${Number(session?.rootTurns || 0)} root turns Â· ${Number(session?.workers || 0)} workers`
+        ? `${Number(session?.rootTurns || 0)} root turns · ${Number(session?.workers || 0)} workers`
         : (run.steps.length ? run.steps.length + ' workers' : 'driver-only turn'),
-      workerCount: hasSessionIndex ? Number(session?.workers || 0) : run.steps.length,
+      workerCount,
       status,
       statusLabel: m.label,
       statusColor: m.color,
+      // Escalation is the state that needs you — say so on the card.
+      stateLabel: status === 'escalated' && current?.max
+        ? `escalated at ${Number(current.turns || 0)}/${Number(current.max)}`
+        : m.label,
       currentBrief: hasSessionIndex
         ? (session?.lastRequest || run.task || current?.brief || '')
         : (current?.brief || run.task || 'Driver handled this turn without spawning workers.'),
       orderLabel: (hasSessionIndex ? 'S' : 'R') + String(runNumberById.get(run.id) || 1).padStart(2, '0'),
-      dotStyle: 'width:6px;height:6px;border-radius:50%;background:' + m.color + ';' + (status === 'running' ? 'animation:pulse 1.4s ease-in-out infinite;' : ''),
-      cardStyle: 'width:100%;text-align:left;background:' + (selected ? '#1b2536' : '#111721') + ';border:1px solid ' + (selected ? '#ff9b3d' : 'rgba(255,255,255,0.08)') + ';border-radius:10px;padding:11px 12px;cursor:pointer;transition:border-color .15s,box-shadow .15s;' + (selected ? 'box-shadow:0 0 0 1px #ff9b3d, 0 0 18px rgba(255,155,61,0.16);' : ''),
       onSelect: () => act.selectSession(run.id),
     }
   })
+  // Presentation order inside the rail is bucket first, recency second; runsRaw
+  // is already newest-first so the filter preserves it.
+  const railGroups = RAIL_BUCKETS
+    .map((bucket) => ({ ...bucket, runs: runs.filter((run) => run.bucket === bucket.key) }))
+    .filter((bucket) => bucket.runs.length)
   const slots = [{ cx: 189, cy: 300 }, { cx: 500, cy: 300 }, { cx: 811, cy: 300 }]
   const subagents = orchSubagents.slice(-3).map((a, i) => {
     const m = sm[a.status]
@@ -717,12 +798,46 @@ export function buildViewModel(s, act) {
         .flatMap((run) => run.stages || []),
     ].map((agent) => [agent.handle, agent])).values())
 
+    // Order requests oldest-first. The two available keys are not comparable:
+    // `agent_turns.started_at` is epoch seconds (~1.79e9) while
+    // `runtime_log_events.id` is an AUTOINCREMENT rowid (hundreds). Taking
+    // whichever exists and sorting the mixture ranked every turn-less request
+    // before every turn-bearing one.
+    //
+    // That is not an edge case: `_record_agent_turn` is called with
+    // `ended_at=time.time()` (agent/run.py), so the row is written when the
+    // turn *ends*. The in-flight request therefore never has a turn, always
+    // fell back to the small rowid, and was always sorted as the oldest thing
+    // in the session — mislabelled R01 and given the head of the continuation
+    // chain, on every run.
+    //
+    // So rank by tier first. A turn row exists if and only if the turn
+    // finished, which makes "has no turn" a reliable marker for "still
+    // running", and a running request is by definition the newest. Within a
+    // tier the keys are homogeneous: epoch seconds for finished requests,
+    // ledger rowid for in-flight ones.
+    // Sort on the ledger's own rowid, which every request in the new Console
+    // has (the host writes a launch line before the process starts) and which
+    // is monotonic across the whole session. Legacy requests predating the
+    // ledger have only a turn, so they form an earlier block ordered by epoch;
+    // the two keys are never compared against each other.
+    //
+    // The running request is pinned last by identity, not inferred from a
+    // missing turn row. `agent_turns` is written with `ended_at=time.time()`
+    // so an in-flight request has none — but so does a request whose process
+    // failed to spawn, and treating those alike would park a dead request at
+    // the head of the timeline forever. The driver already reports which
+    // request it owns.
+    const liveRequestId = driverRunning ? String(driverStatusForRuns.requestId || '') : ''
+    const requestTier = (request) => {
+      if (liveRequestId && request.requestId === liveRequestId) return 2
+      return request.events.length ? 1 : 0
+    }
+    const requestKey = (request) => (request.events.length
+      ? Number(request.events[0].id || 0)
+      : Number(request.turn?.startedAt || 0))
     const requestEntries = Array.from(requestMap.values())
-      .sort((a, b) => {
-        const at = Number(a.turn?.startedAt || a.events[0]?.id || 0)
-        const bt = Number(b.turn?.startedAt || b.events[0]?.id || 0)
-        return at - bt
-      })
+      .sort((a, b) => (requestTier(a) - requestTier(b)) || (requestKey(a) - requestKey(b)))
     requestEntries.forEach((request) => {
       const exactHandles = new Set(request.events.map((event) => event.agentHandle).filter(Boolean))
       request.agents = sessionAgents.filter((agent) => (
@@ -904,16 +1019,22 @@ export function buildViewModel(s, act) {
     keyEnv: '',
     fc: '#ff9b3d',
   }
-  const activeEconomicsSessionId = activeRunRaw?.rootTurn?.parentSession
-    || activeRunRaw?.turn?.parentSession
-    || activeSessionId
+  // Every parent session this conversation has opened — one per root turn —
+  // so the panel headed "This session" actually covers the session.
+  const activeEconomicsSessionIds = new Set([
+    ...orchAgentTurns.filter((turn) => turn.chatId === activeSessionId).map((turn) => turn.parentSession),
+    ...activeSessionAgents.map((agent) => agent.parentSession),
+    activeRunRaw?.rootTurn?.parentSession,
+    activeRunRaw?.turn?.parentSession,
+    activeSessionId,
+  ].filter(Boolean))
   const driverSummary = {
     title: 'Run summary',
     countLine: statusCountLine(activeSessionAgents),
     focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
     alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
-    economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionId),
+    economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionIds),
   }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
@@ -977,7 +1098,93 @@ export function buildViewModel(s, act) {
   const orchestratorHasDriverLog = driverBelongsToOrchestrator && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
+
+  // "What is the agent doing right now?" answered in one object: who is acting,
+  // what the act is, how long it has been going, and how to stop it. The banner
+  // that renders this is the largest element on the screen; everything that has
+  // already happened collapses to one line beneath it.
+  // The banner reports the run the DRIVER owns, not the session you happen to
+  // be reading. Those are the same thing until you click a historical session
+  // mid-run — at which point sourcing the actor and the act from the viewed
+  // session presents a finished run's last log line as live activity, which is
+  // the one thing this banner must never do.
+  const driverChatId = String(driverStatus.chatId || '')
+  const driverRequestId = String(driverStatus.requestId || '')
+  const driverSessionAgents = allSubagents.filter((agent) => agent.chatId === driverChatId)
+  const driverRunningAgent = driverSessionAgents.find((agent) => agent.status === 'running')
+  const nowActor = driverRunningAgent
+    ? prettyRole(driverRunningAgent.role)
+    : (orchestratorOwnsDriver ? 'Driver' : '')
+  // Scoped to the driver's own request, so a quiet historical session cannot
+  // lend its last line to a run happening elsewhere.
+  const lastRuntimeLine = [...(s.runtimeLogEvents || [])]
+    .filter((row) => (driverRequestId
+      ? row.requestId === driverRequestId
+      : row.chatId === driverChatId))
+    .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
+    .reverse()
+    .find((row) => (row.message || '').trim())
+  const nowTurns = Number(driverRunningAgent?.turns || 0)
+  const nowMaxTurns = Number(driverRunningAgent?.max || 0)
+  const driverRunIsPipeline = !!driverStatus.pipelineName
+  const nowRun = orchestratorOwnsDriver
+    ? {
+      running: true,
+      actor: nowActor,
+      // Reads as a sentence: "Planner is reading your workspace".
+      headline: `${nowActor} is ${actPhrase(lastRuntimeLine)}`,
+      task: driverStatus.task || '',
+      act: lastRuntimeLine?.message || driverStatusText || 'working…',
+      actRole: lastRuntimeLine?.role || '',
+      // Epoch seconds; the banner ticks the elapsed clock locally.
+      startedAt: Number(driverStatus.startedAt || 0),
+      turns: nowTurns,
+      maxTurns: nowMaxTurns,
+      turnLabel: nowMaxTurns ? `Turn ${nowTurns} of ${nowMaxTurns}` : '',
+      progress: nowMaxTurns ? Math.min(100, Math.round((nowTurns / nowMaxTurns) * 100)) : 0,
+      modeLabel: driverRunIsPipeline ? (driverStatus.pipelineName || 'pipeline') : 'direct',
+      // True while you are reading some other session; the banner says so and
+      // offers the way back rather than pretending you are watching this run.
+      viewingElsewhere: !!driverChatId && driverChatId !== activeSessionId,
+      onOpenRunningSession: () => act.selectSession(driverChatId),
+    }
+    : { running: false, headline: 'Nothing is running', act: '', startedAt: 0, progress: 0, viewingElsewhere: false }
+
+  // The trust strip proved nothing while its four pills were hard-coded
+  // strings: unchanging green teaches the eye to ignore green. Same four
+  // invariants, but each one now moves, so a deny is visible when it lands.
+  //
+  // Both counters below have to come from uncapped aggregates. `s.audit` is a
+  // display list the Rust side ends with `audit.truncate(120)`, so reading its
+  // length pins the number at 120 forever — a counter that stops moving is the
+  // decoration this strip was meant to stop being. total_spawned/total_done
+  // are incremented across the whole unbounded `subagent_audit` scan, and by
+  // HI #8 every spawn and completion writes exactly one row, so their sum is
+  // the ledger's real size.
+  const auditRows = Number(s.totalSpawned || 0) + Number(s.totalDone || 0)
+  // HI #3 firewalls the evaluator: `_STAGE_PERMISSIONS["reviewer"]` plus the
+  // runner's last-stage brief. `reviewer-aux` is a haiku helper from the
+  // exploration split, not an evaluator, so counting it overstated the claim
+  // while pipeline evaluators — which live in pipelineRuns[].stages, never in
+  // s.subagents — were missed entirely.
+  const evaluatorHandles = new Set([
+    ...allSubagents.filter((agent) => agent.role === 'reviewer'),
+    ...(s.pipelineRuns || []).flatMap((run) => (run.stages || []).slice(-1)),
+  ].map((agent) => agent.handle).filter(Boolean))
+  const trustCounters = [
+    { key: 'policy', label: 'policy', value: `${s.allowCount || 0} allow / ${s.denyCount || 0} deny`, ok: !Number(s.denyCount || 0) },
+    { key: 'audit', label: 'audit', value: `${auditRows} rows appended`, ok: true },
+    { key: 'firewall', label: 'firewall', value: `${evaluatorHandles.size} evaluator isolated`, ok: true },
+    { key: 'substrate', label: 'substrate', value: '0 LM calls', ok: true },
+  ]
+
   return {
+    nowRun,
+    sessionsHidden: !!s.sessionsHidden,
+    onToggleSessions: act.toggleSessions,
+    trustCounters,
+    railGroups,
+    onStopRun: act.cancelAgent,
     runMode: s.runMode === 'pipeline' ? 'pipeline' : 'direct',
     selectedPipeline: s.selectedPipeline || '',
     selectedPipelineRunnable: !!selectedPipelineEntry?.runnable,
@@ -1017,11 +1224,18 @@ export function buildViewModel(s, act) {
         onCancelTransition: act.cancelPipelineTransition,
       },
     },
-    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
-    view: s.view,
+    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',    view: s.view,
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
-    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
+    // On another view the Orchestrator button navigates. Once you are already
+    // there it toggles the sessions rail, which is the pane directly beside
+    // it — the control that hides a pane now sits next to that pane instead of
+    // in the opposite corner of the window.
+    selOrch: () => (s.view === 'orchestrator' ? act.toggleSessions() : act.setView('orchestrator')),
+    orchNavTitle: s.view === 'orchestrator'
+      ? (s.sessionsHidden ? 'Show sessions' : 'Hide sessions')
+      : 'Orchestrator',
+    selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
     totalDone: orchSubagents.filter((a) => a.status === 'done').length,
@@ -1043,22 +1257,31 @@ export function buildViewModel(s, act) {
       : 'Session history',
     sessionSubtitle: hasSessionIndex
       ? (activeRunRaw?.rootTurn
-        ? `latest root turn · ${activeSessionAgents.length} summoned workers`
+        ? `latest root turn · ${plural(activeSessionAgents.length, 'summoned worker')}`
         : 'no agent activity yet')
       : (sessionSteps.length
-        ? (sessionSteps.length + ' workers · full history for this parent run')
-        : (activeRunRaw?.turn ? 'driver-only turn - no workers spawned' : 'no workers in this session yet')),
+        ? (plural(sessionSteps.length, 'worker') + ' · full history for this parent run')
+        : (activeRunRaw?.turn ? 'driver-only turn — no workers spawned' : 'no workers in this session yet')),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
+    clearNodeSelect: () => act.clearNodeSelect(),
     driverBusy: orchestratorOwnsDriver, driverTask: (orchestratorOwnsDriver || orchestratorHasDriverLog) ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : (driverBelongsToOrchestrator ? driverStatusText : ''),
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorHasDriverLog && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
     onNewSession: act.newSession,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
-    onSend: orchestratorOwnsDriver ? act.cancelAgent : act.sendChat,
-    sendTitle: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active` : (orchestratorOwnsDriver ? 'Cancel running agent' : (orchestratorPipelineBlocked ? 'Select a runnable pipeline' : 'Send')),
-    sendMode: orchestratorOwnsDriver ? 'cancel' : 'send',
-    sendDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked || orchestratorPipelineBlocked,
+    // Send stays send. It used to swap glyph and colour in place while busy,
+    // so the only destructive control in the app sat exactly where the safe
+    // one had been — a misclick waiting to happen. Stopping a run is now a
+    // labelled button in the Now banner, where you are already looking.
+    onSend: act.sendChat,
+    sendTitle: orchestratorBlockedByPipeline
+      ? `${activeSurfaceLabel} run is active`
+      : (orchestratorOwnsDriver
+        ? 'Agent is running — stop it from the banner to send'
+        : (orchestratorPipelineBlocked ? 'Select a runnable pipeline' : 'Send')),
+    sendMode: 'send',
+    sendDisabled: orchestratorOwnsDriver || orchestratorBlockedByPipeline || historicalSessionBlocked || orchestratorPipelineBlocked,
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : (orchestratorPipelineBlocked ? 'Select a runnable pipeline before sending.' : '')),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),

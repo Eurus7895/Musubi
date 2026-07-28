@@ -39,6 +39,71 @@ test('legacy duplicated summary and verbose evidence surfaces are removed', () =
 
 test('hiding Sessions removes the rail instead of collapsing it', () => {
   assert.match(source, /sessions-hidden/)
-  assert.match(source, /Show sessions/)
   assert.equal(source.includes('sessions-collapsed'), false)
+  // The rail toggle is owned by the source so the activity bar can drive it.
+  assert.match(source, /vals\.sessionsHidden/)
+  assert.match(source, /vals\.onToggleSessions/)
+  // The composer's old button — which put the control for the leftmost pane
+  // in the bottom-right corner of the window — is gone.
+  assert.equal(source.includes('show-sessions'), false)
+  assert.equal(/composer__config[\s\S]*Show sessions/.test(source), false)
+  // Restoring the rail has a visible affordance, in the corner the rail's own
+  // ← hide button occupied, so the gesture round-trips where it started.
+  assert.match(source, /rail-toggle/)
+  assert.match(source, /aria-label="Show sessions"/)
+  assert.match(source, /aria-label="Hide sessions"/)
+})
+
+test('the Now banner answers what the agent is doing, and offers the way out', () => {
+  assert.match(source, /function NowBanner/)
+  // Actor, act, elapsed, and stop — the four things wanted mid-run.
+  assert.match(source, /nowRun/)
+  assert.match(source, /now\.headline/)
+  assert.match(source, /now\.act/)
+  assert.match(source, /elapsedSince/)
+  assert.match(source, /Stop run/)
+  assert.match(source, /onStopRun/)
+  // The banner ticks its own clock; the data source is event-driven.
+  assert.match(source, /setInterval/)
+})
+
+test('the run status strip and run-config band no longer sit above the evidence', () => {
+  // 206px of stacked chrome came before the first data row. Run mode is a
+  // start-of-run decision and now lives with the composer instead.
+  assert.equal(source.includes('runtime-status'), false)
+  assert.equal(source.includes('audited nodes'), false)
+  assert.equal(source.includes('log rows</span>'), false)
+  assert.match(source, /composer__config/)
+  assert.match(source, /config=\{<RunConfiguration/)
+})
+
+test('the session log is reachable without drilling into a single request', () => {
+  // The Timeline/Session log toggle had stylesheet rules but no component, so
+  // the only log surface was per-request — a run spanning several requests
+  // could not be read end to end.
+  assert.match(source, /surface-tabs/)
+  assert.match(source, />Timeline</)
+  assert.match(source, /Session log/)
+  assert.match(source, /surfaceTab/)
+  // Session scope is unscoped by construction: a lingering node selection
+  // would silently narrow it back down to that node's rows.
+  assert.match(source, /setSelectedNodeId\(null\)/)
+  // Rows carry the request that emitted them, since a row ordinal is useless
+  // once the log spans requests.
+  assert.match(source, /requestLabels/)
+  assert.equal(source.includes('workspaceTab'), false)
+})
+
+test('finished requests collapse to one line and absent values are not zeros', () => {
+  assert.match(source, /function RequestTimeline/)
+  assert.match(source, /function RequestRow/)
+  // A sparse run typesets its noughts like real data unless they are dashed.
+  assert.match(source, /metricField/)
+  assert.match(source, /'—'/)
+  assert.match(source, /is-absent/)
+  // The running request shows its last log lines without leaving the timeline.
+  assert.match(source, /function LiveLog/)
+  assert.match(source, /LIVE_LOG_LINES/)
+  // The 980px cap wasted gutter on a wide display; the pane grows instead.
+  assert.equal(source.includes('request-graph'), false)
 })
