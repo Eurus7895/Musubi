@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -3279,3 +3280,43 @@ def test_a_short_answer_to_the_question_is_still_the_answer(
     system_text = router.calls[0]["messages"][0]["content"]
     assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
     assert db.pending_clarification(chat, db_path=chat_db) is None
+def test_apply_workspace_points_tools_at_the_selected_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--workspace must set the var the spawned server reads AND chdir, so
+    both halves of the stack agree on the project boundary."""
+    from agent.run import _apply_workspace
+
+    selected = tmp_path / "application"
+    selected.mkdir()
+    monkeypatch.chdir(tmp_path)
+    # setenv (not delenv) so monkeypatch records the key and undoes the
+    # direct os.environ write _apply_workspace makes. A leaked
+    # MUSUBI_WORKSPACE pointing at a torn-down tmp_path would re-root the
+    # fs tools and artifact checks for every later test in the session.
+    monkeypatch.setenv("MUSUBI_WORKSPACE", "")
+
+    assert _apply_workspace(selected) == 0
+    assert os.environ["MUSUBI_WORKSPACE"] == str(selected.resolve())
+    assert Path.cwd().resolve() == selected.resolve()
+
+    # The var must survive into the spawned server's env, or tools/fs.py
+    # in the child process falls back to the Musubi checkout.
+    from agent.run import _server_env
+
+    assert _server_env()["MUSUBI_WORKSPACE"] == str(selected.resolve())
+
+
+def test_apply_workspace_rejects_missing_and_non_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.run import _apply_workspace
+
+    monkeypatch.chdir(tmp_path)
+    assert _apply_workspace(tmp_path / "nope") == 2
+
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x")
+    assert _apply_workspace(a_file) == 2
+    # A rejected workspace must not have moved the process.
+    assert Path.cwd().resolve() == tmp_path.resolve()

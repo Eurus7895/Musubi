@@ -37,11 +37,16 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Console workspace picker.** Settings can select and persist an existing
-   application folder, then restart into that project boundary while retaining
-   the installed Musubi runtime and configured LLM profile. Direct filesystem
-   tools and launched workers share the dedicated `MUSUBI_WORKSPACE` root;
-   switching is rejected while an agent is running. Plan:
+1. **Workspace selection — edit an application outside the Musubi checkout.**
+   Settings can select and persist an existing application folder, then restart
+   into that project boundary while retaining the installed Musubi runtime and
+   configured LLM profile. Headless runs reach the same boundary with
+   `agent --workspace <dir>` (distinct from `--musubi`, which points at the
+   runtime). Direct filesystem tools, `run_command`, the mechanical lint gate,
+   and completion artifact verification all resolve against the dedicated
+   `MUSUBI_WORKSPACE` root; shipped pipelines, agents, and skills keep
+   resolving from the install so an application folder with no `.github/` of
+   its own stays usable. Switching is rejected while an agent is running. Plan:
    [`2026-07-28-console-workspace-picker.md`](./superpowers/plans/2026-07-28-console-workspace-picker.md)
 
 2. **Skill catalog growth.** Skills remain the cheapest optimization surface.

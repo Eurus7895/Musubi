@@ -1878,6 +1878,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--workspace",
+        type=Path,
+        default=None,
+        help=(
+            "Application folder the agent reads and writes. This is the "
+            "project boundary, NOT the Musubi install — use --musubi for "
+            "that. Defaults to $MUSUBI_WORKSPACE, else the current "
+            "directory. The Console's Settings picker sets the same var."
+        ),
+    )
+    ap.add_argument(
         "--plan",
         action="store_true",
         help=(
@@ -1901,7 +1912,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
 
-    musubi_dir = args.musubi or _default_musubi_dir()
+    # Resolve the runtime dir BEFORE any chdir, so a relative --musubi still
+    # means what the user typed it against.
+    musubi_dir = (args.musubi or _default_musubi_dir()).resolve()
+    if args.workspace is not None:
+        rc = _apply_workspace(args.workspace)
+        if rc:
+            return rc
     if not (musubi_dir / "server.py").is_file():
         print(
             f"agent-agent: server.py not found under {musubi_dir} "
@@ -2020,6 +2037,41 @@ def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     if root:
         return Path(root) / "data" / "audit.db"
     return musubi_dir / "storage" / "audit.db"
+
+
+def _apply_workspace(raw: Path) -> int:
+    """Point this run at an application folder. Returns 0, or 2 to abort.
+
+    Two effects, because the workspace has to hold on both halves of the
+    stack:
+
+      * `MUSUBI_WORKSPACE` — `_server_env` forwards every `MUSUBI_*` var to
+        the spawned server, where `tools.fs._workspace_root` reads it. This
+        is what makes reads, writes, and `run_command` land in the selected
+        folder instead of the Musubi checkout.
+      * `chdir` — the server subprocess inherits this process's cwd, and
+        `execution.executor.run_lint` shells out to ruff with no explicit
+        cwd. Without the chdir a relative path from the worker would be
+        linted against wherever the operator happened to launch the CLI.
+
+    Together these match what the Console already does: it exports the var
+    and spawns the driver with `current_dir` set to the same folder. Asset
+    lookup is unaffected — pipelines, agents, and skills resolve from
+    `MUSUBI_ROOT` or `__file__`, never from cwd, so shipped recipes stay
+    reachable from an application folder that has no `.github/` of its own.
+    """
+    workspace = raw.expanduser()
+    try:
+        workspace = workspace.resolve(strict=True)
+    except OSError as exc:
+        print(f"agent-agent: --workspace is not accessible: {exc}", file=sys.stderr)
+        return 2
+    if not workspace.is_dir():
+        print(f"agent-agent: --workspace is not a directory: {workspace}", file=sys.stderr)
+        return 2
+    os.environ["MUSUBI_WORKSPACE"] = str(workspace)
+    os.chdir(workspace)
+    return 0
 
 
 def _default_audit_db_path() -> Path:
