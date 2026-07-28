@@ -58,14 +58,15 @@ def _artifacts_verified(artifacts: list[str] | None) -> bool:
     """Deterministically verify a runner's artifact manifest on disk.
 
     True only when the manifest is a non-empty list and EVERY entry resolves
-    inside the workspace root (`MUSUBI_ROOT`, else the server's cwd — the same
-    anchor `tools/fs.py` writes against), is a regular file, and is non-empty.
+    inside the workspace root (`MUSUBI_WORKSPACE`, else `MUSUBI_ROOT`, else the
+    server's cwd — the same anchor `tools/fs.py` writes against), is a regular
+    file, and is non-empty.
     Any escape, miss, empty file, or stat error fails the whole manifest —
     the caller keeps its fail-closed coercion. Zero-LLM (HI #1).
     """
     if not artifacts or not isinstance(artifacts, list):
         return False
-    env = os.environ.get("MUSUBI_ROOT")
+    env = os.environ.get("MUSUBI_WORKSPACE") or os.environ.get("MUSUBI_ROOT")
     root = Path(env).resolve() if env else Path.cwd().resolve()
     for entry in artifacts:
         if not isinstance(entry, str) or not entry.strip():

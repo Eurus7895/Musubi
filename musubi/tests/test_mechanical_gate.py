@@ -177,3 +177,27 @@ def test_gate_skipped_when_all_writes_deleted(tmp_path: Path, monkeypatch) -> No
     )
     assert gate["result"] == "skipped"
     assert "no surviving files" in gate["detail"]
+
+
+# ── workspace anchoring (the gate must follow tools/fs.py) ──────────────────
+
+
+def test_mechanical_root_follows_selected_workspace(monkeypatch, tmp_path) -> None:
+    """`_mechanical_workspace_root` documents itself as mirroring tools.fs.
+    tools/fs.py prefers MUSUBI_WORKSPACE, so the survivor check must too —
+    otherwise a worker that wrote into the selected application folder has
+    every file counted as deleted and the gate skips linting entirely."""
+    runtime = tmp_path / "runtime"
+    selected = tmp_path / "application"
+    runtime.mkdir()
+    selected.mkdir()
+    (selected / "app.py").write_text("x = 1\n")
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(runtime))
+    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
+    assert subagent._mechanical_workspace_root() == selected.resolve()
+    assert subagent._file_still_exists("app.py") is True
+
+    monkeypatch.delenv("MUSUBI_WORKSPACE")
+    assert subagent._mechanical_workspace_root() == runtime.resolve()
+    assert subagent._file_still_exists("app.py") is False

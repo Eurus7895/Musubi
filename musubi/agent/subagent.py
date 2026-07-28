@@ -363,8 +363,13 @@ _LINTABLE_EXT = (".py",)
 
 
 def _mechanical_workspace_root() -> Path:
-    """Workspace root, mirroring tools.fs so a relative path resolves the same."""
-    env = os.environ.get("MUSUBI_ROOT")
+    """Workspace root, mirroring tools.fs so a relative path resolves the same.
+
+    Precedence must stay identical to `tools.fs._workspace_root`: a worker
+    writes through those tools, so anchoring the survivor check anywhere else
+    reports every delivered file as missing.
+    """
+    env = os.environ.get("MUSUBI_WORKSPACE") or os.environ.get("MUSUBI_ROOT")
     return Path(env).resolve() if env else Path.cwd().resolve()
 
 

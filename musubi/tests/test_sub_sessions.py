@@ -741,3 +741,23 @@ def test_mcp_list_subagents_for_unknown_main_is_empty(mcp_db: Path) -> None:
     raw = server.musubi_list_subagents(main_agent_name="nobody")
     payload = json.loads(raw)
     assert payload["roles"] == []
+
+
+def test_artifacts_verified_anchors_on_selected_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A worker writes through tools/fs.py, which prefers MUSUBI_WORKSPACE.
+    The manifest check must use the same anchor or every delivered file
+    reads as missing and the completion is coerced to escalated."""
+    runtime = tmp_path / "runtime"
+    selected = tmp_path / "application"
+    (selected / "src").mkdir(parents=True)
+    runtime.mkdir()
+    (selected / "src" / "app.py").write_text("print('hi')\n")
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(runtime))
+    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
+    assert sub_sessions._artifacts_verified(["src/app.py"]) is True
+
+    monkeypatch.delenv("MUSUBI_WORKSPACE")
+    assert sub_sessions._artifacts_verified(["src/app.py"]) is False
