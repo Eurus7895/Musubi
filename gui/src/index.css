@@ -198,7 +198,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-rail header, .conversation-panel__header { height: 48px; flex: none; padding: 0 var(--s-3); display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); border-bottom: 1px solid var(--line); }
 .session-rail header strong, .conversation-panel__header strong { color: var(--text); font: 600 var(--fs-3) var(--sans); }
 .session-rail header span { color: var(--text-3); font: var(--fs-1) var(--mono); }
-.session-rail header button, .collapse-button, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
+.session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
+.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: rgba(255, 255, 255, .28); }
 .session-rail__list { flex: 1; min-height: 0; padding-bottom: var(--s-2); overflow: auto; }
 
 /* Grouped by what you would do about them, not by recency alone. */
@@ -252,9 +253,12 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 
 /* Session strip — which session the timeline below belongs to. */
 .session-strip { flex: none; padding: var(--s-3) 22px var(--s-2); display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
-.session-strip__id { min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); }
-.session-strip__id strong { overflow: hidden; color: #e6ebf2; font: 600 var(--fs-4) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
-.session-strip__id span { flex: none; color: var(--text-3); font: var(--fs-2) var(--mono); }
+.session-strip__id { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); }
+/* The title keeps its natural width; the meta takes what is left and is the
+   first to give it back, so the session name is not clipped while the byline
+   beside it sits at full length. */
+.session-strip__id strong { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #e6ebf2; font: 600 var(--fs-4) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.session-strip__id span { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-3); font: var(--fs-2) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .surface-tabs, .run-mode { flex: none; padding: 2px; display: flex; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
 .surface-tabs button, .run-mode button, .log-filters button { border: 0; border-radius: var(--r-sm); color: #798697; background: transparent; font: 600 var(--fs-2) var(--sans); cursor: pointer; }
 .surface-tabs button, .run-mode button { padding: 5px 11px; }
@@ -307,8 +311,11 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 /* Drill-in keeps the timeline: detail is a pane beside it, not instead of it. */
 .runtime-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .runtime-detail__header { padding: var(--s-4) 22px 0; border-bottom: 1px solid var(--line); }
-.runtime-detail__back { padding: 0; border: 0; color: var(--text-2); background: transparent; font: var(--fs-3) var(--sans); cursor: pointer; }
-.runtime-detail__back:hover { color: #fff; }
+/* Was borderless, background-less text at --text-2 — indistinguishable from
+   the labels around it, so the only way out of a detail pane did not read as
+   a control. It is a button now, and says so at rest. */
+.runtime-detail__back { padding: 5px var(--s-2) 5px 6px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #c3ccd8; background: var(--raised); font: 600 var(--fs-2) var(--sans); cursor: pointer; }
+.runtime-detail__back:hover { color: #fff; border-color: rgba(255, 255, 255, .28); }
 .runtime-detail__title { margin-top: var(--s-4); display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
 .runtime-detail__title h1 { margin: var(--s-1) 0 0; color: var(--text); font: 600 var(--fs-6)/1.3 var(--sans); letter-spacing: -.025em; }
 .runtime-detail__title code { max-width: 45%; padding: 7px 11px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); font: var(--fs-2) var(--mono); text-overflow: ellipsis; white-space: nowrap; }

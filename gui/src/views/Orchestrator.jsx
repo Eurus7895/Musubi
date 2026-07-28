@@ -107,6 +107,21 @@ export default function Orchestrator({ vals }) {
           }}
         />
         <div className="session-strip">
+          {/* The rail's own header carries a ← to hide it. Once hidden that
+              button goes with it, leaving nothing on screen to say the pane
+              can come back. This → takes its place in the same corner, so the
+              gesture round-trips where it started rather than sending you to
+              the activity bar to guess. */}
+          {sessionsHidden && (
+            <button
+              className="rail-toggle"
+              aria-label="Show sessions"
+              title="Show sessions"
+              onClick={vals.onToggleSessions}
+            >
+              →
+            </button>
+          )}
           <div className="session-strip__id">
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
