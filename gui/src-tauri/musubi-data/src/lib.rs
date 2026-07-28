@@ -4650,6 +4650,7 @@ mod tests {
         let cli = PathBuf::from("/scripts/agent.exe");
         let mut env = std::collections::HashMap::new();
         env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
+        env.insert("MUSUBI_WORKSPACE".to_string(), "/proj".to_string());
         env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
         env.insert(
             "MUSUBI_LLM_CONFIG".to_string(),
@@ -4688,6 +4689,7 @@ mod tests {
                     "/proj/.musubi/mcp.json".to_string()
                 ),
                 ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
+                ("MUSUBI_WORKSPACE".to_string(), "/proj".to_string()),
             ],
             "only MUSUBI_* is forwarded explicitly; the rest is inherited"
         );
@@ -5044,6 +5046,7 @@ pub fn build_agent_launch_spec(
 fn forwarded_spec_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
     let mut spec_env = Vec::new();
     for key in [
+        "MUSUBI_WORKSPACE",
         "MUSUBI_ROOT",
         "MUSUBI_DB",
         "MUSUBI_LLM_CONFIG",

@@ -39,6 +39,7 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
+      workspaceError: '', workspaceSwitching: false,
       pipelineBuilder: {
         step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
         selectedStageIndex: null, findings: [], saveResult: null,
@@ -230,6 +231,17 @@ export default class TauriSource {
       },
       cancelAgent: () => this._action('cancel_agent'),
       selectProfile: (name) => this._action('select_profile', [name]),
+      chooseWorkspace: async () => {
+        if (this.state.driverStatus?.running || this.state.workspaceSwitching) return
+        try {
+          const selected = await this._invoke('choose_workspace')
+          if (!selected) return
+          this._setLocal({ workspaceError: '', workspaceSwitching: true })
+          await this._invoke('action', { kind: 'set_workspace', args: [selected] })
+        } catch (error) {
+          this._setLocal({ workspaceError: String(error), workspaceSwitching: false })
+        }
+      },
       sendChat: () => this._submitChat(this.state.draft),
       // Approval is a user message, not a control channel. It goes through the
       // same submit as typing, so the backend sees one kind of consent and the

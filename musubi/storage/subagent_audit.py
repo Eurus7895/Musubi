@@ -79,6 +79,9 @@ CREATE INDEX IF NOT EXISTS idx_subagent_audit_handle
 def _resolve_db_path() -> Path:
     """audit.db lives next to storage/db.py in dev; respect MUSUBI_ROOT
     in extension binary mode so dev and packaged runs converge."""
+    workspace = os.environ.get("MUSUBI_WORKSPACE")
+    if workspace:
+        return Path(workspace) / ".musubi" / "data" / "audit.db"
     env = os.environ.get("MUSUBI_ROOT")
     if env:
         return Path(env) / "data" / "audit.db"

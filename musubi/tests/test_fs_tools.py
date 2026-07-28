@@ -46,6 +46,16 @@ def test_resolve_path_accepts_absolute_inside_workspace(workspace: Path) -> None
     assert fs.resolve_path(abs_path) == Path(abs_path).resolve()
 
 
+def test_selected_workspace_overrides_packaged_musubi_root(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    selected = tmp_path / "application"
+    selected.mkdir()
+    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
+
+    assert fs.resolve_path("app.py") == (selected / "app.py").resolve()
+
+
 def test_resolve_path_rejects_dotdot_traversal(workspace: Path) -> None:
     with pytest.raises(PermissionError, match="outside the workspace root"):
         fs.resolve_path("../../etc/passwd")

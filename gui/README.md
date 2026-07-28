@@ -106,6 +106,11 @@ The sections backed by the Tauri backend:
   `agent "<brief>" --pipeline <name>`. Exact serialized catalog and builder
   fields are documented in
   [`src-tauri/SCHEMA.md`](src-tauri/SCHEMA.md#state-shape-rust--json--buildviewmodel).
+- **Application workspace picker**: Settings → **Choose folder** selects an
+  existing application directory and restarts the Console into that governed
+  boundary. The preference is stored per operating-system user; the selected
+  application gets its own `.musubi/data/audit.db`, while the installed Musubi
+  runtime and existing LLM configuration remain independent.
 - **Policy**: fail-closed PreToolUse allow/deny stream and role tool surfaces.
 - **Audit**: append-only ledger, filterable by event type.
 - **Models**: LMRouter vendor profiles and active profile selection.

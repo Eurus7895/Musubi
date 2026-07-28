@@ -1308,5 +1308,10 @@ export function buildViewModel(s, act) {
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),
     auditFAll: auditBtn(s.auditFilter === 'all'), auditFSpawn: auditBtn(s.auditFilter === 'spawned'), auditFDone: auditBtn(s.auditFilter === 'completed'),
     profiles, skills, setupRows, setupPathHint: setup.pathHint || '',
+    workspaceRoot: setup.projectRoot || '',
+    workspaceError: s.workspaceError || '',
+    workspaceSwitching: !!s.workspaceSwitching,
+    workspaceSwitchDisabled: !!driverStatus.running || !!s.workspaceSwitching,
+    onChooseWorkspace: act.chooseWorkspace,
   }
 }

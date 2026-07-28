@@ -2002,6 +2002,9 @@ def _server_env() -> dict[str, str]:
 
 def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     """Return the SQLite DB path used by the spawned Musubi server."""
+    workspace = server_env.get("MUSUBI_WORKSPACE")
+    if workspace:
+        return Path(workspace) / ".musubi" / "data" / "musubi.db"
     root = server_env.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "musubi.db"
@@ -2010,6 +2013,9 @@ def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
 
 def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     """Return the append-only audit DB path used by the spawned server."""
+    workspace = server_env.get("MUSUBI_WORKSPACE")
+    if workspace:
+        return Path(workspace) / ".musubi" / "data" / "audit.db"
     root = server_env.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "audit.db"

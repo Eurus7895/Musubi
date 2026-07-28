@@ -206,6 +206,9 @@ def _default_db_path() -> Path:
     # When running as the VS Code extension binary MUSUBI_ROOT points to the
     # extension install dir — a stable, writable location across binary runs.
     # Fall back to alongside db.py for dev / test usage.
+    workspace = os.environ.get("MUSUBI_WORKSPACE")
+    if workspace:
+        return Path(workspace) / ".musubi" / "data" / "musubi.db"
     root = os.environ.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "musubi.db"

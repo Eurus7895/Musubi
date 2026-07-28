@@ -560,7 +560,7 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
-    from agent.run import _server_db_path
+    from agent.run import _server_audit_db_path, _server_db_path
 
     musubi_dir = tmp_path / "checkout" / "musubi"
     assert _server_db_path(musubi_dir, {}) == musubi_dir / "storage" / "musubi.db"
@@ -570,6 +570,11 @@ def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
         _server_db_path(musubi_dir, {"MUSUBI_ROOT": str(root)})
         == root / "data" / "musubi.db"
     )
+
+    workspace = tmp_path / "application"
+    env = {"MUSUBI_ROOT": str(root), "MUSUBI_WORKSPACE": str(workspace)}
+    assert _server_db_path(musubi_dir, env) == workspace / ".musubi/data/musubi.db"
+    assert _server_audit_db_path(musubi_dir, env) == workspace / ".musubi/data/audit.db"
 
 
 def test_fit_model_input_enforces_hard_cap_including_tools() -> None:
