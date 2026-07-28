@@ -122,6 +122,55 @@ teaches the eye to ignore green; a deny is now visible the moment it lands.
 Also fixed in passing: `1 workers` had no plural handling anywhere, and
 `sessionSubtitle` carried a double-encoded `·`.
 
+### One latent bug the reordering exposed
+
+Rendering newest-first moved the running request from the top of the list to
+the bottom, which made a pre-existing sort defect obvious. `viewModel.js`
+ordered requests with `Number(turn?.startedAt || events[0]?.id || 0)`. Those
+keys are not comparable: `agent_turns.started_at` is epoch seconds (~1.79e9),
+`runtime_log_events.id` is an `AUTOINCREMENT` rowid in the hundreds.
+
+It was not a rare case. `_record_agent_turn` is called with
+`ended_at=time.time()` (`agent/run.py:661`, `:861`), so the turn row is written
+when the turn *ends* — an in-flight request has none, was the only entry taking
+the rowid branch, and was therefore ranked oldest on every run: mislabelled
+R01, and given the head of the continuation chain instead of its tail.
+
+Requests are now ranked by tier — finished before in-flight, since a turn row
+exists if and only if the turn finished — and compared only against like keys
+within a tier.
+
+**Known limit:** a run killed mid-flight leaves ledger rows with no turn row
+permanently, so it pins to the newest slot rather than settling into
+chronological position. Fixing that needs an epoch column on the ledger;
+`runtime_log_events.ts` is `TEXT` clock-time only.
+
+### Controls that were reachable but did not look it
+
+Three follow-ups, each found by using the thing rather than reading it:
+
+- **The session log.** The Timeline/Log toggle had stylesheet rules and no
+  component, so the rules were dead and the only log surface was per-request —
+  a run spanning several requests could not be read end to end, and with
+  nothing running there was no path to a log at all. The toggle now renders,
+  switching to it clears any selected node (the scope filter would otherwise
+  silently narrow a "session" log to one node's rows), and each line carries
+  the request that emitted it, since a row ordinal means nothing once the
+  stream spans requests.
+- **The sessions rail toggle.** Moving run configuration into the composer
+  dragged the "Show sessions" button with it, putting the only control for the
+  leftmost pane in the bottom-right corner. It folded into the Orchestrator
+  entry in the activity bar, which sits beside the rail: on another view it
+  navigates, on Orchestrator it toggles. That required `sessionsHidden` to move
+  from component state into the source next to `processOpen` and
+  `logWindowOpen`, since `ActivityBar` is a sibling of `Orchestrator` and could
+  never have reached its `useState`. A matching `→` in the session strip took
+  the place of the rail's own `←`, so a hidden rail still advertises its way
+  back rather than relying on a tooltip.
+- **"Back to graph."** Borderless, background-less text at `--text-2` — the
+  same treatment as the labels beside it, so the only way out of a detail pane
+  read as a caption. It is a button at rest now.
+
 ## Deliberately unchanged
 
 The three-pane shape, the activity bar, the knot mark, the dark ledger register,
@@ -136,6 +185,11 @@ chat bubble geometry, and the request→agent nesting. The diagnosis was not
 - No cross-view deep links (an escalated agent cannot jump to its policy
   verdicts or audit rows), and no session scope outside the Orchestrator.
 - Drill-in still swaps the centre pane rather than opening beside the timeline.
+- An orphaned request (ledger rows, no turn row, run killed) pins to the newest
+  slot; ordering it correctly needs an epoch column on `runtime_log_events`.
+- Mid-run steering is still not possible — `sendChat` is gated on
+  `driverStatus.running`, so the composer is disabled while a run owns the
+  driver rather than queueing.
 - No keyboard shortcuts (`⌘K` sessions, `⌘.` stop, `1–7` views).
 - Pipeline Studio, Skills, and Settings keep their own headers and card styles;
   the token layer is available to them but they have not been migrated.

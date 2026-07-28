@@ -133,7 +133,21 @@ enforcement path for the same dimension.
   Two factual bugs went with it — Policy's hard-coded "4 policy roles" now
   reads the live catalog, and Models' invented `.musubi/llm.toml` sample is the
   documented `llm.json` schema beside the operator's real path (the file itself
-  stays unrendered because a profile may hold an inline `api_key`). Record:
+  stays unrendered because a profile may hold an inline `api_key`).
+  Rendering the timeline newest-first surfaced a latent ordering defect: the
+  request sort compared `agent_turns.started_at` (epoch seconds) against
+  `runtime_log_events.id` (an AUTOINCREMENT rowid) in one expression, and since
+  `_record_agent_turn` is called with `ended_at=time.time()` the running
+  request has no turn row, so it took the rowid branch and was ranked oldest on
+  every run — mislabelled R01 and handed the head of the continuation chain.
+  Requests are now ranked by tier (finished before in-flight) and compared only
+  against like keys within a tier. Rounding the surface out: a session log
+  reachable without drilling into one request, with each line carrying the
+  request that emitted it; the sessions rail toggle moved onto the Orchestrator
+  entry in the activity bar, which sits beside the pane it hides, with a
+  matching visible button in the strip so a hidden rail still advertises its
+  way back; and "Back to graph" restyled as a button, having been borderless
+  text in the same colour as the labels around it. Record:
   [`2026-07-27-console-now-first-orchestrator.md`](./superpowers/plans/2026-07-27-console-now-first-orchestrator.md)
 
 - Commit identity is enforced, not remembered — the harness presets
