@@ -16,6 +16,35 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('workspace picker applies the selected native folder exactly once', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => {
+    calls.push({ command, payload })
+    if (command === 'choose_workspace') return 'C:\\Workspace\\application'
+    return null
+  }
+
+  await source.actions.chooseWorkspace()
+
+  assert.equal(source.state.workspaceSwitching, true)
+  assert.deepEqual(calls, [
+    { command: 'choose_workspace', payload: undefined },
+    { command: 'action', payload: { kind: 'set_workspace', args: ['C:\\Workspace\\application'] } },
+  ])
+})
+
+test('workspace picker is disabled while an agent is running', async () => {
+  const source = new TauriSource({})
+  let invoked = false
+  source._invoke = async () => { invoked = true }
+  source._setLocal({ driverStatus: { running: true } })
+
+  await source.actions.chooseWorkspace()
+
+  assert.equal(invoked, false)
+})
+
 test('merges pipeline chat from backend snapshots', () => {
   const { source } = sourceWithActionSpy()
 

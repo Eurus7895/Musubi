@@ -37,7 +37,14 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Skill catalog growth.** Skills remain the cheapest optimization surface.
+1. **Console workspace picker.** Settings can select and persist an existing
+   application folder, then restart into that project boundary while retaining
+   the installed Musubi runtime and configured LLM profile. Direct filesystem
+   tools and launched workers share the dedicated `MUSUBI_WORKSPACE` root;
+   switching is rejected while an agent is running. Plan:
+   [`2026-07-28-console-workspace-picker.md`](./superpowers/plans/2026-07-28-console-workspace-picker.md)
+
+2. **Skill catalog growth.** Skills remain the cheapest optimization surface.
    Each new skill should carry useful metadata such as `applies-to`, `triggers`,
    and relevant tools.
    First batch landed: `debugging`, `refactoring`, `git-workflow`, and `web-ui`

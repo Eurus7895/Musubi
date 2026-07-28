@@ -23,7 +23,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 struct AppState {
@@ -75,6 +75,92 @@ const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
 ];
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsolePreferences {
+    workspace: String,
+    #[serde(default)]
+    llm_config: String,
+}
+
+fn console_preferences_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    base.unwrap_or_else(std::env::temp_dir)
+        .join("musubi")
+        .join("console.json")
+}
+
+fn load_console_preferences() -> Option<ConsolePreferences> {
+    let text = std::fs::read_to_string(console_preferences_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn save_console_preferences(preferences: &ConsolePreferences) -> Result<(), String> {
+    let path = console_preferences_path();
+    let parent = path.parent().ok_or("invalid Console preferences path")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create preferences directory: {e}"))?;
+    let text = serde_json::to_string_pretty(preferences).map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("{text}\n")).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Choose a workspace folder first.".into());
+    }
+    let path = PathBuf::from(raw)
+        .canonicalize()
+        .map_err(|e| format!("Workspace folder is not accessible: {e}"))?;
+    if !path.is_dir() {
+        return Err("The selected workspace is not a directory.".into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn choose_workspace() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Choose the application workspace for Musubi'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }",
+        ]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("osascript");
+        command.args(["-e", "POSIX path of (choose folder with prompt \"Choose the application workspace for Musubi\")"]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("zenity");
+        command.args([
+            "--file-selection",
+            "--directory",
+            "--title=Choose the application workspace for Musubi",
+        ]);
+        command
+    };
+    let output = command
+        .output()
+        .map_err(|e| format!("open folder picker: {e}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!path.is_empty()).then_some(path))
+}
 
 fn epoch_secs() -> i64 {
     SystemTime::now()
@@ -394,6 +480,9 @@ fn resolve_project_root(
     cwd: &Path,
     audit_db: Option<&musubi_data::ResolvedAuditDb>,
 ) -> PathBuf {
+    if let Some(root) = env_path(env, "MUSUBI_WORKSPACE") {
+        return root;
+    }
     if let Some(root) = env_path(env, "MUSUBI_ROOT") {
         return root;
     }
@@ -1063,17 +1152,22 @@ fn start_chat_agent(
     let mut env = musubi_data::current_env_map();
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
-    let mut launch_root = state.project_root.clone();
+    let launch_root = state.project_root.clone();
+    env.insert(
+        "MUSUBI_WORKSPACE".into(),
+        launch_root.to_string_lossy().to_string(),
+    );
+    if let Some(audit_db) = state.audit_db.as_ref() {
+        env.insert(
+            "MUSUBI_DB".into(),
+            audit_db.path.to_string_lossy().to_string(),
+        );
+    }
     let llm_config_path =
         (!setup.llm_config_path.is_empty()).then(|| PathBuf::from(&setup.llm_config_path));
     if !setup.llm_config_path.is_empty() {
         env.entry("MUSUBI_LLM_CONFIG".into())
             .or_insert_with(|| setup.llm_config_path.clone());
-        if let Some(root) =
-            workspace_root_from_musubi_config(std::path::Path::new(&setup.llm_config_path))
-        {
-            launch_root = root;
-        }
     }
     let default_profile = llm_config_path
         .as_deref()
@@ -1462,9 +1556,36 @@ struct OpenedDb {
 }
 
 fn open_configured_db() -> OpenedDb {
-    let env = musubi_data::current_env_map();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut env = musubi_data::current_env_map();
+    let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(preferences) = load_console_preferences() {
+        if let Ok(workspace) = canonical_workspace(&preferences.workspace) {
+            env.insert("MUSUBI_WORKSPACE".into(), workspace.display().to_string());
+            env.insert(
+                "MUSUBI_DB".into(),
+                workspace
+                    .join(".musubi")
+                    .join("data")
+                    .join("audit.db")
+                    .display()
+                    .to_string(),
+            );
+            if !preferences.llm_config.trim().is_empty() {
+                env.entry("MUSUBI_LLM_CONFIG".into())
+                    .or_insert(preferences.llm_config);
+            }
+        }
+    }
+    let cwd = env_path(&env, "MUSUBI_WORKSPACE").unwrap_or(process_cwd);
+    for key in ["MUSUBI_WORKSPACE", "MUSUBI_DB", "MUSUBI_LLM_CONFIG"] {
+        if let Some(value) = env.get(key) {
+            std::env::set_var(key, value);
+        }
+    }
     if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
+        if let Some(parent) = resolved.path.parent() {
+            std::fs::create_dir_all(parent).expect("create Musubi database directory");
+        }
         let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
         let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
         let _ = musubi_data::init_schema(&conn);
@@ -1700,6 +1821,22 @@ fn action(
             .to_string()
     };
     match kind.as_str() {
+        "set_workspace" => {
+            if state.chat_agent.lock().map_err(|e| e.to_string())?.running {
+                return Err("Cannot switch workspace while an agent is running.".into());
+            }
+            let workspace = canonical_workspace(&str_arg(0))?;
+            let setup = musubi_data::detect_setup_status(
+                &musubi_data::current_env_map(),
+                &state.project_root,
+                state.audit_db.as_ref(),
+            );
+            save_console_preferences(&ConsolePreferences {
+                workspace: workspace.display().to_string(),
+                llm_config: setup.llm_config_path,
+            })?;
+            app.restart();
+        }
         "send_chat" => {
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
             let text = str_arg(0);
@@ -1865,6 +2002,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             action,
+            choose_workspace,
             load_pipeline_recipe,
             validate_pipeline_recipe,
             save_pipeline_recipe
@@ -1888,6 +2026,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_selection_accepts_only_existing_directories() {
+        let root = std::env::temp_dir().join(format!("musubi-workspace-picker-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        assert_eq!(canonical_workspace(root.to_str().unwrap()).unwrap(), root);
+        assert!(canonical_workspace(file.to_str().unwrap()).is_err());
+        assert!(canonical_workspace(root.join("missing").to_str().unwrap()).is_err());
+        assert!(canonical_workspace("  ").is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn runtime_ledger_assigns_monotonic_sequence_per_request() {

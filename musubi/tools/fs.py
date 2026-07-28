@@ -65,12 +65,13 @@ _GREP_MAX_LINE_CHARS = 500
 def _workspace_root() -> Path:
     """Workspace root the tools resolve against.
 
-    Resolution order matches the rest of the Musubi:
-      1. `MUSUBI_ROOT` env var (the extension's convention).
-      2. Current working directory of the server process (set when the
+    Resolution order matches the rest of Musubi:
+      1. `MUSUBI_WORKSPACE` env var (the operator-selected project).
+      2. `MUSUBI_ROOT` env var (legacy/package convention).
+      3. Current working directory of the server process (set when the
          user starts the MCP server — typically the repo root).
     """
-    env = os.environ.get("MUSUBI_ROOT")
+    env = os.environ.get("MUSUBI_WORKSPACE") or os.environ.get("MUSUBI_ROOT")
     if env:
         return Path(env).resolve()
     return Path.cwd().resolve()

@@ -181,6 +181,12 @@ status, cancellation, task metadata, and retained process logs. Every session
 for a project launches with the same project root as its working directory; a
 session never owns a filesystem root, worktree, clone, virtualenv, or container.
 
+Settings may replace the canonical project root through the persisted Console
+workspace preference. Applying a new existing directory restarts the process
+before any state is reopened, creates/opens that project's
+`.musubi/data/audit.db`, and exports the same root to the driver as
+`MUSUBI_WORKSPACE`. A running driver blocks the switch.
+
 `driverStatus.chatId` is the exact owner of the live or retained runtime state.
 The frontend renders that state only when it matches the current surface's full
 chat ID. Surface names remain useful labels but are not ownership boundaries.
