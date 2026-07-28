@@ -1118,6 +1118,8 @@ export function buildViewModel(s, act) {
 
   return {
     nowRun,
+    sessionsHidden: !!s.sessionsHidden,
+    onToggleSessions: act.toggleSessions,
     trustCounters,
     railGroups,
     onStopRun: act.cancelAgent,
@@ -1160,11 +1162,18 @@ export function buildViewModel(s, act) {
         onCancelTransition: act.cancelPipelineTransition,
       },
     },
-    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',
-    view: s.view,
+    isOrch: s.view === 'orchestrator', isPipeline: s.view === 'pipeline', isPolicy: s.view === 'policy', isAudit: s.view === 'audit', isModels: s.view === 'models', isSkills: s.view === 'skills', isSettings: s.view === 'settings',    view: s.view,
     runtimeSourceLabel: sourceLabels[s.runtimeSource] || 'audit.db',
     orchNav: navStyle(s.view === 'orchestrator'), pipeNav: navStyle(s.view === 'pipeline'), polNav: navStyle(s.view === 'policy'), audNav: navStyle(s.view === 'audit'), modNav: navStyle(s.view === 'models'), sklNav: navStyle(s.view === 'skills'), settingsNav: navStyle(s.view === 'settings'),
-    selOrch: () => act.setView('orchestrator'), selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
+    // On another view the Orchestrator button navigates. Once you are already
+    // there it toggles the sessions rail, which is the pane directly beside
+    // it — the control that hides a pane now sits next to that pane instead of
+    // in the opposite corner of the window.
+    selOrch: () => (s.view === 'orchestrator' ? act.toggleSessions() : act.setView('orchestrator')),
+    orchNavTitle: s.view === 'orchestrator'
+      ? (s.sessionsHidden ? 'Show sessions' : 'Hide sessions')
+      : 'Orchestrator',
+    selPipe: () => act.setView('pipeline'), selPolicy: () => act.setView('policy'), selAudit: () => act.setView('audit'), selModels: () => act.setView('models'), selSkills: () => act.setView('skills'), selSettings: () => act.setView('settings'),
     activeModel: activeDef.model, activeProfileName: s.activeProfile,
     runningCount: orchSubagents.filter((a) => a.status === 'running').length,
     totalDone: orchSubagents.filter((a) => a.status === 'done').length,

@@ -29,6 +29,7 @@ export default class TauriSource {
       view: this.props.startView || 'orchestrator',
       selected: null, selectedSession: null, paused: false, t: 0,
       auditFilter: 'all', draft: '', processOpen: false, logWindowOpen: false,
+      sessionsHidden: false,
       subagents: [], agentTurns: [], agentCycles: [], runtimeLogEvents: [], orchestratorSessions: [],
       pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '',
@@ -146,6 +147,9 @@ export default class TauriSource {
       clearSelect: local({ selected: null, selectedSession: null }),
       setAuditFilter: (auditFilter) => this._setLocal({ auditFilter }),
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
+      // Owned here rather than inside Orchestrator so the activity bar — which
+      // sits beside the rail it shows and hides — can drive it.
+      toggleSessions: () => this._setLocal({ sessionsHidden: !this.state.sessionsHidden }),
       openProcessLog: () => this._setLocal({ logWindowOpen: true }),
       closeProcessLog: () => this._setLocal({ logWindowOpen: false }),
       clearDriverChat: () => {

@@ -39,8 +39,14 @@ test('legacy duplicated summary and verbose evidence surfaces are removed', () =
 
 test('hiding Sessions removes the rail instead of collapsing it', () => {
   assert.match(source, /sessions-hidden/)
-  assert.match(source, /Show sessions/)
   assert.equal(source.includes('sessions-collapsed'), false)
+  // The rail toggle is owned by the source so the activity bar can drive it;
+  // the composer no longer carries a "Show sessions" button, which put the
+  // control for the leftmost pane in the bottom-right corner of the window.
+  assert.match(source, /vals\.sessionsHidden/)
+  assert.match(source, /vals\.onToggleSessions/)
+  assert.equal(source.includes('Show sessions'), false)
+  assert.equal(source.includes('show-sessions'), false)
 })
 
 test('the Now banner answers what the agent is doing, and offers the way out', () => {

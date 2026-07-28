@@ -15,7 +15,9 @@ export default function ActivityBar({ vals }) {
         </svg>
       </div>
 
-      <Box as="button" onClick={vals.selOrch} title="Orchestrator" css={vals.orchNav} hover="color:#cfcfd4">
+      {/* Doubles as the sessions-rail toggle once Orchestrator is the active
+          view, so the control sits beside the pane it hides. */}
+      <Box as="button" onClick={vals.selOrch} title={vals.orchNavTitle || 'Orchestrator'} aria-label={vals.orchNavTitle || 'Orchestrator'} css={vals.orchNav} hover="color:#cfcfd4">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M5 6 L12 11 M12 4 L12 11 M19 6 L12 11 M12 11 L12 18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /><circle cx="5" cy="6" r="1.5" fill="currentColor" /><circle cx="12" cy="4" r="1.5" fill="currentColor" /><circle cx="19" cy="6" r="1.5" fill="currentColor" /><circle cx="12" cy="11" r="2.1" fill="currentColor" /><circle cx="12" cy="18" r="1.6" fill="currentColor" /></svg>
       </Box>
       <Box as="button" onClick={vals.selPipe} title="Run pipeline" css={vals.pipeNav} hover="color:#cfcfd4">

@@ -26,8 +26,9 @@ function Metric({ value, suffix }) {
 }
 
 export default function Orchestrator({ vals }) {
-  const [sessionsHidden, setSessionsHidden] = useState(false)
   const [conversationCollapsed, setConversationCollapsed] = useState(false)
+  // Lives in the source, not here, so the activity bar can toggle it.
+  const sessionsHidden = !!vals.sessionsHidden
   const [selectedNodeId, setSelectedNodeId] = useState(null)
   const [detailTab, setDetailTab] = useState('overview')
   const [logFilter, setLogFilter] = useState('all')
@@ -95,7 +96,7 @@ export default function Orchestrator({ vals }) {
 
   return (
     <div className={`orchestrator-console${sessionsHidden ? ' sessions-hidden' : ''}${conversationCollapsed ? ' conversation-collapsed' : ''}`}>
-      {!sessionsHidden && <SessionsRail vals={vals} onHide={() => setSessionsHidden(true)} />}
+      {!sessionsHidden && <SessionsRail vals={vals} onHide={vals.onToggleSessions} />}
       <main className="orchestrator-workspace">
         <NowBanner
           now={vals.nowRun}
@@ -152,7 +153,6 @@ export default function Orchestrator({ vals }) {
         vals={vals}
         collapsed={conversationCollapsed}
         onToggle={() => setConversationCollapsed((value) => !value)}
-        onShowSessions={sessionsHidden ? () => setSessionsHidden(false) : null}
       />
     </div>
   )
@@ -424,7 +424,7 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabe
   )
 }
 
-function ConversationPanel({ vals, collapsed, onToggle, onShowSessions }) {
+function ConversationPanel({ vals, collapsed, onToggle }) {
   const skills = Array.from(new Set(Object.values(vals.skillsByWorker || {}).flat()))
   if (collapsed) return <aside className="conversation-panel is-collapsed"><button aria-label="Expand conversation" onClick={onToggle}>←</button><span>Conversation</span></aside>
   return (
@@ -435,7 +435,7 @@ function ConversationPanel({ vals, collapsed, onToggle, onShowSessions }) {
       </header>
       <div className="skills-used"><span>Skills used</span>{skills.length ? skills.map((skill) => <i key={skill}>{skill}</i>) : <small>No successful skill calls recorded</small>}</div>
       <TokenEconomics economics={vals.driverSummary?.economics} />
-      <ChatBody vals={vals} config={<RunConfiguration vals={vals} onShowSessions={onShowSessions} />} />
+      <ChatBody vals={vals} config={<RunConfiguration vals={vals} />} />
     </aside>
   )
 }
@@ -443,7 +443,7 @@ function ConversationPanel({ vals, collapsed, onToggle, onShowSessions }) {
 // Execution mode and the pipeline recipe are start-of-run decisions, so they
 // belong with the composer rather than in a header band you stare past while
 // a run is already going. That is 56px of the chrome the banner reclaimed.
-function RunConfiguration({ vals, onShowSessions }) {
+function RunConfiguration({ vals }) {
   const pipelineMode = vals.runMode === 'pipeline'
   return (
     <div className="composer__config">
@@ -464,7 +464,6 @@ function RunConfiguration({ vals, onShowSessions }) {
             </select>
           )
           : <span className="composer__hint">The driver chooses governed workers as evidence requires.</span>}
-        {onShowSessions && <button className="show-sessions" onClick={onShowSessions}>→ Show sessions</button>}
       </div>
     </div>
   )

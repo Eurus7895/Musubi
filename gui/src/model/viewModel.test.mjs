@@ -1067,6 +1067,28 @@ test('active running session offers Stop in the banner, not a mutated send butto
   assert.match(vm.nowRun.headline, /^Driver is /)
 })
 
+test('the Orchestrator nav button navigates, then toggles the sessions rail', () => {
+  const calls = []
+  const act = { ...actions(), setView: (v) => calls.push(['setView', v]), toggleSessions: () => calls.push(['toggle']) }
+
+  // From another view it must navigate, or the rail toggle would strand you.
+  buildViewModel(baseState({ view: 'audit' }), act).selOrch()
+  assert.deepEqual(calls, [['setView', 'orchestrator']])
+
+  // Already on Orchestrator, it toggles the pane beside it.
+  calls.length = 0
+  const onOrch = buildViewModel(baseState({ view: 'orchestrator' }), act)
+  onOrch.selOrch()
+  assert.deepEqual(calls, [['toggle']])
+  assert.equal(onOrch.sessionsHidden, false)
+  assert.equal(onOrch.orchNavTitle, 'Hide sessions')
+
+  const hidden = buildViewModel(baseState({ view: 'orchestrator', sessionsHidden: true }), act)
+  assert.equal(hidden.sessionsHidden, true)
+  assert.equal(hidden.orchNavTitle, 'Show sessions')
+  assert.equal(buildViewModel(baseState({ view: 'audit' }), act).orchNavTitle, 'Orchestrator')
+})
+
 test('rail groups sessions by what the operator would do about them', () => {
   const vm = buildViewModel(baseState({
     subagents: [
