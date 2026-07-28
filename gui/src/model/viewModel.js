@@ -1309,7 +1309,9 @@ export function buildViewModel(s, act) {
     auditFAll: auditBtn(s.auditFilter === 'all'), auditFSpawn: auditBtn(s.auditFilter === 'spawned'), auditFDone: auditBtn(s.auditFilter === 'completed'),
     profiles, skills, setupRows, setupPathHint: setup.pathHint || '',
     workspaceRoot: setup.projectRoot || '',
-    workspaceError: s.workspaceError || '',
+    // A blocked boundary outranks a transient picker message: while it is set
+    // the agent will not launch at all, so that is what the operator must see.
+    workspaceError: s.workspaceBlockedReason || s.workspaceError || '',
     workspaceSwitching: !!s.workspaceSwitching,
     workspaceSwitchDisabled: !!driverStatus.running || !!s.workspaceSwitching,
     onChooseWorkspace: act.chooseWorkspace,

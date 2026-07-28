@@ -1314,3 +1314,23 @@ test('an ordinary answer leaves the composer as the only way to reply', () => {
 
   assert.equal(vm.approval, null)
 })
+
+test('a blocked workspace boundary outranks a transient picker message', () => {
+  // The startup error means the agent will not launch at all, so it is what
+  // the operator has to see — even while a picker error is still on screen.
+  const blocked = buildViewModel(baseState({
+    workspaceBlockedReason: 'Selected workspace /gone is unavailable.',
+    workspaceError: 'transient picker message',
+  }), {})
+  assert.equal(blocked.workspaceError, 'Selected workspace /gone is unavailable.')
+
+  // With no backend problem the picker's own message still shows.
+  const pickerOnly = buildViewModel(baseState({
+    workspaceBlockedReason: '',
+    workspaceError: 'transient picker message',
+  }), {})
+  assert.equal(pickerOnly.workspaceError, 'transient picker message')
+
+  // The folder button stays usable while blocked — it is the recovery path.
+  assert.equal(blocked.workspaceSwitchDisabled, false)
+})

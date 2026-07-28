@@ -15,6 +15,10 @@ const DOMAIN_KEYS = [
   'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
   'pipelineCatalog', 'pipelineRuns',
   'pipelineBuilderCatalog',
+  // Backend-owned: the persisted workspace could not be honoured at startup.
+  // Kept separate from the client-local `workspaceError` the picker sets, so
+  // a poll returning "no problem" cannot wipe a transient picker message.
+  'workspaceBlockedReason',
 ]
 
 export default class TauriSource {
@@ -39,7 +43,7 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
-      workspaceError: '', workspaceSwitching: false,
+      workspaceError: '', workspaceSwitching: false, workspaceBlockedReason: '',
       pipelineBuilder: {
         step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
         selectedStageIndex: null, findings: [], saveResult: null,

@@ -72,6 +72,10 @@ pub struct State {
     pub runtime_source: String,
     pub setup_status: SetupStatus,
     pub driver_status: DriverStatus,
+    /// Why the persisted workspace is not in effect, empty when it is.
+    /// Non-empty means agent launches are refused until the operator picks a
+    /// usable folder, so the Console never silently edits its own install.
+    pub workspace_blocked_reason: String,
     pub t: i64,
 }
 

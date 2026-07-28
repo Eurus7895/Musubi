@@ -41,6 +41,10 @@ struct AppState {
     // Optional read-only history focus. Never owns a running process or future
     // messages; it only chooses which orchestrator chat snapshot is displayed.
     viewed_orchestrator_chat_id: Mutex<Option<String>>,
+    // Set when a persisted workspace could not be honoured at startup. While
+    // set the Console is outside the operator's chosen boundary, so agent
+    // launches are refused rather than silently retargeted at the runtime.
+    workspace_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -121,6 +125,28 @@ fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
         return Err("The selected workspace is not a directory.".into());
     }
     Ok(path)
+}
+
+/// Absolute path to the Musubi state directory inside a selected workspace.
+fn workspace_data_dir(workspace: &Path) -> PathBuf {
+    workspace.join(".musubi").join("data")
+}
+
+/// Create `.musubi/data` inside the workspace and prove it is writable.
+///
+/// Existing-and-readable is not enough to accept a folder: startup opens a
+/// SQLite database under this directory, so a read-only checkout would be
+/// persisted happily and then fail on every subsequent launch. Probing here
+/// keeps the failure in the picker, where the operator can pick again.
+fn ensure_workspace_data_dir(workspace: &Path) -> Result<PathBuf, String> {
+    let dir = workspace_data_dir(workspace);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create {} in the selected workspace: {e}", dir.display()))?;
+    let probe = dir.join(".musubi-write-probe");
+    std::fs::write(&probe, b"")
+        .map_err(|e| format!("The selected workspace is not writable: {e}"))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(dir)
 }
 
 #[tauri::command]
@@ -1139,6 +1165,12 @@ fn start_chat_agent(
     chat_id: &str,
     pipeline_name: Option<&str>,
 ) -> Result<(), String> {
+    // Fail closed: the operator picked a boundary and it is not in effect.
+    // Launching anyway would export the runtime checkout as the workspace and
+    // let the agent edit Musubi's own install.
+    if let Some(reason) = state.workspace_error.as_ref() {
+        return Err(reason.clone());
+    }
     let started_at = epoch_secs();
     let request_id = new_request_id();
     let launch_chat_id = chat_id.to_string();
@@ -1553,26 +1585,47 @@ struct OpenedDb {
     state_db: Option<Connection>,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
+    /// Why the persisted workspace could not be honoured, if it could not.
+    ///
+    /// Set means the Console is NOT running inside the boundary the operator
+    /// selected. Execution stays blocked until they choose a valid folder —
+    /// silently reverting to the runtime checkout would let an agent modify
+    /// Musubi's own install while the operator believes their application is
+    /// the target.
+    workspace_error: Option<String>,
 }
 
 fn open_configured_db() -> OpenedDb {
     let mut env = musubi_data::current_env_map();
     let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut workspace_error: Option<String> = None;
     if let Some(preferences) = load_console_preferences() {
-        if let Ok(workspace) = canonical_workspace(&preferences.workspace) {
-            env.insert("MUSUBI_WORKSPACE".into(), workspace.display().to_string());
-            env.insert(
-                "MUSUBI_DB".into(),
-                workspace
-                    .join(".musubi")
-                    .join("data")
-                    .join("audit.db")
-                    .display()
-                    .to_string(),
-            );
-            if !preferences.llm_config.trim().is_empty() {
-                env.entry("MUSUBI_LLM_CONFIG".into())
-                    .or_insert(preferences.llm_config);
+        if !preferences.workspace.trim().is_empty() {
+            match canonical_workspace(&preferences.workspace)
+                .and_then(|ws| ensure_workspace_data_dir(&ws).map(|dir| (ws, dir)))
+            {
+                Ok((workspace, data_dir)) => {
+                    env.insert("MUSUBI_WORKSPACE".into(), workspace.display().to_string());
+                    env.insert(
+                        "MUSUBI_DB".into(),
+                        data_dir.join("audit.db").display().to_string(),
+                    );
+                    if !preferences.llm_config.trim().is_empty() {
+                        env.entry("MUSUBI_LLM_CONFIG".into())
+                            .or_insert(preferences.llm_config);
+                    }
+                }
+                Err(reason) => {
+                    workspace_error = Some(format!(
+                        "Selected workspace {} is unavailable: {reason} \
+                         Choose a workspace folder to continue.",
+                        preferences.workspace.trim()
+                    ));
+                    eprintln!(
+                        "[musubi] persisted workspace unusable ({}); execution blocked",
+                        reason
+                    );
+                }
             }
         }
     }
@@ -1582,36 +1635,70 @@ fn open_configured_db() -> OpenedDb {
             std::env::set_var(key, value);
         }
     }
-    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
-        if let Some(parent) = resolved.path.parent() {
-            std::fs::create_dir_all(parent).expect("create Musubi database directory");
+    if workspace_error.is_none() {
+        if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
+            // Never panic on a storage problem: this runs before the window
+            // exists, so an abort here leaves the operator with a Console that
+            // cannot start and no UI to fix the offending preference from.
+            // Degrade to in-memory state and report the reason instead.
+            match prepare_audit_connection(&resolved) {
+                Ok(conn) => {
+                    let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
+                    let state_db = open_state_db(&resolved);
+                    eprintln!(
+                        "[musubi] reading audit.db at {} ({}) project_root={}",
+                        resolved.path.display(),
+                        resolved.source,
+                        project_root.display()
+                    );
+                    return OpenedDb {
+                        conn,
+                        state_db,
+                        project_root,
+                        audit_db: Some(resolved),
+                        workspace_error: None,
+                    };
+                }
+                Err(reason) => {
+                    eprintln!(
+                        "[musubi] cannot open audit.db at {}: {reason}",
+                        resolved.path.display()
+                    );
+                    workspace_error = Some(format!(
+                        "Musubi cannot open its database at {}: {reason} \
+                         Choose a writable workspace folder to continue.",
+                        resolved.path.display()
+                    ));
+                }
+            }
         }
-        let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
-        let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
-        let _ = musubi_data::init_schema(&conn);
-        let state_db = open_state_db(&resolved);
-        eprintln!(
-            "[musubi] reading audit.db at {} ({}) project_root={}",
-            resolved.path.display(),
-            resolved.source,
-            project_root.display()
-        );
-        return OpenedDb {
-            conn,
-            state_db,
-            project_root,
-            audit_db: Some(resolved),
-        };
     }
 
     let conn = open_db();
-    eprintln!("[musubi] no audit.db source found; using empty in-memory state");
+    if workspace_error.is_none() {
+        eprintln!("[musubi] no audit.db source found; using empty in-memory state");
+    }
     OpenedDb {
         conn,
         state_db: None,
         project_root: resolve_project_root(&env, &cwd, None),
         audit_db: None,
+        workspace_error,
     }
+}
+
+/// Create the parent directory and open the audit DB, reporting failure
+/// instead of aborting the process.
+fn prepare_audit_connection(
+    resolved: &musubi_data::ResolvedAuditDb,
+) -> Result<Connection, String> {
+    if let Some(parent) = resolved.path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let conn = Connection::open(&resolved.path).map_err(|e| e.to_string())?;
+    let _ = musubi_data::init_schema(&conn);
+    Ok(conn)
 }
 
 fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> {
@@ -1678,6 +1765,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
+    st.workspace_blocked_reason = state.workspace_error.clone().unwrap_or_default();
     let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
         .then(|| PathBuf::from(&st.setup_status.llm_config_path));
     st.active_profile =
@@ -1826,6 +1914,10 @@ fn action(
                 return Err("Cannot switch workspace while an agent is running.".into());
             }
             let workspace = canonical_workspace(&str_arg(0))?;
+            // Prove Musubi can write its state here before persisting the
+            // choice — otherwise the next launch inherits an unusable
+            // preference with no UI left to correct it from.
+            ensure_workspace_data_dir(&workspace)?;
             let setup = musubi_data::detect_setup_status(
                 &musubi_data::current_env_map(),
                 &state.project_root,
@@ -1998,6 +2090,7 @@ pub fn run() {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new(chat_id),
             viewed_orchestrator_chat_id: Mutex::new(None),
+            workspace_error: opened.workspace_error,
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -2039,6 +2132,57 @@ mod tests {
         assert!(canonical_workspace(root.join("missing").to_str().unwrap()).is_err());
         assert!(canonical_workspace("  ").is_err());
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_data_dir_is_created_and_probed_before_the_choice_is_kept() {
+        let root = std::env::temp_dir().join(format!("musubi-workspace-data-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let dir = ensure_workspace_data_dir(&root).unwrap();
+        assert_eq!(dir, root.join(".musubi").join("data"));
+        assert!(dir.is_dir(), "the data directory must exist afterwards");
+        // The probe file must not survive — it is a check, not state.
+        assert!(!dir.join(".musubi-write-probe").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_workspace_is_rejected_instead_of_bricking_the_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("musubi-workspace-ro-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Read+execute only: the folder opens fine, but nothing can be created
+        // inside it. This is the case that used to be persisted happily and
+        // then panic in open_configured_db on every subsequent start.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // Root ignores the permission bits, so the scenario cannot be staged
+        // as root (CI containers often are). Detect that and skip rather than
+        // report a false failure.
+        let bits_are_enforced = std::fs::write(root.join(".probe"), b"").is_err();
+        if !bits_are_enforced {
+            let _ = std::fs::remove_file(root.join(".probe"));
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            eprintln!("skipped: running with permission-bit override (root)");
+            return;
+        }
+
+        assert!(
+            canonical_workspace(root.to_str().unwrap()).is_ok(),
+            "the folder is readable, so existence alone accepts it"
+        );
+        assert!(
+            ensure_workspace_data_dir(&root).is_err(),
+            "writability must be proven before the preference is saved"
+        );
+
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2093,6 +2237,7 @@ mod tests {
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new("gui-orchestrator-project-active".into()),
             viewed_orchestrator_chat_id: Mutex::new(Some("gui-orchestrator-project-viewed".into())),
+            workspace_error: None,
         };
         let _db_guard = state.db.lock().unwrap();
 
