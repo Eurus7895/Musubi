@@ -1105,6 +1105,70 @@ test('rail groups sessions by what the operator would do about them', () => {
   assert.equal(vm.railGroups[2].runs[0].id, 'done-session')
 })
 
+test('a failed turn-less request does not masquerade as the live one', () => {
+  // "No turn row" was used as the marker for "running", but a process that
+  // fails to spawn also leaves ledger rows and no turn — that request would
+  // park itself at the newest slot forever. The driver reports which request
+  // it actually owns.
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'chat-live',
+    selectedSession: 'chat-live',
+    orchestratorSessions: [{ chatId: 'chat-live', title: 'calc', lastRequest: 'calc', rootTurns: 2, workers: 0 }],
+    agentTurns: [
+      { id: 1, requestId: 'req-old', chatId: 'chat-live', parentSession: 'root-1', request: 'first', startedAt: 1785166000 },
+      { id: 2, requestId: 'req-new', chatId: 'chat-live', parentSession: 'root-2', request: 'third', startedAt: 1785166600 },
+    ],
+    runtimeLogEvents: [
+      { id: 1, requestId: 'req-old', chatId: 'chat-live', seq: 1, ts: '1', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'first' },
+      // Spawn failure: ledger rows, no turn row, and NOT the driver's request.
+      { id: 2, requestId: 'req-dead', chatId: 'chat-live', seq: 1, ts: '2', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'spawn failed' },
+      { id: 3, requestId: 'req-new', chatId: 'chat-live', seq: 1, ts: '3', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'third' },
+      { id: 4, requestId: 'req-live', chatId: 'chat-live', seq: 1, ts: '4', source: 'root', stream: 'stderr', agentHandle: '', role: 'root', category: 'output', message: 'working' },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'chat-live',
+      requestId: 'req-live', task: 'calc', startedAt: 1785166900, stdoutTail: '', stderrTail: '',
+    },
+  }), actions())
+
+  // Chronological by ledger rowid, with the driver's own request pinned last.
+  assert.deepEqual(
+    vm.runtimeGraph.requests.map((request) => request.requestId),
+    ['req-old', 'req-dead', 'req-new', 'req-live'],
+  )
+})
+
+test('the Now banner reports the driver run, not the session being read', () => {
+  // Clicking a historical session mid-run used to source the actor and the act
+  // from the session on screen, presenting a finished run's last log line as
+  // live activity.
+  const live = agent(300, 'root-live', 'running', 'planner', 'chat-live')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'chat-live',
+    selectedSession: 'chat-old',
+    orchestratorSessions: [
+      { chatId: 'chat-live', title: 'live', lastRequest: 'now', rootTurns: 1, workers: 1 },
+      { chatId: 'chat-old', title: 'old', lastRequest: 'then', rootTurns: 1, workers: 0 },
+    ],
+    subagents: [live],
+    runtimeLogEvents: [
+      { id: 1, requestId: 'req-old', chatId: 'chat-old', seq: 1, ts: '1', source: 'root', stream: 'stderr', agentHandle: '', role: 'root', category: 'output', message: 'ANCIENT LINE' },
+      { id: 2, requestId: 'req-live', chatId: 'chat-live', seq: 1, ts: '2', source: 'worker', stream: 'stderr', agentHandle: live.handle, role: 'planner', category: 'tools', message: 'glob current' },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'chat-live',
+      requestId: 'req-live', task: 'now', startedAt: 500, stdoutTail: '', stderrTail: '',
+    },
+  }), actions())
+
+  assert.equal(vm.nowRun.running, true)
+  assert.equal(vm.nowRun.act, 'glob current')
+  assert.equal(vm.nowRun.actor, 'Planner')
+  // And it admits the run is not what you are looking at.
+  assert.equal(vm.nowRun.viewingElsewhere, true)
+  assert.equal(typeof vm.nowRun.onOpenRunningSession, 'function')
+})
+
 test('trust strip carries live counters rather than fixed claims', () => {
   const vm = buildViewModel(baseState({ allowCount: 14, denyCount: 0 }), actions())
   const byKey = Object.fromEntries(vm.trustCounters.map((row) => [row.key, row]))
@@ -1118,4 +1182,71 @@ test('trust strip carries live counters rather than fixed claims', () => {
   const policy = denied.trustCounters.find((row) => row.key === 'policy')
   assert.equal(policy.value, '14 allow / 2 deny')
   assert.equal(policy.ok, false)
+})
+
+test('audit and firewall counters read uncapped evidence, not display lists', () => {
+  // `audit` is truncated to 120 rows Rust-side, so its length plateaus and the
+  // counter stops being evidence. totalSpawned + totalDone is the real ledger
+  // size: HI #8 writes one row per spawn and one per completion.
+  const vm = buildViewModel(baseState({
+    audit: new Array(120).fill(0).map((_, i) => ({ id: i, event: 'spawned', status: 'ok', role: 'coder', ts: '1' })),
+    totalSpawned: 240,
+    totalDone: 197,
+    subagents: [
+      agent(400, 'r', 'done', 'reviewer'),
+      // A helper from the exploration split, not the firewalled evaluator.
+      agent(401, 'r', 'done', 'reviewer-aux'),
+      agent(402, 'r', 'done', 'coder'),
+    ],
+    pipelineRuns: [{
+      sessionId: 'p1', chatId: 'c', pipelineName: 'feature-dev', startedAt: 1, status: 'success',
+      // Only the last stage is firewalled by the runner's stage brief.
+      stages: [agent(410, 'p1', 'done', 'planner'), agent(411, 'p1', 'done', 'reviewer')],
+    }],
+  }), actions())
+  const byKey = Object.fromEntries(vm.trustCounters.map((row) => [row.key, row]))
+
+  assert.equal(byKey.audit.value, '437 rows appended')
+  // h400 (reviewer) + h411 (pipeline last stage); reviewer-aux is excluded.
+  assert.equal(byKey.firewall.value, '2 evaluator isolated')
+})
+
+test('session economics cover every request, not only the latest', () => {
+  // The panel is headed "This session", but a chat opens one parent session
+  // per root turn and only the newest was counted.
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'chat-1',
+    selectedSession: 'chat-1',
+    orchestratorSessions: [{ chatId: 'chat-1', title: 't', lastRequest: 'r', rootTurns: 2, workers: 0 }],
+    agentTurns: [
+      { id: 1, requestId: 'r1', chatId: 'chat-1', parentSession: 'root-1', request: 'first', startedAt: 100 },
+      { id: 2, requestId: 'r2', chatId: 'chat-1', parentSession: 'root-2', request: 'second', startedAt: 200 },
+    ],
+    agentCycles: [
+      { sessionId: 'root-1', workerId: 'w1', tokensIn: 1000, cachedInputTokens: 400, tokensOut: 100, lmMs: 1000, tokenSource: 'provider', toolNames: ['read'] },
+      { sessionId: 'root-2', workerId: 'w2', tokensIn: 500, cachedInputTokens: 0, tokensOut: 50, lmMs: 500, tokenSource: 'provider', toolNames: ['write'] },
+    ],
+  }), actions())
+
+  const economics = vm.driverSummary.economics
+  assert.equal(economics.cycles, 2)
+  assert.equal(economics.inputTokens, 1500)
+  assert.equal(economics.outputTokens, 150)
+  assert.equal(economics.lmMs, 1500)
+  assert.deepEqual(economics.tools.map((tool) => tool.name).sort(), ['read', 'write'])
+})
+
+test('clearing a node selection does not evict the operator from a session', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    clearSelect: () => calls.push('clearSelect'),
+    clearNodeSelect: () => calls.push('clearNodeSelect'),
+  }
+  const vm = buildViewModel(baseState({ selectedSession: 'old' }), act)
+
+  // clearSelect drops selectedSession too, so the narrower action exists for
+  // "deselect this node" — opening the session log, or selecting a request.
+  vm.clearNodeSelect()
+  assert.deepEqual(calls, ['clearNodeSelect'])
 })

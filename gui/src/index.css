@@ -385,9 +385,24 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
   .orchestrator-console { grid-template-columns: 220px minmax(460px, 1fr) 360px; }
   .orchestrator-console.sessions-hidden { grid-template-columns: minmax(460px, 1fr) 360px; }
 }
+/* Narrow windows narrow the rail; they do not delete it. `display: none` here
+   made session history unreachable — the activity-bar toggle and the strip's
+   → both kept working and produced nothing visible — so the rail drops to an
+   icon column instead, and the toggle still removes it entirely when asked.
+   The collapsed conversation also has to give its width back, or the grid
+   keeps reserving a full pane for a 48px strip. */
 @media (max-width: 1180px) {
-  .orchestrator-console, .orchestrator-console.conversation-collapsed { grid-template-columns: minmax(430px, 1fr) 320px; }
-  .session-rail { display: none; }
+  .orchestrator-console { grid-template-columns: 58px minmax(430px, 1fr) 320px; }
+  .orchestrator-console.conversation-collapsed { grid-template-columns: 58px minmax(430px, 1fr) 48px; }
+  .orchestrator-console.sessions-hidden { grid-template-columns: minmax(430px, 1fr) 320px; }
+  .orchestrator-console.sessions-hidden.conversation-collapsed { grid-template-columns: minmax(430px, 1fr) 48px; }
+  /* At 58px the word "Sessions" cannot fit, but the ← must survive — it is
+     the rail's own way of closing itself. Drop the label and the count. */
+  .session-rail header > strong, .session-rail header span, .session-group, .session-card__meta { display: none; }
+  .session-rail header { justify-content: center; padding: 0 6px; }
+  .session-group-list { padding: 0 6px; }
+  .session-card { min-height: 40px; padding: var(--s-2) 6px; align-items: center; }
+  .session-card__title strong { display: none; }
   .runtime-overview__metrics { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
   .now-banner h1 { font-size: var(--fs-5); }
 }

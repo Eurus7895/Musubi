@@ -145,6 +145,10 @@ export default class TauriSource {
         this._action('select_session', [id])
       },
       clearSelect: local({ selected: null, selectedSession: null }),
+      // Drops the node selection only. `clearSelect` also drops
+      // selectedSession, which snaps the operator out of whatever historical
+      // session they were reading — wrong when the intent is just "no node".
+      clearNodeSelect: local({ selected: null }),
       setAuditFilter: (auditFilter) => this._setLocal({ auditFilter }),
       toggleProcess: () => this._setLocal({ processOpen: !this.state.processOpen }),
       // Owned here rather than inside Orchestrator so the activity bar — which

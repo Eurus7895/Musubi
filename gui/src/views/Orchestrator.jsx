@@ -70,7 +70,7 @@ export default function Orchestrator({ vals }) {
     setDetailTab('overview')
     setLogFilter('all')
     setLogQuery('')
-    if (node.kind === 'request' || node.id === 'root') vals.clearSelect?.()
+    if (node.kind === 'request' || node.id === 'root') vals.clearNodeSelect?.()
     else vals.onSelectRuntimeNode?.(node.id)
   }
 
@@ -82,7 +82,7 @@ export default function Orchestrator({ vals }) {
       setSelectedNodeId(null)
       setLogFilter('all')
       setLogQuery('')
-      vals.clearSelect?.()
+      vals.clearNodeSelect?.()
     }
   }
   const showingLog = surfaceTab === 'log' && !selectedNode
@@ -211,11 +211,16 @@ function NowBanner({ now = {}, onStop, onWatch }) {
           <div><i style={{ width: `${now.progress || 0}%` }} /></div>
           <span>
             {now.maxTurns ? `${now.turns} of ${now.maxTurns} turns · ` : ''}{now.modeLabel}
+            {now.viewingElsewhere ? ' · in another session' : ''}
           </span>
         </div>
       </div>
       <div className="now-banner__actions">
-        <button className="ui-button" onClick={onWatch}>Watch log</button>
+        {/* The run may not be the session you are reading. Say so, and offer
+            the way back, rather than letting the banner imply otherwise. */}
+        {now.viewingElsewhere
+          ? <button className="ui-button" onClick={now.onOpenRunningSession}>Go to run</button>
+          : <button className="ui-button" onClick={onWatch}>Watch log</button>}
         {/* Stop lives where you are already looking, and says what it does. */}
         <button className="ui-button ui-button--danger" onClick={onStop}>Stop run</button>
       </div>

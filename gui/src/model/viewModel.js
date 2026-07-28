@@ -154,8 +154,13 @@ function runSummary(status, logText, run) {
   return 'No worker activity for this run yet.'
 }
 
-function economicsForSession(agentCycles, sessionId) {
-  const rows = (agentCycles || []).filter((row) => row.sessionId === sessionId)
+// Takes the set of parent-session ids belonging to one conversation, not a
+// single id. A chat accumulates one parent session per root turn, so scoping
+// to the latest one and calling the result "this session" omitted every
+// earlier request's tokens, tools, and latency.
+function economicsForSession(agentCycles, sessionIds) {
+  const wanted = sessionIds instanceof Set ? sessionIds : new Set([sessionIds].filter(Boolean))
+  const rows = (agentCycles || []).filter((row) => wanted.has(row.sessionId))
   const tools = new Map()
   const summary = {
     cycles: rows.length,
@@ -811,12 +816,28 @@ export function buildViewModel(s, act) {
     // running", and a running request is by definition the newest. Within a
     // tier the keys are homogeneous: epoch seconds for finished requests,
     // ledger rowid for in-flight ones.
-    const requestRank = (request) => (request.turn ? 0 : 1)
-    const requestTime = (request) => Number(
-      request.turn ? request.turn.startedAt || 0 : request.events[0]?.id || 0,
-    )
+    // Sort on the ledger's own rowid, which every request in the new Console
+    // has (the host writes a launch line before the process starts) and which
+    // is monotonic across the whole session. Legacy requests predating the
+    // ledger have only a turn, so they form an earlier block ordered by epoch;
+    // the two keys are never compared against each other.
+    //
+    // The running request is pinned last by identity, not inferred from a
+    // missing turn row. `agent_turns` is written with `ended_at=time.time()`
+    // so an in-flight request has none — but so does a request whose process
+    // failed to spawn, and treating those alike would park a dead request at
+    // the head of the timeline forever. The driver already reports which
+    // request it owns.
+    const liveRequestId = driverRunning ? String(driverStatusForRuns.requestId || '') : ''
+    const requestTier = (request) => {
+      if (liveRequestId && request.requestId === liveRequestId) return 2
+      return request.events.length ? 1 : 0
+    }
+    const requestKey = (request) => (request.events.length
+      ? Number(request.events[0].id || 0)
+      : Number(request.turn?.startedAt || 0))
     const requestEntries = Array.from(requestMap.values())
-      .sort((a, b) => (requestRank(a) - requestRank(b)) || (requestTime(a) - requestTime(b)))
+      .sort((a, b) => (requestTier(a) - requestTier(b)) || (requestKey(a) - requestKey(b)))
     requestEntries.forEach((request) => {
       const exactHandles = new Set(request.events.map((event) => event.agentHandle).filter(Boolean))
       request.agents = sessionAgents.filter((agent) => (
@@ -998,16 +1019,22 @@ export function buildViewModel(s, act) {
     keyEnv: '',
     fc: '#ff9b3d',
   }
-  const activeEconomicsSessionId = activeRunRaw?.rootTurn?.parentSession
-    || activeRunRaw?.turn?.parentSession
-    || activeSessionId
+  // Every parent session this conversation has opened — one per root turn —
+  // so the panel headed "This session" actually covers the session.
+  const activeEconomicsSessionIds = new Set([
+    ...orchAgentTurns.filter((turn) => turn.chatId === activeSessionId).map((turn) => turn.parentSession),
+    ...activeSessionAgents.map((agent) => agent.parentSession),
+    activeRunRaw?.rootTurn?.parentSession,
+    activeRunRaw?.turn?.parentSession,
+    activeSessionId,
+  ].filter(Boolean))
   const driverSummary = {
     title: 'Run summary',
     countLine: statusCountLine(activeSessionAgents),
     focusLine: focusLineForRun(activeSessionAgents, currentSessionAgent),
     alertLine: runSummary(activeRunStatus, processTextForRuns, activeRunRaw),
     metaLine: (activeDef.model || 'unconfigured') + ' - ' + (s.activeProfile || 'no profile'),
-    economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionId),
+    economics: economicsForSession(s.agentCycles || [], activeEconomicsSessionIds),
   }
   const profiles = profileList.map((p) => {
     const active = p.name === s.activeProfile
@@ -1076,14 +1103,30 @@ export function buildViewModel(s, act) {
   // what the act is, how long it has been going, and how to stop it. The banner
   // that renders this is the largest element on the screen; everything that has
   // already happened collapses to one line beneath it.
-  const nowActor = runningInSession
-    ? prettyRole(runningInSession.role)
+  // The banner reports the run the DRIVER owns, not the session you happen to
+  // be reading. Those are the same thing until you click a historical session
+  // mid-run — at which point sourcing the actor and the act from the viewed
+  // session presents a finished run's last log line as live activity, which is
+  // the one thing this banner must never do.
+  const driverChatId = String(driverStatus.chatId || '')
+  const driverRequestId = String(driverStatus.requestId || '')
+  const driverSessionAgents = allSubagents.filter((agent) => agent.chatId === driverChatId)
+  const driverRunningAgent = driverSessionAgents.find((agent) => agent.status === 'running')
+  const nowActor = driverRunningAgent
+    ? prettyRole(driverRunningAgent.role)
     : (orchestratorOwnsDriver ? 'Driver' : '')
-  const lastRuntimeLine = [...projectedRuntimeLogs]
+  // Scoped to the driver's own request, so a quiet historical session cannot
+  // lend its last line to a run happening elsewhere.
+  const lastRuntimeLine = [...(s.runtimeLogEvents || [])]
+    .filter((row) => (driverRequestId
+      ? row.requestId === driverRequestId
+      : row.chatId === driverChatId))
+    .sort((a, b) => Number(a.id || 0) - Number(b.id || 0))
     .reverse()
     .find((row) => (row.message || '').trim())
-  const nowTurns = Number(runningInSession?.turns || 0)
-  const nowMaxTurns = Number(runningInSession?.max || 0)
+  const nowTurns = Number(driverRunningAgent?.turns || 0)
+  const nowMaxTurns = Number(driverRunningAgent?.max || 0)
+  const driverRunIsPipeline = !!driverStatus.pipelineName
   const nowRun = orchestratorOwnsDriver
     ? {
       running: true,
@@ -1099,20 +1142,39 @@ export function buildViewModel(s, act) {
       maxTurns: nowMaxTurns,
       turnLabel: nowMaxTurns ? `Turn ${nowTurns} of ${nowMaxTurns}` : '',
       progress: nowMaxTurns ? Math.min(100, Math.round((nowTurns / nowMaxTurns) * 100)) : 0,
-      modeLabel: projectedRuntimeGraph.mode === 'pipeline'
-        ? (projectedRuntimeGraph.pipelineName || 'pipeline')
-        : 'direct',
+      modeLabel: driverRunIsPipeline ? (driverStatus.pipelineName || 'pipeline') : 'direct',
+      // True while you are reading some other session; the banner says so and
+      // offers the way back rather than pretending you are watching this run.
+      viewingElsewhere: !!driverChatId && driverChatId !== activeSessionId,
+      onOpenRunningSession: () => act.selectSession(driverChatId),
     }
-    : { running: false, headline: 'Nothing is running', act: '', startedAt: 0, progress: 0 }
+    : { running: false, headline: 'Nothing is running', act: '', startedAt: 0, progress: 0, viewingElsewhere: false }
 
   // The trust strip proved nothing while its four pills were hard-coded
   // strings: unchanging green teaches the eye to ignore green. Same four
   // invariants, but each one now moves, so a deny is visible when it lands.
-  const evaluatorCount = orchSubagents.filter((agent) => agent.role === 'reviewer-aux' || agent.role === 'reviewer').length
+  //
+  // Both counters below have to come from uncapped aggregates. `s.audit` is a
+  // display list the Rust side ends with `audit.truncate(120)`, so reading its
+  // length pins the number at 120 forever — a counter that stops moving is the
+  // decoration this strip was meant to stop being. total_spawned/total_done
+  // are incremented across the whole unbounded `subagent_audit` scan, and by
+  // HI #8 every spawn and completion writes exactly one row, so their sum is
+  // the ledger's real size.
+  const auditRows = Number(s.totalSpawned || 0) + Number(s.totalDone || 0)
+  // HI #3 firewalls the evaluator: `_STAGE_PERMISSIONS["reviewer"]` plus the
+  // runner's last-stage brief. `reviewer-aux` is a haiku helper from the
+  // exploration split, not an evaluator, so counting it overstated the claim
+  // while pipeline evaluators — which live in pipelineRuns[].stages, never in
+  // s.subagents — were missed entirely.
+  const evaluatorHandles = new Set([
+    ...allSubagents.filter((agent) => agent.role === 'reviewer'),
+    ...(s.pipelineRuns || []).flatMap((run) => (run.stages || []).slice(-1)),
+  ].map((agent) => agent.handle).filter(Boolean))
   const trustCounters = [
     { key: 'policy', label: 'policy', value: `${s.allowCount || 0} allow / ${s.denyCount || 0} deny`, ok: !Number(s.denyCount || 0) },
-    { key: 'audit', label: 'audit', value: `${(s.audit || []).length} rows appended`, ok: true },
-    { key: 'firewall', label: 'firewall', value: `${evaluatorCount} evaluator isolated`, ok: true },
+    { key: 'audit', label: 'audit', value: `${auditRows} rows appended`, ok: true },
+    { key: 'firewall', label: 'firewall', value: `${evaluatorHandles.size} evaluator isolated`, ok: true },
     { key: 'substrate', label: 'substrate', value: '0 LM calls', ok: true },
   ]
 
@@ -1201,6 +1263,7 @@ export function buildViewModel(s, act) {
         ? (plural(sessionSteps.length, 'worker') + ' · full history for this parent run')
         : (activeRunRaw?.turn ? 'driver-only turn — no workers spawned' : 'no workers in this session yet')),
     hasDetail: !!detail, showFeed: !detail, detail, clearSelect: () => act.clearSelect(),
+    clearNodeSelect: () => act.clearNodeSelect(),
     driverBusy: orchestratorOwnsDriver, driverTask: (orchestratorOwnsDriver || orchestratorHasDriverLog) ? (driverStatus.task || '') : '', driverStatusText: orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active.` : (driverBelongsToOrchestrator ? driverStatusText : ''),
     driverProcessOpen: orchestratorOwnsDriver && !!s.processOpen, driverProcessLog: orchestratorHasDriverLog ? driverProcessLog : '', hasDriverLog: orchestratorHasDriverLog, onToggleProcess: act.toggleProcess,
     logWindowOpen: orchestratorHasDriverLog && !!s.logWindowOpen, onOpenLog: act.openProcessLog, onCloseLog: act.closeProcessLog,
