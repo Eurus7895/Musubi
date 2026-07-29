@@ -1399,12 +1399,15 @@ pub struct ToolEvidence {
     pub detail: String,
 }
 
-#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSession {
     pub chat_id: String,
     pub created_at: String,
     pub updated_at: String,
+    pub latest_activity: f64,
+    pub viewed_through: f64,
+    pub unread: bool,
     pub title: String,
     pub last_request: String,
     pub root_turns: i64,
@@ -1660,26 +1663,111 @@ fn load_orchestrator_sessions(conn: &Connection) -> rusqlite::Result<Vec<Orchest
                 COALESCE((SELECT x.text FROM chat_log x
                           WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
                             AND x.role='you'
-                          ORDER BY x.id DESC LIMIT 1), '')
+                          ORDER BY x.id DESC LIMIT 1), ''),
+                MAX(
+                  COALESCE((SELECT MAX(CAST(REPLACE(COALESCE(x.ts,''),'epoch:','') AS REAL))
+                            FROM chat_log x
+                            WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(CAST(REPLACE(COALESCE(x.ts,''),'epoch:','') AS REAL))
+                            FROM runtime_log_events x WHERE x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(COALESCE(x.ended_at,x.started_at))
+                            FROM agent_turns x WHERE x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(a.ts)
+                            FROM subagent_audit a
+                            WHERE EXISTS (
+                              SELECT 1 FROM agent_turns t
+                              WHERE t.chat_id=c.chat_id
+                                AND t.parent_session_id=a.parent_session_id
+                            )), 0)
+                ),
+                COALESCE(s.viewed_through, 0)
          FROM chat_log c
+         LEFT JOIN orchestrator_session_state s ON s.chat_id=c.chat_id
          WHERE c.surface='orchestrator' AND COALESCE(c.chat_id, '') <> ''
+           AND s.deleted_at IS NULL
          GROUP BY c.chat_id
          ORDER BY MAX(c.id) DESC",
     )?;
     let sessions = stmt
         .query_map([], |r| {
+            let latest_activity = r.get::<_, f64>(5)?;
+            let viewed_through = r.get::<_, f64>(6)?;
             Ok(OrchestratorSession {
                 chat_id: r.get(0)?,
                 created_at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 updated_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 last_request: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                latest_activity,
+                viewed_through,
+                unread: latest_activity > viewed_through,
                 root_turns: 0,
                 workers: 0,
             })
         })?
         .collect();
     sessions
+}
+
+pub fn latest_orchestrator_session_activity(
+    conn: &Connection,
+    chat_id: &str,
+) -> rusqlite::Result<Option<f64>> {
+    Ok(load_orchestrator_sessions(conn)?
+        .into_iter()
+        .find(|session| session.chat_id == chat_id)
+        .map(|session| session.latest_activity))
+}
+
+pub fn mark_orchestrator_session_viewed(
+    conn: &Connection,
+    chat_id: &str,
+    viewed_through: f64,
+    now: f64,
+) -> rusqlite::Result<bool> {
+    if latest_orchestrator_session_activity(conn, chat_id)?.is_none() {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+         VALUES(?1,?2,NULL,?3)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           viewed_through=MAX(orchestrator_session_state.viewed_through,excluded.viewed_through),
+           deleted_at=NULL,
+           updated_at=excluded.updated_at",
+        rusqlite::params![chat_id, viewed_through, now],
+    )?;
+    Ok(true)
+}
+
+pub fn delete_orchestrator_session(
+    conn: &mut Connection,
+    chat_id: &str,
+    deleted_at: f64,
+) -> rusqlite::Result<bool> {
+    let exists = latest_orchestrator_session_activity(conn, chat_id)?.is_some();
+    if !exists {
+        return Ok(false);
+    }
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+         VALUES(?1,0,?2,?2)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           deleted_at=excluded.deleted_at,
+           updated_at=excluded.updated_at",
+        rusqlite::params![chat_id, deleted_at],
+    )?;
+    tx.execute(
+        "DELETE FROM chat_log WHERE surface='orchestrator' AND chat_id=?1",
+        [chat_id],
+    )?;
+    tx.execute(
+        "DELETE FROM session_folder_grants WHERE chat_id=?1",
+        [chat_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// Return only real pipeline runs joined to their audit-envelope ancestry.
@@ -2772,6 +2860,12 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS orchestrator_session_state (
+  chat_id        TEXT PRIMARY KEY,
+  viewed_through REAL NOT NULL DEFAULT 0,
+  deleted_at     REAL,
+  updated_at     REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_folder_grants (
   chat_id        TEXT NOT NULL,
   grant_id       TEXT NOT NULL,
@@ -3020,6 +3114,85 @@ mod tests {
     fn demo_state() -> State {
         let conn = demo();
         load_state_at(&conn, 1_736_500_020).unwrap()
+    }
+
+    #[test]
+    fn orchestrator_session_unread_cursor_advances_and_later_activity_reopens_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','first','orchestrator','chat-a')",
+            [],
+        )
+        .unwrap();
+
+        let initial = load_orchestrator_sessions(&conn).unwrap();
+        assert_eq!(initial.len(), 1);
+        assert!(initial[0].unread);
+        assert_eq!(initial[0].latest_activity, 100.0);
+
+        mark_orchestrator_session_viewed(&conn, "chat-a", 100.0, 101.0).unwrap();
+        assert!(!load_orchestrator_sessions(&conn).unwrap()[0].unread);
+
+        conn.execute(
+            "INSERT INTO runtime_log_events
+             (request_id,chat_id,seq,ts,source,stream,role,category,message)
+             VALUES('req-a','chat-a',1,'epoch:102','host','host','host','host','done')",
+            [],
+        )
+        .unwrap();
+        let reopened = load_orchestrator_sessions(&conn).unwrap();
+        assert!(reopened[0].unread);
+        assert_eq!(reopened[0].latest_activity, 102.0);
+        assert_eq!(reopened[0].viewed_through, 100.0);
+    }
+
+    #[test]
+    fn delete_orchestrator_session_hides_chat_and_grants_but_preserves_evidence() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','first','orchestrator','chat-a')",
+            [],
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "grant-a".into(),
+                alias: "docs".into(),
+                canonical_path: "D:/docs".into(),
+                ordinal: 0,
+            },
+            "100",
+        )
+        .unwrap();
+        snapshot_request_folder_grants(&mut conn, "req-a", "chat-a", "C:/Musubi", "101")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO runtime_log_events
+             (request_id,chat_id,seq,ts,source,stream,role,category,message)
+             VALUES('req-a','chat-a',1,'epoch:102','host','host','host','host','done')",
+            [],
+        )
+        .unwrap();
+
+        assert!(delete_orchestrator_session(&mut conn, "chat-a", 103.0).unwrap());
+
+        assert!(load_orchestrator_sessions(&conn).unwrap().is_empty());
+        assert!(list_session_folder_grants(&conn, "chat-a").unwrap().is_empty());
+        assert_eq!(list_request_folder_grants(&conn, "req-a").unwrap().len(), 2);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM runtime_log_events WHERE chat_id='chat-a'"
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]
