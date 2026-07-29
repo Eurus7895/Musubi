@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.change_assessment import Band, assess_request
+from agent.change_assessment import BROAD_PRODUCT_QUESTION, Band, assess_request
 from agent.scope import ScopeKind, classify_task
 
 
@@ -289,9 +289,30 @@ def test_bare_website_creation_requires_clarification() -> None:
     )
     assert result.route == "ask_scope"
     assert result.clarifying_question == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
+
+
+def test_the_clarifying_question_is_one_its_answer_can_settle() -> None:
+    # A question the asker cannot act on is not a governance step. The earlier
+    # wording led with "What should the website do?", which nothing in
+    # `assess_request` tests — so the honest answer "a weather checking
+    # website" re-matched `_BROAD_PRODUCT_RE` with no escape hatch touched and
+    # drew the identical sentence back. Every natural answer to the question as
+    # written must now change the verdict ON ITS OWN, without relying on the
+    # one-question-per-stall escape to break the tie.
+    assert assess_request("create a website").clarifying_question == (
+        BROAD_PRODUCT_QUESTION
+    )
+    for answer, expected in (
+        ("a static page", "single_coder"),
+        ("just a single static page", "single_coder"),
+        ("a static single-file page showing the weather", "single_coder"),
+        ("react", "planner_then_coder_check"),
+        ("next.js please", "planner_then_coder_check"),
+    ):
+        merged = f"create a website\n\n[clarification answer] {answer}"
+        assert classify_task(merged).route == expected, answer
 
 
 def test_constrained_single_file_website_is_simple() -> None:

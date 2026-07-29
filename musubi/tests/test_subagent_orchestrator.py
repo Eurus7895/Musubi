@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from agent.change_assessment import BROAD_PRODUCT_QUESTION
 from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.run import Orchestration, run_agent
 from agent.subagent import (
@@ -1024,8 +1025,7 @@ def test_bare_new_website_request_stops_at_clarification() -> None:
 
     assert hint.route == "ask_scope"
     assert answer == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
 
 

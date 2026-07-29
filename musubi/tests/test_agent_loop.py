@@ -18,6 +18,7 @@ import pytest
 
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
+from agent.change_assessment import BROAD_PRODUCT_QUESTION
 from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter
 
@@ -2716,8 +2717,7 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     answer = run_mod._deterministic_scope_answer("create a new website", hint)
     assert hint.route == "ask_scope"
     assert answer == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
 
 
@@ -2744,8 +2744,7 @@ def test_clarification_is_asked_once_then_the_answer_is_acted_on(
 
     assert silent.calls == []
     assert question == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
     assert "route=ask_scope" in first_log.getvalue()
     assert db.pending_clarification(chat, db_path=chat_db) == "create a website"

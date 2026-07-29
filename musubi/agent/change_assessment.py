@@ -62,6 +62,23 @@ _MULTIPART_RE = re.compile(
 # narrow job: withhold the lone-coder shortcut so a planner reads first.
 
 
+#: The one question a broad product request is stopped for. It asks ONLY what
+#: the gate below can actually act on — the page shape, tested by
+#: `_STATIC_FILE_RE` and `_FRAMEWORK_RE`. The earlier wording led with "What
+#: should the website do?", which nothing here tests: a user who answered it
+#: ("a weather checking website") re-matched `_BROAD_PRODUCT_RE` with no escape
+#: hatch touched, so an earnest answer could not move the route. A question the
+#: asker cannot act on is not a governance step. The content ask stays, demoted
+#: to a second sentence and explicitly optional: it enriches the planner's brief
+#: without deciding anything, and the turn proceeds either way.
+BROAD_PRODUCT_QUESTION = (
+    "Should this be a single static HTML page, or a framework app "
+    "(React, Next.js, Vue, Svelte, or Angular)? Add what the page should "
+    "show in the same reply if you know it — I will build from your answer "
+    "either way."
+)
+
+
 def assess_request(task: str) -> ChangeAssessment:
     """Bands + route for one raw user request. Pure text analysis, zero LLM.
 
@@ -81,7 +98,7 @@ def assess_request(task: str) -> ChangeAssessment:
         return ChangeAssessment(
             Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
             ("broad-product-without-deliverable-constraints",),
-            "What should the website do, and should it be a static page or use a specific framework?",
+            BROAD_PRODUCT_QUESTION,
         )
     if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
         return ChangeAssessment(
