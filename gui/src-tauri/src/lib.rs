@@ -11,9 +11,8 @@
 //! resolved, the console opens an empty in-memory schema for first-run setup.
 
 use std::collections::{hash_map::DefaultHasher, HashMap};
-use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
@@ -24,7 +23,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::{Emitter, Manager};
 
 struct AppState {
@@ -76,139 +75,10 @@ enum TailStream {
 const TAIL_CAP: usize = 64 * 1024;
 const RUNTIME_LOG_PREFIX: &str = "\u{1e}MUSUBI_LOG ";
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
-static CONSOLE_PREFERENCES_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
 ];
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConsolePreferences {
-    workspace: String,
-    #[serde(default)]
-    llm_config: String,
-}
-
-fn load_console_preferences_from(path: &Path) -> Result<Option<ConsolePreferences>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
-    };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|error| format!("parse {}: {error}", path.display()))
-}
-
-type ConsolePreferencesReplacer = dyn Fn(&Path, &Path) -> std::io::Result<()>;
-
-fn console_preferences_temp_path(path: &Path) -> Result<PathBuf, String> {
-    let parent = path.parent().ok_or("invalid Console preferences path")?;
-    let name = path
-        .file_name()
-        .ok_or("invalid Console preferences filename")?
-        .to_string_lossy();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let sequence = CONSOLE_PREFERENCES_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    Ok(parent.join(format!(
-        ".{name}.{}.{}.{}.tmp",
-        std::process::id(),
-        nanos,
-        sequence
-    )))
-}
-
-fn atomic_console_preferences_writer(
-    temp: &Path,
-    target: &Path,
-    bytes: &[u8],
-    replacer: &ConsolePreferencesReplacer,
-) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().create_new(true).write(true).open(temp)?;
-    let result = (|| {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        replacer(temp, target)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    }
-    result
-}
-
-#[cfg(not(windows))]
-fn atomic_console_preferences_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
-    std::fs::rename(temp, target)
-}
-
-#[cfg(windows)]
-fn atomic_console_preferences_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    if !target.exists() {
-        return std::fs::rename(temp, target);
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn ReplaceFileW(
-            replaced: *const u16,
-            replacement: *const u16,
-            backup: *const u16,
-            flags: u32,
-            exclude: *mut std::ffi::c_void,
-            reserved: *mut std::ffi::c_void,
-        ) -> i32;
-    }
-    let replaced = target
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let replacement = temp
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        ReplaceFileW(
-            replaced.as_ptr(),
-            replacement.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-fn save_console_preferences_with_replacer(
-    path: &Path,
-    preferences: &ConsolePreferences,
-    replacer: &ConsolePreferencesReplacer,
-) -> Result<(), String> {
-    let parent = path.parent().ok_or("invalid Console preferences path")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("create preferences directory: {e}"))?;
-    let text = serde_json::to_string_pretty(preferences).map_err(|e| e.to_string())?;
-    let temp = console_preferences_temp_path(path)?;
-    atomic_console_preferences_writer(&temp, path, format!("{text}\n").as_bytes(), replacer)
-        .map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn save_console_preferences_to(
-    path: &Path,
-    preferences: &ConsolePreferences,
-) -> Result<(), String> {
-    save_console_preferences_with_replacer(path, preferences, &atomic_console_preferences_replace)
-}
 
 fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
     let raw = raw.trim();
@@ -222,32 +92,6 @@ fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
         return Err("The selected workspace is not a directory.".into());
     }
     Ok(path)
-}
-
-/// Absolute path to the Musubi state directory inside a selected workspace.
-fn workspace_data_dir(workspace: &Path) -> PathBuf {
-    workspace.join(".musubi").join("data")
-}
-
-/// Create `.musubi/data` inside the workspace and prove it is writable.
-///
-/// Existing-and-readable is not enough to accept a folder: startup opens a
-/// SQLite database under this directory, so a read-only checkout would be
-/// persisted happily and then fail on every subsequent launch. Probing here
-/// keeps the failure in the picker, where the operator can pick again.
-fn ensure_workspace_data_dir(workspace: &Path) -> Result<PathBuf, String> {
-    let dir = workspace_data_dir(workspace);
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        format!(
-            "Cannot create {} in the selected workspace: {e}",
-            dir.display()
-        )
-    })?;
-    let probe = dir.join(".musubi-write-probe");
-    std::fs::write(&probe, b"")
-        .map_err(|e| format!("The selected workspace is not writable: {e}"))?;
-    let _ = std::fs::remove_file(&probe);
-    Ok(dir)
 }
 
 #[tauri::command]
@@ -2340,86 +2184,6 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn temp_console_preferences_dir(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "musubi-console-preferences-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[test]
-    fn missing_console_preferences_are_unconfigured() {
-        let root = temp_console_preferences_dir("missing");
-        let path = root.join("console.json");
-
-        assert!(load_console_preferences_from(&path).unwrap().is_none());
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn malformed_console_preferences_fail_closed() {
-        let root = temp_console_preferences_dir("malformed");
-        let path = root.join("console.json");
-        std::fs::write(&path, "{broken").unwrap();
-
-        let error = load_console_preferences_from(&path).unwrap_err();
-
-        assert!(error.contains("parse"));
-        assert!(error.contains("console.json"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn console_preferences_replace_existing_file_atomically() {
-        let root = temp_console_preferences_dir("replace");
-        let path = root.join("console.json");
-        std::fs::write(&path, r#"{"workspace":"old"}"#).unwrap();
-        let preferences = ConsolePreferences {
-            workspace: "new".into(),
-            llm_config: "model.json".into(),
-        };
-
-        save_console_preferences_to(&path, &preferences).unwrap();
-
-        let loaded = load_console_preferences_from(&path).unwrap().unwrap();
-        assert_eq!(loaded.workspace, "new");
-        assert_eq!(loaded.llm_config, "model.json");
-        assert!(root
-            .read_dir()
-            .unwrap()
-            .all(|entry| { entry.unwrap().file_name() == std::ffi::OsStr::new("console.json") }));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn failed_console_preference_replace_preserves_previous_file() {
-        let root = temp_console_preferences_dir("replace-failure");
-        let path = root.join("console.json");
-        let before = r#"{"workspace":"old"}"#;
-        std::fs::write(&path, before).unwrap();
-        let preferences = ConsolePreferences {
-            workspace: "new".into(),
-            llm_config: String::new(),
-        };
-
-        let error = save_console_preferences_with_replacer(&path, &preferences, &|_, _| {
-            Err(std::io::Error::other("simulated replace failure"))
-        })
-        .unwrap_err();
-
-        assert!(error.contains("simulated replace failure"));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
-        assert_eq!(root.read_dir().unwrap().count(), 1);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     #[test]
     fn workspace_selection_accepts_only_existing_directories() {
         let root = std::env::temp_dir().join(format!("musubi-workspace-picker-{}", epoch_secs()));
@@ -2435,57 +2199,6 @@ mod tests {
         assert!(canonical_workspace(root.join("missing").to_str().unwrap()).is_err());
         assert!(canonical_workspace("  ").is_err());
 
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn workspace_data_dir_is_created_and_probed_before_the_choice_is_kept() {
-        let root = std::env::temp_dir().join(format!("musubi-workspace-data-{}", epoch_secs()));
-        std::fs::create_dir_all(&root).unwrap();
-
-        let dir = ensure_workspace_data_dir(&root).unwrap();
-        assert_eq!(dir, root.join(".musubi").join("data"));
-        assert!(dir.is_dir(), "the data directory must exist afterwards");
-        // The probe file must not survive — it is a check, not state.
-        assert!(!dir.join(".musubi-write-probe").exists());
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unwritable_workspace_is_rejected_instead_of_bricking_the_next_launch() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let root = std::env::temp_dir().join(format!("musubi-workspace-ro-{}", epoch_secs()));
-        std::fs::create_dir_all(&root).unwrap();
-        // Read+execute only: the folder opens fine, but nothing can be created
-        // inside it. This is the case that used to be persisted happily and
-        // then panic in open_configured_db on every subsequent start.
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o500)).unwrap();
-
-        // Root ignores the permission bits, so the scenario cannot be staged
-        // as root (CI containers often are). Detect that and skip rather than
-        // report a false failure.
-        let bits_are_enforced = std::fs::write(root.join(".probe"), b"").is_err();
-        if !bits_are_enforced {
-            let _ = std::fs::remove_file(root.join(".probe"));
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-            std::fs::remove_dir_all(root).unwrap();
-            eprintln!("skipped: running with permission-bit override (root)");
-            return;
-        }
-
-        assert!(
-            canonical_workspace(root.to_str().unwrap()).is_ok(),
-            "the folder is readable, so existence alone accepts it"
-        );
-        assert!(
-            ensure_workspace_data_dir(&root).is_err(),
-            "writability must be proven before the preference is saved"
-        );
-
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
