@@ -49,6 +49,12 @@ if str(_MUSUBI_MODULE_ROOT) not in sys.path:
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from workspace.grants import (
+    MANIFEST_ENV,
+    FolderGrant,
+    RootRegistry,
+    derive_alias,
+)
 
 from agent.context import (
     build_system_prompt,
@@ -635,9 +641,16 @@ async def run_agent(
     "tool_use"`) OR `max_cycles` is hit.
     """
     server_path = musubi_dir / "server.py"
+    harness_root = _harness_root(musubi_dir)
+    registry = _current_root_registry(harness_root)
     server_env = _server_env()
+    server_env["MUSUBI_ROOT"] = str(harness_root)
+    server_env[MANIFEST_ENV] = registry.to_json()
     context_compression_db_path = _server_db_path(musubi_dir, server_env)
+    server_env["MUSUBI_STATE_DB"] = str(context_compression_db_path)
     audit_db_path = _server_audit_db_path(musubi_dir, server_env)
+    server_env["MUSUBI_AUDIT_DB"] = str(audit_db_path)
+    server_env["MUSUBI_DB"] = str(audit_db_path)
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
@@ -881,7 +894,11 @@ async def run_agent(
         # Hint first, evidence second: the hint is an opinion the root may
         # override, the evidence is the record it must not contradict.
         system_prompt = build_system_prompt(
-            scope_hint.prompt_block() + "\n\n" + evidence.prompt_block()
+            scope_hint.prompt_block()
+            + "\n\n"
+            + evidence.prompt_block()
+            + "\n\n"
+            + registry.prompt_block()
         )
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
@@ -1878,14 +1895,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
-        "--workspace",
-        type=Path,
-        default=None,
+        "--add-folder",
+        action="append",
+        default=[],
+        metavar="[ALIAS=]PATH",
         help=(
-            "Application folder the agent reads and writes. This is the "
-            "project boundary, NOT the Musubi install — use --musubi for "
-            "that. Defaults to $MUSUBI_WORKSPACE, else the current "
-            "directory. The Console's Settings picker sets the same var."
+            "Grant this session access to an additional folder. Repeat for "
+            "multiple folders. Paths remain separate roots; --musubi always "
+            "selects the fixed Musubi harness root."
         ),
     )
     ap.add_argument(
@@ -1912,18 +1929,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
 
-    # Resolve the runtime dir BEFORE any chdir, so a relative --musubi still
-    # means what the user typed it against.
     musubi_dir = (args.musubi or _default_musubi_dir()).resolve()
-    workspace = args.workspace
-    if workspace is None:
-        env_workspace = os.environ.get("MUSUBI_WORKSPACE", "").strip()
-        if env_workspace:
-            workspace = Path(env_workspace)
-    if workspace is not None:
-        rc = _apply_workspace(workspace)
-        if rc:
-            return rc
     if not (musubi_dir / "server.py").is_file():
         print(
             f"agent-agent: server.py not found under {musubi_dir} "
@@ -1931,28 +1937,44 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-
+    previous_root = os.environ.get("MUSUBI_ROOT")
+    previous_manifest = os.environ.get(MANIFEST_ENV)
+    harness_root = _harness_root(musubi_dir)
+    os.environ["MUSUBI_ROOT"] = str(harness_root)
     try:
-        answer = asyncio.run(
-            run_agent(
-                args.task, vendor, musubi_dir,
-                max_cycles=args.max_cycles, mcp_config=args.mcp_config,
-                log=runtime_log,
-                vendor_source=vendor_source,
-                chat_id=args.chat_id,
-                request_id=request_id,
-                max_tokens=args.max_tokens,
-                tool_surface=args.tool_surface,
-                pipeline=args.pipeline,
-                plan_first=args.plan,
+        try:
+            if args.add_folder:
+                _build_folder_registry(harness_root, args.add_folder)
+            else:
+                _current_root_registry(harness_root)
+        except ValueError as exc:
+            print(f"agent-agent: invalid folder grant: {exc}", file=sys.stderr)
+            return 2
+
+        try:
+            answer = asyncio.run(
+                run_agent(
+                    args.task, vendor, musubi_dir,
+                    max_cycles=args.max_cycles, mcp_config=args.mcp_config,
+                    log=runtime_log,
+                    vendor_source=vendor_source,
+                    chat_id=args.chat_id,
+                    request_id=request_id,
+                    max_tokens=args.max_tokens,
+                    tool_surface=args.tool_surface,
+                    pipeline=args.pipeline,
+                    plan_first=args.plan,
+                )
             )
-        )
-    except KeyboardInterrupt:
-        print("\n[agent] cancelled.", file=sys.stderr)
-        return 130
-    except RuntimeError as exc:
-        print(f"agent-agent: {exc}", file=sys.stderr)
-        return 1
+        except KeyboardInterrupt:
+            print("\n[agent] cancelled.", file=sys.stderr)
+            return 130
+        except RuntimeError as exc:
+            print(f"agent-agent: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        _restore_environment_value("MUSUBI_ROOT", previous_root)
+        _restore_environment_value(MANIFEST_ENV, previous_manifest)
 
     print(answer)
     return 0
@@ -2024,9 +2046,9 @@ def _server_env() -> dict[str, str]:
 
 def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     """Return the SQLite DB path used by the spawned Musubi server."""
-    workspace = server_env.get("MUSUBI_WORKSPACE")
-    if workspace:
-        return Path(workspace) / ".musubi" / "data" / "musubi.db"
+    configured = server_env.get("MUSUBI_STATE_DB")
+    if configured:
+        return Path(configured)
     root = server_env.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "musubi.db"
@@ -2035,52 +2057,74 @@ def _server_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
 
 def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     """Return the append-only audit DB path used by the spawned server."""
-    workspace = server_env.get("MUSUBI_WORKSPACE")
-    if workspace:
-        return Path(workspace) / ".musubi" / "data" / "audit.db"
+    configured = server_env.get("MUSUBI_DB")
+    if configured:
+        return Path(configured)
     root = server_env.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "audit.db"
     return musubi_dir / "storage" / "audit.db"
 
 
-def _apply_workspace(raw: Path) -> int:
-    """Point this run at an application folder. Returns 0, or 2 to abort.
+def _current_root_registry(musubi_dir: Path) -> RootRegistry:
+    raw = os.environ.get(MANIFEST_ENV, "").strip()
+    return (
+        RootRegistry.from_json(raw, musubi_dir)
+        if raw
+        else RootRegistry.build(musubi_dir)
+    )
 
-    Two effects, because the workspace has to hold on both halves of the
-    stack:
 
-      * `MUSUBI_WORKSPACE` — `_server_env` forwards every `MUSUBI_*` var to
-        the spawned server, where `tools.fs._workspace_root` reads it. This
-        is what makes reads, writes, and `run_command` land in the selected
-        folder instead of the Musubi checkout.
-      * `chdir` — the server subprocess inherits this process's cwd, and
-        `execution.executor.run_lint` shells out to ruff with no explicit
-        cwd. Without the chdir a relative path from the worker would be
-        linted against wherever the operator happened to launch the CLI.
+def _build_folder_registry(
+    musubi_dir: Path,
+    raw_folders: list[str],
+) -> RootRegistry:
+    used: set[str] = set()
+    grants: list[FolderGrant] = []
+    for index, raw in enumerate(raw_folders):
+        value = raw.strip()
+        if not value:
+            raise ValueError("folder argument must be non-empty")
+        if "=" in value:
+            alias, path_text = value.split("=", 1)
+            alias = alias.strip().lower()
+        else:
+            path_text = value
+            alias = derive_alias(Path(path_text), used)
+        path = Path(path_text.strip()).expanduser()
+        if not path.is_dir():
+            raise ValueError(f"folder grant is not an existing directory: {path}")
+        used.add(alias)
+        grants.append(FolderGrant(f"cli-{index + 1}", alias, path))
+    registry = RootRegistry.build(musubi_dir, grants)
+    os.environ[MANIFEST_ENV] = registry.to_json()
+    return registry
 
-    Together these match what the Console already does: it exports the var
-    and spawns the driver with `current_dir` set to the same folder. Asset
-    lookup is unaffected — pipelines, agents, and skills resolve from
-    `MUSUBI_ROOT` or `__file__`, never from cwd, so shipped recipes stay
-    reachable from an application folder that has no `.github/` of its own.
-    """
-    workspace = raw.expanduser()
-    try:
-        workspace = workspace.resolve(strict=True)
-    except OSError as exc:
-        print(f"agent-agent: --workspace is not accessible: {exc}", file=sys.stderr)
-        return 2
-    if not workspace.is_dir():
-        print(f"agent-agent: --workspace is not a directory: {workspace}", file=sys.stderr)
-        return 2
-    os.environ["MUSUBI_WORKSPACE"] = str(workspace)
-    os.chdir(workspace)
-    return 0
+
+def _restore_environment_value(name: str, previous: str | None) -> None:
+    """Restore an entrypoint-scoped environment value for embedded callers."""
+    if previous is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = previous
 
 
 def _default_audit_db_path() -> Path:
     return Path(__file__).resolve().parent.parent / "storage" / "audit.db"
+
+
+def _harness_root(musubi_dir: Path) -> Path:
+    """Return the fixed checkout/install root, not its Python package."""
+    configured = os.environ.get("MUSUBI_ROOT", "").strip()
+    if configured:
+        return Path(configured).resolve()
+    package = musubi_dir.resolve()
+    parent = package.parent
+    if package.name.lower() == "musubi" and (
+        (parent / "CLAUDE.md").is_file() or (parent / ".github").is_dir()
+    ):
+        return parent
+    return package
 
 
 def _default_musubi_dir() -> Path:
@@ -2093,7 +2137,12 @@ def _default_musubi_dir() -> Path:
     """
     env = os.environ.get("MUSUBI_ROOT")
     if env:
-        return Path(env)
+        root = Path(env).expanduser()
+        if (root / "server.py").is_file():
+            return root
+        package = root / "musubi"
+        if (package / "server.py").is_file():
+            return package
     return Path(__file__).resolve().parent.parent
 
 
@@ -3327,7 +3376,9 @@ async def _dispatch_one(
         if should_audit:
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
-                args=json_args(args), status="ok", db_path=audit_path,
+                args=json_args(_tool_audit_args(args, text)),
+                status=_tool_result_audit_status(text),
+                db_path=audit_path,
                 result_text=text, log=log,
             )
         _record_touched_file(name, args, text)
@@ -3352,6 +3403,35 @@ def _tool_wrote_ok(text: str) -> bool:
     return isinstance(obj, dict) and obj.get("status") == "ok"
 
 
+def _tool_result_audit_status(text: str) -> str:
+    """Reflect deterministic JSON tool denials in the append-only audit."""
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return "ok"
+    if isinstance(payload, dict) and (
+        payload.get("status") == "error" or "error" in payload
+    ):
+        return "error"
+    return "ok"
+
+
+def _tool_audit_args(args: dict[str, Any], text: str) -> dict[str, Any]:
+    """Attach resolver evidence from successful filesystem tool results."""
+    enriched = dict(args)
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return enriched
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return enriched
+    for key in ("root", "grant_id", "path", "resolved_path"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            enriched[key] = value
+    return enriched
+
+
 def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
     """Record a successful file mutation into the active worker's sink.
 
@@ -3365,7 +3445,10 @@ def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
         return
     path = args.get("path")
     if isinstance(path, str) and path:
-        sink.add(path)
+        root = args.get("root", "musubi")
+        if not isinstance(root, str) or not root:
+            root = "musubi"
+        sink.add(path if root == "musubi" else f"{root}::{path}")
 
 
 def _file_tool_argument_error(name: str, args: Any) -> str | None:

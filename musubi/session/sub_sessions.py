@@ -54,28 +54,38 @@ DEFAULT_WALL_CLOCK_TIMEOUT_S: int = 300
 DEFAULT_AWAIT_MAX_WAIT_S: int = 300
 
 
-def _artifacts_verified(artifacts: list[str] | None) -> bool:
-    """Deterministically verify a runner's artifact manifest on disk.
+def _artifacts_verified(artifacts: list[Any] | None) -> bool:
+    """Deterministically verify a root-qualified artifact manifest on disk.
 
     True only when the manifest is a non-empty list and EVERY entry resolves
-    inside the workspace root (`MUSUBI_WORKSPACE`, else `MUSUBI_ROOT`, else the
-    server's cwd — the same anchor `tools/fs.py` writes against), is a regular
-    file, and is non-empty.
+    through the immutable request root registry, is a regular file, and is
+    non-empty.
     Any escape, miss, empty file, or stat error fails the whole manifest —
     the caller keeps its fail-closed coercion. Zero-LLM (HI #1).
     """
     if not artifacts or not isinstance(artifacts, list):
         return False
-    env = os.environ.get("MUSUBI_WORKSPACE") or os.environ.get("MUSUBI_ROOT")
+    from workspace.grants import MANIFEST_ENV, RootRegistry
+
+    env = os.environ.get("MUSUBI_ROOT")
     root = Path(env).resolve() if env else Path.cwd().resolve()
+    raw = os.environ.get(MANIFEST_ENV, "")
+    try:
+        registry = RootRegistry.from_json(raw, root) if raw else RootRegistry.build(root)
+    except ValueError:
+        return False
     for entry in artifacts:
-        if not isinstance(entry, str) or not entry.strip():
+        if isinstance(entry, str):
+            alias, path = "musubi", entry
+        elif isinstance(entry, dict):
+            alias, path = entry.get("root"), entry.get("path")
+        else:
             return False
-        p = Path(entry)
-        candidate = (p if p.is_absolute() else root / p).resolve()
+        if not isinstance(alias, str) or not isinstance(path, str) or not path.strip():
+            return False
         try:
-            candidate.relative_to(root)
-        except ValueError:
+            candidate = registry.resolve(alias, path)
+        except (ValueError, PermissionError):
             return False
         try:
             if not candidate.is_file() or candidate.stat().st_size <= 0:
@@ -177,7 +187,7 @@ def complete(
     tools_used: list[str] | None = None,
     turns: int = 0,
     status: str = "done",
-    artifacts: list[str] | None = None,
+    artifacts: list[Any] | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Persist a terminal result and return the final row.

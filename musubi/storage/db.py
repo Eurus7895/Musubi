@@ -200,15 +200,42 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_chat
     ON agent_turns (chat_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_agent_turns_started
     ON agent_turns (started_at);
+CREATE TABLE IF NOT EXISTS session_folder_grants (
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, grant_id),
+    UNIQUE (chat_id, alias),
+    UNIQUE (chat_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_folder_grants_chat_order
+    ON session_folder_grants (chat_id, ordinal, grant_id);
+CREATE TABLE IF NOT EXISTS request_folder_grants (
+    request_id     TEXT NOT NULL,
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    captured_at    TEXT NOT NULL,
+    PRIMARY KEY (request_id, grant_id),
+    UNIQUE (request_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
+    ON request_folder_grants (chat_id, request_id, ordinal);
 """
 
 def _default_db_path() -> Path:
+    configured = os.environ.get("MUSUBI_STATE_DB")
+    if configured:
+        return Path(configured)
     # When running as the VS Code extension binary MUSUBI_ROOT points to the
     # extension install dir — a stable, writable location across binary runs.
     # Fall back to alongside db.py for dev / test usage.
-    workspace = os.environ.get("MUSUBI_WORKSPACE")
-    if workspace:
-        return Path(workspace) / ".musubi" / "data" / "musubi.db"
     root = os.environ.get("MUSUBI_ROOT")
     if root:
         return Path(root) / "data" / "musubi.db"

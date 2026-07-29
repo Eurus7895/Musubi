@@ -244,3 +244,4 @@ fail-closed access for the complete worker tree.
 9. Commit with Conventional Commits and repository identity:
    `feat(console): add session folder grants`.
 
+Implementation status: completed and verified on 2026-07-29.

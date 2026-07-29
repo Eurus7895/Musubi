@@ -37,24 +37,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Session-scoped folder grants — keep Musubi as the fixed harness root.**
-   The Musubi checkout/install remains the root for the driver, substrate,
-   skills, agents, pipelines, policy, and audit. An Orchestrator session may
-   attach multiple existing folders as explicit read/write grants without
-   replacing that root, changing a global Setting, or restarting Console.
-   Grants remain editable while the session is idle; each request captures an
-   immutable snapshot so an in-flight run cannot gain or lose filesystem
-   authority. Filesystem tools, command working directories, mechanical gates,
-   and artifact verification must select and validate the applicable grant,
-   reject path escape or unavailable roots fail-closed, and audit the resolved
-   root for every operation. This is a Musubi harness boundary, not a launcher
-   for external coding agents; the standalone driver through `LMRouter` remains
-   the execution path. The superseded single-workspace plan remains historical.
-   Design and plan:
-   [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md) and
-   [`2026-07-29-session-folder-grants.md`](./superpowers/plans/2026-07-29-session-folder-grants.md)
-
-2. **Skill catalog growth.** Skills remain the cheapest optimization surface.
+1. **Skill catalog growth.** Skills remain the cheapest optimization surface.
    Each new skill should carry useful metadata such as `applies-to`, `triggers`,
    and relevant tools.
    First batch landed: `debugging`, `refactoring`, `git-workflow`, and `web-ui`
@@ -250,6 +233,19 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   escape moves one way only (it can remove a halt, never add one, never widen a
   route) and fails toward the old behavior if storage is unreadable. Plan:
   [`2026-07-29-clarification-terminates.md`](./superpowers/plans/2026-07-29-clarification-terminates.md)
+- Session-scoped multi-folder grants — Musubi remains the fixed harness root,
+  while each idle Orchestrator session may attach, rename, and remove up to 16
+  non-overlapping external folder roots without a Settings change or restart.
+  Every request snapshots the exact aliases, grant IDs, and canonical paths;
+  all filesystem tools accept an explicit root and relative path, command cwd
+  changes only inside the selected root, and mechanical/artifact checks retain
+  root-qualified evidence. The standalone CLI exposes the same boundary with
+  repeatable `--add-folder [ALIAS=]PATH`. Unknown, moved, overlapping, absolute,
+  and escaping paths fail closed. This grants the Musubi harness filesystem
+  authority for one session; it does not launch Codex or Claude. Design and
+  implementation plan:
+  [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md) and
+  [`2026-07-29-session-folder-grants.md`](./superpowers/plans/2026-07-29-session-folder-grants.md)
 
 - Console now-first Orchestrator and design tokens — the view that answers
   "what is the agent doing right now?" spent ~206 px of stacked chrome before

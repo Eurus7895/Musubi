@@ -272,3 +272,33 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_chat
     ON agent_turns (chat_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_agent_turns_started
     ON agent_turns (started_at);
+
+CREATE TABLE IF NOT EXISTS session_folder_grants (
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, grant_id),
+    UNIQUE (chat_id, alias),
+    UNIQUE (chat_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_folder_grants_chat_order
+    ON session_folder_grants (chat_id, ordinal, grant_id);
+
+-- Append-only authority snapshot for one Orchestrator request.
+CREATE TABLE IF NOT EXISTS request_folder_grants (
+    request_id     TEXT NOT NULL,
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    captured_at    TEXT NOT NULL,
+    PRIMARY KEY (request_id, grant_id),
+    UNIQUE (request_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
+    ON request_folder_grants (chat_id, request_id, ordinal);

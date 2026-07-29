@@ -90,18 +90,6 @@ struct ConsolePreferences {
     llm_config: String,
 }
 
-fn console_preferences_path() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    let base = std::env::var_os("APPDATA").map(PathBuf::from);
-    #[cfg(not(target_os = "windows"))]
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    base.unwrap_or_else(std::env::temp_dir)
-        .join("musubi")
-        .join("console.json")
-}
-
 fn load_console_preferences_from(path: &Path) -> Result<Option<ConsolePreferences>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -111,10 +99,6 @@ fn load_console_preferences_from(path: &Path) -> Result<Option<ConsolePreference
     serde_json::from_str(&text)
         .map(Some)
         .map_err(|error| format!("parse {}: {error}", path.display()))
-}
-
-fn load_console_preferences() -> Result<Option<ConsolePreferences>, String> {
-    load_console_preferences_from(&console_preferences_path())
 }
 
 type ConsolePreferencesReplacer = dyn Fn(&Path, &Path) -> std::io::Result<()>;
@@ -224,10 +208,6 @@ fn save_console_preferences_to(
     preferences: &ConsolePreferences,
 ) -> Result<(), String> {
     save_console_preferences_with_replacer(path, preferences, &atomic_console_preferences_replace)
-}
-
-fn save_console_preferences(preferences: &ConsolePreferences) -> Result<(), String> {
-    save_console_preferences_to(&console_preferences_path(), preferences)
 }
 
 fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
@@ -627,9 +607,6 @@ fn resolve_project_root(
     cwd: &Path,
     audit_db: Option<&musubi_data::ResolvedAuditDb>,
 ) -> PathBuf {
-    if let Some(root) = env_path(env, "MUSUBI_WORKSPACE") {
-        return root;
-    }
     if let Some(root) = env_path(env, "MUSUBI_ROOT") {
         return root;
     }
@@ -1301,20 +1278,81 @@ fn start_chat_agent(
         rt.request_id = request_id.clone();
         surface_arg(&rt.surface).to_string()
     };
+    let fixed_root = state
+        .project_root
+        .canonicalize()
+        .map_err(|e| format!("Musubi root is unavailable: {e}"))?;
+    let request_manifest = {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        let session_grants =
+            musubi_data::list_session_folder_grants(&conn, chat_id).map_err(|e| e.to_string())?;
+        let mut aliases = std::collections::HashSet::new();
+        let mut paths = vec![fixed_root.clone()];
+        for grant in session_grants {
+            let alias = normalize_folder_alias(&grant.alias)?;
+            if alias != grant.alias || !aliases.insert(alias) {
+                return Err(format!(
+                    "Folder alias {} is invalid or duplicated.",
+                    grant.alias
+                ));
+            }
+            let stored = PathBuf::from(&grant.canonical_path);
+            let current = stored
+                .canonicalize()
+                .map_err(|e| format!("Folder {} is unavailable: {e}", grant.alias))?;
+            if !current.is_dir() {
+                return Err(format!("Folder {} is no longer a directory.", grant.alias));
+            }
+            if workspace_path_key(&current) != workspace_path_key(&stored) {
+                return Err(format!(
+                    "Folder {} changed since it was attached; remove and add it again.",
+                    grant.alias
+                ));
+            }
+            if paths.iter().any(|other| {
+                is_inside_workspace(&current, other) || is_inside_workspace(other, &current)
+            }) {
+                return Err(format!(
+                    "Folder {} overlaps another request root.",
+                    grant.alias
+                ));
+            }
+            paths.push(current);
+        }
+        musubi_data::snapshot_request_folder_grants(
+            &mut conn,
+            &request_id,
+            chat_id,
+            &fixed_root.display().to_string(),
+            &epoch_secs().to_string(),
+        )
+        .map_err(|e| e.to_string())?;
+        musubi_data::list_request_folder_grants(&conn, &request_id).map_err(|e| e.to_string())?
+    };
 
     let mut env = musubi_data::current_env_map();
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
-    let launch_root = state.project_root.clone();
+    let launch_root = fixed_root;
     env.insert(
-        "MUSUBI_WORKSPACE".into(),
+        "MUSUBI_ROOT".into(),
         launch_root.to_string_lossy().to_string(),
+    );
+    env.insert(
+        "MUSUBI_FOLDER_GRANTS_JSON".into(),
+        serde_json::to_string(&request_manifest).map_err(|e| e.to_string())?,
     );
     if let Some(audit_db) = state.audit_db.as_ref() {
         env.insert(
             "MUSUBI_DB".into(),
             audit_db.path.to_string_lossy().to_string(),
         );
+        if let Some(parent) = audit_db.path.parent() {
+            env.insert(
+                "MUSUBI_STATE_DB".into(),
+                parent.join("musubi.db").to_string_lossy().to_string(),
+            );
+        }
     }
     let llm_config_path =
         (!setup.llm_config_path.is_empty()).then(|| PathBuf::from(&setup.llm_config_path));
@@ -1718,106 +1756,36 @@ struct OpenedDb {
 
 fn open_configured_db() -> OpenedDb {
     let mut env = musubi_data::current_env_map();
-    let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut workspace_error: Option<String> = None;
-    match load_console_preferences() {
-        Ok(Some(preferences)) => {
-            if !preferences.workspace.trim().is_empty() {
-                match canonical_workspace(&preferences.workspace)
-                    .and_then(|ws| ensure_workspace_data_dir(&ws).map(|dir| (ws, dir)))
-                {
-                    Ok((workspace, data_dir)) => {
-                        env.insert("MUSUBI_WORKSPACE".into(), workspace.display().to_string());
-                        env.insert(
-                            "MUSUBI_DB".into(),
-                            data_dir.join("audit.db").display().to_string(),
-                        );
-                        if !preferences.llm_config.trim().is_empty() {
-                            env.entry("MUSUBI_LLM_CONFIG".into())
-                                .or_insert(preferences.llm_config);
-                        }
-                    }
-                    Err(reason) => {
-                        workspace_error = Some(format!(
-                            "Selected workspace {} is unavailable: {reason} \
-                             Choose a workspace folder to continue.",
-                            preferences.workspace.trim()
-                        ));
-                        eprintln!(
-                            "[musubi] persisted workspace unusable ({}); execution blocked",
-                            reason
-                        );
-                    }
-                }
+    env.remove("MUSUBI_WORKSPACE");
+    std::env::remove_var("MUSUBI_WORKSPACE");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
+        match prepare_audit_connection(&resolved) {
+            Ok(conn) => {
+                let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
+                let state_db = open_state_db(&resolved);
+                std::env::set_var("MUSUBI_ROOT", &project_root);
+                return OpenedDb {
+                    conn,
+                    state_db,
+                    project_root,
+                    audit_db: Some(resolved),
+                    workspace_error: None,
+                };
             }
-        }
-        Ok(None) => {}
-        Err(reason) => {
-            workspace_error = Some(format!(
-                "Musubi cannot read its Console preferences: {reason} \
-                 Choose a workspace folder to continue."
-            ));
-            eprintln!(
-                "[musubi] Console preferences unusable ({}); execution blocked",
-                reason
-            );
-        }
-    }
-    let cwd = env_path(&env, "MUSUBI_WORKSPACE").unwrap_or(process_cwd);
-    for key in ["MUSUBI_WORKSPACE", "MUSUBI_DB", "MUSUBI_LLM_CONFIG"] {
-        if let Some(value) = env.get(key) {
-            std::env::set_var(key, value);
-        }
-    }
-    if workspace_error.is_none() {
-        if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
-            // Never panic on a storage problem: this runs before the window
-            // exists, so an abort here leaves the operator with a Console that
-            // cannot start and no UI to fix the offending preference from.
-            // Degrade to in-memory state and report the reason instead.
-            match prepare_audit_connection(&resolved) {
-                Ok(conn) => {
-                    let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
-                    let state_db = open_state_db(&resolved);
-                    eprintln!(
-                        "[musubi] reading audit.db at {} ({}) project_root={}",
-                        resolved.path.display(),
-                        resolved.source,
-                        project_root.display()
-                    );
-                    return OpenedDb {
-                        conn,
-                        state_db,
-                        project_root,
-                        audit_db: Some(resolved),
-                        workspace_error: None,
-                    };
-                }
-                Err(reason) => {
-                    eprintln!(
-                        "[musubi] cannot open audit.db at {}: {reason}",
-                        resolved.path.display()
-                    );
-                    workspace_error = Some(format!(
-                        "Musubi cannot open its database at {}: {reason} \
-                         Choose a writable workspace folder to continue.",
-                        resolved.path.display()
-                    ));
-                }
+            Err(reason) => {
+                eprintln!("[musubi] cannot open audit.db: {reason}");
             }
         }
     }
-
-    let conn = open_db();
-    if workspace_error.is_none() {
-        eprintln!("[musubi] no audit.db source found; using empty in-memory state");
-    }
+    let project_root = resolve_project_root(&env, &cwd, None);
+    std::env::set_var("MUSUBI_ROOT", &project_root);
     OpenedDb {
-        conn,
+        conn: open_db(),
         state_db: None,
-        project_root: resolve_project_root(&env, &cwd, None),
+        project_root,
         audit_db: None,
-        workspace_error,
+        workspace_error: None,
     }
 }
 
@@ -1878,6 +1846,9 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     st.chat =
         musubi_data::load_chat_for_session(&conn, "orchestrator", displayed_orchestrator_chat_id)
             .map_err(|e| e.to_string())?;
+    st.session_folder_grants =
+        musubi_data::list_session_folder_grants(&conn, displayed_orchestrator_chat_id)
+            .map_err(|e| e.to_string())?;
     st.pipe_chat = musubi_data::load_chat_for_session(&conn, "pipeline", &pipeline_chat_id)
         .map_err(|e| e.to_string())?;
     st.orchestrator_chat_id = orchestrator_chat_id;
@@ -1896,7 +1867,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
-    st.workspace_blocked_reason = state.workspace_error.clone().unwrap_or_default();
+    st.workspace_blocked_reason.clear();
     let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
         .then(|| PathBuf::from(&st.setup_status.llm_config_path));
     st.active_profile =
@@ -2026,6 +1997,64 @@ where
     launch(&task, &chat_id, pipeline_name.as_deref())
 }
 
+fn normalize_folder_alias(raw: &str) -> Result<String, String> {
+    let alias = raw.trim().to_ascii_lowercase();
+    let valid = !alias.is_empty()
+        && alias.len() <= 32
+        && alias.bytes().enumerate().all(|(index, byte)| {
+            if index == 0 {
+                byte.is_ascii_lowercase()
+            } else {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            }
+        });
+    if !valid || alias == "musubi" {
+        return Err("Folder alias must match [a-z][a-z0-9_-]{0,31}; musubi is reserved.".into());
+    }
+    Ok(alias)
+}
+
+fn default_folder_alias(path: &Path, used: &std::collections::HashSet<String>) -> String {
+    let raw = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("folder")
+        .to_ascii_lowercase();
+    let mut base = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(&['-', '_'][..])
+        .to_string();
+    if base.is_empty() || !base.as_bytes()[0].is_ascii_lowercase() {
+        base = format!("folder-{base}");
+    }
+    base.truncate(32);
+    let mut alias = base.clone();
+    let mut suffix = 2;
+    while alias == "musubi" || used.contains(&alias) {
+        let tail = format!("-{suffix}");
+        alias = format!("{}{}", &base[..base.len().min(32 - tail.len())], tail);
+        suffix += 1;
+    }
+    alias
+}
+
+fn displayed_folder_chat_id(state: &AppState, requested: &str) -> Result<String, String> {
+    let (active, viewed) = snapshot_session_ids(state)?;
+    let displayed = viewed.unwrap_or(active);
+    if !requested.trim().is_empty() && requested != displayed {
+        return Err("Folder grants may only edit the displayed session.".into());
+    }
+    Ok(displayed)
+}
+
 #[tauri::command]
 fn action(
     kind: String,
@@ -2040,25 +2069,85 @@ fn action(
             .to_string()
     };
     match kind.as_str() {
-        "set_workspace" => {
-            if state.chat_agent.lock().map_err(|e| e.to_string())?.running {
-                return Err("Cannot switch workspace while an agent is running.".into());
+        "add_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
             }
-            let workspace = canonical_workspace(&str_arg(0))?;
-            // Prove Musubi can write its state here before persisting the
-            // choice — otherwise the next launch inherits an unusable
-            // preference with no UI left to correct it from.
-            ensure_workspace_data_dir(&workspace)?;
-            let setup = musubi_data::detect_setup_status(
-                &musubi_data::current_env_map(),
-                &state.project_root,
-                state.audit_db.as_ref(),
-            );
-            save_console_preferences(&ConsolePreferences {
-                workspace: workspace.display().to_string(),
-                llm_config: setup.llm_config_path,
-            })?;
-            app.restart();
+            let folder = canonical_workspace(&str_arg(0))?;
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(1))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            let existing = musubi_data::list_session_folder_grants(&conn, &chat_id)
+                .map_err(|e| e.to_string())?;
+            let fixed = state
+                .project_root
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if is_inside_workspace(&folder, &fixed) || is_inside_workspace(&fixed, &folder) {
+                return Err("Attached folders may not overlap the Musubi root.".into());
+            }
+            for grant in &existing {
+                let other = PathBuf::from(&grant.canonical_path);
+                if is_inside_workspace(&folder, &other) || is_inside_workspace(&other, &folder) {
+                    return Err(format!(
+                        "Attached folder overlaps existing root {}.",
+                        grant.alias
+                    ));
+                }
+            }
+            let used = existing
+                .iter()
+                .map(|grant| grant.alias.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let alias = default_folder_alias(&folder, &used);
+            musubi_data::insert_session_folder_grant(
+                &conn,
+                &musubi_data::FolderGrant {
+                    chat_id,
+                    grant_id: format!("folder-{}", new_request_id()),
+                    alias,
+                    canonical_path: folder.display().to_string(),
+                    ordinal: existing.len() as i64,
+                },
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            drop(runtime);
+        }
+        "rename_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
+            }
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(0))?;
+            let alias = normalize_folder_alias(&str_arg(2))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            if !musubi_data::rename_session_folder_grant(
+                &conn,
+                &chat_id,
+                &str_arg(1),
+                &alias,
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?
+            {
+                return Err("Folder grant no longer exists.".into());
+            }
+            drop(runtime);
+        }
+        "remove_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
+            }
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(0))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            if !musubi_data::remove_session_folder_grant(&conn, &chat_id, &str_arg(1))
+                .map_err(|e| e.to_string())?
+            {
+                return Err("Folder grant no longer exists.".into());
+            }
+            drop(runtime);
         }
         "send_chat" => {
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);

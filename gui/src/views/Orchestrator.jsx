@@ -133,6 +133,7 @@ export default function Orchestrator({ vals }) {
             </button>
           </div>
         </div>
+        <SessionFolders vals={vals} />
         <section className="runtime-evidence">
           {selectedNode
             ? <RuntimeDetail
@@ -170,6 +171,60 @@ export default function Orchestrator({ vals }) {
         onToggle={() => setConversationCollapsed((value) => !value)}
       />
     </div>
+  )
+}
+
+function SessionFolders({ vals }) {
+  const grants = vals.sessionFolderGrants || []
+  return (
+    <section className="session-folders" aria-label="Session folders">
+      <div className="session-folders__heading">
+        <div>
+          <strong>Folders</strong>
+          <span>Access granted to this session</span>
+        </div>
+        <button
+          type="button"
+          disabled={vals.folderGrantControlsDisabled}
+          onClick={vals.onAddSessionFolder}
+        >
+          Add folder
+        </button>
+      </div>
+      <div className="session-folders__roots">
+        {grants.map((grant) => (
+          <div className="session-folder" key={grant.grantId}>
+            <input
+              aria-label={`Alias for ${grant.canonicalPath}`}
+              defaultValue={grant.alias}
+              disabled={grant.fixed || vals.folderGrantControlsDisabled}
+              onBlur={(event) => {
+                const alias = event.target.value.trim()
+                event.currentTarget.value = grant.alias
+                if (!grant.fixed && alias && alias !== grant.alias) {
+                  vals.onRenameSessionFolder?.(grant.grantId, alias)
+                }
+              }}
+            />
+            <span title={grant.canonicalPath}>{grant.canonicalPath}</span>
+            {grant.fixed
+              ? <em>fixed</em>
+              : (
+                <button
+                  type="button"
+                  disabled={vals.folderGrantControlsDisabled}
+                  onClick={() => vals.onRemoveSessionFolder?.(grant.grantId)}
+                >
+                  Remove
+                </button>
+              )}
+          </div>
+        ))}
+      </div>
+      {vals.folderGrantError ? (
+        <div className="session-folders__error" role="alert">{vals.folderGrantError}</div>
+      ) : null}
+    </section>
   )
 }
 

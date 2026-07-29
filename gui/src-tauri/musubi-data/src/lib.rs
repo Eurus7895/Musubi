@@ -43,6 +43,7 @@ pub struct State {
     pub runtime_log_events: Vec<RuntimeLogEvent>,
     pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
+    pub session_folder_grants: Vec<FolderGrant>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
     pub pipeline_builder_catalog: PipelineBuilderCatalog,
@@ -72,11 +73,21 @@ pub struct State {
     pub runtime_source: String,
     pub setup_status: SetupStatus,
     pub driver_status: DriverStatus,
-    /// Why the persisted workspace is not in effect, empty when it is.
-    /// Non-empty means agent launches are refused until the operator picks a
-    /// usable folder, so the Console never silently edits its own install.
+    /// Legacy compatibility field; session grants no longer block startup.
     pub workspace_blocked_reason: String,
     pub t: i64,
+}
+
+pub const MAX_EXTERNAL_FOLDER_GRANTS: i64 = 16;
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderGrant {
+    pub chat_id: String,
+    pub grant_id: String,
+    pub alias: String,
+    pub canonical_path: String,
+    pub ordinal: i64,
 }
 
 /// Runtime overlay for the on-demand task launcher. The GUI spawns one governed
@@ -2502,6 +2513,131 @@ fn count(conn: &Connection, sql: &str) -> rusqlite::Result<i64> {
     conn.query_row(sql, [], |r| r.get(0))
 }
 
+pub fn list_session_folder_grants(
+    conn: &Connection,
+    chat_id: &str,
+) -> rusqlite::Result<Vec<FolderGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT chat_id,grant_id,alias,canonical_path,ordinal
+         FROM session_folder_grants WHERE chat_id=?1
+         ORDER BY ordinal ASC, grant_id ASC",
+    )?;
+    let grants = stmt.query_map([chat_id], |row| {
+        Ok(FolderGrant {
+            chat_id: row.get(0)?,
+            grant_id: row.get(1)?,
+            alias: row.get(2)?,
+            canonical_path: row.get(3)?,
+            ordinal: row.get(4)?,
+        })
+    })?
+    .collect();
+    grants
+}
+
+pub fn insert_session_folder_grant(
+    conn: &Connection,
+    grant: &FolderGrant,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let current: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM session_folder_grants WHERE chat_id=?1",
+        [&grant.chat_id],
+        |row| row.get(0),
+    )?;
+    if current >= MAX_EXTERNAL_FOLDER_GRANTS {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "a session may attach at most {MAX_EXTERNAL_FOLDER_GRANTS} folders"
+        )));
+    }
+    conn.execute(
+        "INSERT INTO session_folder_grants
+         (chat_id,grant_id,alias,canonical_path,ordinal,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?6)",
+        rusqlite::params![
+            grant.chat_id,
+            grant.grant_id,
+            grant.alias,
+            grant.canonical_path,
+            grant.ordinal,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn rename_session_folder_grant(
+    conn: &Connection,
+    chat_id: &str,
+    grant_id: &str,
+    alias: &str,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE session_folder_grants SET alias=?3,updated_at=?4
+         WHERE chat_id=?1 AND grant_id=?2",
+        rusqlite::params![chat_id, grant_id, alias, now],
+    )? == 1)
+}
+
+pub fn remove_session_folder_grant(
+    conn: &Connection,
+    chat_id: &str,
+    grant_id: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "DELETE FROM session_folder_grants WHERE chat_id=?1 AND grant_id=?2",
+        rusqlite::params![chat_id, grant_id],
+    )? == 1)
+}
+
+pub fn snapshot_request_folder_grants(
+    conn: &mut Connection,
+    request_id: &str,
+    chat_id: &str,
+    musubi_root: &str,
+    captured_at: &str,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO request_folder_grants
+         (request_id,chat_id,grant_id,alias,canonical_path,ordinal,captured_at)
+         VALUES(?1,?2,'musubi','musubi',?3,-1,?4)",
+        rusqlite::params![request_id, chat_id, musubi_root, captured_at],
+    )?;
+    tx.execute(
+        "INSERT INTO request_folder_grants
+         (request_id,chat_id,grant_id,alias,canonical_path,ordinal,captured_at)
+         SELECT ?1,chat_id,grant_id,alias,canonical_path,ordinal,?3
+         FROM session_folder_grants WHERE chat_id=?2
+         ORDER BY ordinal ASC, grant_id ASC",
+        rusqlite::params![request_id, chat_id, captured_at],
+    )?;
+    tx.commit()
+}
+
+pub fn list_request_folder_grants(
+    conn: &Connection,
+    request_id: &str,
+) -> rusqlite::Result<Vec<FolderGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT chat_id,grant_id,alias,canonical_path,ordinal
+         FROM request_folder_grants WHERE request_id=?1
+         ORDER BY ordinal ASC, grant_id ASC",
+    )?;
+    let grants = stmt.query_map([request_id], |row| {
+        Ok(FolderGrant {
+            chat_id: row.get(0)?,
+            grant_id: row.get(1)?,
+            alias: row.get(2)?,
+            canonical_path: row.get(3)?,
+            ordinal: row.get(4)?,
+        })
+    })?
+    .collect();
+    grants
+}
+
 /// Create the Musubi audit schema on a fresh database. Mirrors the real
 /// substrate tables (`subagent_audit`, `tool_audit`) plus the console-side
 /// `chat_log` / `meta`, and an optional `policy_audit` verdict ledger.
@@ -2636,6 +2772,33 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS session_folder_grants (
+  chat_id        TEXT NOT NULL,
+  grant_id       TEXT NOT NULL,
+  alias          TEXT NOT NULL,
+  canonical_path TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (chat_id, grant_id),
+  UNIQUE (chat_id, alias),
+  UNIQUE (chat_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_folder_grants_chat_order
+  ON session_folder_grants(chat_id, ordinal, grant_id);
+CREATE TABLE IF NOT EXISTS request_folder_grants (
+  request_id     TEXT NOT NULL,
+  chat_id        TEXT NOT NULL,
+  grant_id       TEXT NOT NULL,
+  alias          TEXT NOT NULL,
+  canonical_path TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  captured_at    TEXT NOT NULL,
+  PRIMARY KEY (request_id, grant_id),
+  UNIQUE (request_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
+  ON request_folder_grants(chat_id, request_id, ordinal);
 "#;
 
 /// Seed a representative governed session — used by `cargo test`, and by the
@@ -2857,6 +3020,119 @@ mod tests {
     fn demo_state() -> State {
         let conn = demo();
         load_state_at(&conn, 1_736_500_020).unwrap()
+    }
+
+    #[test]
+    fn folder_grants_are_session_scoped_ordered_and_snapshotted() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "g-web".into(),
+                alias: "web".into(),
+                canonical_path: "D:/work/web".into(),
+                ordinal: 1,
+            },
+            "100",
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "g-api".into(),
+                alias: "api".into(),
+                canonical_path: "D:/work/api".into(),
+                ordinal: 0,
+            },
+            "101",
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-b".into(),
+                grant_id: "g-docs".into(),
+                alias: "docs".into(),
+                canonical_path: "D:/work/docs".into(),
+                ordinal: 0,
+            },
+            "102",
+        )
+        .unwrap();
+
+        let current = list_session_folder_grants(&conn, "chat-a").unwrap();
+        assert_eq!(
+            current.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            vec!["api", "web"]
+        );
+
+        snapshot_request_folder_grants(
+            &mut conn,
+            "req-1",
+            "chat-a",
+            "C:/Musubi",
+            "103",
+        )
+        .unwrap();
+        remove_session_folder_grant(&conn, "chat-a", "g-web").unwrap();
+
+        assert_eq!(list_session_folder_grants(&conn, "chat-a").unwrap().len(), 1);
+        let snapshot = list_request_folder_grants(&conn, "req-1").unwrap();
+        assert_eq!(
+            snapshot.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            vec!["musubi", "api", "web"]
+        );
+        assert_eq!(snapshot[0].canonical_path, "C:/Musubi");
+    }
+
+    #[test]
+    fn folder_grants_reject_duplicate_alias_path_and_seventeenth_root() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        for index in 0..16 {
+            insert_session_folder_grant(
+                &conn,
+                &FolderGrant {
+                    chat_id: "chat".into(),
+                    grant_id: format!("g-{index}"),
+                    alias: format!("root-{index}"),
+                    canonical_path: format!("D:/work/{index}"),
+                    ordinal: index,
+                },
+                "100",
+            )
+            .unwrap();
+        }
+
+        let overflow = insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat".into(),
+                grant_id: "overflow".into(),
+                alias: "overflow".into(),
+                canonical_path: "D:/work/overflow".into(),
+                ordinal: 16,
+            },
+            "100",
+        );
+        assert!(overflow.is_err());
+
+        let other = insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "other".into(),
+                grant_id: "other-id".into(),
+                alias: "root-0".into(),
+                canonical_path: "D:/work/0".into(),
+                ordinal: 0,
+            },
+            "100",
+        );
+        assert!(other.is_ok(), "uniqueness is scoped to one chat");
     }
 
     #[test]
@@ -4654,8 +4930,15 @@ mod tests {
         let cli = PathBuf::from("/scripts/agent.exe");
         let mut env = std::collections::HashMap::new();
         env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
-        env.insert("MUSUBI_WORKSPACE".to_string(), "/proj".to_string());
         env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
+        env.insert(
+            "MUSUBI_STATE_DB".to_string(),
+            "/data/musubi.db".to_string(),
+        );
+        env.insert(
+            "MUSUBI_FOLDER_GRANTS_JSON".to_string(),
+            "[{\"grantId\":\"musubi\"}]".to_string(),
+        );
         env.insert(
             "MUSUBI_LLM_CONFIG".to_string(),
             "/proj/.musubi/llm.json".to_string(),
@@ -4685,6 +4968,10 @@ mod tests {
             vec![
                 ("MUSUBI_DB".to_string(), "/data/audit.db".to_string()),
                 (
+                    "MUSUBI_FOLDER_GRANTS_JSON".to_string(),
+                    "[{\"grantId\":\"musubi\"}]".to_string()
+                ),
+                (
                     "MUSUBI_LLM_CONFIG".to_string(),
                     "/proj/.musubi/llm.json".to_string()
                 ),
@@ -4693,7 +4980,10 @@ mod tests {
                     "/proj/.musubi/mcp.json".to_string()
                 ),
                 ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
-                ("MUSUBI_WORKSPACE".to_string(), "/proj".to_string()),
+                (
+                    "MUSUBI_STATE_DB".to_string(),
+                    "/data/musubi.db".to_string()
+                ),
             ],
             "only MUSUBI_* is forwarded explicitly; the rest is inherited"
         );
@@ -5050,9 +5340,11 @@ pub fn build_agent_launch_spec(
 fn forwarded_spec_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
     let mut spec_env = Vec::new();
     for key in [
-        "MUSUBI_WORKSPACE",
         "MUSUBI_ROOT",
         "MUSUBI_DB",
+        "MUSUBI_STATE_DB",
+        "MUSUBI_AUDIT_DB",
+        "MUSUBI_FOLDER_GRANTS_JSON",
         "MUSUBI_LLM_CONFIG",
         "MUSUBI_MCP_CONFIG",
     ] {

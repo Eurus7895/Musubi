@@ -1302,18 +1302,27 @@ export function buildViewModel(s, act) {
     approval,
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : (orchestratorPipelineBlocked ? 'Select a runnable pipeline before sending.' : '')),
+    sessionFolderGrants: [
+      {
+        grantId: 'musubi',
+        alias: 'musubi',
+        canonicalPath: setup.projectRoot || '',
+        fixed: true,
+      },
+      ...(s.sessionFolderGrants || []).map((grant) => ({ ...grant, fixed: false })),
+    ],
+    folderGrantError: s.folderGrantError || '',
+    folderGrantControlsDisabled: !!driverStatus.running || !!s.folderGrantBusy,
+    onAddSessionFolder: act.addSessionFolder,
+    onRenameSessionFolder: act.renameSessionFolder,
+    onRemoveSessionFolder: act.removeSessionFolder,
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),
     auditFAll: auditBtn(s.auditFilter === 'all'), auditFSpawn: auditBtn(s.auditFilter === 'spawned'), auditFDone: auditBtn(s.auditFilter === 'completed'),
     profiles, skills, setupRows, setupPathHint: setup.pathHint || '',
-    workspaceRoot: setup.projectRoot || '',
-    // A blocked boundary outranks a transient picker message: while it is set
-    // the agent will not launch at all, so that is what the operator must see.
     workspaceError: s.workspaceBlockedReason || s.workspaceError || '',
-    workspaceSwitching: !!s.workspaceSwitching,
-    workspaceSwitchDisabled: !!driverStatus.running || !!s.workspaceSwitching,
-    onChooseWorkspace: act.chooseWorkspace,
+    workspaceSwitchDisabled: !!driverStatus.running,
   }
 }

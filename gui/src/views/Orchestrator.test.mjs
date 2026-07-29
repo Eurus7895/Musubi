@@ -12,6 +12,14 @@ test('Orchestrator owns Direct and Pipeline execution configuration', () => {
   assert.match(source, /NewSessionButton/)
 })
 
+test('Orchestrator owns editable session folder grants', () => {
+  assert.match(source, /SessionFolders/)
+  assert.match(source, /Add folder/)
+  assert.match(source, /onRenameSessionFolder/)
+  assert.match(source, /onRemoveSessionFolder/)
+  assert.match(source, /fixed harness root|fixed/)
+})
+
 test('center workspace opens request or agent detail and returns to the graph', () => {
   for (const label of ['Back to graph', 'Request log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
     assert.equal(source.includes(label), true, label)

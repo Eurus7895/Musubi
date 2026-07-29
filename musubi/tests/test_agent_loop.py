@@ -572,10 +572,17 @@ def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
         == root / "data" / "musubi.db"
     )
 
-    workspace = tmp_path / "application"
-    env = {"MUSUBI_ROOT": str(root), "MUSUBI_WORKSPACE": str(workspace)}
-    assert _server_db_path(musubi_dir, env) == workspace / ".musubi/data/musubi.db"
-    assert _server_audit_db_path(musubi_dir, env) == workspace / ".musubi/data/audit.db"
+    env = {"MUSUBI_ROOT": str(root)}
+    assert _server_db_path(musubi_dir, env) == root / "data/musubi.db"
+    assert _server_audit_db_path(musubi_dir, env) == root / "data/audit.db"
+    audit = tmp_path / "custom-audit.db"
+    assert _server_audit_db_path(
+        musubi_dir, {**env, "MUSUBI_DB": str(audit)}
+    ) == audit
+    state_db = tmp_path / "custom-state.db"
+    assert _server_db_path(
+        musubi_dir, {**env, "MUSUBI_STATE_DB": str(state_db)}
+    ) == state_db
 
 
 def test_fit_model_input_enforces_hard_cap_including_tools() -> None:
@@ -2367,7 +2374,10 @@ def test_run_agent_persists_and_replays_chat_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    from agent import run as run_mod
+
+    db_path = tmp_path / "musubi.db"
+    monkeypatch.setattr(run_mod, "_server_db_path", lambda *_args: db_path)
 
     first_router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "first answer"}]),
@@ -2407,7 +2417,7 @@ def test_run_agent_persists_and_replays_chat_history(
     assert "first answer" in replay
     assert "second question" in replay
 
-    with sqlite3.connect(tmp_path / "data" / "musubi.db") as conn:
+    with sqlite3.connect(db_path) as conn:
         rows = list(conn.execute(
             "SELECT role, content FROM conversation_messages "
             "WHERE chat_id='chat-1' ORDER BY id"
@@ -3280,52 +3290,88 @@ def test_a_short_answer_to_the_question_is_still_the_answer(
     system_text = router.calls[0]["messages"][0]["content"]
     assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
     assert db.pending_clarification(chat, db_path=chat_db) is None
-def test_apply_workspace_points_tools_at_the_selected_folder(
+
+
+def test_build_folder_registry_keeps_process_in_musubi_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--workspace must set the var the spawned server reads AND chdir, so
-    both halves of the stack agree on the project boundary."""
-    from agent.run import _apply_workspace
+    from agent.run import _build_folder_registry
+    from workspace.grants import MANIFEST_ENV, RootRegistry
 
+    runtime = tmp_path / "runtime"
     selected = tmp_path / "application"
+    runtime.mkdir()
     selected.mkdir()
-    monkeypatch.chdir(tmp_path)
-    # setenv (not delenv) so monkeypatch records the key and undoes the
-    # direct os.environ write _apply_workspace makes. A leaked
-    # MUSUBI_WORKSPACE pointing at a torn-down tmp_path would re-root the
-    # fs tools and artifact checks for every later test in the session.
-    monkeypatch.setenv("MUSUBI_WORKSPACE", "")
+    monkeypatch.chdir(runtime)
+    monkeypatch.setenv(MANIFEST_ENV, "")
 
-    assert _apply_workspace(selected) == 0
-    assert os.environ["MUSUBI_WORKSPACE"] == str(selected.resolve())
-    assert Path.cwd().resolve() == selected.resolve()
+    registry = _build_folder_registry(runtime, [f"app={selected}"])
 
-    # The var must survive into the spawned server's env, or tools/fs.py
-    # in the child process falls back to the Musubi checkout.
-    from agent.run import _server_env
-
-    assert _server_env()["MUSUBI_WORKSPACE"] == str(selected.resolve())
+    assert Path.cwd().resolve() == runtime.resolve()
+    assert registry.root("app").path == selected.resolve()
+    assert RootRegistry.from_json(
+        os.environ[MANIFEST_ENV], runtime
+    ).root("app").path == selected.resolve()
 
 
-def test_apply_workspace_rejects_missing_and_non_directories(
+def test_harness_root_is_distinct_from_python_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent.run import _apply_workspace
+    from agent.run import _default_musubi_dir, _harness_root
+
+    root = tmp_path / "Musubi"
+    package = root / "musubi"
+    package.mkdir(parents=True)
+    (package / "server.py").write_text("", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("MUSUBI_ROOT", str(root))
+
+    assert _default_musubi_dir().resolve() == package.resolve()
+    assert _harness_root(package) == root.resolve()
+
+
+def test_json_tool_denial_is_audited_as_error() -> None:
+    from agent.run import _tool_audit_args, _tool_result_audit_status
+
+    assert _tool_result_audit_status('{"status":"error","error":"unknown root"}') == "error"
+    assert _tool_result_audit_status('{"status":"ok","root":"app"}') == "ok"
+    assert _tool_audit_args(
+        {"root": "app", "path": "src/a.py"},
+        (
+            '{"status":"ok","root":"app","grant_id":"g-app",'
+            '"path":"src/a.py","resolved_path":"D:\\\\app\\\\src\\\\a.py"}'
+        ),
+    ) == {
+        "root": "app",
+        "grant_id": "g-app",
+        "path": "src/a.py",
+        "resolved_path": r"D:\app\src\a.py",
+    }
+
+
+def test_build_folder_registry_rejects_missing_and_non_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.run import _build_folder_registry
+    from workspace.grants import MANIFEST_ENV
 
     monkeypatch.chdir(tmp_path)
-    assert _apply_workspace(tmp_path / "nope") == 2
+    monkeypatch.setenv(MANIFEST_ENV, "")
+    with pytest.raises(ValueError, match="existing directory"):
+        _build_folder_registry(tmp_path, [str(tmp_path / "nope")])
 
     a_file = tmp_path / "file.txt"
     a_file.write_text("x")
-    assert _apply_workspace(a_file) == 2
-    # A rejected workspace must not have moved the process.
+    with pytest.raises(ValueError, match="existing directory"):
+        _build_folder_registry(tmp_path, [str(a_file)])
     assert Path.cwd().resolve() == tmp_path.resolve()
 
 
-def test_main_applies_workspace_from_environment(
+def test_main_preserves_cwd_and_forwards_environment_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agent import run as run_mod
+    from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
 
     selected = tmp_path / "application"
     runtime = tmp_path / "runtime"
@@ -3333,35 +3379,46 @@ def test_main_applies_workspace_from_environment(
     runtime.mkdir()
     (runtime / "server.py").write_text("")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
+    registry = RootRegistry.build(
+        runtime,
+        [FolderGrant("g-app", "app", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
     monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
 
     async def fake_run_agent(*args, **kwargs):
+        assert run_mod._server_env()[MANIFEST_ENV] == registry.to_json()
         return "done"
 
     monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
 
     assert run_mod.main(["task", "--musubi", str(runtime)]) == 0
-    assert Path.cwd().resolve() == selected.resolve()
+    assert Path.cwd().resolve() == tmp_path.resolve()
+    assert os.environ[MANIFEST_ENV] == registry.to_json()
 
 
-def test_explicit_workspace_overrides_environment(
+def test_main_builds_repeated_add_folder_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agent import run as run_mod
+    from workspace.grants import MANIFEST_ENV, RootRegistry
 
-    environment_workspace = tmp_path / "environment"
-    explicit_workspace = tmp_path / "explicit"
+    web = tmp_path / "web"
+    api = tmp_path / "api"
     runtime = tmp_path / "runtime"
-    environment_workspace.mkdir()
-    explicit_workspace.mkdir()
+    web.mkdir()
+    api.mkdir()
     runtime.mkdir()
     (runtime / "server.py").write_text("")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MUSUBI_WORKSPACE", str(environment_workspace))
+    monkeypatch.setenv(MANIFEST_ENV, "")
     monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
 
     async def fake_run_agent(*args, **kwargs):
+        registry = RootRegistry.from_json(os.environ[MANIFEST_ENV], runtime)
+        assert [grant.alias for grant in registry.grants] == [
+            "musubi", "web", "api",
+        ]
         return "done"
 
     monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
@@ -3370,7 +3427,10 @@ def test_explicit_workspace_overrides_environment(
         "task",
         "--musubi",
         str(runtime),
-        "--workspace",
-        str(explicit_workspace),
+        "--add-folder",
+        f"web={web}",
+        "--add-folder",
+        f"api={api}",
     ]) == 0
-    assert Path.cwd().resolve() == explicit_workspace.resolve()
+    assert Path.cwd().resolve() == tmp_path.resolve()
+    assert os.environ[MANIFEST_ENV] == ""

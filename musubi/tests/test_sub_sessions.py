@@ -746,9 +746,9 @@ def test_mcp_list_subagents_for_unknown_main_is_empty(mcp_db: Path) -> None:
 def test_artifacts_verified_anchors_on_selected_workspace(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """A worker writes through tools/fs.py, which prefers MUSUBI_WORKSPACE.
-    The manifest check must use the same anchor or every delivered file
-    reads as missing and the completion is coerced to escalated."""
+    """A root-qualified manifest resolves through the immutable grant."""
+    from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
+
     runtime = tmp_path / "runtime"
     selected = tmp_path / "application"
     (selected / "src").mkdir(parents=True)
@@ -756,8 +756,13 @@ def test_artifacts_verified_anchors_on_selected_workspace(
     (selected / "src" / "app.py").write_text("print('hi')\n")
 
     monkeypatch.setenv("MUSUBI_ROOT", str(runtime))
-    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
-    assert sub_sessions._artifacts_verified(["src/app.py"]) is True
+    registry = RootRegistry.build(
+        runtime, [FolderGrant("g-app", "app", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
+    assert sub_sessions._artifacts_verified([
+        {"root": "app", "path": "src/app.py"},
+    ]) is True
 
-    monkeypatch.delenv("MUSUBI_WORKSPACE")
+    monkeypatch.delenv(MANIFEST_ENV)
     assert sub_sessions._artifacts_verified(["src/app.py"]) is False

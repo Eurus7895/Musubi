@@ -418,7 +418,22 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     monkeypatch,
     tmp_path: Path,
 ) -> None:  # noqa: ANN001
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    from agent import run as run_mod
+    from workspace.grants import MANIFEST_ENV, FolderGrant, RootRegistry
+
+    musubi_root = _musubi_dir()
+    audit_db = tmp_path / "audit.db"
+    state_db = tmp_path / "musubi.db"
+    monkeypatch.setattr(run_mod, "_server_audit_db_path", lambda *_args: audit_db)
+    monkeypatch.setattr(run_mod, "_server_db_path", lambda *_args: state_db)
+    monkeypatch.setenv("MUSUBI_ROOT", str(musubi_root))
+    monkeypatch.setenv(
+        MANIFEST_ENV,
+        RootRegistry.build(
+            musubi_root,
+            [FolderGrant("g-app", "app", tmp_path)],
+        ).to_json(),
+    )
     primary_summary = (
         "status: incomplete\n"
         "files_changed:\n- recovery.html\n"
@@ -427,16 +442,18 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     router = FakeRouter([
         _spawn("coder", "create recovery.html"),
         LMResponse(stop_reason="tool_use", content=[{
-            "type": "tool_use", "id": "write-recovery",
-            "name": "musubi_write_file", "input": {
-                "path": "recovery.html",
-                "content": "<!doctype html><title>Recovery</title>",
-            },
+                "type": "tool_use", "id": "write-recovery",
+                "name": "musubi_write_file", "input": {
+                    "root": "app",
+                    "path": "recovery.html",
+                    "content": "<!doctype html><title>Recovery</title>",
+                },
         }]),
         *[
             LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use", "id": f"read-recovery-{index}",
-                "name": "musubi_read_file", "input": {"path": "recovery.html"},
+                "name": "musubi_read_file",
+                "input": {"root": "app", "path": "recovery.html"},
             }])
             for index in range(7)
         ],
@@ -474,7 +491,6 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         "write-recovery", *[f"read-recovery-{index}" for index in range(7)],
     ]
 
-    audit_db = tmp_path / "data" / "audit.db"
     with sqlite3.connect(audit_db) as conn:
         conn.row_factory = sqlite3.Row
         audit_rows = [
@@ -506,11 +522,10 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert audit_rows[3]["turns"] == 1
     replacement_brief = audit_rows[2]["brief"]
     assert "[worker-replacement]" in replacement_brief
-    assert "Touched files: recovery.html" in replacement_brief
+    assert "Touched files: app::recovery.html" in replacement_brief
     assert "Prior status: escalated" in replacement_brief
     assert f"Prior summary: {primary_summary}" in replacement_brief
 
-    state_db = tmp_path / "data" / "musubi.db"
     with sqlite3.connect(state_db) as conn:
         conn.row_factory = sqlite3.Row
         sub_sessions = [
@@ -537,7 +552,7 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert sub_sessions[1]["parent_session_id"] == sub_sessions[0]["parent_session_id"]
     assert {row["role"] for row in sub_sessions} == {"coder"}
     assert "[worker-replacement]" in sub_sessions[1]["brief"]
-    assert "Touched files: recovery.html" in sub_sessions[1]["brief"]
+    assert "Touched files: app::recovery.html" in sub_sessions[1]["brief"]
     assert "Prior status: escalated" in sub_sessions[1]["brief"]
     assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
 

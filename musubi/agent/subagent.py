@@ -29,6 +29,7 @@ from typing import Any
 
 from agent.jsonio import loads_dict
 from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
+from workspace.grants import MANIFEST_ENV, RootRegistry
 
 # Symbolic capability (role allow-list) → MCP tool names. The role allow-list
 # uses Copilot's symbolic names; the standalone path drives `musubi_*` MCP
@@ -160,6 +161,7 @@ async def run_subagent(
 
     worker_max_output = _frontmatter_max_output_tokens(agent_md)
     system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
+    system_prompt = f"{system_prompt}\n\n{_mechanical_registry().prompt_block()}"
     child_tools = select_child_tools(tools, allowed)
 
     # Nesting: this worker may itself spawn only when the parent still has depth
@@ -266,7 +268,7 @@ async def run_subagent(
     # terminated the worker), never from parsing summary prose (HI #1-adjacent:
     # deterministic, no judgement call).
     failure_kind = None
-    done_artifacts: list[str] | None = None
+    done_artifacts: list[Any] | None = None
     if answer is None:
         summary = f"[subagent {role}] exceeded {max_turns} cycles without a final answer"
         status = "escalated"
@@ -369,15 +371,40 @@ def _mechanical_workspace_root() -> Path:
     writes through those tools, so anchoring the survivor check anywhere else
     reports every delivered file as missing.
     """
-    env = os.environ.get("MUSUBI_WORKSPACE") or os.environ.get("MUSUBI_ROOT")
-    return Path(env).resolve() if env else Path.cwd().resolve()
+    env = os.environ.get("MUSUBI_ROOT")
+    return (
+        Path(env).resolve()
+        if env
+        else Path(__file__).resolve().parents[1]
+    )
+
+
+def _mechanical_registry() -> RootRegistry:
+    root = _mechanical_workspace_root()
+    raw = os.environ.get(MANIFEST_ENV, "")
+    return RootRegistry.from_json(raw, root) if raw else RootRegistry.build(root)
+
+
+def _split_touched_ref(reference: str) -> tuple[str, str]:
+    if "::" in reference:
+        root, path = reference.split("::", 1)
+        return root, path
+    return "musubi", reference
+
+
+def _resolve_touched_ref(reference: str) -> Path:
+    root, path = _split_touched_ref(reference)
+    direct = Path(path)
+    if root == "musubi" and direct.is_absolute():
+        return direct.resolve()
+    return _mechanical_registry().resolve(root, path)
 
 
 def _file_still_exists(path: str) -> bool:
-    p = Path(path)
-    if not p.is_absolute():
-        p = _mechanical_workspace_root() / p
-    return p.exists()
+    try:
+        return _resolve_touched_ref(path).exists()
+    except (ValueError, PermissionError):
+        return False
 
 
 #: A worker's Output Contract opens with a `status:` line; `done` on that line
@@ -387,16 +414,14 @@ _STATUS_DONE_RE = re.compile(r"(?im)^\s*status:\s*done\b")
 
 
 def _file_nonempty(path: str) -> bool:
-    p = Path(path)
-    if not p.is_absolute():
-        p = _mechanical_workspace_root() / p
     try:
+        p = _resolve_touched_ref(path)
         return p.is_file() and p.stat().st_size > 0
-    except OSError:
+    except (OSError, ValueError, PermissionError):
         return False
 
 
-def surviving_nonempty_files(touched: set[str]) -> list[str] | None:
+def surviving_nonempty_files(touched: set[str]) -> list[Any] | None:
     """Sorted mutated files that still exist and are all non-empty, else None.
 
     Files the worker wrote and then deleted (a generator/scratch script) are
@@ -413,10 +438,22 @@ def surviving_nonempty_files(touched: set[str]) -> list[str] | None:
         return None
     if not all(_file_nonempty(path) for path in survivors):
         return None
-    return survivors
+    artifacts: list[Any] = []
+    for reference in survivors:
+        root, path = _split_touched_ref(reference)
+        direct = Path(path)
+        if root == "musubi" and direct.is_absolute():
+            try:
+                path = direct.resolve().relative_to(
+                    _mechanical_registry().root("musubi").path
+                ).as_posix()
+            except ValueError:
+                return None
+        artifacts.append(path if root == "musubi" else {"root": root, "path": path})
+    return artifacts
 
 
-def _forced_final_artifacts(answer: str, touched: set[str]) -> list[str] | None:
+def _forced_final_artifacts(answer: str, touched: set[str]) -> list[Any] | None:
     """Surviving artifact paths when a max-turns worker's deliverable is done.
 
     On top of `surviving_nonempty_files`, the forced-final answer must
@@ -475,19 +512,33 @@ async def _run_mechanical_gate(
     elif not lintable:
         detail = "no lintable files"
     else:
-        raw = await _call_tool_text(session, "musubi_run_lint", {"files": lintable})
-        res = loads_dict(raw)
-        if not isinstance(res, dict):
-            result, detail = "error", "validator returned no result"
-        elif res.get("passed"):
-            result = "pass"
-        else:
-            errors = _lint_errors_preview(res)
-            # ruff ran but produced no structured errors → it could not lint
-            # (missing/unparseable) rather than found real problems.
-            result = "fail" if errors else "error"
-            if result == "error":
-                detail = "validator could not lint the file(s)"
+        registry = _mechanical_registry()
+        grouped: dict[str, list[str]] = {}
+        for reference in lintable:
+            root, _ = _split_touched_ref(reference)
+            resolved = _resolve_touched_ref(reference)
+            relative = resolved.relative_to(registry.root(root).path).as_posix()
+            grouped.setdefault(root, []).append(relative)
+        result = "pass"
+        for root, lint_paths in sorted(grouped.items()):
+            raw = await _call_tool_text(
+                session,
+                "musubi_run_lint",
+                {"files": lint_paths, "root": root},
+            )
+            res = _loads(raw)
+            if not isinstance(res, dict):
+                result, detail = "error", "validator returned no result"
+                break
+            if not res.get("passed"):
+                root_errors = _lint_errors_preview(res)
+                errors.extend(root_errors)
+                # ruff ran but produced no structured errors → it could not lint
+                # (missing/unparseable) rather than found real problems.
+                result = "fail" if root_errors else "error"
+                if result == "error":
+                    detail = f"validator could not lint root {root!r}"
+                break
 
     return {
         "validator": "ruff" if lintable else "none",

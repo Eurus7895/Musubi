@@ -13,6 +13,7 @@ const DOMAIN_KEYS = [
   'denyCount', 'activeProfile', 'profiles', 'paused', 't', 'runtimeSource',
   'setupStatus', 'driverStatus', 'orchestratorChatId',
   'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
+  'sessionFolderGrants',
   'pipelineCatalog', 'pipelineRuns',
   'pipelineBuilderCatalog',
   // Backend-owned: the persisted workspace could not be honoured at startup.
@@ -43,7 +44,8 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
-      workspaceError: '', workspaceSwitching: false, workspaceBlockedReason: '',
+      sessionFolderGrants: [], folderGrantError: '', folderGrantBusy: false,
+      workspaceBlockedReason: '',
       pipelineBuilder: {
         step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
         selectedStageIndex: null, findings: [], saveResult: null,
@@ -235,15 +237,54 @@ export default class TauriSource {
       },
       cancelAgent: () => this._action('cancel_agent'),
       selectProfile: (name) => this._action('select_profile', [name]),
-      chooseWorkspace: async () => {
-        if (this.state.driverStatus?.running || this.state.workspaceSwitching) return
+      addSessionFolder: async () => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
         try {
           const selected = await this._invoke('choose_workspace')
           if (!selected) return
-          this._setLocal({ workspaceError: '', workspaceSwitching: true })
-          await this._invoke('action', { kind: 'set_workspace', args: [selected] })
+          const chatId = this.state.selectedSession
+            || this.state.viewedOrchestratorChatId
+            || this.state.orchestratorChatId
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'add_session_folder',
+            args: [selected, chatId],
+          })
+          this._setLocal({ folderGrantBusy: false })
         } catch (error) {
-          this._setLocal({ workspaceError: String(error), workspaceSwitching: false })
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
+        }
+      },
+      renameSessionFolder: async (grantId, alias) => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
+        const chatId = this.state.selectedSession
+          || this.state.viewedOrchestratorChatId
+          || this.state.orchestratorChatId
+        try {
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'rename_session_folder',
+            args: [chatId, grantId, alias],
+          })
+          this._setLocal({ folderGrantBusy: false })
+        } catch (error) {
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
+        }
+      },
+      removeSessionFolder: async (grantId) => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
+        const chatId = this.state.selectedSession
+          || this.state.viewedOrchestratorChatId
+          || this.state.orchestratorChatId
+        try {
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'remove_session_folder',
+            args: [chatId, grantId],
+          })
+          this._setLocal({ folderGrantBusy: false })
+        } catch (error) {
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
         }
       },
       sendChat: () => this._submitChat(this.state.draft),
