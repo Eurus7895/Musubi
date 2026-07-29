@@ -31,6 +31,9 @@ struct AppState {
     // `pipeline_runs` is state-store data, intentionally kept separate from
     // the append-only audit ledger. The GUI never writes to this connection.
     state_db: Option<Mutex<Connection>>,
+    // Decisions use a fresh writable connection and a short IMMEDIATE
+    // transaction; the polling connection above remains read-only.
+    state_db_path: Option<PathBuf>,
     paused: AtomicBool,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
@@ -1672,6 +1675,7 @@ fn open_db() -> Connection {
 struct OpenedDb {
     conn: Connection,
     state_db: Option<Connection>,
+    state_db_path: Option<PathBuf>,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
     /// Why the persisted workspace could not be honoured, if it could not.
@@ -1693,11 +1697,14 @@ fn open_configured_db() -> OpenedDb {
         match prepare_audit_connection(&resolved) {
             Ok(conn) => {
                 let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
-                let state_db = open_state_db(&resolved);
+                let state_db_path =
+                    musubi_data::resolve_state_db_path(&resolved).map(|db| db.path);
+                let state_db = state_db_path.as_deref().and_then(open_state_db_path);
                 std::env::set_var("MUSUBI_ROOT", &project_root);
                 return OpenedDb {
                     conn,
                     state_db,
+                    state_db_path,
                     project_root,
                     audit_db: Some(resolved),
                     workspace_error: None,
@@ -1713,6 +1720,7 @@ fn open_configured_db() -> OpenedDb {
     OpenedDb {
         conn: open_db(),
         state_db: None,
+        state_db_path: None,
         project_root,
         audit_db: None,
         workspace_error: None,
@@ -1732,7 +1740,31 @@ fn prepare_audit_connection(resolved: &musubi_data::ResolvedAuditDb) -> Result<C
 
 fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> {
     let state_db = musubi_data::resolve_state_db_path(audit_db)?;
-    Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+    open_state_db_path(&state_db.path)
+}
+
+fn open_state_db_path(path: &Path) -> Option<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+}
+
+fn apply_pipeline_resume_decision(
+    state_db_path: &Path,
+    session_id: &str,
+    action: &str,
+    user_hint: Option<&str>,
+    extra_budget: i64,
+    now: f64,
+) -> Result<musubi_data::PipelineResumeDecision, String> {
+    let mut conn = Connection::open(state_db_path)
+        .map_err(|e| format!("Cannot open writable pipeline state: {e}"))?;
+    musubi_data::resume_pipeline_session(
+        &mut conn,
+        session_id,
+        action,
+        user_hint,
+        extra_budget,
+        now,
+    )
 }
 
 fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>), String> {
@@ -2261,6 +2293,7 @@ pub fn run() {
         .manage(AppState {
             db: Mutex::new(opened.conn),
             state_db: opened.state_db.map(Mutex::new),
+            state_db_path: opened.state_db_path,
             paused: AtomicBool::new(false),
             project_root: opened.project_root,
             audit_db: opened.audit_db,
@@ -2360,6 +2393,7 @@ mod tests {
         let state = AppState {
             db: Mutex::new(Connection::open_in_memory().unwrap()),
             state_db: None,
+            state_db_path: None,
             paused: AtomicBool::new(false),
             project_root: PathBuf::from("."),
             audit_db: None,
@@ -2374,6 +2408,62 @@ mod tests {
 
         assert_eq!(ids.0, "gui-orchestrator-project-active");
         assert_eq!(ids.1.as_deref(), Some("gui-orchestrator-project-viewed"));
+    }
+
+    #[test]
+    fn resume_pipeline_decision_uses_a_short_lived_writable_state_connection() {
+        let root = std::env::temp_dir().join(format!("musubi-resume-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("musubi.db");
+        let conn = Connection::open(&path).unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                request TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                paused_at_stage TEXT,
+                paused_at_chunk TEXT,
+                pause_reason TEXT,
+                auto_approve_remaining INTEGER NOT NULL DEFAULT 0,
+                pending_action TEXT,
+                pending_user_hint TEXT,
+                pending_extra_budget INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions
+                (session_id,request,status,created_at,updated_at,paused_at_stage,pause_reason)
+                VALUES ('pipeline-1','ship','active','1','2','coder','stage_review');
+            INSERT INTO pipeline_runs
+                (session_id,pipeline_name,chat_id,request_id,profile,task,started_at)
+                VALUES ('pipeline-1','feature-dev','chat-1','request-1','openai.work','ship',1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let decision = apply_pipeline_resume_decision(
+            &path,
+            "pipeline-1",
+            "approve",
+            None,
+            0,
+            3.0,
+        )
+        .unwrap();
+
+        assert!(decision.launch);
+        let conn = Connection::open(&path).unwrap();
+        let pending: Option<String> = conn
+            .query_row(
+                "SELECT pending_action FROM sessions WHERE session_id='pipeline-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending.as_deref(), Some("approve"));
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

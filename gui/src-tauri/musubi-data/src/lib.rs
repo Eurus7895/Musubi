@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -1420,11 +1420,169 @@ pub struct PipelineRun {
     pub session_id: String,
     pub chat_id: String,
     pub pipeline_name: String,
+    pub request_id: String,
+    pub profile: String,
+    pub task: String,
     pub brief: String,
     pub started_at: f64,
     pub ended_at: Option<f64>,
     pub status: String,
+    pub paused_at_stage: Option<String>,
+    pub paused_at_chunk: Option<String>,
+    pub pause_reason: Option<String>,
+    pub pending_action: Option<String>,
     pub stages: Vec<Agent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineResumeDecision {
+    pub session_id: String,
+    pub chat_id: String,
+    pub pipeline_name: String,
+    pub request_id: String,
+    pub profile: String,
+    pub task: String,
+    pub action: String,
+    pub user_hint: Option<String>,
+    pub extra_budget: i64,
+    pub launch: bool,
+}
+
+pub fn resume_pipeline_session(
+    conn: &mut Connection,
+    session_id: &str,
+    action: &str,
+    user_hint: Option<&str>,
+    extra_budget: i64,
+    now: f64,
+) -> Result<PipelineResumeDecision, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("Cannot lock pipeline state for resume: {e}"))?;
+    let checkpoint = tx
+        .query_row(
+            "SELECT s.pause_reason, s.paused_at_stage,
+                    COALESCE(pr.chat_id,''), pr.pipeline_name,
+                    COALESCE(pr.request_id,''), COALESCE(pr.profile,''),
+                    COALESCE(pr.task,'')
+             FROM sessions s
+             JOIN pipeline_runs pr ON pr.session_id=s.session_id
+             WHERE s.session_id=?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Paused pipeline session was not found.".to_string())?;
+    let (reason, paused_stage, chat_id, pipeline_name, request_id, profile, task) = checkpoint;
+    let reason = reason.ok_or_else(|| "Pipeline session is no longer paused.".to_string())?;
+    if paused_stage.as_deref().unwrap_or_default().is_empty() {
+        return Err("Pipeline session has no resumable stage checkpoint.".into());
+    }
+    let valid = match reason.as_str() {
+        "stage_review" => matches!(
+            action,
+            "approve" | "retry" | "abort" | "auto_approve_rest"
+        ),
+        "budget_exhausted" => matches!(action, "grant" | "force" | "abort"),
+        _ => return Err(format!("Unknown pipeline pause reason {reason:?}.")),
+    };
+    if !valid {
+        return Err(format!(
+            "Action {action:?} does not apply to pause reason {reason:?}."
+        ));
+    }
+    if action == "grant" && extra_budget <= 0 {
+        return Err("Grant requires a positive extra budget.".into());
+    }
+    if action != "grant" && extra_budget != 0 {
+        return Err(format!("Action {action:?} does not accept an extra budget."));
+    }
+    for (label, value) in [
+        ("chat ID", chat_id.as_str()),
+        ("pipeline name", pipeline_name.as_str()),
+        ("request ID", request_id.as_str()),
+        ("profile", profile.as_str()),
+        ("task", task.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("Pipeline resume checkpoint is missing {label}."));
+        }
+    }
+    let hint = user_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let launch = action != "abort";
+    if launch {
+        let auto_approve = i64::from(action == "auto_approve_rest");
+        tx.execute(
+            "UPDATE sessions SET
+                paused_at_stage=NULL,
+                paused_at_chunk=NULL,
+                pause_reason=NULL,
+                pending_action=?1,
+                pending_user_hint=?2,
+                pending_extra_budget=?3,
+                auto_approve_remaining=MAX(auto_approve_remaining,?4),
+                updated_at=?5
+             WHERE session_id=?6 AND pause_reason=?7",
+            rusqlite::params![
+                action,
+                hint,
+                extra_budget,
+                auto_approve,
+                now.to_string(),
+                session_id,
+                reason
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE sessions SET
+                paused_at_stage=NULL,
+                paused_at_chunk=NULL,
+                pause_reason=NULL,
+                pending_action=NULL,
+                pending_user_hint=NULL,
+                pending_extra_budget=0,
+                status='escalated',
+                updated_at=?1
+             WHERE session_id=?2 AND pause_reason=?3",
+            rusqlite::params![now.to_string(), session_id, reason],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE pipeline_runs SET ended_at=?1, final_status='aborted'
+             WHERE session_id=?2 AND ended_at IS NULL",
+            rusqlite::params![now, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(PipelineResumeDecision {
+        session_id: session_id.to_string(),
+        chat_id,
+        pipeline_name,
+        request_id,
+        profile,
+        task,
+        action: action.to_string(),
+        user_hint: hint,
+        extra_budget,
+        launch,
+    })
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -2261,10 +2419,41 @@ fn load_state_at_with_pipeline_runs(
 
     if let Some(state_conn) = pipeline_state_conn {
         if table_exists(state_conn, "pipeline_runs")? {
-            let mut pstmt = state_conn.prepare(
-                "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
-             FROM pipeline_runs ORDER BY started_at ASC",
-            )?;
+            let has_pause = table_exists(state_conn, "sessions")?
+                && column_exists(state_conn, "sessions", "paused_at_stage")?
+                && column_exists(state_conn, "sessions", "paused_at_chunk")?
+                && column_exists(state_conn, "sessions", "pause_reason")?
+                && column_exists(state_conn, "sessions", "pending_action")?;
+            let request_expr = if column_exists(state_conn, "pipeline_runs", "request_id")? {
+                "COALESCE(pr.request_id,'')"
+            } else {
+                "''"
+            };
+            let profile_expr = if column_exists(state_conn, "pipeline_runs", "profile")? {
+                "COALESCE(pr.profile,'')"
+            } else {
+                "''"
+            };
+            let task_expr = if column_exists(state_conn, "pipeline_runs", "task")? {
+                "COALESCE(pr.task,'')"
+            } else {
+                "''"
+            };
+            let (join, pause_exprs) = if has_pause {
+                (
+                    "LEFT JOIN sessions s ON s.session_id=pr.session_id",
+                    "s.paused_at_stage,s.paused_at_chunk,s.pause_reason,s.pending_action",
+                )
+            } else {
+                ("", "NULL,NULL,NULL,NULL")
+            };
+            let query = format!(
+                "SELECT pr.session_id,pr.pipeline_name,pr.started_at,pr.ended_at,
+                        pr.final_status,{request_expr},{profile_expr},{task_expr},
+                        {pause_exprs}
+                 FROM pipeline_runs pr {join} ORDER BY pr.started_at ASC"
+            );
+            let mut pstmt = state_conn.prepare(&query)?;
             st.pipeline_runs = pstmt
                 .query_map([], |r| {
                     let session_id: String = r.get(0)?;
@@ -2276,6 +2465,7 @@ fn load_state_at_with_pipeline_runs(
                     };
                     let chat_id = session_to_chat
                         .get(&envelope.parent_session)
+                        .or_else(|| session_to_chat.get(&session_id))
                         .cloned()
                         .unwrap_or_default();
                     let mut stages = st
@@ -2293,10 +2483,17 @@ fn load_state_at_with_pipeline_runs(
                         session_id,
                         chat_id,
                         pipeline_name: r.get(1)?,
+                        request_id: r.get(5)?,
+                        profile: r.get(6)?,
+                        task: r.get(7)?,
                         brief: envelope.brief.clone(),
                         started_at: r.get(2)?,
                         ended_at: r.get(3)?,
                         status,
+                        paused_at_stage: r.get(8)?,
+                        paused_at_chunk: r.get(9)?,
+                        pause_reason: r.get(10)?,
+                        pending_action: r.get(11)?,
                         stages,
                     }))
                 })?
@@ -2877,6 +3074,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   session_id              TEXT PRIMARY KEY,
   pipeline_name           TEXT NOT NULL,
   chat_id                 TEXT,
+  request_id              TEXT,
+  profile                 TEXT,
+  task                    TEXT,
   started_at              REAL NOT NULL,
   ended_at                REAL,
   final_status            TEXT,
@@ -5206,6 +5406,176 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("empty"));
+    }
+
+    fn create_paused_pipeline_fixture() -> (Connection, Connection) {
+        let audit = Connection::open_in_memory().unwrap();
+        let state = Connection::open_in_memory().unwrap();
+        init_schema(&audit).unwrap();
+        init_schema(&state).unwrap();
+        state
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    request TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    paused_at_stage TEXT,
+                    paused_at_chunk TEXT,
+                    pause_reason TEXT,
+                    auto_approve_remaining INTEGER NOT NULL DEFAULT 0,
+                    pending_action TEXT,
+                    pending_user_hint TEXT,
+                    pending_extra_budget INTEGER NOT NULL DEFAULT 0
+                );
+                ",
+            )
+            .unwrap();
+        audit
+            .execute(
+                "INSERT INTO subagent_audit
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,
+                  allowed_tools,max_turns,wall_clock_timeout_s)
+                 VALUES (10,'spawned','pipeline-session','outer-root','agent',
+                         'pipeline:feature-dev','ship it','[]',2,0)",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO sessions
+                 (session_id,request,status,created_at,updated_at,paused_at_stage,
+                  paused_at_chunk,pause_reason)
+                 VALUES ('pipeline-session','ship it','active','1','2','coder','T2','stage_review')",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO pipeline_runs
+                 (session_id,pipeline_name,chat_id,started_at,request_id,profile,task)
+                 VALUES ('pipeline-session','feature-dev','gui-orchestrator-project-chat',
+                         10,'request-original','openai.work','ship it')",
+                [],
+            )
+            .unwrap();
+        (audit, state)
+    }
+
+    #[test]
+    fn paused_pipeline_fields_project_from_state_db() {
+        let (audit, state) = create_paused_pipeline_fixture();
+
+        let snapshot = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+        let run = &snapshot.pipeline_runs[0];
+
+        assert_eq!(run.paused_at_stage.as_deref(), Some("coder"));
+        assert_eq!(run.paused_at_chunk.as_deref(), Some("T2"));
+        assert_eq!(run.pause_reason.as_deref(), Some("stage_review"));
+        assert_eq!(run.pending_action, None);
+        assert_eq!(run.request_id, "request-original");
+        assert_eq!(run.profile, "openai.work");
+        assert_eq!(run.task, "ship it");
+    }
+
+    #[test]
+    fn resume_pipeline_decision_validates_matrix_and_is_single_use() {
+        let (_audit, mut state) = create_paused_pipeline_fixture();
+
+        let decision = resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "retry",
+            Some("keep the API stable"),
+            0,
+            20.0,
+        )
+        .unwrap();
+
+        assert!(decision.launch);
+        assert_eq!(decision.chat_id, "gui-orchestrator-project-chat");
+        assert_eq!(decision.request_id, "request-original");
+        assert_eq!(decision.profile, "openai.work");
+        assert_eq!(decision.task, "ship it");
+        assert_eq!(
+            state
+                .query_row(
+                    "SELECT pending_action FROM sessions WHERE session_id='pipeline-session'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("retry")
+        );
+        assert!(resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "approve",
+            None,
+            0,
+            21.0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resume_pipeline_decision_rejects_reason_mismatch_without_mutation() {
+        let (_audit, mut state) = create_paused_pipeline_fixture();
+
+        let error = resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "grant",
+            None,
+            3,
+            20.0,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("does not apply"));
+        let pause: (Option<String>, Option<String>) = state
+            .query_row(
+                "SELECT paused_at_stage,pending_action FROM sessions
+                 WHERE session_id='pipeline-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pause, (Some("coder".into()), None));
+    }
+
+    #[test]
+    fn resume_pipeline_decision_accepts_only_the_reason_action_matrix() {
+        for action in ["approve", "retry", "abort", "auto_approve_rest"] {
+            let (_audit, mut state) = create_paused_pipeline_fixture();
+            let decision =
+                resume_pipeline_session(&mut state, "pipeline-session", action, None, 0, 20.0)
+                    .unwrap();
+            assert_eq!(decision.launch, action != "abort");
+        }
+        for action in ["grant", "force", "abort"] {
+            let (_audit, mut state) = create_paused_pipeline_fixture();
+            state
+                .execute(
+                    "UPDATE sessions SET pause_reason='budget_exhausted'
+                     WHERE session_id='pipeline-session'",
+                    [],
+                )
+                .unwrap();
+            let extra = if action == "grant" { 3 } else { 0 };
+            let decision = resume_pipeline_session(
+                &mut state,
+                "pipeline-session",
+                action,
+                None,
+                extra,
+                20.0,
+            )
+            .unwrap();
+            assert_eq!(decision.launch, action != "abort");
+        }
     }
 
     #[test]
