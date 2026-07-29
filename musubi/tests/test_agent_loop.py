@@ -3320,3 +3320,57 @@ def test_apply_workspace_rejects_missing_and_non_directories(
     assert _apply_workspace(a_file) == 2
     # A rejected workspace must not have moved the process.
     assert Path.cwd().resolve() == tmp_path.resolve()
+
+
+def test_main_applies_workspace_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    selected = tmp_path / "application"
+    runtime = tmp_path / "runtime"
+    selected.mkdir()
+    runtime.mkdir()
+    (runtime / "server.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MUSUBI_WORKSPACE", str(selected))
+    monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
+
+    async def fake_run_agent(*args, **kwargs):
+        return "done"
+
+    monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
+
+    assert run_mod.main(["task", "--musubi", str(runtime)]) == 0
+    assert Path.cwd().resolve() == selected.resolve()
+
+
+def test_explicit_workspace_overrides_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+
+    environment_workspace = tmp_path / "environment"
+    explicit_workspace = tmp_path / "explicit"
+    runtime = tmp_path / "runtime"
+    environment_workspace.mkdir()
+    explicit_workspace.mkdir()
+    runtime.mkdir()
+    (runtime / "server.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MUSUBI_WORKSPACE", str(environment_workspace))
+    monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
+
+    async def fake_run_agent(*args, **kwargs):
+        return "done"
+
+    monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
+
+    assert run_mod.main([
+        "task",
+        "--musubi",
+        str(runtime),
+        "--workspace",
+        str(explicit_workspace),
+    ]) == 0
+    assert Path.cwd().resolve() == explicit_workspace.resolve()

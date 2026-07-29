@@ -31,4 +31,3 @@ selected application root.
 4. Surface Browse/Apply controls in Settings and block switching during a run.
 5. Cover resolution, persistence validation, launch environment, and frontend
    action wiring with deterministic tests.
-

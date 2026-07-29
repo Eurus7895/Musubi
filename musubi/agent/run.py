@@ -1915,8 +1915,13 @@ def main(argv: list[str] | None = None) -> int:
     # Resolve the runtime dir BEFORE any chdir, so a relative --musubi still
     # means what the user typed it against.
     musubi_dir = (args.musubi or _default_musubi_dir()).resolve()
-    if args.workspace is not None:
-        rc = _apply_workspace(args.workspace)
+    workspace = args.workspace
+    if workspace is None:
+        env_workspace = os.environ.get("MUSUBI_WORKSPACE", "").strip()
+        if env_workspace:
+            workspace = Path(env_workspace)
+    if workspace is not None:
+        rc = _apply_workspace(workspace)
         if rc:
             return rc
     if not (musubi_dir / "server.py").is_file():
