@@ -34,5 +34,3 @@ class RouteKind(StrEnum):
     ASK_SCOPE = "ask_scope"
     #: Conversational reply, no tools.
     DIRECT_ANSWER = "direct_answer"
-    #: Refuse and hand back manual operator steps.
-    MANUAL_DESTRUCTIVE = "manual_destructive"

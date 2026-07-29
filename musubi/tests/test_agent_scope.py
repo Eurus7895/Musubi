@@ -222,12 +222,24 @@ def test_greeting_routes_to_direct_answer_without_workers() -> None:
     assert not hasattr(hint, "max_workers")
 
 
-def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
+def test_delete_request_warns_the_model_instead_of_refusing_the_turn() -> None:
+    # The old branch REFUSED this turn and handed back manual operator steps.
+    # It blocked the user saying plainly what they wanted, while `rm -rf build`
+    # did not match its noun list and reached a coder holding
+    # musubi_run_command. A regex over a sentence may warn; it may not refuse.
+    # The refusal lives in agent/blast_radius.py, where files are counted.
+    from agent.scope import DESTRUCTIVE_WARNING
+
     hint = classify_task("delete all *-dashboard.html files")
 
-    assert hint.kind is ScopeKind.UNKNOWN
-    assert hint.route == "manual_destructive"
-    assert not hasattr(hint, "max_workers")
+    assert hint.route != "manual_destructive", "the halting route is gone"
+    assert DESTRUCTIVE_WARNING in hint.warnings
+    block = hint.prompt_block()
+    assert "warning=This request reads as removing files" in block
+    assert "REFUSES any that deletes a file" in block
+
+    # A request with no deletion in it carries no warning.
+    assert classify_task("create a dashboard file").warnings == ()
 
 
 def test_answered_clarification_never_asks_the_same_question_again() -> None:

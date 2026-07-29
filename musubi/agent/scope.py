@@ -54,6 +54,11 @@ class ScopeHint:
     route: str
     reason: str
     requires: tuple[str, ...] = field(default_factory=tuple)
+    #: Non-binding notes for the model. A warning never changes the route: it
+    #: says something the text suggests but cannot establish, and the model is
+    #: free to act on it or not. Anything that must be ENFORCED belongs at the
+    #: tool boundary, where the affected files can be counted.
+    warnings: tuple[str, ...] = field(default_factory=tuple)
     #: Ambiguity/impact/risk bands for a mutation request (None on the casual,
     #: destructive, vague, and read-only branches, which return before the
     #: assessment runs). Carries the one deterministic clarifying question the
@@ -106,10 +111,6 @@ class ScopeHint:
             RouteKind.DIRECT_ANSWER: (
                 "Casual route: answer directly in one turn without tools or workers."
             ),
-            RouteKind.MANUAL_DESTRUCTIVE: (
-                "Destructive route: do not call tools or workers. Warn and give "
-                "manual operator steps instead."
-            ),
         }.get(self.route, "Use the route conservatively.")
         return (
             "[agent-routing-scope]\n"
@@ -117,7 +118,8 @@ class ScopeHint:
             f"route={self.route}\n"
             f"requires={requires}\n"
             f"reason={self.reason}\n"
-            f"guidance={route_guidance}\n"
+            + "".join(f"warning={w}\n" for w in self.warnings)
+            + f"guidance={route_guidance}\n"
             "[/agent-routing-scope]\n\n"
             "Use this deterministic hint before choosing tools. The root "
             "agent still makes the final role and routing decision. Scope is "
@@ -394,7 +396,7 @@ def _clarification_already_spent(
     )
 
 
-def classify_task(
+def _classify_route(
     task: str,
     *,
     has_history: bool = False,
@@ -421,13 +423,6 @@ def classify_task(
             kind=ScopeKind.UNKNOWN,
             route=RouteKind.DIRECT_ANSWER,
             reason="casual chat does not need tools",
-        )
-    if _DESTRUCTIVE_FILE_RE.search(text):
-        return ScopeHint(
-            kind=ScopeKind.UNKNOWN,
-            route=RouteKind.MANUAL_DESTRUCTIVE,
-            reason="destructive file operation needs explicit operator control",
-            requires=("manual_confirmation",),
         )
     if not text or _VAGUE_RE.match(text):
         # An empty message is the one case that still halts after a spent
@@ -572,3 +567,46 @@ def is_simple_scope(hint: ScopeHint | None) -> bool:
 # guessing. It matched phrases like "whole app" and "multiple services" — and
 # so scored zero on "rewrite the entire user system" and "migrate all 40
 # services to the new runtime". Size is decided from the planner's manifest.
+
+
+#: What the text SUGGESTS about deletion — never what it establishes. The
+#: sentence cannot say which files a run will remove; only the tool call can,
+#: and `agent/blast_radius.py` counts them there. This note exists so the model
+#: raises the question with the user BEFORE spending a worker on a plan whose
+#: last step the gate will refuse.
+DESTRUCTIVE_WARNING = (
+    "This request reads as removing files. The harness measures every tool "
+    "call and REFUSES any that deletes a file, or that overwrites more than a "
+    "handful in one run, until the user has explicitly approved it. So do not "
+    "plan around a silent deletion: name the exact paths you intend to remove, "
+    "show the user that list, and get a clear go-ahead first."
+)
+
+
+def classify_task(
+    task: str,
+    *,
+    has_history: bool = False,
+    allow_clarification: bool = True,
+) -> ScopeHint:
+    """Classify one message, attaching non-binding warnings.
+
+    The destructive check used to HALT the turn here, answering with manual
+    operator steps. It was measurably the wrong shape: it refused "delete all
+    *-dashboard.html files" — the user saying plainly what they wanted — while
+    `run rm -rf build` did not match its noun list and routed to a coder
+    holding `musubi_run_command`, whose contract states it does no dangerous
+    command detection. The guard blocked the honest request and missed every
+    other path to the same outcome.
+
+    A regex over a sentence is not entitled to refuse; it IS entitled to warn.
+    The refusal now lives in `agent/blast_radius.py`, at the tool call, where
+    the files about to be removed can be counted and named.
+    """
+    hint = _classify_route(
+        task, has_history=has_history, allow_clarification=allow_clarification,
+    )
+    text = " ".join((task or "").strip().split())
+    if _DESTRUCTIVE_FILE_RE.search(text):
+        return replace(hint, warnings=hint.warnings + (DESTRUCTIVE_WARNING,))
+    return hint

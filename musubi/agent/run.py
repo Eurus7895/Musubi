@@ -63,6 +63,7 @@ from agent.goal_state import (
     GoalState,
     root_decision_tools,
 )
+from agent.blast_radius import RunningTotals, describe, exceeds_threshold, measure
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -256,6 +257,10 @@ class Orchestration:
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
+    #: Files this run has already overwritten. The overwrite ceiling is
+    #: per-RUN, not per-call: a worker rewriting one file per cycle never
+    #: trips a per-call check, which is exactly the drift being watched for.
+    destructive_totals: RunningTotals = field(default_factory=RunningTotals)
 
     @property
     def enabled(self) -> bool:
@@ -1981,16 +1986,6 @@ def _deterministic_scope_answer(
     # that route from text, and when a manifest produces it the goal runs the
     # designer → coder → reviewer chain instead of halting. A large change is
     # more review, not a refusal handed back as a command to type.
-    if scope_hint.route == RouteKind.MANUAL_DESTRUCTIVE:
-        return (
-            "I cannot safely delete files from this route because deletion is "
-            "destructive and there is no interactive confirmation step here.\n\n"
-            "To delete them manually from the workspace root, use one of these:\n"
-            "- In VS Code Explorer: select the matching files and press Delete.\n"
-            "- In PowerShell: `Remove-Item -Force *-dashboard.html`\n"
-            "- In cmd: `del /f *-dashboard.html`\n\n"
-            f"Requested pattern/task: `{task}`"
-        )
     return None
 
 
@@ -2489,6 +2484,79 @@ def _charge_budget_postflight(
         )
 
 
+#: Grant that lets a run past the destructive gate. The OPERATOR sets it — a
+#: worker cannot set its own env, so this is a human's decision by
+#: construction, not something the model can talk its way into.
+DESTRUCTIVE_GRANT_ENV = "MUSUBI_ALLOW_DESTRUCTIVE"
+
+
+def _destructive_grant() -> bool:
+    return os.environ.get(DESTRUCTIVE_GRANT_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _preflight_destructive_batch(
+    tool_uses: list[dict[str, Any]],
+    *,
+    orchestration: Orchestration | None,
+    log: Any,
+) -> dict[str, str]:
+    """Measure each call's blast radius; return refusals keyed by tool_use id.
+
+    This is the hard stop the old lexical guard could never be. It reads the
+    CALL, not the user's sentence, so it sees `rm -rf build` — which the old
+    guard let through to a coder holding `musubi_run_command` — and it counts
+    the files rather than asserting a mood.
+
+    Measurement failures do not silently allow: `measure` never raises, and an
+    unresolvable delete comes back `unanalyzable`, which is over threshold.
+    """
+    totals = (
+        orchestration.destructive_totals
+        if orchestration is not None
+        else RunningTotals()
+    )
+    granted = _destructive_grant()
+    refusals: dict[str, str] = {}
+    for tu in tool_uses:
+        name = str(tu.get("name", ""))
+        raw_args = tu.get("input") or {}
+        args = raw_args if isinstance(raw_args, dict) else {}
+        radius = measure(name, args)
+        if radius.is_empty:
+            continue
+        if exceeds_threshold(radius, totals) and not granted:
+            reason = describe(radius, totals)
+            refusals[str(tu.get("id") or "")] = reason
+            print(
+                f"[agent] destructive gate: {name} refused — "
+                f"deletes={radius.delete_count} "
+                f"overwrites={radius.overwrite_count} "
+                f"unanalyzable={radius.unanalyzable}",
+                file=log,
+            )
+            continue
+        if granted and exceeds_threshold(radius, totals):
+            print(
+                f"[agent] destructive gate: {name} allowed by "
+                f"{DESTRUCTIVE_GRANT_ENV}",
+                file=log,
+            )
+        totals.add(radius)
+    return refusals
+
+
+def _destructive_refusal_answer(reason: str) -> str:
+    payload = {
+        "status": "blocked",
+        "reason": "destructive_change_needs_user_confirmation",
+        "retry_same_strategy": False,
+        "message": reason,
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
 def _preflight_policy_batch(
     tool_uses: list[dict[str, Any]],
     *,
@@ -2588,6 +2656,9 @@ async def _dispatch(
         audit_db_path=audit_db_path,
         log=log,
     )
+    destructive = _preflight_destructive_batch(
+        tool_uses, orchestration=orchestration, log=log,
+    )
     refused = _spawn_overflow_reasons(
         tool_uses,
         log,
@@ -2605,6 +2676,7 @@ async def _dispatch(
                     vendor=vendor, tools=tools,
                     orchestration=orchestration, gateway=gateway,
                     refused_reason=refused.get(tu.get("id", "")),
+                    destructive_reason=destructive.get(tu.get("id", "")),
                     compression_db_path=compression_db_path,
                     role=role,
                     budget=budget,
@@ -2622,6 +2694,7 @@ async def _dispatch(
                 vendor=vendor, tools=tools,
                 orchestration=orchestration, gateway=gateway,
                 refused_reason=refused.get(tu.get("id", "")),
+                destructive_reason=destructive.get(tu.get("id", "")),
                 compression_db_path=compression_db_path,
                 role=role,
                 budget=budget,
@@ -2780,6 +2853,7 @@ async def _dispatch_one(
     gateway: McpGateway | None,
     refused_reason: str | None = None,
     refused: bool = False,
+    destructive_reason: str | None = None,
     compression_db_path: Path | None = None,
     role: str = "agent",
     budget: TokenBudgetEnforcer | None = None,
@@ -2810,6 +2884,19 @@ async def _dispatch_one(
         if orchestration is not None and orchestration.parent_agent_name
         else role
     )
+    if destructive_reason:
+        # The hard stop, ahead of the tool and ahead of the spawn branch: a
+        # measured, irreversible change does not run until a human says so.
+        blocked = _destructive_refusal_answer(destructive_reason)
+        emit_runtime_log(
+            log, f"[agent]   destructive gate blocked {name}", category="tools",
+        )
+        _safe_record_tool_audit(
+            session_id=session_id, role=call_role, tool=str(name),
+            args=json_args(args), status="refused", db_path=audit_path,
+            result_text=blocked, log=log,
+        )
+        return blocked
     should_audit = is_musubi_tool(name)
     if should_audit:
         decision = evaluate_tool_call(call_role, name)

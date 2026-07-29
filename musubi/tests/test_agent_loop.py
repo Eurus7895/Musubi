@@ -2580,8 +2580,13 @@ def test_plan_first_directive_injected_into_system_prompt() -> None:
     assert "plan-first" in combined.lower()
 
 
-def test_delete_request_returns_manual_answer_without_llm_calls() -> None:
-    router = FakeRouter([])
+def test_delete_request_now_runs_and_carries_the_warning() -> None:
+    # Was: refused with zero model calls and a list of manual commands. The
+    # turn now proceeds — the hard stop moved to the tool boundary, where the
+    # files can be counted — and the model is told what the gate will do.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
     log = io.StringIO()
 
     answer = asyncio.run(run_agent(
@@ -2592,10 +2597,11 @@ def test_delete_request_returns_manual_answer_without_llm_calls() -> None:
         max_tokens=0,
     ))
 
-    assert router.calls == []
-    assert "I cannot safely delete files from this route" in answer
-    assert "*-dashboard.html" in answer
-    assert "manual_destructive" in log.getvalue()
+    assert answer == "ok"
+    assert len(router.calls) == 1
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "warning=This request reads as removing files" in system_text
+    assert "manual_destructive" not in log.getvalue()
 
 
 def test_greeting_returns_direct_answer_without_llm_calls() -> None:
