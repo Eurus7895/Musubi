@@ -1,7 +1,87 @@
 # LLM-owned scope, substrate-owned evidence
 
-**Status: proposal. Nothing implemented. Two forks and one Hard-Invariant tag
-change need Eurus's decision before step 1.**
+**Status: governing principle decided (2026-07-29). Implementation not started.
+One question open — see "The destructive gate" below.**
+
+## The principle, in Eurus's words
+
+> *"ai triage cũng giống scope và change request, đều không nên để code quyết
+> định"* — who triages a turn, what its scope is, and how large the change is
+> are the same kind of question, and none of them should be decided by code.
+
+This settles the fork the plan opened between "the root triages" and "the
+planner triages": neither is a rule the substrate encodes. The root is simply
+the first model in the loop, so it is where a judgment first becomes possible —
+not because a line of code awards it the job.
+
+### Where the line falls: judging vs enforcing
+
+The principle cannot mean "code decides nothing" — the policy engine, the
+firewall, the budgets and the manifest ceilings are all code deciding, and all
+of them stay. The distinguishing question is what the decision is made FROM:
+
+- **Judging** = reading English and forming an opinion about it. *Is this
+  request broad? Is it sensitive? Is it an edit or a question?* Text is the
+  only input, and nothing checks the answer. **This is what code stops doing.**
+- **Enforcing** = checking a claim or a fact against a rule. *This manifest
+  declares 6 files, the ceiling is 5. This path resolves outside the workspace
+  root. This worker touched 11 files after declaring 1.* The input is a
+  measurement, and the answer is verifiable. **This is what code keeps doing,
+  and does more of.**
+
+Every deterministic decision in the host sorts cleanly into one column:
+
+| Judges (dies) | Enforces (stays) |
+|---|---|
+| `_BROAD_PRODUCT_RE`, `_STATIC_FILE_RE`, `_BOUNDED_ARTIFACT_RE`, `_FRAMEWORK_RE`, `_MULTIPART_RE` — is this request broad? | `assess_manifest` — arithmetic over the planner's declaration |
+| `_ARTIFACT_RE`, `_SIMPLE_EDIT_RE` — is this a small edit? | `manifest_overrun` — declared radius vs files actually touched |
+| `_NO_SHORTCUT_RE` — is this sensitive? (wrong in both directions, proven) | `policy_engine` membership + tool gates (HI #5) |
+| `_ADVISORY_RE`, `_INSPECT_RE`, `_DIAGNOSTIC_RE` — what does the user want? | `_STAGE_PERMISSIONS` evaluator firewall (HI #3) |
+| `_VAGUE_RE`, `_CASUAL_RE` — is this a real request? | `TokenBudgetEnforcer`, stage allowances |
+| `_DESTRUCTIVE_FILE_RE` — see below | `fs.resolve_path` workspace containment |
+| all of `assess_request` | the evidence vector (step 1) — facts about the record |
+
+### The destructive gate — the one open question
+
+`_DESTRUCTIVE_FILE_RE` refuses a turn whose *sentence* mentions deleting files.
+Under the principle it is a judgment and dies with the rest. Two facts say it
+should die regardless:
+
+1. It is already inconsistent with the substrate's own stated position.
+   `musubi_run_command`'s contract says, verbatim: *"No 'dangerous command'
+   detection — the user is in control of what the model can do."* The substrate
+   declines to guess at the shell boundary, where it can see the real command,
+   while guessing at the sentence boundary, where it can only see intent.
+2. It therefore blocks the honest case and misses the rest. "delete all
+   \*.html" is refused; a model that reaches the same outcome through
+   `musubi_run_command` is not.
+
+What replaces it is a real decision:
+
+- **(a) Nothing.** Consistent with `musubi_run_command`; the user is in control.
+- **(b) A fact-based confirmation at the tool boundary.** A call that would
+  delete or overwrite files pauses for the user. This is enforcement on a
+  measurement, not judgment on a sentence — it fits the principle and covers
+  the path the lexical gate never saw.
+
+**(b) is the recommendation.** It needs Eurus's decision because it adds a
+human gate to the tool path, and doing nothing in the meantime would remove a
+guard without a replacement.
+
+### Consequence for the tier change
+
+The principle settles the `musubi-tier` question: a layer whose only job is
+judging English is temporary by definition. The split is also cheaper than this
+plan first described — TWO files move, not three:
+
+- `agent/scope.py` becomes `ephemeral` **whole**. Its `ScopeHint` rendering
+  dies with it, because the evidence vector renders its own prompt block.
+- `assess_request` + its 5 regexes + `BROAD_PRODUCT_QUESTION` move OUT of
+  `change_assessment.py` INTO `scope.py`, so the deletion is one file.
+- `change_assessment.py` keeps only the manifest half and stays `substrate`,
+  with its "never" justification rewritten to the honest one.
+
+No new module, no third file.
 
 ## Context
 
