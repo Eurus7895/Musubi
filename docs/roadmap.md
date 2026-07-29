@@ -50,8 +50,9 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    root for every operation. This is a Musubi harness boundary, not a launcher
    for external coding agents; the standalone driver through `LMRouter` remains
    the execution path. The superseded single-workspace plan remains historical.
-   Design:
-   [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md)
+   Design and plan:
+   [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md) and
+   [`2026-07-29-session-folder-grants.md`](./superpowers/plans/2026-07-29-session-folder-grants.md)
 
 2. **Skill catalog growth.** Skills remain the cheapest optimization surface.
    Each new skill should carry useful metadata such as `applies-to`, `triggers`,
