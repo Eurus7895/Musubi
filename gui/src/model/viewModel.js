@@ -219,9 +219,9 @@ const RAIL_BUCKETS = [
   { key: 'earlier', label: 'Earlier' },
 ]
 
-function railBucketFor(status) {
+function railBucketFor(status, unread) {
   if (status === 'running') return 'active'
-  if (status === 'escalated' || status === 'failed' || status === 'budget_halted') return 'needsYou'
+  if (unread) return 'needsYou'
   return 'earlier'
 }
 
@@ -458,7 +458,7 @@ export function buildViewModel(s, act) {
     return {
       id: run.id,
       startedAt,
-      bucket: railBucketFor(status),
+      bucket: railBucketFor(status, !!session?.unread),
       selected,
       // A running card shows elapsed; a finished one shows when it ran.
       clock: clockLabel(startedAt, nowMs),
@@ -1201,6 +1201,10 @@ export function buildViewModel(s, act) {
     onToggleSessions: act.toggleSessions,
     trustCounters,
     railGroups,
+    onDeleteSession: () => act.deleteSession(activeSessionId),
+    deleteSessionDisabled: !activeSessionId || activeRunStatus === 'running',
+    onCleanSessions: act.cleanSessions,
+    cleanSessionsDisabled: !!driverStatus.running || !runs.length,
     onStopRun: act.cancelAgent,
     runMode: s.runMode === 'pipeline' ? 'pipeline' : 'direct',
     selectedPipeline: s.selectedPipeline || '',

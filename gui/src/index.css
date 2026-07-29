@@ -200,6 +200,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-rail header span { color: var(--text-3); font: var(--fs-1) var(--mono); }
 .session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
 .session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: rgba(255, 255, 255, .28); }
+.session-rail header .session-clean { width: auto; padding: 0 8px; color: var(--danger); font: 600 var(--fs-1) var(--sans); }
+.session-rail header button:disabled, .session-delete:disabled { opacity: .38; cursor: not-allowed; }
 .session-rail__list { flex: 1; min-height: 0; padding-bottom: var(--s-2); overflow: auto; }
 
 /* Grouped by what you would do about them, not by recency alone. */
@@ -259,6 +261,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
    beside it sits at full length. */
 .session-strip__id strong { flex: 0 1 auto; min-width: 0; overflow: hidden; color: #e6ebf2; font: 600 var(--fs-4) var(--sans); text-overflow: ellipsis; white-space: nowrap; }
 .session-strip__id span { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--text-3); font: var(--fs-2) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.session-delete { flex: none; padding: 5px 10px; border: 1px solid rgba(232, 106, 95, .3); border-radius: var(--r-sm); color: var(--danger); background: rgba(232, 106, 95, .06); font: 600 var(--fs-2) var(--sans); cursor: pointer; }
+.session-delete:not(:disabled):hover { border-color: rgba(232, 106, 95, .65); background: rgba(232, 106, 95, .12); }
 .surface-tabs, .run-mode { flex: none; padding: 2px; display: flex; gap: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
 .surface-tabs button, .run-mode button, .log-filters button { border: 0; border-radius: var(--r-sm); color: #798697; background: transparent; font: 600 var(--fs-2) var(--sans); cursor: pointer; }
 .surface-tabs button, .run-mode button { padding: 5px 11px; }

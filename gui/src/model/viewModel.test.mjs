@@ -88,6 +88,8 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
+    deleteSession() {},
+    cleanSessions() {},
     clearSelect() {},
     setAuditFilter() {},
     selectProfile() {},
@@ -1089,20 +1091,68 @@ test('the Orchestrator nav button navigates, then toggles the sessions rail', ()
   assert.equal(buildViewModel(baseState({ view: 'audit' }), act).orchNavTitle, 'Orchestrator')
 })
 
-test('rail groups sessions by what the operator would do about them', () => {
+test('Needs you contains unread sessions, not sessions with failure statuses', () => {
   const vm = buildViewModel(baseState({
-    subagents: [
-      agent(200, 'done-session', 'done', 'coder'),
-      agent(201, 'stuck-session', 'escalated', 'planner'),
-      agent(202, 'live-session', 'running', 'planner'),
+    orchestratorChatId: 'live-session',
+    orchestratorSessions: [
+      { chatId: 'live-session', title: 'live', unread: false, rootTurns: 1, workers: 0 },
+      { chatId: 'done-unread', title: 'new result', unread: true, rootTurns: 1, workers: 0 },
+      { chatId: 'stuck-viewed', title: 'old failure', unread: false, rootTurns: 1, workers: 1 },
     ],
+    subagents: [
+      agent(201, 'stuck-root', 'escalated', 'planner', 'stuck-viewed'),
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'done-unread', parentSession: 'done-root', request: 'done', startedAt: 30 },
+      { id: 2, chatId: 'stuck-viewed', parentSession: 'stuck-root', request: 'failed', startedAt: 20 },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'live-session',
+      task: 'working', startedAt: 40,
+    },
   }), actions())
 
   assert.deepEqual(vm.railGroups.map((group) => group.label), ['Active', 'Needs you', 'Earlier'])
   assert.deepEqual(vm.railGroups.map((group) => group.runs.length), [1, 1, 1])
   assert.equal(vm.railGroups[0].runs[0].id, 'live-session')
-  assert.equal(vm.railGroups[1].runs[0].id, 'stuck-session')
-  assert.equal(vm.railGroups[2].runs[0].id, 'done-session')
+  assert.equal(vm.railGroups[1].runs[0].id, 'done-unread')
+  assert.equal(vm.railGroups[2].runs[0].id, 'stuck-viewed')
+})
+
+test('session cleanup actions target the selected session and lock clean-all while running', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    deleteSession: (id) => calls.push(['delete', id]),
+    cleanSessions: () => calls.push(['clean']),
+  }
+  const idle = buildViewModel(baseState({
+    orchestratorChatId: 'chat-current',
+    selectedSession: 'chat-old',
+    orchestratorSessions: [
+      { chatId: 'chat-current', title: 'current', unread: false, rootTurns: 0, workers: 0 },
+      { chatId: 'chat-old', title: 'old', unread: false, rootTurns: 0, workers: 0 },
+    ],
+  }), act)
+
+  assert.equal(idle.deleteSessionDisabled, false)
+  assert.equal(idle.cleanSessionsDisabled, false)
+  idle.onDeleteSession()
+  idle.onCleanSessions()
+  assert.deepEqual(calls, [['delete', 'chat-old'], ['clean']])
+
+  const busy = buildViewModel(baseState({
+    orchestratorChatId: 'chat-live',
+    orchestratorSessions: [
+      { chatId: 'chat-live', title: 'live', unread: false, rootTurns: 0, workers: 0 },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'chat-live',
+      task: 'working', startedAt: 40,
+    },
+  }), act)
+  assert.equal(busy.deleteSessionDisabled, true)
+  assert.equal(busy.cleanSessionsDisabled, true)
 })
 
 test('a failed turn-less request does not masquerade as the live one', () => {

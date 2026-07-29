@@ -62,6 +62,16 @@ test('hiding Sessions removes the rail instead of collapsing it', () => {
   assert.match(source, /aria-label="Hide sessions"/)
 })
 
+test('session cleanup controls are contextual and clean-all requires confirmation', () => {
+  assert.match(source, /Delete session/)
+  assert.match(source, /Clean all/)
+  assert.match(source, /window\.confirm/)
+  assert.match(source, /vals\.onDeleteSession/)
+  assert.match(source, /vals\.onCleanSessions/)
+  assert.match(source, /deleteSessionDisabled/)
+  assert.match(source, /cleanSessionsDisabled/)
+})
+
 test('the Now banner answers what the agent is doing, and offers the way out', () => {
   assert.match(source, /function NowBanner/)
   // Actor, act, elapsed, and stop — the four things wanted mid-run.

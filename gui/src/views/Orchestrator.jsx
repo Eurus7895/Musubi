@@ -126,6 +126,14 @@ export default function Orchestrator({ vals }) {
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
           </div>
+          <button
+            type="button"
+            className="session-delete"
+            disabled={vals.deleteSessionDisabled}
+            onClick={vals.onDeleteSession}
+          >
+            Delete session
+          </button>
           <div className="surface-tabs" role="tablist" aria-label="Session surface">
             <button className={!showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('timeline')}>Timeline</button>
             <button className={showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('log')}>
@@ -300,6 +308,18 @@ function SessionsRail({ vals, onHide }) {
         <strong>Sessions</strong>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span>{vals.runs.length}</span>
+          <button
+            type="button"
+            className="session-clean"
+            disabled={vals.cleanSessionsDisabled}
+            onClick={() => {
+              if (window.confirm('Clean all sessions? Audit evidence and snapshots will be preserved.')) {
+                vals.onCleanSessions()
+              }
+            }}
+          >
+            Clean all
+          </button>
           <button aria-label="Hide sessions" onClick={onHide}>←</button>
         </div>
       </header>

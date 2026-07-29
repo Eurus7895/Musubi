@@ -121,6 +121,41 @@ test('selectSession switches the active backend session without deleting history
   }])
 })
 
+test('deleteSession and cleanSessions dispatch the exact backend cleanup actions', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    selectedSession: 'gui-orchestrator-project-old',
+    driverStatus: { running: false },
+  })
+
+  source.actions.deleteSession('gui-orchestrator-project-old')
+  source.actions.cleanSessions()
+
+  assert.equal(source.state.selectedSession, null)
+  assert.deepEqual(calls, [
+    { kind: 'delete_session', args: ['gui-orchestrator-project-old'] },
+    { kind: 'clean_sessions', args: [] },
+  ])
+})
+
+test('cleanup actions do not dispatch while the selected session is running', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-live',
+    selectedSession: 'gui-orchestrator-project-live',
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-project-live',
+    },
+  })
+
+  source.actions.deleteSession('gui-orchestrator-project-live')
+  source.actions.cleanSessions()
+
+  assert.deepEqual(calls, [])
+})
+
 test('selectSession browses history while the active session keeps running', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({

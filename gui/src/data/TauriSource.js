@@ -189,6 +189,19 @@ export default class TauriSource {
         })
         this._action('select_session', [id])
       },
+      deleteSession: (id) => {
+        const chatId = String(id || '')
+        if (!chatId) return
+        const driver = this.state.driverStatus || {}
+        if (driver.running && driver.surface === 'orchestrator' && driver.chatId === chatId) return
+        if (this.state.selectedSession === chatId) this._setLocal({ selectedSession: null, selected: null })
+        this._action('delete_session', [chatId])
+      },
+      cleanSessions: () => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({ selectedSession: null, selected: null })
+        this._action('clean_sessions', [])
+      },
       clearSelect: local({ selected: null, selectedSession: null }),
       // Drops the node selection only. `clearSelect` also drops
       // selectedSession, which snaps the operator out of whatever historical
