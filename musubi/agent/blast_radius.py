@@ -49,6 +49,8 @@ understand *unless* that command is trying to delete. Everything else keeps
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -99,6 +101,20 @@ class BlastRadius:
     @property
     def is_empty(self) -> bool:
         return not (self.deletes or self.overwrites or self.unanalyzable)
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """Stable identifiers for what this call would destroy.
+
+        A resolved call is identified by its PATHS, so approving three files
+        approves those three and nothing else. An unanalyzable call has no
+        paths to name, so it is identified by the command text itself — which
+        means approval there is narrower, not broader: the exact same command,
+        or nothing.
+        """
+        if self.unanalyzable:
+            return (f"cmd:{self.subject}",)
+        return tuple(sorted({*self.deletes, *self.overwrites}))
 
 
 @dataclass
@@ -282,3 +298,79 @@ def describe(radius: BlastRadius, totals: RunningTotals) -> str:
         f"rewriting this many files has outgrown what it was asked to do. "
         f"Report what has been rewritten so far and confirm before continuing."
     )
+
+
+# ── one-time approval, verifiable without reading prose ─────────────────────
+#
+# The harness cannot tell "yes, delete them" from "no, don't" — judging a
+# sentence is the thing this whole redesign removes. So consent arrives as a
+# token the HARNESS mints, shows in its refusal, and later matches literally
+# against the USER's message. The comparison is string equality against a value
+# the harness itself generated; no interpretation happens anywhere.
+#
+# What makes it sound is structural, not clever: a model cannot author a user
+# turn. `_append_chat_message(chat_id, "user", task)` is fed by the CLI
+# argument or the Console input box, never by model output. So a token found in
+# a user message is proof a human put it there — the same class of guarantee as
+# "a worker cannot set its own process env", without the env.
+
+#: Prefix that makes an approval token unmistakable in a chat transcript.
+GRANT_PREFIX = "allow-"
+#: Hex digits of the digest. Six is ~16.7M combinations — far beyond guessing
+#: for a value that is displayed anyway, and short enough to retype by hand.
+GRANT_DIGEST_CHARS = 6
+
+
+def grant_token(keys: tuple[str, ...]) -> str:
+    """A stable one-time token for exactly this set of destructions.
+
+    Derived from the SORTED key set, so the same files always produce the same
+    token and one extra file produces a different one. Approval therefore
+    cannot silently widen: a call reaching beyond what was shown to the user
+    hashes differently and is refused with a fresh token.
+    """
+    digest = hashlib.sha256("\x00".join(sorted(keys)).encode("utf-8")).hexdigest()
+    return f"{GRANT_PREFIX}{digest[:GRANT_DIGEST_CHARS]}"
+
+
+def covered_by(radius: BlastRadius, approved: frozenset[str]) -> bool:
+    """True when everything this call destroys was already approved."""
+    keys = radius.keys
+    return bool(keys) and all(key in approved for key in keys)
+
+
+def encode_pending(grants: list[tuple[str, tuple[str, ...]]]) -> str:
+    """Serialize `(token, keys)` pairs for the agent_turns row."""
+    return json.dumps(
+        [{"token": token, "keys": list(keys)} for token, keys in grants],
+        separators=(",", ":"),
+    )
+
+
+def approved_keys_from(pending: str | None, user_message: str) -> frozenset[str]:
+    """Keys the user approved by echoing a token, or an empty set.
+
+    Reads only two things: the tokens this chat is waiting on, and whether the
+    literal token appears in what the user typed. Malformed storage yields an
+    empty set — the safe direction, since an unreadable grant means the gate
+    stays shut.
+    """
+    if not pending or not user_message:
+        return frozenset()
+    try:
+        entries = json.loads(pending)
+    except (json.JSONDecodeError, TypeError):
+        return frozenset()
+    if not isinstance(entries, list):
+        return frozenset()
+    approved: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("token")
+        keys = entry.get("keys")
+        if not isinstance(token, str) or not isinstance(keys, list):
+            continue
+        if token and token in user_message:
+            approved.update(key for key in keys if isinstance(key, str))
+    return frozenset(approved)

@@ -63,7 +63,16 @@ from agent.goal_state import (
     GoalState,
     root_decision_tools,
 )
-from agent.blast_radius import RunningTotals, describe, exceeds_threshold, measure
+from agent.blast_radius import (
+    RunningTotals,
+    approved_keys_from,
+    covered_by,
+    describe,
+    encode_pending,
+    exceeds_threshold,
+    grant_token,
+    measure,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -261,6 +270,12 @@ class Orchestration:
     #: per-RUN, not per-call: a worker rewriting one file per cycle never
     #: trips a per-call check, which is exactly the drift being watched for.
     destructive_totals: RunningTotals = field(default_factory=RunningTotals)
+    #: Keys a human approved for THIS run by echoing the harness's token.
+    approved_destructive: frozenset[str] = frozenset()
+    #: `(token, keys)` this turn was gated on, persisted for the next turn.
+    pending_destructive: list[tuple[str, tuple[str, ...]]] = field(
+        default_factory=list
+    )
 
     @property
     def enabled(self) -> bool:
@@ -795,6 +810,23 @@ async def run_agent(
             parent_session_id=parent_session_id,
             goal_state=goal_state,
         )
+        # Consent is matched against the RAW user message. A model cannot
+        # author a user turn, so a token found here is proof a human typed it —
+        # and the match is string equality against a value the harness itself
+        # minted, not an interpretation of what the sentence means.
+        approved = approved_keys_from(
+            _pending_destructive(
+                chat_id, db_path=context_compression_db_path, log=log,
+            ),
+            task,
+        )
+        if approved:
+            orchestration.approved_destructive = approved
+            print(
+                f"[agent] destructive approval accepted for {len(approved)} "
+                f"path(s)",
+                file=log,
+            )
         print(f"[agent] {scope_hint.log_line()}", file=log)
         system_prompt = build_system_prompt(scope_hint.prompt_block())
         if plan_first:
@@ -913,6 +945,11 @@ async def run_agent(
             log=log,
             delivered_artifact=(
                 orchestration is not None and orchestration.delivered_artifact
+            ),
+            pending_destructive=(
+                encode_pending(orchestration.pending_destructive)
+                if orchestration is not None and orchestration.pending_destructive
+                else None
             ),
         )
     _log_turn_usage(log, stats, budget)
@@ -2099,6 +2136,30 @@ def _pending_clarification(
         return None
 
 
+def _pending_destructive(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> str | None:
+    """Approval tokens this chat is waiting on, or None on any failure.
+
+    None is the safe direction: an unreadable grant leaves the gate shut.
+    """
+    if not chat_id:
+        return None
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.pending_destructive(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] pending destructive read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return None
+
+
 def _chat_turn_usage(
     chat_id: str | None, *, db_path: Path, log: Any,
 ) -> dict[str, int]:
@@ -2177,6 +2238,7 @@ def _record_agent_turn(
     log: Any,
     delivered_artifact: bool = False,
     clarification_request: str | None = None,
+    pending_destructive: str | None = None,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2198,6 +2260,7 @@ def _record_agent_turn(
             db_path=db_path,
             delivered_artifact=delivered_artifact,
             clarification_request=clarification_request,
+            pending_destructive=pending_destructive,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(
@@ -2526,17 +2589,38 @@ def _preflight_destructive_batch(
         radius = measure(name, args)
         if radius.is_empty:
             continue
+        approved = (
+            orchestration.approved_destructive
+            if orchestration is not None
+            else frozenset()
+        )
         if exceeds_threshold(radius, totals) and not granted:
-            reason = describe(radius, totals)
-            refusals[str(tu.get("id") or "")] = reason
-            print(
-                f"[agent] destructive gate: {name} refused — "
-                f"deletes={radius.delete_count} "
-                f"overwrites={radius.overwrite_count} "
-                f"unanalyzable={radius.unanalyzable}",
-                file=log,
-            )
-            continue
+            if covered_by(radius, approved):
+                print(
+                    f"[agent] destructive gate: {name} allowed — user approved "
+                    f"these exact paths",
+                    file=log,
+                )
+            else:
+                token = grant_token(radius.keys)
+                reason = (
+                    f"{describe(radius, totals)}\n\n"
+                    f"To approve exactly this and nothing else, reply with: "
+                    f"{token}"
+                )
+                refusals[str(tu.get("id") or "")] = reason
+                if orchestration is not None:
+                    orchestration.pending_destructive.append(
+                        (token, radius.keys)
+                    )
+                print(
+                    f"[agent] destructive gate: {name} refused ({token}) — "
+                    f"deletes={radius.delete_count} "
+                    f"overwrites={radius.overwrite_count} "
+                    f"unanalyzable={radius.unanalyzable}",
+                    file=log,
+                )
+                continue
         if granted and exceeds_threshold(radius, totals):
             print(
                 f"[agent] destructive gate: {name} allowed by "

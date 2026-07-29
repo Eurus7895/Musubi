@@ -192,3 +192,82 @@ def test_gate_refuses_the_batch_and_names_the_files(
         calls, orchestration=Orchestration(parent_session_id="s1"),
         log=io.StringIO(),
     ) == {}
+
+
+# ── one-time approval, verifiable without reading prose ─────────────────────
+
+
+def test_the_token_is_bound_to_the_exact_file_set(workspace: Path) -> None:
+    from agent.blast_radius import GRANT_PREFIX, covered_by, grant_token
+
+    three = measure("musubi_run_command", {"command": "rm -rf build"})
+    token = grant_token(three.keys)
+    assert token.startswith(GRANT_PREFIX)
+    # Order-independent, so the same files always yield the same token…
+    assert grant_token(tuple(reversed(three.keys))) == token
+    # …and one extra file yields a different one, so approval cannot widen.
+    assert grant_token(three.keys + ("extra.js",)) != token
+
+    approved = frozenset(three.keys)
+    assert covered_by(three, approved)
+    assert not covered_by(
+        measure("musubi_run_command", {"command": "rm keep.py"}), approved,
+    )
+
+
+def test_approval_reads_the_token_not_the_sentiment(workspace: Path) -> None:
+    # The harness cannot tell "yes delete them" from "no don't" — judging a
+    # sentence is what this whole redesign removes. It matches a literal it
+    # minted itself, which is string equality, not interpretation.
+    from agent.blast_radius import approved_keys_from, encode_pending, grant_token
+
+    radius = measure("musubi_run_command", {"command": "rm -rf build"})
+    token = grant_token(radius.keys)
+    pending = encode_pending([(token, radius.keys)])
+
+    assert approved_keys_from(pending, token) == frozenset(radius.keys)
+    assert approved_keys_from(pending, f"ok, {token} please") == frozenset(radius.keys)
+    for prose in ("ok xoá đi", "yes delete them", "go ahead", "allow-000000", ""):
+        assert approved_keys_from(pending, prose) == frozenset(), prose
+
+
+def test_unreadable_storage_leaves_the_gate_shut(workspace: Path) -> None:
+    from agent.blast_radius import approved_keys_from
+
+    for pending in (None, "", "not json", "{}", "[1,2]", '[{"token":1}]'):
+        assert approved_keys_from(pending, "allow-abc123") == frozenset(), pending
+
+
+def test_gate_mints_a_token_then_honours_it_next_run(
+    workspace: Path,
+) -> None:
+    import io
+
+    from agent.blast_radius import approved_keys_from, encode_pending
+    from agent.run import Orchestration, _preflight_destructive_batch
+
+    calls = [
+        {"id": "t1", "name": "musubi_run_command", "input": {"command": "rm -rf build"}},
+    ]
+    first = Orchestration(parent_session_id="s1")
+    refusals = _preflight_destructive_batch(
+        calls, orchestration=first, log=io.StringIO(),
+    )
+    assert "reply with: allow-" in refusals["t1"]
+    assert len(first.pending_destructive) == 1
+
+    # The user echoes the token; the next run allows exactly those paths.
+    token, keys = first.pending_destructive[0]
+    approved = approved_keys_from(encode_pending([(token, keys)]), f"{token}")
+    second = Orchestration(parent_session_id="s1", approved_destructive=approved)
+    assert _preflight_destructive_batch(
+        calls, orchestration=second, log=io.StringIO(),
+    ) == {}
+
+    # A DIFFERENT deletion is not covered by that approval.
+    other = [
+        {"id": "t2", "name": "musubi_run_command", "input": {"command": "rm keep.py"}},
+    ]
+    assert _preflight_destructive_batch(
+        other, orchestration=second, log=io.StringIO(),
+    ) != {}

@@ -280,6 +280,11 @@ _AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("request_id", "TEXT"),
     ("delivered_artifact", "INTEGER NOT NULL DEFAULT 0"),
     ("clarification_request", "TEXT"),
+    # One-time destructive-approval tokens this turn is waiting on, as JSON
+    # `[{token, keys}]`. The NEXT turn matches the token literally against the
+    # user's own message — a model cannot author a user turn, so a match is
+    # proof a human approved exactly these paths.
+    ("pending_destructive", "TEXT"),
 )
 
 # Root-selected skill injection (option 3): the root may name a catalog
@@ -1317,6 +1322,7 @@ def insert_agent_turn(
     db_path: Path | None = None,
     delivered_artifact: bool = False,
     clarification_request: str | None = None,
+    pending_destructive: str | None = None,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
     Caller (TS runner via the musubi_record_agent_turn MCP
@@ -1337,14 +1343,15 @@ def insert_agent_turn(
             " (chat_id, request_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,"
-            "  delivered_artifact, clarification_request)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  delivered_artifact, clarification_request, pending_destructive)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id, request_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
                 tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,
                 1 if delivered_artifact else 0,
                 clarification_request or None,
+                pending_destructive or None,
             ),
         )
 
@@ -1417,6 +1424,27 @@ def pending_clarification(
     if row is None:
         return None
     pending = row["clarification_request"]
+    return str(pending) if pending else None
+
+
+def pending_destructive(chat_id: str, db_path: Path | None = None) -> str | None:
+    """Approval tokens the latest turn of `chat_id` is waiting on, or None.
+
+    Latest turn only, exactly like `pending_clarification`: a turn that ran
+    without being gated writes NULL, so an approval cannot be replayed against
+    a later, different set of files.
+    """
+    if not chat_id:
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT pending_destructive FROM agent_turns"
+            " WHERE chat_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    pending = row["pending_destructive"]
     return str(pending) if pending else None
 
 
