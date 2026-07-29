@@ -37,17 +37,21 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
-1. **Workspace selection — edit an application outside the Musubi checkout.**
-   Settings can select and persist an existing application folder, then restart
-   into that project boundary while retaining the installed Musubi runtime and
-   configured LLM profile. Headless runs reach the same boundary with
-   `agent --workspace <dir>` (distinct from `--musubi`, which points at the
-   runtime). Direct filesystem tools, `run_command`, the mechanical lint gate,
-   and completion artifact verification all resolve against the dedicated
-   `MUSUBI_WORKSPACE` root; shipped pipelines, agents, and skills keep
-   resolving from the install so an application folder with no `.github/` of
-   its own stays usable. Switching is rejected while an agent is running. Plan:
-   [`2026-07-28-console-workspace-picker.md`](./superpowers/plans/2026-07-28-console-workspace-picker.md)
+1. **Session-scoped folder grants — keep Musubi as the fixed harness root.**
+   The Musubi checkout/install remains the root for the driver, substrate,
+   skills, agents, pipelines, policy, and audit. An Orchestrator session may
+   attach multiple existing folders as explicit read/write grants without
+   replacing that root, changing a global Setting, or restarting Console.
+   Grants remain editable while the session is idle; each request captures an
+   immutable snapshot so an in-flight run cannot gain or lose filesystem
+   authority. Filesystem tools, command working directories, mechanical gates,
+   and artifact verification must select and validate the applicable grant,
+   reject path escape or unavailable roots fail-closed, and audit the resolved
+   root for every operation. This is a Musubi harness boundary, not a launcher
+   for external coding agents; the standalone driver through `LMRouter` remains
+   the execution path. The superseded single-workspace plan remains historical.
+   Design:
+   [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md)
 
 2. **Skill catalog growth.** Skills remain the cheapest optimization surface.
    Each new skill should carry useful metadata such as `applies-to`, `triggers`,
