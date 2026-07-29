@@ -600,6 +600,92 @@ fn select_driver_session(
     Ok(())
 }
 
+fn mark_selected_session_viewed(conn: &Connection, chat_id: &str, now: f64) -> Result<(), String> {
+    let latest = musubi_data::latest_orchestrator_session_activity(conn, chat_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Requested session was not found in this project.".to_string())?;
+    if !musubi_data::mark_orchestrator_session_viewed(conn, chat_id, latest, now)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Requested session was not found in this project.".into());
+    }
+    Ok(())
+}
+
+fn delete_selected_session(
+    conn: &mut Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
+    project_root: &Path,
+    requested_chat_id: &str,
+    deleted_at: f64,
+) -> Result<(), String> {
+    let active_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
+    let viewed_id = viewed_chat_id_slot
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let displayed_id = viewed_id.as_deref().unwrap_or(&active_id);
+    if requested_chat_id != displayed_id {
+        return Err("Only the displayed session may be deleted.".into());
+    }
+    if rt.running && rt.chat_id == requested_chat_id {
+        return Err("Cannot delete a session while its agent is running.".into());
+    }
+    if !musubi_data::delete_orchestrator_session(conn, requested_chat_id, deleted_at)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Requested session was not found in this project.".into());
+    }
+
+    if requested_chat_id == active_id {
+        new_driver_session(
+            conn,
+            rt,
+            chat_id_slot,
+            viewed_chat_id_slot,
+            project_root,
+            "orchestrator",
+        )?;
+    } else {
+        *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
+    }
+    if !rt.running && rt.chat_id == requested_chat_id {
+        rt.stdout_tail.clear();
+        rt.stderr_tail.clear();
+        rt.task.clear();
+        rt.started_at = None;
+        rt.terminal_status.clear();
+    }
+    Ok(())
+}
+
+fn clean_all_sessions(
+    conn: &mut Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
+    project_root: &Path,
+    deleted_at: f64,
+) -> Result<(), String> {
+    if rt.running {
+        return Err(
+            "Cannot clean sessions while an agent is running. Cancel or wait for it to finish."
+                .into(),
+        );
+    }
+    musubi_data::clean_orchestrator_sessions(conn, deleted_at).map_err(|e| e.to_string())?;
+    new_driver_session(
+        conn,
+        rt,
+        chat_id_slot,
+        viewed_chat_id_slot,
+        project_root,
+        "orchestrator",
+    )
+}
+
 fn resolve_orchestrator_history_target(
     conn: &Connection,
     current_chat_id: &str,
@@ -2073,6 +2159,33 @@ fn action(
                 "orchestrator",
                 &requested_chat_id,
             )?;
+            mark_selected_session_viewed(&conn, &requested_chat_id, epoch_secs() as f64)?;
+        }
+        "delete_session" => {
+            let requested_chat_id = str_arg(0);
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+            delete_selected_session(
+                &mut conn,
+                &mut rt,
+                &state.chat_id,
+                &state.viewed_orchestrator_chat_id,
+                &state.project_root,
+                &requested_chat_id,
+                epoch_secs() as f64,
+            )?;
+        }
+        "clean_sessions" => {
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+            clean_all_sessions(
+                &mut conn,
+                &mut rt,
+                &state.chat_id,
+                &state.viewed_orchestrator_chat_id,
+                &state.project_root,
+                epoch_secs() as f64,
+            )?;
         }
         "clear_driver_chat" => {
             let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
@@ -2463,6 +2576,141 @@ mod tests {
             load_or_mint_session_nonce(&conn, "orchestrator").unwrap(),
             "old"
         );
+    }
+
+    #[test]
+    fn marking_selected_session_viewed_advances_its_unread_cursor() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+
+        mark_selected_session_viewed(&conn, "gui-orchestrator-project-old", 101.0).unwrap();
+
+        assert!(
+            !musubi_data::load_state(&conn)
+                .unwrap()
+                .orchestrator_sessions[0]
+                .unread
+        );
+    }
+
+    #[test]
+    fn delete_selected_session_mints_replacement_for_active_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "hello", "orchestrator", &active_id).unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime::default();
+
+        delete_selected_session(
+            &mut conn,
+            &mut runtime,
+            &active,
+            &viewed,
+            root,
+            &active_id,
+            200.0,
+        )
+        .unwrap();
+
+        assert_ne!(*active.lock().unwrap(), active_id);
+        assert!(viewed.lock().unwrap().is_none());
+        assert!(
+            musubi_data::load_chat_for_session(&conn, "orchestrator", &active_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn delete_selected_session_refuses_the_running_owner() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "hello", "orchestrator", &active_id).unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: active_id.clone(),
+            ..ChatAgentRuntime::default()
+        };
+
+        let error = delete_selected_session(
+            &mut conn,
+            &mut runtime,
+            &active,
+            &viewed,
+            root,
+            &active_id,
+            200.0,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("running"));
+        assert_eq!(
+            musubi_data::load_chat_for_session(&conn, "orchestrator", &active_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn clean_all_sessions_rejects_running_then_mints_one_fresh_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "one", "orchestrator", &active_id).unwrap();
+        insert_chat(
+            &conn,
+            "you",
+            None,
+            "two",
+            "orchestrator",
+            "gui-orchestrator-project-old",
+        )
+        .unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: active_id.clone(),
+            ..ChatAgentRuntime::default()
+        };
+
+        assert!(
+            clean_all_sessions(&mut conn, &mut runtime, &active, &viewed, root, 200.0,)
+                .unwrap_err()
+                .contains("running")
+        );
+        assert_eq!(
+            musubi_data::load_state(&conn)
+                .unwrap()
+                .orchestrator_sessions
+                .len(),
+            2
+        );
+
+        runtime.running = false;
+        clean_all_sessions(&mut conn, &mut runtime, &active, &viewed, root, 201.0).unwrap();
+
+        assert!(musubi_data::load_state(&conn)
+            .unwrap()
+            .orchestrator_sessions
+            .is_empty());
+        assert_ne!(*active.lock().unwrap(), active_id);
+        assert!(viewed.lock().unwrap().is_none());
     }
 
     #[test]

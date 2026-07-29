@@ -1770,6 +1770,37 @@ pub fn delete_orchestrator_session(
     Ok(true)
 }
 
+pub fn clean_orchestrator_sessions(
+    conn: &mut Connection,
+    deleted_at: f64,
+) -> rusqlite::Result<usize> {
+    let chat_ids = load_orchestrator_sessions(conn)?
+        .into_iter()
+        .map(|session| session.chat_id)
+        .collect::<Vec<_>>();
+    if chat_ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    for chat_id in &chat_ids {
+        tx.execute(
+            "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+             VALUES(?1,0,?2,?2)
+             ON CONFLICT(chat_id) DO UPDATE SET
+               deleted_at=excluded.deleted_at,
+               updated_at=excluded.updated_at",
+            rusqlite::params![chat_id, deleted_at],
+        )?;
+        tx.execute(
+            "DELETE FROM session_folder_grants WHERE chat_id=?1",
+            [chat_id],
+        )?;
+    }
+    tx.execute("DELETE FROM chat_log WHERE surface='orchestrator'", [])?;
+    tx.commit()?;
+    Ok(chat_ids.len())
+}
+
 /// Return only real pipeline runs joined to their audit-envelope ancestry.
 pub fn load_pipeline_runs(
     audit_conn: &Connection,
