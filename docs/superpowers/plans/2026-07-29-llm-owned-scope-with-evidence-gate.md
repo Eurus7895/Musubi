@@ -1,7 +1,25 @@
 # LLM-owned scope, substrate-owned evidence
 
-**Status: governing principle decided (2026-07-29). Implementation not started.
-One question open — see "The destructive gate" below.**
+**Status: governing principle decided (2026-07-29). Step 0 shipped — the
+destructive gate moved from judging a sentence to measuring a call, and the
+tier change landed with it. Steps 1–5 (the evidence vector and the deletion it
+unlocks) not started. No open questions.**
+
+## What shipped (step 0)
+
+Not in the original step list: the destructive gate was the one open question
+below, and answering it turned out to be a prerequisite, because the tier
+change could not land while a safety guard lived inside the layer being
+re-tagged.
+
+| Commit | What it did |
+|---|---|
+| `a689dba` | `_describe_exc` unwraps nested `anyio` groups (the uninformative `!mcp … skipped` line); three duplicated helpers single-owned |
+| `c70e899` | `RouteKind` StrEnum; `agent/config.py::config_candidates` shared by MCP and profile discovery |
+| `d579c75` | Judging split from enforcing, one file each: `change_assessment.py` → `manifest.py` (substrate), all 19 lexical regexes into `scope.py` (ephemeral) |
+| `dd41918` | `agent/blast_radius.py` — the gate measures the CALL. `_DESTRUCTIVE_FILE_RE` demoted from route to prompt warning |
+| `c896bcc` | Approval is a token the harness mints and matches literally against a user message |
+| `f61669d` | Console Approve/Reject; the harness re-appends any token the model dropped from its answer |
 
 ## The principle, in Eurus's words
 
@@ -41,7 +59,7 @@ Every deterministic decision in the host sorts cleanly into one column:
 | `_DESTRUCTIVE_FILE_RE` — see below | `fs.resolve_path` workspace containment |
 | all of `assess_request` | the evidence vector (step 1) — facts about the record |
 
-### The destructive gate — the one open question
+### The destructive gate — decided, and shipped as (b)
 
 `_DESTRUCTIVE_FILE_RE` refuses a turn whose *sentence* mentions deleting files.
 Under the principle it is a judgment and dies with the rest. Two facts say it
@@ -64,24 +82,79 @@ What replaces it is a real decision:
   measurement, not judgment on a sentence — it fits the principle and covers
   the path the lexical gate never saw.
 
-**(b) is the recommendation.** It needs Eurus's decision because it adds a
-human gate to the tool path, and doing nothing in the meantime would remove a
-guard without a replacement.
+**(b) was chosen** (`dd41918`, `c896bcc`, `f61669d`), with the shape settled in
+conversation rather than assumed here:
 
-### Consequence for the tier change
+- **The lexical regex became a warning, not a refusal.** `_DESTRUCTIVE_FILE_RE`
+  survives as `DESTRUCTIVE_WARNING` on `ScopeHint.warnings` — it tells the model
+  what the sentence looks like and routes nothing. `RouteKind.MANUAL_DESTRUCTIVE`
+  was added during the refactor and then deleted, because after the demotion no
+  code path could produce it.
+- **The hard stop is arithmetic at the tool boundary.** `agent/blast_radius.py`
+  `measure(tool_name, args)` resolves what a call would destroy, before the call
+  runs. Deletes are counted from the argv (`rm`, `rmdir`, `del`, `git clean`, …
+  **in command position** — `grep -r rm .` passes, `find … | xargs rm` does
+  not); overwrites are counted per `musubi_write_file`. Thresholds: **delete
+  N=1, overwrite N=5 per run.** A shell command whose targets cannot be resolved
+  statically (`|`, `;`, backticks, `$( )`, `xargs`, `find`, `eval`) is
+  `unanalyzable`, which is over threshold — fail-closed.
+- **Consent is verifiable, not interpreted.** The refusal carries a token
+  `allow-` + 6 hex of `sha256` over the SORTED destruction keys, so the same
+  file set always mints the same token and one extra file mints a different one
+  — approval cannot silently widen. The harness matches that literal string
+  against the **user-role** message. A model cannot author a user turn
+  (`_append_chat_message(chat_id, "user", …)` is fed by the CLI argument or the
+  Console input box), so the token's presence is structural proof a human put it
+  there. Unreadable storage yields an empty grant set: the gate stays shut.
+- **Two surfaces, one mechanism.** The Console renders Approve/Reject beside the
+  refusal; Approve submits the token through the same `send_chat` route the
+  composer uses, so the GUI holds no authority the CLI lacks. Reject sends
+  nothing — the call was already blocked and the turn already ended, so
+  declining is simply not granting.
+- **The token no longer depends on the model.** The refusal reaches the model as
+  a tool result and the model writes the user's answer itself; a paraphrase used
+  to leave the user with no token and therefore no way to approve.
+  `run.py::_ensure_grant_visible` re-appends any grant the answer dropped.
+
+`MUSUBI_ALLOW_DESTRUCTIVE` remains, narrowed in purpose to unattended
+automation. It is not the interactive path: it grants for a whole run rather
+than the measured files, and an exported value disables the gate silently and
+permanently.
+
+**Why this is enforcement, not judgment.** The old guard read the user's
+sentence and formed an opinion; the new one reads the call's arguments and
+counts. It answers "how many files does *this* delete", which is checkable, in
+place of "does this person sound destructive", which is not. That is why it
+survives a principle that deletes the rest of the lexical layer — and why the
+two are not in tension.
+
+### Consequence for the tier change — shipped in `d579c75`
 
 The principle settles the `musubi-tier` question: a layer whose only job is
-judging English is temporary by definition. The split is also cheaper than this
-plan first described — TWO files move, not three:
+judging English is temporary by definition. The split was also cheaper than this
+plan first described — TWO files moved, not three:
 
-- `agent/scope.py` becomes `ephemeral` **whole**. Its `ScopeHint` rendering
-  dies with it, because the evidence vector renders its own prompt block.
-- `assess_request` + its 5 regexes + `BROAD_PRODUCT_QUESTION` move OUT of
+- `agent/scope.py` became `ephemeral` **whole**, with
+  `expires-when: the root triages its own turn from the evidence vector` and
+  `cost-lever: deletes 18 of 19 regexes, assess_request, the pre-run ask_scope
+  halt, BROAD_PRODUCT_QUESTION, and the pending_clarification storage column`.
+- `assess_request` + its 5 regexes + `BROAD_PRODUCT_QUESTION` moved OUT of
   `change_assessment.py` INTO `scope.py`, so the deletion is one file.
-- `change_assessment.py` keeps only the manifest half and stays `substrate`,
-  with its "never" justification rewritten to the honest one.
+- `change_assessment.py` was renamed `manifest.py`, keeps only the manifest
+  half, and stays `substrate`. Its "never" justification is now the honest one:
+  *arithmetic over an LLM-declared blast radius is governance, not a
+  compensation for a weak model — a stronger planner makes the DECLARATION
+  better; it does not remove the need to check it.*
 
-No new module, no third file.
+No new module for the split itself; `blast_radius.py` and `routes.py` are new
+because the gate needed a home outside the layer being retired.
+
+**Why one file could not carry both tiers.** A `musubi-tier` tag is a promise
+about a whole file's lifetime — `scripts/check_musubi_tier.py` reads one tag per
+file, and "delete this when X" cannot be true of half a module. The old
+`change_assessment.py` held a judging half that dies and an enforcing half that
+never dies, so no single honest tag existed for it. Splitting the file *is* the
+tier change; the rename follows from it.
 
 ## Context
 
@@ -92,6 +165,10 @@ Musubi decides the shape of a turn three times, in three different ways:
 | 1 | `agent/scope.py::classify_task` | ~12 regexes over the sentence | before any model call |
 | 2 | `agent/change_assessment.py::assess_request` | 5 more regexes | inside #1 |
 | 3 | `agent/change_assessment.py::assess_manifest` | arithmetic over the planner's declared JSON | after the planner reads code |
+
+*(Paths as of writing. After `d579c75`: #1 and #2 both live in `agent/scope.py`,
+#3 in `agent/manifest.py`, and a fourth decision — `agent/blast_radius.py`, at
+the tool boundary — was added.)*
 
 Only #3 is evidence-based. #1 and #2 judge English with pattern matching, and
 the repository already says out loud that this cannot work. From the shipped
@@ -117,9 +194,13 @@ their expiry trigger is step 4 below.
 **What is genuinely worth keeping.** Not everything deterministic here is a
 judgment about work. Three things are facts or safety, and they stay:
 
-- *Destructive-operation refusal* (`_DESTRUCTIVE_FILE_RE` → `manual_destructive`).
-  Not a scope opinion — a safety gate, and cheap to be wrong about in the safe
-  direction.
+- ~~*Destructive-operation refusal* (`_DESTRUCTIVE_FILE_RE` →
+  `manual_destructive`). Not a scope opinion — a safety gate, and cheap to be
+  wrong about in the safe direction.~~ **Superseded.** "Cheap to be wrong about
+  in the safe direction" was the assumption, and it was false in both
+  directions: the regex refused the honest request ("delete all \*.html") while
+  `rm -rf build` reached `musubi_run_command` untouched. What is kept is the
+  *intent*, re-founded on a measurement — see the destructive gate above.
 - *`assess_manifest`* — deterministic arithmetic over what an LLM declared. This
   is the governance model this plan generalizes, not replaces.
 - *`GoalState.manifest_overrun`* — compares the declared radius against files
@@ -167,11 +248,11 @@ expires-when: never - risk/ambiguity/blast-radius hints are durable routing
   context even as model quality improves.
 ```
 
-That "never" is the claim this plan contradicts. Step 4 re-tiers the *lexical
-judgment* portion to `ephemeral` with `expires-when: the root triages its own
-turn` and `cost-lever: deletes ~12 regexes and the pre-run halt`. The safety
-gate and `assess_manifest` keep `substrate`. **CLAUDE.md says a change that
-would break an invariant stops and asks — this is the ask.**
+That "never" is the claim this plan contradicts. **Asked and approved
+(2026-07-29); shipped in `d579c75`** — the lexical judgment moved to
+`ephemeral`, `assess_manifest` kept `substrate` under a rewritten justification,
+and `blast_radius.py` was born `substrate` because measuring a call is not a
+judgment that a better model makes unnecessary.
 
 ## Design: three layers, honestly named
 
@@ -184,7 +265,14 @@ Runs before anything. Judges no work size:
 
 Everything else falls through. Notably `_CASUAL_RE` ("hi", "thanks") is
 *demoted* to a hint: it is a cost saver, not a safety property, and it belongs
-with the other hints in layer 3.
+with the other hints in layer 3. **Decided 2026-07-29: it is deleted outright**
+— Eurus, *"hi không cần giữ"* — so "hi" costs one root call like everything
+else, and no branch survives to justify itself on price.
+
+After step 0 this layer is thinner than the plan assumed: the destructive check
+is no longer here at all. It moved to the tool boundary, where it can see the
+call. What remains for step 4 to remove is the empty-message no-op and the
+`DESTRUCTIVE_WARNING` string.
 
 ### Layer 2 — Evidence sufficiency (deterministic, NEW)
 
@@ -228,6 +316,10 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
 
 ## Implementation steps
 
+- [x] **Step 0 — the destructive gate (not originally in this list).** Measure
+  the call instead of judging the sentence; re-tier the lexical layer once the
+  safety guard no longer lives inside it. See "What shipped" above.
+
 - [ ] **Step 1 — evidence vector.** New `agent/evidence.py` with the six
   predicates above and a `prompt_block()` renderer. Pure functions over the
   request text, the workspace root, and the DB. Tagged `musubi-tier: substrate`,
@@ -248,14 +340,17 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   chosen turn shape in one line, which is logged and audited so a wrong triage
   is attributable post-hoc.
 
-- [ ] **Step 4 — delete the lexical judgment.** Remove `assess_request` and
-  `_BROAD_PRODUCT_RE`, `_STATIC_FILE_RE`, `_BOUNDED_ARTIFACT_RE`,
-  `_FRAMEWORK_RE`, `_MULTIPART_RE`, `_ARTIFACT_RE`, `_SIMPLE_EDIT_RE`,
-  `_NO_SHORTCUT_RE`, `_VAGUE_RE`, and with them the pre-run `ask_scope` halt —
-  and therefore `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
-  `pending_clarification` (both of today's fixes). Re-tier what remains. This
-  step is where the cost profile changes, so it lands last and behind the
-  measurements from step 1.
+- [ ] **Step 4 — delete the lexical judgment.** Reduce `classify_task` to the
+  two branches that remain meaningful — is there work to do, and is it
+  destructive — by removing `assess_request` and `_BROAD_PRODUCT_RE`,
+  `_STATIC_FILE_RE`, `_BOUNDED_ARTIFACT_RE`, `_FRAMEWORK_RE`, `_MULTIPART_RE`,
+  `_ARTIFACT_RE`, `_SIMPLE_EDIT_RE`, `_NO_SHORTCUT_RE`, `_VAGUE_RE`,
+  `_CASUAL_RE`, and with them the pre-run `ask_scope` halt — and therefore
+  `BROAD_PRODUCT_QUESTION`, `clarification_request`, and `pending_clarification`
+  (both of 2026-07-29's earlier fixes). Re-tiering already happened in step 0,
+  so this step is pure deletion: **18 of 19 regexes, ~551 lines.** It is where
+  the cost profile changes, so it lands last and behind the measurements from
+  step 1.
 
 - [ ] **Step 5 — enforce the declaration.** Promote `manifest_overrun` from a
   prompt warning to a hard stop on the coder path. With scope LLM-declared, an
@@ -268,7 +363,7 @@ Today's cheap paths are cheap because a regex decided without a model:
 
 | Turn today | Cost today | Cost after |
 |---|---|---|
-| "hi" | 0 tokens, 0 ms | 1 root call (~1–2k tokens) unless kept as a hint-level fast path |
+| "hi" | 0 tokens, 0 ms | 1 root call (~1–2k tokens) — the fast path is deleted, decision 2 |
 | "explain each" | 1 root call, no tools | unchanged |
 | "read run.py" | 1 explorer | 1 root call + 1 explorer |
 | "create a website" | 0 tokens (halt) | 1 root call, then explorer/planner as the root judges |
@@ -282,6 +377,12 @@ the planner decides *how big the change* only when something will mutate.
 
 ## Verification
 
+- Step 0 shipped with `tests/test_blast_radius.py` (16 tests). The ones that
+  matter are the negatives: `grep -r rm .` is not a deletion, `find … | xargs
+  rm` is, `"ok xoá đi"` / `"yes delete them"` / `"go ahead"` do **not** open the
+  gate, a token approves only its own key set, and unreadable pending storage
+  grants nothing. `tests/test_tool_name_references.py` freezes the tool-name
+  literals the gate keys on.
 - Step 1 ships behind no behavior change: assert the vector's six predicates
   against fixtures, including a path outside the workspace root (the
   `09_CD_Team` case from the traced session) and a path that resolves inside but
@@ -294,14 +395,22 @@ the planner decides *how big the change* only when something will mutate.
   file.
 - Step 5: a manifest declaring 1 file while the worker touches 6 halts the run.
 
-## Decisions required before step 1
+## Decisions taken (2026-07-29) — none outstanding
 
-1. **Who triages the turn** — root-in-first-cycle (my recommendation: it is
-   already a model call, so triage is ~free) versus planner-always (evidence-
-   based but pays 30–61 s on every "read run.py").
-2. **Does `_CASUAL_RE` keep its zero-token fast path**, or does "hi" become a
-   model call? Recommendation: keep it, as the one hint promoted to a route,
-   and accept that it is a cost hack rather than a principle.
-3. **Approve the `musubi-tier` change** on the lexical judgment layer
-   (`substrate / expires-when: never` → `ephemeral / expires-when: the root
-   triages its own turn`). Without this, step 4 cannot land.
+1. **Who triages the turn** — the **root**, in its first cycle. It is already a
+   model call, so triage costs ~0 extra spawns; planner-always would pay the
+   observed 30–61 s on every "read run.py". Settled by the governing principle
+   rather than by the cost table: triage is a judgment, so no line of code
+   awards it — the root is simply where a judgment first becomes possible.
+2. **`_CASUAL_RE` does not keep its zero-token fast path.** Eurus: *"hi không
+   cần giữ"*. The earlier recommendation (keep it as a cost hack) is withdrawn —
+   a branch that exists only because it is cheap is exactly the kind of
+   exception that makes the rest of the layer defensible.
+3. **The `musubi-tier` change is approved and shipped** (`d579c75`).
+4. **The destructive gate is (b), at the tool boundary**, with delete N=1 and
+   overwrite N=5, harness-verified token consent, and Approve/Reject in the
+   Console. Shipped in `dd41918`, `c896bcc`, `f61669d`.
+5. **Harness-verified consent is preferred over model-mediated confirmation.**
+   Eurus: *"có lẽ vẫn nên ưu tiên harness"*. A confirmation the model relays is
+   only as reliable as the model's relaying of it — which is precisely the
+   failure `_ensure_grant_visible` had to close.

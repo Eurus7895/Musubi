@@ -103,6 +103,31 @@ enforcement path for the same dimension.
 
 ---
 
+## Dissolution candidates
+
+Every `musubi-tier: ephemeral` component, with the trigger that retires it and
+what its removal buys. This is the table `CLAUDE.md` § Substrate vs ephemeral
+points at; the tags in the source files are the source of truth, and this list
+exists so the removal cost is visible in one place rather than by `grep`.
+
+| Component | `expires-when:` | `cost-lever:` |
+|---|---|---|
+| `agent/scope.py` | the root triages its own turn from the evidence vector, leaving one deterministic question — is the request destructive? — whose answer is a warning, not a refusal | 18 of 19 regexes, `assess_request`, the pre-run `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, and the `pending_clarification` column (~551 lines) |
+| `agent/subagent.py` | models gain reliable native multi-agent tool-use | the standalone spawn→run→complete driver (~120 lines) |
+| `session/sub_sessions.py` | models gain reliable native multi-agent tool-use | ~400 lines of lifecycle + cascade-abandon machinery |
+| `agent/pipeline_runner.py` | models orchestrate multi-step pipelines natively | the driver-side stage sequencer (~90 lines) |
+| `memory/session_distiller.py` | the 4-stage pipeline is dissolved | ~250 lines tied to the planner-designer-coder-reviewer shape |
+| `session/correction_loop.py` | models pass verifier checks on first try at 95th-percentile rate | the retry agent + `validation_feedback` pipeline |
+| `.github/agents/**` (14 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
+
+Two triggers dominate: *native multi-agent tool-use* retires the spawn and
+sub-session machinery together (~520 lines), and *the root triages its own turn*
+retires the lexical layer. Neither is scheduled — they fire on model capability,
+not on a date. `scripts/check_musubi_tier.py` fails CI when a new or modified
+file in scope carries no tag, so this list cannot silently fall behind the code.
+
+---
+
 ## Postponed
 
 - **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
@@ -112,6 +137,31 @@ enforcement path for the same dimension.
 ---
 
 ## Completed Tracks
+
+- Destruction is gated on a measurement, not on a sentence — the old guard read
+  the user's *sentence* for delete-ish words, so it refused the honest request
+  ("delete all \*.html") while `rm -rf build` reached `musubi_run_command`
+  untouched, whose own contract says *"No 'dangerous command' detection"*. The
+  lexical regex is now a **warning** to the model and routes nothing
+  (`RouteKind.MANUAL_DESTRUCTIVE` was added during the refactor, then deleted
+  once nothing could produce it). The hard stop moved to the tool boundary:
+  `agent/blast_radius.py::measure` resolves what a call would destroy before it
+  runs, counting deletes from argv verbs **in command position** (`grep -r rm .`
+  passes; `find … | xargs rm` does not) and overwrites per `musubi_write_file`,
+  at delete N=1 / overwrite N=5 per run. A command whose targets cannot be
+  resolved statically is `unanalyzable`, which is over threshold — fail-closed.
+  Consent is a token the harness mints (`allow-` + 6 hex over the sorted
+  destruction keys, so one extra file mints a different token and approval
+  cannot silently widen) and matches literally against the **user-role**
+  message; a model cannot author a user turn, so the token is structural proof
+  a human granted it. `_ensure_grant_visible` re-appends any token the model
+  dropped from its answer, and the Console renders Approve/Reject that submit
+  that same token through the ordinary `send_chat` route — one mechanism, two
+  surfaces, no GUI-only authority. Splitting judging from enforcing came with
+  it: `change_assessment.py` → `manifest.py` (substrate, arithmetic over an
+  LLM-declared radius), all 19 lexical regexes into `scope.py` (**re-tiered
+  substrate → ephemeral**, HI #9 ask approved). Plan:
+  [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
 - Terminating clarification — the deterministic "stops at one clarification"
   halt had nothing counting to one. `classify_task` reads a single message, so

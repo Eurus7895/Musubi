@@ -34,12 +34,13 @@ run-trace post-mortem, never a summary.
 
 **Substrate (invest):** audit DB tables · `.github/skills/*/SKILL.md` catalog · 3-tier memory ·
 append-only stage store · Hard Invariants · policy engine · `TokenBudgetEnforcer` ·
-`_STAGE_PERMISSIONS` firewall · `musubi_*` tool catalog.
+`_STAGE_PERMISSIONS` firewall · `musubi_*` tool catalog · blast-radius measurement at the tool
+boundary (`agent/blast_radius.py`, `agent/manifest.py`).
 
-**Ephemeral (label + schedule for removal):** the 4-stage pipeline shape · the
-explorer/investigator/reviewer-aux split · correction loop + `validation_feedback` retry · cycle-loop
-guards · path-rules and workspace-root preamble blocks · per-stage tagged scaffolds · worker prompt
-scaffolding.
+**Ephemeral (label + schedule for removal):** the lexical scope layer (`agent/scope.py`) · the 4-stage
+pipeline shape · the explorer/investigator/reviewer-aux split · correction loop +
+`validation_feedback` retry · cycle-loop guards · path-rules and workspace-root preamble blocks ·
+per-stage tagged scaffolds · worker prompt scaffolding.
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration trigger fires.** Per-component
 analysis, removability cost, and cost-lever values → [`docs/roadmap.md`](./docs/roadmap.md)
