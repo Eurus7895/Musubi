@@ -1,8 +1,31 @@
-"""Deterministic scope hints for the standalone root agent.
+"""Lexical request classification — the pre-model routing layer.
 
-musubi-tier: substrate
-expires-when: never - risk/ambiguity/blast-radius hints are durable routing
-  context even as model quality improves.
+musubi-tier: ephemeral
+expires-when: the root triages its own turn from the evidence vector, leaving
+  this file one deterministic question — is the request destructive? — whose
+  answer is a WARNING to the model, not a refusal. See
+  docs/superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md
+cost-lever: deletes 18 of 19 regexes, assess_request, the pre-run ask_scope
+  halt, BROAD_PRODUCT_QUESTION, and the pending_clarification storage column
+
+What lives here, and why it is temporary
+----------------------------------------
+Every function below answers a question about ENGLISH: is this request broad,
+is it an edit, is it sensitive, does the user want advice or a file. Text is
+the only input and nothing checks the answer, so a wrong verdict is silent —
+which is exactly how "fix the typo in the security section of the README" came
+to read as critical while "wire up Okta" read as routine.
+
+The repository already states the position this file contradicts. From the
+`request-triage` skill pushed to the planner on every run: *"The harness makes
+no judgment about how large or how risky a change is. It cannot."*
+
+What replaces it: the root triages its own turn (it is already a model call),
+the planner declares blast radius in a change manifest, and the substrate
+ENFORCES that declaration deterministically in `agent/manifest.py`. What stays
+here at the end is one branch — destructive or not — emitted as a warning the
+model acts on, with the hard stop measured at the tool boundary where the
+files being touched can actually be counted.
 """
 
 from __future__ import annotations
@@ -11,7 +34,7 @@ import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from agent.change_assessment import ChangeAssessment, assess_request
+from agent.manifest import Band, ChangeAssessment
 from agent.routes import RouteKind
 
 
@@ -171,6 +194,91 @@ _PATH_TOKEN_RE = re.compile(
     r"(?i)[a-z]:[\\/][\w.\-\\/]*|[\w.\-]*[\\/][\w.\-/\\]*|"
     r"\b[\w.\-]+\.(?:py|js|jsx|ts|tsx|rs|go|java|html|htm|css|md|json|ya?ml|toml|csv|txt)\b"
 )
+
+
+_BROAD_PRODUCT_RE = re.compile(
+    r"(?i)\b(create|make|build|generate|implement)\b.*\b"
+    r"(website|site|web app|application|app|platform|system)\b"
+)
+_STATIC_FILE_RE = re.compile(
+    r"(?i)\b(static|single[- ]file)\b.*\b(html|website|page)\b|"
+    r"\b[\w.-]+\.html\b"
+)
+_BOUNDED_ARTIFACT_RE = re.compile(
+    r"(?i)\b(create|make|generate|write|build)\b.*\b"
+    r"(file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc)\b"
+)
+_FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
+_MULTIPART_RE = re.compile(
+    r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
+)
+# NOTE: the lexical critical-risk gate was REMOVED. It matched a word, not a
+# change: it refused "fix the typo in the security section of the README" with
+# zero model calls, while "wire up Okta", "add SSO", and "store user passwords"
+# sailed past it. Risk is now declared by the planner in the change manifest
+# (`security_sensitive`), read from the code rather than guessed from the
+# sentence, and enforced deterministically by `assess_manifest`. The
+# sensitive-area vocabulary that remains lives in `agent/scope.py` and has one
+# narrow job: withhold the lone-coder shortcut so a planner reads first.
+
+
+#: The one question a broad product request is stopped for. It asks ONLY what
+#: the gate below can actually act on — the page shape, tested by
+#: `_STATIC_FILE_RE` and `_FRAMEWORK_RE`. The earlier wording led with "What
+#: should the website do?", which nothing here tests: a user who answered it
+#: ("a weather checking website") re-matched `_BROAD_PRODUCT_RE` with no escape
+#: hatch touched, so an earnest answer could not move the route. A question the
+#: asker cannot act on is not a governance step. The content ask stays, demoted
+#: to a second sentence and explicitly optional: it enriches the planner's brief
+#: without deciding anything, and the turn proceeds either way.
+BROAD_PRODUCT_QUESTION = (
+    "Should this be a single static HTML page, or a framework app "
+    "(React, Next.js, Vue, Svelte, or Angular)? Add what the page should "
+    "show in the same reply if you know it — I will build from your answer "
+    "either way."
+)
+
+
+def assess_request(task: str) -> ChangeAssessment:
+    """Bands + route for one raw user request. Pure text analysis, zero LLM.
+
+    This function NEVER returns `plan_design_workflow`: nothing readable from
+    one sentence establishes blast radius, so "large" is decided in exactly one
+    place — `assess_manifest`, from what the planner declares after reading the
+    code. Precedence here: a broad product request without deliverable
+    constraints stops for ONE clarification; bounded static/named artifacts
+    route to a single coder; a framework scaffold with multiple parts is a
+    planned medium change; anything left is a medium change on insufficient
+    evidence.
+    """
+    text = " ".join((task or "").split())
+    if _BROAD_PRODUCT_RE.search(text) and not (
+        _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
+    ):
+        return ChangeAssessment(
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
+            ("broad-product-without-deliverable-constraints",),
+            BROAD_PRODUCT_QUESTION,
+        )
+    if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
+            ("bounded-static-artifact",),
+        )
+    if _BOUNDED_ARTIFACT_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
+            ("bounded-named-artifact",),
+        )
+    if _FRAMEWORK_RE.search(text) and _MULTIPART_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
+            ("framework-multifile-change",),
+        )
+    return ChangeAssessment(
+        Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
+        RouteKind.PLANNER_THEN_CODER_CHECK, ("insufficient-deterministic-evidence",),
+    )
 
 
 def _mutation_intent(text: str) -> bool:

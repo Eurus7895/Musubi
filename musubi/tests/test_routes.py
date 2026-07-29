@@ -6,11 +6,8 @@ a declared `RouteKind`, and that every declared kind carries prompt guidance.
 
 from __future__ import annotations
 
-from agent.change_assessment import (
-    ChangeManifest,
-    assess_manifest,
-    assess_request,
-)
+from agent.manifest import ChangeManifest, assess_manifest
+from agent.scope import assess_request
 from agent.routes import RouteKind
 from agent.scope import ScopeHint, ScopeKind, classify_task
 

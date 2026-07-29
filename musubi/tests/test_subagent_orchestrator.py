@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from agent.change_assessment import BROAD_PRODUCT_QUESTION
+from agent.scope import BROAD_PRODUCT_QUESTION
 from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.run import Orchestration, run_agent
 from agent.subagent import (

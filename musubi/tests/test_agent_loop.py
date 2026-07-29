@@ -18,7 +18,7 @@ import pytest
 
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
-from agent.change_assessment import BROAD_PRODUCT_QUESTION
+from agent.scope import BROAD_PRODUCT_QUESTION
 from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter

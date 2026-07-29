@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from agent.change_assessment import BROAD_PRODUCT_QUESTION, Band, assess_request
-from agent.scope import ScopeKind, classify_task
+from agent.manifest import Band
+from agent.scope import (
+    BROAD_PRODUCT_QUESTION,
+    ScopeKind,
+    assess_request,
+    classify_task,
+)
 
 
 def test_consultative_question_routes_to_advisory_without_workers() -> None:
@@ -418,7 +423,7 @@ def test_lexical_layer_is_frozen_not_grown() -> None:
         len(re.findall(r"^_[A-Z0-9_]+_RE = re\.compile", src, re.M))
         for src in (
             (lexical / name).read_text(encoding="utf-8")
-            for name in ("scope.py", "change_assessment.py")
+            for name in ("scope.py",)
         )
     )
     assert total <= LEXICAL_REGEX_CEILING, (

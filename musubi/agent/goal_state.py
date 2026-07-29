@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from agent.change_assessment import (
+from agent.manifest import (
     Band,
     ChangeAssessment,
     assess_manifest,
