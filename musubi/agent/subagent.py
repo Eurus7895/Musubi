@@ -638,10 +638,26 @@ def _strip_frontmatter(md: str) -> str:
     return after.lstrip("\n")
 
 
-def _read_agent_md(role: str, agents_dir: Path | None) -> str:
+def _agents_root(agents_dir: Path | None) -> Path:
+    """The repo root that holds `.github/agents`, from a possibly-None dir."""
     base = agents_dir or _default_agents_dir()
-    root = base.parent.parent if base.name == "agents" else base
-    return read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
+    return base.parent.parent if base.name == "agents" else base
+
+
+def read_worker_prompt(role: str, agents_dir: Path | None = None) -> str:
+    """`workers/<role>.agent.md`, or "" when the role has no worker prompt.
+
+    Public because the pipeline runner needs exactly this lookup as the first
+    half of its own two-step resolution, and used to reimplement the three
+    lines rather than call them.
+    """
+    return read_agent_prompt(
+        [_agents_root(agents_dir)], role, purpose=AgentPromptPurpose.WORKER,
+    )
+
+
+def _read_agent_md(role: str, agents_dir: Path | None) -> str:
+    return read_worker_prompt(role, agents_dir)
 
 
 def _default_agents_dir() -> Path:

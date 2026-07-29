@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from agent.change_assessment import ChangeAssessment, assess_request
+from agent.routes import RouteKind
 
 
 class ScopeKind(StrEnum):
@@ -33,20 +34,20 @@ class ScopeHint:
     #: Ambiguity/impact/risk bands for a mutation request (None on the casual,
     #: destructive, vague, and read-only branches, which return before the
     #: assessment runs). Carries the one deterministic clarifying question the
-    #: driver returns without a model call when route == "ask_scope".
+    #: driver returns without a model call when route == RouteKind.ASK_SCOPE.
     assessment: ChangeAssessment | None = None
 
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
-            "advisory": (
+            RouteKind.ADVISORY: (
                 "Advisory route: the user asked to be ADVISED, not for a "
                 "change. Answer directly from your own reasoning in ONE turn. "
                 "Do NOT spawn a worker: the request names no file, so no "
                 "read-only worker can add evidence, and a planner would "
                 "return a change manifest the user never asked for."
             ),
-            "single_explorer": (
+            RouteKind.SINGLE_EXPLORER: (
                 "Read-only route: the user wants to inspect, not change. Spawn "
                 "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
                 "compact brief to reach the target path or files and summarize "
@@ -54,14 +55,14 @@ class ScopeHint:
                 "attempt any edit. If the path is outside the workspace root or "
                 "does not exist, report that plainly and stop — do not retry."
             ),
-            "single_coder": (
+            RouteKind.SINGLE_CODER: (
                 "Simple route: start with one coder worker using a compact, "
                 "implementation-ready brief. Recommend a skill for the coder "
                 "(musubi_recommend_skills) and pass the best skill_id as "
                 "pushed_skill_id on the spawn. This is an initial routing "
                 "recommendation, not a lifetime worker cap."
             ),
-            "planner_then_coder_check": (
+            RouteKind.PLANNER_THEN_CODER_CHECK: (
                 "Medium route: spawn planner first for scope, acceptance "
                 "criteria, and a change manifest; then spawn coder with that "
                 "plan. Do not ask coder to both plan and implement.\n"
@@ -72,17 +73,17 @@ class ScopeHint:
                 "sent to find its own facts spends its whole turn budget "
                 "reading and returns no manifest at all."
             ),
-            "plan_design_workflow": (
+            RouteKind.PLAN_DESIGN_WORKFLOW: (
                 "Large route: require explicit plan/design/implementation/"
                 "review structure before mutation."
             ),
-            "ask_scope": (
+            RouteKind.ASK_SCOPE: (
                 "Unknown route: ask one clarifying question before spawning."
             ),
-            "direct_answer": (
+            RouteKind.DIRECT_ANSWER: (
                 "Casual route: answer directly in one turn without tools or workers."
             ),
-            "manual_destructive": (
+            RouteKind.MANUAL_DESTRUCTIVE: (
                 "Destructive route: do not call tools or workers. Warn and give "
                 "manual operator steps instead."
             ),
@@ -271,14 +272,14 @@ def _clarification_already_spent(
         if assessment is None
         else replace(
             assessment,
-            route="planner_then_coder_check",
+            route=RouteKind.PLANNER_THEN_CODER_CHECK,
             evidence=assessment.evidence + ("clarification-answered",),
             clarifying_question=None,
         )
     )
     return ScopeHint(
         kind=ScopeKind.MEDIUM_CHANGE,
-        route="planner_then_coder_check",
+        route=RouteKind.PLANNER_THEN_CODER_CHECK,
         reason="clarification already asked and answered; plan on what is known",
         requires=("plan", "implementation", "verification"),
         assessment=downgraded,
@@ -310,13 +311,13 @@ def classify_task(
     if _CASUAL_RE.match(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="direct_answer",
+            route=RouteKind.DIRECT_ANSWER,
             reason="casual chat does not need tools",
         )
     if _DESTRUCTIVE_FILE_RE.search(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="manual_destructive",
+            route=RouteKind.MANUAL_DESTRUCTIVE,
             reason="destructive file operation needs explicit operator control",
             requires=("manual_confirmation",),
         )
@@ -329,7 +330,7 @@ def classify_task(
             return _clarification_already_spent(None)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="ask_scope",
+            route=RouteKind.ASK_SCOPE,
             reason="request lacks a concrete target",
             requires=("clarification",),
         )
@@ -352,7 +353,7 @@ def classify_task(
     ):
         return ScopeHint(
             kind=ScopeKind.ADVISORY,
-            route="advisory",
+            route=RouteKind.ADVISORY,
             reason="consultative question with no deliverable or path target",
         )
 
@@ -368,7 +369,7 @@ def classify_task(
     if has_history and _is_bare_follow_up(text):
         return ScopeHint(
             kind=ScopeKind.ADVISORY,
-            route="advisory",
+            route=RouteKind.ADVISORY,
             reason="bare follow-up in an ongoing conversation",
         )
 
@@ -387,7 +388,7 @@ def classify_task(
     ):
         return ScopeHint(
             kind=ScopeKind.INSPECT,
-            route="single_explorer",
+            route=RouteKind.SINGLE_EXPLORER,
             reason="read-only inspection of a path or files",
         )
 
@@ -399,12 +400,12 @@ def classify_task(
     # it: two keywords made "fix typo in auth.py and payment.py" a large
     # feature, while "rewrite the entire user system" scored zero.
     assessment = assess_request(text)
-    if assessment.route == "ask_scope":
+    if assessment.route == RouteKind.ASK_SCOPE:
         if not allow_clarification:
             return _clarification_already_spent(assessment)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="ask_scope",
+            route=RouteKind.ASK_SCOPE,
             reason="broad product request without deliverable constraints",
             requires=("clarification",),
             assessment=assessment,
@@ -420,7 +421,7 @@ def classify_task(
     if has_path and _SIMPLE_EDIT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_EDIT,
-            route="single_coder",
+            route=RouteKind.SINGLE_CODER,
             reason="known file and low-risk edit",
             assessment=assessment,
         )
@@ -428,7 +429,7 @@ def classify_task(
     if _ARTIFACT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_ARTIFACT,
-            route="single_coder",
+            route=RouteKind.SINGLE_CODER,
             reason="concrete low-risk artifact request",
             assessment=assessment,
         )
@@ -436,7 +437,7 @@ def classify_task(
     if no_shortcut:
         return ScopeHint(
             kind=ScopeKind.MEDIUM_CHANGE,
-            route="planner_then_coder_check",
+            route=RouteKind.PLANNER_THEN_CODER_CHECK,
             reason="touches a sensitive area; a planner reads before mutation",
             requires=("plan", "implementation", "verification"),
             assessment=assessment,
@@ -444,7 +445,7 @@ def classify_task(
 
     return ScopeHint(
         kind=ScopeKind.MEDIUM_CHANGE,
-        route="planner_then_coder_check",
+        route=RouteKind.PLANNER_THEN_CODER_CHECK,
         reason="concrete change but scope is not obviously tiny",
         requires=("plan", "implementation", "verification"),
         assessment=assessment,

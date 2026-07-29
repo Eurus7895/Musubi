@@ -73,6 +73,9 @@ db.sqlite3-journal
 musubi/storage/musubi.db
 musubi/storage/audit.db
 musubi/memory/cross_session.db
+# SQLite rollback journals beside them. An interrupted write leaves one
+# behind, and it was showing up as an untracked file after a test run.
+*.db-journal
 # Runtime DBs created when the server runs with the repo root as MUSUBI_ROOT
 # (e.g. tests spawning the real MCP server) — never part of the tree.
 /data/

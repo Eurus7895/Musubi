@@ -85,6 +85,8 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
+from agent.routes import RouteKind
+from agent.textfmt import bounded
 from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
@@ -345,7 +347,7 @@ class Orchestration:
             ):
                 self.goal_state.apply_planner_manifest(summary)
                 if self.goal_state.role_chain or (
-                    self.goal_state.route == "plan_design_workflow"
+                    self.goal_state.route == RouteKind.PLAN_DESIGN_WORKFLOW
                 ):
                     # A large change owes designer → coder → reviewer after the
                     # planner. That is four workers, one more than the default
@@ -624,7 +626,7 @@ async def run_agent(
     # clarification, and the pending request is folded back in so the planner
     # gets the whole intent rather than the fragment the user just typed.
     effective_task = task
-    if scope_hint.route == "ask_scope":
+    if scope_hint.route == RouteKind.ASK_SCOPE:
         pending = _pending_clarification(
             chat_id, db_path=context_compression_db_path, log=log,
         )
@@ -697,7 +699,7 @@ async def run_agent(
                 # message.
                 clarification_request=(
                     effective_task[:MAX_PENDING_CLARIFICATION_CHARS]
-                    if scope_hint.route == "ask_scope"
+                    if scope_hint.route == RouteKind.ASK_SCOPE
                     else None
                 ),
             )
@@ -1966,9 +1968,9 @@ def _deterministic_scope_answer(
     scope_hint: ScopeHint,
     goal_state: GoalState | None = None,
 ) -> str | None:
-    if scope_hint.route == "direct_answer":
+    if scope_hint.route == RouteKind.DIRECT_ANSWER:
         return "Hi! How can I help?"
-    if scope_hint.route == "ask_scope":
+    if scope_hint.route == RouteKind.ASK_SCOPE:
         # High ambiguity halts BEFORE any parent session, model call, or worker
         # spawn: one deterministic clarifying question, zero tokens spent.
         assessment = scope_hint.assessment
@@ -1979,7 +1981,7 @@ def _deterministic_scope_answer(
     # that route from text, and when a manifest produces it the goal runs the
     # designer → coder → reviewer chain instead of halting. A large change is
     # more review, not a refusal handed back as a command to type.
-    if scope_hint.route == "manual_destructive":
+    if scope_hint.route == RouteKind.MANUAL_DESTRUCTIVE:
         return (
             "I cannot safely delete files from this route because deletion is "
             "destructive and there is no interactive confirmation step here.\n\n"
@@ -2164,13 +2166,7 @@ REPLAY_TOOL_ROW_MAX_CHARS = 2000
 
 
 def _elide_replayed_tool_row(content: str) -> str:
-    if len(content) <= REPLAY_TOOL_ROW_MAX_CHARS:
-        return content
-    elided = len(content) - REPLAY_TOOL_ROW_MAX_CHARS
-    return (
-        content[:REPLAY_TOOL_ROW_MAX_CHARS]
-        + f"\n…[{elided} chars elided on replay]"
-    )
+    return bounded(content, REPLAY_TOOL_ROW_MAX_CHARS, collapse=False)
 
 
 def _record_agent_turn(
@@ -2674,7 +2670,7 @@ def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
             "compact_artifact",
             "split_files",
             "append_chunks",
-            "ask_scope",
+            RouteKind.ASK_SCOPE,
         ],
         "message": (
             "Model output hit max_tokens while emitting tool calls, so Musubi "
@@ -3138,7 +3134,7 @@ def _skill_loaded_successfully(text: str) -> bool:
 
 
 def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return bounded(text, limit, collapse=False)
 
 
 def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:

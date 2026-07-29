@@ -48,24 +48,57 @@ KNOWN_FAMILIES = frozenset({
 })
 
 
+def config_candidates(
+    explicit: str | os.PathLike[str] | None,
+    env_var: str,
+    *,
+    cwd: tuple[str, ...],
+    home: tuple[str, ...],
+) -> list[Path]:
+    """Ordered config locations: explicit arg → $env_var → cwd → home.
+
+    Both config files this host reads (`llm.json`, `mcp.json`) resolve the
+    same way, and they diverged once already — `mcp.json` grew a repo-root
+    `.mcp.json` location that `llm.json` never learned about. One
+    implementation, two callers, so a new lookup rule lands in both by
+    construction.
+
+    `cwd` and `home` are listed SEPARATELY on purpose: `.mcp.json` is a
+    repo-root convention and has never been a $HOME location, so a helper
+    that mirrored one list under both bases would silently invent
+    `~/.mcp.json` as a place Musubi reads config from.
+    """
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    env = os.environ.get(env_var)
+    if env:
+        candidates.append(Path(env))
+    candidates.extend(Path.cwd() / rel for rel in cwd)
+    candidates.extend(Path.home() / rel for rel in home)
+    return candidates
+
+
+def first_existing(candidates: list[Path]) -> Path | None:
+    """The first candidate that is a file, or None."""
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def find_config_path(explicit: str | os.PathLike[str] | None = None) -> Path | None:
     """Resolve the llm.json location.
 
     Order: explicit arg → $MUSUBI_LLM_CONFIG → ./.musubi/llm.json →
     ~/.musubi/llm.json. Returns None if none exists.
     """
-    candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit))
-    env = os.environ.get("MUSUBI_LLM_CONFIG")
-    if env:
-        candidates.append(Path(env))
-    candidates.append(Path.cwd() / ".musubi" / "llm.json")
-    candidates.append(Path.home() / ".musubi" / "llm.json")
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
+    return first_existing(
+        config_candidates(
+            explicit, "MUSUBI_LLM_CONFIG",
+            cwd=(".musubi/llm.json",), home=(".musubi/llm.json",),
+        )
+    )
 
 
 def load_profile(

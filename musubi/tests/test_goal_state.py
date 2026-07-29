@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
 from agent.scope import classify_task
 
@@ -103,7 +104,8 @@ def test_outcome_packet_bounds_unstructured_fallback() -> None:
     )
 
     assert len(packet.summary) <= 800
-    assert packet.summary.endswith("… [truncated]")
+    assert TRUNCATION_MARK in packet.summary
+    assert packet.summary.endswith(" chars]")
 
 
 def test_goal_state_keeps_exact_intent_and_root_only_usage() -> None:

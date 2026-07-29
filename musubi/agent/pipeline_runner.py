@@ -458,15 +458,13 @@ def _read_stage_agent_md(
     caller fails the stage closed.
     """
     from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
-    from agent.subagent import _default_agents_dir
+    from agent.subagent import _agents_root, read_worker_prompt
 
-    base = agents_dir or _default_agents_dir()
-    root = base.parent.parent if base.name == "agents" else base
-    text = read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
+    text = read_worker_prompt(role, agents_dir)
     if text.strip():
         return text
     return read_agent_prompt(
-        [root], role,
+        [_agents_root(agents_dir)], role,
         purpose=AgentPromptPurpose.PIPELINE_STAGE,
         pipeline_name=pipeline_name,
     )

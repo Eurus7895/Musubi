@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from agent.routes import RouteKind
+
 
 class Band(StrEnum):
     LOW = "low"
@@ -96,28 +98,28 @@ def assess_request(task: str) -> ChangeAssessment:
         _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
     ):
         return ChangeAssessment(
-            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
             ("broad-product-without-deliverable-constraints",),
             BROAD_PRODUCT_QUESTION,
         )
     if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
         return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             ("bounded-static-artifact",),
         )
     if _BOUNDED_ARTIFACT_RE.search(text) and not _FRAMEWORK_RE.search(text):
         return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             ("bounded-named-artifact",),
         )
     if _FRAMEWORK_RE.search(text) and _MULTIPART_RE.search(text):
         return ChangeAssessment(
-            Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+            Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
             ("framework-multifile-change",),
         )
     return ChangeAssessment(
         Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
-        "planner_then_coder_check", ("insufficient-deterministic-evidence",),
+        RouteKind.PLANNER_THEN_CODER_CHECK, ("insufficient-deterministic-evidence",),
     )
 
 
@@ -309,7 +311,7 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     if manifest.unknowns and not deferrable:
         listed = ", ".join(manifest.unknowns)
         return ChangeAssessment(
-            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
             tuple(f"unknown:{item}" for item in manifest.unknowns),
             f"The plan leaves open: {listed}. "
             "Please decide before implementation starts.",
@@ -331,7 +333,7 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             Band.LOW,
             Band.HIGH,
             Band.HIGH if flags else Band.MEDIUM,
-            "plan_design_workflow",
+            RouteKind.PLAN_DESIGN_WORKFLOW,
             evidence,
         )
     if (
@@ -339,12 +341,12 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
         and len(manifest.subsystems) <= 1
     ):
         return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             (f"files_expected:{manifest.files_expected}",),
             deferred_unknowns=deferred,
         )
     return ChangeAssessment(
-        Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+        Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
         (
             f"files_expected:{manifest.files_expected}",
             f"subsystems:{len(manifest.subsystems)}",

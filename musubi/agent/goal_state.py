@@ -17,6 +17,8 @@ from agent.change_assessment import (
     assess_manifest,
     parse_change_manifest,
 )
+from agent.routes import RouteKind
+from agent.textfmt import bounded as _bounded
 
 SIMPLE_ROOT_TOKEN_TARGET = 3_000
 DEFAULT_ROOT_TOKEN_TARGET = 8_000
@@ -30,7 +32,7 @@ _SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
 #: The consultative route (`agent/scope.py`): the user asked to be advised,
 #: not for a change. The root is the whole answer, so its decision phase gets
 #: no tools at all.
-ADVISORY_ROUTE = "advisory"
+ADVISORY_ROUTE = RouteKind.ADVISORY
 #: Trailing barren turns before the root is told to stop planning. Three is
 #: the point at which the traced conversation had already spent two planner
 #: round trips and two question walls without a single file on disk.
@@ -63,12 +65,6 @@ _SKILL_READ_TOOLS = frozenset({
 })
 
 
-def _bounded(value: str, limit: int) -> str:
-    compact = " ".join((value or "").split())
-    if len(compact) <= limit:
-        return compact
-    suffix = "… [truncated]"
-    return compact[: limit - len(suffix)].rstrip() + suffix
 
 
 def _fields(text: str) -> dict[str, str]:
@@ -181,7 +177,7 @@ class GoalState:
             assessment=assessment,
             # Medium routes are planner-led: the coder gate opens only after
             # the planner's manifest reclassifies the blast radius.
-            next_role="planner" if route == "planner_then_coder_check" else None,
+            next_role="planner" if route == RouteKind.PLANNER_THEN_CODER_CHECK else None,
         )
 
     def apply_planner_manifest(self, text: str) -> ChangeAssessment:
@@ -198,7 +194,7 @@ class GoalState:
             assess_manifest(manifest)
             if manifest is not None
             else ChangeAssessment(
-                Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+                Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
                 ("missing-or-invalid-change-manifest",),
                 "The planner could not produce a valid change manifest. "
                 "Which files or deliverables should this change include?",
@@ -207,12 +203,12 @@ class GoalState:
         self.assessment = assessment
         self.route = assessment.route
         self.scope = {
-            "single_coder": "simple_artifact",
-            "planner_then_coder_check": "medium_change",
-            "plan_design_workflow": "large_feature",
-            "ask_scope": "unknown",
+            RouteKind.SINGLE_CODER: "simple_artifact",
+            RouteKind.PLANNER_THEN_CODER_CHECK: "medium_change",
+            RouteKind.PLAN_DESIGN_WORKFLOW: "large_feature",
+            RouteKind.ASK_SCOPE: "unknown",
         }[assessment.route]
-        if assessment.route == "plan_design_workflow":
+        if assessment.route == RouteKind.PLAN_DESIGN_WORKFLOW:
             # A large change is not a refusal. It means the remaining work owes
             # a design and an independent review before it is done, so the root
             # runs that chain with the roles it is already allowed to spawn.
@@ -222,7 +218,7 @@ class GoalState:
             self.next_role = (
                 "coder"
                 if assessment.route
-                in {"single_coder", "planner_then_coder_check"}
+                in {RouteKind.SINGLE_CODER, RouteKind.PLANNER_THEN_CODER_CHECK}
                 else None
             )
             self.role_chain = ()

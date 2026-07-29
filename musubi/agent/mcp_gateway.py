@@ -108,16 +108,13 @@ def mcp_config_candidates(
     Exposed so the agent log can show *exactly* where it looked when no
     config is found — the ambiguity is otherwise invisible from the output.
     """
-    candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit))
-    env = os.environ.get("MUSUBI_MCP_CONFIG")
-    if env:
-        candidates.append(Path(env))
-    candidates.append(Path.cwd() / ".mcp.json")
-    candidates.append(Path.cwd() / ".musubi" / "mcp.json")
-    candidates.append(Path.home() / ".musubi" / "mcp.json")
-    return candidates
+    from agent.config import config_candidates
+
+    return config_candidates(
+        explicit, "MUSUBI_MCP_CONFIG",
+        cwd=(".mcp.json", ".musubi/mcp.json"),
+        home=(".musubi/mcp.json",),
+    )
 
 
 def find_mcp_config_path(
@@ -129,10 +126,9 @@ def find_mcp_config_path(
     own project convention) → ./.musubi/mcp.json → ~/.musubi/mcp.json.
     Returns None if none exists (the common case — the feature is opt-in).
     """
-    for c in mcp_config_candidates(explicit):
-        if c.is_file():
-            return c
-    return None
+    from agent.config import first_existing
+
+    return first_existing(mcp_config_candidates(explicit))
 
 
 def load_mcp_servers(

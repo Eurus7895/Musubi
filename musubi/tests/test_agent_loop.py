@@ -19,6 +19,7 @@ import pytest
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
 from agent.change_assessment import BROAD_PRODUCT_QUESTION
+from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter
 
@@ -242,7 +243,7 @@ def test_root_compacts_terminal_worker_feedback_to_goal_state_delta(
     assert cycles == 2
     assert "[root-goal-state]" in replay
     assert "intent=exact user intent" in replay
-    assert "… [truncated]" in replay
+    assert TRUNCATION_MARK in replay
     assert raw_marker not in replay
     assert "root goal-state compacted outcomes=1" in log.getvalue()
 
@@ -1582,7 +1583,7 @@ def test_replay_elides_large_tool_rows() -> None:
     big = "A" * (run_mod.REPLAY_TOOL_ROW_MAX_CHARS + 500)
     elided = run_mod._elide_replayed_tool_row(big)
     assert len(elided) < len(big)
-    assert "chars elided on replay" in elided
+    assert TRUNCATION_MARK in elided
 
     history = {"messages": [
         {"id": 1, "role": "user", "content": "make a dashboard", "ts": "t"},
@@ -1591,7 +1592,7 @@ def test_replay_elides_large_tool_rows() -> None:
     messages = run_mod._messages_from_chat_history("sys", history)
     tool_msg = messages[-1]["content"]
     assert tool_msg.startswith("[prior tool result]")
-    assert "chars elided on replay" in tool_msg
+    assert TRUNCATION_MARK in tool_msg
     assert len(tool_msg) < len(big)
 
 
