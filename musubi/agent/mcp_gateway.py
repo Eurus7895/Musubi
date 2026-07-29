@@ -469,10 +469,16 @@ def _is_spurious_cancel(exc: BaseException) -> bool:
 
 
 def _describe_exc(exc: BaseException) -> str:
-    """One-line cause for the skip log, unwrapping an anyio group to its leaf."""
-    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        leaf = exc.exceptions[0]
-        return f"{type(leaf).__name__}: {leaf}"
+    """One-line cause for the skip log, unwrapping an anyio group to its leaf.
+
+    Unwraps REPEATEDLY, not once. anyio nests groups routinely — a task group
+    inside a task group — and a single unwrap on a two-level nest printed
+    "ExceptionGroup: inner (1 sub-exception)", swallowing the actual cause of
+    the skip. That is the whole value of this line: the operator learns the
+    server was skipped and nothing else unless the leaf reaches the log.
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
 
 

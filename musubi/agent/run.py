@@ -83,6 +83,7 @@ from agent.mcp_gateway import (
     find_mcp_config_path,
     load_mcp_servers,
     mcp_config_candidates,
+    mcp_tool_to_schema,
 )
 from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
@@ -727,7 +728,7 @@ async def run_agent(
 
         gateway = McpGateway()
         mcp_tools = (await session.list_tools()).tools
-        local_tools = [_mcp_to_anthropic_tool(t) for t in mcp_tools]
+        local_tools = [mcp_tool_to_schema(t) for t in mcp_tools]
         surface = _tool_surface(tool_surface)
         visible_local_tools = filter_tool_catalog(local_tools, surface)
         gateway.register_local(session, visible_local_tools)
@@ -2212,14 +2213,6 @@ def _record_agent_turn(
             f"[agent] agent_turn write failed: {type(exc).__name__}: {exc}",
             file=log,
         )
-
-
-def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
-    return {
-        "name": tool.name,
-        "description": tool.description or "",
-        "input_schema": tool.inputSchema or {"type": "object", "properties": {}},
-    }
 
 
 def _extract_text(content_blocks: list[dict[str, Any]]) -> str:

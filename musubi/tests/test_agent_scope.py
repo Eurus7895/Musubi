@@ -389,3 +389,40 @@ def test_ordinary_requests_keep_the_shortcut() -> None:
     # The guard must stay narrow: nothing sensitive, nothing withheld.
     assert classify_task("create a dashboard page").route == "single_coder"
     assert classify_task("update the title in index.html").route == "single_coder"
+
+
+#: Regex count in the lexical routing layer at the moment it was declared
+#: closed for growth. See
+#: docs/superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md —
+#: this layer judges English with pattern matching, the planner's manifest
+#: replaces it, and it is scheduled for deletion.
+LEXICAL_REGEX_CEILING = 19
+
+
+def test_lexical_layer_is_frozen_not_grown() -> None:
+    """The pattern-matching router may be repaired, never extended.
+
+    Fixing a wrong regex keeps the count flat and stays green. ADDING one
+    grows a component that is on the demolition list — the failure is the
+    point: it forces the question "why not in the evidence vector or the
+    planner?" onto a diff, instead of letting the layer quietly accrete the
+    way `_CRITICAL_RISK_RE` and `_LARGE_RISK_RE` did before they drifted
+    apart in 11 places. Raising the ceiling is allowed; doing it silently
+    is not.
+    """
+    import re
+    from pathlib import Path
+
+    lexical = Path(__file__).resolve().parent.parent / "agent"
+    total = sum(
+        len(re.findall(r"^_[A-Z0-9_]+_RE = re\.compile", src, re.M))
+        for src in (
+            (lexical / name).read_text(encoding="utf-8")
+            for name in ("scope.py", "change_assessment.py")
+        )
+    )
+    assert total <= LEXICAL_REGEX_CEILING, (
+        f"lexical routing layer grew to {total} regexes (ceiling "
+        f"{LEXICAL_REGEX_CEILING}). This layer is scheduled for deletion — "
+        "put new judgment in the planner's manifest or the evidence vector."
+    )

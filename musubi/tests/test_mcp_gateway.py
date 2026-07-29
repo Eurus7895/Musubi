@@ -490,3 +490,37 @@ def test_is_spurious_cancel_false_when_task_genuinely_cancelling() -> None:
 
     asyncio.run(_drive())
     assert seen == [False]
+
+
+def test_skip_log_reaches_the_leaf_of_a_NESTED_exception_group() -> None:
+    # `_describe_exc` used to unwrap exactly one level, while its twin in
+    # run.py (`_clean_error`) unwrapped repeatedly — two copies of one idea,
+    # and only one of them got fixed. anyio nests groups routinely (a task
+    # group inside a task group), and on a two-level nest the single unwrap
+    # printed "ExceptionGroup: inner (1 sub-exception)", swallowing the cause
+    # of the skip. That log line is the ONLY thing an operator gets when an
+    # optional server is dropped, so it has to carry the leaf.
+    from agent.mcp_gateway import _describe_exc
+
+    leaf = ConnectionRefusedError("port 8080 closed")
+    one = BaseExceptionGroup("inner", [leaf])
+    two = BaseExceptionGroup("outer", [one])
+    three = BaseExceptionGroup("outermost", [two])
+
+    for depth, exc in ((0, leaf), (1, one), (2, two), (3, three)):
+        assert _describe_exc(exc) == "ConnectionRefusedError: port 8080 closed", depth
+
+
+def test_one_owner_for_the_anthropic_tool_schema() -> None:
+    # `run.py` carried a byte-identical copy of this under another name. Two
+    # copies of the vendor tool shape drift the moment one provider changes.
+    from agent import run as run_mod
+    from agent.mcp_gateway import mcp_tool_to_schema
+
+    assert not hasattr(run_mod, "_mcp_to_anthropic_tool")
+    tool = SimpleNamespace(name="x", description=None, inputSchema=None)
+    assert mcp_tool_to_schema(tool) == {
+        "name": "x",
+        "description": "",
+        "input_schema": {"type": "object", "properties": {}},
+    }

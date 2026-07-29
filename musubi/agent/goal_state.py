@@ -294,13 +294,20 @@ class GoalState:
                 " then " + " → ".join(self.role_chain) if self.role_chain else ""
             )
             order = f"next_role={self.next_role}{remaining}\n"
+        # Bands only — NOT `assessment.route`. Two components decide the route
+        # from the same sentence, and on every sensitive request they disagree:
+        # `assess_request` reads "make a payments dashboard" as a bounded
+        # artifact (single_coder) while `classify_task` withholds the shortcut
+        # (planner_then_coder_check). Rendering both put two contradictory
+        # orders in one prompt. `self.route` above is the one that governs, so
+        # it is the only one the model is shown; the bands still carry what the
+        # assessment actually knows.
         bands = ""
         if self.assessment is not None:
             bands = (
                 f"assessment=ambiguity:{self.assessment.ambiguity.value},"
                 f"impact:{self.assessment.impact.value},"
-                f"risk:{self.assessment.risk.value},"
-                f"route:{self.assessment.route}\n"
+                f"risk:{self.assessment.risk.value}\n"
             )
         conversation = ""
         if self.chat_turns:
