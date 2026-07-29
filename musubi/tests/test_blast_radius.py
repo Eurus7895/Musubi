@@ -271,3 +271,23 @@ def test_gate_mints_a_token_then_honours_it_next_run(
     assert _preflight_destructive_batch(
         other, orchestration=second, log=io.StringIO(),
     ) != {}
+
+
+def test_a_dropped_token_is_restored_by_the_harness(workspace: Path) -> None:
+    """Consent must not depend on the model relaying the refusal faithfully."""
+    from agent.run import _ensure_grant_visible
+
+    pending = [("allow-a3f9c1", ("build/a.js",)), ("allow-b7e204", ("out/b.js",))]
+
+    # The model paraphrased and dropped both tokens: the harness puts them back.
+    restored = _ensure_grant_visible("I stopped before deleting anything.", pending)
+    assert "reply with: allow-a3f9c1" in restored
+    assert "reply with: allow-b7e204" in restored
+
+    # A token the model DID relay is not printed twice.
+    kept = _ensure_grant_visible("… reply with: allow-a3f9c1", [pending[0]])
+    assert kept.count("allow-a3f9c1") == 1
+
+    # Two refusals over the same radius print one line, not two.
+    once = _ensure_grant_visible("blocked", [pending[0], pending[0]])
+    assert once.count("allow-a3f9c1") == 1

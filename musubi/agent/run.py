@@ -928,6 +928,10 @@ async def run_agent(
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
+    if orchestration is not None and orchestration.pending_destructive:
+        final_answer = _ensure_grant_visible(
+            final_answer, orchestration.pending_destructive
+        )
     if chat_id:
         _append_chat_message(
             chat_id, "assistant", final_answer,
@@ -2629,6 +2633,31 @@ def _preflight_destructive_batch(
             )
         totals.add(radius)
     return refusals
+
+
+def _ensure_grant_visible(
+    answer: str,
+    pending: list[tuple[str, tuple[str, ...]]],
+) -> str:
+    """Guarantee every un-echoed approval token reaches the user.
+
+    The gate's refusal is a TOOL RESULT: the model reads it and then writes the
+    user's answer in its own words. A model that paraphrases the refusal — or
+    judges it not worth mentioning — leaves the user holding no token, and so
+    no way to approve, from either surface. Consent must not depend on the
+    model's diligence, so the harness appends whatever the model dropped.
+
+    `dict.fromkeys` deduplicates while keeping the order the refusals happened
+    in, so two calls hitting the same radius print one line, not two.
+    """
+    missing = [token for token, _ in pending if token not in answer]
+    if not missing:
+        return answer
+    lines = "\n".join(
+        f"To approve exactly this and nothing else, reply with: {token}"
+        for token in dict.fromkeys(missing)
+    )
+    return f"{answer.rstrip()}\n\n{lines}"
 
 
 def _destructive_refusal_answer(reason: str) -> str:

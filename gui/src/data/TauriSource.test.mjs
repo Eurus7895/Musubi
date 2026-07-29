@@ -567,3 +567,44 @@ test('legacy Pipeline Studio runtime actions are absent', () => {
     assert.equal(actions[name], undefined, name)
   }
 })
+
+test('approving a destruction sends the token as an ordinary user message', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({ orchestratorChatId: 'gui-orchestrator-project', viewedOrchestratorChatId: 'gui-orchestrator-project' })
+
+  source.actions.approveDestructive('allow-a3f9c1')
+
+  // Same command, same argument shape as typing it. The GUI has no private
+  // channel to the gate; consent is a user turn or it is nothing.
+  assert.deepEqual(calls, [{
+    kind: 'send_chat',
+    args: ['allow-a3f9c1', 'gui-orchestrator-project', 'direct', ''],
+  }])
+})
+
+test('rejecting a destruction sends nothing and only clears the offer', () => {
+  const { source, calls } = sourceWithActionSpy()
+
+  source.actions.dismissApproval('allow-a3f9c1')
+
+  assert.deepEqual(calls, [])
+  assert.equal(source.state.dismissedApproval, 'allow-a3f9c1')
+})
+
+test('sending anything spends the dismissal so a stale button cannot linger', () => {
+  const { source } = sourceWithActionSpy()
+  source._setLocal({ dismissedApproval: 'allow-a3f9c1', draft: 'what changed?' })
+
+  source.actions.sendChat()
+
+  assert.equal(source.state.dismissedApproval, '')
+  assert.equal(source.state.draft, '')
+})
+
+test('an empty approval token is not a message', () => {
+  const { source, calls } = sourceWithActionSpy()
+
+  source.actions.approveDestructive('')
+
+  assert.deepEqual(calls, [])
+})
