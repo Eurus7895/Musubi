@@ -59,6 +59,25 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    "no skill evidence"; `planner` has an empty skill allowlist and remains
    skill-less by design.
 
+2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
+   what a request MEANS and starts proving what the record CONTAINS. Governing
+   principle: deciding a turn's triage, scope, or change size is judging — code
+   stops doing it; checking a claim or a measurement is enforcing — code keeps
+   doing it and does more of it.
+   Shipped: the destructive gate (see Completed Tracks) and `agent/evidence.py`
+   — six facts per turn (`names_workspace_path`, `path_exists`,
+   `has_conversation`, `explorer_findings`, `clarification_answered`,
+   `barren_turns`, plus `escaped_paths` for targets outside the workspace root),
+   rendered into the root prompt and logged. **It routes nothing yet**, by
+   design: the distribution is measured before behavior depends on it.
+   Remaining: a fail-closed sufficiency rule refusing a coder spawn while the
+   target is unknown; a root triage prompt of evidence plus overridable hints;
+   then the deletion this buys — `classify_task` reduced to two branches, 18 of
+   19 regexes and the pre-run `ask_scope` halt removed (~551 lines); and
+   `manifest_overrun` promoted from prompt warning to hard stop.
+   Plan:
+   [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

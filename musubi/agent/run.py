@@ -95,6 +95,7 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
+from agent.evidence import collect as collect_evidence
 from agent.routes import RouteKind
 from agent.textfmt import bounded
 from agent.scope import ScopeHint, classify_task
@@ -635,22 +636,22 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
-    scope_hint = classify_task(
-        task,
-        has_history=_chat_has_history(
-            chat_id, db_path=context_compression_db_path, log=log,
-        ),
+    has_conversation = _chat_has_history(
+        chat_id, db_path=context_compression_db_path, log=log,
     )
+    scope_hint = classify_task(task, has_history=has_conversation)
     # The request the rest of the turn works from. It differs from `task` in
     # exactly one case: this message is the ANSWER to the one deterministic
     # clarification, and the pending request is folded back in so the planner
     # gets the whole intent rather than the fragment the user just typed.
     effective_task = task
+    clarification_answered = False
     if scope_hint.route == RouteKind.ASK_SCOPE:
         pending = _pending_clarification(
             chat_id, db_path=context_compression_db_path, log=log,
         )
         if pending:
+            clarification_answered = True
             effective_task = f"{pending}\n\n[clarification answer] {task}"
             scope_hint = classify_task(
                 effective_task, has_history=True, allow_clarification=False,
@@ -685,6 +686,18 @@ async def run_agent(
             f"{chat_usage['barren_turns']} turns without a file",
             file=log,
         )
+    # What the RECORD establishes, as distinct from what the sentence suggests.
+    # Nothing routes on this yet — it renders into the root's prompt and prints
+    # one line per turn so the distribution can be measured before any behavior
+    # depends on it. See the plan's step 1.
+    evidence = collect_evidence(
+        effective_task,
+        has_conversation=has_conversation,
+        explorer_findings=_has_explorer_findings(goal_state),
+        clarification_answered=clarification_answered,
+        barren_turns=chat_usage["barren_turns"],
+    )
+    print(evidence.log_line(), file=log)
     direct_answer = _deterministic_scope_answer(
         effective_task, scope_hint, goal_state,
     )
@@ -828,7 +841,11 @@ async def run_agent(
                 file=log,
             )
         print(f"[agent] {scope_hint.log_line()}", file=log)
-        system_prompt = build_system_prompt(scope_hint.prompt_block())
+        # Hint first, evidence second: the hint is an opinion the root may
+        # override, the evidence is the record it must not contradict.
+        system_prompt = build_system_prompt(
+            scope_hint.prompt_block() + "\n\n" + evidence.prompt_block()
+        )
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
             print("[agent] plan-first requested (--plan)", file=log)
@@ -2080,6 +2097,27 @@ def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, An
             file=log,
         )
         return {"messages": [], "total_tokens": 0, "truncated": False}
+
+
+#: Roles whose outcome establishes a fact about the workspace rather than
+#: changing it. A coder's report is not evidence that the target was found —
+#: it is evidence that something was written, which is a different claim.
+_READ_ONLY_EVIDENCE_ROLES = frozenset({"explorer", "investigator", "finder"})
+
+
+def _has_explorer_findings(goal_state: GoalState) -> bool:
+    """True once a read-only worker has reported into this turn.
+
+    Empty at turn start, by construction: a fresh process holds a fresh
+    `GoalState`. That is correct rather than a limitation — evidence gathered
+    in a PREVIOUS turn is only usable if it was written down, and what was
+    written down is the conversation, which `has_conversation` already covers.
+    """
+    return any(
+        outcome.role in _READ_ONLY_EVIDENCE_ROLES
+        and outcome.status not in {"failed", "error"}
+        for outcome in goal_state.outcomes
+    )
 
 
 def _chat_has_history(

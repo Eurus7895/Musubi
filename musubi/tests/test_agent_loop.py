@@ -3194,3 +3194,43 @@ def test_turn_cap_without_surviving_files_defers_to_root_analysis(
     assert "deferring to root analysis" in log.getvalue()
     assert "automatic recovery: coder" not in log.getvalue()
     assert answer is not None and answer.startswith("[incomplete]")
+
+
+def test_root_system_prompt_carries_the_evidence_vector() -> None:
+    """Step 1 is observable, not yet enforced: the vector renders, nothing routes."""
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}])
+    ])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "Update weather-dashboard.html to refresh every 5 minutes",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert answer == "ok"
+    system_text = router.calls[0]["messages"][0]["content"]
+    # Hint first, evidence second — an opinion the root may override, then the
+    # record it must not contradict.
+    assert system_text.index("[agent-routing-scope]") < system_text.index(
+        "[agent-evidence]"
+    )
+    assert "names_workspace_path=" in system_text
+    assert "[agent] evidence:" in log.getvalue()
+
+
+def test_the_evidence_vector_changes_no_route() -> None:
+    """A request naming nothing still routes exactly as it did before step 1."""
+    from agent.evidence import collect
+    from agent.routes import RouteKind
+    from agent.scope import classify_task
+
+    hint = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
+    vector = collect("Update weather-dashboard.html to refresh every 5 minutes")
+
+    # The vector says the target does not exist here; the route is unmoved.
+    assert vector.path_exists is False
+    assert hint.route == RouteKind.SINGLE_CODER

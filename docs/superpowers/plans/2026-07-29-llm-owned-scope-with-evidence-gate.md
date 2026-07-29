@@ -2,8 +2,9 @@
 
 **Status: governing principle decided (2026-07-29). Step 0 shipped — the
 destructive gate moved from judging a sentence to measuring a call, and the
-tier change landed with it. Steps 1–5 (the evidence vector and the deletion it
-unlocks) not started. No open questions.**
+tier change landed with it. Step 1 shipped — the evidence vector is rendered
+and logged, and routes nothing. Steps 2–5 (the sufficiency rule and the
+deletion it unlocks) not started. No open questions.**
 
 ## What shipped (step 0)
 
@@ -20,6 +21,7 @@ re-tagged.
 | `dd41918` | `agent/blast_radius.py` — the gate measures the CALL. `_DESTRUCTIVE_FILE_RE` demoted from route to prompt warning |
 | `c896bcc` | Approval is a token the harness mints and matches literally against a user message |
 | `f61669d` | Console Approve/Reject; the harness re-appends any token the model dropped from its answer |
+| *(step 1)* | `agent/evidence.py` — six facts about the record, rendered and logged, routing nothing |
 
 ## The principle, in Eurus's words
 
@@ -320,12 +322,37 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   the call instead of judging the sentence; re-tier the lexical layer once the
   safety guard no longer lives inside it. See "What shipped" above.
 
-- [ ] **Step 1 — evidence vector.** New `agent/evidence.py` with the six
-  predicates above and a `prompt_block()` renderer. Pure functions over the
-  request text, the workspace root, and the DB. Tagged `musubi-tier: substrate`,
-  `expires-when: never` (it proves facts, not judgments). Wired into `run_agent`
-  beside today's scope block; nothing routes on it yet, so this step is
-  observable in the logs before it changes any behavior.
+- [x] **Step 1 — evidence vector.** `agent/evidence.py`, `musubi-tier:
+  substrate`, `expires-when: never`. Rendered into the root prompt after the
+  scope hint and printed once per turn as `[agent] evidence: …`. **Nothing
+  routes on it**, which a test pins directly.
+
+  Two departures from the sketch above, both from writing it:
+
+  - **The DB facts are passed in, not queried.** `run_agent` already reads
+    `_chat_has_history`, `_pending_clarification`, and `chat_turn_usage` for its
+    own purposes; a second query path would be a second thing to keep true.
+    `evidence.py` imports no storage module and needs no database in tests.
+  - **A fourth output: `escaped_paths`.** The sketch had one path predicate
+    resolving to true/false. In practice three situations matter and the sketch
+    conflated two of them:
+
+    | Request | `names_workspace_path` | `path_exists` | Meaning |
+    |---|---|---|---|
+    | `read agent/run.py` | true | true | target known and present |
+    | `edit agent/gone.py` | true | false | target known, **not vague** — the filesystem already answered |
+    | `create a website` | false | false | nothing establishes a target |
+    | `summarize /etc/hosts` | false | false | + `escaped_paths` — no worker can reach it |
+
+    The middle row is the one the lexical layer could never see: it read
+    "gone.py" as a fine target and spent a turn on it, or read a vague sentence
+    as a clarification case. The last row is the traced session's ending — the
+    refusal arrived *after* a spawn; the vector states it before one.
+
+  Containment reuses the firewall's own test (`Path.relative_to` against
+  `_workspace_root()`), inlined rather than called because `resolve_path`
+  raises on escape and this needs the escape as data. A test asserts both
+  agree, so the vector cannot promise a path the firewall will then refuse.
 
 - [ ] **Step 2 — sufficiency rule for mutation.** `GoalState` gains a
   deterministic gate: a `coder` spawn is refused while the evidence vector says
