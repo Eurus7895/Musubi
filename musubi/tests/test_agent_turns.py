@@ -84,6 +84,38 @@ def test_chat_turn_usage_aggregates_conversation_cost(fresh_db: Path) -> None:
     assert db.chat_turn_usage("chat-a", db_path=fresh_db)["barren_turns"] == 0
 
 
+def test_pending_clarification_survives_one_turn_and_clears_on_the_next(
+    fresh_db: Path,
+) -> None:
+    # The traced loop: "create a website" was answered with a canned question,
+    # and the answer ("a weather checking website") classified identically, so
+    # the same question came back three times. This row is what lets the next
+    # turn know a question is outstanding and act on the answer instead.
+    assert db.pending_clarification("chat-c", db_path=fresh_db) is None
+
+    db.insert_agent_turn(
+        chat_id="chat-c", parent_session_id="s0", started_at=0.0, ended_at=0.1,
+        model_family="deterministic", cycles=0, tokens_in_estimate=0,
+        tokens_out_estimate=0, lm_ms=0, total_ms=0, db_path=fresh_db,
+        clarification_request="create a website",
+    )
+    assert db.pending_clarification("chat-c", db_path=fresh_db) == (
+        "create a website"
+    )
+    # Scoped per conversation, and a blank id never claims a pending question.
+    assert db.pending_clarification("chat-other", db_path=fresh_db) is None
+    assert db.pending_clarification("", db_path=fresh_db) is None
+
+    # A turn that actually ran clears it — no delete, no marker left to leak
+    # into an unrelated later request.
+    db.insert_agent_turn(
+        chat_id="chat-c", parent_session_id="s1", started_at=1.0, ended_at=2.0,
+        model_family="fake", cycles=3, tokens_in_estimate=10,
+        tokens_out_estimate=10, lm_ms=1, total_ms=1, db_path=fresh_db,
+    )
+    assert db.pending_clarification("chat-c", db_path=fresh_db) is None
+
+
 def test_chat_turn_usage_is_scoped_per_conversation(fresh_db: Path) -> None:
     db.insert_agent_turn(
         chat_id="chat-a", parent_session_id="s", started_at=0.0, ended_at=1.0,

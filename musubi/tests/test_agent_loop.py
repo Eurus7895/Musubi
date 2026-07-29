@@ -2721,6 +2721,61 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     )
 
 
+def test_clarification_is_asked_once_then_the_answer_is_acted_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # The traced loop (chat gui-orchestrator-…-7bce98a4ecdc): "create a
+    # website" was met with the canned question, and so were BOTH answers the
+    # user typed after it — three turns, zero model calls, zero files, the same
+    # sentence every time. The question is a governance step exactly once; the
+    # next message is the answer and must be acted on.
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat_db = tmp_path / "data" / "musubi.db"
+    chat = "chat-clarify"
+
+    silent = FakeRouter([])
+    first_log = io.StringIO()
+    question = asyncio.run(run_agent(
+        "create a website", silent, _musubi_dir(),
+        log=first_log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert silent.calls == []
+    assert question == (
+        "What should the website do, and should it be a static page or use "
+        "a specific framework?"
+    )
+    assert "route=ask_scope" in first_log.getvalue()
+    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
+
+    # Turn 2 answers it. Classified alone the answer is still a broad product
+    # request and would have drawn the identical question.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    second_log = io.StringIO()
+    answer = asyncio.run(run_agent(
+        "i would like to create a weather checking website",
+        router, _musubi_dir(), log=second_log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert answer == "ok"
+    assert len(router.calls) == 1, "the answer must reach the model, not a canned reply"
+    log_text = second_log.getvalue()
+    assert "clarification answered" in log_text
+    assert "route=planner_then_coder_check" in log_text
+    assert "route=ask_scope" not in log_text
+
+    # The root sees the WHOLE intent, not just the fragment typed last.
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "scope=medium_change" in system_text
+    # And the marker is spent: a later broad request gets its own question,
+    # but this one can never be re-asked.
+    assert db.pending_clarification(chat, db_path=chat_db) is None
+
+
 def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
     # Observed with deepseek-v4-flash: the no-tools final call answered with
     # DeepSeek's own tool-call syntax (FULL-WIDTH bars) as prose, and the

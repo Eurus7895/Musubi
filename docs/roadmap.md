@@ -113,6 +113,22 @@ enforcement path for the same dimension.
 
 ## Completed Tracks
 
+- Terminating clarification — the deterministic "stops at one clarification"
+  halt had nothing counting to one. `classify_task` reads a single message, so
+  the answer to *"What should the website do…?"* ("i would like to create a
+  weather checking website") re-matched the same broad-product branch and drew
+  the identical sentence back: three turns, zero model calls, zero files, a
+  fixed point rather than a stall. `agent_turns` now carries
+  `clarification_request` (the request a turn halted on, NULL when the turn
+  ran), `db.pending_clarification` reads it from the latest turn only, and a
+  second `ask_scope` on the same chat merges the pending request with the
+  user's answer and routes it to a planner —
+  `classify_task(…, allow_clarification=False)`, which rewrites every
+  `ask_scope` return and strips the question out of the carried assessment. The
+  escape moves one way only (it can remove a halt, never add one, never widen a
+  route) and fails toward the old behavior if storage is unreadable. Plan:
+  [`2026-07-29-clarification-terminates.md`](./superpowers/plans/2026-07-29-clarification-terminates.md)
+
 - Console now-first Orchestrator and design tokens — the view that answers
   "what is the agent doing right now?" spent ~206 px of stacked chrome before
   any evidence, and the answer was an 11 px pill between "feature-dev mode" and

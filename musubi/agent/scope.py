@@ -8,7 +8,7 @@ expires-when: never - risk/ambiguity/blast-radius hints are durable routing
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from agent.change_assessment import ChangeAssessment, assess_request
@@ -249,13 +249,61 @@ _DESTRUCTIVE_FILE_RE = re.compile(
 )
 
 
-def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
+def _clarification_already_spent(
+    assessment: ChangeAssessment | None,
+) -> ScopeHint:
+    """The route to take when the one clarification has already been asked.
+
+    Never `ask_scope`: the user has answered the deterministic question once,
+    and a second identical question is not a governance step — it is a loop
+    that spends a turn and delivers nothing. The request goes to a planner
+    instead, which reads the workspace and asks its own *specific* questions
+    inside a plan rather than re-emitting a canned sentence.
+
+    The assessment rides along with its route downgraded and its clarifying
+    question dropped, so nothing downstream (`GoalState` bands,
+    `_deterministic_scope_answer`) can resurrect the halt. The bands are left
+    exactly as assessed: the request may still be ambiguous, and the planner
+    should see that.
+    """
+    downgraded = (
+        None
+        if assessment is None
+        else replace(
+            assessment,
+            route="planner_then_coder_check",
+            evidence=assessment.evidence + ("clarification-answered",),
+            clarifying_question=None,
+        )
+    )
+    return ScopeHint(
+        kind=ScopeKind.MEDIUM_CHANGE,
+        route="planner_then_coder_check",
+        reason="clarification already asked and answered; plan on what is known",
+        requires=("plan", "implementation", "verification"),
+        assessment=downgraded,
+    )
+
+
+def classify_task(
+    task: str,
+    *,
+    has_history: bool = False,
+    allow_clarification: bool = True,
+) -> ScopeHint:
     """Classify ONE user message.
 
     `has_history` says only that this `chat_id` already has prior turns — not
     what they were about. It is used in exactly one direction: to route a bare
     conversational follow-up to the cheap advisory answer. Nothing may use it
     to escalate, so a stale or wrong flag can never open a mutation path.
+
+    `allow_clarification=False` says the caller has ALREADY spent this
+    conversation's one deterministic clarification and is passing the merged
+    request (original + the user's answer). Every `ask_scope` return below
+    becomes a planner route instead. Like `has_history`, it moves in exactly
+    one direction — it can only remove a halt, never add one — so a wrong flag
+    costs one planner run and can never block the conversation.
     """
     text = " ".join((task or "").strip().split())
     low = text.lower()
@@ -273,6 +321,12 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
             requires=("manual_confirmation",),
         )
     if not text or _VAGUE_RE.match(text):
+        # An empty message is the one case that still halts after a spent
+        # clarification: there is no merged text to plan from, so the question
+        # is the only move left. Every other vague request carries the prior
+        # turn's content and goes to a planner.
+        if text and not allow_clarification:
+            return _clarification_already_spent(None)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
             route="ask_scope",
@@ -346,6 +400,8 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     # feature, while "rewrite the entire user system" scored zero.
     assessment = assess_request(text)
     if assessment.route == "ask_scope":
+        if not allow_clarification:
+            return _clarification_already_spent(assessment)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
             route="ask_scope",

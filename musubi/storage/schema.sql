@@ -257,6 +257,11 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     -- budgets are process-scoped, so this is what lets a LATER turn see that
     -- the conversation has been spending without delivering anything.
     delivered_artifact   INTEGER NOT NULL DEFAULT 0,
+    -- The request this turn HALTED on when it answered with the deterministic
+    -- clarifying question instead of running; NULL when the turn actually ran.
+    -- The next turn of the same chat merges the user's answer into it and
+    -- routes for real, so one stall costs one question, never a loop.
+    clarification_request TEXT,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_chat

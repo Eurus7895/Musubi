@@ -225,6 +225,60 @@ def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
     assert not hasattr(hint, "max_workers")
 
 
+def test_answered_clarification_never_asks_the_same_question_again() -> None:
+    # The traced loop: turn 1 "create a website" asked the canned question,
+    # turn 2 answered it ("a weather checking website"), and because
+    # `classify_task` reads one message the answer classified identically —
+    # same question, three turns, zero files. With the conversation's one
+    # clarification already spent, the merged request must go to a planner.
+    merged = (
+        "create a website\n\n"
+        "[clarification answer] i would like to create a weather checking website"
+    )
+    assert classify_task(merged).route == "ask_scope"
+
+    hint = classify_task(merged, has_history=True, allow_clarification=False)
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
+    assert hint.requires == ("plan", "implementation", "verification")
+    # The assessment rides along with the halt stripped out, so nothing
+    # downstream can resurrect the question from it.
+    assert hint.assessment is not None
+    assert hint.assessment.route == "planner_then_coder_check"
+    assert hint.assessment.clarifying_question is None
+    assert "clarification-answered" in hint.assessment.evidence
+
+
+def test_spent_clarification_also_releases_a_vague_follow_up() -> None:
+    # "fix this" halts on its own; as the answer to a question already asked it
+    # carries the prior request's content and must route rather than re-ask.
+    assert classify_task("fix this").route == "ask_scope"
+    assert classify_task(
+        "fix this", allow_clarification=False,
+    ).route == "planner_then_coder_check"
+    # An EMPTY message is the one thing still worth a question: there is no
+    # merged text to plan from.
+    assert classify_task("", allow_clarification=False).route == "ask_scope"
+
+
+def test_spent_clarification_only_removes_halts_never_adds_one() -> None:
+    # The flag may only move routing toward doing the work. Every other route
+    # must classify identically with or without it, so a wrong flag can never
+    # escalate a greeting, an inspection, or a deletion into a mutation.
+    for task in (
+        "hi",
+        "delete all *-dashboard.html files",
+        "open C:\\Workspace\\Musubi",
+        "explain each",
+        "update the header text in landing.html",
+        "add authentication to the app",
+    ):
+        assert (
+            classify_task(task, allow_clarification=False).route
+            == classify_task(task).route
+        ), task
+
+
 # ── deterministic ambiguity/impact/risk assessment ──────────────────────────
 
 

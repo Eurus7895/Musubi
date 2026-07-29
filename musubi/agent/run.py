@@ -618,8 +618,27 @@ async def run_agent(
             chat_id, db_path=context_compression_db_path, log=log,
         ),
     )
+    # The request the rest of the turn works from. It differs from `task` in
+    # exactly one case: this message is the ANSWER to the one deterministic
+    # clarification, and the pending request is folded back in so the planner
+    # gets the whole intent rather than the fragment the user just typed.
+    effective_task = task
+    if scope_hint.route == "ask_scope":
+        pending = _pending_clarification(
+            chat_id, db_path=context_compression_db_path, log=log,
+        )
+        if pending:
+            effective_task = f"{pending}\n\n[clarification answer] {task}"
+            scope_hint = classify_task(
+                effective_task, has_history=True, allow_clarification=False,
+            )
+            print(
+                "[agent] clarification answered; merged the pending request "
+                f"and routed to {scope_hint.route} instead of asking again",
+                file=log,
+            )
     goal_state = GoalState.create(
-        intent=task,
+        intent=effective_task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
@@ -643,7 +662,9 @@ async def run_agent(
             f"{chat_usage['barren_turns']} turns without a file",
             file=log,
         )
-    direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
+    direct_answer = _deterministic_scope_answer(
+        effective_task, scope_hint, goal_state,
+    )
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
         print(
@@ -669,6 +690,15 @@ async def run_agent(
                 stats=stats,
                 db_path=context_compression_db_path,
                 log=log,
+                # Only an ask_scope halt leaves a question outstanding. A
+                # casual greeting or a destructive-operation warning is a
+                # complete answer, so it must not arm the merge on the next
+                # message.
+                clarification_request=(
+                    effective_task[:MAX_PENDING_CLARIFICATION_CHARS]
+                    if scope_hint.route == "ask_scope"
+                    else None
+                ),
             )
         return direct_answer
     params = StdioServerParameters(
@@ -750,7 +780,9 @@ async def run_agent(
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        parent_session_id = await _open_parent_session(session, task, log, chat_id)
+        parent_session_id = await _open_parent_session(
+            session, effective_task, log, chat_id,
+        )
         orchestration = Orchestration(
             parent_session_id=parent_session_id,
             goal_state=goal_state,
@@ -762,6 +794,9 @@ async def run_agent(
             print("[agent] plan-first requested (--plan)", file=log)
         initial_messages: list[dict[str, Any]] | None = None
         if chat_id:
+            # The RAW message, not `effective_task`: the pending request the
+            # merge folded in is already on record as its own earlier row, and
+            # replaying it twice would seed the model with a duplicate.
             _append_chat_message(
                 chat_id, "user", task,
                 db_path=context_compression_db_path, log=log,
@@ -798,7 +833,7 @@ async def run_agent(
                     "parent_session_id": parent_session_id,
                     "parent_agent_name": "agent",
                     "pipeline_name": pipeline,
-                    "brief": task,
+                    "brief": effective_task,
                 }
                 print(
                     f"[agent] running pipeline {pipeline!r} directly "
@@ -822,7 +857,7 @@ async def run_agent(
                 final_answer, _ = await run_unit(
                     session, vendor, tools,
                     system_prompt=system_prompt,
-                    user_message=task,
+                    user_message=effective_task,
                     max_cycles=max_cycles, log=log,
                     orchestration=orchestration, gateway=gateway,
                     spawn_catalog=worker_catalog,
@@ -2035,6 +2070,37 @@ def _chat_has_history(
         return False
 
 
+#: Cap on the pending request carried across turns. A merged brief still has to
+#: fit the per-call sizing rule, and the full original text remains in
+#: `conversation_messages` for replay either way.
+MAX_PENDING_CLARIFICATION_CHARS = 2000
+
+
+def _pending_clarification(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> str | None:
+    """The request whose clarification this chat is still waiting to answer.
+
+    Returns None on any failure, which is the safe direction: the driver then
+    asks the question again rather than merging a request it could not read.
+    """
+    if not chat_id:
+        return None
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.pending_clarification(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] pending clarification read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return None
+
+
 def _chat_turn_usage(
     chat_id: str | None, *, db_path: Path, log: Any,
 ) -> dict[str, int]:
@@ -2118,6 +2184,7 @@ def _record_agent_turn(
     db_path: Path,
     log: Any,
     delivered_artifact: bool = False,
+    clarification_request: str | None = None,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2138,6 +2205,7 @@ def _record_agent_turn(
             total_ms=int((ended_at - started_at) * 1000),
             db_path=db_path,
             delivered_artifact=delivered_artifact,
+            clarification_request=clarification_request,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(
