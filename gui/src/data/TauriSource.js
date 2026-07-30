@@ -13,8 +13,13 @@ const DOMAIN_KEYS = [
   'denyCount', 'activeProfile', 'profiles', 'paused', 't', 'runtimeSource',
   'setupStatus', 'driverStatus', 'orchestratorChatId',
   'viewedOrchestratorChatId', 'pipelineChatId', 'orchestratorSessions',
+  'sessionFolderGrants',
   'pipelineCatalog', 'pipelineRuns',
   'pipelineBuilderCatalog',
+  // Backend-owned: the persisted workspace could not be honoured at startup.
+  // Kept separate from the client-local `workspaceError` the picker sets, so
+  // a poll returning "no problem" cannot wipe a transient picker message.
+  'workspaceBlockedReason',
 ]
 
 export default class TauriSource {
@@ -25,6 +30,7 @@ export default class TauriSource {
     this._builderGeneration = 0
     this._pendingBuilderOperations = 0
     this._pendingNewSessionFrom = null
+    this._pendingPipelineResumeSession = null
     const emptyDraft = createPipelineDraft()
     this.state = {
       view: this.props.startView || 'orchestrator',
@@ -39,6 +45,9 @@ export default class TauriSource {
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
+      sessionFolderGrants: [], folderGrantError: '', folderGrantBusy: false,
+      pipelineResumeBusy: false, pipelineResumeError: '',
+      workspaceBlockedReason: '',
       pipelineBuilder: {
         step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
         selectedStageIndex: null, findings: [], saveResult: null,
@@ -85,6 +94,19 @@ export default class TauriSource {
       } else {
         delete patch.orchestratorChatId
         delete patch.viewedOrchestratorChatId
+      }
+    }
+    if (
+      this._pendingPipelineResumeSession
+      && Array.isArray(dom.pipelineRuns)
+    ) {
+      const pendingRun = dom.pipelineRuns.find(
+        (run) => run.sessionId === this._pendingPipelineResumeSession,
+      )
+      if (!pendingRun?.pauseReason) {
+        this._pendingPipelineResumeSession = null
+        patch.pipelineResumeBusy = false
+        patch.pipelineResumeError = ''
       }
     }
     const catalog = Array.isArray(dom.pipelineCatalog) ? dom.pipelineCatalog : []
@@ -182,6 +204,40 @@ export default class TauriSource {
         })
         this._action('select_session', [id])
       },
+      deleteSession: (id) => {
+        const chatId = String(id || '')
+        if (!chatId) return
+        const driver = this.state.driverStatus || {}
+        if (driver.running && driver.surface === 'orchestrator' && driver.chatId === chatId) return
+        if (this.state.selectedSession === chatId) this._setLocal({ selectedSession: null, selected: null })
+        this._action('delete_session', [chatId])
+      },
+      cleanSessions: () => {
+        if (this.state.driverStatus?.running) return
+        this._setLocal({ selectedSession: null, selected: null })
+        this._action('clean_sessions', [])
+      },
+      resumePipeline: async (sessionId, action, userHint = '', extraBudget = 0) => {
+        if (
+          !this._invoke
+          || this.state.driverStatus?.running
+          || this.state.pipelineResumeBusy
+        ) return
+        this._pendingPipelineResumeSession = sessionId
+        this._setLocal({ pipelineResumeBusy: true, pipelineResumeError: '' })
+        try {
+          await this._invoke('action', {
+            kind: 'resume_pipeline',
+            args: [sessionId, action, userHint, extraBudget],
+          })
+        } catch (error) {
+          this._pendingPipelineResumeSession = null
+          this._setLocal({
+            pipelineResumeBusy: false,
+            pipelineResumeError: String(error),
+          })
+        }
+      },
       clearSelect: local({ selected: null, selectedSession: null }),
       // Drops the node selection only. `clearSelect` also drops
       // selectedSession, which snaps the operator out of whatever historical
@@ -230,6 +286,56 @@ export default class TauriSource {
       },
       cancelAgent: () => this._action('cancel_agent'),
       selectProfile: (name) => this._action('select_profile', [name]),
+      addSessionFolder: async () => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
+        try {
+          const selected = await this._invoke('choose_workspace')
+          if (!selected) return
+          const chatId = this.state.selectedSession
+            || this.state.viewedOrchestratorChatId
+            || this.state.orchestratorChatId
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'add_session_folder',
+            args: [selected, chatId],
+          })
+          this._setLocal({ folderGrantBusy: false })
+        } catch (error) {
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
+        }
+      },
+      renameSessionFolder: async (grantId, alias) => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
+        const chatId = this.state.selectedSession
+          || this.state.viewedOrchestratorChatId
+          || this.state.orchestratorChatId
+        try {
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'rename_session_folder',
+            args: [chatId, grantId, alias],
+          })
+          this._setLocal({ folderGrantBusy: false })
+        } catch (error) {
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
+        }
+      },
+      removeSessionFolder: async (grantId) => {
+        if (this.state.driverStatus?.running || this.state.folderGrantBusy) return
+        const chatId = this.state.selectedSession
+          || this.state.viewedOrchestratorChatId
+          || this.state.orchestratorChatId
+        try {
+          this._setLocal({ folderGrantError: '', folderGrantBusy: true })
+          await this._invoke('action', {
+            kind: 'remove_session_folder',
+            args: [chatId, grantId],
+          })
+          this._setLocal({ folderGrantBusy: false })
+        } catch (error) {
+          this._setLocal({ folderGrantError: String(error), folderGrantBusy: false })
+        }
+      },
       sendChat: () => this._submitChat(this.state.draft),
       // Approval is a user message, not a control channel. It goes through the
       // same submit as typing, so the backend sees one kind of consent and the

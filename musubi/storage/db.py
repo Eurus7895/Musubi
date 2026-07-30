@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     session_id              TEXT PRIMARY KEY,
     pipeline_name           TEXT NOT NULL,
     chat_id                 TEXT,
+    request_id              TEXT,
+    profile                 TEXT,
+    task                    TEXT,
     started_at              REAL NOT NULL,
     ended_at                REAL,
     final_status            TEXT,
@@ -200,9 +203,39 @@ CREATE INDEX IF NOT EXISTS idx_agent_turns_chat
     ON agent_turns (chat_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_agent_turns_started
     ON agent_turns (started_at);
+CREATE TABLE IF NOT EXISTS session_folder_grants (
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, grant_id),
+    UNIQUE (chat_id, alias),
+    UNIQUE (chat_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_folder_grants_chat_order
+    ON session_folder_grants (chat_id, ordinal, grant_id);
+CREATE TABLE IF NOT EXISTS request_folder_grants (
+    request_id     TEXT NOT NULL,
+    chat_id        TEXT NOT NULL,
+    grant_id       TEXT NOT NULL,
+    alias          TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    ordinal        INTEGER NOT NULL,
+    captured_at    TEXT NOT NULL,
+    PRIMARY KEY (request_id, grant_id),
+    UNIQUE (request_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
+    ON request_folder_grants (chat_id, request_id, ordinal);
 """
 
 def _default_db_path() -> Path:
+    configured = os.environ.get("MUSUBI_STATE_DB")
+    if configured:
+        return Path(configured)
     # When running as the VS Code extension binary MUSUBI_ROOT points to the
     # extension install dir — a stable, writable location across binary runs.
     # Fall back to alongside db.py for dev / test usage.
@@ -265,6 +298,9 @@ _AGENT_CYCLE_COLUMNS: tuple[tuple[str, str], ...] = (
 
 _PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("chat_id", "TEXT"),
+    ("request_id", "TEXT"),
+    ("profile", "TEXT"),
+    ("task", "TEXT"),
 )
 
 # `request_id` groups the turns of one Orchestrator launch.
@@ -1065,15 +1101,21 @@ def insert_pipeline_run(
     db_path: Path | None = None,
     *,
     chat_id: str | None = None,
+    request_id: str | None = None,
+    profile: str | None = None,
+    task: str | None = None,
 ) -> None:
     """Open a `pipeline_runs` row at session creation. ended_at and
     final_status stay NULL until `finalize_pipeline_run` is called."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO pipeline_runs"
-            " (session_id, pipeline_name, chat_id, started_at)"
-            " VALUES (?, ?, ?, ?)",
-            (session_id, pipeline_name, chat_id, started_at),
+            " (session_id, pipeline_name, chat_id, request_id, profile, task, started_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id, pipeline_name, chat_id, request_id,
+                profile, task, started_at,
+            ),
         )
 
 

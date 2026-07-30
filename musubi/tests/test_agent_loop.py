@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -560,7 +561,7 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
-    from agent.run import _server_db_path
+    from agent.run import _server_audit_db_path, _server_db_path
 
     musubi_dir = tmp_path / "checkout" / "musubi"
     assert _server_db_path(musubi_dir, {}) == musubi_dir / "storage" / "musubi.db"
@@ -570,6 +571,18 @@ def test_server_db_path_matches_spawned_server_default(tmp_path: Path) -> None:
         _server_db_path(musubi_dir, {"MUSUBI_ROOT": str(root)})
         == root / "data" / "musubi.db"
     )
+
+    env = {"MUSUBI_ROOT": str(root)}
+    assert _server_db_path(musubi_dir, env) == root / "data/musubi.db"
+    assert _server_audit_db_path(musubi_dir, env) == root / "data/audit.db"
+    audit = tmp_path / "custom-audit.db"
+    assert _server_audit_db_path(
+        musubi_dir, {**env, "MUSUBI_DB": str(audit)}
+    ) == audit
+    state_db = tmp_path / "custom-state.db"
+    assert _server_db_path(
+        musubi_dir, {**env, "MUSUBI_STATE_DB": str(state_db)}
+    ) == state_db
 
 
 def test_fit_model_input_enforces_hard_cap_including_tools() -> None:
@@ -2361,7 +2374,10 @@ def test_run_agent_persists_and_replays_chat_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    from agent import run as run_mod
+
+    db_path = tmp_path / "musubi.db"
+    monkeypatch.setattr(run_mod, "_server_db_path", lambda *_args: db_path)
 
     first_router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "first answer"}]),
@@ -2401,7 +2417,7 @@ def test_run_agent_persists_and_replays_chat_history(
     assert "first answer" in replay
     assert "second question" in replay
 
-    with sqlite3.connect(tmp_path / "data" / "musubi.db") as conn:
+    with sqlite3.connect(db_path) as conn:
         rows = list(conn.execute(
             "SELECT role, content FROM conversation_messages "
             "WHERE chat_id='chat-1' ORDER BY id"
@@ -3274,3 +3290,287 @@ def test_a_short_answer_to_the_question_is_still_the_answer(
     system_text = router.calls[0]["messages"][0]["content"]
     assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
     assert db.pending_clarification(chat, db_path=chat_db) is None
+
+
+def test_build_folder_registry_keeps_process_in_musubi_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.run import _build_folder_registry
+    from workspace.grants import MANIFEST_ENV, RootRegistry
+
+    runtime = tmp_path / "runtime"
+    selected = tmp_path / "application"
+    runtime.mkdir()
+    selected.mkdir()
+    monkeypatch.chdir(runtime)
+    monkeypatch.setenv(MANIFEST_ENV, "")
+
+    registry = _build_folder_registry(runtime, [f"app={selected}"])
+
+    assert Path.cwd().resolve() == runtime.resolve()
+    assert registry.root("app").path == selected.resolve()
+    assert RootRegistry.from_json(
+        os.environ[MANIFEST_ENV], runtime
+    ).root("app").path == selected.resolve()
+
+
+def test_harness_root_is_distinct_from_python_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.run import _default_musubi_dir, _harness_root
+
+    root = tmp_path / "Musubi"
+    package = root / "musubi"
+    package.mkdir(parents=True)
+    (package / "server.py").write_text("", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("", encoding="utf-8")
+    monkeypatch.setenv("MUSUBI_ROOT", str(root))
+
+    assert _default_musubi_dir().resolve() == package.resolve()
+    assert _harness_root(package) == root.resolve()
+
+
+def test_json_tool_denial_is_audited_as_error() -> None:
+    from agent.run import _tool_audit_args, _tool_result_audit_status
+
+    assert _tool_result_audit_status('{"status":"error","error":"unknown root"}') == "error"
+    assert _tool_result_audit_status('{"status":"ok","root":"app"}') == "ok"
+    assert _tool_audit_args(
+        {"root": "app", "path": "src/a.py"},
+        (
+            '{"status":"ok","root":"app","grant_id":"g-app",'
+            '"path":"src/a.py","resolved_path":"D:\\\\app\\\\src\\\\a.py"}'
+        ),
+    ) == {
+        "root": "app",
+        "grant_id": "g-app",
+        "path": "src/a.py",
+        "resolved_path": r"D:\app\src\a.py",
+    }
+
+
+def test_build_folder_registry_rejects_missing_and_non_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.run import _build_folder_registry
+    from workspace.grants import MANIFEST_ENV
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(MANIFEST_ENV, "")
+    with pytest.raises(ValueError, match="existing directory"):
+        _build_folder_registry(tmp_path, [str(tmp_path / "nope")])
+
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x")
+    with pytest.raises(ValueError, match="existing directory"):
+        _build_folder_registry(tmp_path, [str(a_file)])
+    assert Path.cwd().resolve() == tmp_path.resolve()
+
+
+def test_main_preserves_cwd_and_forwards_environment_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+    from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
+
+    selected = tmp_path / "application"
+    runtime = tmp_path / "runtime"
+    selected.mkdir()
+    runtime.mkdir()
+    (runtime / "server.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    registry = RootRegistry.build(
+        runtime,
+        [FolderGrant("g-app", "app", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
+    monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
+
+    async def fake_run_agent(*args, **kwargs):
+        assert run_mod._server_env()[MANIFEST_ENV] == registry.to_json()
+        return "done"
+
+    monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
+
+    assert run_mod.main(["task", "--musubi", str(runtime)]) == 0
+    assert Path.cwd().resolve() == tmp_path.resolve()
+    assert os.environ[MANIFEST_ENV] == registry.to_json()
+
+
+def test_main_builds_repeated_add_folder_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import run as run_mod
+    from workspace.grants import MANIFEST_ENV, RootRegistry
+
+    web = tmp_path / "web"
+    api = tmp_path / "api"
+    runtime = tmp_path / "runtime"
+    web.mkdir()
+    api.mkdir()
+    runtime.mkdir()
+    (runtime / "server.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(MANIFEST_ENV, "")
+    monkeypatch.setattr(run_mod, "_resolve_vendor", lambda _: (object(), "test"))
+
+    async def fake_run_agent(*args, **kwargs):
+        registry = RootRegistry.from_json(os.environ[MANIFEST_ENV], runtime)
+        assert [grant.alias for grant in registry.grants] == [
+            "musubi", "web", "api",
+        ]
+        return "done"
+
+    monkeypatch.setattr(run_mod, "run_agent", fake_run_agent)
+
+    assert run_mod.main([
+        "task",
+        "--musubi",
+        str(runtime),
+        "--add-folder",
+        f"web={web}",
+        "--add-folder",
+        f"api={api}",
+    ]) == 0
+    assert Path.cwd().resolve() == tmp_path.resolve()
+    assert os.environ[MANIFEST_ENV] == ""
+
+
+def test_pipeline_resume_checkpoint_requires_pending_exact_identity(
+    tmp_path: Path,
+) -> None:
+    from agent.run import _load_pipeline_resume_checkpoint
+    from session import state
+
+    state_db = tmp_path / "musubi.db"
+    sid = state.create_session(
+        "ship it",
+        state_db,
+        pipeline_name="feature-dev",
+        chat_id="chat-1",
+        request_id="request-1",
+        profile="openai.work",
+        task="ship it",
+    )
+    state.pause_session(sid, "design", "stage_review", state_db)
+    state.resume_session(sid, "approve", state_db)
+
+    checkpoint = _load_pipeline_resume_checkpoint(sid, state_db)
+
+    assert checkpoint == {
+        "session_id": sid,
+        "pipeline_name": "feature-dev",
+        "chat_id": "chat-1",
+        "request_id": "request-1",
+        "profile": "openai.work",
+        "task": "ship it",
+    }
+    state.consume_pending_action(sid, state_db)
+    with pytest.raises(RuntimeError, match="no pending action"):
+        _load_pipeline_resume_checkpoint(sid, state_db)
+
+
+def test_pipeline_resume_rejects_changed_folder_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from agent.run import _validate_resume_folder_manifest
+    from workspace.grants import MANIFEST_ENV
+
+    root = tmp_path / "musubi"
+    other = tmp_path / "other"
+    root.mkdir()
+    other.mkdir()
+    audit = tmp_path / "audit.db"
+    with sqlite3.connect(audit) as conn:
+        conn.execute(
+            "CREATE TABLE request_folder_grants ("
+            "request_id TEXT,grant_id TEXT,alias TEXT,canonical_path TEXT,ordinal INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO request_folder_grants VALUES (?,?,?,?,?)",
+            ("request-1", "musubi", "musubi", str(root), 0),
+        )
+    monkeypatch.setenv(
+        MANIFEST_ENV,
+        json.dumps([{
+            "grantId": "musubi",
+            "alias": "musubi",
+            "canonicalPath": str(other),
+        }]),
+    )
+
+    with pytest.raises(RuntimeError, match="differs"):
+        _validate_resume_folder_manifest("request-1", audit)
+
+
+def test_pipeline_resume_checkpoint_requires_pending_exact_identity(
+    tmp_path: Path,
+) -> None:
+    from agent.run import _load_pipeline_resume_checkpoint
+    from session import state
+
+    state_db = tmp_path / "musubi.db"
+    sid = state.create_session(
+        "ship it",
+        state_db,
+        pipeline_name="feature-dev",
+        chat_id="chat-1",
+        request_id="request-1",
+        profile="openai.work",
+        task="ship it",
+    )
+    state.pause_session(sid, "design", "stage_review", state_db)
+    state.resume_session(sid, "approve", state_db)
+
+    checkpoint = _load_pipeline_resume_checkpoint(sid, state_db)
+
+    assert checkpoint == {
+        "session_id": sid,
+        "pipeline_name": "feature-dev",
+        "chat_id": "chat-1",
+        "request_id": "request-1",
+        "profile": "openai.work",
+        "task": "ship it",
+    }
+    state.consume_pending_action(sid, state_db)
+    with pytest.raises(RuntimeError, match="no pending action"):
+        _load_pipeline_resume_checkpoint(sid, state_db)
+
+
+def test_pipeline_resume_rejects_changed_folder_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from agent.run import _validate_resume_folder_manifest
+    from workspace.grants import MANIFEST_ENV
+
+    root = tmp_path / "musubi"
+    other = tmp_path / "other"
+    root.mkdir()
+    other.mkdir()
+    audit = tmp_path / "audit.db"
+    with sqlite3.connect(audit) as conn:
+        conn.execute(
+            "CREATE TABLE request_folder_grants ("
+            "request_id TEXT,grant_id TEXT,alias TEXT,canonical_path TEXT,ordinal INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO request_folder_grants VALUES (?,?,?,?,?)",
+            ("request-1", "musubi", "musubi", str(root), 0),
+        )
+    monkeypatch.setenv(
+        MANIFEST_ENV,
+        json.dumps([{
+            "grantId": "musubi",
+            "alias": "musubi",
+            "canonicalPath": str(other),
+        }]),
+    )
+
+    with pytest.raises(RuntimeError, match="differs"):
+        _validate_resume_folder_manifest("request-1", audit)

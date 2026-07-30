@@ -18,6 +18,7 @@ import pytest
 
 import server
 from tools import fs
+from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
 
 
 def _py_cmd(code: str) -> str:
@@ -41,18 +42,82 @@ def test_resolve_path_accepts_relative_inside_workspace(workspace: Path) -> None
     assert resolved == (workspace / "src" / "main.py").resolve()
 
 
-def test_resolve_path_accepts_absolute_inside_workspace(workspace: Path) -> None:
+def test_resolve_path_rejects_absolute_inside_workspace(workspace: Path) -> None:
     abs_path = str(workspace / "a" / "b.txt")
-    assert fs.resolve_path(abs_path) == Path(abs_path).resolve()
+    with pytest.raises(PermissionError, match="relative"):
+        fs.resolve_path(abs_path)
+
+
+def test_registered_external_root_is_selected_explicitly(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    selected = tmp_path.parent / f"{tmp_path.name}-application"
+    selected.mkdir()
+    registry = RootRegistry.build(
+        workspace,
+        [FolderGrant("g-app", "application", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
+
+    assert fs.resolve_path(
+        "app.py", root="application"
+    ) == (selected / "app.py").resolve()
+    result = fs.write_file(
+        "app.py", "print('ok')\n", root="application"
+    )
+    assert result["status"] == "ok"
+    assert result["root"] == "application"
+    assert result["grant_id"] == "g-app"
+    assert result["path"] == "app.py"
+    assert Path(result["resolved_path"]) == (selected / "app.py").resolve()
+    assert not (workspace / "app.py").exists()
+
+
+def test_grep_does_not_follow_file_symlink_outside_root(
+    workspace: Path, tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-secret.txt"
+    outside.write_text("private-marker\n", encoding="utf-8")
+    link = workspace / "leak.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    result = fs.grep("private-marker")
+
+    assert result["status"] == "ok"
+    assert result["count"] == 0
+
+
+def test_grep_resolves_each_discovered_file_before_reading(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = workspace / "leak.txt"
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    candidate.write_text("private-marker\n", encoding="utf-8")
+    outside.write_text("private-marker\n", encoding="utf-8")
+    original_resolve = Path.resolve
+
+    def escaped_resolve(path: Path, *args, **kwargs) -> Path:
+        if path == candidate:
+            return outside
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", escaped_resolve)
+    result = fs.grep("private-marker")
+
+    assert result["status"] == "ok"
+    assert result["count"] == 0
 
 
 def test_resolve_path_rejects_dotdot_traversal(workspace: Path) -> None:
-    with pytest.raises(PermissionError, match="outside the workspace root"):
+    with pytest.raises(PermissionError, match="escapes root"):
         fs.resolve_path("../../etc/passwd")
 
 
 def test_resolve_path_rejects_absolute_outside_workspace(workspace: Path) -> None:
-    with pytest.raises(PermissionError, match="outside the workspace root"):
+    with pytest.raises(PermissionError, match="relative"):
         fs.resolve_path("/etc/passwd")
 
 
@@ -88,7 +153,7 @@ def test_read_file_directory_returns_error(workspace: Path) -> None:
 def test_read_file_traversal_blocked(workspace: Path) -> None:
     result = fs.read_file("../escape.txt")
     assert result["status"] == "error"
-    assert "outside the workspace" in result["error"]
+    assert "escapes root" in result["error"]
 
 
 def test_read_file_binary_is_rejected_cleanly(workspace: Path) -> None:
@@ -103,7 +168,8 @@ def test_read_file_binary_is_rejected_cleanly(workspace: Path) -> None:
 
 def test_write_file_creates_new(workspace: Path) -> None:
     result = fs.write_file("note.md", "# Hello\n")
-    assert result == {"status": "ok", "bytes_written": len(b"# Hello\n")}
+    assert result["status"] == "ok"
+    assert result["bytes_written"] == len(b"# Hello\n")
     assert (workspace / "note.md").read_text(encoding="utf-8") == "# Hello\n"
 
 
@@ -127,7 +193,8 @@ def test_write_file_refuses_empty_overwrite_of_nonempty_file(workspace: Path) ->
 def test_write_file_still_allows_creating_an_empty_file(workspace: Path) -> None:
     result = fs.write_file("placeholder.txt", "")
 
-    assert result == {"status": "ok", "bytes_written": 0}
+    assert result["status"] == "ok"
+    assert result["bytes_written"] == 0
     assert (workspace / "placeholder.txt").read_bytes() == b""
 
 
@@ -153,7 +220,7 @@ def test_write_file_refuses_directory_path(workspace: Path) -> None:
 def test_write_file_traversal_blocked(workspace: Path) -> None:
     result = fs.write_file("../outside.txt", "x")
     assert result["status"] == "error"
-    assert "outside the workspace" in result["error"]
+    assert "escapes root" in result["error"]
 
 
 # ── edit_file ──────────────────────────────────────────────────────────────
@@ -164,22 +231,18 @@ def test_write_file_traversal_blocked(workspace: Path) -> None:
 
 def test_append_file_creates_new(workspace: Path) -> None:
     result = fs.append_file("note.md", "# Hello\n")
-    assert result == {
-        "status": "ok",
-        "bytes_written": len(b"# Hello\n"),
-        "total_bytes": len(b"# Hello\n"),
-    }
+    assert result["status"] == "ok"
+    assert result["bytes_written"] == len(b"# Hello\n")
+    assert result["total_bytes"] == len(b"# Hello\n")
     assert (workspace / "note.md").read_text(encoding="utf-8") == "# Hello\n"
 
 
 def test_append_file_appends_existing(workspace: Path) -> None:
     (workspace / "f").write_text("old", encoding="utf-8")
     result = fs.append_file("f", "new", expected_offset=3)
-    assert result == {
-        "status": "ok",
-        "bytes_written": len(b"new"),
-        "total_bytes": len(b"oldnew"),
-    }
+    assert result["status"] == "ok"
+    assert result["bytes_written"] == len(b"new")
+    assert result["total_bytes"] == len(b"oldnew")
     assert (workspace / "f").read_text(encoding="utf-8") == "oldnew"
 
 
@@ -205,7 +268,7 @@ def test_append_file_refuses_directory_path(workspace: Path) -> None:
 def test_append_file_traversal_blocked(workspace: Path) -> None:
     result = fs.append_file("../outside.txt", "x")
     assert result["status"] == "error"
-    assert "outside the workspace" in result["error"]
+    assert "escapes root" in result["error"]
 
 
 def test_append_file_expected_offset_mismatch(workspace: Path) -> None:
@@ -220,7 +283,8 @@ def test_append_file_expected_offset_mismatch(workspace: Path) -> None:
 def test_edit_file_unique_match_replaces(workspace: Path) -> None:
     (workspace / "f.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
     result = fs.edit_file("f.py", "b = 2", "b = 99")
-    assert result == {"status": "ok", "replacements": 1}
+    assert result["status"] == "ok"
+    assert result["replacements"] == 1
     assert (workspace / "f.py").read_text(encoding="utf-8") == "a = 1\nb = 99\n"
 
 
@@ -236,7 +300,8 @@ def test_edit_file_non_unique_match_errors_by_default(workspace: Path) -> None:
 def test_edit_file_replace_all_replaces_every_occurrence(workspace: Path) -> None:
     (workspace / "f.py").write_text("x\nx\nx\n", encoding="utf-8")
     result = fs.edit_file("f.py", "x", "y", replace_all=True)
-    assert result == {"status": "ok", "replacements": 3}
+    assert result["status"] == "ok"
+    assert result["replacements"] == 3
     assert (workspace / "f.py").read_text(encoding="utf-8") == "y\ny\ny\n"
 
 
@@ -262,10 +327,34 @@ def test_edit_file_missing_file_errors(workspace: Path) -> None:
 def test_edit_file_traversal_blocked(workspace: Path) -> None:
     result = fs.edit_file("../outside.py", "a", "b")
     assert result["status"] == "error"
-    assert "outside the workspace" in result["error"]
+    assert "escapes root" in result["error"]
 
 
 # ── run_command ────────────────────────────────────────────────────────────
+
+
+def test_run_command_strips_windows_verbatim_prefix_at_subprocess_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fs, "_workspace_root", lambda _root: Path(r"\\?\C:\Workspace\AgentShield"))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = fs.run_command("git status")
+
+    assert result["status"] == "ok"
+    assert captured["cwd"] == r"C:\Workspace\AgentShield"
+
+
+def test_subprocess_cwd_converts_windows_verbatim_unc() -> None:
+    assert fs._subprocess_cwd(
+        Path(r"\\?\UNC\server\share\repo")
+    ) == r"\\server\share\repo"
 
 
 def test_run_command_returns_stdout(workspace: Path) -> None:
@@ -330,7 +419,7 @@ def test_run_command_explicit_cwd_resolves_inside_workspace(workspace: Path) -> 
 def test_run_command_explicit_cwd_rejected_outside_workspace(workspace: Path) -> None:
     result = fs.run_command("ls", cwd="..")
     assert result["status"] == "error"
-    assert "outside the workspace" in result["error"]
+    assert "escapes root" in result["error"]
 
 
 def test_run_command_empty_errors(workspace: Path) -> None:
@@ -376,7 +465,9 @@ def test_mcp_append_file_round_trip(workspace: Path) -> None:
     payload = json.loads(server.musubi_append_file("out.txt", "hello"))
     assert payload["status"] == "ok"
     payload = json.loads(server.musubi_append_file("out.txt", " world", expected_offset=5))
-    assert payload == {"status": "ok", "bytes_written": 6, "total_bytes": 11}
+    assert payload["status"] == "ok"
+    assert payload["bytes_written"] == 6
+    assert payload["total_bytes"] == 11
     assert (workspace / "out.txt").read_text(encoding="utf-8") == "hello world"
 
 

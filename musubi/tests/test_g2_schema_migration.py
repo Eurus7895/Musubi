@@ -39,6 +39,26 @@ def test_init_db_adds_schema_version_column(fresh_db: Path) -> None:
     assert "schema_version" in cols
 
 
+def test_init_db_adds_session_and_request_folder_grant_tables(
+    fresh_db: Path,
+) -> None:
+    with sqlite3.connect(fresh_db) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        request_sql = conn.execute(
+            "SELECT sql FROM sqlite_master"
+            " WHERE type='table' AND name='request_folder_grants'"
+        ).fetchone()[0]
+
+    assert "session_folder_grants" in tables
+    assert "request_folder_grants" in tables
+    assert "PRIMARY KEY (request_id, grant_id)" in request_sql
+
+
 def test_create_session_tags_rows_with_current_version(fresh_db: Path) -> None:
     sid = state.create_session("do x", fresh_db)
     with sqlite3.connect(fresh_db) as conn:

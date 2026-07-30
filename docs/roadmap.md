@@ -128,12 +128,12 @@ enforcement path for the same dimension.
 - **Stage extension by user grant.** When a pipeline stage exhausts its cycle
   cap it currently fails closed (`[stage <x>] exceeded N cycles`). Reuse the
   existing budget-grant gate (`pause_reason='budget_exhausted'`,
-  `pending_extra_budget`, `grant` action) — today wired only into the
-  server/GUI session path — inside the standalone pipeline runner, so an
-  escalated stage (reviewer or any) can be extended by asking the user for
-  more cycles instead of aborting the run. Design-gated: the grant is bounded,
-  audited, and never waives the wall-clock rule. Plan to be written before
-  implementation.
+  `pending_extra_budget`, `grant` action). Token-budget exhaustion now pauses
+  and resumes the exact standalone pipeline checkpoint with an audited grant;
+  the remaining work is to route the distinct per-stage turn/cycle cap through
+  the same gate instead of aborting the run. Design-gated: the cycle grant is
+  bounded, audited, and never waives the wall-clock rule. Plan to be written
+  before implementation.
   Landed alongside: a **no-progress budget breaker** on the root run. A weak
   driver model that never converges (e.g. a flash model that emits tool calls
   as text and never signals done) otherwise burns the full 200k ceiling across
@@ -233,6 +233,32 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   escape moves one way only (it can remove a halt, never add one, never widen a
   route) and fails toward the old behavior if storage is unreadable. Plan:
   [`2026-07-29-clarification-terminates.md`](./superpowers/plans/2026-07-29-clarification-terminates.md)
+- Console session inbox, cleanup, and exact pipeline continuation — **Needs
+  you** contains only unread sessions and selecting one marks it viewed.
+  Operators can delete the selected session or clean the visible session list
+  without deleting append-only audit, stage, or request evidence. A genuinely
+  paused pipeline projects its reason and legal actions into the selected
+  session; approve, retry, grant, force, and abort decisions are validated and
+  audited before the Console relaunches the same profile, task, folder
+  snapshot, pipeline ID, and first incomplete stage. Windows command execution
+  also normalizes extended-length paths only at the subprocess boundary.
+  Design and implementation plan:
+  [`2026-07-29-session-inbox-resume-cleanup-design.md`](./superpowers/specs/2026-07-29-session-inbox-resume-cleanup-design.md) and
+  [`2026-07-29-session-inbox-resume-cleanup.md`](./superpowers/plans/2026-07-29-session-inbox-resume-cleanup.md)
+
+- Session-scoped multi-folder grants — Musubi remains the fixed harness root,
+  while each idle Orchestrator session may attach, rename, and remove up to 16
+  non-overlapping external folder roots without a Settings change or restart.
+  Every request snapshots the exact aliases, grant IDs, and canonical paths;
+  all filesystem tools accept an explicit root and relative path, command cwd
+  changes only inside the selected root, and mechanical/artifact checks retain
+  root-qualified evidence. The standalone CLI exposes the same boundary with
+  repeatable `--add-folder [ALIAS=]PATH`. Unknown, moved, overlapping, absolute,
+  and escaping paths fail closed. This grants the Musubi harness filesystem
+  authority for one session; it does not launch Codex or Claude. Design and
+  implementation plan:
+  [`2026-07-29-session-folder-grants-design.md`](./superpowers/specs/2026-07-29-session-folder-grants-design.md) and
+  [`2026-07-29-session-folder-grants.md`](./superpowers/plans/2026-07-29-session-folder-grants.md)
 
 - Console now-first Orchestrator and design tokens — the view that answers
   "what is the agent doing right now?" spent ~206 px of stacked chrome before

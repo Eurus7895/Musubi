@@ -147,13 +147,14 @@ def _parse_pytest_output(output: str) -> list[FailedTest]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def run_lint(files: list[str]) -> LintResult:
+def run_lint(files: list[str], *, cwd: Path | None = None) -> LintResult:
     """Run ruff check on the given files. Returns structured LintResult."""
     if not files:
         return LintResult(passed=True)
 
     returncode, stdout, stderr = _run(
-        ["ruff", "check", "--output-format=json", "--", *files]
+        ["ruff", "check", "--output-format=json", "--", *files],
+        cwd=cwd,
     )
     raw = stdout or stderr
     errors = _parse_ruff_output(stdout)

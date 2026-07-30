@@ -53,6 +53,17 @@ def test_init_db_adds_user_hint_to_stage_outputs(fresh_db: Path) -> None:
     assert "user_hint" in cols
 
 
+def test_init_db_adds_console_resume_checkpoint_to_pipeline_runs(
+    fresh_db: Path,
+) -> None:
+    with sqlite3.connect(fresh_db) as conn:
+        cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(pipeline_runs)").fetchall()
+        }
+    assert {"request_id", "profile", "task"}.issubset(cols)
+
+
 def test_init_db_migrates_pre_g15_db_in_place(tmp_path: Path) -> None:
     """Simulate a pre-G.1.5 DB by creating the old schema, inserting a
     session row, then running init_db. The new columns must appear and

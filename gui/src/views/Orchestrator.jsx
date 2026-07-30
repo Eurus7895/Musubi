@@ -126,6 +126,14 @@ export default function Orchestrator({ vals }) {
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
           </div>
+          <button
+            type="button"
+            className="session-delete"
+            disabled={vals.deleteSessionDisabled}
+            onClick={vals.onDeleteSession}
+          >
+            Delete session
+          </button>
           <div className="surface-tabs" role="tablist" aria-label="Session surface">
             <button className={!showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('timeline')}>Timeline</button>
             <button className={showingLog ? 'is-active' : ''} onClick={() => onSurfaceTab('log')}>
@@ -133,6 +141,10 @@ export default function Orchestrator({ vals }) {
             </button>
           </div>
         </div>
+        <SessionFolders vals={vals} />
+        {vals.pausePanel?.visible && (
+          <PausePanel key={vals.pausePanel.sessionId} panel={vals.pausePanel} />
+        )}
         <section className="runtime-evidence">
           {selectedNode
             ? <RuntimeDetail
@@ -170,6 +182,118 @@ export default function Orchestrator({ vals }) {
         onToggle={() => setConversationCollapsed((value) => !value)}
       />
     </div>
+  )
+}
+
+function PausePanel({ panel }) {
+  const [retryHint, setRetryHint] = useState('')
+  const reason = panel.reason === 'stage_review'
+    ? 'Review gate'
+    : panel.reason === 'budget_exhausted'
+      ? 'Worker budget exhausted'
+      : `Unknown pause reason: ${panel.reason}`
+  return (
+    <section className="pause-panel" aria-label="Waiting for decision">
+      <div className="pause-panel__heading">
+        <div>
+          <strong>Waiting for decision</strong>
+          <span>
+            {reason}{panel.stage ? ` · ${panel.stage}` : ''}
+            {panel.chunk ? ` · ${panel.chunk}` : ''}
+          </span>
+        </div>
+      </div>
+      {panel.reason === 'stage_review' && (
+        <label className="pause-panel__hint">
+          <span>Retry hint <em>optional</em></span>
+          <input
+            value={retryHint}
+            disabled={panel.pipelineResumeBusy}
+            onChange={(event) => setRetryHint(event.target.value)}
+            placeholder="What should the stage change?"
+          />
+        </label>
+      )}
+      {panel.unknownReason ? (
+        <div className="pause-panel__error" role="alert">
+          This pause reason is not supported. No action was guessed.
+        </div>
+      ) : (
+        <div className="pause-panel__actions">
+          {panel.actions.map((action) => (
+            <button
+              type="button"
+              key={action.id}
+              className={action.danger ? 'is-danger' : ''}
+              disabled={panel.pipelineResumeBusy}
+              onClick={() => panel.onDecision(
+                action.id,
+                action.id === 'retry' ? retryHint : '',
+              )}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {panel.pipelineResumeError ? (
+        <div className="pause-panel__error" role="alert">{panel.pipelineResumeError}</div>
+      ) : null}
+    </section>
+  )
+}
+
+function SessionFolders({ vals }) {
+  const grants = vals.sessionFolderGrants || []
+  return (
+    <section className="session-folders" aria-label="Session folders">
+      <div className="session-folders__heading">
+        <div>
+          <strong>Folders</strong>
+          <span>Access granted to this session</span>
+        </div>
+        <button
+          type="button"
+          disabled={vals.folderGrantControlsDisabled}
+          onClick={vals.onAddSessionFolder}
+        >
+          Add folder
+        </button>
+      </div>
+      <div className="session-folders__roots">
+        {grants.map((grant) => (
+          <div className="session-folder" key={grant.grantId}>
+            <input
+              aria-label={`Alias for ${grant.canonicalPath}`}
+              defaultValue={grant.alias}
+              disabled={grant.fixed || vals.folderGrantControlsDisabled}
+              onBlur={(event) => {
+                const alias = event.target.value.trim()
+                event.currentTarget.value = grant.alias
+                if (!grant.fixed && alias && alias !== grant.alias) {
+                  vals.onRenameSessionFolder?.(grant.grantId, alias)
+                }
+              }}
+            />
+            <span title={grant.canonicalPath}>{grant.canonicalPath}</span>
+            {grant.fixed
+              ? <em>fixed</em>
+              : (
+                <button
+                  type="button"
+                  disabled={vals.folderGrantControlsDisabled}
+                  onClick={() => vals.onRemoveSessionFolder?.(grant.grantId)}
+                >
+                  Remove
+                </button>
+              )}
+          </div>
+        ))}
+      </div>
+      {vals.folderGrantError ? (
+        <div className="session-folders__error" role="alert">{vals.folderGrantError}</div>
+      ) : null}
+    </section>
   )
 }
 
@@ -245,6 +369,18 @@ function SessionsRail({ vals, onHide }) {
         <strong>Sessions</strong>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span>{vals.runs.length}</span>
+          <button
+            type="button"
+            className="session-clean"
+            disabled={vals.cleanSessionsDisabled}
+            onClick={() => {
+              if (window.confirm('Clean all sessions? Audit evidence and snapshots will be preserved.')) {
+                vals.onCleanSessions()
+              }
+            }}
+          >
+            Clean all
+          </button>
           <button aria-label="Hide sessions" onClick={onHide}>←</button>
         </div>
       </header>

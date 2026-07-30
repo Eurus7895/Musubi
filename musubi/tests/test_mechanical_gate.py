@@ -143,13 +143,14 @@ def test_gate_skips_when_no_lintable_files(monkeypatch) -> None:
 
 
 def test_gate_filters_deleted_scratch_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
     real = tmp_path / "app.py"
     real.write_text("x = 1\n")
     deleted = tmp_path / "build_gen.py"  # written then deleted → never on disk
 
     async def fake_call(session, name, args):
         # Only the surviving file reaches the linter; the deleted one is gone.
-        assert args["files"] == [str(real)]
+        assert args == {"files": ["app.py"], "root": "musubi"}
         return '{"passed": true, "errors": []}'
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
@@ -177,3 +178,40 @@ def test_gate_skipped_when_all_writes_deleted(tmp_path: Path, monkeypatch) -> No
     )
     assert gate["result"] == "skipped"
     assert "no surviving files" in gate["detail"]
+
+
+# ── workspace anchoring (the gate must follow tools/fs.py) ──────────────────
+
+
+def test_mechanical_root_follows_selected_workspace(monkeypatch, tmp_path) -> None:
+    """The survivor check resolves external artifacts through their grant."""
+    from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
+
+    runtime = tmp_path / "runtime"
+    selected = tmp_path / "application"
+    runtime.mkdir()
+    selected.mkdir()
+    (selected / "app.py").write_text("x = 1\n")
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(runtime))
+    registry = RootRegistry.build(
+        runtime, [FolderGrant("g-app", "app", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
+    assert subagent._mechanical_workspace_root() == runtime.resolve()
+    assert subagent._file_still_exists("app::app.py") is True
+
+    async def fake_call(session, name, args):
+        assert name == "musubi_run_lint"
+        assert args == {"files": ["app.py"], "root": "app"}
+        return '{"passed": true, "errors": []}'
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    gate = asyncio.run(
+        subagent._run_mechanical_gate(object(), {"app::app.py"}, io.StringIO())
+    )
+    assert gate["result"] == "pass"
+
+    monkeypatch.delenv(MANIFEST_ENV)
+    assert subagent._mechanical_workspace_root() == runtime.resolve()
+    assert subagent._file_still_exists("app.py") is False

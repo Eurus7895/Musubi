@@ -12,6 +12,14 @@ test('Orchestrator owns Direct and Pipeline execution configuration', () => {
   assert.match(source, /NewSessionButton/)
 })
 
+test('Orchestrator owns editable session folder grants', () => {
+  assert.match(source, /SessionFolders/)
+  assert.match(source, /Add folder/)
+  assert.match(source, /onRenameSessionFolder/)
+  assert.match(source, /onRemoveSessionFolder/)
+  assert.match(source, /fixed harness root|fixed/)
+})
+
 test('center workspace opens request or agent detail and returns to the graph', () => {
   for (const label of ['Back to graph', 'Request log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
     assert.equal(source.includes(label), true, label)
@@ -52,6 +60,26 @@ test('hiding Sessions removes the rail instead of collapsing it', () => {
   assert.match(source, /rail-toggle/)
   assert.match(source, /aria-label="Show sessions"/)
   assert.match(source, /aria-label="Hide sessions"/)
+})
+
+test('session cleanup controls are contextual and clean-all requires confirmation', () => {
+  assert.match(source, /Delete session/)
+  assert.match(source, /Clean all/)
+  assert.match(source, /window\.confirm/)
+  assert.match(source, /vals\.onDeleteSession/)
+  assert.match(source, /vals\.onCleanSessions/)
+  assert.match(source, /deleteSessionDisabled/)
+  assert.match(source, /cleanSessionsDisabled/)
+})
+
+test('selected paused pipelines render contextual decisions and an optional retry hint', () => {
+  assert.match(source, /function PausePanel/)
+  assert.match(source, /Waiting for decision/)
+  assert.match(source, /Retry hint/)
+  assert.match(source, /panel\.actions/)
+  assert.match(source, /onDecision/)
+  assert.match(source, /pipelineResumeBusy/)
+  assert.match(source, /pipelineResumeError/)
 })
 
 test('the Now banner answers what the agent is doing, and offers the way out', () => {

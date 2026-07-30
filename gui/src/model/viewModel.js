@@ -219,9 +219,9 @@ const RAIL_BUCKETS = [
   { key: 'earlier', label: 'Earlier' },
 ]
 
-function railBucketFor(status) {
+function railBucketFor(status, unread) {
   if (status === 'running') return 'active'
-  if (status === 'escalated' || status === 'failed' || status === 'budget_halted') return 'needsYou'
+  if (unread) return 'needsYou'
   return 'earlier'
 }
 
@@ -432,6 +432,37 @@ export function buildViewModel(s, act) {
       && !isPipelineChatId(run.chatId)
       && (!activeRunRaw?.rootTurn?.startedAt || Number(run.startedAt || 0) >= Number(activeRunRaw.rootTurn.startedAt)))
     .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0))[0]
+  const pauseActions = activePipelineRun?.pauseReason === 'stage_review'
+    ? [
+        { id: 'approve', label: 'Approve' },
+        { id: 'retry', label: 'Retry' },
+        { id: 'auto_approve_rest', label: 'Approve remaining' },
+        { id: 'abort', label: 'Abort', danger: true },
+      ]
+    : activePipelineRun?.pauseReason === 'budget_exhausted'
+      ? [
+          { id: 'grant', label: 'Grant +3' },
+          { id: 'force', label: 'Continue without more workers' },
+          { id: 'abort', label: 'Abort', danger: true },
+        ]
+      : []
+  const pausePanel = {
+    visible: !!activePipelineRun?.pauseReason,
+    sessionId: activePipelineRun?.sessionId || '',
+    reason: activePipelineRun?.pauseReason || '',
+    stage: activePipelineRun?.pausedAtStage || '',
+    chunk: activePipelineRun?.pausedAtChunk || '',
+    actions: pauseActions,
+    unknownReason: !!activePipelineRun?.pauseReason && !pauseActions.length,
+    pipelineResumeBusy: !!s.pipelineResumeBusy,
+    pipelineResumeError: s.pipelineResumeError || '',
+    onDecision: (action, hint = '') => act.resumePipeline(
+      activePipelineRun?.sessionId || '',
+      action,
+      hint,
+      action === 'grant' ? 3 : 0,
+    ),
+  }
   const activeSessionAgents = Array.from(new Map([
     ...(activeRunRaw?.steps || []),
     ...(activePipelineRun?.stages || []),
@@ -453,12 +484,15 @@ export function buildViewModel(s, act) {
     const current = run.steps.find((a) => a.status === 'running') || run.steps[run.steps.length - 1]
     const selected = run.id === activeSessionId
     const session = run.session
+    const pausedPipeline = (s.pipelineRuns || []).find(
+      (pipelineRun) => pipelineRun.chatId === run.id && pipelineRun.pauseReason,
+    )
     const startedAt = Number(run.rootTurn?.startedAt || run.turn?.startedAt || 0)
     const workerCount = hasSessionIndex ? Number(session?.workers || 0) : run.steps.length
     return {
       id: run.id,
       startedAt,
-      bucket: railBucketFor(status),
+      bucket: railBucketFor(status, !!session?.unread),
       selected,
       // A running card shows elapsed; a finished one shows when it ran.
       clock: clockLabel(startedAt, nowMs),
@@ -476,7 +510,9 @@ export function buildViewModel(s, act) {
       statusLabel: m.label,
       statusColor: m.color,
       // Escalation is the state that needs you — say so on the card.
-      stateLabel: status === 'escalated' && current?.max
+      stateLabel: pausedPipeline
+        ? 'Waiting for decision'
+        : status === 'escalated' && current?.max
         ? `escalated at ${Number(current.turns || 0)}/${Number(current.max)}`
         : m.label,
       currentBrief: hasSessionIndex
@@ -1201,6 +1237,11 @@ export function buildViewModel(s, act) {
     onToggleSessions: act.toggleSessions,
     trustCounters,
     railGroups,
+    pausePanel,
+    onDeleteSession: () => act.deleteSession(activeSessionId),
+    deleteSessionDisabled: !activeSessionId || activeRunStatus === 'running',
+    onCleanSessions: act.cleanSessions,
+    cleanSessionsDisabled: !!driverStatus.running || !runs.length,
     onStopRun: act.cancelAgent,
     runMode: s.runMode === 'pipeline' ? 'pipeline' : 'direct',
     selectedPipeline: s.selectedPipeline || '',
@@ -1302,11 +1343,27 @@ export function buildViewModel(s, act) {
     approval,
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : (orchestratorPipelineBlocked ? 'Select a runnable pipeline before sending.' : '')),
+    sessionFolderGrants: [
+      {
+        grantId: 'musubi',
+        alias: 'musubi',
+        canonicalPath: setup.projectRoot || '',
+        fixed: true,
+      },
+      ...(s.sessionFolderGrants || []).map((grant) => ({ ...grant, fixed: false })),
+    ],
+    folderGrantError: s.folderGrantError || '',
+    folderGrantControlsDisabled: !!driverStatus.running || !!s.folderGrantBusy,
+    onAddSessionFolder: act.addSessionFolder,
+    onRenameSessionFolder: act.renameSessionFolder,
+    onRemoveSessionFolder: act.removeSessionFolder,
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),
     policy, policyRoles, allowCount: s.allowCount, denyCount: s.denyCount,
     auditView, auditCountLabel: auditView.length + ' rows · immutable',
     setAuditAll: () => act.setAuditFilter('all'), setAuditSpawn: () => act.setAuditFilter('spawned'), setAuditDone: () => act.setAuditFilter('completed'),
     auditFAll: auditBtn(s.auditFilter === 'all'), auditFSpawn: auditBtn(s.auditFilter === 'spawned'), auditFDone: auditBtn(s.auditFilter === 'completed'),
     profiles, skills, setupRows, setupPathHint: setup.pathHint || '',
+    workspaceError: s.workspaceBlockedReason || s.workspaceError || '',
+    workspaceSwitchDisabled: !!driverStatus.running,
   }
 }

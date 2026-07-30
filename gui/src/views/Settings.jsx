@@ -4,7 +4,9 @@ export default function Settings({ vals }) {
       <div style={{ maxWidth: 980, display: 'flex', flexDirection: 'column', gap: 18 }}>
         <header>
           <div style={{ fontSize: 20, fontWeight: 700, color: '#f2f2f3' }}>First run</div>
-          <div style={{ fontSize: 12, color: '#7a7a82', marginTop: 5 }}>Core runtime, model profile, and audit database discovery.</div>
+          <div style={{ fontSize: 12, color: '#7a7a82', marginTop: 5 }}>
+            Core runtime, model profile, and audit database discovery.
+          </div>
         </header>
 
         <section style={{ border: '1px solid rgba(255,255,255,0.08)', background: '#141b27', borderRadius: 8, overflow: 'hidden' }}>
@@ -28,8 +30,11 @@ export default function Settings({ vals }) {
 }
 
 function cssToObj(css) {
-  return Object.fromEntries(css.split(';').filter(Boolean).map((p) => {
-    const [k, ...v] = p.split(':')
-    return [k.trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase()), v.join(':').trim()]
+  return Object.fromEntries(css.split(';').filter(Boolean).map((part) => {
+    const [key, ...value] = part.split(':')
+    return [
+      key.trim().replace(/-([a-z])/g, (_, character) => character.toUpperCase()),
+      value.join(':').trim(),
+    ]
   }))
 }

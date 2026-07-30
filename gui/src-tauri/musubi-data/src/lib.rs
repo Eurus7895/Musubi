@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Default, Debug, Clone)]
@@ -43,6 +43,7 @@ pub struct State {
     pub runtime_log_events: Vec<RuntimeLogEvent>,
     pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
+    pub session_folder_grants: Vec<FolderGrant>,
     pub pipeline_runs: Vec<PipelineRun>,
     pub pipeline_catalog: Vec<PipelineCatalogEntry>,
     pub pipeline_builder_catalog: PipelineBuilderCatalog,
@@ -72,7 +73,21 @@ pub struct State {
     pub runtime_source: String,
     pub setup_status: SetupStatus,
     pub driver_status: DriverStatus,
+    /// Legacy compatibility field; session grants no longer block startup.
+    pub workspace_blocked_reason: String,
     pub t: i64,
+}
+
+pub const MAX_EXTERNAL_FOLDER_GRANTS: i64 = 16;
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderGrant {
+    pub chat_id: String,
+    pub grant_id: String,
+    pub alias: String,
+    pub canonical_path: String,
+    pub ordinal: i64,
 }
 
 /// Runtime overlay for the on-demand task launcher. The GUI spawns one governed
@@ -1384,12 +1399,15 @@ pub struct ToolEvidence {
     pub detail: String,
 }
 
-#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OrchestratorSession {
     pub chat_id: String,
     pub created_at: String,
     pub updated_at: String,
+    pub latest_activity: f64,
+    pub viewed_through: f64,
+    pub unread: bool,
     pub title: String,
     pub last_request: String,
     pub root_turns: i64,
@@ -1402,11 +1420,169 @@ pub struct PipelineRun {
     pub session_id: String,
     pub chat_id: String,
     pub pipeline_name: String,
+    pub request_id: String,
+    pub profile: String,
+    pub task: String,
     pub brief: String,
     pub started_at: f64,
     pub ended_at: Option<f64>,
     pub status: String,
+    pub paused_at_stage: Option<String>,
+    pub paused_at_chunk: Option<String>,
+    pub pause_reason: Option<String>,
+    pub pending_action: Option<String>,
     pub stages: Vec<Agent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineResumeDecision {
+    pub session_id: String,
+    pub chat_id: String,
+    pub pipeline_name: String,
+    pub request_id: String,
+    pub profile: String,
+    pub task: String,
+    pub action: String,
+    pub user_hint: Option<String>,
+    pub extra_budget: i64,
+    pub launch: bool,
+}
+
+pub fn resume_pipeline_session(
+    conn: &mut Connection,
+    session_id: &str,
+    action: &str,
+    user_hint: Option<&str>,
+    extra_budget: i64,
+    now: f64,
+) -> Result<PipelineResumeDecision, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("Cannot lock pipeline state for resume: {e}"))?;
+    let checkpoint = tx
+        .query_row(
+            "SELECT s.pause_reason, s.paused_at_stage,
+                    COALESCE(pr.chat_id,''), pr.pipeline_name,
+                    COALESCE(pr.request_id,''), COALESCE(pr.profile,''),
+                    COALESCE(pr.task,'')
+             FROM sessions s
+             JOIN pipeline_runs pr ON pr.session_id=s.session_id
+             WHERE s.session_id=?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Paused pipeline session was not found.".to_string())?;
+    let (reason, paused_stage, chat_id, pipeline_name, request_id, profile, task) = checkpoint;
+    let reason = reason.ok_or_else(|| "Pipeline session is no longer paused.".to_string())?;
+    if paused_stage.as_deref().unwrap_or_default().is_empty() {
+        return Err("Pipeline session has no resumable stage checkpoint.".into());
+    }
+    let valid = match reason.as_str() {
+        "stage_review" => matches!(
+            action,
+            "approve" | "retry" | "abort" | "auto_approve_rest"
+        ),
+        "budget_exhausted" => matches!(action, "grant" | "force" | "abort"),
+        _ => return Err(format!("Unknown pipeline pause reason {reason:?}.")),
+    };
+    if !valid {
+        return Err(format!(
+            "Action {action:?} does not apply to pause reason {reason:?}."
+        ));
+    }
+    if action == "grant" && extra_budget <= 0 {
+        return Err("Grant requires a positive extra budget.".into());
+    }
+    if action != "grant" && extra_budget != 0 {
+        return Err(format!("Action {action:?} does not accept an extra budget."));
+    }
+    for (label, value) in [
+        ("chat ID", chat_id.as_str()),
+        ("pipeline name", pipeline_name.as_str()),
+        ("request ID", request_id.as_str()),
+        ("profile", profile.as_str()),
+        ("task", task.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("Pipeline resume checkpoint is missing {label}."));
+        }
+    }
+    let hint = user_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let launch = action != "abort";
+    if launch {
+        let auto_approve = i64::from(action == "auto_approve_rest");
+        tx.execute(
+            "UPDATE sessions SET
+                paused_at_stage=NULL,
+                paused_at_chunk=NULL,
+                pause_reason=NULL,
+                pending_action=?1,
+                pending_user_hint=?2,
+                pending_extra_budget=?3,
+                auto_approve_remaining=MAX(auto_approve_remaining,?4),
+                updated_at=?5
+             WHERE session_id=?6 AND pause_reason=?7",
+            rusqlite::params![
+                action,
+                hint,
+                extra_budget,
+                auto_approve,
+                now.to_string(),
+                session_id,
+                reason
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE sessions SET
+                paused_at_stage=NULL,
+                paused_at_chunk=NULL,
+                pause_reason=NULL,
+                pending_action=NULL,
+                pending_user_hint=NULL,
+                pending_extra_budget=0,
+                status='escalated',
+                updated_at=?1
+             WHERE session_id=?2 AND pause_reason=?3",
+            rusqlite::params![now.to_string(), session_id, reason],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE pipeline_runs SET ended_at=?1, final_status='aborted'
+             WHERE session_id=?2 AND ended_at IS NULL",
+            rusqlite::params![now, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(PipelineResumeDecision {
+        session_id: session_id.to_string(),
+        chat_id,
+        pipeline_name,
+        request_id,
+        profile,
+        task,
+        action: action.to_string(),
+        user_hint: hint,
+        extra_budget,
+        launch,
+    })
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -1645,26 +1821,142 @@ fn load_orchestrator_sessions(conn: &Connection) -> rusqlite::Result<Vec<Orchest
                 COALESCE((SELECT x.text FROM chat_log x
                           WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id
                             AND x.role='you'
-                          ORDER BY x.id DESC LIMIT 1), '')
+                          ORDER BY x.id DESC LIMIT 1), ''),
+                MAX(
+                  COALESCE((SELECT MAX(CAST(REPLACE(COALESCE(x.ts,''),'epoch:','') AS REAL))
+                            FROM chat_log x
+                            WHERE x.surface='orchestrator' AND x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(CAST(REPLACE(COALESCE(x.ts,''),'epoch:','') AS REAL))
+                            FROM runtime_log_events x WHERE x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(COALESCE(x.ended_at,x.started_at))
+                            FROM agent_turns x WHERE x.chat_id=c.chat_id), 0),
+                  COALESCE((SELECT MAX(a.ts)
+                            FROM subagent_audit a
+                            WHERE EXISTS (
+                              SELECT 1 FROM agent_turns t
+                              WHERE t.chat_id=c.chat_id
+                                AND t.parent_session_id=a.parent_session_id
+                            )), 0)
+                ),
+                COALESCE(s.viewed_through, 0)
          FROM chat_log c
+         LEFT JOIN orchestrator_session_state s ON s.chat_id=c.chat_id
          WHERE c.surface='orchestrator' AND COALESCE(c.chat_id, '') <> ''
+           AND s.deleted_at IS NULL
          GROUP BY c.chat_id
          ORDER BY MAX(c.id) DESC",
     )?;
     let sessions = stmt
         .query_map([], |r| {
+            let latest_activity = r.get::<_, f64>(5)?;
+            let viewed_through = r.get::<_, f64>(6)?;
             Ok(OrchestratorSession {
                 chat_id: r.get(0)?,
                 created_at: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 updated_at: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 title: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                 last_request: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                latest_activity,
+                viewed_through,
+                unread: latest_activity > viewed_through,
                 root_turns: 0,
                 workers: 0,
             })
         })?
         .collect();
     sessions
+}
+
+pub fn latest_orchestrator_session_activity(
+    conn: &Connection,
+    chat_id: &str,
+) -> rusqlite::Result<Option<f64>> {
+    Ok(load_orchestrator_sessions(conn)?
+        .into_iter()
+        .find(|session| session.chat_id == chat_id)
+        .map(|session| session.latest_activity))
+}
+
+pub fn mark_orchestrator_session_viewed(
+    conn: &Connection,
+    chat_id: &str,
+    viewed_through: f64,
+    now: f64,
+) -> rusqlite::Result<bool> {
+    if latest_orchestrator_session_activity(conn, chat_id)?.is_none() {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+         VALUES(?1,?2,NULL,?3)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           viewed_through=MAX(orchestrator_session_state.viewed_through,excluded.viewed_through),
+           deleted_at=NULL,
+           updated_at=excluded.updated_at",
+        rusqlite::params![chat_id, viewed_through, now],
+    )?;
+    Ok(true)
+}
+
+pub fn delete_orchestrator_session(
+    conn: &mut Connection,
+    chat_id: &str,
+    deleted_at: f64,
+) -> rusqlite::Result<bool> {
+    let exists = latest_orchestrator_session_activity(conn, chat_id)?.is_some();
+    if !exists {
+        return Ok(false);
+    }
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+         VALUES(?1,0,?2,?2)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           deleted_at=excluded.deleted_at,
+           updated_at=excluded.updated_at",
+        rusqlite::params![chat_id, deleted_at],
+    )?;
+    tx.execute(
+        "DELETE FROM chat_log WHERE surface='orchestrator' AND chat_id=?1",
+        [chat_id],
+    )?;
+    tx.execute(
+        "DELETE FROM session_folder_grants WHERE chat_id=?1",
+        [chat_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
+pub fn clean_orchestrator_sessions(
+    conn: &mut Connection,
+    deleted_at: f64,
+) -> rusqlite::Result<usize> {
+    let chat_ids = load_orchestrator_sessions(conn)?
+        .into_iter()
+        .map(|session| session.chat_id)
+        .collect::<Vec<_>>();
+    if chat_ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    for chat_id in &chat_ids {
+        tx.execute(
+            "INSERT INTO orchestrator_session_state(chat_id,viewed_through,deleted_at,updated_at)
+             VALUES(?1,0,?2,?2)
+             ON CONFLICT(chat_id) DO UPDATE SET
+               deleted_at=excluded.deleted_at,
+               updated_at=excluded.updated_at",
+            rusqlite::params![chat_id, deleted_at],
+        )?;
+        tx.execute(
+            "DELETE FROM session_folder_grants WHERE chat_id=?1",
+            [chat_id],
+        )?;
+    }
+    tx.execute("DELETE FROM chat_log WHERE surface='orchestrator'", [])?;
+    tx.commit()?;
+    Ok(chat_ids.len())
 }
 
 /// Return only real pipeline runs joined to their audit-envelope ancestry.
@@ -2127,10 +2419,41 @@ fn load_state_at_with_pipeline_runs(
 
     if let Some(state_conn) = pipeline_state_conn {
         if table_exists(state_conn, "pipeline_runs")? {
-            let mut pstmt = state_conn.prepare(
-                "SELECT session_id, pipeline_name, started_at, ended_at, final_status \
-             FROM pipeline_runs ORDER BY started_at ASC",
-            )?;
+            let has_pause = table_exists(state_conn, "sessions")?
+                && column_exists(state_conn, "sessions", "paused_at_stage")?
+                && column_exists(state_conn, "sessions", "paused_at_chunk")?
+                && column_exists(state_conn, "sessions", "pause_reason")?
+                && column_exists(state_conn, "sessions", "pending_action")?;
+            let request_expr = if column_exists(state_conn, "pipeline_runs", "request_id")? {
+                "COALESCE(pr.request_id,'')"
+            } else {
+                "''"
+            };
+            let profile_expr = if column_exists(state_conn, "pipeline_runs", "profile")? {
+                "COALESCE(pr.profile,'')"
+            } else {
+                "''"
+            };
+            let task_expr = if column_exists(state_conn, "pipeline_runs", "task")? {
+                "COALESCE(pr.task,'')"
+            } else {
+                "''"
+            };
+            let (join, pause_exprs) = if has_pause {
+                (
+                    "LEFT JOIN sessions s ON s.session_id=pr.session_id",
+                    "s.paused_at_stage,s.paused_at_chunk,s.pause_reason,s.pending_action",
+                )
+            } else {
+                ("", "NULL,NULL,NULL,NULL")
+            };
+            let query = format!(
+                "SELECT pr.session_id,pr.pipeline_name,pr.started_at,pr.ended_at,
+                        pr.final_status,{request_expr},{profile_expr},{task_expr},
+                        {pause_exprs}
+                 FROM pipeline_runs pr {join} ORDER BY pr.started_at ASC"
+            );
+            let mut pstmt = state_conn.prepare(&query)?;
             st.pipeline_runs = pstmt
                 .query_map([], |r| {
                     let session_id: String = r.get(0)?;
@@ -2142,6 +2465,7 @@ fn load_state_at_with_pipeline_runs(
                     };
                     let chat_id = session_to_chat
                         .get(&envelope.parent_session)
+                        .or_else(|| session_to_chat.get(&session_id))
                         .cloned()
                         .unwrap_or_default();
                     let mut stages = st
@@ -2159,10 +2483,17 @@ fn load_state_at_with_pipeline_runs(
                         session_id,
                         chat_id,
                         pipeline_name: r.get(1)?,
+                        request_id: r.get(5)?,
+                        profile: r.get(6)?,
+                        task: r.get(7)?,
                         brief: envelope.brief.clone(),
                         started_at: r.get(2)?,
                         ended_at: r.get(3)?,
                         status,
+                        paused_at_stage: r.get(8)?,
+                        paused_at_chunk: r.get(9)?,
+                        pause_reason: r.get(10)?,
+                        pending_action: r.get(11)?,
                         stages,
                     }))
                 })?
@@ -2498,6 +2829,131 @@ fn count(conn: &Connection, sql: &str) -> rusqlite::Result<i64> {
     conn.query_row(sql, [], |r| r.get(0))
 }
 
+pub fn list_session_folder_grants(
+    conn: &Connection,
+    chat_id: &str,
+) -> rusqlite::Result<Vec<FolderGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT chat_id,grant_id,alias,canonical_path,ordinal
+         FROM session_folder_grants WHERE chat_id=?1
+         ORDER BY ordinal ASC, grant_id ASC",
+    )?;
+    let grants = stmt.query_map([chat_id], |row| {
+        Ok(FolderGrant {
+            chat_id: row.get(0)?,
+            grant_id: row.get(1)?,
+            alias: row.get(2)?,
+            canonical_path: row.get(3)?,
+            ordinal: row.get(4)?,
+        })
+    })?
+    .collect();
+    grants
+}
+
+pub fn insert_session_folder_grant(
+    conn: &Connection,
+    grant: &FolderGrant,
+    now: &str,
+) -> rusqlite::Result<()> {
+    let current: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM session_folder_grants WHERE chat_id=?1",
+        [&grant.chat_id],
+        |row| row.get(0),
+    )?;
+    if current >= MAX_EXTERNAL_FOLDER_GRANTS {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "a session may attach at most {MAX_EXTERNAL_FOLDER_GRANTS} folders"
+        )));
+    }
+    conn.execute(
+        "INSERT INTO session_folder_grants
+         (chat_id,grant_id,alias,canonical_path,ordinal,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?6)",
+        rusqlite::params![
+            grant.chat_id,
+            grant.grant_id,
+            grant.alias,
+            grant.canonical_path,
+            grant.ordinal,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn rename_session_folder_grant(
+    conn: &Connection,
+    chat_id: &str,
+    grant_id: &str,
+    alias: &str,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "UPDATE session_folder_grants SET alias=?3,updated_at=?4
+         WHERE chat_id=?1 AND grant_id=?2",
+        rusqlite::params![chat_id, grant_id, alias, now],
+    )? == 1)
+}
+
+pub fn remove_session_folder_grant(
+    conn: &Connection,
+    chat_id: &str,
+    grant_id: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute(
+        "DELETE FROM session_folder_grants WHERE chat_id=?1 AND grant_id=?2",
+        rusqlite::params![chat_id, grant_id],
+    )? == 1)
+}
+
+pub fn snapshot_request_folder_grants(
+    conn: &mut Connection,
+    request_id: &str,
+    chat_id: &str,
+    musubi_root: &str,
+    captured_at: &str,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "INSERT INTO request_folder_grants
+         (request_id,chat_id,grant_id,alias,canonical_path,ordinal,captured_at)
+         VALUES(?1,?2,'musubi','musubi',?3,-1,?4)",
+        rusqlite::params![request_id, chat_id, musubi_root, captured_at],
+    )?;
+    tx.execute(
+        "INSERT INTO request_folder_grants
+         (request_id,chat_id,grant_id,alias,canonical_path,ordinal,captured_at)
+         SELECT ?1,chat_id,grant_id,alias,canonical_path,ordinal,?3
+         FROM session_folder_grants WHERE chat_id=?2
+         ORDER BY ordinal ASC, grant_id ASC",
+        rusqlite::params![request_id, chat_id, captured_at],
+    )?;
+    tx.commit()
+}
+
+pub fn list_request_folder_grants(
+    conn: &Connection,
+    request_id: &str,
+) -> rusqlite::Result<Vec<FolderGrant>> {
+    let mut stmt = conn.prepare(
+        "SELECT chat_id,grant_id,alias,canonical_path,ordinal
+         FROM request_folder_grants WHERE request_id=?1
+         ORDER BY ordinal ASC, grant_id ASC",
+    )?;
+    let grants = stmt.query_map([request_id], |row| {
+        Ok(FolderGrant {
+            chat_id: row.get(0)?,
+            grant_id: row.get(1)?,
+            alias: row.get(2)?,
+            canonical_path: row.get(3)?,
+            ordinal: row.get(4)?,
+        })
+    })?
+    .collect();
+    grants
+}
+
 /// Create the Musubi audit schema on a fresh database. Mirrors the real
 /// substrate tables (`subagent_audit`, `tool_audit`) plus the console-side
 /// `chat_log` / `meta`, and an optional `policy_audit` verdict ledger.
@@ -2618,6 +3074,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   session_id              TEXT PRIMARY KEY,
   pipeline_name           TEXT NOT NULL,
   chat_id                 TEXT,
+  request_id              TEXT,
+  profile                 TEXT,
+  task                    TEXT,
   started_at              REAL NOT NULL,
   ended_at                REAL,
   final_status            TEXT,
@@ -2632,6 +3091,39 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+CREATE TABLE IF NOT EXISTS orchestrator_session_state (
+  chat_id        TEXT PRIMARY KEY,
+  viewed_through REAL NOT NULL DEFAULT 0,
+  deleted_at     REAL,
+  updated_at     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_folder_grants (
+  chat_id        TEXT NOT NULL,
+  grant_id       TEXT NOT NULL,
+  alias          TEXT NOT NULL,
+  canonical_path TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (chat_id, grant_id),
+  UNIQUE (chat_id, alias),
+  UNIQUE (chat_id, canonical_path)
+);
+CREATE INDEX IF NOT EXISTS idx_session_folder_grants_chat_order
+  ON session_folder_grants(chat_id, ordinal, grant_id);
+CREATE TABLE IF NOT EXISTS request_folder_grants (
+  request_id     TEXT NOT NULL,
+  chat_id        TEXT NOT NULL,
+  grant_id       TEXT NOT NULL,
+  alias          TEXT NOT NULL,
+  canonical_path TEXT NOT NULL,
+  ordinal        INTEGER NOT NULL,
+  captured_at    TEXT NOT NULL,
+  PRIMARY KEY (request_id, grant_id),
+  UNIQUE (request_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
+  ON request_folder_grants(chat_id, request_id, ordinal);
 "#;
 
 /// Seed a representative governed session — used by `cargo test`, and by the
@@ -2853,6 +3345,198 @@ mod tests {
     fn demo_state() -> State {
         let conn = demo();
         load_state_at(&conn, 1_736_500_020).unwrap()
+    }
+
+    #[test]
+    fn orchestrator_session_unread_cursor_advances_and_later_activity_reopens_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','first','orchestrator','chat-a')",
+            [],
+        )
+        .unwrap();
+
+        let initial = load_orchestrator_sessions(&conn).unwrap();
+        assert_eq!(initial.len(), 1);
+        assert!(initial[0].unread);
+        assert_eq!(initial[0].latest_activity, 100.0);
+
+        mark_orchestrator_session_viewed(&conn, "chat-a", 100.0, 101.0).unwrap();
+        assert!(!load_orchestrator_sessions(&conn).unwrap()[0].unread);
+
+        conn.execute(
+            "INSERT INTO runtime_log_events
+             (request_id,chat_id,seq,ts,source,stream,role,category,message)
+             VALUES('req-a','chat-a',1,'epoch:102','host','host','host','host','done')",
+            [],
+        )
+        .unwrap();
+        let reopened = load_orchestrator_sessions(&conn).unwrap();
+        assert!(reopened[0].unread);
+        assert_eq!(reopened[0].latest_activity, 102.0);
+        assert_eq!(reopened[0].viewed_through, 100.0);
+    }
+
+    #[test]
+    fn delete_orchestrator_session_hides_chat_and_grants_but_preserves_evidence() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','first','orchestrator','chat-a')",
+            [],
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "grant-a".into(),
+                alias: "docs".into(),
+                canonical_path: "D:/docs".into(),
+                ordinal: 0,
+            },
+            "100",
+        )
+        .unwrap();
+        snapshot_request_folder_grants(&mut conn, "req-a", "chat-a", "C:/Musubi", "101")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO runtime_log_events
+             (request_id,chat_id,seq,ts,source,stream,role,category,message)
+             VALUES('req-a','chat-a',1,'epoch:102','host','host','host','host','done')",
+            [],
+        )
+        .unwrap();
+
+        assert!(delete_orchestrator_session(&mut conn, "chat-a", 103.0).unwrap());
+
+        assert!(load_orchestrator_sessions(&conn).unwrap().is_empty());
+        assert!(list_session_folder_grants(&conn, "chat-a").unwrap().is_empty());
+        assert_eq!(list_request_folder_grants(&conn, "req-a").unwrap().len(), 2);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM runtime_log_events WHERE chat_id='chat-a'"
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn folder_grants_are_session_scoped_ordered_and_snapshotted() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "g-web".into(),
+                alias: "web".into(),
+                canonical_path: "D:/work/web".into(),
+                ordinal: 1,
+            },
+            "100",
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-a".into(),
+                grant_id: "g-api".into(),
+                alias: "api".into(),
+                canonical_path: "D:/work/api".into(),
+                ordinal: 0,
+            },
+            "101",
+        )
+        .unwrap();
+        insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat-b".into(),
+                grant_id: "g-docs".into(),
+                alias: "docs".into(),
+                canonical_path: "D:/work/docs".into(),
+                ordinal: 0,
+            },
+            "102",
+        )
+        .unwrap();
+
+        let current = list_session_folder_grants(&conn, "chat-a").unwrap();
+        assert_eq!(
+            current.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            vec!["api", "web"]
+        );
+
+        snapshot_request_folder_grants(
+            &mut conn,
+            "req-1",
+            "chat-a",
+            "C:/Musubi",
+            "103",
+        )
+        .unwrap();
+        remove_session_folder_grant(&conn, "chat-a", "g-web").unwrap();
+
+        assert_eq!(list_session_folder_grants(&conn, "chat-a").unwrap().len(), 1);
+        let snapshot = list_request_folder_grants(&conn, "req-1").unwrap();
+        assert_eq!(
+            snapshot.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            vec!["musubi", "api", "web"]
+        );
+        assert_eq!(snapshot[0].canonical_path, "C:/Musubi");
+    }
+
+    #[test]
+    fn folder_grants_reject_duplicate_alias_path_and_seventeenth_root() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        for index in 0..16 {
+            insert_session_folder_grant(
+                &conn,
+                &FolderGrant {
+                    chat_id: "chat".into(),
+                    grant_id: format!("g-{index}"),
+                    alias: format!("root-{index}"),
+                    canonical_path: format!("D:/work/{index}"),
+                    ordinal: index,
+                },
+                "100",
+            )
+            .unwrap();
+        }
+
+        let overflow = insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "chat".into(),
+                grant_id: "overflow".into(),
+                alias: "overflow".into(),
+                canonical_path: "D:/work/overflow".into(),
+                ordinal: 16,
+            },
+            "100",
+        );
+        assert!(overflow.is_err());
+
+        let other = insert_session_folder_grant(
+            &conn,
+            &FolderGrant {
+                chat_id: "other".into(),
+                grant_id: "other-id".into(),
+                alias: "root-0".into(),
+                canonical_path: "D:/work/0".into(),
+                ordinal: 0,
+            },
+            "100",
+        );
+        assert!(other.is_ok(), "uniqueness is scoped to one chat");
     }
 
     #[test]
@@ -4652,6 +5336,14 @@ mod tests {
         env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
         env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
         env.insert(
+            "MUSUBI_STATE_DB".to_string(),
+            "/data/musubi.db".to_string(),
+        );
+        env.insert(
+            "MUSUBI_FOLDER_GRANTS_JSON".to_string(),
+            "[{\"grantId\":\"musubi\"}]".to_string(),
+        );
+        env.insert(
             "MUSUBI_LLM_CONFIG".to_string(),
             "/proj/.musubi/llm.json".to_string(),
         );
@@ -4680,6 +5372,10 @@ mod tests {
             vec![
                 ("MUSUBI_DB".to_string(), "/data/audit.db".to_string()),
                 (
+                    "MUSUBI_FOLDER_GRANTS_JSON".to_string(),
+                    "[{\"grantId\":\"musubi\"}]".to_string()
+                ),
+                (
                     "MUSUBI_LLM_CONFIG".to_string(),
                     "/proj/.musubi/llm.json".to_string()
                 ),
@@ -4688,6 +5384,10 @@ mod tests {
                     "/proj/.musubi/mcp.json".to_string()
                 ),
                 ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
+                (
+                    "MUSUBI_STATE_DB".to_string(),
+                    "/data/musubi.db".to_string()
+                ),
             ],
             "only MUSUBI_* is forwarded explicitly; the rest is inherited"
         );
@@ -4706,6 +5406,176 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("empty"));
+    }
+
+    fn create_paused_pipeline_fixture() -> (Connection, Connection) {
+        let audit = Connection::open_in_memory().unwrap();
+        let state = Connection::open_in_memory().unwrap();
+        init_schema(&audit).unwrap();
+        init_schema(&state).unwrap();
+        state
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    request TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    paused_at_stage TEXT,
+                    paused_at_chunk TEXT,
+                    pause_reason TEXT,
+                    auto_approve_remaining INTEGER NOT NULL DEFAULT 0,
+                    pending_action TEXT,
+                    pending_user_hint TEXT,
+                    pending_extra_budget INTEGER NOT NULL DEFAULT 0
+                );
+                ",
+            )
+            .unwrap();
+        audit
+            .execute(
+                "INSERT INTO subagent_audit
+                 (ts,event,handle_id,parent_session_id,parent_agent_name,role,brief,
+                  allowed_tools,max_turns,wall_clock_timeout_s)
+                 VALUES (10,'spawned','pipeline-session','outer-root','agent',
+                         'pipeline:feature-dev','ship it','[]',2,0)",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO sessions
+                 (session_id,request,status,created_at,updated_at,paused_at_stage,
+                  paused_at_chunk,pause_reason)
+                 VALUES ('pipeline-session','ship it','active','1','2','coder','T2','stage_review')",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO pipeline_runs
+                 (session_id,pipeline_name,chat_id,started_at,request_id,profile,task)
+                 VALUES ('pipeline-session','feature-dev','gui-orchestrator-project-chat',
+                         10,'request-original','openai.work','ship it')",
+                [],
+            )
+            .unwrap();
+        (audit, state)
+    }
+
+    #[test]
+    fn paused_pipeline_fields_project_from_state_db() {
+        let (audit, state) = create_paused_pipeline_fixture();
+
+        let snapshot = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+        let run = &snapshot.pipeline_runs[0];
+
+        assert_eq!(run.paused_at_stage.as_deref(), Some("coder"));
+        assert_eq!(run.paused_at_chunk.as_deref(), Some("T2"));
+        assert_eq!(run.pause_reason.as_deref(), Some("stage_review"));
+        assert_eq!(run.pending_action, None);
+        assert_eq!(run.request_id, "request-original");
+        assert_eq!(run.profile, "openai.work");
+        assert_eq!(run.task, "ship it");
+    }
+
+    #[test]
+    fn resume_pipeline_decision_validates_matrix_and_is_single_use() {
+        let (_audit, mut state) = create_paused_pipeline_fixture();
+
+        let decision = resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "retry",
+            Some("keep the API stable"),
+            0,
+            20.0,
+        )
+        .unwrap();
+
+        assert!(decision.launch);
+        assert_eq!(decision.chat_id, "gui-orchestrator-project-chat");
+        assert_eq!(decision.request_id, "request-original");
+        assert_eq!(decision.profile, "openai.work");
+        assert_eq!(decision.task, "ship it");
+        assert_eq!(
+            state
+                .query_row(
+                    "SELECT pending_action FROM sessions WHERE session_id='pipeline-session'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("retry")
+        );
+        assert!(resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "approve",
+            None,
+            0,
+            21.0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resume_pipeline_decision_rejects_reason_mismatch_without_mutation() {
+        let (_audit, mut state) = create_paused_pipeline_fixture();
+
+        let error = resume_pipeline_session(
+            &mut state,
+            "pipeline-session",
+            "grant",
+            None,
+            3,
+            20.0,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("does not apply"));
+        let pause: (Option<String>, Option<String>) = state
+            .query_row(
+                "SELECT paused_at_stage,pending_action FROM sessions
+                 WHERE session_id='pipeline-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pause, (Some("coder".into()), None));
+    }
+
+    #[test]
+    fn resume_pipeline_decision_accepts_only_the_reason_action_matrix() {
+        for action in ["approve", "retry", "abort", "auto_approve_rest"] {
+            let (_audit, mut state) = create_paused_pipeline_fixture();
+            let decision =
+                resume_pipeline_session(&mut state, "pipeline-session", action, None, 0, 20.0)
+                    .unwrap();
+            assert_eq!(decision.launch, action != "abort");
+        }
+        for action in ["grant", "force", "abort"] {
+            let (_audit, mut state) = create_paused_pipeline_fixture();
+            state
+                .execute(
+                    "UPDATE sessions SET pause_reason='budget_exhausted'
+                     WHERE session_id='pipeline-session'",
+                    [],
+                )
+                .unwrap();
+            let extra = if action == "grant" { 3 } else { 0 };
+            let decision = resume_pipeline_session(
+                &mut state,
+                "pipeline-session",
+                action,
+                None,
+                extra,
+                20.0,
+            )
+            .unwrap();
+            assert_eq!(decision.launch, action != "abort");
+        }
     }
 
     #[test]
@@ -5046,8 +5916,14 @@ fn forwarded_spec_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
     for key in [
         "MUSUBI_ROOT",
         "MUSUBI_DB",
+        "MUSUBI_STATE_DB",
+        "MUSUBI_AUDIT_DB",
+        "MUSUBI_FOLDER_GRANTS_JSON",
         "MUSUBI_LLM_CONFIG",
         "MUSUBI_MCP_CONFIG",
+        "MUSUBI_CHAT_ID",
+        "MUSUBI_PIPELINE_PROFILE",
+        "MUSUBI_PIPELINE_TASK",
     ] {
         if let Some(val) = nonempty(env, key) {
             spec_env.push((key.to_string(), val));

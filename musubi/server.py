@@ -1264,11 +1264,18 @@ def musubi_get_reference(skill_id: str, reference_name: str, agent_name: str) ->
 # ── Execution tools ───────────────────────────────────────────────────────────
 
 @mcp.tool()
-def musubi_run_lint(files: list[str]) -> str:
-    """Run ruff check on the specified files. Returns structured lint errors."""
+def musubi_run_lint(files: list[str], root: str = "musubi") -> str:
+    """Run ruff on root-relative files from one immutable request root."""
     if not files:
         return json.dumps({"passed": True, "errors": [], "note": "No files specified."})
-    result = executor.run_lint(files)
+    from tools import fs
+
+    try:
+        resolved = [str(fs.resolve_path(path, root=root)) for path in files]
+        lint_root = fs.resolve_path(".", root=root)
+    except (ValueError, PermissionError) as exc:
+        return json.dumps({"passed": False, "errors": [], "error": str(exc)})
+    result = executor.run_lint(resolved, cwd=lint_root)
     payload: dict = {
         "passed": result.passed,
         "errors": [
@@ -1649,7 +1656,14 @@ def musubi_spawn_pipeline(
             "status": "error",
             "error": f"parent session {parent_session_id!r} not found",
         })
-    pipeline_session_id = state.create_session(brief, pipeline_name=pipeline_name)
+    pipeline_session_id = state.create_session(
+        brief,
+        pipeline_name=pipeline_name,
+        chat_id=os.environ.get("MUSUBI_CHAT_ID") or None,
+        request_id=os.environ.get("MUSUBI_REQUEST_ID") or None,
+        profile=os.environ.get("MUSUBI_PIPELINE_PROFILE") or None,
+        task=os.environ.get("MUSUBI_PIPELINE_TASK") or brief,
+    )
     try:
         subagent_audit.record_spawn(
             handle_id=pipeline_session_id,
@@ -1777,7 +1791,7 @@ def musubi_complete_subagent(
     turns: int = 0,
     status: str = "done",
     max_summary_tokens: int = verifier.DEFAULT_SUBAGENT_MAX_TOKENS,
-    artifacts: list[str] | None = None,
+    artifacts: list[Any] | None = None,
 ) -> str:
     """Record the terminal result of a sub-agent run.
 
@@ -2431,24 +2445,30 @@ def _maybe_compress_field(
 
 
 @mcp.tool()
-def musubi_read_file(path: str) -> str:
-    """Read a text file from the workspace.
+def musubi_read_file(path: str, root: str = "musubi") -> str:
+    """Read a UTF-8 text file from one granted root.
 
-    `path` may be workspace-relative or absolute; absolute paths must
-    resolve inside the workspace root. Reads up to 5 MB of UTF-8 text.
+    `root` defaults to the fixed `musubi` harness root. `path` must be
+    relative and remain inside that root. Reads up to 5 MB of UTF-8 text.
     Returns JSON {"status":"ok","content":...,"bytes":...} or
     {"status":"error","error":...}. When compression is enabled the
     `content` may be compressed with a `compressed_ref` for retrieval.
     """
     from tools import fs
-    return json.dumps(_maybe_compress_field(fs.read_file(path), "content", path))
+    return json.dumps(
+        _maybe_compress_field(fs.read_file(path, root=root), "content", path)
+    )
 
 
 @mcp.tool()
-def musubi_glob(path: str | None = None, pattern: str = "**/*") -> str:
-    """List workspace files matching a glob pattern (read-only discovery).
+def musubi_glob(
+    path: str | None = None,
+    pattern: str = "**/*",
+    root: str = "musubi",
+) -> str:
+    """List files under one granted root (read-only discovery).
 
-    `pattern` is matched against each file's workspace-relative POSIX path
+    `pattern` is matched against each file's root-relative POSIX path
     and basename (e.g. `*.py`, `gui/src/**`, `**/*.jsx`); the default `**/*`
     lists the whole tree. `path` optionally scopes to a sub-directory. Heavy
     build/VCS directories (`.git`, `node_modules`, …) are skipped. Use this
@@ -2456,7 +2476,7 @@ def musubi_glob(path: str | None = None, pattern: str = "**/*") -> str:
     Returns JSON {"status":"ok","matches":[...],"count":N,"truncated":bool}.
     """
     from tools import fs
-    return json.dumps(fs.glob(pattern, path=path))
+    return json.dumps(fs.glob(pattern, path=path, root=root))
 
 
 @mcp.tool()
@@ -2465,8 +2485,9 @@ def musubi_grep(
     path: str | None = None,
     file_glob: str | None = None,
     ignore_case: bool = False,
+    root: str = "musubi",
 ) -> str:
-    """Search workspace file contents for a regex (read-only).
+    """Search one granted root's file contents for a regex (read-only).
 
     Returns matching lines as {"file","line","text"} hits (bounded). `path`
     scopes to a sub-directory; `file_glob` limits which files are scanned
@@ -2477,7 +2498,11 @@ def musubi_grep(
     """
     from tools import fs
     return json.dumps(fs.grep(
-        pattern, path=path, file_glob=file_glob, ignore_case=ignore_case,
+        pattern,
+        path=path,
+        file_glob=file_glob,
+        ignore_case=ignore_case,
+        root=root,
     ))
 
 
@@ -2486,16 +2511,23 @@ def musubi_write_file(
     path: str,
     content: str,
     create_parents: bool = True,
+    root: str = "musubi",
 ) -> str:
-    """Write `content` to `path`, creating or replacing the file.
+    """Write `content` to a relative path under one granted root.
 
     Parent directories are created by default. Pass create_parents=False
-    to require the parent to exist already. Workspace-scoped; refuses
-    to write outside the workspace root.
+    to require the parent to exist already. `root` defaults to `musubi`.
     Returns JSON {"status":"ok","bytes_written":N} or {"status":"error",...}.
     """
     from tools import fs
-    return json.dumps(fs.write_file(path, content, create_parents=create_parents))
+    return json.dumps(
+        fs.write_file(
+            path,
+            content,
+            create_parents=create_parents,
+            root=root,
+        )
+    )
 
 
 @mcp.tool()
@@ -2504,13 +2536,14 @@ def musubi_append_file(
     content: str,
     create_parents: bool = True,
     expected_offset: int | None = None,
+    root: str = "musubi",
 ) -> str:
-    """Append `content` to `path`, creating the file when needed.
+    """Append `content` to a relative path under one granted root.
 
     Parent directories are created by default. Pass create_parents=False
     to require the parent to exist already. If expected_offset is provided,
-    the current byte size must match before the append happens. Workspace-
-    scoped; refuses to write outside the workspace root.
+    the current byte size must match before the append happens. `root`
+    defaults to `musubi`.
     Returns JSON {"status":"ok","bytes_written":N,"total_bytes":M} or
     {"status":"error",...}.
     """
@@ -2521,6 +2554,7 @@ def musubi_append_file(
             content,
             create_parents=create_parents,
             expected_offset=expected_offset,
+            root=root,
         )
     )
 
@@ -2531,8 +2565,9 @@ def musubi_edit_file(
     old_string: str,
     new_string: str,
     replace_all: bool = False,
+    root: str = "musubi",
 ) -> str:
-    """Replace the first occurrence of `old_string` in `path` with `new_string`.
+    """Edit a relative file under one granted root.
 
     Default semantics: the match must be UNIQUE in the file. If
     `old_string` occurs more than once, the tool returns an error so
@@ -2542,7 +2577,11 @@ def musubi_edit_file(
     """
     from tools import fs
     return json.dumps(fs.edit_file(
-        path, old_string, new_string, replace_all=replace_all,
+        path,
+        old_string,
+        new_string,
+        replace_all=replace_all,
+        root=root,
     ))
 
 
@@ -2551,11 +2590,12 @@ def musubi_run_command(
     command: str,
     timeout_seconds: int = 60,
     cwd: str | None = None,
+    root: str = "musubi",
 ) -> str:
-    """Run a shell command from the workspace root.
+    """Run a shell command with cwd inside one granted root.
 
-    cwd is optional; when set, it's resolved against the workspace root
-    and rejected if it escapes. Shell features (pipes, &&, env vars)
+    `root` defaults to `musubi`; cwd defaults to that root and an explicit
+    value must be relative and remain inside it. Shell features (pipes, &&, env vars)
     work via `sh -c`. Output is capped at ~1M chars (head + tail
     preserved on overflow). No "dangerous command" detection — the
     user is in control of what the model can do.
@@ -2564,7 +2604,10 @@ def musubi_run_command(
     """
     from tools import fs
     result = fs.run_command(
-        command, timeout_seconds=timeout_seconds, cwd=cwd,
+        command,
+        timeout_seconds=timeout_seconds,
+        cwd=cwd,
+        root=root,
     )
     return json.dumps(_maybe_compress_field(result, "stdout", "log"))
 

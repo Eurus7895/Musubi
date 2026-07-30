@@ -16,6 +16,69 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('session folder picker attaches the selected folder without restart', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => {
+    calls.push({ command, payload })
+    if (command === 'choose_workspace') return 'C:\\Workspace\\application'
+    return null
+  }
+
+  source._setLocal({ orchestratorChatId: 'chat-1' })
+  await source.actions.addSessionFolder()
+
+  assert.equal(source.state.folderGrantBusy, false)
+  assert.deepEqual(calls, [
+    { command: 'choose_workspace', payload: undefined },
+    {
+      command: 'action',
+      payload: {
+        kind: 'add_session_folder',
+        args: ['C:\\Workspace\\application', 'chat-1'],
+      },
+    },
+  ])
+})
+
+test('session folder picker is disabled while an agent is running', async () => {
+  const source = new TauriSource({})
+  let invoked = false
+  source._invoke = async () => { invoked = true }
+  source._setLocal({ driverStatus: { running: true } })
+
+  await source.actions.addSessionFolder()
+
+  assert.equal(invoked, false)
+})
+
+test('session folder aliases and removals target the displayed session', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => calls.push({ command, payload })
+  source._setLocal({ selectedSession: 'chat-history' })
+
+  await source.actions.renameSessionFolder('grant-1', 'frontend')
+  await source.actions.removeSessionFolder('grant-1')
+
+  assert.deepEqual(calls, [
+    {
+      command: 'action',
+      payload: {
+        kind: 'rename_session_folder',
+        args: ['chat-history', 'grant-1', 'frontend'],
+      },
+    },
+    {
+      command: 'action',
+      payload: {
+        kind: 'remove_session_folder',
+        args: ['chat-history', 'grant-1'],
+      },
+    },
+  ])
+})
+
 test('merges pipeline chat from backend snapshots', () => {
   const { source } = sourceWithActionSpy()
 
@@ -56,6 +119,78 @@ test('selectSession switches the active backend session without deleting history
     kind: 'select_session',
     args: ['gui-orchestrator-project-old'],
   }])
+})
+
+test('deleteSession and cleanSessions dispatch the exact backend cleanup actions', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    selectedSession: 'gui-orchestrator-project-old',
+    driverStatus: { running: false },
+  })
+
+  source.actions.deleteSession('gui-orchestrator-project-old')
+  source.actions.cleanSessions()
+
+  assert.equal(source.state.selectedSession, null)
+  assert.deepEqual(calls, [
+    { kind: 'delete_session', args: ['gui-orchestrator-project-old'] },
+    { kind: 'clean_sessions', args: [] },
+  ])
+})
+
+test('cleanup actions do not dispatch while the selected session is running', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    orchestratorChatId: 'gui-orchestrator-project-live',
+    selectedSession: 'gui-orchestrator-project-live',
+    driverStatus: {
+      running: true,
+      surface: 'orchestrator',
+      chatId: 'gui-orchestrator-project-live',
+    },
+  })
+
+  source.actions.deleteSession('gui-orchestrator-project-live')
+  source.actions.cleanSessions()
+
+  assert.deepEqual(calls, [])
+})
+
+test('pipeline resume stays busy until a backend snapshot clears the pause', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => calls.push({ command, payload })
+
+  const pending = source.actions.resumePipeline('pipeline-1', 'retry', 'fix API', 0)
+  await pending
+
+  assert.equal(source.state.pipelineResumeBusy, true)
+  assert.deepEqual(calls, [{
+    command: 'action',
+    payload: {
+      kind: 'resume_pipeline',
+      args: ['pipeline-1', 'retry', 'fix API', 0],
+    },
+  }])
+
+  source._mergeDomain({
+    pipelineRuns: [{
+      sessionId: 'pipeline-1',
+      pauseReason: null,
+      pendingAction: 'retry',
+    }],
+  })
+  assert.equal(source.state.pipelineResumeBusy, false)
+})
+
+test('pipeline resume surfaces backend failure and unlocks decisions', async () => {
+  const source = new TauriSource({})
+  source._invoke = async () => { throw new Error('stale pause') }
+
+  await source.actions.resumePipeline('pipeline-1', 'approve', '', 0)
+
+  assert.equal(source.state.pipelineResumeBusy, false)
+  assert.match(source.state.pipelineResumeError, /stale pause/)
 })
 
 test('selectSession browses history while the active session keeps running', () => {

@@ -31,6 +31,9 @@ struct AppState {
     // `pipeline_runs` is state-store data, intentionally kept separate from
     // the append-only audit ledger. The GUI never writes to this connection.
     state_db: Option<Mutex<Connection>>,
+    // Decisions use a fresh writable connection and a short IMMEDIATE
+    // transaction; the polling connection above remains read-only.
+    state_db_path: Option<PathBuf>,
     paused: AtomicBool,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
@@ -41,6 +44,10 @@ struct AppState {
     // Optional read-only history focus. Never owns a running process or future
     // messages; it only chooses which orchestrator chat snapshot is displayed.
     viewed_orchestrator_chat_id: Mutex<Option<String>>,
+    // Set when a persisted workspace could not be honoured at startup. While
+    // set the Console is outside the operator's chosen boundary, so agent
+    // launches are refused rather than silently retargeted at the runtime.
+    workspace_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -75,6 +82,59 @@ const ARTIFACT_EXTENSIONS: &[&str] = &[
     "html", "htm", "md", "pdf", "png", "jpg", "jpeg", "svg", "json", "csv", "txt", "xlsx", "docx",
     "pptx",
 ];
+
+fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Choose a workspace folder first.".into());
+    }
+    let path = PathBuf::from(raw)
+        .canonicalize()
+        .map_err(|e| format!("Workspace folder is not accessible: {e}"))?;
+    if !path.is_dir() {
+        return Err("The selected workspace is not a directory.".into());
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn choose_workspace() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Choose the application workspace for Musubi'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }",
+        ]);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("osascript");
+        command.args(["-e", "POSIX path of (choose folder with prompt \"Choose the application workspace for Musubi\")"]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("zenity");
+        command.args([
+            "--file-selection",
+            "--directory",
+            "--title=Choose the application workspace for Musubi",
+        ]);
+        command
+    };
+    let output = command
+        .output()
+        .map_err(|e| format!("open folder picker: {e}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!path.is_empty()).then_some(path))
+}
 
 fn epoch_secs() -> i64 {
     SystemTime::now()
@@ -541,6 +601,92 @@ fn select_driver_session(
     *chat_id_slot.lock().map_err(|e| e.to_string())? = requested_chat_id.to_string();
     *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
     Ok(())
+}
+
+fn mark_selected_session_viewed(conn: &Connection, chat_id: &str, now: f64) -> Result<(), String> {
+    let latest = musubi_data::latest_orchestrator_session_activity(conn, chat_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Requested session was not found in this project.".to_string())?;
+    if !musubi_data::mark_orchestrator_session_viewed(conn, chat_id, latest, now)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Requested session was not found in this project.".into());
+    }
+    Ok(())
+}
+
+fn delete_selected_session(
+    conn: &mut Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
+    project_root: &Path,
+    requested_chat_id: &str,
+    deleted_at: f64,
+) -> Result<(), String> {
+    let active_id = chat_id_slot.lock().map_err(|e| e.to_string())?.clone();
+    let viewed_id = viewed_chat_id_slot
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    let displayed_id = viewed_id.as_deref().unwrap_or(&active_id);
+    if requested_chat_id != displayed_id {
+        return Err("Only the displayed session may be deleted.".into());
+    }
+    if rt.running && rt.chat_id == requested_chat_id {
+        return Err("Cannot delete a session while its agent is running.".into());
+    }
+    if !musubi_data::delete_orchestrator_session(conn, requested_chat_id, deleted_at)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Requested session was not found in this project.".into());
+    }
+
+    if requested_chat_id == active_id {
+        new_driver_session(
+            conn,
+            rt,
+            chat_id_slot,
+            viewed_chat_id_slot,
+            project_root,
+            "orchestrator",
+        )?;
+    } else {
+        *viewed_chat_id_slot.lock().map_err(|e| e.to_string())? = None;
+    }
+    if !rt.running && rt.chat_id == requested_chat_id {
+        rt.stdout_tail.clear();
+        rt.stderr_tail.clear();
+        rt.task.clear();
+        rt.started_at = None;
+        rt.terminal_status.clear();
+    }
+    Ok(())
+}
+
+fn clean_all_sessions(
+    conn: &mut Connection,
+    rt: &mut ChatAgentRuntime,
+    chat_id_slot: &Mutex<String>,
+    viewed_chat_id_slot: &Mutex<Option<String>>,
+    project_root: &Path,
+    deleted_at: f64,
+) -> Result<(), String> {
+    if rt.running {
+        return Err(
+            "Cannot clean sessions while an agent is running. Cancel or wait for it to finish."
+                .into(),
+        );
+    }
+    musubi_data::clean_orchestrator_sessions(conn, deleted_at).map_err(|e| e.to_string())?;
+    new_driver_session(
+        conn,
+        rt,
+        chat_id_slot,
+        viewed_chat_id_slot,
+        project_root,
+        "orchestrator",
+    )
 }
 
 fn resolve_orchestrator_history_target(
@@ -1049,7 +1195,14 @@ fn start_chat_agent(
     task_text: String,
     chat_id: &str,
     pipeline_name: Option<&str>,
+    resume: Option<&musubi_data::PipelineResumeDecision>,
 ) -> Result<(), String> {
+    // Fail closed: the operator picked a boundary and it is not in effect.
+    // Launching anyway would export the runtime checkout as the workspace and
+    // let the agent edit Musubi's own install.
+    if let Some(reason) = state.workspace_error.as_ref() {
+        return Err(reason.clone());
+    }
     let started_at = epoch_secs();
     let request_id = new_request_id();
     let launch_chat_id = chat_id.to_string();
@@ -1059,30 +1212,118 @@ fn start_chat_agent(
         rt.request_id = request_id.clone();
         surface_arg(&rt.surface).to_string()
     };
+    let fixed_root = state
+        .project_root
+        .canonicalize()
+        .map_err(|e| format!("Musubi root is unavailable: {e}"))?;
+    let request_manifest = {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        if let Some(checkpoint) = resume {
+            let manifest = musubi_data::list_request_folder_grants(&conn, &checkpoint.request_id)
+                .map_err(|e| e.to_string())?;
+            if manifest.is_empty() {
+                return Err("Resume failed: original folder snapshot was not found.".into());
+            }
+            manifest
+        } else {
+            let session_grants = musubi_data::list_session_folder_grants(&conn, chat_id)
+                .map_err(|e| e.to_string())?;
+            let mut aliases = std::collections::HashSet::new();
+            let mut paths = vec![fixed_root.clone()];
+            for grant in session_grants {
+                let alias = normalize_folder_alias(&grant.alias)?;
+                if alias != grant.alias || !aliases.insert(alias) {
+                    return Err(format!(
+                        "Folder alias {} is invalid or duplicated.",
+                        grant.alias
+                    ));
+                }
+                let stored = PathBuf::from(&grant.canonical_path);
+                let current = stored
+                    .canonicalize()
+                    .map_err(|e| format!("Folder {} is unavailable: {e}", grant.alias))?;
+                if !current.is_dir() {
+                    return Err(format!("Folder {} is no longer a directory.", grant.alias));
+                }
+                if workspace_path_key(&current) != workspace_path_key(&stored) {
+                    return Err(format!(
+                        "Folder {} changed since it was attached; remove and add it again.",
+                        grant.alias
+                    ));
+                }
+                if paths.iter().any(|other| {
+                    is_inside_workspace(&current, other) || is_inside_workspace(other, &current)
+                }) {
+                    return Err(format!(
+                        "Folder {} overlaps another request root.",
+                        grant.alias
+                    ));
+                }
+                paths.push(current);
+            }
+            musubi_data::snapshot_request_folder_grants(
+                &mut conn,
+                &request_id,
+                chat_id,
+                &fixed_root.display().to_string(),
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            musubi_data::list_request_folder_grants(&conn, &request_id)
+                .map_err(|e| e.to_string())?
+        }
+    };
 
     let mut env = musubi_data::current_env_map();
     let setup =
         musubi_data::detect_setup_status(&env, &state.project_root, state.audit_db.as_ref());
-    let mut launch_root = state.project_root.clone();
+    let launch_root = fixed_root;
+    env.insert(
+        "MUSUBI_ROOT".into(),
+        launch_root.to_string_lossy().to_string(),
+    );
+    env.insert(
+        "MUSUBI_FOLDER_GRANTS_JSON".into(),
+        serde_json::to_string(&request_manifest).map_err(|e| e.to_string())?,
+    );
+    if let Some(audit_db) = state.audit_db.as_ref() {
+        env.insert(
+            "MUSUBI_DB".into(),
+            audit_db.path.to_string_lossy().to_string(),
+        );
+        if let Some(parent) = audit_db.path.parent() {
+            env.insert(
+                "MUSUBI_STATE_DB".into(),
+                parent.join("musubi.db").to_string_lossy().to_string(),
+            );
+        }
+    }
     let llm_config_path =
         (!setup.llm_config_path.is_empty()).then(|| PathBuf::from(&setup.llm_config_path));
     if !setup.llm_config_path.is_empty() {
         env.entry("MUSUBI_LLM_CONFIG".into())
             .or_insert_with(|| setup.llm_config_path.clone());
-        if let Some(root) =
-            workspace_root_from_musubi_config(std::path::Path::new(&setup.llm_config_path))
-        {
-            launch_root = root;
-        }
     }
     let default_profile = llm_config_path
         .as_deref()
         .and_then(musubi_data::read_llm_default_from_path)
         .unwrap_or_default();
-    let profile = {
+    let profile = if let Some(checkpoint) = resume {
+        checkpoint.profile.clone()
+    } else {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref())
     };
+    let effective_profile = if profile.trim().is_empty() {
+        default_profile.clone()
+    } else {
+        profile.clone()
+    };
+    if pipeline_name.is_some() {
+        env.insert("MUSUBI_CHAT_ID".into(), chat_id.to_string());
+        env.insert("MUSUBI_PIPELINE_PROFILE".into(), effective_profile);
+        env.insert("MUSUBI_PIPELINE_TASK".into(), task_text.clone());
+    }
     let mcp_config = launch_root.join(".musubi").join("mcp.json");
     if mcp_config.is_file() {
         env.entry("MUSUBI_MCP_CONFIG".into())
@@ -1092,7 +1333,7 @@ fn start_chat_agent(
         .agent_cli
         .found
         .then(|| PathBuf::from(&setup.agent_cli.path));
-    let spec = musubi_data::build_agent_launch_spec(
+    let mut spec = musubi_data::build_agent_launch_spec(
         &task_text,
         &profile,
         &default_profile,
@@ -1105,6 +1346,10 @@ fn start_chat_agent(
             request_id: Some(&request_id),
         },
     )?;
+    if let Some(checkpoint) = resume {
+        spec.args.push("--resume-pipeline-session".into());
+        spec.args.push(checkpoint.session_id.clone());
+    }
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let db_path = state
@@ -1457,45 +1702,95 @@ fn open_db() -> Connection {
 struct OpenedDb {
     conn: Connection,
     state_db: Option<Connection>,
+    state_db_path: Option<PathBuf>,
     project_root: PathBuf,
     audit_db: Option<musubi_data::ResolvedAuditDb>,
+    /// Why the persisted workspace could not be honoured, if it could not.
+    ///
+    /// Set means the Console is NOT running inside the boundary the operator
+    /// selected. Execution stays blocked until they choose a valid folder —
+    /// silently reverting to the runtime checkout would let an agent modify
+    /// Musubi's own install while the operator believes their application is
+    /// the target.
+    workspace_error: Option<String>,
 }
 
 fn open_configured_db() -> OpenedDb {
-    let env = musubi_data::current_env_map();
+    let mut env = musubi_data::current_env_map();
+    env.remove("MUSUBI_WORKSPACE");
+    std::env::remove_var("MUSUBI_WORKSPACE");
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if let Some(resolved) = musubi_data::resolve_audit_db_path(&env, &cwd) {
-        let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
-        let conn = Connection::open(&resolved.path).expect("open Musubi audit db");
-        let _ = musubi_data::init_schema(&conn);
-        let state_db = open_state_db(&resolved);
-        eprintln!(
-            "[musubi] reading audit.db at {} ({}) project_root={}",
-            resolved.path.display(),
-            resolved.source,
-            project_root.display()
-        );
-        return OpenedDb {
-            conn,
-            state_db,
-            project_root,
-            audit_db: Some(resolved),
-        };
+        match prepare_audit_connection(&resolved) {
+            Ok(conn) => {
+                let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
+                let state_db_path = musubi_data::resolve_state_db_path(&resolved).map(|db| db.path);
+                let state_db = state_db_path.as_deref().and_then(open_state_db_path);
+                std::env::set_var("MUSUBI_ROOT", &project_root);
+                return OpenedDb {
+                    conn,
+                    state_db,
+                    state_db_path,
+                    project_root,
+                    audit_db: Some(resolved),
+                    workspace_error: None,
+                };
+            }
+            Err(reason) => {
+                eprintln!("[musubi] cannot open audit.db: {reason}");
+            }
+        }
     }
-
-    let conn = open_db();
-    eprintln!("[musubi] no audit.db source found; using empty in-memory state");
+    let project_root = resolve_project_root(&env, &cwd, None);
+    std::env::set_var("MUSUBI_ROOT", &project_root);
     OpenedDb {
-        conn,
+        conn: open_db(),
         state_db: None,
-        project_root: resolve_project_root(&env, &cwd, None),
+        state_db_path: None,
+        project_root,
         audit_db: None,
+        workspace_error: None,
     }
+}
+
+/// Create the parent directory and open the audit DB, reporting failure
+/// instead of aborting the process.
+fn prepare_audit_connection(resolved: &musubi_data::ResolvedAuditDb) -> Result<Connection, String> {
+    if let Some(parent) = resolved.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    let conn = Connection::open(&resolved.path).map_err(|e| e.to_string())?;
+    let _ = musubi_data::init_schema(&conn);
+    Ok(conn)
 }
 
 fn open_state_db(audit_db: &musubi_data::ResolvedAuditDb) -> Option<Connection> {
     let state_db = musubi_data::resolve_state_db_path(audit_db)?;
-    Connection::open_with_flags(state_db.path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+    open_state_db_path(&state_db.path)
+}
+
+fn open_state_db_path(path: &Path) -> Option<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+}
+
+fn apply_pipeline_resume_decision(
+    state_db_path: &Path,
+    session_id: &str,
+    action: &str,
+    user_hint: Option<&str>,
+    extra_budget: i64,
+    now: f64,
+) -> Result<musubi_data::PipelineResumeDecision, String> {
+    let mut conn = Connection::open(state_db_path)
+        .map_err(|e| format!("Cannot open writable pipeline state: {e}"))?;
+    musubi_data::resume_pipeline_session(
+        &mut conn,
+        session_id,
+        action,
+        user_hint,
+        extra_budget,
+        now,
+    )
 }
 
 fn snapshot_session_ids(state: &AppState) -> Result<(String, Option<String>), String> {
@@ -1539,6 +1834,9 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
     st.chat =
         musubi_data::load_chat_for_session(&conn, "orchestrator", displayed_orchestrator_chat_id)
             .map_err(|e| e.to_string())?;
+    st.session_folder_grants =
+        musubi_data::list_session_folder_grants(&conn, displayed_orchestrator_chat_id)
+            .map_err(|e| e.to_string())?;
     st.pipe_chat = musubi_data::load_chat_for_session(&conn, "pipeline", &pipeline_chat_id)
         .map_err(|e| e.to_string())?;
     st.orchestrator_chat_id = orchestrator_chat_id;
@@ -1557,6 +1855,7 @@ fn snapshot(state: &AppState) -> Result<musubi_data::State, String> {
         &state.project_root,
         state.audit_db.as_ref(),
     );
+    st.workspace_blocked_reason.clear();
     let llm_config_path = (!st.setup_status.llm_config_path.is_empty())
         .then(|| PathBuf::from(&st.setup_status.llm_config_path));
     st.active_profile =
@@ -1686,6 +1985,64 @@ where
     launch(&task, &chat_id, pipeline_name.as_deref())
 }
 
+fn normalize_folder_alias(raw: &str) -> Result<String, String> {
+    let alias = raw.trim().to_ascii_lowercase();
+    let valid = !alias.is_empty()
+        && alias.len() <= 32
+        && alias.bytes().enumerate().all(|(index, byte)| {
+            if index == 0 {
+                byte.is_ascii_lowercase()
+            } else {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            }
+        });
+    if !valid || alias == "musubi" {
+        return Err("Folder alias must match [a-z][a-z0-9_-]{0,31}; musubi is reserved.".into());
+    }
+    Ok(alias)
+}
+
+fn default_folder_alias(path: &Path, used: &std::collections::HashSet<String>) -> String {
+    let raw = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("folder")
+        .to_ascii_lowercase();
+    let mut base = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(&['-', '_'][..])
+        .to_string();
+    if base.is_empty() || !base.as_bytes()[0].is_ascii_lowercase() {
+        base = format!("folder-{base}");
+    }
+    base.truncate(32);
+    let mut alias = base.clone();
+    let mut suffix = 2;
+    while alias == "musubi" || used.contains(&alias) {
+        let tail = format!("-{suffix}");
+        alias = format!("{}{}", &base[..base.len().min(32 - tail.len())], tail);
+        suffix += 1;
+    }
+    alias
+}
+
+fn displayed_folder_chat_id(state: &AppState, requested: &str) -> Result<String, String> {
+    let (active, viewed) = snapshot_session_ids(state)?;
+    let displayed = viewed.unwrap_or(active);
+    if !requested.trim().is_empty() && requested != displayed {
+        return Err("Folder grants may only edit the displayed session.".into());
+    }
+    Ok(displayed)
+}
+
 #[tauri::command]
 fn action(
     kind: String,
@@ -1700,6 +2057,86 @@ fn action(
             .to_string()
     };
     match kind.as_str() {
+        "add_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
+            }
+            let folder = canonical_workspace(&str_arg(0))?;
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(1))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            let existing = musubi_data::list_session_folder_grants(&conn, &chat_id)
+                .map_err(|e| e.to_string())?;
+            let fixed = state
+                .project_root
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if is_inside_workspace(&folder, &fixed) || is_inside_workspace(&fixed, &folder) {
+                return Err("Attached folders may not overlap the Musubi root.".into());
+            }
+            for grant in &existing {
+                let other = PathBuf::from(&grant.canonical_path);
+                if is_inside_workspace(&folder, &other) || is_inside_workspace(&other, &folder) {
+                    return Err(format!(
+                        "Attached folder overlaps existing root {}.",
+                        grant.alias
+                    ));
+                }
+            }
+            let used = existing
+                .iter()
+                .map(|grant| grant.alias.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let alias = default_folder_alias(&folder, &used);
+            musubi_data::insert_session_folder_grant(
+                &conn,
+                &musubi_data::FolderGrant {
+                    chat_id,
+                    grant_id: format!("folder-{}", new_request_id()),
+                    alias,
+                    canonical_path: folder.display().to_string(),
+                    ordinal: existing.len() as i64,
+                },
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            drop(runtime);
+        }
+        "rename_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
+            }
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(0))?;
+            let alias = normalize_folder_alias(&str_arg(2))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            if !musubi_data::rename_session_folder_grant(
+                &conn,
+                &chat_id,
+                &str_arg(1),
+                &alias,
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?
+            {
+                return Err("Folder grant no longer exists.".into());
+            }
+            drop(runtime);
+        }
+        "remove_session_folder" => {
+            let runtime = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if runtime.running {
+                return Err("Cannot edit session folders while an agent is running.".into());
+            }
+            let chat_id = displayed_folder_chat_id(state.inner(), &str_arg(0))?;
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            if !musubi_data::remove_session_folder_grant(&conn, &chat_id, &str_arg(1))
+                .map_err(|e| e.to_string())?
+            {
+                return Err("Folder grant no longer exists.".into());
+            }
+            drop(runtime);
+        }
         "send_chat" => {
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
             let text = str_arg(0);
@@ -1736,6 +2173,7 @@ fn action(
                         task.to_string(),
                         chat_id,
                         pipeline_name,
+                        None,
                     ) {
                         if let Ok(mut rt) = state.chat_agent.lock() {
                             if rt.chat_id == chat_id {
@@ -1780,6 +2218,84 @@ fn action(
                 "orchestrator",
                 &requested_chat_id,
             )?;
+            mark_selected_session_viewed(&conn, &requested_chat_id, epoch_secs() as f64)?;
+        }
+        "delete_session" => {
+            let requested_chat_id = str_arg(0);
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+            delete_selected_session(
+                &mut conn,
+                &mut rt,
+                &state.chat_id,
+                &state.viewed_orchestrator_chat_id,
+                &state.project_root,
+                &requested_chat_id,
+                epoch_secs() as f64,
+            )?;
+        }
+        "clean_sessions" => {
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+            clean_all_sessions(
+                &mut conn,
+                &mut rt,
+                &state.chat_id,
+                &state.viewed_orchestrator_chat_id,
+                &state.project_root,
+                epoch_secs() as f64,
+            )?;
+        }
+        "resume_pipeline" => {
+            let session_id = str_arg(0);
+            let decision_action = str_arg(1);
+            let hint = str_arg(2);
+            let extra_budget = args.get(3).and_then(|value| value.as_i64()).unwrap_or(0);
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if rt.running {
+                return Err("Cannot resume a pipeline while another agent is running.".into());
+            }
+            let state_db_path = state
+                .state_db_path
+                .as_deref()
+                .ok_or_else(|| "Pipeline state database is unavailable.".to_string())?;
+            let decision = apply_pipeline_resume_decision(
+                state_db_path,
+                &session_id,
+                &decision_action,
+                (!hint.trim().is_empty()).then_some(hint.as_str()),
+                extra_budget,
+                epoch_secs() as f64,
+            )?;
+            if decision.launch {
+                claim_runtime_owner(
+                    &mut rt,
+                    &decision.chat_id,
+                    "orchestrator",
+                    &decision.pipeline_name,
+                    &decision.task,
+                    epoch_secs(),
+                )?;
+            }
+            drop(rt);
+            if decision.launch {
+                if let Err(error) = start_chat_agent(
+                    app,
+                    state.inner(),
+                    decision.task.clone(),
+                    &decision.chat_id,
+                    Some(&decision.pipeline_name),
+                    Some(&decision),
+                ) {
+                    if let Ok(mut rt) = state.chat_agent.lock() {
+                        if rt.chat_id == decision.chat_id {
+                            rt.running = false;
+                            rt.child = None;
+                        }
+                    }
+                    return Err(error);
+                }
+            }
         }
         "clear_driver_chat" => {
             let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
@@ -1855,16 +2371,19 @@ pub fn run() {
         .manage(AppState {
             db: Mutex::new(opened.conn),
             state_db: opened.state_db.map(Mutex::new),
+            state_db_path: opened.state_db_path,
             paused: AtomicBool::new(false),
             project_root: opened.project_root,
             audit_db: opened.audit_db,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new(chat_id),
             viewed_orchestrator_chat_id: Mutex::new(None),
+            workspace_error: opened.workspace_error,
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
             action,
+            choose_workspace,
             load_pipeline_recipe,
             validate_pipeline_recipe,
             save_pipeline_recipe
@@ -1888,6 +2407,24 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_selection_accepts_only_existing_directories() {
+        let root = std::env::temp_dir().join(format!("musubi-workspace-picker-{}", epoch_secs()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        assert_eq!(
+            canonical_workspace(root.to_str().unwrap()).unwrap(),
+            root.canonicalize().unwrap()
+        );
+        assert!(canonical_workspace(file.to_str().unwrap()).is_err());
+        assert!(canonical_workspace(root.join("missing").to_str().unwrap()).is_err());
+        assert!(canonical_workspace("  ").is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn runtime_ledger_assigns_monotonic_sequence_per_request() {
@@ -1934,12 +2471,14 @@ mod tests {
         let state = AppState {
             db: Mutex::new(Connection::open_in_memory().unwrap()),
             state_db: None,
+            state_db_path: None,
             paused: AtomicBool::new(false),
             project_root: PathBuf::from("."),
             audit_db: None,
             chat_agent: Arc::new(Mutex::new(ChatAgentRuntime::default())),
             chat_id: Mutex::new("gui-orchestrator-project-active".into()),
             viewed_orchestrator_chat_id: Mutex::new(Some("gui-orchestrator-project-viewed".into())),
+            workspace_error: None,
         };
         let _db_guard = state.db.lock().unwrap();
 
@@ -1947,6 +2486,55 @@ mod tests {
 
         assert_eq!(ids.0, "gui-orchestrator-project-active");
         assert_eq!(ids.1.as_deref(), Some("gui-orchestrator-project-viewed"));
+    }
+
+    #[test]
+    fn resume_pipeline_decision_uses_a_short_lived_writable_state_connection() {
+        let root = std::env::temp_dir().join(format!("musubi-resume-{}", new_request_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("musubi.db");
+        let conn = Connection::open(&path).unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                request TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                paused_at_stage TEXT,
+                paused_at_chunk TEXT,
+                pause_reason TEXT,
+                auto_approve_remaining INTEGER NOT NULL DEFAULT 0,
+                pending_action TEXT,
+                pending_user_hint TEXT,
+                pending_extra_budget INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions
+                (session_id,request,status,created_at,updated_at,paused_at_stage,pause_reason)
+                VALUES ('pipeline-1','ship','active','1','2','coder','stage_review');
+            INSERT INTO pipeline_runs
+                (session_id,pipeline_name,chat_id,request_id,profile,task,started_at)
+                VALUES ('pipeline-1','feature-dev','chat-1','request-1','openai.work','ship',1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let decision =
+            apply_pipeline_resume_decision(&path, "pipeline-1", "approve", None, 0, 3.0).unwrap();
+
+        assert!(decision.launch);
+        let conn = Connection::open(&path).unwrap();
+        let pending: Option<String> = conn
+            .query_row(
+                "SELECT pending_action FROM sessions WHERE session_id='pipeline-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending.as_deref(), Some("approve"));
+        drop(conn);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2149,6 +2737,141 @@ mod tests {
             load_or_mint_session_nonce(&conn, "orchestrator").unwrap(),
             "old"
         );
+    }
+
+    #[test]
+    fn marking_selected_session_viewed_advances_its_unread_cursor() {
+        let conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO chat_log(id,ts,role,text,surface,chat_id)
+             VALUES(1,'epoch:100','you','request','orchestrator','gui-orchestrator-project-old')",
+            [],
+        )
+        .unwrap();
+
+        mark_selected_session_viewed(&conn, "gui-orchestrator-project-old", 101.0).unwrap();
+
+        assert!(
+            !musubi_data::load_state(&conn)
+                .unwrap()
+                .orchestrator_sessions[0]
+                .unread
+        );
+    }
+
+    #[test]
+    fn delete_selected_session_mints_replacement_for_active_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "hello", "orchestrator", &active_id).unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime::default();
+
+        delete_selected_session(
+            &mut conn,
+            &mut runtime,
+            &active,
+            &viewed,
+            root,
+            &active_id,
+            200.0,
+        )
+        .unwrap();
+
+        assert_ne!(*active.lock().unwrap(), active_id);
+        assert!(viewed.lock().unwrap().is_none());
+        assert!(
+            musubi_data::load_chat_for_session(&conn, "orchestrator", &active_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn delete_selected_session_refuses_the_running_owner() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "hello", "orchestrator", &active_id).unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: active_id.clone(),
+            ..ChatAgentRuntime::default()
+        };
+
+        let error = delete_selected_session(
+            &mut conn,
+            &mut runtime,
+            &active,
+            &viewed,
+            root,
+            &active_id,
+            200.0,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("running"));
+        assert_eq!(
+            musubi_data::load_chat_for_session(&conn, "orchestrator", &active_id)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn clean_all_sessions_rejects_running_then_mints_one_fresh_session() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        musubi_data::init_schema(&conn).unwrap();
+        let root = Path::new("C:/project");
+        let active_id = scoped_chat_id(root, "orchestrator", "current");
+        insert_chat(&conn, "you", None, "one", "orchestrator", &active_id).unwrap();
+        insert_chat(
+            &conn,
+            "you",
+            None,
+            "two",
+            "orchestrator",
+            "gui-orchestrator-project-old",
+        )
+        .unwrap();
+        let active = Mutex::new(active_id.clone());
+        let viewed = Mutex::new(None);
+        let mut runtime = ChatAgentRuntime {
+            running: true,
+            chat_id: active_id.clone(),
+            ..ChatAgentRuntime::default()
+        };
+
+        assert!(
+            clean_all_sessions(&mut conn, &mut runtime, &active, &viewed, root, 200.0,)
+                .unwrap_err()
+                .contains("running")
+        );
+        assert_eq!(
+            musubi_data::load_state(&conn)
+                .unwrap()
+                .orchestrator_sessions
+                .len(),
+            2
+        );
+
+        runtime.running = false;
+        clean_all_sessions(&mut conn, &mut runtime, &active, &viewed, root, 201.0).unwrap();
+
+        assert!(musubi_data::load_state(&conn)
+            .unwrap()
+            .orchestrator_sessions
+            .is_empty());
+        assert_ne!(*active.lock().unwrap(), active_id);
+        assert!(viewed.lock().unwrap().is_none());
     }
 
     #[test]
@@ -2922,6 +3645,7 @@ mod tests {
         assert!(source.contains("fn load_pipeline_recipe("));
         assert!(source.contains("fn validate_pipeline_recipe("));
         assert!(source.contains("fn save_pipeline_recipe("));
+        assert!(source.contains("\"resume_pipeline\" =>"));
         let handler_block = source
             .split_once("invoke_handler(tauri::generate_handler![")
             .unwrap()

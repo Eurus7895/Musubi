@@ -88,6 +88,9 @@ function actions() {
     setView() {},
     selectAgent() {},
     selectSession() {},
+    deleteSession() {},
+    cleanSessions() {},
+    resumePipeline() {},
     clearSelect() {},
     setAuditFilter() {},
     selectProfile() {},
@@ -1089,20 +1092,118 @@ test('the Orchestrator nav button navigates, then toggles the sessions rail', ()
   assert.equal(buildViewModel(baseState({ view: 'audit' }), act).orchNavTitle, 'Orchestrator')
 })
 
-test('rail groups sessions by what the operator would do about them', () => {
+test('Needs you contains unread sessions, not sessions with failure statuses', () => {
   const vm = buildViewModel(baseState({
-    subagents: [
-      agent(200, 'done-session', 'done', 'coder'),
-      agent(201, 'stuck-session', 'escalated', 'planner'),
-      agent(202, 'live-session', 'running', 'planner'),
+    orchestratorChatId: 'live-session',
+    orchestratorSessions: [
+      { chatId: 'live-session', title: 'live', unread: false, rootTurns: 1, workers: 0 },
+      { chatId: 'done-unread', title: 'new result', unread: true, rootTurns: 1, workers: 0 },
+      { chatId: 'stuck-viewed', title: 'old failure', unread: false, rootTurns: 1, workers: 1 },
     ],
+    subagents: [
+      agent(201, 'stuck-root', 'escalated', 'planner', 'stuck-viewed'),
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'done-unread', parentSession: 'done-root', request: 'done', startedAt: 30 },
+      { id: 2, chatId: 'stuck-viewed', parentSession: 'stuck-root', request: 'failed', startedAt: 20 },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'live-session',
+      task: 'working', startedAt: 40,
+    },
   }), actions())
 
   assert.deepEqual(vm.railGroups.map((group) => group.label), ['Active', 'Needs you', 'Earlier'])
   assert.deepEqual(vm.railGroups.map((group) => group.runs.length), [1, 1, 1])
   assert.equal(vm.railGroups[0].runs[0].id, 'live-session')
-  assert.equal(vm.railGroups[1].runs[0].id, 'stuck-session')
-  assert.equal(vm.railGroups[2].runs[0].id, 'done-session')
+  assert.equal(vm.railGroups[1].runs[0].id, 'done-unread')
+  assert.equal(vm.railGroups[2].runs[0].id, 'stuck-viewed')
+})
+
+test('session cleanup actions target the selected session and lock clean-all while running', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    deleteSession: (id) => calls.push(['delete', id]),
+    cleanSessions: () => calls.push(['clean']),
+  }
+  const idle = buildViewModel(baseState({
+    orchestratorChatId: 'chat-current',
+    selectedSession: 'chat-old',
+    orchestratorSessions: [
+      { chatId: 'chat-current', title: 'current', unread: false, rootTurns: 0, workers: 0 },
+      { chatId: 'chat-old', title: 'old', unread: false, rootTurns: 0, workers: 0 },
+    ],
+  }), act)
+
+  assert.equal(idle.deleteSessionDisabled, false)
+  assert.equal(idle.cleanSessionsDisabled, false)
+  idle.onDeleteSession()
+  idle.onCleanSessions()
+  assert.deepEqual(calls, [['delete', 'chat-old'], ['clean']])
+
+  const busy = buildViewModel(baseState({
+    orchestratorChatId: 'chat-live',
+    orchestratorSessions: [
+      { chatId: 'chat-live', title: 'live', unread: false, rootTurns: 0, workers: 0 },
+    ],
+    driverStatus: {
+      running: true, surface: 'orchestrator', chatId: 'chat-live',
+      task: 'working', startedAt: 40,
+    },
+  }), act)
+  assert.equal(busy.deleteSessionDisabled, true)
+  assert.equal(busy.cleanSessionsDisabled, true)
+})
+
+test('selected paused pipeline exposes the exact reason action matrix outside unread grouping', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    resumePipeline: (...args) => calls.push(args),
+  }
+  const state = {
+    orchestratorChatId: 'chat-1',
+    selectedSession: 'chat-1',
+    orchestratorSessions: [
+      { chatId: 'chat-1', title: 'viewed pause', unread: false, rootTurns: 1, workers: 1 },
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'chat-1', parentSession: 'root-1', request: 'ship', startedAt: 10 },
+    ],
+    pipelineRuns: [{
+      sessionId: 'pipeline-1',
+      chatId: 'chat-1',
+      pipelineName: 'feature-dev',
+      startedAt: 11,
+      pauseReason: 'stage_review',
+      pausedAtStage: 'coder',
+      pausedAtChunk: null,
+      stages: [],
+    }],
+  }
+  const review = buildViewModel(baseState(state), act)
+
+  assert.equal(review.runs[0].bucket, 'earlier')
+  assert.equal(review.pausePanel.visible, true)
+  assert.deepEqual(review.pausePanel.actions.map((action) => action.id), [
+    'approve', 'retry', 'auto_approve_rest', 'abort',
+  ])
+  review.pausePanel.onDecision('retry', 'keep API stable')
+  assert.deepEqual(calls, [['pipeline-1', 'retry', 'keep API stable', 0]])
+
+  const budget = buildViewModel(baseState({
+    ...state,
+    pipelineRuns: [{
+      ...state.pipelineRuns[0],
+      pauseReason: 'budget_exhausted',
+    }],
+  }), act)
+  assert.deepEqual(budget.pausePanel.actions.map((action) => action.id), [
+    'grant', 'force', 'abort',
+  ])
+  budget.pausePanel.onDecision('grant', '')
+  assert.deepEqual(calls.at(-1), ['pipeline-1', 'grant', '', 3])
 })
 
 test('a failed turn-less request does not masquerade as the live one', () => {
@@ -1313,4 +1414,24 @@ test('an ordinary answer leaves the composer as the only way to reply', () => {
   const vm = buildViewModel(baseState({ chat: [{ role: 'driver', text: 'All done.' }] }), actions())
 
   assert.equal(vm.approval, null)
+})
+
+test('a blocked workspace boundary outranks a transient picker message', () => {
+  // The startup error means the agent will not launch at all, so it is what
+  // the operator has to see — even while a picker error is still on screen.
+  const blocked = buildViewModel(baseState({
+    workspaceBlockedReason: 'Selected workspace /gone is unavailable.',
+    workspaceError: 'transient picker message',
+  }), {})
+  assert.equal(blocked.workspaceError, 'Selected workspace /gone is unavailable.')
+
+  // With no backend problem the picker's own message still shows.
+  const pickerOnly = buildViewModel(baseState({
+    workspaceBlockedReason: '',
+    workspaceError: 'transient picker message',
+  }), {})
+  assert.equal(pickerOnly.workspaceError, 'transient picker message')
+
+  // The folder button stays usable while blocked — it is the recovery path.
+  assert.equal(blocked.workspaceSwitchDisabled, false)
 })

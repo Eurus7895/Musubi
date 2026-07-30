@@ -68,6 +68,9 @@ def create_session(
     *,
     pipeline_name: str = "feature-dev",
     chat_id: str | None = None,
+    request_id: str | None = None,
+    profile: str | None = None,
+    task: str | None = None,
 ) -> str:
     """Create a new session and seed all stage rows as pending. Returns session_id.
 
@@ -92,7 +95,14 @@ def create_session(
     # G.3: open the pipeline_runs row. ended_at + final_status stay
     # NULL until `finalize_pipeline_run` is called from the runner.
     db.insert_pipeline_run(
-        session_id, pipeline_name, _time.time(), db_path, chat_id=chat_id,
+        session_id,
+        pipeline_name,
+        _time.time(),
+        db_path,
+        chat_id=chat_id,
+        request_id=request_id,
+        profile=profile,
+        task=task or request,
     )
     return session_id
 

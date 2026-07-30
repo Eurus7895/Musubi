@@ -1008,16 +1008,16 @@ def test_pipeline_readonly_stage_at_cap_sends_no_manifest(
     assert "artifacts" not in completions[0]
 
 
-def test_pipeline_stage_budget_exhaustion_finalizes_escalated_once(
+def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stage whose fair-share allowance is exhausted completes as escalated
-    and finalizes the run once as escalated — later stages never run."""
+    """Budget exhaustion preserves the checkpoint for an audited resume."""
     from agent import pipeline_runner
     from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
 
     completions: list[dict[str, Any]] = []
     finalizations: list[dict[str, Any]] = []
+    pauses: list[dict[str, Any]] = []
 
     async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
         if name == "musubi_spawn_pipeline":
@@ -1043,6 +1043,9 @@ def test_pipeline_stage_budget_exhaustion_finalizes_escalated_once(
         if name == "musubi_complete_subagent":
             completions.append(args)
             return json.dumps({"status": "ok"})
+        if name == "musubi_pause_session":
+            pauses.append(args)
+            return json.dumps({"status": "paused"})
         if name == "musubi_finalize_pipeline_run":
             finalizations.append(args)
             return json.dumps({"status": "ok"})
@@ -1066,13 +1069,17 @@ def test_pipeline_stage_budget_exhaustion_finalizes_escalated_once(
             PipelineRouter(), [], io.StringIO(), strict=True, budget=parent,
         ))
 
-    # Only the first stage was reached; it escalated and the run finalized once.
+    # Only the first stage was reached. Its evidence stays escalated, while the
+    # pipeline remains paused rather than losing its resumable checkpoint.
     assert len(completions) == 1
     assert completions[0]["handle_id"] == "h-code"
     assert completions[0]["status"] == "escalated"
-    assert finalizations == [{
-        "session_id": "pipe-broke", "final_status": "escalated", "escalated": True,
+    assert pauses == [{
+        "session_id": "pipe-broke",
+        "stage": "code",
+        "reason": "budget_exhausted",
     }]
+    assert finalizations == []
 
 
 # ── Feature A: stage nesting — spawn_roles gates the spawn tool ─────────────

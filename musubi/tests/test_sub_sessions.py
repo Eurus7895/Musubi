@@ -741,3 +741,28 @@ def test_mcp_list_subagents_for_unknown_main_is_empty(mcp_db: Path) -> None:
     raw = server.musubi_list_subagents(main_agent_name="nobody")
     payload = json.loads(raw)
     assert payload["roles"] == []
+
+
+def test_artifacts_verified_anchors_on_selected_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A root-qualified manifest resolves through the immutable grant."""
+    from workspace.grants import FolderGrant, MANIFEST_ENV, RootRegistry
+
+    runtime = tmp_path / "runtime"
+    selected = tmp_path / "application"
+    (selected / "src").mkdir(parents=True)
+    runtime.mkdir()
+    (selected / "src" / "app.py").write_text("print('hi')\n")
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(runtime))
+    registry = RootRegistry.build(
+        runtime, [FolderGrant("g-app", "app", selected)],
+    )
+    monkeypatch.setenv(MANIFEST_ENV, registry.to_json())
+    assert sub_sessions._artifacts_verified([
+        {"root": "app", "path": "src/app.py"},
+    ]) is True
+
+    monkeypatch.delenv(MANIFEST_ENV)
+    assert sub_sessions._artifacts_verified(["src/app.py"]) is False

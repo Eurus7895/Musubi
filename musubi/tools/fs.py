@@ -1,11 +1,11 @@
-"""Workspace-scoped filesystem + command tools.
+"""Root-qualified filesystem and command tools.
 
 musubi-tier: substrate
 expires-when: never — these are the file ops MCP clients need to
   do real work; deterministic, vendor-neutral, HI #1-compliant.
 
-Every operation resolves paths against `_workspace_root()` and refuses
-anything that escapes it. There is intentionally no "is this command
+Every operation resolves relative paths against an immutable request root
+and refuses anything that escapes it. There is intentionally no "is this command
 dangerous?" heuristic — the user gave the model an API key + this
 catalog, and detection would just generate false confidence. The
 substrate's job here is path-safety and audit, not paternalism.
@@ -36,8 +36,11 @@ import re
 import subprocess
 import sys
 from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from workspace.grants import MANIFEST_ENV, RootRegistry
 
 # Cap reads + command output at ~5 MB so a single tool call can't OOM
 # the model's context or the Musubi process. Tunable later if real
@@ -62,49 +65,47 @@ _GREP_MAX_LINE_CHARS = 500
 # ── Path resolution ────────────────────────────────────────────────────────
 
 
-def _workspace_root() -> Path:
-    """Workspace root the tools resolve against.
-
-    Resolution order matches the rest of the Musubi:
-      1. `MUSUBI_ROOT` env var (the extension's convention).
-      2. Current working directory of the server process (set when the
-         user starts the MCP server — typically the repo root).
-    """
-    env = os.environ.get("MUSUBI_ROOT")
-    if env:
-        return Path(env).resolve()
-    return Path.cwd().resolve()
-
-
-def resolve_path(path: str) -> Path:
-    """Resolve `path` against the workspace root, rejecting traversal.
-
-    Accepts workspace-relative or absolute paths. Raises PermissionError
-    when the resolved target escapes the workspace root (the only
-    safety boundary the tools enforce).
-    """
-    if not path:
-        raise ValueError("path must be a non-empty string")
-    root = _workspace_root()
-    p = Path(path)
-    candidate = (p if p.is_absolute() else root / p).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise PermissionError(
-            f"path {path!r} resolves to {candidate}, which is outside "
-            f"the workspace root {root}"
-        ) from exc
-    return candidate
-
-
 # ── Tool implementations ───────────────────────────────────────────────────
 
 
-def read_file(path: str) -> dict[str, Any]:
+@lru_cache(maxsize=8)
+def _registry_for(musubi_root: str, manifest: str) -> RootRegistry:
+    root = Path(musubi_root)
+    if manifest:
+        return RootRegistry.from_json(manifest, root)
+    return RootRegistry.build(root)
+
+
+def _root_registry() -> RootRegistry:
+    """Return the immutable request registry exported by the driver."""
+    musubi_root = os.environ.get("MUSUBI_ROOT") or str(Path.cwd())
+    return _registry_for(musubi_root, os.environ.get(MANIFEST_ENV, ""))
+
+
+def _workspace_root(root: str = "musubi") -> Path:
+    """Return one selected root without changing the process directory."""
+    return _root_registry().resolve(root, ".")
+
+
+def resolve_path(path: str, *, root: str = "musubi") -> Path:
+    """Resolve a relative path under one immutable request root."""
+    return _root_registry().resolve(root, path)
+
+
+def _resolved_metadata(root: str, path: str, target: Path) -> dict[str, str]:
+    grant = _root_registry().root(root)
+    return {
+        "root": grant.alias,
+        "grant_id": grant.grant_id,
+        "path": path,
+        "resolved_path": str(target),
+    }
+
+
+def read_file(path: str, *, root: str = "musubi") -> dict[str, Any]:
     """Read a text file from the workspace."""
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, root=root)
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if not target.exists():
@@ -128,7 +129,12 @@ def read_file(path: str) -> dict[str, Any]:
     except OSError as exc:
         return _error(exc)
     _audit("read", target)
-    return {"status": "ok", "content": content, "bytes": len(content.encode("utf-8"))}
+    return {
+        "status": "ok",
+        "content": content,
+        "bytes": len(content.encode("utf-8")),
+        **_resolved_metadata(root, path, target),
+    }
 
 
 def write_file(
@@ -136,6 +142,7 @@ def write_file(
     content: str,
     *,
     create_parents: bool = True,
+    root: str = "musubi",
 ) -> dict[str, Any]:
     """Write `content` to `path`, replacing the file if it exists.
 
@@ -144,7 +151,7 @@ def write_file(
     parent directory exist already.
     """
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, root=root)
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if target.exists() and target.is_dir():
@@ -174,7 +181,11 @@ def write_file(
     except OSError as exc:
         return _error(exc)
     _audit("write", target, f"bytes={len(encoded)}")
-    return {"status": "ok", "bytes_written": len(encoded)}
+    return {
+        "status": "ok",
+        "bytes_written": len(encoded),
+        **_resolved_metadata(root, path, target),
+    }
 
 
 def append_file(
@@ -183,6 +194,7 @@ def append_file(
     *,
     create_parents: bool = True,
     expected_offset: int | None = None,
+    root: str = "musubi",
 ) -> dict[str, Any]:
     """Append `content` to `path`, creating the file when needed.
 
@@ -191,7 +203,7 @@ def append_file(
     reordered chunks without turning the tool into a heavier file-session API.
     """
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, root=root)
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if target.exists() and target.is_dir():
@@ -228,6 +240,7 @@ def append_file(
         "status": "ok",
         "bytes_written": len(encoded),
         "total_bytes": total,
+        **_resolved_metadata(root, path, target),
     }
 
 
@@ -237,6 +250,7 @@ def edit_file(
     new_string: str,
     *,
     replace_all: bool = False,
+    root: str = "musubi",
 ) -> dict[str, Any]:
     """Find `old_string` in `path` and replace it with `new_string`.
 
@@ -248,7 +262,7 @@ def edit_file(
     if not old_string:
         return {"status": "error", "error": "old_string must be non-empty"}
     try:
-        target = resolve_path(path)
+        target = resolve_path(path, root=root)
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if not target.is_file():
@@ -277,7 +291,23 @@ def edit_file(
         return _error(exc)
     replacements = occurrences if replace_all else 1
     _audit("edit", target, f"replacements={replacements}")
-    return {"status": "ok", "replacements": replacements}
+    return {
+        "status": "ok",
+        "replacements": replacements,
+        **_resolved_metadata(root, path, target),
+    }
+
+
+def _subprocess_cwd(path: Path) -> str:
+    """Return a shell-compatible cwd without changing the authorized Path."""
+    value = str(path)
+    verbatim_unc = "\\\\?\\UNC\\"
+    verbatim = "\\\\?\\"
+    if value.startswith(verbatim_unc):
+        return "\\\\" + value[len(verbatim_unc):]
+    if value.startswith(verbatim):
+        return value[len(verbatim):]
+    return value
 
 
 def run_command(
@@ -285,20 +315,21 @@ def run_command(
     *,
     timeout_seconds: int = 60,
     cwd: str | None = None,
+    root: str = "musubi",
 ) -> dict[str, Any]:
     """Run `command` via `sh -c`. Returns stdout/stderr/exit_code.
 
     Shell features (pipes, redirects, `&&`, env vars) work because
     `shell=True` is what makes this a useful tool. cwd defaults to the
-    workspace root; an explicit cwd is resolved against the workspace
-    root and rejected if it escapes.
+    selected root; an explicit cwd is resolved under that root and rejected
+    if it escapes.
     """
     if not command or not command.strip():
         return {"status": "error", "error": "command must be non-empty"}
-    work_dir = _workspace_root()
+    work_dir = _workspace_root(root)
     if cwd:
         try:
-            resolved = resolve_path(cwd)
+            resolved = resolve_path(cwd, root=root)
         except (ValueError, PermissionError) as exc:
             return _error(exc)
         if not resolved.is_dir():
@@ -308,7 +339,7 @@ def run_command(
         result = subprocess.run(
             command,
             shell=True,
-            cwd=str(work_dir),
+            cwd=_subprocess_cwd(work_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -338,16 +369,22 @@ def run_command(
         "stdout": _truncate(result.stdout),
         "stderr": _truncate(result.stderr),
         "exit_code": result.returncode,
+        **_resolved_metadata(root, cwd or ".", work_dir),
     }
 
 
 # ── Read-only discovery (Grep/Glob capabilities) ────────────────────────────
 
 
-def glob(pattern: str = "**/*", *, path: str | None = None) -> dict[str, Any]:
+def glob(
+    pattern: str = "**/*",
+    *,
+    path: str | None = None,
+    root: str = "musubi",
+) -> dict[str, Any]:
     """List workspace files matching `pattern` (read-only discovery).
 
-    `pattern` is matched with fnmatch against each file's workspace-relative
+    `pattern` is matched with fnmatch against each file's root-relative
     POSIX path and its basename, so `*.py`, `gui/src/**`, and `**/*.jsx` all
     work; the whole-tree default `**/*` lists every file. `path` optionally
     scopes the search to a sub-directory. Heavy build/VCS directories
@@ -357,7 +394,8 @@ def glob(pattern: str = "**/*", *, path: str | None = None) -> dict[str, Any]:
     if not (pattern or "").strip():
         return {"status": "error", "error": "pattern must be non-empty"}
     try:
-        base = resolve_path(path) if path else _workspace_root()
+        selected_root = _workspace_root(root)
+        base = resolve_path(path, root=root) if path else selected_root
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if not base.is_dir():
@@ -365,7 +403,7 @@ def glob(pattern: str = "**/*", *, path: str | None = None) -> dict[str, Any]:
     matches: list[str] = []
     truncated = False
     try:
-        for rel, _full in _iter_workspace_files(base, pattern):
+        for rel, _full in _iter_workspace_files(base, selected_root, pattern):
             matches.append(rel)
             if len(matches) >= _MAX_GLOB_MATCHES:
                 truncated = True
@@ -379,6 +417,7 @@ def glob(pattern: str = "**/*", *, path: str | None = None) -> dict[str, Any]:
         "matches": matches,
         "count": len(matches),
         "truncated": truncated,
+        **_resolved_metadata(root, path or ".", base),
     }
 
 
@@ -388,6 +427,7 @@ def grep(
     path: str | None = None,
     file_glob: str | None = None,
     ignore_case: bool = False,
+    root: str = "musubi",
 ) -> dict[str, Any]:
     """Search workspace file contents for a regex (read-only).
 
@@ -404,7 +444,8 @@ def grep(
     except re.error as exc:
         return {"status": "error", "error": f"invalid regex: {exc}"}
     try:
-        base = resolve_path(path) if path else _workspace_root()
+        selected_root = _workspace_root(root)
+        base = resolve_path(path, root=root) if path else selected_root
     except (ValueError, PermissionError) as exc:
         return _error(exc)
     if not base.is_dir():
@@ -413,7 +454,7 @@ def grep(
     files_scanned = 0
     truncated = False
     try:
-        for rel, full in _iter_workspace_files(base, file_glob):
+        for rel, full in _iter_workspace_files(base, selected_root, file_glob):
             try:
                 if full.stat().st_size > _GREP_MAX_FILE_BYTES:
                     continue
@@ -442,6 +483,7 @@ def grep(
         "count": len(hits),
         "files_scanned": files_scanned,
         "truncated": truncated,
+        **_resolved_metadata(root, path or ".", base),
     }
 
 
@@ -449,24 +491,24 @@ def grep(
 
 
 def _iter_workspace_files(
-    base: Path, file_glob: str | None
+    base: Path, root: Path, file_glob: str | None
 ) -> Iterator[tuple[str, Path]]:
     """Yield `(rel_posix, full_path)` for files under `base`, pruning heavy
     build/VCS directories. When `file_glob` is set, only files whose relative
     POSIX path or basename fnmatches it are yielded."""
-    root = _workspace_root()
     for dirpath, dirnames, filenames in os.walk(base):
         # Prune in place so os.walk never descends into skipped trees.
         dirnames[:] = sorted(d for d in dirnames if d not in _DISCOVERY_SKIP_DIRS)
         for name in sorted(filenames):
             full = Path(dirpath) / name
             try:
-                rel = full.relative_to(root).as_posix()
+                resolved = full.resolve()
+                rel = resolved.relative_to(root).as_posix()
             except ValueError:
                 continue
             if file_glob and not _glob_match(rel, name, file_glob):
                 continue
-            yield rel, full
+            yield rel, resolved
 
 
 def _glob_match(rel_posix: str, base_name: str, pattern: str) -> bool:
