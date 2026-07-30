@@ -417,7 +417,6 @@ def _classify_route(
     costs one planner run and can never block the conversation.
     """
     text = " ".join((task or "").strip().split())
-    low = text.lower()
     if _CASUAL_RE.match(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
