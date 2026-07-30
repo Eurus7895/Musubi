@@ -54,12 +54,18 @@ ORDERED_ROLES: frozenset[str] = frozenset(
 MUTATION_ROLES: frozenset[str] = frozenset({"coder", "designer"})
 #: Roles whose report establishes a fact about the workspace. A coder's report
 #: says something was written, which is a different claim from "the target was
-#: found", so it does not clear the gate.
+#: found", so it does not clear the gate. `planner` is here because a planner
+#: reads the workspace before it can commit to a blast radius — its OUTCOME is
+#: the evidence, not its manifest (see `evidence_gap`).
 EVIDENCE_ROLES: frozenset[str] = frozenset(
-    {"explorer", "investigator", "finder"}
+    {"explorer", "investigator", "finder", "planner"}
 )
-#: Outcome statuses that establish nothing.
-_FAILED: frozenset[str] = frozenset({"failed", "error"})
+#: The only status that establishes anything. An allowlist, not a denylist:
+#: workers also finish `escalated` (hit the turn cap) and `abandoned`
+#: (cascade-killed), and both were passing a "not failed" test while carrying
+#: no findings at all — an explorer that ran out of cycles was opening the
+#: mutation gate on the strength of having been spawned.
+_SUCCEEDED: str = "done"
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -250,38 +256,54 @@ class GoalState:
     def evidence_gap(self) -> str | None:
         """Why a mutation worker may not be summoned yet, or None.
 
-        The enforceable core of "collect enough information first". Three ways
-        to know what a turn targets, and a coder needs at least one:
+        The enforceable core of "collect enough information first". Two ways to
+        know what a turn targets, and a mutation worker needs one:
 
         1. **the request named it** — a path resolving inside the workspace
            root, established at turn start by `agent/evidence.py`;
         2. **somebody looked** — a read-only worker (explorer, investigator,
-           finder) has reported into this turn;
-        3. **a planner committed to it** — an accepted change manifest declares
-           the blast radius.
+           finder, or planner) came back `done`.
 
-        With none of the three, a coder is being sent at a guess. That is the
-        traced failure in its expensive form: the cheap version asked the same
+        With neither, a coder is being sent at a guess. That is the traced
+        failure in its expensive form: the cheap version asked the same
         question three times and spent nothing, while this version spawns a
         worker that writes files nobody asked for, in a place nobody named.
 
-        Fail-closed and cheap to satisfy: the refusal names the two roles that
-        can supply what is missing, and either one clears it. Read fresh at
-        every spawn, because (2) and (3) become true DURING a turn — the whole
-        point is that the root can fix this without asking the user.
+        **An accepted manifest is deliberately NOT one of the ways.** It was,
+        and that was wrong: `ChangeManifest` carries `files_expected`,
+        `subsystems`, and a handful of flags — counts and labels, no paths. A
+        planner can legally declare `files_expected=0` with no subsystems, and
+        that manifest would have cleared this gate while identifying nothing.
+        What the planner establishes is that it READ the workspace, which its
+        `done` outcome already records; the manifest is a size, and size is not
+        a location. Keying on the outcome rather than the manifest also fixes a
+        second hole: `apply_planner_manifest` only runs when
+        `next_role == "planner"`, so on a `single_coder` route — exactly where
+        this gate fires — a planner spawned to clear it never set
+        `declared_files_expected` at all, and the refusal's own advice could
+        not be followed.
+
+        Only `done` counts. Workers also finish `escalated` (out of cycles) and
+        `abandoned` (cascade-killed); both carry no findings, and both were
+        clearing this gate on the strength of having been spawned.
+
+        Fail-closed and cheap to satisfy: the refusal names the roles that can
+        supply what is missing. Read fresh at every spawn, because (2) becomes
+        true DURING a turn — the whole point is that the root can fix this
+        itself rather than returning to the user.
         """
-        if self.target_named or self.declared_files_expected is not None:
+        if self.target_named:
             return None
         if any(
-            outcome.role in EVIDENCE_ROLES and outcome.status not in _FAILED
+            outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
             for outcome in self.outcomes
         ):
             return None
         return (
             "nothing establishes what this turn targets: the request names no "
-            "path inside the workspace, no read-only worker has reported, and "
-            "no change manifest has been accepted. Spawn 'explorer' to find "
-            "the target, or 'planner' to commit to a blast radius, then retry"
+            "path inside the workspace, and no read-only worker has come back "
+            "with findings. Spawn 'explorer' (or 'planner', which reads before "
+            "it plans) and retry once it reports"
         )
 
     def manifest_overrun(self) -> tuple[int, int] | None:

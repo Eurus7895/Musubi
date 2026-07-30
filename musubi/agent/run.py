@@ -1017,6 +1017,27 @@ async def run_agent(
     # `main()` prints as `agent-agent: …`, and that `except RuntimeError`
     # callers can catch. `_run_loop` signals cycle exhaustion by returning
     # None rather than raising, for the same reason.
+    # A turn that died still happened, and it is the one most worth reading
+    # afterwards. The success path below is the only place a row was ever
+    # written, so a crashed turn left no `root_triage`, no cycle count, and
+    # nothing for `chat_turn_usage` to see — a conversation could fail three
+    # times in a row and the no-progress breaker would count zero turns.
+    if chat_id and (loop_error is not None or final_answer is None):
+        _record_agent_turn(
+            chat_id=chat_id,
+            request_id=request_id,
+            parent_session_id=parent_session_id,
+            started_at=turn_started_at,
+            ended_at=time.time(),
+            model_family=vendor.model,
+            stats=stats,
+            db_path=context_compression_db_path,
+            log=log,
+            delivered_artifact=(
+                orchestration is not None and orchestration.delivered_artifact
+            ),
+            root_triage=encode_triage(triage_slot[0]),
+        )
     if loop_error is not None:
         raise RuntimeError(_clean_error(loop_error)) from None
     if final_answer is None:
@@ -1353,14 +1374,24 @@ async def _run_loop(
         # answer exists the turn is over and the declaration has stopped being
         # a plan. First one wins (`parse_triage`); later cycles cannot rewrite
         # what the turn was planned around.
-        if text and role == "agent":
+        # Only the FIRST root response is read. A declaration that arrives
+        # after the root has seen a worker result is a conclusion, not a plan,
+        # and storing it in the same column would present hindsight as
+        # foresight — destroying the one thing the column is for. A first cycle
+        # that declares nothing records nothing, permanently.
+        if role == "agent" and cycle == 0:
             slot = _root_triage.get()
-            if slot is not None and slot[0] is None:
-                declared = parse_triage(text)
+            if slot is not None:
+                declared = parse_triage(text) if text else None
+                slot[0] = declared
                 if declared is not None:
-                    slot[0] = declared
                     print(
                         f"[agent] root triage: {declared[0]} — {declared[1]}",
+                        file=log,
+                    )
+                else:
+                    print(
+                        "[agent] root triage: not declared on the first cycle",
                         file=log,
                     )
 

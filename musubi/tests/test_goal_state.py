@@ -491,11 +491,45 @@ def test_an_explorer_report_is_enough() -> None:
     assert state.evidence_gap() is None
 
 
-def test_an_accepted_manifest_is_enough() -> None:
+def test_an_accepted_manifest_is_not_a_target() -> None:
+    # PR #166 review. `ChangeManifest` carries files_expected, subsystems, and
+    # flags — counts and labels, no paths. A planner may legally declare
+    # `files_expected=0` with no subsystems, so treating "a manifest exists" as
+    # target evidence cleared the gate while identifying nothing. Size is not a
+    # location.
     state = _blind_goal()
     state.declared_files_expected = 2
 
+    assert state.evidence_gap() is not None
+
+
+def test_a_planners_own_outcome_is_evidence() -> None:
+    # What the planner establishes is that it READ the workspace, which its
+    # `done` outcome already records. Keying on the outcome also survives the
+    # second hole: `apply_planner_manifest` only runs when next_role ==
+    # "planner", so on a single_coder route — exactly where this gate fires —
+    # a planner spawned to clear it never set declared_files_expected at all,
+    # and the refusal's own advice could not be followed.
+    state = _blind_goal()
+    state.record_outcome(
+        role="planner", status="done", summary="summary: 1 file, agent/run.py",
+        touched_files=set(),
+    )
+
     assert state.evidence_gap() is None
+
+
+def test_only_a_finished_worker_counts() -> None:
+    # `escalated` (out of cycles) and `abandoned` (cascade-killed) carry no
+    # findings, and a "not failed" test let both open the mutation gate on the
+    # strength of having been spawned.
+    for status in ("escalated", "abandoned", "failed", "error"):
+        state = _blind_goal()
+        state.record_outcome(
+            role="explorer", status=status, summary="summary: ran out",
+            touched_files=set(),
+        )
+        assert state.evidence_gap() is not None, status
 
 
 def test_a_coders_report_does_not_establish_the_target() -> None:

@@ -450,6 +450,27 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   exception here. Deferred until there is data; noted so the option is not
   rediscovered from scratch.
 
+  **What review caught (PR #166).** Three holes in the gate as first written,
+  each reproduced against the code before it was fixed:
+
+  - **An accepted manifest was treated as target evidence.** `ChangeManifest`
+    carries `files_expected`, `subsystems`, and flags — counts and labels, no
+    paths — and a planner may legally declare `files_expected=0` with no
+    subsystems. That manifest cleared the gate while identifying nothing. Size
+    is not a location. What the planner does establish is that it READ the
+    workspace, so the gate now keys on its `done` outcome and `planner` joined
+    `EVIDENCE_ROLES`.
+  - **…which also closed a hole underneath it.** `apply_planner_manifest` runs
+    only when `next_role == "planner"`, and on a `single_coder` route — exactly
+    where this gate fires — `next_role` is `None`. A planner spawned to follow
+    the refusal's own advice therefore never set `declared_files_expected`, and
+    the retried coder was refused again. The advice was unfollowable.
+  - **`escalated` and `abandoned` cleared the gate.** The status test was a
+    denylist (`not in {failed, error}`), and an explorer that runs out of
+    cycles finishes `escalated` carrying no findings — opening the mutation
+    gate on the strength of having been spawned. It is an allowlist now: only
+    `done`.
+
 - [x] **Step 3 — root triage prompt.** Two halves, and the second is what makes
   the first safe.
 
@@ -485,6 +506,26 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   `test_simple_root_two_call_projection_stays_below_3k_tokens` by ~50 tokens
   (4553 against a 4500 ceiling). The block was trimmed rather than the ceiling
   raised — that test exists for exactly this.
+
+  **What review caught (PR #166).** Three more, all honesty rather than
+  parsing:
+
+  - **The trailer claimed overriding costs nothing.** On the planner-led routes
+    it does not: `GoalState.create` sets `next_role="planner"` and the
+    role-order gate refuses a writer until the manifest lands. A root that
+    followed the new instruction and recorded a direct-coder override would pay
+    the planner round trip and be refused anyway. The trailer now names that
+    one ordering as enforced instead of implying everything is negotiable.
+  - **A late triage was stored as the plan.** The slot filled on any cycle, so
+    a root that declared nothing first, called tools, saw a worker result and
+    only then emitted `[triage] …` had its CONCLUSION recorded as its
+    intention — destroying the one thing the column is for. Only cycle 0 is
+    read now, and a silent first cycle records absence permanently.
+  - **A failed turn recorded nothing at all.** `_record_agent_turn` sat on the
+    success path only, so a crashed turn — the kind most worth a post-mortem —
+    left no triage, no cycle count, and nothing for `chat_turn_usage` to see.
+    Three failures in a row looked like zero turns to the no-progress breaker.
+    The row is written before the re-raise now.
 
 - [ ] **Step 4 — delete the lexical judgment.** Reduce `classify_task` to the
   two branches that remain meaningful — is there work to do, and is it

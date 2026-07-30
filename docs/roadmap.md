@@ -140,18 +140,6 @@ enforcement path for the same dimension.
 
 ### Backlog
 
-- **A skipped MCP server should say which one and why.** External servers are
-  fail-open by design — one that is misconfigured, missing, or slow is logged
-  and skipped, never fatal. But the log line (`agent/mcp_gateway.py:313`) prints
-  only the server's name and the exception, which leaves the two questions an
-  operator actually has unanswered: *which transport was it* (a stdio `command`
-  and an HTTP `url` fail for entirely different reasons), and *how long did it
-  wait* — with `timeout_s` defaulting to 30 s, a timeout and an instant refusal
-  read identically. In the traced session this produced
-  `!mcp 'local' skipped: CancelledError`, which named no cause at all; the
-  cause-unwrapping half was fixed in `a689dba`, the transport and elapsed-time
-  half was not. Small and self-contained: add the transport kind and elapsed ms
-  to the line. No behaviour change — the server is skipped either way.
 - **Installer runtime reduction.** Prefer a bundled or locally repairable
   Python core payload so first run does not depend on global `pip install` or
   manual `PATH` edits. Keep network install as a fallback for development
@@ -222,6 +210,20 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 ---
 
 ## Completed Tracks
+
+- A skipped MCP server now says which one, how, and how long — external
+  servers are fail-open by design, but the log line named only the server and
+  the exception, leaving the two questions an operator actually has
+  unanswered. A stdio `command` that is not installed and an HTTP `url` whose
+  host is unreachable need opposite first moves and produced identical lines;
+  with `timeout_s` defaulting to 30 s, a real timeout and an instant refusal
+  also read the same. The line now carries the elapsed ms, an explicit
+  `(timeout Ns)` marker when the wait reached the ceiling, and
+  `via <stdio|http> <command-or-url>` — never `headers` or `env`, which is
+  where the `${VAR}`-interpolated secrets live, and a test pins that. Completes
+  the defect whose other half (`_describe_exc` losing the cause inside nested
+  `anyio` groups, which produced the traced `!mcp 'local' skipped:
+  CancelledError`) was fixed in `a689dba`.
 
 - Destruction is gated on a measurement, not on a sentence — the old guard read
   the user's *sentence* for delete-ish words, so it refused the honest request

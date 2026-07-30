@@ -3732,3 +3732,86 @@ def test_a_turn_with_no_triage_records_none(
             "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
         ).fetchone()
     assert row["root_triage"] is None
+
+
+def test_a_late_triage_is_not_recorded_as_the_plan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """PR #166 review: hindsight must not be stored as foresight.
+
+    A root that declares nothing on its first cycle, calls tools, sees a worker
+    result and only THEN emits `[triage] …` is stating a conclusion. Recording
+    it in the same column would destroy the one thing the column is for.
+    """
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat = "chat-late-triage"
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[
+            {"type": "text", "text": "No declaration here."},
+        ]),
+    ])
+
+    asyncio.run(run_agent(
+        "add a dark theme to dashboard.html", router, _musubi_dir(),
+        log=io.StringIO(), max_tokens=0, chat_id=chat,
+    ))
+
+    with db._connect(tmp_path / "data" / "musubi.db") as conn:
+        row = conn.execute(
+            "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
+        ).fetchone()
+    assert row["root_triage"] is None
+
+    from agent import run as run_mod
+
+    # The capture site itself refuses anything after the first cycle: the slot
+    # is written exactly once, on cycle 0, and a later cycle cannot revisit it.
+    source = (Path(run_mod.__file__)).read_text(encoding="utf-8")
+    assert "if role == \"agent\" and cycle == 0:" in source
+
+
+def test_a_failed_turn_still_records_what_it_planned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # PR #166 review: a crashed turn is the one most worth reading afterwards,
+    # and it used to leave no row at all — no triage, no cycles, and nothing
+    # for chat_turn_usage to count, so three failures in a row looked like zero
+    # turns to the no-progress breaker.
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat = "chat-failed-turn"
+
+    class Exploding(FakeRouter):
+        def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+            if not self.calls:
+                self.calls.append({"messages": messages, "tools": tools})
+                # Triage rides alongside the first tool call, which is where a
+                # real root emits it — so the turn is already "planned" when
+                # the next vendor call dies.
+                return LMResponse(stop_reason="tool_use", content=[
+                    {"type": "text", "text": "[triage] work: dashboard.html"},
+                    {
+                        "type": "tool_use", "id": "t1",
+                        "name": "musubi_read_file",
+                        "input": {"path": "dashboard.html"},
+                    },
+                ])
+            raise RuntimeError("vendor exploded")
+
+    router = Exploding([])
+    router.calls = []
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(run_agent(
+            "add a dark theme to dashboard.html", router, _musubi_dir(),
+            log=io.StringIO(), max_tokens=0, chat_id=chat, max_cycles=2,
+        ))
+
+    with db._connect(tmp_path / "data" / "musubi.db") as conn:
+        rows = conn.execute(
+            "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
+        ).fetchall()
+    assert rows and rows[0]["root_triage"] is not None

@@ -137,9 +137,11 @@ class ScopeHint:
             "This hint is pattern-matched from the request text alone — it has "
             "read no file and run nothing. The evidence block below it reports "
             "what the record actually contains; where the two disagree, the "
-            "evidence is the one that was checked. You own the routing "
-            "decision. Overriding this hint is expected and costs nothing; say "
-            "so in your triage line so the choice is on the record."
+            "evidence is the one that was checked.\n"
+            "Departing from the suggestion is expected — say so in your triage "
+            "line. One part is not a suggestion: on the planner-led routes the "
+            "planner runs before any writer, and a coder spawned first is "
+            "refused until its manifest lands."
         )
 
     def log_line(self) -> str:

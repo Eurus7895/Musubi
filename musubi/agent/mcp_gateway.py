@@ -56,6 +56,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,6 +99,30 @@ class McpServerSpec:
     def resolved_env(self) -> dict[str, str] | None:
         """The child's env overrides, or None to inherit the safe default."""
         return dict(self.env) or None
+
+    @property
+    def transport(self) -> str:
+        """`stdio`, `http`, or `none` — which way this server was reached.
+
+        A skipped server used to be logged by NAME alone, which is the one
+        thing that does not narrow the cause: a stdio server fails because the
+        command is missing or the package is not installed, an HTTP one because
+        the host is unreachable or the token is wrong. Different first move,
+        identical log line.
+        """
+        if self.command:
+            return "stdio"
+        if self.url:
+            return "http"
+        return "none"
+
+    @property
+    def target(self) -> str:
+        """The command or URL, for the skip line. Never the headers or env —
+        those are where the interpolated secrets live."""
+        if self.command:
+            return " ".join([self.command, *self.args]) if self.args else self.command
+        return self.url or "<no transport configured>"
 
 
 def mcp_config_candidates(
@@ -305,12 +330,28 @@ class McpGateway:
         """
         open_session = opener or _open_session
         for spec in specs:
+            started = time.monotonic()
             try:
                 await self._connect_one(stack, spec, log, open_session)
             except BaseException as exc:  # noqa: BLE001 — additive; never fatal
                 if _is_fatal(exc) and not _is_spurious_cancel(exc):
                     raise
-                _log(log, f"[agent] !mcp '{spec.name}' skipped: {_describe_exc(exc)}")
+                # Name the transport and the elapsed time. Without them the
+                # line answered none of the questions an operator has: the
+                # traced session logged `!mcp 'local' skipped: CancelledError`,
+                # which said neither what was tried nor whether it had waited
+                # the full `timeout_s` or failed instantly. Those two cases
+                # need opposite first moves — check the host versus check the
+                # command — and read identically without the elapsed number.
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                timed_out = elapsed_ms >= spec.timeout_s * 1000
+                _log(
+                    log,
+                    f"[agent] !mcp '{spec.name}' skipped after {elapsed_ms}ms"
+                    + (f" (timeout {spec.timeout_s}s)" if timed_out else "")
+                    + f" via {spec.transport} {spec.target}: "
+                    + _describe_exc(exc),
+                )
 
     async def _connect_one(
         self,
