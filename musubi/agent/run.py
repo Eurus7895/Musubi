@@ -64,6 +64,7 @@ from agent.context import (
     resolve_effort_bounds,
 )
 from agent.goal_state import (
+    MUTATION_ROLES,
     NO_PROGRESS_TURN_THRESHOLD,
     ORDERED_ROLES,
     GoalState,
@@ -725,9 +726,6 @@ async def run_agent(
             file=log,
         )
     # What the RECORD establishes, as distinct from what the sentence suggests.
-    # Nothing routes on this yet — it renders into the root's prompt and prints
-    # one line per turn so the distribution can be measured before any behavior
-    # depends on it. See the plan's step 1.
     evidence = collect_evidence(
         effective_task,
         has_conversation=has_conversation,
@@ -736,6 +734,12 @@ async def run_agent(
         barren_turns=chat_usage["barren_turns"],
     )
     print(evidence.log_line(), file=log)
+    # One fact crosses from observation into enforcement: did the request name
+    # a path inside the workspace? It is static for the turn, so the goal state
+    # carries it, and `GoalState.evidence_gap` combines it with the two facts
+    # that are not — worker outcomes and an accepted manifest — to decide
+    # whether a mutation worker may be summoned at all.
+    goal_state.target_named = evidence.names_workspace_path
     direct_answer = _deterministic_scope_answer(
         effective_task, scope_hint, goal_state,
     )
@@ -3233,6 +3237,27 @@ def _spawn_overflow_reasons(
                 file=log,
             )
             continue
+        # Evidence sufficiency (root only, mutation roles only). The role-order
+        # gate above asks "is this the right role NEXT"; this one asks "does
+        # anyone know what this turn is about yet". They are different
+        # questions: a simple route sets no `next_role` at all, so a coder on
+        # "make it faster" passed the order gate and wrote files at a guess.
+        # Read fresh — an explorer summoned earlier THIS turn clears it.
+        if (
+            role == "agent"
+            and orchestration is not None
+            and orchestration.depth == 0
+            and orchestration.goal_state is not None
+            and spawn_role in MUTATION_ROLES
+        ):
+            gap = orchestration.goal_state.evidence_gap()
+            if gap is not None:
+                overflow[tu.get("id", "")] = gap
+                print(
+                    f"[agent]   ⨯ refused worker(role={spawn_role!r}): {gap}",
+                    file=log,
+                )
+                continue
         if (
             role == "agent"
             and orchestration is not None

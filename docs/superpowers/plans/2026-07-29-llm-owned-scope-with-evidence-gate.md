@@ -407,13 +407,48 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   raises on escape and this needs the escape as data. A test asserts both
   agree, so the vector cannot promise a path the firewall will then refuse.
 
-- [ ] **Step 2 — sufficiency rule for mutation.** `GoalState` gains a
-  deterministic gate: a `coder` spawn is refused while the evidence vector says
-  no workspace path is named *and* no explorer findings and no manifest exist.
-  This is the enforceable core of "collect enough information first" — same
-  shape as today's role-order gate, which already refuses a coder before the
-  planner's manifest lands. Fail-closed; the refusal names the legal next role
-  (`explorer` or `planner`).
+- [x] **Step 2 — sufficiency rule for mutation.** `GoalState.evidence_gap()`
+  refuses a `coder` or `designer` spawn while all three are absent: a workspace
+  path named by the request, a report from a read-only worker, and an accepted
+  change manifest. Enforced in `_spawn_overflow_reasons` beside the role-order
+  gate it mirrors, root only, fail-closed, and the refusal names both roles
+  that can close the gap.
+
+  Two things the writing settled:
+
+  - **It answers a different question from the role-order gate.** That gate
+    asks *is this the right role next*; this one asks *does anyone know what
+    this turn is about*. A `single_coder` route sets no `next_role` at all, so
+    "make it faster" passed the order gate untouched and reached a coder that
+    wrote files in a place nobody had named. That hole is the reason this step
+    exists, and it is not covered by anything else.
+  - **Only `target_named` is stored; the other two are read live.** The
+    request's text cannot change mid-turn, so it is captured once from the
+    evidence vector. Worker outcomes and the manifest DO change mid-turn, and
+    reading them fresh at every spawn is what lets the root close the gap
+    itself — summon an explorer, then retry the coder in the same turn — rather
+    than having to return to the user.
+
+  **The cost, measured rather than assumed.** Four existing tests failed on
+  this gate, and all four for the same honest reason: their requests
+  (`create a file`, `create a report file`, `create html dashboard`,
+  `create one policy test artifact`) name no path, so the gate refused the
+  coder. That is the gate working, but it exposes a case worth naming — a pure
+  CREATION request has no existing target to find, so the remedy it suggests
+  (summon an explorer) buys nothing except clearing the gate. The gate is
+  always satisfiable, so this is a wasted spawn, never a deadlock; the fixtures
+  were updated to name the file they create, which is what a real request of
+  that shape looks like anyway.
+
+  The harness cannot separate "create something, you pick the name" from
+  "change something, I didn't say what" — both read as `names_workspace_path =
+  false`, and telling them apart means judging the sentence. The layer that
+  CAN tell them apart is the tool boundary, where `musubi_write_file` already
+  knows whether the path exists. **If the wasted spawn on creation requests
+  proves to cost real money, the fix is to move this check down there** — the
+  same move that fixed the destructive gate — rather than to add a lexical
+  exception here. Deferred until there is data; noted so the option is not
+  rediscovered from scratch.
 
 - [ ] **Step 3 — root triage prompt.** Rewrite the routing block: evidence
   vector + overridable hints instead of a decided route. The root states its

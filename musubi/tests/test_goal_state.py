@@ -455,3 +455,76 @@ def test_decision_block_never_shows_a_second_contradictory_route() -> None:
 
     assert "ambiguity:low,impact:low,risk:low" in block
     assert hint.assessment.route not in block
+
+
+# ── evidence sufficiency: a coder may not be sent at a guess ────────────────
+
+
+def _blind_goal() -> GoalState:
+    """A turn where nothing establishes what is being changed."""
+    return GoalState.create("make it faster", "simple_artifact", "single_coder")
+
+
+def test_a_turn_that_establishes_nothing_refuses_a_mutation_worker() -> None:
+    gap = _blind_goal().evidence_gap()
+
+    assert gap is not None
+    # The refusal must be actionable: naming the two roles that can supply what
+    # is missing is what lets the root fix this without asking the user.
+    assert "explorer" in gap and "planner" in gap
+
+
+def test_a_named_target_is_enough() -> None:
+    state = _blind_goal()
+    state.target_named = True
+
+    assert state.evidence_gap() is None
+
+
+def test_an_explorer_report_is_enough() -> None:
+    state = _blind_goal()
+    state.record_outcome(
+        role="explorer", status="done", summary="summary: found src/app.py",
+        touched_files=set(),
+    )
+
+    assert state.evidence_gap() is None
+
+
+def test_an_accepted_manifest_is_enough() -> None:
+    state = _blind_goal()
+    state.declared_files_expected = 2
+
+    assert state.evidence_gap() is None
+
+
+def test_a_coders_report_does_not_establish_the_target() -> None:
+    # "Something was written" is a different claim from "the target was found".
+    # If a coder's own outcome cleared the gate, one blind spawn would unlock
+    # every spawn after it.
+    state = _blind_goal()
+    state.record_outcome(
+        role="coder", status="done", summary="summary: wrote a file",
+        touched_files={"guess.txt"},
+    )
+
+    assert state.evidence_gap() is not None
+
+
+def test_a_failed_explorer_establishes_nothing() -> None:
+    state = _blind_goal()
+    state.record_outcome(
+        role="explorer", status="failed", summary="summary: could not read it",
+        touched_files=set(),
+    )
+
+    assert state.evidence_gap() is not None
+
+
+def test_the_gate_covers_writers_only() -> None:
+    # Refusing a read-only worker for lack of evidence would refuse the very
+    # thing that supplies it — a deadlock, not a gate.
+    from agent.goal_state import EVIDENCE_ROLES, MUTATION_ROLES
+
+    assert MUTATION_ROLES == {"coder", "designer"}
+    assert not (MUTATION_ROLES & EVIDENCE_ROLES)

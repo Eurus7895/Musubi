@@ -48,6 +48,18 @@ LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
 ORDERED_ROLES: frozenset[str] = frozenset(
     {"planner", "designer", "coder", "reviewer"}
 )
+#: Roles that WRITE. The sufficiency gate applies to these and nothing else:
+#: refusing a read-only worker for lack of evidence would refuse the very thing
+#: that supplies it.
+MUTATION_ROLES: frozenset[str] = frozenset({"coder", "designer"})
+#: Roles whose report establishes a fact about the workspace. A coder's report
+#: says something was written, which is a different claim from "the target was
+#: found", so it does not clear the gate.
+EVIDENCE_ROLES: frozenset[str] = frozenset(
+    {"explorer", "investigator", "finder"}
+)
+#: Outcome statuses that establish nothing.
+_FAILED: frozenset[str] = frozenset({"failed", "error"})
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -155,6 +167,12 @@ class GoalState:
     #: lexical risk gates gone, the manifest is the sole input to routing, and
     #: a declaration nobody verifies is trusted rather than governed.
     declared_files_expected: int | None = None
+    #: Did the REQUEST name a path inside the workspace? From the evidence
+    #: vector at turn start (`agent/evidence.py`). Static for the turn — the
+    #: user's sentence does not change while the turn runs — which is why it is
+    #: stored rather than recomputed. The other two inputs to the sufficiency
+    #: gate below are live, and read from this object each time it is asked.
+    target_named: bool = False
 
     @classmethod
     def create(
@@ -228,6 +246,43 @@ class GoalState:
             manifest.files_expected if manifest is not None else None
         )
         return assessment
+
+    def evidence_gap(self) -> str | None:
+        """Why a mutation worker may not be summoned yet, or None.
+
+        The enforceable core of "collect enough information first". Three ways
+        to know what a turn targets, and a coder needs at least one:
+
+        1. **the request named it** — a path resolving inside the workspace
+           root, established at turn start by `agent/evidence.py`;
+        2. **somebody looked** — a read-only worker (explorer, investigator,
+           finder) has reported into this turn;
+        3. **a planner committed to it** — an accepted change manifest declares
+           the blast radius.
+
+        With none of the three, a coder is being sent at a guess. That is the
+        traced failure in its expensive form: the cheap version asked the same
+        question three times and spent nothing, while this version spawns a
+        worker that writes files nobody asked for, in a place nobody named.
+
+        Fail-closed and cheap to satisfy: the refusal names the two roles that
+        can supply what is missing, and either one clears it. Read fresh at
+        every spawn, because (2) and (3) become true DURING a turn — the whole
+        point is that the root can fix this without asking the user.
+        """
+        if self.target_named or self.declared_files_expected is not None:
+            return None
+        if any(
+            outcome.role in EVIDENCE_ROLES and outcome.status not in _FAILED
+            for outcome in self.outcomes
+        ):
+            return None
+        return (
+            "nothing establishes what this turn targets: the request names no "
+            "path inside the workspace, no read-only worker has reported, and "
+            "no change manifest has been accepted. Spawn 'explorer' to find "
+            "the target, or 'planner' to commit to a blast radius, then retry"
+        )
 
     def manifest_overrun(self) -> tuple[int, int] | None:
         """`(declared, actual)` when mutation exceeded the declared radius.

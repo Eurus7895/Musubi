@@ -443,6 +443,10 @@ def test_root_concludes_when_worker_ceiling_is_spent_by_successes(
     state = GoalState.create(
         "could you reach to a folder", "simple_artifact", "single_coder",
     )
+    # This test is about the worker ceiling, so the turn must get past the
+    # evidence-sufficiency gate to reach it. `target_named` is what the request
+    # naming a workspace path sets.
+    state.target_named = True
     orchestration = Orchestration(
         parent_session_id="root", goal_state=state, spawned_workers=2,
     )
@@ -3574,3 +3578,93 @@ def test_pipeline_resume_rejects_changed_folder_manifest(
 
     with pytest.raises(RuntimeError, match="differs"):
         _validate_resume_folder_manifest("request-1", audit)
+def test_a_blind_coder_spawn_is_refused_and_names_the_way_out(
+    tmp_path: Path,
+) -> None:
+    """Plan step 2: a mutation worker may not be sent at a guess.
+
+    The route here is `single_coder`, which sets no `next_role` — so the
+    role-order gate does not apply and, before this gate, "make it faster"
+    reached a coder that wrote files in a place nobody had named.
+    """
+    from agent import run as run_mod
+
+    state = GoalState.create("make it faster", "simple_artifact", "single_coder")
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    calls = [{
+        "id": "s1", "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "speed it up"},
+    }]
+
+    refusals = run_mod._spawn_overflow_reasons(
+        calls, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    )
+
+    assert "s1" in refusals
+    assert "explorer" in refusals["s1"] and "planner" in refusals["s1"]
+    # A read-only worker is never blocked — it is how the gap gets closed.
+    explorer = [{
+        "id": "s2", "name": "musubi_spawn_subagent",
+        "input": {"role": "explorer", "brief": "find the slow path"},
+    }]
+    assert run_mod._spawn_overflow_reasons(
+        explorer, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    ) == {}
+
+
+def test_an_explorer_report_opens_the_coder_gate_within_the_turn(
+    tmp_path: Path,
+) -> None:
+    # The gate is read fresh at every spawn, so the root can fix the gap itself
+    # rather than having to come back to the user for it.
+    from agent import run as run_mod
+
+    state = GoalState.create("make it faster", "simple_artifact", "single_coder")
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    calls = [{
+        "id": "s1", "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "speed it up"},
+    }]
+    assert run_mod._spawn_overflow_reasons(
+        calls, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    ) != {}
+
+    state.record_outcome(
+        role="explorer", status="done",
+        summary="summary: the hot loop is in agent/run.py", touched_files=set(),
+    )
+
+    assert run_mod._spawn_overflow_reasons(
+        calls, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    ) == {}
+
+
+def test_a_request_naming_a_path_reaches_a_coder_directly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # The gate must not tax the common case. A request that names where the
+    # work goes has already answered the question the gate asks.
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    from agent import run as run_mod
+    from agent.evidence import collect
+
+    state = GoalState.create(
+        "add a dark theme to dashboard.html", "simple_artifact", "single_coder",
+    )
+    state.target_named = collect("add a dark theme to dashboard.html").names_workspace_path
+    assert state.target_named is True
+
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    calls = [{
+        "id": "s1", "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "dark theme"},
+    }]
+
+    assert run_mod._spawn_overflow_reasons(
+        calls, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    ) == {}

@@ -301,7 +301,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
         _text("created: hello.html"),
         _text("done"),
     ])
-    asyncio.run(run_agent("create a file", router, _musubi_dir(), log=io.StringIO()))
+    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=io.StringIO()))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
     child_tools = {t["name"] for t in router.calls[1]["tools"]}
@@ -368,7 +368,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
     ])
 
     answer = asyncio.run(run_agent(
-        "create one policy test artifact",
+        "create policy-test.html",
         router,
         _musubi_dir(),
         log=io.StringIO(),
@@ -591,7 +591,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     ])
 
     answer = asyncio.run(run_agent(
-        "create html dashboard",
+        "create dashboard.html",
         router,
         _musubi_dir(),
         log=io.StringIO(),

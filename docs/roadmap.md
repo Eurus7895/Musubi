@@ -73,14 +73,19 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Remaining, in order — each depends on the one before, and the deletion lands
    last because it is the only step that changes the cost profile:
 
-   - **Sufficiency rule (plan step 2).** A `coder` spawn is refused while the
-     evidence vector reports no named workspace path, no explorer findings, and
-     no manifest. This is the enforceable core of "collect enough information
-     first", and the same shape as today's role-order gate, which already
-     refuses a coder before the planner's manifest lands. Fail-closed; the
-     refusal names the legal next role. **First real behaviour change on the
-     routing path** — it belongs in its own PR, where that is the only question
-     on the table.
+   - ~~**Sufficiency rule (plan step 2).**~~ **Shipped.**
+     `GoalState.evidence_gap()` refuses a `coder` or `designer` spawn while all
+     three are absent: a path named by the request, a read-only worker's
+     report, and an accepted manifest. It answers a different question from the
+     role-order gate — that one asks *is this the right role next*, this one
+     asks *does anyone know what this turn targets* — which matters because a
+     `single_coder` route sets no `next_role`, so "make it faster" reached a
+     coder untouched. Only the request fact is stored; outcomes and the
+     manifest are read live, so the root closes the gap itself within the turn.
+     Known cost: a pure creation request names no path and pays one wasted
+     explorer spawn. Always satisfiable, never a deadlock; if it proves
+     expensive the fix is to move the check to the tool boundary, where
+     `musubi_write_file` already knows whether the path exists.
    - **Root triage prompt (plan step 3).** Replace the decided route with the
      evidence vector plus overridable hints. The root states its chosen turn
      shape in one logged, audited line, so a wrong triage is attributable
