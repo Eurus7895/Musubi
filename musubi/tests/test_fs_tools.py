@@ -333,6 +333,30 @@ def test_edit_file_traversal_blocked(workspace: Path) -> None:
 # ── run_command ────────────────────────────────────────────────────────────
 
 
+def test_run_command_strips_windows_verbatim_prefix_at_subprocess_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fs, "_workspace_root", lambda _root: Path(r"\\?\C:\Workspace\AgentShield"))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = fs.run_command("git status")
+
+    assert result["status"] == "ok"
+    assert captured["cwd"] == r"C:\Workspace\AgentShield"
+
+
+def test_subprocess_cwd_converts_windows_verbatim_unc() -> None:
+    assert fs._subprocess_cwd(
+        Path(r"\\?\UNC\server\share\repo")
+    ) == r"\\server\share\repo"
+
+
 def test_run_command_returns_stdout(workspace: Path) -> None:
     result = fs.run_command("echo hello")
     assert result["status"] == "ok"

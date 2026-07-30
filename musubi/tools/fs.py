@@ -298,6 +298,18 @@ def edit_file(
     }
 
 
+def _subprocess_cwd(path: Path) -> str:
+    """Return a shell-compatible cwd without changing the authorized Path."""
+    value = str(path)
+    verbatim_unc = "\\\\?\\UNC\\"
+    verbatim = "\\\\?\\"
+    if value.startswith(verbatim_unc):
+        return "\\\\" + value[len(verbatim_unc):]
+    if value.startswith(verbatim):
+        return value[len(verbatim):]
+    return value
+
+
 def run_command(
     command: str,
     *,
@@ -327,7 +339,7 @@ def run_command(
         result = subprocess.run(
             command,
             shell=True,
-            cwd=str(work_dir),
+            cwd=_subprocess_cwd(work_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",
