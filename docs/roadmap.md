@@ -70,11 +70,32 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    `barren_turns`, plus `escaped_paths` for targets outside the workspace root),
    rendered into the root prompt and logged. **It routes nothing yet**, by
    design: the distribution is measured before behavior depends on it.
-   Remaining: a fail-closed sufficiency rule refusing a coder spawn while the
-   target is unknown; a root triage prompt of evidence plus overridable hints;
-   then the deletion this buys — `classify_task` reduced to two branches, 18 of
-   19 regexes and the pre-run `ask_scope` halt removed (~551 lines); and
-   `manifest_overrun` promoted from prompt warning to hard stop.
+   Remaining, in order — each depends on the one before, and the deletion lands
+   last because it is the only step that changes the cost profile:
+
+   - **Sufficiency rule (plan step 2).** A `coder` spawn is refused while the
+     evidence vector reports no named workspace path, no explorer findings, and
+     no manifest. This is the enforceable core of "collect enough information
+     first", and the same shape as today's role-order gate, which already
+     refuses a coder before the planner's manifest lands. Fail-closed; the
+     refusal names the legal next role. **First real behaviour change on the
+     routing path** — it belongs in its own PR, where that is the only question
+     on the table.
+   - **Root triage prompt (plan step 3).** Replace the decided route with the
+     evidence vector plus overridable hints. The root states its chosen turn
+     shape in one logged, audited line, so a wrong triage is attributable
+     afterwards instead of invisible.
+   - **Delete the lexical judgment (plan step 4).** `classify_task` drops to two
+     branches — is there work, and is it destructive. Removes `assess_request`,
+     18 of 19 regexes, `_CASUAL_RE`'s zero-token fast path, the pre-run
+     `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
+     the `pending_clarification` column: ~551 lines, and the trigger written
+     into `agent/scope.py`'s `expires-when:`.
+   - **Enforce the declaration (plan step 5).** `manifest_overrun` promoted from
+     a prompt warning to a hard stop on the coder path. With scope
+     LLM-declared, an under-declared radius is the primary abuse channel and
+     must cost the run rather than a paragraph.
+
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
@@ -86,6 +107,18 @@ enforcement path for the same dimension.
 
 ### Backlog
 
+- **A skipped MCP server should say which one and why.** External servers are
+  fail-open by design — one that is misconfigured, missing, or slow is logged
+  and skipped, never fatal. But the log line (`agent/mcp_gateway.py:313`) prints
+  only the server's name and the exception, which leaves the two questions an
+  operator actually has unanswered: *which transport was it* (a stdio `command`
+  and an HTTP `url` fail for entirely different reasons), and *how long did it
+  wait* — with `timeout_s` defaulting to 30 s, a timeout and an instant refusal
+  read identically. In the traced session this produced
+  `!mcp 'local' skipped: CancelledError`, which named no cause at all; the
+  cause-unwrapping half was fixed in `a689dba`, the transport and elapsed-time
+  half was not. Small and self-contained: add the transport kind and elapsed ms
+  to the line. No behaviour change — the server is skipped either way.
 - **Installer runtime reduction.** Prefer a bundled or locally repairable
   Python core payload so first run does not depend on global `pip install` or
   manual `PATH` edits. Keep network install as a fallback for development
