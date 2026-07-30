@@ -34,6 +34,7 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -286,7 +287,7 @@ async def run_pipeline(
             raise RuntimeError(
                 f"pipeline {pname!r} has no resumable registered stage plan"
             )
-        consumed = _loads(await _call_tool_text(
+        consumed = loads_dict(await _call_tool_text(
             session,
             "musubi_consume_pending_action",
             {"session_id": psid},
@@ -298,7 +299,7 @@ async def run_pipeline(
         rows = state_db.get_all_stage_rows(psid, compression_db_path)
         resume_plan = _plan_pipeline_resume(plan, rows, consumed)
         if resume_plan.retry_stage:
-            incremented = _loads(await _call_tool_text(
+            incremented = loads_dict(await _call_tool_text(
                 session,
                 "musubi_increment_attempt",
                 {
@@ -317,7 +318,7 @@ async def run_pipeline(
                 )
     else:
         raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
-        spawned = _loads(raw)
+        spawned = loads_dict(raw)
         if spawned.get("status") != "spawned":
             if spawned.get("error_kind") == "policy_denied":
                 raise PolicyDeniedError(
@@ -536,7 +537,7 @@ async def run_pipeline(
                     "turns": 0,
                     "status": "escalated",
                 })
-                paused = _loads(await _call_tool_text(
+                paused = loads_dict(await _call_tool_text(
                     session,
                     "musubi_pause_session",
                     {

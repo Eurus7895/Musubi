@@ -526,7 +526,7 @@ async def _run_mechanical_gate(
                 "musubi_run_lint",
                 {"files": lint_paths, "root": root},
             )
-            res = _loads(raw)
+            res = loads_dict(raw)
             if not isinstance(res, dict):
                 result, detail = "error", "validator returned no result"
                 break
