@@ -1,6 +1,7 @@
 // Native DataSource for the Tauri desktop shell. Backend domain snapshots are
 // merged with local Orchestrator composer and Pipeline Studio builder state.
 import { classifyChatCommand, pipelineNameFromCommand } from './chatCommands.js'
+import { approvalScope } from '../model/approvalRequest.js'
 import {
   createPipelineDraft, addStage, moveStage, removeStage, updateStage, updateRecipe,
   setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
@@ -238,7 +239,13 @@ export default class TauriSource {
       // Refusing needs no message: the gate already stopped the call and the
       // turn already ended. Rejecting is declining to grant, so it only clears
       // the offer from the screen.
-      dismissApproval: (token) => this._setLocal({ dismissedApproval: String(token || '') }),
+      // Scoped to the conversation it was rejected in. A token is a hash of the
+      // destruction key set, so deleting the same path in a different chat
+      // mints the SAME token — comparing tokens alone would silently hide a
+      // brand-new offer because an unrelated chat had declined one.
+      dismissApproval: (token) => this._setLocal({
+        dismissedApproval: approvalScope(this.state, String(token || '')),
+      }),
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
 
       newPipelineRecipe: () => this._replaceBuilder(

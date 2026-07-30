@@ -22,6 +22,59 @@ re-tagged.
 | `c896bcc` | Approval is a token the harness mints and matches literally against a user message |
 | `f61669d` | Console Approve/Reject; the harness re-appends any token the model dropped from its answer |
 | *(step 1)* | `agent/evidence.py` — six facts about the record, rendered and logged, routing nothing |
+| *(review)* | PR #164 review: the gate failed OPEN in five ways, and a leaf worker could never be granted an approval — see below |
+
+### What review caught (PR #164)
+
+An automated review found the gate answering "harmless" where the honest answer
+was "unreadable". Each case was reproduced before it was fixed, and each now
+has a test naming the deletion it would have performed:
+
+| Command | Was | Why |
+|---|---|---|
+| `sudo rm -rf build` | **passed** — 3 files | only the first token was read, and it said `sudo` |
+| `env rm x`, `command rm x`, `nice -n 10 rm x` | **passed** | same |
+| `rm /abs/path/*.txt` | **passed** — 4 files | `lstrip("./")` stripped the leading `/` and globbed the remainder *under* the root, matching nothing |
+| `del C:\ws\a.txt` | **passed** | posix `shlex` eats backslashes; `C:wsa.txt` resolves nowhere while `cmd.exe` deletes the real file |
+| `rm a.txt` with `cwd=sub` | **passed** | measured `<root>/a.txt`, deleted `<root>/sub/a.txt` |
+
+One root cause, five symptoms: `_expand` returned `[]` — "nothing there" — for
+targets it could not attribute. It now returns `None` for "cannot read this",
+which `measure` turns into `unanalyzable`. Bare wrappers are stepped over; a
+wrapper carrying its own options is declared unreadable rather than guessed at;
+a delete whose text contains a backslash is unreadable; `cwd` is honoured for
+both measurement and the grant key, so an approval cannot travel between
+directories. The negatives that make the gate tolerable are pinned in the same
+file: `grep -r rm .`, `sudo apt install`, `rm never-existed.txt` all still pass.
+
+Two more, neither about parsing:
+
+- **A leaf worker could never be approved.** Gate state lived on
+  `Orchestration`, which describes a position in the SPAWN TREE. A coder — the
+  role most likely to delete something — is handed `orchestration=None` on
+  purpose, so its refusal was recorded nowhere: the user could echo the exact
+  token and the same deletion would be refused again, forever.
+  `Orchestration.child()` dropped it too. The state moved to a run-scoped
+  `DestructiveGate` behind a `ContextVar`, following the `_worker_touched_files`
+  precedent. The overwrite ceiling now also counts across workers, which is
+  what "per-run" claimed all along.
+- **The clarification merge depended on how the ANSWER classified.** The
+  pending request was consulted only when the new message itself routed to
+  `ask_scope`, but the question offers "React" and "a single static HTML page",
+  and both classify as bare advisory follow-ups once the chat has history.
+  Those turns were answered as advice, and the completed turn cleared the
+  pending marker — losing the build request. The pending request is now checked
+  BEFORE classifying.
+
+**Not fixed, and deliberately so: external MCP tools are outside the gate.**
+`measure` knows two tool names. A federated server exposing its own delete tool
+is measured as harmless. The tempting fix — inferring "is this destructive?"
+from a name or JSON schema — is a guess about meaning that nothing can check,
+i.e. the discredited lexical guard rebuilt one layer down and handed a security
+job. Closing it properly needs a declared capability in the MCP contract or an
+explicit operator allowlist, which is a design decision. Until then `run_agent`
+logs the uncovered external tools by name at startup, so the boundary is
+visible in every run's log rather than implied.
 
 ## The principle, in Eurus's words
 

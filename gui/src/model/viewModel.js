@@ -8,7 +8,7 @@ import {
 import { roleChip, navStyle, auditBtn } from './styleHelpers.js'
 import { fmtClock } from './format.js'
 import { createPipelineDraft, isDirty } from './pipelineBuilder.js'
-import { pendingApproval } from './approvalRequest.js'
+import { approvalScope, pendingApproval } from './approvalRequest.js'
 
 function statusForRun(run) {
   const steps = run.steps || []
@@ -1106,7 +1106,8 @@ export function buildViewModel(s, act) {
   // exactly the composer's conditions: no approving into a busy driver, into a
   // pipeline's run, or from a historical session you are only reading.
   const approvalRequest = composerBlocked ? null : pendingApproval(s.chat || [])
-  const approval = approvalRequest && approvalRequest.token !== s.dismissedApproval
+  const approval = approvalRequest
+    && approvalScope(s, approvalRequest.token) !== s.dismissedApproval
     ? {
       token: approvalRequest.token,
       summary: approvalRequest.summary,

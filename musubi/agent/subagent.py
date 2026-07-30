@@ -22,7 +22,6 @@ spawn tool, so delegation is one level deep.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path

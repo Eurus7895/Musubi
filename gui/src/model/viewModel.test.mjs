@@ -1273,9 +1273,26 @@ test('a pending destructive refusal offers approve and reject beside the chat', 
 })
 
 test('rejecting clears the offer without sending anything', () => {
-  const state = { chat: [destructiveRefusal], dismissedApproval: 'allow-a3f9c1' }
+  const state = {
+    chat: [destructiveRefusal],
+    orchestratorChatId: 'gui-orchestrator-a',
+    dismissedApproval: 'gui-orchestrator-a allow-a3f9c1',
+  }
 
   assert.equal(buildViewModel(baseState(state), actions()).approval, null)
+})
+
+test('a rejection in one conversation does not hide the offer in another', () => {
+  // Tokens hash the destruction key set, so deleting the same path in a
+  // different chat mints the SAME token. Comparing tokens alone hid a real
+  // offer because an unrelated conversation had already declined one.
+  const state = {
+    chat: [destructiveRefusal],
+    orchestratorChatId: 'gui-orchestrator-b',
+    dismissedApproval: 'gui-orchestrator-a allow-a3f9c1',
+  }
+
+  assert.equal(buildViewModel(baseState(state), actions()).approval.token, 'allow-a3f9c1')
 })
 
 test('approval obeys the composer, so a busy or read-only surface offers nothing', () => {

@@ -64,7 +64,7 @@ from agent.goal_state import (
     root_decision_tools,
 )
 from agent.blast_radius import (
-    RunningTotals,
+    DestructiveGate,
     approved_keys_from,
     covered_by,
     describe,
@@ -157,6 +157,17 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
 # distinguishable. Same ContextVar pattern as above — no loop-signature changes.
 _worker_log_label: contextvars.ContextVar[str] = (
     contextvars.ContextVar("musubi_worker_log_label", default="root")
+)
+
+# The destructive gate's state for one run. Unlike the two above, this sink is
+# set ONCE by `run_agent` and deliberately NOT re-set per worker: every worker
+# shares it. That is the point — the overwrite ceiling counts across the run,
+# an approval the user grants covers the coder the root dispatches, and a
+# refusal raised inside a leaf reaches the turn record that persists its token.
+# Threading it as a parameter would mean touching ten call sites and would
+# still miss leaves, which are handed `orchestration=None` by design.
+_destructive_gate: contextvars.ContextVar[DestructiveGate | None] = (
+    contextvars.ContextVar("musubi_destructive_gate", default=None)
 )
 
 
@@ -267,16 +278,10 @@ class Orchestration:
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
-    #: Files this run has already overwritten. The overwrite ceiling is
-    #: per-RUN, not per-call: a worker rewriting one file per cycle never
-    #: trips a per-call check, which is exactly the drift being watched for.
-    destructive_totals: RunningTotals = field(default_factory=RunningTotals)
-    #: Keys a human approved for THIS run by echoing the harness's token.
-    approved_destructive: frozenset[str] = frozenset()
-    #: `(token, keys)` this turn was gated on, persisted for the next turn.
-    pending_destructive: list[tuple[str, tuple[str, ...]]] = field(
-        default_factory=list
-    )
+    # The destructive gate's state deliberately does NOT live here. See
+    # `_destructive_gate` below: it is run-scoped, and an Orchestration
+    # describes a position in the spawn tree — the one thing the gate must be
+    # blind to, since leaf workers carry no Orchestration at all.
 
     @property
     def enabled(self) -> bool:
@@ -636,31 +641,50 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
+    # One gate for the whole run, published before any tool can be dispatched.
+    # Every worker reads this same object — root, nested, and the leaf coder
+    # that carries no Orchestration at all.
+    destructive_gate = DestructiveGate()
+    _destructive_gate.set(destructive_gate)
     has_conversation = _chat_has_history(
         chat_id, db_path=context_compression_db_path, log=log,
     )
-    scope_hint = classify_task(task, has_history=has_conversation)
     # The request the rest of the turn works from. It differs from `task` in
     # exactly one case: this message is the ANSWER to the one deterministic
     # clarification, and the pending request is folded back in so the planner
     # gets the whole intent rather than the fragment the user just typed.
+    #
+    # The pending request is checked BEFORE classifying, not after. Checking
+    # after — gated on the answer itself routing to ASK_SCOPE — assumed every
+    # answer looks as broad as the question. It does not: the question offers
+    # "React" and "a single static HTML page" as answers, and both classify as
+    # bare advisory follow-ups once the chat has history. Those turns were
+    # answered as advice, and because a completed turn writes a row with no
+    # `clarification_request`, the pending marker was cleared and the build the
+    # user actually asked for was lost with it.
+    #
+    # The cost of the other direction is bounded and visible: a user who
+    # ignores the question and asks something unrelated gets their new message
+    # merged with the old request. The merge only ever REMOVES a halt — it
+    # cannot add one, and it cannot widen a route — so a wrong merge costs one
+    # turn, while a wrong drop costs the request.
+    pending = _pending_clarification(
+        chat_id, db_path=context_compression_db_path, log=log,
+    )
     effective_task = task
-    clarification_answered = False
-    if scope_hint.route == RouteKind.ASK_SCOPE:
-        pending = _pending_clarification(
-            chat_id, db_path=context_compression_db_path, log=log,
+    clarification_answered = bool(pending)
+    if pending:
+        effective_task = f"{pending}\n\n[clarification answer] {task}"
+        scope_hint = classify_task(
+            effective_task, has_history=True, allow_clarification=False,
         )
-        if pending:
-            clarification_answered = True
-            effective_task = f"{pending}\n\n[clarification answer] {task}"
-            scope_hint = classify_task(
-                effective_task, has_history=True, allow_clarification=False,
-            )
-            print(
-                "[agent] clarification answered; merged the pending request "
-                f"and routed to {scope_hint.route} instead of asking again",
-                file=log,
-            )
+        print(
+            "[agent] clarification answered; merged the pending request "
+            f"and routed to {scope_hint.route} instead of asking again",
+            file=log,
+        )
+    else:
+        scope_hint = classify_task(task, has_history=has_conversation)
     goal_state = GoalState.create(
         intent=effective_task,
         scope=scope_hint.kind.value,
@@ -811,6 +835,19 @@ async def run_agent(
             f"musubi_total={len(mcp_tools)}, external={n_external})",
             file=log,
         )
+        # The destructive gate measures the calls it can resolve, and it can
+        # only resolve tools whose argument shape it knows. Saying so out loud
+        # is the honest alternative to inferring "is this tool destructive?"
+        # from a schema — an inference nothing could check, and the exact
+        # species of guess this design removes.
+        if external_tools:
+            print(
+                f"[agent] destructive gate covers musubi_write_file and "
+                f"musubi_run_command; {len(external_tools)} external tool(s) "
+                f"are outside it: "
+                f"{', '.join(sorted(str(t.get('name', '?')) for t in external_tools)[:8])}",
+                file=log,
+            )
 
         # Open a parent session up front so the model's sub-agent spawns
         # have a valid parent. The "agent" identity short-circuits the
@@ -834,7 +871,7 @@ async def run_agent(
             task,
         )
         if approved:
-            orchestration.approved_destructive = approved
+            destructive_gate.approved = approved
             print(
                 f"[agent] destructive approval accepted for {len(approved)} "
                 f"path(s)",
@@ -945,9 +982,9 @@ async def run_agent(
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
-    if orchestration is not None and orchestration.pending_destructive:
+    if destructive_gate.pending:
         final_answer = _ensure_grant_visible(
-            final_answer, orchestration.pending_destructive
+            final_answer, destructive_gate.pending
         )
     if chat_id:
         _append_chat_message(
@@ -968,8 +1005,8 @@ async def run_agent(
                 orchestration is not None and orchestration.delivered_artifact
             ),
             pending_destructive=(
-                encode_pending(orchestration.pending_destructive)
-                if orchestration is not None and orchestration.pending_destructive
+                encode_pending(destructive_gate.pending)
+                if destructive_gate.pending
                 else None
             ),
         )
@@ -2604,7 +2641,6 @@ def _destructive_grant() -> bool:
 def _preflight_destructive_batch(
     tool_uses: list[dict[str, Any]],
     *,
-    orchestration: Orchestration | None,
     log: Any,
 ) -> dict[str, str]:
     """Measure each call's blast radius; return refusals keyed by tool_use id.
@@ -2614,14 +2650,17 @@ def _preflight_destructive_batch(
     guard let through to a coder holding `musubi_run_command` — and it counts
     the files rather than asserting a mood.
 
-    Measurement failures do not silently allow: `measure` never raises, and an
-    unresolvable delete comes back `unanalyzable`, which is over threshold.
+    Measurement failures do not silently allow: `measure` never raises, and a
+    delete whose targets cannot be attributed comes back `unanalyzable`, which
+    is over threshold.
+
+    State comes from the run-scoped `_destructive_gate`, never from the caller's
+    `Orchestration`. A leaf worker has no Orchestration, and reading one meant
+    its refusals were recorded nowhere — the user could echo the token and the
+    same deletion would be refused again, indefinitely.
     """
-    totals = (
-        orchestration.destructive_totals
-        if orchestration is not None
-        else RunningTotals()
-    )
+    gate = _destructive_gate.get() or DestructiveGate()
+    totals = gate.totals
     granted = _destructive_grant()
     refusals: dict[str, str] = {}
     for tu in tool_uses:
@@ -2631,13 +2670,8 @@ def _preflight_destructive_batch(
         radius = measure(name, args)
         if radius.is_empty:
             continue
-        approved = (
-            orchestration.approved_destructive
-            if orchestration is not None
-            else frozenset()
-        )
         if exceeds_threshold(radius, totals) and not granted:
-            if covered_by(radius, approved):
+            if covered_by(radius, gate.approved):
                 print(
                     f"[agent] destructive gate: {name} allowed — user approved "
                     f"these exact paths",
@@ -2651,10 +2685,7 @@ def _preflight_destructive_batch(
                     f"{token}"
                 )
                 refusals[str(tu.get("id") or "")] = reason
-                if orchestration is not None:
-                    orchestration.pending_destructive.append(
-                        (token, radius.keys)
-                    )
+                gate.pending.append((token, radius.keys))
                 print(
                     f"[agent] destructive gate: {name} refused ({token}) — "
                     f"deletes={radius.delete_count} "
@@ -2807,9 +2838,7 @@ async def _dispatch(
         audit_db_path=audit_db_path,
         log=log,
     )
-    destructive = _preflight_destructive_batch(
-        tool_uses, orchestration=orchestration, log=log,
-    )
+    destructive = _preflight_destructive_batch(tool_uses, log=log)
     refused = _spawn_overflow_reasons(
         tool_uses,
         log,

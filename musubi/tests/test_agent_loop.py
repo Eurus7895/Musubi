@@ -3234,3 +3234,43 @@ def test_the_evidence_vector_changes_no_route() -> None:
     # The vector says the target does not exist here; the route is unmoved.
     assert vector.path_exists is False
     assert hint.route == RouteKind.SINGLE_CODER
+
+
+def test_a_short_answer_to_the_question_is_still_the_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """PR #164 review: the merge must not depend on how the answer classifies.
+
+    The pending request used to be consulted only when the NEW message itself
+    routed to `ask_scope`. But the question offers "React" and "a single static
+    HTML page" as answers, and with chat history both classify as bare advisory
+    follow-ups. Those turns were answered as advice, and the completed turn
+    wrote a row with no `clarification_request` — clearing the marker and
+    losing the build request permanently.
+    """
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat_db = tmp_path / "data" / "musubi.db"
+    chat = "chat-short-answer"
+
+    asyncio.run(run_agent(
+        "create a website", FakeRouter([]), _musubi_dir(),
+        log=io.StringIO(), max_tokens=0, chat_id=chat,
+    ))
+    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    log = io.StringIO()
+    answer = asyncio.run(run_agent(
+        "React", router, _musubi_dir(), log=log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert answer == "ok"
+    assert "clarification answered" in log.getvalue()
+    # The root must be told what is being built, not just which framework.
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
+    assert db.pending_clarification(chat, db_path=chat_db) is None

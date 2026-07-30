@@ -30,6 +30,23 @@ export function pendingApproval(messages = []) {
   return { token: found[found.length - 1], summary: approvalSummary(last.text) }
 }
 
+/** Identity of a dismissal: the conversation it happened in, plus the token.
+ *
+ * A token is a hash of the destruction key set, so rejecting the deletion of
+ * `build/a.js` in one chat mints the same token as a fresh offer to delete
+ * `build/a.js` in another. Comparing tokens alone therefore hid a real offer
+ * because an unrelated conversation had already declined one. Both the writer
+ * (the data source) and the reader (the view-model) call this, so there is one
+ * definition of "the same offer".
+ */
+export function approvalScope(state = {}, token = '') {
+  const chatId = state.selectedSession
+    || state.viewedOrchestratorChatId
+    || state.orchestratorChatId
+    || ''
+  return token ? `${chatId} ${token}` : ''
+}
+
 // The blast radius in one line, lifted from the refusal the user is already
 // reading. Buttons that say only "Approve" would hide what is being approved.
 export function approvalSummary(text) {

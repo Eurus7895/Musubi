@@ -116,3 +116,34 @@ def test_absent_facts_default_to_absent(workspace: Path) -> None:
     assert vector.explorer_findings is False
     assert vector.clarification_answered is False
     assert vector.barren_turns == 0
+
+
+def test_a_url_is_not_a_filesystem_path(workspace: Path) -> None:
+    # PR #164 review: the path pattern matched from `//` onward, so a URL
+    # resolved "outside the workspace" and the prompt told the root no worker
+    # could reach it — false when an HTTP or browser MCP server is configured,
+    # which is precisely when the request is about a URL.
+    vector = collect("summarize https://example.com/docs/page.html for me")
+
+    assert vector.escaped_paths == ()
+    assert vector.named_paths == ()
+    assert "no worker can reach" not in vector.prompt_block()
+
+
+def test_a_url_beside_a_real_path_leaves_the_path_alone(workspace: Path) -> None:
+    vector = collect("port https://example.com/a.html into agent/run.py")
+
+    assert vector.named_paths == ("agent/run.py",)
+    assert vector.escaped_paths == ()
+
+
+def test_the_prompt_omits_facts_that_change_mid_turn(workspace: Path) -> None:
+    # The system prompt is built once and never rewritten. `explorer_findings`
+    # flips the moment a read-only worker reports, so freezing it into that
+    # block would contradict the outcome the root reads later in the same turn.
+    block = collect("create a website").prompt_block()
+
+    assert "explorer_findings" not in block
+    assert "as this turn begins" in block
+    # It stays in the log line, which is honest about being one moment.
+    assert "explorer=" in collect("create a website").log_line()

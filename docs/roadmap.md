@@ -173,7 +173,10 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   destruction keys, so one extra file mints a different token and approval
   cannot silently widen) and matches literally against the **user-role**
   message; a model cannot author a user turn, so the token is structural proof
-  a human granted it. `_ensure_grant_visible` re-appends any token the model
+  a human granted it, and it is held in a run-scoped `DestructiveGate` rather
+  than on `Orchestration` — a leaf worker carries no `Orchestration`, so its
+  refusals were recorded nowhere and could never be approved.
+  `_ensure_grant_visible` re-appends any token the model
   dropped from its answer, and the Console renders Approve/Reject that submit
   that same token through the ordinary `send_chat` route — one mechanism, two
   surfaces, no GUI-only authority. Splitting judging from enforcing came with

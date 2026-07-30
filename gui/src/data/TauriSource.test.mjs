@@ -584,11 +584,13 @@ test('approving a destruction sends the token as an ordinary user message', () =
 
 test('rejecting a destruction sends nothing and only clears the offer', () => {
   const { source, calls } = sourceWithActionSpy()
+  source._setLocal({ orchestratorChatId: 'gui-orchestrator-a' })
 
   source.actions.dismissApproval('allow-a3f9c1')
 
   assert.deepEqual(calls, [])
-  assert.equal(source.state.dismissedApproval, 'allow-a3f9c1')
+  // Scoped to the chat: the same token in another conversation is a new offer.
+  assert.equal(source.state.dismissedApproval, 'gui-orchestrator-a allow-a3f9c1')
 })
 
 test('sending anything spends the dismissal so a stale button cannot linger', () => {

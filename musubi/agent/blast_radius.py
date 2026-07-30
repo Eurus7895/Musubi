@@ -45,6 +45,21 @@ what an arbitrary pipeline deletes. So it is read in three bands:
 Note what band 1 means: this module never blocks a command it does not
 understand *unless* that command is trying to delete. Everything else keeps
 `musubi_run_command`'s stated position that the user is in control.
+
+What this gate does NOT cover
+-----------------------------
+Exactly two tool names: `musubi_write_file` and `musubi_run_command`. A
+federated external MCP server may expose its own delete or write tool, and this
+module will measure it as harmless because it cannot know the argument shape.
+
+That is a real limit, stated rather than papered over. The tempting fix —
+inferring "is this tool destructive?" from its name or JSON schema — is a guess
+about meaning that nothing can check, which is the exact species of decision
+this whole design removes; it would put the discredited lexical guard back one
+layer down and give it a security job. Closing it properly needs either a
+declared capability in the MCP contract or an explicit operator allowlist, and
+that is a design decision, not a patch. `run_agent` logs the uncovered external
+tools by name at startup so the boundary is visible in every run's log.
 """
 
 from __future__ import annotations
@@ -70,6 +85,22 @@ _DELETE_COMMANDS = frozenset({
 })
 #: `git clean` removes untracked files; `git` alone does not.
 _DELETE_SUBCOMMANDS = {("git", "clean")}
+#: Commands that RUN another command. `sudo rm -rf build` deletes exactly what
+#: `rm -rf build` deletes, so the real verb is one token later — and reading
+#: only the first token saw `sudo`, concluded "not a delete", and waved it
+#: through. Bare wrappers are stepped over; a wrapper carrying its own options
+#: (`sudo -u root rm x`) is not parsed further but is not trusted either — see
+#: `_delete_targets`.
+_WRAPPERS = frozenset({
+    "sudo", "doas", "env", "command", "nice", "ionice",
+    "time", "nohup", "stdbuf", "setsid",
+})
+#: A backslash means this command was written for a Windows shell, and
+#: `shlex(posix=True)` eats backslashes as escapes: `del C:\\ws\\a.txt` tokenizes
+#: to `C:wsa.txt`, which resolves nowhere and measured as zero files while
+#: `cmd.exe` deleted the real one. Rather than guess a tokenizer per platform,
+#: a delete whose text contains a backslash is declared unreadable.
+_BACKSLASH = "\\"
 #: Shell constructs the target parser cannot follow. Their presence alongside a
 #: delete verb makes the command unanalyzable rather than safe.
 _OPAQUE_SHELL_RE = re.compile(r"[|;&`]|\$\(|\bxargs\b|\bfind\b|\beval\b")
@@ -135,6 +166,32 @@ class RunningTotals:
         return len(self.overwritten)
 
 
+@dataclass
+class DestructiveGate:
+    """The gate's state for ONE RUN, shared by every worker in it.
+
+    This used to live on `Orchestration`, which was the wrong owner: an
+    `Orchestration` describes a position in the SPAWN TREE, and the tree is
+    exactly what the gate must not care about. A leaf worker (a coder — the
+    role most likely to delete something) is handed `orchestration=None`
+    precisely so it cannot spawn, and that also stripped it of the approval
+    set: its destruction was measured and refused, but the token was recorded
+    nowhere, so echoing it back changed nothing and the same deletion was
+    refused forever. A nesting worker fared no better, since
+    `Orchestration.child()` built a fresh object and left the state behind.
+
+    One run, one gate: the overwrite ceiling counts across all workers, an
+    approval granted to the root covers the coder it dispatches, and a refusal
+    raised in a leaf reaches the turn record that persists it.
+    """
+
+    totals: RunningTotals = field(default_factory=RunningTotals)
+    #: Keys a human approved for THIS run by echoing the harness's token.
+    approved: frozenset[str] = frozenset()
+    #: `(token, keys)` this turn was gated on, persisted for the next turn.
+    pending: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+
+
 def _workspace_root() -> Path:
     """Same root the filesystem tools resolve against."""
     from tools import fs
@@ -142,12 +199,18 @@ def _workspace_root() -> Path:
     return fs._workspace_root()
 
 
-def _resolve(candidate: str, root: Path) -> Path | None:
-    """`candidate` under the workspace root, or None if it escapes or is junk."""
+def _resolve(candidate: str, base: Path, root: Path | None = None) -> Path | None:
+    """`candidate` resolved from `base`, contained by `root`, else None.
+
+    `base` and `root` differ when the call carries a `cwd`: a relative target
+    is resolved from the directory the command will actually run in, while
+    containment is still judged against the workspace root.
+    """
+    boundary = root if root is not None else base
     try:
         path = Path(candidate)
-        resolved = (path if path.is_absolute() else root / path).resolve()
-        resolved.relative_to(root)
+        resolved = (path if path.is_absolute() else base / path).resolve()
+        resolved.relative_to(boundary)
     except (ValueError, OSError):
         return None
     return resolved
@@ -165,17 +228,55 @@ def _existing_files_under(path: Path) -> list[str]:
     return []
 
 
-def _expand(target: str, root: Path) -> list[str]:
-    """Existing files a shell target names, glob included."""
+def _expand(target: str, base: Path, root: Path) -> list[str] | None:
+    """Existing files a shell target names, or None when it cannot be read.
+
+    The None/[] distinction is the whole correctness of this module. `[]` means
+    "resolved fine, nothing is there" — `rm gone.txt` genuinely destroys
+    nothing. `None` means "could not be attributed", which the caller must
+    treat as unanalyzable. Conflating them is how `rm /abs/path/*.txt` measured
+    as zero files: the old code stripped the leading slash with `lstrip("./")`,
+    globbed the remainder *under* the root, matched nothing, and reported a
+    harmless command that would have deleted four files.
+    """
     if any(ch in target for ch in "*?["):
+        pattern = Path(target)
+        if pattern.is_absolute():
+            try:
+                relative = pattern.relative_to(root)
+            except ValueError:
+                return None  # a glob aimed outside the workspace
+            pattern_text = relative.as_posix()
+        else:
+            pattern_text = _strip_dot_slash(target)
+            # A relative glob is resolved from the command's cwd, not the root.
+            try:
+                prefix = base.relative_to(root).as_posix()
+            except ValueError:
+                return None
+            if prefix and prefix != ".":
+                pattern_text = f"{prefix}/{pattern_text}"
+        if not pattern_text or pattern_text.startswith(".."):
+            return None
         try:
-            return sorted(
-                str(p) for p in root.glob(target.lstrip("./")) if p.is_file()
-            )
-        except (ValueError, OSError):
-            return []
-    resolved = _resolve(target, root)
-    return sorted(_existing_files_under(resolved)) if resolved else []
+            return sorted(str(p) for p in root.glob(pattern_text) if p.is_file())
+        except (ValueError, OSError, IndexError):
+            return None
+    resolved = _resolve(target, base, root)
+    if resolved is None:
+        return None  # escapes the workspace, or is not a readable path
+    return sorted(_existing_files_under(resolved))
+
+
+def _strip_dot_slash(target: str) -> str:
+    """Drop a leading `./`, without `lstrip`'s character-set behaviour.
+
+    `".hidden/x".lstrip("./")` returns `"hidden/x"` — it strips CHARACTERS, not
+    the prefix, so a dotfile directory silently became a different directory.
+    """
+    while target.startswith("./"):
+        target = target[2:]
+    return target
 
 
 #: Tokens after which a NEW command begins. A delete verb only counts when it
@@ -212,21 +313,40 @@ def _delete_targets(command: str) -> list[str] | None:
     if not tokens:
         return None
 
+    def _unwrap(index: int) -> int:
+        """Step over bare wrappers so `sudo rm x` is read as `rm x`."""
+        while index < len(tokens) and _normalize(tokens[index]) in _WRAPPERS:
+            index += 1
+        return index
+
     def _is_delete(index: int) -> bool:
+        if index >= len(tokens):
+            return False
         head = _normalize(tokens[index])
         if head in _DELETE_COMMANDS:
             return True
         following = _normalize(tokens[index + 1]) if index + 1 < len(tokens) else ""
         return (head, following) in _DELETE_SUBCOMMANDS
 
-    positions = _command_heads(tokens)
+    positions = [_unwrap(index) for index in _command_heads(tokens)]
     if not any(_is_delete(index) for index in positions):
+        # A wrapper we stepped into but could not parse past — `sudo -u root rm
+        # x`, where `-u` is the wrapper's own option — must not be read as
+        # harmless just because the verb moved. If a delete verb is anywhere in
+        # a command that STARTS with a wrapper, say so and let the gate ask.
+        if _normalize(tokens[0]) in _WRAPPERS and any(
+            _normalize(token) in _DELETE_COMMANDS for token in tokens
+        ):
+            return []
         return None  # band 1: nothing here removes a file
-    if not _is_delete(0):
+    start = _unwrap(0)
+    if not _is_delete(start):
         return []  # the delete is downstream of a pipe — targets unattributable
+    if _BACKSLASH in command:
+        return []  # Windows path text; posix tokenization already ate it
 
-    rest = tokens[1:]
-    if rest and (_normalize(tokens[0]), _normalize(rest[0])) in _DELETE_SUBCOMMANDS:
+    rest = tokens[start + 1:]
+    if rest and (_normalize(tokens[start]), _normalize(rest[0])) in _DELETE_SUBCOMMANDS:
         rest = rest[1:]
     return [token for token in rest if not token.startswith("-")]
 
@@ -253,12 +373,42 @@ def measure(tool_name: str, args: dict[str, object]) -> BlastRadius:
     targets = _delete_targets(command)
     if targets is None:
         return BlastRadius()  # band 1: not a delete, not this module's business
+
+    # `musubi_run_command` runs relative paths from its optional `cwd`
+    # (`tools/fs.run_command`), so measuring them from the workspace root
+    # measured a different file than the one the shell would remove.
+    raw_cwd = args.get("cwd")
+    subject = _subject(command, raw_cwd)
+    base = root
+    if isinstance(raw_cwd, str) and raw_cwd.strip():
+        resolved_cwd = _resolve(raw_cwd, root)
+        if resolved_cwd is None:
+            return BlastRadius(unanalyzable=True, subject=subject)
+        base = resolved_cwd
+
     if _OPAQUE_SHELL_RE.search(command) or not targets:
-        return BlastRadius(unanalyzable=True, subject=command)  # band 3
+        return BlastRadius(unanalyzable=True, subject=subject)  # band 3
     found: list[str] = []
     for target in targets:
-        found.extend(_expand(target, root))
-    return BlastRadius(deletes=tuple(sorted(set(found))), subject=command)
+        expanded = _expand(target, base, root)
+        if expanded is None:
+            # Unreadable target. Guessing "zero files" here is the one guess
+            # that can never be walked back, so it is the one we refuse to make.
+            return BlastRadius(unanalyzable=True, subject=subject)
+        found.extend(expanded)
+    return BlastRadius(deletes=tuple(sorted(set(found))), subject=subject)
+
+
+def _subject(command: str, cwd: object) -> str:
+    """The command as the user will read it — and as the grant key binds it.
+
+    `cwd` belongs in the subject because it belongs in the identity: `rm a.txt`
+    in `build/` and `rm a.txt` in `src/` destroy different files, and an
+    approval for one must not silently cover the other.
+    """
+    if isinstance(cwd, str) and cwd.strip():
+        return f"{command} (cwd={cwd.strip()})"
+    return command
 
 
 def exceeds_threshold(radius: BlastRadius, totals: RunningTotals) -> bool:

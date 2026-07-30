@@ -171,27 +171,24 @@ def test_the_grant_is_an_operator_env_var_not_a_tool_argument() -> None:
 def test_gate_refuses_the_batch_and_names_the_files(
     workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent.run import Orchestration, _preflight_destructive_batch
+    from agent.blast_radius import DestructiveGate
+    from agent.run import _destructive_gate, _preflight_destructive_batch
 
-    orchestration = Orchestration(parent_session_id="s1")
+    _destructive_gate.set(DestructiveGate())
     calls = [
         {"id": "t1", "name": "musubi_run_command", "input": {"command": "rm -rf build"}},
         {"id": "t2", "name": "musubi_read_file", "input": {"path": "keep.py"}},
     ]
     import io
 
-    refusals = _preflight_destructive_batch(
-        calls, orchestration=orchestration, log=io.StringIO(),
-    )
+    refusals = _preflight_destructive_batch(calls, log=io.StringIO())
     assert set(refusals) == {"t1"}, "only the destructive call is refused"
     assert "out0.js" in refusals["t1"]
 
     # With the operator's grant the same batch proceeds and is accounted for.
     monkeypatch.setenv("MUSUBI_ALLOW_DESTRUCTIVE", "1")
-    assert _preflight_destructive_batch(
-        calls, orchestration=Orchestration(parent_session_id="s1"),
-        log=io.StringIO(),
-    ) == {}
+    _destructive_gate.set(DestructiveGate())
+    assert _preflight_destructive_batch(calls, log=io.StringIO()) == {}
 
 
 # ── one-time approval, verifiable without reading prose ─────────────────────
@@ -243,34 +240,33 @@ def test_gate_mints_a_token_then_honours_it_next_run(
 ) -> None:
     import io
 
-    from agent.blast_radius import approved_keys_from, encode_pending
-    from agent.run import Orchestration, _preflight_destructive_batch
+    from agent.blast_radius import (
+        DestructiveGate,
+        approved_keys_from,
+        encode_pending,
+    )
+    from agent.run import _destructive_gate, _preflight_destructive_batch
 
     calls = [
         {"id": "t1", "name": "musubi_run_command", "input": {"command": "rm -rf build"}},
     ]
-    first = Orchestration(parent_session_id="s1")
-    refusals = _preflight_destructive_batch(
-        calls, orchestration=first, log=io.StringIO(),
-    )
+    first = DestructiveGate()
+    _destructive_gate.set(first)
+    refusals = _preflight_destructive_batch(calls, log=io.StringIO())
     assert "reply with: allow-" in refusals["t1"]
-    assert len(first.pending_destructive) == 1
+    assert len(first.pending) == 1
 
     # The user echoes the token; the next run allows exactly those paths.
-    token, keys = first.pending_destructive[0]
+    token, keys = first.pending[0]
     approved = approved_keys_from(encode_pending([(token, keys)]), f"{token}")
-    second = Orchestration(parent_session_id="s1", approved_destructive=approved)
-    assert _preflight_destructive_batch(
-        calls, orchestration=second, log=io.StringIO(),
-    ) == {}
+    _destructive_gate.set(DestructiveGate(approved=approved))
+    assert _preflight_destructive_batch(calls, log=io.StringIO()) == {}
 
     # A DIFFERENT deletion is not covered by that approval.
     other = [
         {"id": "t2", "name": "musubi_run_command", "input": {"command": "rm keep.py"}},
     ]
-    assert _preflight_destructive_batch(
-        other, orchestration=second, log=io.StringIO(),
-    ) != {}
+    assert _preflight_destructive_batch(other, log=io.StringIO()) != {}
 
 
 def test_a_dropped_token_is_restored_by_the_harness(workspace: Path) -> None:
@@ -291,3 +287,171 @@ def test_a_dropped_token_is_restored_by_the_harness(workspace: Path) -> None:
     # Two refusals over the same radius print one line, not two.
     once = _ensure_grant_visible("blocked", [pending[0], pending[0]])
     assert once.count("allow-a3f9c1") == 1
+
+
+# ── the gate must fail CLOSED, not quiet (PR #164 review) ───────────────────
+#
+# Five ways `measure` used to answer "harmless" when the honest answer was
+# "unreadable". Each one let a real deletion through a gate the module
+# advertises as fail-closed, and each is pinned here by the deletion it would
+# have performed.
+
+
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        ("sudo rm -rf build", "a wrapper moved the verb one token right"),
+        ("env rm keep.py", "env is a wrapper too"),
+        ("command rm keep.py", "so is the shell builtin"),
+        ("sudo -u root rm keep.py", "wrapper options are not parsed — ask"),
+        ("nice -n 10 rm keep.py", "same, with a numeric option"),
+    ],
+)
+def test_a_wrapper_does_not_hide_the_delete(
+    workspace: Path, command: str, why: str,
+) -> None:
+    radius = measure("musubi_run_command", {"command": command})
+
+    assert exceeds_threshold(radius, RunningTotals()), why
+
+
+def test_an_absolute_glob_is_measured_where_it_points(workspace: Path) -> None:
+    # `lstrip("./")` turned `/root/*.html` into `root/*.html` and globbed it
+    # UNDER the root, matched nothing, and reported a harmless command.
+    radius = measure(
+        "musubi_run_command", {"command": f"rm {workspace}/*.html"},
+    )
+
+    assert radius.delete_count == 6
+    assert exceeds_threshold(radius, RunningTotals())
+
+
+def test_a_dot_directory_survives_prefix_stripping(workspace: Path) -> None:
+    # `".hidden/x".lstrip("./")` is `"hidden/x"` — a DIFFERENT directory.
+    hidden = workspace / ".hidden"
+    hidden.mkdir()
+    (hidden / "secret.txt").write_text("x", encoding="utf-8")
+
+    radius = measure("musubi_run_command", {"command": "rm ./.hidden/*.txt"})
+
+    assert radius.deletes == (str(hidden / "secret.txt"),)
+
+
+def test_a_windows_delete_is_not_measured_by_a_posix_tokenizer(
+    workspace: Path,
+) -> None:
+    # posix shlex eats the backslashes: `C:\ws\a.txt` tokenizes to `C:wsa.txt`,
+    # which resolves nowhere while cmd.exe deletes the real file.
+    radius = measure("musubi_run_command", {"command": r"del C:\ws\a.txt"})
+
+    assert radius.unanalyzable is True
+
+
+def test_targets_are_measured_from_the_commands_own_cwd(workspace: Path) -> None:
+    # `{"command": "rm out0.js", "cwd": "build"}` removes build/out0.js, but the
+    # measurement resolved <root>/out0.js, found nothing, and allowed it.
+    radius = measure(
+        "musubi_run_command", {"command": "rm out0.js", "cwd": "build"},
+    )
+
+    assert radius.deletes == (str(workspace / "build" / "out0.js"),)
+
+
+def test_an_approval_does_not_travel_between_directories(workspace: Path) -> None:
+    from agent.blast_radius import grant_token
+
+    opaque = "find . -name '*.tmp' | xargs rm"
+    here = measure("musubi_run_command", {"command": opaque, "cwd": "build"})
+    there = measure("musubi_run_command", {"command": opaque})
+
+    # An unanalyzable call has no paths to key on, so it is keyed by its
+    # subject. Two different directories are two different destructions, and
+    # approving one must not approve the other.
+    assert here.unanalyzable and there.unanalyzable
+    assert grant_token(here.keys) != grant_token(there.keys)
+
+
+def test_a_delete_aimed_outside_the_workspace_is_unreadable(
+    workspace: Path,
+) -> None:
+    for command in ("rm /etc/hosts", "rm ../../etc/hosts", "rm /var/*.log"):
+        radius = measure("musubi_run_command", {"command": command})
+        assert radius.unanalyzable is True, command
+
+
+def test_a_cwd_outside_the_workspace_is_unreadable(workspace: Path) -> None:
+    radius = measure(
+        "musubi_run_command", {"command": "rm keep.py", "cwd": "../elsewhere"},
+    )
+
+    assert radius.unanalyzable is True
+
+
+def test_the_negatives_still_pass_through(workspace: Path) -> None:
+    # Nothing above may be bought by gating ordinary work.
+    for command in (
+        "grep -r rm .",
+        "sudo apt install ripgrep",
+        "npm run build",
+        "echo removing old files",
+        "rm never-existed.txt",
+    ):
+        radius = measure("musubi_run_command", {"command": command})
+        assert not exceeds_threshold(radius, RunningTotals()), command
+
+
+def test_a_leaf_worker_shares_the_runs_gate(workspace: Path) -> None:
+    """A coder carries no Orchestration; it must still reach the same gate.
+
+    Leaf roles are handed `orchestration=None` on purpose — that is what
+    removes the spawn tool (`subagent.py`). Reading the gate's state off that
+    argument therefore gave every leaf an empty approval set and a refusal that
+    was recorded nowhere: the user could echo the exact token and the coder
+    would refuse the identical deletion on the next turn, and the next, forever.
+    """
+    import io
+
+    from agent.blast_radius import (
+        DestructiveGate,
+        approved_keys_from,
+        encode_pending,
+    )
+    from agent.run import _destructive_gate, _preflight_destructive_batch
+
+    calls = [
+        {"id": "t1", "name": "musubi_run_command", "input": {"command": "rm keep.py"}},
+    ]
+    gate = DestructiveGate()
+    _destructive_gate.set(gate)
+
+    # The refusal is raised where no Orchestration exists, and still lands in
+    # the run's pending list — which is what the turn record persists.
+    assert _preflight_destructive_batch(calls, log=io.StringIO())
+    assert len(gate.pending) == 1
+
+    token, keys = gate.pending[0]
+    _destructive_gate.set(DestructiveGate(
+        approved=approved_keys_from(encode_pending([(token, keys)]), token),
+    ))
+    assert _preflight_destructive_batch(calls, log=io.StringIO()) == {}
+
+
+def test_the_overwrite_ceiling_counts_across_workers(workspace: Path) -> None:
+    # Per-run means per RUN. With the totals living on each worker's own
+    # Orchestration, five workers rewriting one file each never reached the
+    # ceiling the module documents.
+    import io
+
+    from agent.blast_radius import DestructiveGate
+    from agent.run import _destructive_gate, _preflight_destructive_batch
+
+    _destructive_gate.set(DestructiveGate())
+    log = io.StringIO()
+    for i in range(OVERWRITE_CONFIRM_THRESHOLD - 1):
+        call = [{"id": f"w{i}", "name": "musubi_write_file",
+                 "input": {"path": f"page{i}.html"}}]
+        assert _preflight_destructive_batch(call, log=log) == {}, i
+
+    last = [{"id": "w-last", "name": "musubi_write_file",
+             "input": {"path": f"page{OVERWRITE_CONFIRM_THRESHOLD - 1}.html"}}]
+    assert _preflight_destructive_batch(last, log=log) != {}

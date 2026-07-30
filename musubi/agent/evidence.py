@@ -51,6 +51,14 @@ _PATH_CANDIDATE = re.compile(
 #: A trailing sentence period is not part of a filename; a leading `./` is.
 _TRIM = "`'\"()[],:;"
 
+#: A URI is not a filesystem path. `https://example.com/docs/page.html` matched
+#: the path pattern from the `//` onward, resolved outside the workspace, and
+#: the prompt then told the root that no worker could reach it — which is false
+#: when an HTTP or browser MCP server is configured, and that server is exactly
+#: the thing the request was about. Schemes are stripped from consideration
+#: entirely: this module measures the filesystem, and a URL is not on it.
+_URI_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{1,31}://\S+")
+
 #: Turns in a row that ended without writing a file before the vector says so
 #: out loud. Same threshold the driver already warns at, kept in one place.
 NO_PROGRESS_TURNS = 3
@@ -117,12 +125,17 @@ class EvidenceVector:
         assume the file it invented is there, which is the exact failure the
         traced session ended in.
         """
+        # `explorer_findings` is deliberately absent. The system prompt is built
+        # once and never rewritten, while that fact changes the moment a
+        # read-only worker reports — so printing it here would freeze
+        # `explorer_findings=False` into an immutable block and contradict the
+        # worker outcome the root reads later in the same turn. It stays in
+        # `log_line`, which is a snapshot of one moment and honest about it.
         lines = [
             "[agent-evidence]",
             f"names_workspace_path={self.names_workspace_path}",
             f"path_exists={self.path_exists}",
             f"has_conversation={self.has_conversation}",
-            f"explorer_findings={self.explorer_findings}",
             f"clarification_answered={self.clarification_answered}",
             f"barren_turns={self.barren_turns}",
         ]
@@ -134,10 +147,13 @@ class EvidenceVector:
                 + " (no worker can reach these; say so and stop)"
             )
         if self.target_is_unknown:
+            # Phrased as a starting condition, not a standing fact, because
+            # this text outlives the moment it was true: an explorer summoned
+            # later in this turn is exactly how it stops being true.
             lines.append(
-                "note=nothing in the record establishes what this turn "
-                "targets. Do not send a coder at a guess — either ask, or "
-                "summon an explorer to find the target first."
+                "note=as this turn begins, nothing in the record establishes "
+                "what it targets. Do not send a coder at a guess — either ask, "
+                "or summon an explorer first and route on what it reports."
             )
         if self.barren_turns >= NO_PROGRESS_TURNS:
             lines.append(
@@ -189,7 +205,11 @@ def _classify_paths(
     inside: list[str] = []
     outside: list[str] = []
     exists = False
-    for match in _PATH_CANDIDATE.finditer(str(request or "")):
+    # Blank out URIs before looking for paths, so their host and path segments
+    # never reach the containment test. Replacing with spaces keeps every other
+    # offset intact.
+    text = _URI_RE.sub(lambda m: " " * len(m.group(0)), str(request or ""))
+    for match in _PATH_CANDIDATE.finditer(text):
         token = match.group(1).strip(_TRIM)
         if not token or token in {".", ".."}:
             continue
