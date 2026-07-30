@@ -679,42 +679,12 @@ async def run_agent(
     has_conversation = _chat_has_history(
         chat_id, db_path=context_compression_db_path, log=log,
     )
-    # The request the rest of the turn works from. It differs from `task` in
-    # exactly one case: this message is the ANSWER to the one deterministic
-    # clarification, and the pending request is folded back in so the planner
-    # gets the whole intent rather than the fragment the user just typed.
-    #
-    # The pending request is checked BEFORE classifying, not after. Checking
-    # after — gated on the answer itself routing to ASK_SCOPE — assumed every
-    # answer looks as broad as the question. It does not: the question offers
-    # "React" and "a single static HTML page" as answers, and both classify as
-    # bare advisory follow-ups once the chat has history. Those turns were
-    # answered as advice, and because a completed turn writes a row with no
-    # `clarification_request`, the pending marker was cleared and the build the
-    # user actually asked for was lost with it.
-    #
-    # The cost of the other direction is bounded and visible: a user who
-    # ignores the question and asks something unrelated gets their new message
-    # merged with the old request. The merge only ever REMOVES a halt — it
-    # cannot add one, and it cannot widen a route — so a wrong merge costs one
-    # turn, while a wrong drop costs the request.
-    pending = _pending_clarification(
-        chat_id, db_path=context_compression_db_path, log=log,
-    )
+    # No pre-model routing survives. `classify_task` reads one question — does
+    # this sentence read like a deletion — and answers with a warning; the
+    # shape of the turn is the root's to declare (`agent/triage.py`) from facts
+    # the substrate can check (`agent/evidence.py`).
+    scope_hint = classify_task(task)
     effective_task = task
-    clarification_answered = bool(pending)
-    if pending:
-        effective_task = f"{pending}\n\n[clarification answer] {task}"
-        scope_hint = classify_task(
-            effective_task, has_history=True, allow_clarification=False,
-        )
-        print(
-            "[agent] clarification answered; merged the pending request "
-            f"and routed to {scope_hint.route} instead of asking again",
-            file=log,
-        )
-    else:
-        scope_hint = classify_task(task, has_history=has_conversation)
     goal_state = GoalState.create(
         intent=effective_task,
         scope=scope_hint.kind.value,
@@ -745,7 +715,6 @@ async def run_agent(
         effective_task,
         has_conversation=has_conversation,
         explorer_findings=_has_explorer_findings(goal_state),
-        clarification_answered=clarification_answered,
         barren_turns=chat_usage["barren_turns"],
     )
     print(evidence.log_line(), file=log)
@@ -755,45 +724,6 @@ async def run_agent(
     # that are not — worker outcomes and an accepted manifest — to decide
     # whether a mutation worker may be summoned at all.
     goal_state.target_named = evidence.names_workspace_path
-    direct_answer = _deterministic_scope_answer(
-        effective_task, scope_hint, goal_state,
-    )
-    if direct_answer is not None:
-        print(f"[agent] {scope_hint.log_line()}", file=log)
-        print(
-            f"[agent] deterministic route={scope_hint.route}; no model call",
-            file=log,
-        )
-        if chat_id:
-            _append_chat_message(
-                chat_id, "user", task,
-                db_path=context_compression_db_path, log=log,
-            )
-            _append_chat_message(
-                chat_id, "assistant", direct_answer,
-                db_path=context_compression_db_path, log=log,
-            )
-            _record_agent_turn(
-                chat_id=chat_id,
-                request_id=request_id,
-                parent_session_id=None,
-                started_at=turn_started_at,
-                ended_at=time.time(),
-                model_family="deterministic",
-                stats=stats,
-                db_path=context_compression_db_path,
-                log=log,
-                # Only an ask_scope halt leaves a question outstanding. A
-                # casual greeting or a destructive-operation warning is a
-                # complete answer, so it must not arm the merge on the next
-                # message.
-                clarification_request=(
-                    effective_task[:MAX_PENDING_CLARIFICATION_CHARS]
-                    if scope_hint.route == RouteKind.ASK_SCOPE
-                    else None
-                ),
-            )
-        return direct_answer
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -2363,27 +2293,6 @@ def _build_token_budget(
     return budget
 
 
-def _deterministic_scope_answer(
-    task: str,
-    scope_hint: ScopeHint,
-    goal_state: GoalState | None = None,
-) -> str | None:
-    if scope_hint.route == RouteKind.DIRECT_ANSWER:
-        return "Hi! How can I help?"
-    if scope_hint.route == RouteKind.ASK_SCOPE:
-        # High ambiguity halts BEFORE any parent session, model call, or worker
-        # spawn: one deterministic clarifying question, zero tokens spent.
-        assessment = scope_hint.assessment
-        if assessment is not None and assessment.clarifying_question:
-            return assessment.clarifying_question
-        return "What exact target and acceptance criteria should this change satisfy?"
-    # No `plan_design_workflow` branch: `classify_task` can no longer produce
-    # that route from text, and when a manifest produces it the goal runs the
-    # designer → coder → reviewer chain instead of halting. A large change is
-    # more review, not a refusal handed back as a command to type.
-    return None
-
-
 def _ensure_core_import_path() -> None:
     root = Path(__file__).resolve().parent.parent
     if str(root) not in sys.path:
@@ -2487,34 +2396,6 @@ def _chat_has_history(
 #: Cap on the pending request carried across turns. A merged brief still has to
 #: fit the per-call sizing rule, and the full original text remains in
 #: `conversation_messages` for replay either way.
-MAX_PENDING_CLARIFICATION_CHARS = 2000
-
-
-def _pending_clarification(
-    chat_id: str | None, *, db_path: Path, log: Any,
-) -> str | None:
-    """The request whose clarification this chat is still waiting to answer.
-
-    Returns None on any failure, which is the safe direction: the driver then
-    asks the question again rather than merging a request it could not read.
-    """
-    if not chat_id:
-        return None
-    try:
-        _ensure_core_import_path()
-        from storage import db
-
-        db.init_db(db_path)
-        return db.pending_clarification(chat_id, db_path=db_path)
-    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
-        print(
-            f"[agent] pending clarification read failed: "
-            f"{type(exc).__name__}: {exc}",
-            file=log,
-        )
-        return None
-
-
 def _pending_destructive(
     chat_id: str | None, *, db_path: Path, log: Any,
 ) -> str | None:
@@ -2616,7 +2497,6 @@ def _record_agent_turn(
     db_path: Path,
     log: Any,
     delivered_artifact: bool = False,
-    clarification_request: str | None = None,
     pending_destructive: str | None = None,
     root_triage: str | None = None,
 ) -> None:
@@ -2639,7 +2519,6 @@ def _record_agent_turn(
             total_ms=int((ended_at - started_at) * 1000),
             db_path=db_path,
             delivered_artifact=delivered_artifact,
-            clarification_request=clarification_request,
             pending_destructive=pending_destructive,
             root_triage=root_triage,
         )
@@ -3317,13 +3196,24 @@ def _spawn_overflow_reasons(
             and orchestration.goal_state is not None
             and spawn_role in MUTATION_ROLES
         ):
-            gap = orchestration.goal_state.evidence_gap()
-            if gap is not None:
-                overflow[tu.get("id", "")] = gap
-                print(
-                    f"[agent]   ⨯ refused worker(role={spawn_role!r}): {gap}",
-                    file=log,
-                )
+            # Two questions, asked in order of how much they already know.
+            # `overrun_stop` reads an ACCEPTED declaration against files
+            # actually touched, so when it fires it is the more specific
+            # refusal and the more useful one to report.
+            for check in (
+                orchestration.goal_state.overrun_stop,
+                orchestration.goal_state.evidence_gap,
+            ):
+                reason = check()
+                if reason is not None:
+                    overflow[tu.get("id", "")] = reason
+                    print(
+                        f"[agent]   ⨯ refused worker(role={spawn_role!r}): "
+                        f"{reason}",
+                        file=log,
+                    )
+                    break
+            if tu.get("id", "") in overflow:
                 continue
         if (
             role == "agent"

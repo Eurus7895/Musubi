@@ -19,9 +19,17 @@ from enum import StrEnum
 
 
 class RouteKind(StrEnum):
-    #: Answer from the root's own reasoning, one turn, no workers.
+    #: Nothing was decided before the model ran. The starting route of every
+    #: turn now: the root reads the evidence vector, declares its own triage,
+    #: and picks the roles. Only `assess_manifest` narrows it, and only once a
+    #: planner has read code and declared a blast radius.
+    ROOT_DECIDES = "root_decides"
+    #: Answer from the root's own reasoning, one turn, no workers. Retired as a
+    #: PRE-model verdict along with the lexical layer; kept because the enum is
+    #: a stored contract and old audit rows still carry the value.
     ADVISORY = "advisory"
-    #: One read-only explorer worker reaches a path and reports.
+    #: One read-only explorer worker reaches a path and reports. Same: retired
+    #: as a pre-model verdict, retained for stored rows.
     SINGLE_EXPLORER = "single_explorer"
     #: One coder worker implements directly.
     SINGLE_CODER = "single_coder"

@@ -28,11 +28,14 @@ MAX_DETAIL_CHARS = 400
 _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
-_SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
-#: The consultative route (`agent/scope.py`): the user asked to be advised,
-#: not for a change. The root is the whole answer, so its decision phase gets
-#: no tools at all.
-ADVISORY_ROUTE = RouteKind.ADVISORY
+#: Sizes at which the root may want to read full skill text into its OWN
+#: context rather than pushing a skill to the worker it summons. Only
+#: `assess_manifest` produces these, and only after a planner has read code —
+#: so the wider surface is now bought with evidence rather than guessed from
+#: the request. Every turn starts `unknown` and therefore lean, which is the
+#: conservative direction: the previous code widened by default and narrowed on
+#: a lexical hunch.
+_WIDE_SCOPES = frozenset({"medium_change", "large_feature"})
 #: Trailing barren turns before the root is told to stop planning. Three is
 #: the point at which the traced conversation had already spent two planner
 #: round trips and two question walls without a single file on disk.
@@ -188,10 +191,13 @@ class GoalState:
         route: str,
         assessment: ChangeAssessment | None = None,
     ) -> "GoalState":
+        # Same inversion as the tool surface: lean until a manifest says
+        # otherwise. A turn whose size nobody has established yet gets the
+        # smaller target, which is the direction that fails cheap.
         target = (
-            SIMPLE_ROOT_TOKEN_TARGET
-            if scope in _SIMPLE_SCOPES
-            else DEFAULT_ROOT_TOKEN_TARGET
+            DEFAULT_ROOT_TOKEN_TARGET
+            if scope in _WIDE_SCOPES
+            else SIMPLE_ROOT_TOKEN_TARGET
         )
         return cls(
             intent=intent,
@@ -252,6 +258,34 @@ class GoalState:
             manifest.files_expected if manifest is not None else None
         )
         return assessment
+
+    def overrun_stop(self) -> str | None:
+        """Why no further writer may be summoned, or None.
+
+        `manifest_overrun` has always computed this; until now its only
+        consequence was a paragraph in the decision block, which the model was
+        free to read and continue past. With the lexical risk gates gone the
+        manifest is the SOLE input to routing, so a declaration nobody enforces
+        is trusted rather than governed: declare one file, clear the cheap
+        route, touch eleven, and nothing stops the twelfth.
+
+        Deliberately not terminal. The run keeps whatever it has already
+        written and the root may still report, re-plan, or ask — what it may
+        not do is summon another writer on a radius that has already been
+        exceeded. Making it fatal would throw away completed work to punish a
+        declaration, and the append-only stage store exists precisely so a
+        wrong attempt can be superseded rather than lost.
+        """
+        breach = self.manifest_overrun()
+        if breach is None:
+            return None
+        declared, actual = breach
+        return (
+            f"the change has outgrown its plan: the manifest declared "
+            f"{declared} file(s) and workers have touched {actual}. No further "
+            f"writer may be summoned on this radius — report what was touched, "
+            f"or spawn 'planner' to re-declare the remainder"
+        )
 
     def evidence_gap(self) -> str | None:
         """Why a mutation worker may not be summoned yet, or None.
@@ -443,13 +477,6 @@ def root_decision_tools(
     spawn_exhausted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
-    if state.route == ADVISORY_ROUTE:
-        # Checked before every other phase: an advisory turn must never reach
-        # a tool. No worker can add evidence to "which auth model should I
-        # pick?" — it names no file to read — so a spawn buys a multi-cycle
-        # round trip that ends in a change manifest the user never asked for.
-        # Withholding the catalog forces the root to answer in ONE cycle.
-        return []
     if recovery_outcome:
         # Recovery is a DECISION phase, not a work phase: a worker failed and
         # the root has to choose whether to replace it. Handing over the whole
@@ -478,6 +505,6 @@ def root_decision_tools(
     # Spawn plus skill *selection* in every scope, so the root can push a
     # skill to the worker it summons even for a simple artifact.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
-    if state.scope not in _SIMPLE_SCOPES:
+    if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

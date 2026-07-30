@@ -19,7 +19,6 @@ import pytest
 
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
-from agent.scope import BROAD_PRODUCT_QUESTION
 from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter
@@ -2319,12 +2318,12 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
 
     assert answer == "ok"
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {
-        "musubi_get_reference",
-        "musubi_get_skill",
-        "musubi_recommend_skills",
-        "musubi_spawn_subagent",
-    }
+    # Lean by default now. The skill-READING tools used to be handed over
+    # whenever a regex failed to call the request simple; a turn whose size
+    # nobody has established yet gets the smaller surface, and it widens only
+    # once `assess_manifest` classifies the planner's declaration as medium or
+    # large. The widening is bought with evidence rather than guessed.
+    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
     assert "musubi_write_file" not in names
     assert "musubi_edit_file" not in names
     assert "musubi_run_command" not in names
@@ -2348,12 +2347,12 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {
-        "musubi_get_reference",
-        "musubi_get_skill",
-        "musubi_recommend_skills",
-        "musubi_spawn_subagent",
-    }
+    # Lean by default now. The skill-READING tools used to be handed over
+    # whenever a regex failed to call the request simple; a turn whose size
+    # nobody has established yet gets the smaller surface, and it widens only
+    # once `assess_manifest` classifies the planner's declaration as medium or
+    # large. The widening is bought with evidence rather than guessed.
+    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
 
 
 def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
@@ -2524,29 +2523,27 @@ def test_loop_passes_tool_error_to_model_rather_than_raising(
     assert len(router.calls) == 2, "loop should have completed both cycles"
 
 
-def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
+def test_the_root_prompt_carries_no_pre_model_route() -> None:
+    """Plan step 4: the hint block states ignorance, not a decision."""
     router = FakeRouter([
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{"type": "text", "text": "ok"}],
-        )
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}])
     ])
 
     answer = asyncio.run(run_agent(
         "Update weather-dashboard.html to refresh every 5 minutes",
-        router,
-        _musubi_dir(),
-        log=io.StringIO(),
-        max_tokens=0,
+        router, _musubi_dir(), log=io.StringIO(), max_tokens=0,
     ))
 
     assert answer == "ok"
     system_text = router.calls[0]["messages"][0]["content"]
     assert "[agent-routing-hint]" in system_text
-    assert "scope=simple_edit" in system_text
-    assert "suggested_route=single_coder" in system_text
-    assert "max_workers=" not in system_text
-    assert "one coder worker" in system_text.lower()
+    assert "no route was guessed" in system_text
+    # The verdicts a regex used to hand over are gone from the prompt.
+    for gone in ("suggested_route=", "scope=simple_edit", "guidance="):
+        assert gone not in system_text, gone
+    # What it does carry is checkable.
+    assert "[agent-evidence]" in system_text
+    assert "[agent-triage]" in system_text
 
 
 def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:
@@ -2624,68 +2621,41 @@ def test_delete_request_now_runs_and_carries_the_warning() -> None:
     assert "manual_destructive" not in log.getvalue()
 
 
-def test_greeting_returns_direct_answer_without_llm_calls() -> None:
-    router = FakeRouter([])
-    log = io.StringIO()
+def test_a_greeting_now_costs_one_root_call() -> None:
+    """The documented price of plan step 4, asserted rather than assumed.
 
-    answer = asyncio.run(run_agent(
-        "hi",
-        router,
-        _musubi_dir(),
-        log=log,
-        max_tokens=0,
-    ))
-
-    assert router.calls == []
-    assert answer.startswith("Hi!")
-    assert "direct_answer" in log.getvalue()
-
-
-def test_advisory_request_answers_with_one_model_call_and_no_spawn() -> None:
-    # An advisory turn is NOT a deterministic canned answer: the model still
-    # runs, because the whole deliverable is its reasoning. What it does not
-    # get is a tool catalog, so it cannot spawn a planner or burn a
-    # `musubi_recommend_skills` round trip before answering.
-    from agent import run as run_mod
-    from agent.scope import classify_task
-
-    hint = classify_task("choose the best for me")
-    assert hint.route == "advisory"
-    assert run_mod._deterministic_scope_answer("choose the best for me", hint) is None
-
+    `_CASUAL_RE` answered "hi" for zero tokens. It was a cost hack, not a
+    safety property, and keeping it would have left one lexical branch alive
+    purely because it was cheap — the exception that makes the rest of a
+    deleted layer defensible. Eurus: "hi khong can giu".
+    """
     router = FakeRouter([
-        LMResponse(
-            stop_reason="end_turn",
-            content=[{
-                "type": "text",
-                "text": "OIDC with an email/password fallback.",
-            }],
-        ),
+        LMResponse(stop_reason="end_turn", content=[
+            {"type": "text", "text": "[triage] conversation: greeting"},
+        ]),
     ])
-    log = io.StringIO()
 
     answer = asyncio.run(run_agent(
-        "choose the best for me",
-        router,
-        _musubi_dir(),
-        log=log,
-        max_tokens=0,
+        "hi", router, _musubi_dir(), log=io.StringIO(), max_tokens=0,
     ))
 
     assert len(router.calls) == 1
-    assert router.calls[0]["tools"] == []  # no tool catalog offered
-    assert "OIDC" in answer
-    assert "route=advisory" in log.getvalue()
+    assert answer != ""
 
 
-class _ExplodingRouter(LMRouter):
-    """A vendor whose call fails like a real network/proxy error would."""
+def test_an_advisory_request_is_not_recognised_before_the_model() -> None:
+    # The advisory route stripped every tool from the root so a "which auth
+    # model should I pick?" turn could not spawn. It was decided by
+    # `_ADVISORY_RE` over one sentence, and the same regex read "explain the
+    # deploy script" — which names a file and wants a reader — the same way.
+    # The root now sees the catalog and decides for itself; its triage line
+    # records what it concluded.
+    from agent.routes import RouteKind
+    from agent.scope import classify_task
 
-    name = "boom"
-    model = "boom-1"
-
-    def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
-        raise RuntimeError("curl exited 56 ... 407 proxy auth required")
+    assert classify_task("which auth model should I pick?").route == (
+        RouteKind.ROOT_DECIDES
+    )
 
 
 def test_resolve_vendor_labels_which_profile(
@@ -2736,70 +2706,67 @@ def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
     assert not isinstance(ei.value, BaseExceptionGroup)
 
 
-def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
-    from agent import run as run_mod
+class _ExplodingRouter(LMRouter):
+    """A vendor whose call fails like a real network/proxy error would."""
+
+    name = "boom"
+    model = "boom-1"
+
+    def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+        raise RuntimeError("curl exited 56 ... 407 proxy auth required")
+
+
+def test_high_ambiguity_no_longer_halts_before_the_model() -> None:
+    # The pre-run `ask_scope` halt is gone. What it was reaching for survives
+    # as something checkable: `GoalState.evidence_gap` refuses a WRITER while
+    # nothing establishes the target, and says which role can fix that — so a
+    # vague request costs one root call and a read-only worker instead of a
+    # canned question the answer could not move.
+    from agent.routes import RouteKind
     from agent.scope import classify_task
 
-    hint = classify_task("create a new website")
-    answer = run_mod._deterministic_scope_answer("create a new website", hint)
-    assert hint.route == "ask_scope"
-    assert answer == (
-        BROAD_PRODUCT_QUESTION
-    )
+    hint = classify_task("make a payments dashboard")
+
+    assert hint.route == RouteKind.ROOT_DECIDES
+    assert hint.assessment is None
 
 
-def test_clarification_is_asked_once_then_the_answer_is_acted_on(
+def test_the_clarification_loop_is_gone_with_the_layer_that_caused_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # The traced loop (chat gui-orchestrator-…-7bce98a4ecdc): "create a
-    # website" was met with the canned question, and so were BOTH answers the
-    # user typed after it — three turns, zero model calls, zero files, the same
-    # sentence every time. The question is a governance step exactly once; the
-    # next message is the answer and must be acted on.
+    """Plan step 4. The fixed point is unreachable because the halt is gone.
+
+    The traced session asked the same question three times: `classify_task`
+    read one message, the ANSWER re-matched the same broad-product regex, and
+    the question and the classification came from the same pattern — so no
+    on-topic reply could move the route. Two earlier commits patched the loop
+    (count to one, ask only what the gate can act on). This deletes what made
+    it possible.
+    """
     from storage import db
 
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
-    chat_db = tmp_path / "data" / "musubi.db"
-    chat = "chat-clarify"
-
-    silent = FakeRouter([])
-    first_log = io.StringIO()
-    question = asyncio.run(run_agent(
-        "create a website", silent, _musubi_dir(),
-        log=first_log, max_tokens=0, chat_id=chat,
-    ))
-
-    assert silent.calls == []
-    assert question == (
-        BROAD_PRODUCT_QUESTION
-    )
-    assert "route=ask_scope" in first_log.getvalue()
-    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
-
-    # Turn 2 answers it. Classified alone the answer is still a broad product
-    # request and would have drawn the identical question.
+    chat = "chat-no-halt"
     router = FakeRouter([
-        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+        LMResponse(stop_reason="end_turn", content=[
+            {"type": "text", "text": "[triage] question: nothing to build yet"},
+        ]),
     ])
-    second_log = io.StringIO()
+
     answer = asyncio.run(run_agent(
-        "i would like to create a weather checking website",
-        router, _musubi_dir(), log=second_log, max_tokens=0, chat_id=chat,
+        "create a website", router, _musubi_dir(),
+        log=io.StringIO(), max_tokens=0, chat_id=chat,
     ))
 
-    assert answer == "ok"
-    assert len(router.calls) == 1, "the answer must reach the model, not a canned reply"
-    log_text = second_log.getvalue()
-    assert "clarification answered" in log_text
-    assert "route=planner_then_coder_check" in log_text
-    assert "route=ask_scope" not in log_text
-
-    # The root sees the WHOLE intent, not just the fragment typed last.
-    system_text = router.calls[0]["messages"][0]["content"]
-    assert "scope=medium_change" in system_text
-    # And the marker is spent: a later broad request gets its own question,
-    # but this one can never be re-asked.
-    assert db.pending_clarification(chat, db_path=chat_db) is None
+    # It reaches the model instead of a canned sentence.
+    assert len(router.calls) == 1
+    assert answer != ""
+    # And nothing is stored for a next turn to re-question from.
+    with db._connect(tmp_path / "data" / "musubi.db") as conn:
+        cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(agent_turns)")
+        }
+    assert "clarification_request" not in cols
 
 
 def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
@@ -2829,21 +2796,20 @@ def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
         assert not _looks_like_vendor_tool_markup(prose), prose
 
 
-def test_sensitive_request_is_not_refused_on_vocabulary_alone() -> None:
-    # The removed keyword gate answered "add authentication" with a canned
-    # pipeline recommendation and ZERO model calls — the same treatment it gave
-    # "fix the typo in the security section of the README". A sensitive request
-    # must now actually run, planner-first, with blast radius decided from the
-    # planner's manifest rather than from the sentence.
-    from agent import run as run_mod
+def test_a_sensitive_sounding_request_is_not_classified_at_all() -> None:
+    # `_NO_SHORTCUT_RE` was wrong in both directions, provably: "fix the typo
+    # in the security section of the README" read as critical while "wire up
+    # Okta" read as routine. It is gone, and nothing replaced it at this layer
+    # — risk is the planner's declaration to make, and the substrate's to check.
+    from agent.routes import RouteKind
     from agent.scope import classify_task
 
-    hint = classify_task("Add authentication to the app")
-
-    assert hint.route == "planner_then_coder_check"
-    assert run_mod._deterministic_scope_answer(
-        "Add authentication to the app", hint,
-    ) is None
+    for task in (
+        "add authentication to the app",
+        "fix the typo in the security section of the README",
+        "wire up Okta",
+    ):
+        assert classify_task(task).route == RouteKind.ROOT_DECIDES, task
 
 
 def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
@@ -3242,58 +3208,19 @@ def test_root_system_prompt_carries_the_evidence_vector() -> None:
     assert "[agent] evidence:" in log.getvalue()
 
 
-def test_the_evidence_vector_changes_no_route() -> None:
-    """A request naming nothing still routes exactly as it did before step 1."""
+def test_the_evidence_vector_is_the_only_thing_left_to_route_on() -> None:
     from agent.evidence import collect
     from agent.routes import RouteKind
     from agent.scope import classify_task
 
-    hint = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
-    vector = collect("Update weather-dashboard.html to refresh every 5 minutes")
+    task = "Update weather-dashboard.html to refresh every 5 minutes"
+    hint = classify_task(task)
+    vector = collect(task)
 
-    # The vector says the target does not exist here; the route is unmoved.
+    # The hint decides nothing; the vector reports a fact that can be checked.
+    assert hint.route == RouteKind.ROOT_DECIDES
+    assert vector.names_workspace_path is True
     assert vector.path_exists is False
-    assert hint.route == RouteKind.SINGLE_CODER
-
-
-def test_a_short_answer_to_the_question_is_still_the_answer(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    """PR #164 review: the merge must not depend on how the answer classifies.
-
-    The pending request used to be consulted only when the NEW message itself
-    routed to `ask_scope`. But the question offers "React" and "a single static
-    HTML page" as answers, and with chat history both classify as bare advisory
-    follow-ups. Those turns were answered as advice, and the completed turn
-    wrote a row with no `clarification_request` — clearing the marker and
-    losing the build request permanently.
-    """
-    from storage import db
-
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
-    chat_db = tmp_path / "data" / "musubi.db"
-    chat = "chat-short-answer"
-
-    asyncio.run(run_agent(
-        "create a website", FakeRouter([]), _musubi_dir(),
-        log=io.StringIO(), max_tokens=0, chat_id=chat,
-    ))
-    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
-
-    router = FakeRouter([
-        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
-    ])
-    log = io.StringIO()
-    answer = asyncio.run(run_agent(
-        "React", router, _musubi_dir(), log=log, max_tokens=0, chat_id=chat,
-    ))
-
-    assert answer == "ok"
-    assert "clarification answered" in log.getvalue()
-    # The root must be told what is being built, not just which framework.
-    system_text = router.calls[0]["messages"][0]["content"]
-    assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
-    assert db.pending_clarification(chat, db_path=chat_db) is None
 
 
 def test_build_folder_registry_keeps_process_in_musubi_root(
@@ -3815,3 +3742,39 @@ def test_a_failed_turn_still_records_what_it_planned(
             "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
         ).fetchall()
     assert rows and rows[0]["root_triage"] is not None
+
+
+def test_an_overrun_declaration_refuses_the_next_writer_in_the_loop() -> None:
+    """Plan step 5: promoted from a paragraph the model could read past."""
+    from agent import run as run_mod
+
+    state = GoalState.create("widen it", "medium_change", "planner_then_coder_check")
+    state.target_named = True
+    state.declared_files_expected = 1
+    state.next_role = None  # past the planner; the order gate is satisfied
+    state.record_outcome(
+        role="coder", status="done", summary="summary: done",
+        touched_files={"a.py", "b.py", "c.py"},
+    )
+    orchestration = Orchestration(parent_session_id="root", goal_state=state)
+    calls = [{
+        "id": "s1", "name": "musubi_spawn_subagent",
+        "input": {"role": "coder", "brief": "keep going"},
+    }]
+
+    refusals = run_mod._spawn_overflow_reasons(
+        calls, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    )
+
+    assert "outgrown its plan" in refusals["s1"]
+    # A read-only worker is still free: re-establishing facts is how the root
+    # gets back to a defensible radius.
+    explorer = [{
+        "id": "s2", "name": "musubi_spawn_subagent",
+        "input": {"role": "explorer", "brief": "what changed"},
+    }]
+    assert run_mod._spawn_overflow_reasons(
+        explorer, io.StringIO(), role="agent", scope_hint=None,
+        orchestration=orchestration,
+    ) == {}

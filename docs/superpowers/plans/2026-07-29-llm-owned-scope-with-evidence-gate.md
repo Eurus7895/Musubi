@@ -1,10 +1,15 @@
 # LLM-owned scope, substrate-owned evidence
 
-**Status: governing principle decided (2026-07-29). Step 0 shipped — the
-destructive gate moved from judging a sentence to measuring a call, and the
-tier change landed with it. Step 1 shipped — the evidence vector is rendered
-and logged, and routes nothing. Steps 2–5 (the sufficiency rule and the
-deletion it unlocks) not started. No open questions.**
+**Status: complete. Steps 0–5 all shipped (2026-07-29/30).** The substrate no
+longer judges what a request means: `classify_task` asks one question and
+answers with a warning, the root declares its own triage, and every gate left
+reads a measurement or a declaration.
+
+One caveat on the record: step 4's entry condition — wait for `root_triage`
+rows in volume before removing the routing fallback — was **not met**. Eurus
+chose to proceed without them. If the root's own triage proves worse than the
+regexes were, the evidence to notice that is being collected now rather than
+beforehand.
 
 ## What shipped (step 0)
 
@@ -527,7 +532,7 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
     Three failures in a row looked like zero turns to the no-progress breaker.
     The row is written before the re-raise now.
 
-- [ ] **Step 4 — delete the lexical judgment.** Reduce `classify_task` to the
+- [x] **Step 4 — delete the lexical judgment.** SHIPPED: 735 lines removed, 127 added. Reduce `classify_task` to the
   two branches that remain meaningful — is there work to do, and is it
   destructive — by removing `assess_request` and `_BROAD_PRODUCT_RE`,
   `_STATIC_FILE_RE`, `_BOUNDED_ARTIFACT_RE`, `_FRAMEWORK_RE`, `_MULTIPART_RE`,
@@ -539,7 +544,7 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   the cost profile changes, so it lands last and behind the measurements from
   step 1.
 
-- [ ] **Step 5 — enforce the declaration.** Promote `manifest_overrun` from a
+- [x] **Step 5 — enforce the declaration.** SHIPPED as `GoalState.overrun_stop`, non-terminal. Promote `manifest_overrun` from a
   prompt warning to a hard stop on the coder path. With scope LLM-declared, an
   under-declared radius is the primary abuse channel and it must cost the run,
   not a paragraph.

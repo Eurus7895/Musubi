@@ -98,37 +98,36 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
      never judged: the harness does not check whether a shape was right, and an
      absent declaration is recorded absent rather than inferred, or an invented
      shape would be indistinguishable from a stated one.
-   - **Delete the lexical judgment (plan step 4).** `classify_task` drops to two
-     branches — is there work, and is it destructive. Removes `assess_request`,
-     18 of 19 regexes, `_CASUAL_RE`'s zero-token fast path, the pre-run
-     `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
-     the `pending_clarification` column: ~551 lines, and the trigger written
-     into `agent/scope.py`'s `expires-when:`.
-     **Entry condition — this is the step that must not be taken on faith.** It
-     is the only one that changes the cost profile ("hi" goes from 0 tokens to
-     one root call), and it removes the fallback that has been catching bad
-     routes. Land it only once `root_triage` rows exist in volume and can be
-     read against what those turns actually did: if the root's declared shape
-     tracks the outcome, the hint is redundant and can go; if it does not, the
-     deletion trades a bad router for no router. Steps 1–3 exist to produce
-     that evidence, so reaching for this one before reading it would repeat the
-     mistake the whole track is correcting.
-   - **Enforce the declaration (plan step 5).** `GoalState.manifest_overrun()`
-     already computes `(declared, actual)` by comparing the planner's
-     `files_expected` against the files workers reported touching, but its
-     only consequence today is a line in the root's decision block — a warning
-     the model may read and continue past. Promote it to a hard stop on the
-     mutation path, enforced where the other spawn gates live
-     (`_spawn_overflow_reasons`), so a run that has already exceeded its
-     declared radius cannot summon another writer.
-     Why it matters more after step 4 than before: with the lexical risk gates
-     gone, the manifest is the *sole* input to routing. A declaration nobody
-     enforces is trusted rather than governed — a worker can declare one file,
-     clear the cheap route, and touch eleven. That is the primary abuse channel
-     of an LLM-declared scope, and it must cost the run rather than a
-     paragraph. Open question to settle when implementing: whether the stop is
-     terminal or spends one clarification, given the append-only retry path.
-
+   - ~~**Delete the lexical judgment (plan step 4).**~~ **Shipped.**
+     `classify_task` is one regex asking whether a sentence reads like a
+     deletion, answering with a warning that routes nothing. Gone:
+     `assess_request`, 18 regexes, `_CASUAL_RE`'s zero-token fast path, the
+     pre-run `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, the
+     `clarification_request` column and `db.pending_clarification` — **735
+     lines removed against 127 added.** Every turn now starts
+     `RouteKind.ROOT_DECIDES`; only `assess_manifest` narrows it, and only
+     after a planner has read code.
+     Two inversions fell out of it, both improvements: the root's tool surface
+     and token target are now **lean by default** and widen only when a
+     manifest calls the change medium or large — the old code widened by
+     default and narrowed on a lexical hunch. The documented price is paid as
+     stated: "hi" costs one root call, and a test asserts it.
+     **Entry condition was not met.** The roadmap said to wait for
+     `root_triage` rows in volume before removing the fallback; Eurus chose to
+     proceed without them. What the deletion trades on is therefore untested
+     in production: if the root's own triage turns out worse than the regexes
+     were, the evidence to notice it is being collected now rather than
+     beforehand.
+   - ~~**Enforce the declaration (plan step 5).**~~ **Shipped.**
+     `GoalState.overrun_stop()` refuses a further mutation spawn once workers
+     have touched more files than the accepted manifest declared, enforced in
+     `_spawn_overflow_reasons` beside the other gates. Deliberately not
+     terminal: the run keeps what it wrote and may report or re-plan — making
+     it fatal would discard completed work to punish a declaration, and the
+     append-only stage store exists so a wrong attempt is superseded rather
+     than lost. This matters more now than when it was written: with the
+     lexical risk gates gone the manifest is the sole input to routing, so a
+     declaration nobody enforces is trusted rather than governed.
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 

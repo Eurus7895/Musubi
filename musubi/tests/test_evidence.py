@@ -114,7 +114,6 @@ def test_absent_facts_default_to_absent(workspace: Path) -> None:
 
     assert vector.has_conversation is False
     assert vector.explorer_findings is False
-    assert vector.clarification_answered is False
     assert vector.barren_turns == 0
 
 

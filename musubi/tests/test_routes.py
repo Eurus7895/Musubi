@@ -7,9 +7,8 @@ a declared `RouteKind`, and that every declared kind carries prompt guidance.
 from __future__ import annotations
 
 from agent.manifest import ChangeManifest, assess_manifest
-from agent.scope import assess_request
 from agent.routes import RouteKind
-from agent.scope import ScopeHint, ScopeKind, classify_task
+from agent.scope import classify_task
 
 
 def _manifest(**over: object) -> ChangeManifest:
@@ -37,9 +36,11 @@ def test_every_emitted_route_is_a_declared_kind() -> None:
         "create a next.js app with routes and a navbar",
     )
     for task in corpus:
+        # One answer for all of them now: ROOT_DECIDES. Kept as a corpus anyway
+        # — if a future classifier starts distinguishing them again, this is
+        # where an undeclared route would surface.
         assert classify_task(task).route in valid, task
-        assert classify_task(task, allow_clarification=False).route in valid, task
-        assert assess_request(task).route in valid, task
+        assert classify_task(task).route == RouteKind.ROOT_DECIDES, task
 
     for manifest in (
         _manifest(),
@@ -51,15 +52,27 @@ def test_every_emitted_route_is_a_declared_kind() -> None:
         assert assess_manifest(manifest).route in valid
 
 
-def test_every_route_kind_carries_prompt_guidance() -> None:
-    # A route with no entry in the guidance table falls through to "Use the
-    # route conservatively", which tells the root nothing. Adding a kind
-    # without its guidance is the way that happens silently.
-    for kind in RouteKind:
-        hint = ScopeHint(kind=ScopeKind.UNKNOWN, route=kind, reason="test")
-        block = hint.prompt_block()
-        assert f"route={kind.value}" in block
-        assert "Use the route conservatively" not in block, kind
+def test_the_post_plan_routes_are_the_ones_still_produced() -> None:
+    # `assess_manifest` is the only classifier left that narrows a route, and
+    # it does so from a planner's declaration rather than from text. ADVISORY,
+    # SINGLE_EXPLORER and DIRECT_ANSWER are retired as verdicts but retained in
+    # the enum: audit rows written before step 4 still carry those values.
+    produced = {
+        assess_manifest(m).route
+        for m in (
+            _manifest(),
+            _manifest(unknowns=("palette",)),
+            _manifest(files_expected=9),
+            _manifest(security_sensitive=True),
+            _manifest(files_expected=3, subsystems=("auth", "billing")),
+        )
+    }
+    retired = {
+        RouteKind.ADVISORY, RouteKind.SINGLE_EXPLORER, RouteKind.DIRECT_ANSWER,
+    }
+
+    assert not (produced & retired)
+    assert RouteKind.ROOT_DECIDES not in produced
 
 
 def test_route_kind_stays_string_compatible() -> None:
