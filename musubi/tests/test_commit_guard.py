@@ -234,3 +234,88 @@ def test_hook_checks_only_the_commits_being_pushed(repo_with_hook: tuple[Path, P
     result = _push(work, "dev")
 
     assert result.returncode == 0, result.stderr
+
+
+def _commit_file(
+    repo: Path, path: str, *, name: str, email: str, message: str,
+) -> None:
+    """Like `_commit`, but each commit touches its own file — so a rebase in
+    the test exercises the guard rather than a merge conflict."""
+    (repo / path).write_text(path)
+    _run_git(repo, "add", path)
+    _run_git(
+        repo, "-c", f"user.name={name}", "-c", f"user.email={email}",
+        "commit", "-q", "-m", message,
+    )
+
+
+def test_a_rebase_onto_a_moved_base_checks_only_the_rebased_commits(
+    repo_with_hook: tuple[Path, Path],
+) -> None:
+    """The guard must not demand rewrites of commits the remote already has.
+
+    `remote_sha..local_sha` looks like "what this push publishes" and is not:
+    after a rebase, `remote_sha` is the branch's OLD head, so the range
+    re-includes everything the new base brought in. In the real case that was a
+    merge commit GitHub's web UI had authored on `dev` — the guard refused the
+    push and asked for it to be rewritten, which cannot be done and must not be
+    bypassed.
+    """
+    work, _ = repo_with_hook
+    good = {"name": "Eurus", "email": "t.hoang7895@gmail.com"}
+
+    _commit_file(work, "base.txt", message="feat(x): base", **good)
+    assert _push(work, "dev").returncode == 0
+
+    _run_git(work, "checkout", "-q", "-b", "feat/thing")
+    _commit_file(work, "mine.txt", message="feat(x): mine", **good)
+    assert _push(work, "feat/thing").returncode == 0
+
+    # Someone else lands a commit on dev with a foreign identity — a merge the
+    # web UI authored, say. `--no-verify` stands in for "it arrived by some
+    # route other than our hook". The guard is right to refuse such a commit on
+    # a push of OURS; the point is what happens once it is already published.
+    _run_git(work, "checkout", "-q", "dev")
+    _commit_file(
+        work, "theirs.txt", name="Eurus",
+        email="56497078+Eurus7895@users.noreply.github.com",
+        message="Merge pull request #1 from somewhere",
+    )
+    assert subprocess.run(
+        ["git", "push", "--no-verify", "origin", "dev"],
+        cwd=work, capture_output=True, text=True,
+    ).returncode == 0
+
+    # Rebasing our branch onto it must still push.
+    _run_git(work, "checkout", "-q", "feat/thing")
+    _run_git(
+        work, "-c", "user.name=Eurus", "-c", "user.email=t.hoang7895@gmail.com",
+        "rebase", "dev",
+    )
+    result = subprocess.run(
+        ["git", "push", "--force-with-lease", "origin", "feat/thing"],
+        cwd=work, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "expected 'Eurus <t.hoang7895@gmail.com>'" not in result.stderr
+
+
+def test_a_bad_commit_of_ours_is_still_caught_after_a_rebase(
+    repo_with_hook: tuple[Path, Path],
+) -> None:
+    # The narrower range must not become a hole: our own commits are still
+    # checked, whatever the base did.
+    work, _ = repo_with_hook
+    _commit_file(work, "base.txt", name="Eurus",
+                 email="t.hoang7895@gmail.com", message="feat(x): base")
+    assert _push(work, "dev").returncode == 0
+
+    _run_git(work, "checkout", "-q", "-b", "feat/other")
+    _commit_file(work, "mine.txt", name="Someone Else",
+                 email="other@example.com", message="feat(x): mine")
+
+    result = _push(work, "feat/other")
+
+    assert result.returncode != 0
+    assert "expected 'Eurus <t.hoang7895@gmail.com>'" in result.stderr

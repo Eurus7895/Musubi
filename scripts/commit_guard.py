@@ -127,18 +127,27 @@ def parse_commits(log_output: str) -> list[tuple[str, str, str, str]]:
 
 
 def commits_to_check(remote: str, local_sha: str, remote_sha: str) -> list[tuple[str, str, str, str]]:
-    """The commits this push would publish.
+    """The commits this push would publish — and ONLY those.
 
-    A new branch has no remote sha to diff against, so fall back to "commits
-    not reachable from anything this remote already has" — otherwise the first
-    push of a branch would check its entire history back to the root."""
+    Always "reachable from what is being pushed, and from nothing this remote
+    already has". `remote_sha..local_sha` looks equivalent and is not: after a
+    rebase onto an updated base, `remote_sha` is the branch's OLD head, so that
+    range re-includes every commit the new base brought in. Rebasing a
+    four-commit branch onto a base 23 commits ahead offered 27 commits for
+    checking, among them a merge commit GitHub's web UI had authored on the
+    default branch — which the guard then demanded be rewritten, an instruction
+    that cannot be followed and must not be bypassed.
+
+    The remote's own refs are exactly the right exclusion in both cases, so the
+    new-branch fallback becomes the only path. `remote_sha` is kept in the
+    signature: the caller reads it from stdin per the pre-push contract, and
+    dropping it would hide which case a future reader is in.
+    """
     if local_sha == _ZERO_SHA:
         return []  # deleting a branch publishes nothing
-    if remote_sha == _ZERO_SHA:
-        args = ["log", f"--format={_LOG_FORMAT}", local_sha, "--not", f"--remotes={remote}"]
-    else:
-        args = ["log", f"--format={_LOG_FORMAT}", f"{remote_sha}..{local_sha}"]
-    return parse_commits(_git(*args))
+    return parse_commits(_git(
+        "log", f"--format={_LOG_FORMAT}", local_sha, "--not", f"--remotes={remote}",
+    ))
 
 
 def install() -> int:
