@@ -90,6 +90,7 @@ function actions() {
     selectSession() {},
     deleteSession() {},
     cleanSessions() {},
+    resumePipeline() {},
     clearSelect() {},
     setAuditFilter() {},
     selectProfile() {},
@@ -1153,6 +1154,56 @@ test('session cleanup actions target the selected session and lock clean-all whi
   }), act)
   assert.equal(busy.deleteSessionDisabled, true)
   assert.equal(busy.cleanSessionsDisabled, true)
+})
+
+test('selected paused pipeline exposes the exact reason action matrix outside unread grouping', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    resumePipeline: (...args) => calls.push(args),
+  }
+  const state = {
+    orchestratorChatId: 'chat-1',
+    selectedSession: 'chat-1',
+    orchestratorSessions: [
+      { chatId: 'chat-1', title: 'viewed pause', unread: false, rootTurns: 1, workers: 1 },
+    ],
+    agentTurns: [
+      { id: 1, chatId: 'chat-1', parentSession: 'root-1', request: 'ship', startedAt: 10 },
+    ],
+    pipelineRuns: [{
+      sessionId: 'pipeline-1',
+      chatId: 'chat-1',
+      pipelineName: 'feature-dev',
+      startedAt: 11,
+      pauseReason: 'stage_review',
+      pausedAtStage: 'coder',
+      pausedAtChunk: null,
+      stages: [],
+    }],
+  }
+  const review = buildViewModel(baseState(state), act)
+
+  assert.equal(review.runs[0].bucket, 'earlier')
+  assert.equal(review.pausePanel.visible, true)
+  assert.deepEqual(review.pausePanel.actions.map((action) => action.id), [
+    'approve', 'retry', 'auto_approve_rest', 'abort',
+  ])
+  review.pausePanel.onDecision('retry', 'keep API stable')
+  assert.deepEqual(calls, [['pipeline-1', 'retry', 'keep API stable', 0]])
+
+  const budget = buildViewModel(baseState({
+    ...state,
+    pipelineRuns: [{
+      ...state.pipelineRuns[0],
+      pauseReason: 'budget_exhausted',
+    }],
+  }), act)
+  assert.deepEqual(budget.pausePanel.actions.map((action) => action.id), [
+    'grant', 'force', 'abort',
+  ])
+  budget.pausePanel.onDecision('grant', '')
+  assert.deepEqual(calls.at(-1), ['pipeline-1', 'grant', '', 3])
 })
 
 test('a failed turn-less request does not masquerade as the live one', () => {

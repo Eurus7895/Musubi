@@ -142,6 +142,9 @@ export default function Orchestrator({ vals }) {
           </div>
         </div>
         <SessionFolders vals={vals} />
+        {vals.pausePanel?.visible && (
+          <PausePanel key={vals.pausePanel.sessionId} panel={vals.pausePanel} />
+        )}
         <section className="runtime-evidence">
           {selectedNode
             ? <RuntimeDetail
@@ -179,6 +182,64 @@ export default function Orchestrator({ vals }) {
         onToggle={() => setConversationCollapsed((value) => !value)}
       />
     </div>
+  )
+}
+
+function PausePanel({ panel }) {
+  const [retryHint, setRetryHint] = useState('')
+  const reason = panel.reason === 'stage_review'
+    ? 'Review gate'
+    : panel.reason === 'budget_exhausted'
+      ? 'Worker budget exhausted'
+      : `Unknown pause reason: ${panel.reason}`
+  return (
+    <section className="pause-panel" aria-label="Waiting for decision">
+      <div className="pause-panel__heading">
+        <div>
+          <strong>Waiting for decision</strong>
+          <span>
+            {reason}{panel.stage ? ` · ${panel.stage}` : ''}
+            {panel.chunk ? ` · ${panel.chunk}` : ''}
+          </span>
+        </div>
+      </div>
+      {panel.reason === 'stage_review' && (
+        <label className="pause-panel__hint">
+          <span>Retry hint <em>optional</em></span>
+          <input
+            value={retryHint}
+            disabled={panel.pipelineResumeBusy}
+            onChange={(event) => setRetryHint(event.target.value)}
+            placeholder="What should the stage change?"
+          />
+        </label>
+      )}
+      {panel.unknownReason ? (
+        <div className="pause-panel__error" role="alert">
+          This pause reason is not supported. No action was guessed.
+        </div>
+      ) : (
+        <div className="pause-panel__actions">
+          {panel.actions.map((action) => (
+            <button
+              type="button"
+              key={action.id}
+              className={action.danger ? 'is-danger' : ''}
+              disabled={panel.pipelineResumeBusy}
+              onClick={() => panel.onDecision(
+                action.id,
+                action.id === 'retry' ? retryHint : '',
+              )}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {panel.pipelineResumeError ? (
+        <div className="pause-panel__error" role="alert">{panel.pipelineResumeError}</div>
+      ) : null}
+    </section>
   )
 }
 

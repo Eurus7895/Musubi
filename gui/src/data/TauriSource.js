@@ -30,6 +30,7 @@ export default class TauriSource {
     this._builderGeneration = 0
     this._pendingBuilderOperations = 0
     this._pendingNewSessionFrom = null
+    this._pendingPipelineResumeSession = null
     const emptyDraft = createPipelineDraft()
     this.state = {
       view: this.props.startView || 'orchestrator',
@@ -45,6 +46,7 @@ export default class TauriSource {
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
       driverStatus: emptyDriverStatus(), setupStatus: emptySetupStatus(),
       sessionFolderGrants: [], folderGrantError: '', folderGrantBusy: false,
+      pipelineResumeBusy: false, pipelineResumeError: '',
       workspaceBlockedReason: '',
       pipelineBuilder: {
         step: 'catalog', draft: emptyDraft, savedRecipe: emptyDraft,
@@ -92,6 +94,19 @@ export default class TauriSource {
       } else {
         delete patch.orchestratorChatId
         delete patch.viewedOrchestratorChatId
+      }
+    }
+    if (
+      this._pendingPipelineResumeSession
+      && Array.isArray(dom.pipelineRuns)
+    ) {
+      const pendingRun = dom.pipelineRuns.find(
+        (run) => run.sessionId === this._pendingPipelineResumeSession,
+      )
+      if (!pendingRun?.pauseReason) {
+        this._pendingPipelineResumeSession = null
+        patch.pipelineResumeBusy = false
+        patch.pipelineResumeError = ''
       }
     }
     const catalog = Array.isArray(dom.pipelineCatalog) ? dom.pipelineCatalog : []
@@ -201,6 +216,27 @@ export default class TauriSource {
         if (this.state.driverStatus?.running) return
         this._setLocal({ selectedSession: null, selected: null })
         this._action('clean_sessions', [])
+      },
+      resumePipeline: async (sessionId, action, userHint = '', extraBudget = 0) => {
+        if (
+          !this._invoke
+          || this.state.driverStatus?.running
+          || this.state.pipelineResumeBusy
+        ) return
+        this._pendingPipelineResumeSession = sessionId
+        this._setLocal({ pipelineResumeBusy: true, pipelineResumeError: '' })
+        try {
+          await this._invoke('action', {
+            kind: 'resume_pipeline',
+            args: [sessionId, action, userHint, extraBudget],
+          })
+        } catch (error) {
+          this._pendingPipelineResumeSession = null
+          this._setLocal({
+            pipelineResumeBusy: false,
+            pipelineResumeError: String(error),
+          })
+        }
       },
       clearSelect: local({ selected: null, selectedSession: null }),
       // Drops the node selection only. `clearSelect` also drops

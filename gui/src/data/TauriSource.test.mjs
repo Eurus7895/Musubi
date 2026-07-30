@@ -156,6 +156,43 @@ test('cleanup actions do not dispatch while the selected session is running', ()
   assert.deepEqual(calls, [])
 })
 
+test('pipeline resume stays busy until a backend snapshot clears the pause', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => calls.push({ command, payload })
+
+  const pending = source.actions.resumePipeline('pipeline-1', 'retry', 'fix API', 0)
+  await pending
+
+  assert.equal(source.state.pipelineResumeBusy, true)
+  assert.deepEqual(calls, [{
+    command: 'action',
+    payload: {
+      kind: 'resume_pipeline',
+      args: ['pipeline-1', 'retry', 'fix API', 0],
+    },
+  }])
+
+  source._mergeDomain({
+    pipelineRuns: [{
+      sessionId: 'pipeline-1',
+      pauseReason: null,
+      pendingAction: 'retry',
+    }],
+  })
+  assert.equal(source.state.pipelineResumeBusy, false)
+})
+
+test('pipeline resume surfaces backend failure and unlocks decisions', async () => {
+  const source = new TauriSource({})
+  source._invoke = async () => { throw new Error('stale pause') }
+
+  await source.actions.resumePipeline('pipeline-1', 'approve', '', 0)
+
+  assert.equal(source.state.pipelineResumeBusy, false)
+  assert.match(source.state.pipelineResumeError, /stale pause/)
+})
+
 test('selectSession browses history while the active session keeps running', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({

@@ -72,6 +72,16 @@ test('session cleanup controls are contextual and clean-all requires confirmatio
   assert.match(source, /cleanSessionsDisabled/)
 })
 
+test('selected paused pipelines render contextual decisions and an optional retry hint', () => {
+  assert.match(source, /function PausePanel/)
+  assert.match(source, /Waiting for decision/)
+  assert.match(source, /Retry hint/)
+  assert.match(source, /panel\.actions/)
+  assert.match(source, /onDecision/)
+  assert.match(source, /pipelineResumeBusy/)
+  assert.match(source, /pipelineResumeError/)
+})
+
 test('the Now banner answers what the agent is doing, and offers the way out', () => {
   assert.match(source, /function NowBanner/)
   // Actor, act, elapsed, and stop — the four things wanted mid-run.
