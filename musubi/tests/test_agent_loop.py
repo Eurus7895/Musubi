@@ -2542,11 +2542,11 @@ def test_root_system_prompt_includes_scope_hint_for_simple_task() -> None:
 
     assert answer == "ok"
     system_text = router.calls[0]["messages"][0]["content"]
-    assert "[agent-routing-scope]" in system_text
+    assert "[agent-routing-hint]" in system_text
     assert "scope=simple_edit" in system_text
-    assert "route=single_coder" in system_text
+    assert "suggested_route=single_coder" in system_text
     assert "max_workers=" not in system_text
-    assert "start with one coder" in system_text.lower()
+    assert "one coder worker" in system_text.lower()
 
 
 def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:
@@ -3235,7 +3235,7 @@ def test_root_system_prompt_carries_the_evidence_vector() -> None:
     system_text = router.calls[0]["messages"][0]["content"]
     # Hint first, evidence second — an opinion the root may override, then the
     # record it must not contradict.
-    assert system_text.index("[agent-routing-scope]") < system_text.index(
+    assert system_text.index("[agent-routing-hint]") < system_text.index(
         "[agent-evidence]"
     )
     assert "names_workspace_path=" in system_text
@@ -3668,3 +3668,67 @@ def test_a_request_naming_a_path_reaches_a_coder_directly(
         calls, io.StringIO(), role="agent", scope_hint=None,
         orchestration=orchestration,
     ) == {}
+
+
+def test_the_roots_triage_reaches_the_turn_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Plan step 3: an overridable hint needs a record of the override."""
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat = "chat-triage"
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": (
+                "[triage] question: the hint said single_coder but nothing "
+                "needs writing\nHere is the answer."
+            ),
+        }]),
+    ])
+    log = io.StringIO()
+
+    asyncio.run(run_agent(
+        "add a dark theme to dashboard.html", router, _musubi_dir(),
+        log=log, max_tokens=0, chat_id=chat,
+    ))
+
+    # The root is asked for it...
+    assert "[agent-triage]" in router.calls[0]["messages"][0]["content"]
+    # ...it is logged when given...
+    assert "root triage: question" in log.getvalue()
+    # ...and it lands in the row, next to what the turn actually did.
+    with db._connect(tmp_path / "data" / "musubi.db") as conn:
+        row = conn.execute(
+            "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
+        ).fetchone()
+    assert row["root_triage"].startswith("question: ")
+
+
+def test_a_turn_with_no_triage_records_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Never inferred from behaviour: a shape the harness made up would be
+    # indistinguishable in the DB from one the model stated, which would ruin
+    # the only record that makes an overridden hint reviewable.
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat = "chat-no-triage"
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[
+            {"type": "text", "text": "Answer without declaring anything."},
+        ]),
+    ])
+
+    asyncio.run(run_agent(
+        "add a dark theme to dashboard.html", router, _musubi_dir(),
+        log=io.StringIO(), max_tokens=0, chat_id=chat,
+    ))
+
+    with db._connect(tmp_path / "data" / "musubi.db") as conn:
+        row = conn.execute(
+            "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
+        ).fetchone()
+    assert row["root_triage"] is None

@@ -450,10 +450,41 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   exception here. Deferred until there is data; noted so the option is not
   rediscovered from scratch.
 
-- [ ] **Step 3 — root triage prompt.** Rewrite the routing block: evidence
-  vector + overridable hints instead of a decided route. The root states its
-  chosen turn shape in one line, which is logged and audited so a wrong triage
-  is attributable post-hoc.
+- [x] **Step 3 — root triage prompt.** Two halves, and the second is what makes
+  the first safe.
+
+  **The hint stopped giving orders.** The block ended by saying the root owns
+  the routing decision while its bodies said *"Do NOT spawn a worker"* and
+  *"Do NOT spawn a planner or coder"*. A model reading both cannot obey both,
+  and between a disclaimer and an imperative the imperative wins — so the
+  trailer was decoration and the hint was, in practice, an order issued by ~12
+  regexes over one sentence. Each entry now says what the route is FOR and what
+  would justify departing from it (`suggested_route=`, `guidance=Suggests: …`),
+  and the trailer states plainly that the hint has read no file, that the
+  evidence block below it is the part that was checked, and that overriding
+  costs nothing.
+
+  **The override became reviewable.** An overridable hint with no record of the
+  override is a hint nobody can audit — the log recorded what the REGEX chose
+  and never what the model did with it, so "the harness mis-routed" and "the
+  model ignored a correct hint" left identical evidence. `agent/triage.py` asks
+  the root for one line, `[triage] <shape>: <why>`, over a closed four-word
+  vocabulary (`conversation | question | inspect | work`). It is captured
+  mid-loop rather than from the final answer, because the line rides alongside
+  the first tool call and by the time an answer exists the declaration has
+  stopped being a plan. Stored in `agent_turns.root_triage`.
+
+  Reading that line is **parsing, not judging**: the harness never checks
+  whether the shape was correct — it cannot — and an absent declaration is
+  recorded as absent rather than inferred from behaviour. A shape the harness
+  invented would be indistinguishable in the column from one the model stated,
+  which would ruin the only record that makes an override reviewable.
+
+  Cost, caught by a ratchet rather than by review: the first draft of the
+  prompt block overran
+  `test_simple_root_two_call_projection_stays_below_3k_tokens` by ~50 tokens
+  (4553 against a 4500 ceiling). The block was trimmed rather than the ceiling
+  raised — that test exists for exactly this.
 
 - [ ] **Step 4 — delete the lexical judgment.** Reduce `classify_task` to the
   two branches that remain meaningful — is there work to do, and is it

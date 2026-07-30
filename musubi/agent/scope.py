@@ -66,65 +66,80 @@ class ScopeHint:
     assessment: ChangeAssessment | None = None
 
     def prompt_block(self) -> str:
+        """The suggestion, phrased as one.
+
+        This block used to end with "the root agent still makes the final role
+        and routing decision" while its bodies said "Do NOT spawn a worker" and
+        "Do NOT spawn a planner or coder". A model reading both cannot act on
+        both, and the imperative is the one that wins — so the trailer was
+        decoration and the hint was, in practice, an order. That mattered
+        because the thing issuing the order is ~12 regexes over one sentence.
+
+        Each entry now says what the route is FOR and what would justify
+        departing from it. The facts stay facts; only the mood changes.
+        """
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
             RouteKind.ADVISORY: (
-                "Advisory route: the user asked to be ADVISED, not for a "
-                "change. Answer directly from your own reasoning in ONE turn. "
-                "Do NOT spawn a worker: the request names no file, so no "
-                "read-only worker can add evidence, and a planner would "
-                "return a change manifest the user never asked for."
+                "Suggests: answer from your own reasoning in one turn. The "
+                "request named no file, so a read-only worker has nowhere to "
+                "look and a planner would return a manifest nobody asked for. "
+                "Override if the conversation already established a target "
+                "this message refers to."
             ),
             RouteKind.SINGLE_EXPLORER: (
-                "Read-only route: the user wants to inspect, not change. Spawn "
-                "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
-                "compact brief to reach the target path or files and summarize "
-                "what is there. Do NOT spawn a planner or coder and do NOT "
-                "attempt any edit. If the path is outside the workspace root or "
-                "does not exist, report that plainly and stop — do not retry."
+                "Suggests: one explorer worker (read-only Read/Grep/Glob) with "
+                "a compact brief, to reach the target and summarize what is "
+                "there. Nothing here should be edited. If the path is outside "
+                "the workspace root or absent, report that plainly rather than "
+                "retrying — the evidence block above already says which."
             ),
             RouteKind.SINGLE_CODER: (
-                "Simple route: start with one coder worker using a compact, "
-                "implementation-ready brief. Recommend a skill for the coder "
+                "Suggests: one coder worker with a compact, "
+                "implementation-ready brief. Recommend a skill "
                 "(musubi_recommend_skills) and pass the best skill_id as "
-                "pushed_skill_id on the spawn. This is an initial routing "
-                "recommendation, not a lifetime worker cap."
+                "pushed_skill_id. An initial recommendation, not a lifetime "
+                "worker cap — widen it if the work turns out larger."
             ),
             RouteKind.PLANNER_THEN_CODER_CHECK: (
-                "Medium route: spawn planner first for scope, acceptance "
-                "criteria, and a change manifest; then spawn coder with that "
-                "plan. Do not ask coder to both plan and implement.\n"
-                "If the plan depends on facts about this workspace that "
-                "nobody has established yet, summon an EXPLORER for them "
-                "first and pass its findings into the planner's brief. "
-                "Surveying the workspace is the explorer's job — a planner "
-                "sent to find its own facts spends its whole turn budget "
-                "reading and returns no manifest at all."
+                "Suggests: planner first for scope, acceptance criteria, and a "
+                "change manifest; then coder with that plan. Asking one worker "
+                "to plan and implement is what this ordering exists to "
+                "prevent.\n"
+                "If the plan depends on workspace facts nobody has "
+                "established, summon an EXPLORER first and pass its findings "
+                "into the planner's brief. A planner sent to find its own "
+                "facts spends its turn budget reading and returns no manifest."
             ),
             RouteKind.PLAN_DESIGN_WORKFLOW: (
-                "Large route: require explicit plan/design/implementation/"
-                "review structure before mutation."
+                "Suggests: explicit plan → design → implementation → review "
+                "before anything is written. Reserved for changes broad enough "
+                "that a single manifest cannot describe them."
             ),
             RouteKind.ASK_SCOPE: (
-                "Unknown route: ask one clarifying question before spawning."
+                "Suggests: one clarifying question before spawning. Ask only "
+                "what changes what you would do next — a question the answer "
+                "cannot act on costs a turn and buys nothing."
             ),
             RouteKind.DIRECT_ANSWER: (
-                "Casual route: answer directly in one turn without tools or workers."
+                "Suggests: answer in one turn, no tools, no workers."
             ),
-        }.get(self.route, "Use the route conservatively.")
+        }.get(self.route, "No suggestion for this route; proceed conservatively.")
         return (
-            "[agent-routing-scope]\n"
+            "[agent-routing-hint]\n"
             f"scope={self.kind.value}\n"
-            f"route={self.route}\n"
+            f"suggested_route={self.route}\n"
             f"requires={requires}\n"
-            f"reason={self.reason}\n"
+            f"derived_from={self.reason}\n"
             + "".join(f"warning={w}\n" for w in self.warnings)
             + f"guidance={route_guidance}\n"
-            "[/agent-routing-scope]\n\n"
-            "Use this deterministic hint before choosing tools. The root "
-            "agent still makes the final role and routing decision. Scope is "
-            "an initial routing recommendation; generic orchestration budgets "
-            "bound workers independently. Ask for scope when route=ask_scope."
+            "[/agent-routing-hint]\n\n"
+            "This hint is pattern-matched from the request text alone — it has "
+            "read no file and run nothing. The evidence block below it reports "
+            "what the record actually contains; where the two disagree, the "
+            "evidence is the one that was checked. You own the routing "
+            "decision. Overriding this hint is expected and costs nothing; say "
+            "so in your triage line so the choice is on the record."
         )
 
     def log_line(self) -> str:

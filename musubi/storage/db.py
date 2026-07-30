@@ -321,6 +321,12 @@ _AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
     # user's own message — a model cannot author a user turn, so a match is
     # proof a human approved exactly these paths.
     ("pending_destructive", "TEXT"),
+    # What the ROOT said this turn was, in its own words: "work: dashboard.html
+    # exists and the change is one file". Recorded, never checked — the harness
+    # cannot know whether a triage was right, and inferring one from behaviour
+    # would make a guess indistinguishable from a declaration in the only
+    # record that makes an overridden routing hint reviewable.
+    ("root_triage", "TEXT"),
 )
 
 # Root-selected skill injection (option 3): the root may name a catalog
@@ -1365,6 +1371,7 @@ def insert_agent_turn(
     delivered_artifact: bool = False,
     clarification_request: str | None = None,
     pending_destructive: str | None = None,
+    root_triage: str | None = None,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
     Caller (TS runner via the musubi_record_agent_turn MCP
@@ -1385,8 +1392,9 @@ def insert_agent_turn(
             " (chat_id, request_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,"
-            "  delivered_artifact, clarification_request, pending_destructive)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  delivered_artifact, clarification_request, pending_destructive,"
+            "  root_triage)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id, request_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
@@ -1394,6 +1402,7 @@ def insert_agent_turn(
                 1 if delivered_artifact else 0,
                 clarification_request or None,
                 pending_destructive or None,
+                root_triage or None,
             ),
         )
 

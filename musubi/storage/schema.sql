@@ -269,6 +269,12 @@ CREATE TABLE IF NOT EXISTS agent_turns (
     -- `[{token, keys}]`. Matched literally against the NEXT user message; a
     -- model cannot author a user turn, so a match proves a human approved.
     pending_destructive   TEXT,
+    -- What the ROOT declared this turn to be, as `shape: reason`. Recorded,
+    -- never checked: the harness cannot know whether a triage was right, and a
+    -- shape inferred from behaviour would be indistinguishable from one the
+    -- model stated — which would ruin the only record that makes an overridden
+    -- routing hint reviewable afterwards. NULL when nothing was declared.
+    root_triage           TEXT,
     schema_version       TEXT NOT NULL DEFAULT 'v1'
 );
 CREATE INDEX IF NOT EXISTS idx_agent_turns_chat

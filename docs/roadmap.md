@@ -86,20 +86,48 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
      explorer spawn. Always satisfiable, never a deadlock; if it proves
      expensive the fix is to move the check to the tool boundary, where
      `musubi_write_file` already knows whether the path exists.
-   - **Root triage prompt (plan step 3).** Replace the decided route with the
-     evidence vector plus overridable hints. The root states its chosen turn
-     shape in one logged, audited line, so a wrong triage is attributable
-     afterwards instead of invisible.
+   - ~~**Root triage prompt (plan step 3).**~~ **Shipped.** The routing block
+     ended by saying the root owns the decision while its bodies said "Do NOT
+     spawn a worker" — and between a disclaimer and an imperative the
+     imperative wins, so a hint from ~12 regexes was in practice an order. Each
+     entry now reads `suggested_route=` / `Suggests: …` and names what would
+     justify departing from it. Because an overridable hint with no record of
+     the override cannot be audited, `agent/triage.py` asks the root for one
+     line — `[triage] <shape>: <why>` over `conversation | question | inspect |
+     work` — captured mid-loop and stored in `agent_turns.root_triage`. Parsed,
+     never judged: the harness does not check whether a shape was right, and an
+     absent declaration is recorded absent rather than inferred, or an invented
+     shape would be indistinguishable from a stated one.
    - **Delete the lexical judgment (plan step 4).** `classify_task` drops to two
      branches — is there work, and is it destructive. Removes `assess_request`,
      18 of 19 regexes, `_CASUAL_RE`'s zero-token fast path, the pre-run
      `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
      the `pending_clarification` column: ~551 lines, and the trigger written
      into `agent/scope.py`'s `expires-when:`.
-   - **Enforce the declaration (plan step 5).** `manifest_overrun` promoted from
-     a prompt warning to a hard stop on the coder path. With scope
-     LLM-declared, an under-declared radius is the primary abuse channel and
-     must cost the run rather than a paragraph.
+     **Entry condition — this is the step that must not be taken on faith.** It
+     is the only one that changes the cost profile ("hi" goes from 0 tokens to
+     one root call), and it removes the fallback that has been catching bad
+     routes. Land it only once `root_triage` rows exist in volume and can be
+     read against what those turns actually did: if the root's declared shape
+     tracks the outcome, the hint is redundant and can go; if it does not, the
+     deletion trades a bad router for no router. Steps 1–3 exist to produce
+     that evidence, so reaching for this one before reading it would repeat the
+     mistake the whole track is correcting.
+   - **Enforce the declaration (plan step 5).** `GoalState.manifest_overrun()`
+     already computes `(declared, actual)` by comparing the planner's
+     `files_expected` against the files workers reported touching, but its
+     only consequence today is a line in the root's decision block — a warning
+     the model may read and continue past. Promote it to a hard stop on the
+     mutation path, enforced where the other spawn gates live
+     (`_spawn_overflow_reasons`), so a run that has already exceeded its
+     declared radius cannot summon another writer.
+     Why it matters more after step 4 than before: with the lexical risk gates
+     gone, the manifest is the *sole* input to routing. A declaration nobody
+     enforces is trusted rather than governed — a worker can declare one file,
+     clear the cheap route, and touch eleven. That is the primary abuse channel
+     of an LLM-declared scope, and it must cost the run rather than a
+     paragraph. Open question to settle when implementing: whether the stop is
+     terminal or spends one clarification, given the append-only retry path.
 
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)

@@ -104,6 +104,11 @@ from agent.mcp_gateway import (
 )
 from agent.evidence import collect as collect_evidence
 from agent.routes import RouteKind
+from agent.triage import (
+    encode_triage,
+    parse_triage,
+)
+from agent.triage import prompt_block as triage_prompt_block
 from agent.textfmt import bounded
 from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
@@ -175,6 +180,14 @@ _worker_log_label: contextvars.ContextVar[str] = (
 # still miss leaves, which are handed `orchestration=None` by design.
 _destructive_gate: contextvars.ContextVar[DestructiveGate | None] = (
     contextvars.ContextVar("musubi_destructive_gate", default=None)
+)
+
+# The root's declared turn shape, captured mid-loop and written to the turn
+# record. A one-element list because the loop only ever fills it in — a
+# ContextVar holding an immutable value would need re-setting from inside a
+# function the loop does not own. `None` means "not collecting" (worker runs).
+_root_triage: contextvars.ContextVar[list[tuple[str, str] | None] | None] = (
+    contextvars.ContextVar("musubi_root_triage", default=None)
 )
 
 
@@ -661,6 +674,8 @@ async def run_agent(
     # that carries no Orchestration at all.
     destructive_gate = DestructiveGate()
     _destructive_gate.set(destructive_gate)
+    triage_slot: list[tuple[str, str] | None] = [None]
+    _root_triage.set(triage_slot)
     has_conversation = _chat_has_history(
         chat_id, db_path=context_compression_db_path, log=log,
     )
@@ -896,14 +911,17 @@ async def run_agent(
                 file=log,
             )
         print(f"[agent] {scope_hint.log_line()}", file=log)
-        # Hint first, evidence second: the hint is an opinion the root may
-        # override, the evidence is the record it must not contradict.
+        # Hint, then evidence, then the ask. The hint is an opinion the root
+        # may override, the evidence is the record it must not contradict, and
+        # the triage line is where it says which of the two it acted on.
         system_prompt = build_system_prompt(
             scope_hint.prompt_block()
             + "\n\n"
             + evidence.prompt_block()
             + "\n\n"
             + registry.prompt_block()
+            + "\n"
+            + triage_prompt_block()
         )
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
@@ -1032,6 +1050,7 @@ async def run_agent(
                 if destructive_gate.pending
                 else None
             ),
+            root_triage=encode_triage(triage_slot[0]),
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -1329,6 +1348,21 @@ async def _run_loop(
             text = ""
         if text:
             last_text = text  # remember even when the model also called a tool
+        # The root's triage line usually rides ALONGSIDE its first tool call,
+        # so it is read here rather than from the final answer — by the time an
+        # answer exists the turn is over and the declaration has stopped being
+        # a plan. First one wins (`parse_triage`); later cycles cannot rewrite
+        # what the turn was planned around.
+        if text and role == "agent":
+            slot = _root_triage.get()
+            if slot is not None and slot[0] is None:
+                declared = parse_triage(text)
+                if declared is not None:
+                    slot[0] = declared
+                    print(
+                        f"[agent] root triage: {declared[0]} — {declared[1]}",
+                        file=log,
+                    )
 
         try:
             _charge_budget_postflight(
@@ -2553,6 +2587,7 @@ def _record_agent_turn(
     delivered_artifact: bool = False,
     clarification_request: str | None = None,
     pending_destructive: str | None = None,
+    root_triage: str | None = None,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2575,6 +2610,7 @@ def _record_agent_turn(
             delivered_artifact=delivered_artifact,
             clarification_request=clarification_request,
             pending_destructive=pending_destructive,
+            root_triage=root_triage,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(

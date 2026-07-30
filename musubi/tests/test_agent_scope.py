@@ -29,8 +29,14 @@ def test_consultative_question_routes_to_advisory_without_workers() -> None:
         assert hint.requires == (), task
 
     block = classify_task("explain each").prompt_block().lower()
-    assert "answer directly" in block
-    assert "do not spawn a worker" in block
+    assert "answer from your own reasoning" in block
+    # The hint is a suggestion now. It used to end by saying the root owns the
+    # decision while its bodies said "Do NOT spawn a worker" — and between a
+    # disclaimer and an imperative, the imperative wins. What was issuing that
+    # imperative is ~12 regexes over one sentence.
+    assert "do not spawn" not in block
+    assert "suggests:" in block
+    assert "override if" in block
 
 
 def test_advisory_beats_critical_risk_gate_for_a_pure_question() -> None:
@@ -94,7 +100,9 @@ def test_reach_to_path_routes_to_read_only_single_explorer() -> None:
     assert hint.route == "single_explorer"
     assert "read-only" in hint.reason
     block = hint.prompt_block().lower()
-    assert "explorer" in block and "do not spawn a planner or coder" in block
+    assert "explorer" in block
+    assert "nothing here should be edited" in block
+    assert "do not spawn" not in block
 
 
 def test_read_file_is_inspection_not_a_change() -> None:
@@ -170,7 +178,7 @@ def test_classifies_known_file_edit_as_simple_edit() -> None:
     assert hint.route == "single_coder"
     assert not hasattr(hint, "max_workers")
     assert "known file" in hint.reason
-    assert "initial routing recommendation" in hint.prompt_block()
+    assert "initial recommendation, not a lifetime worker cap" in hint.prompt_block()
 
 
 def test_classifies_small_artifact_as_simple_artifact_without_html_special_case() -> None:
@@ -179,7 +187,7 @@ def test_classifies_small_artifact_as_simple_artifact_without_html_special_case(
     assert hint.kind is ScopeKind.SIMPLE_ARTIFACT
     assert hint.route == "single_coder"
     assert not hasattr(hint, "max_workers")
-    assert "start with one coder" in hint.prompt_block().lower()
+    assert "one coder worker" in hint.prompt_block().lower()
     assert "artifact" in hint.reason
 
 
