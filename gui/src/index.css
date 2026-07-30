@@ -33,6 +33,13 @@
   --line: rgba(255, 255, 255, .07);
   --line-strong: rgba(255, 255, 255, .14);
 
+  /* Hover. Every control that raises on hover raised to the same three values
+     already — as four copies of the same literal. One name each. */
+  --raised-hi: #202938;
+  --line-hover: rgba(255, 255, 255, .28);
+  --danger-hi: #ff8b81;
+  --danger-wash: rgba(232, 106, 95, .14);
+
   /* Type — six steps, no half-pixels, 10px is the hard floor. */
   --fs-1: 10px;
   --fs-2: 11px;
@@ -92,9 +99,9 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 /* The one reusable button in the app. Promoted out of Pipeline Studio so
    every view can use it; sans, because a button label is language. */
 .ui-button { padding: 9px var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #d5dbe4; background: #171f2b; font: 600 var(--fs-2)/1 var(--sans); cursor: pointer; white-space: nowrap; }
-.ui-button:hover:not(:disabled) { border-color: rgba(255,255,255,.28); color: #fff; }
+.ui-button:hover:not(:disabled) { border-color: var(--line-hover); color: #fff; }
 .ui-button--primary { color: #181106; background: #f5a647; border-color: #ffbd72; }
-.ui-button--danger { color: #ff8b81; border-color: rgba(232,106,95,.45); background: rgba(232,106,95,.12); }
+.ui-button--danger { color: var(--danger-hi); border-color: rgba(232,106,95,.45); background: rgba(232,106,95,.12); }
 .ui-button:disabled { opacity: .42; cursor: not-allowed; }
 .pipeline-steps { max-width: 1500px; margin: 0 auto 15px; padding: 7px; display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; border: 1px solid rgba(255,255,255,.07); border-radius: 11px; background: #101721; }
 .pipeline-step { padding: 10px 12px; border: 1px solid transparent; border-radius: 8px; color: #7d8795; background: transparent; text-align: left; font-weight: 600; cursor: pointer; }
@@ -112,6 +119,13 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .builder-field input, .builder-field textarea, .library-search { width: 100%; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 10px 11px; color: #e9edf4; background: #0c121b; outline: none; font: 12px/1.4 'IBM Plex Sans', sans-serif; resize: vertical; }
 .builder-field input:focus, .builder-field textarea:focus, .library-search:focus { border-color: rgba(255,155,61,.55); box-shadow: 0 0 0 2px rgba(255,155,61,.08); }
 .builder-field small { color: #606d7d; font-weight: 400; }
+/* Native steppers are OS-drawn: wrong colour, wrong scale beside a 12px field,
+   and they hit-test over the value. A retry count is typed, not nudged by one.
+   The -webkit- pseudo-elements do the work; appearance:textfield is the
+   Firefox half and is being phased out in Chrome. */
+.builder-field input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.builder-field input[type="number"]::-webkit-outer-spin-button,
+.builder-field input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .stages-workspace { display: grid; grid-template-columns: 250px minmax(360px, 1fr) 300px; gap: 12px; min-height: 590px; }
 .agent-library, .stage-lane, .stage-inspector { padding: 16px; min-width: 0; }
 .library-search { margin: 14px 0; }
@@ -198,8 +212,14 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-rail header, .conversation-panel__header { height: 48px; flex: none; padding: 0 var(--s-3); display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); border-bottom: 1px solid var(--line); }
 .session-rail header strong, .conversation-panel__header strong { color: var(--text); font: 600 var(--fs-3) var(--sans); }
 .session-rail header span { color: var(--text-3); font: var(--fs-1) var(--mono); }
-.session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
-.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: rgba(255, 255, 255, .28); }
+.session-rail__title, .session-rail__meta { display: flex; align-items: center; gap: var(--s-2); }
+/* The box was set but its contents were never centred. An inline glyph sits on
+   the text baseline, so a 15px icon in a 28px button landed 5px from the top
+   and 8px from the bottom — 1.5px high — with text-align rounding splitting the
+   width 7/6. Flex centring is what fixes it; padding:0 only stops the glyph
+   overflowing the 14px content box the UA padding leaves behind. */
+.session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
+.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: var(--line-hover); }
 .session-rail header .session-clean { width: auto; padding: 0 8px; color: var(--danger); font: 600 var(--fs-1) var(--sans); }
 .session-rail header button:disabled, .session-delete:disabled { opacity: .38; cursor: not-allowed; }
 .session-rail__list { flex: 1; min-height: 0; padding-bottom: var(--s-2); overflow: auto; }
@@ -232,7 +252,15 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-card.is-quiet .session-card__title strong { color: #8a94a3; }
 .session-rail__empty { margin: var(--s-2) var(--s-3); padding: 15px var(--s-2); border: 1px dashed var(--line-strong); border-radius: var(--r-sm); color: var(--text-3); font-size: var(--fs-1); text-align: center; }
 
-.orchestrator-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.orchestrator-workspace { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* The rail header is a 48px row padded 12px, so its hide button centres at
+   (26, 23.5) from the console's top-left. The toggle that replaces it centres
+   at (26, 24) — the gesture returns to where it started. It used to live in
+   .session-strip, below the Now banner, which put it at y=132 during a run and
+   y=79.5 idle: the wrong place, and not even the same wrong place twice. */
+.rail-toggle { position: absolute; top: 10px; left: 12px; z-index: 2; }
+/* Make room, or the toggle lands on top of the banner's live dot. */
+.sessions-hidden .now-banner { padding-left: 52px; }
 
 /* The Now banner — actor, act, elapsed, and the way out, in that order. */
 .now-banner { flex: none; padding: var(--s-4) 22px; display: flex; align-items: flex-start; gap: var(--s-4); border-bottom: 1px solid rgba(255, 155, 61, .22); background: linear-gradient(180deg, rgba(255, 155, 61, .10), rgba(255, 155, 61, .03)); }
@@ -267,6 +295,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .surface-tabs button, .run-mode button, .log-filters button { border: 0; border-radius: var(--r-sm); color: #798697; background: transparent; font: 600 var(--fs-2) var(--sans); cursor: pointer; }
 .surface-tabs button, .run-mode button { padding: 5px 11px; }
 .surface-tabs button.is-active, .run-mode button.is-active { color: #e6ebf2; background: rgba(255, 255, 255, .08); }
+/* These had a pointer but no hover, so the only feedback was the click. */
+.surface-tabs button:not(.is-active):hover, .run-mode button:not(.is-active):hover, .log-filters button:not(.is-active):hover { color: var(--text); }
 
 .pause-panel { flex: none; margin: 0 22px var(--s-3); padding: var(--s-3); display: grid; gap: var(--s-3); border: 1px solid rgba(245, 178, 66, .34); border-radius: var(--r-md); background: rgba(245, 178, 66, .07); }
 .pause-panel__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
@@ -280,6 +310,10 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .pause-panel__actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .pause-panel__actions button { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); font: 600 var(--fs-2) var(--sans); cursor: pointer; }
 .pause-panel__actions button.is-danger { color: var(--danger); border-color: rgba(232, 106, 95, .35); }
+/* The one place the operator commits an irreversible decision on a halted
+   pipeline, and it had no hover state at all. */
+.pause-panel__actions button:not(:disabled):hover { color: var(--text); border-color: var(--line-hover); background: var(--raised-hi); }
+.pause-panel__actions button.is-danger:not(:disabled):hover { color: var(--danger-hi); border-color: rgba(232, 106, 95, .6); background: var(--danger-wash); }
 .pause-panel__actions button:disabled, .pause-panel__hint input:disabled { opacity: .45; cursor: wait; }
 .pause-panel__error { color: var(--danger); font-size: var(--fs-2); }
 
@@ -344,7 +378,12 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-folders__heading > div { display: flex; align-items: baseline; gap: 8px; }
 .session-folders__heading strong { font-size: var(--fs-2); color: var(--text); }
 .session-folders__heading span { font-size: var(--fs-1); color: var(--text-3); }
+/* Declared border, background, colour and padding — but no cursor and no
+   hover, the only button group in the console with neither, which is why Add
+   folder and Remove both read as dead labels. */
 .session-folders button { border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--raised); color: var(--text-2); padding: 4px 8px; font-size: var(--fs-1); }
+.session-folders button:not(:disabled) { cursor: pointer; }
+.session-folders__heading button:not(:disabled):hover { color: var(--text); border-color: var(--line-hover); background: var(--raised-hi); }
 .session-folders button:disabled { opacity: .45; cursor: not-allowed; }
 .session-folders__roots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 .session-folder { min-width: 220px; max-width: 360px; display: grid; grid-template-columns: 82px minmax(80px, 1fr) auto; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 6px; background: var(--well); }
@@ -352,11 +391,14 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .session-folder input:disabled { border-bottom-color: transparent; }
 .session-folder > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font: var(--fs-1) var(--mono); }
 .session-folder em { color: var(--text-3); font-size: var(--fs-1); font-style: normal; }
+/* Remove overrides the border away, so it needs its own affordance. */
 .session-folder button { border: 0; padding: 2px 4px; color: var(--danger); background: transparent; }
+.session-folder button:not(:disabled):hover { color: var(--danger-hi); background: var(--danger-wash); border-radius: var(--r-sm); }
 .session-folders__error { margin-top: 6px; color: var(--danger); font-size: var(--fs-1); }
 .runtime-detail__tabs { margin-top: var(--s-3); display: flex; gap: 22px; }
 .runtime-detail__tabs button { padding: var(--s-2) 2px 11px; border: 0; border-bottom: 2px solid transparent; color: #8996a7; background: transparent; font: 600 var(--fs-3) var(--sans); cursor: pointer; }
 .runtime-detail__tabs button.is-active { color: var(--text); border-bottom-color: var(--select); }
+.runtime-detail__tabs button:not(.is-active):hover { color: var(--text); border-bottom-color: var(--line-strong); }
 
 .runtime-overview { flex: 1; min-height: 0; padding: var(--s-5); overflow: auto; }
 .runtime-overview__hero { padding: 22px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
@@ -420,9 +462,10 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
   .orchestrator-console.sessions-hidden { grid-template-columns: minmax(460px, 1fr) 360px; }
 }
 /* Narrow windows narrow the rail; they do not delete it. `display: none` here
-   made session history unreachable — the activity-bar toggle and the strip's
-   → both kept working and produced nothing visible — so the rail drops to an
-   icon column instead, and the toggle still removes it entirely when asked.
+   made session history unreachable — the activity-bar toggle and the workspace
+   corner toggle both kept working and produced nothing visible — so the rail
+   drops to an icon column instead, and the toggle still removes it entirely
+   when asked.
    The collapsed conversation also has to give its width back, or the grid
    keeps reserving a full pane for a 48px strip. */
 @media (max-width: 1180px) {
@@ -430,10 +473,16 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
   .orchestrator-console.conversation-collapsed { grid-template-columns: 58px minmax(430px, 1fr) 48px; }
   .orchestrator-console.sessions-hidden { grid-template-columns: minmax(430px, 1fr) 320px; }
   .orchestrator-console.sessions-hidden.conversation-collapsed { grid-template-columns: minmax(430px, 1fr) 48px; }
-  /* At 58px the word "Sessions" cannot fit, but the ← must survive — it is
-     the rail's own way of closing itself. Drop the label and the count. */
-  .session-rail header > strong, .session-rail header span, .session-group, .session-card__meta { display: none; }
-  .session-rail header { justify-content: center; padding: 0 6px; }
+  /* At 58px the word "Sessions" cannot fit, but the hide button must survive —
+     it is the rail's own way of closing itself. Dropping the label and the
+     count was not enough: "Clean all" stayed, and at 85.4px of content in
+     46px of usable width the header overflowed its column by 30.3px and
+     painted the hide button on top of the Now banner's live dot. Clean all is
+     a destructive bulk action; losing it below 1180px beats rendering it
+     half off-screen. Left-aligned so the hide button keeps its 12px inset and
+     the show toggle still lands on the same coordinate. */
+  .session-rail header strong, .session-rail__meta, .session-group, .session-card__meta { display: none; }
+  .session-rail header { justify-content: flex-start; }
   .session-group-list { padding: 0 6px; }
   .session-card { min-height: 40px; padding: var(--s-2) 6px; align-items: center; }
   .session-card__title strong { display: none; }

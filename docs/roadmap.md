@@ -210,6 +210,28 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 
 ## Completed Tracks
 
+- Console panel toggles round-trip, and geometry is testable — hiding the
+  sessions rail unmounted the header that carried the hide control, and the
+  show control that replaced it rendered *after* the Now banner, so its
+  position was a function of banner height: the gesture closed at (213, 23.5)
+  and reopened at (36, 132) mid-run or (36, 79.5) at rest. Hide now leads its
+  header and show is pinned to the workspace corner — **207.6 px of travel
+  became 0.5 px**, the same at both breakpoints. Below 1180 px the rail header
+  had been overflowing its 58 px column by 30.3 px and painting the hide button
+  on top of the banner's live dot, because the media query dropped the label
+  and the count but not "Clean all"; it fits now. The four bare `←` / `→`
+  characters became one icon whose bar names the edge the panel is on and whose
+  chevron names the way it will move, centred in its box rather than riding the
+  text baseline 1.5 px high. Every button group has a hover state, including
+  `.pause-panel__actions` — the one place an operator commits an irreversible
+  decision on a halted pipeline — and the four hover literals duplicated across
+  the sheet became tokens. None of this could have failed a check: the console
+  suite reads the JSX as a string, and a substring carries no coordinate, so
+  `Orchestrator.geometry.test.mjs` drives headless Chromium over a DOM fixture
+  and asserts the coordinates directly. Presentation only: no substrate,
+  policy, audit, `LMRouter`, or Tauri path changed. Plan:
+  [`2026-07-30-console-panel-toggle-affordances.md`](./superpowers/plans/2026-07-30-console-panel-toggle-affordances.md)
+
 - A skipped MCP server now says which one, how, and how long — external
   servers are fail-open by design, but the log line named only the server and
   the exception, leaving the two questions an operator actually has

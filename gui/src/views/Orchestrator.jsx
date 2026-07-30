@@ -25,6 +25,22 @@ function Metric({ value, suffix }) {
   return <span className={field.absent ? 'is-absent' : ''}>{field.value}</span>
 }
 
+// The bar names the edge the panel is on, the chevron names the direction it
+// will move. A bare ← / → character carried only the second half, so two
+// controls that do opposite things — hide the left rail, collapse the right
+// panel — pointed the same way. Navigation arrows in body copy ("← Back to
+// graph") stay text: they point at a destination, not at a panel edge.
+function PanelIcon({ side, direction }) {
+  const bar = side === 'left' ? 'M5 5 V19' : 'M19 5 V19'
+  const chevron = direction === 'right' ? 'M10 8 L14 12 L10 16' : 'M14 8 L10 12 L14 16'
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true">
+      <path d={bar} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d={chevron} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 export default function Orchestrator({ vals }) {
   const [conversationCollapsed, setConversationCollapsed] = useState(false)
   // Lives in the source, not here, so the activity bar can toggle it.
@@ -98,6 +114,24 @@ export default function Orchestrator({ vals }) {
     <div className={`orchestrator-console${sessionsHidden ? ' sessions-hidden' : ''}${conversationCollapsed ? ' conversation-collapsed' : ''}`}>
       {!sessionsHidden && <SessionsRail vals={vals} onHide={vals.onToggleSessions} />}
       <main className="orchestrator-workspace">
+        {/* The rail's own header carries the hide control, at the rail's
+            top-left corner. Once hidden that header unmounts, so this takes
+            its place — at the same coordinate, half a pixel apart, so the
+            gesture round-trips where it started rather than sending you to
+            the activity bar to guess. The activity bar's Orchestrator button
+            also toggles the rail (viewModel.js selOrch), but it is a
+            navigation icon that changes meaning by context; this is not. */}
+        {sessionsHidden && (
+          <button
+            type="button"
+            className="rail-toggle"
+            aria-label="Show sessions"
+            title="Show sessions"
+            onClick={vals.onToggleSessions}
+          >
+            <PanelIcon side="left" direction="right" />
+          </button>
+        )}
         <NowBanner
           now={vals.nowRun}
           onStop={vals.onStopRun}
@@ -107,21 +141,6 @@ export default function Orchestrator({ vals }) {
           }}
         />
         <div className="session-strip">
-          {/* The rail's own header carries a ← to hide it. Once hidden that
-              button goes with it, leaving nothing on screen to say the pane
-              can come back. This → takes its place in the same corner, so the
-              gesture round-trips where it started rather than sending you to
-              the activity bar to guess. */}
-          {sessionsHidden && (
-            <button
-              className="rail-toggle"
-              aria-label="Show sessions"
-              title="Show sessions"
-              onClick={vals.onToggleSessions}
-            >
-              →
-            </button>
-          )}
           <div className="session-strip__id">
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
@@ -366,8 +385,22 @@ function SessionsRail({ vals, onHide }) {
   return (
     <aside className="session-rail">
       <header>
-        <strong>Sessions</strong>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Hide leads the header rather than trailing it. At the right edge it
+            sat 213px from the console's left, so restoring the rail from the
+            workspace corner could not return the gesture to where it started;
+            at the left edge both controls share one coordinate. */}
+        <div className="session-rail__title">
+          <button
+            type="button"
+            aria-label="Hide sessions"
+            title="Hide sessions"
+            onClick={onHide}
+          >
+            <PanelIcon side="left" direction="left" />
+          </button>
+          <strong>Sessions</strong>
+        </div>
+        <div className="session-rail__meta">
           <span>{vals.runs.length}</span>
           <button
             type="button"
@@ -381,7 +414,6 @@ function SessionsRail({ vals, onHide }) {
           >
             Clean all
           </button>
-          <button aria-label="Hide sessions" onClick={onHide}>←</button>
         </div>
       </header>
       <div className="session-rail__list">
@@ -582,12 +614,12 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabe
 
 function ConversationPanel({ vals, collapsed, onToggle }) {
   const skills = Array.from(new Set(Object.values(vals.skillsByWorker || {}).flat()))
-  if (collapsed) return <aside className="conversation-panel is-collapsed"><button aria-label="Expand conversation" onClick={onToggle}>←</button><span>Conversation</span></aside>
+  if (collapsed) return <aside className="conversation-panel is-collapsed"><button type="button" aria-label="Expand conversation" title="Expand conversation" onClick={onToggle}><PanelIcon side="right" direction="left" /></button><span>Conversation</span></aside>
   return (
     <aside className="conversation-panel">
       <header className="conversation-panel__header">
         <strong>Conversation</strong>
-        <div><NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} /><button className="collapse-button" aria-label="Collapse conversation" onClick={onToggle}>→</button></div>
+        <div><NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} /><button type="button" className="collapse-button" aria-label="Collapse conversation" title="Collapse conversation" onClick={onToggle}><PanelIcon side="right" direction="right" /></button></div>
       </header>
       <div className="skills-used"><span>Skills used</span>{skills.length ? skills.map((skill) => <i key={skill}>{skill}</i>) : <small>No successful skill calls recorded</small>}</div>
       <TokenEconomics economics={vals.driverSummary?.economics} />
