@@ -1490,10 +1490,7 @@ pub fn resume_pipeline_session(
         return Err("Pipeline session has no resumable stage checkpoint.".into());
     }
     let valid = match reason.as_str() {
-        "stage_review" => matches!(
-            action,
-            "approve" | "retry" | "abort" | "auto_approve_rest"
-        ),
+        "stage_review" => matches!(action, "approve" | "retry" | "abort" | "auto_approve_rest"),
         "budget_exhausted" => matches!(action, "grant" | "force" | "abort"),
         _ => return Err(format!("Unknown pipeline pause reason {reason:?}.")),
     };
@@ -1506,7 +1503,9 @@ pub fn resume_pipeline_session(
         return Err("Grant requires a positive extra budget.".into());
     }
     if action != "grant" && extra_budget != 0 {
-        return Err(format!("Action {action:?} does not accept an extra budget."));
+        return Err(format!(
+            "Action {action:?} does not accept an extra budget."
+        ));
     }
     for (label, value) in [
         ("chat ID", chat_id.as_str()),
@@ -2838,16 +2837,17 @@ pub fn list_session_folder_grants(
          FROM session_folder_grants WHERE chat_id=?1
          ORDER BY ordinal ASC, grant_id ASC",
     )?;
-    let grants = stmt.query_map([chat_id], |row| {
-        Ok(FolderGrant {
-            chat_id: row.get(0)?,
-            grant_id: row.get(1)?,
-            alias: row.get(2)?,
-            canonical_path: row.get(3)?,
-            ordinal: row.get(4)?,
-        })
-    })?
-    .collect();
+    let grants = stmt
+        .query_map([chat_id], |row| {
+            Ok(FolderGrant {
+                chat_id: row.get(0)?,
+                grant_id: row.get(1)?,
+                alias: row.get(2)?,
+                canonical_path: row.get(3)?,
+                ordinal: row.get(4)?,
+            })
+        })?
+        .collect();
     grants
 }
 
@@ -2941,16 +2941,17 @@ pub fn list_request_folder_grants(
          FROM request_folder_grants WHERE request_id=?1
          ORDER BY ordinal ASC, grant_id ASC",
     )?;
-    let grants = stmt.query_map([request_id], |row| {
-        Ok(FolderGrant {
-            chat_id: row.get(0)?,
-            grant_id: row.get(1)?,
-            alias: row.get(2)?,
-            canonical_path: row.get(3)?,
-            ordinal: row.get(4)?,
-        })
-    })?
-    .collect();
+    let grants = stmt
+        .query_map([request_id], |row| {
+            Ok(FolderGrant {
+                chat_id: row.get(0)?,
+                grant_id: row.get(1)?,
+                alias: row.get(2)?,
+                canonical_path: row.get(3)?,
+                ordinal: row.get(4)?,
+            })
+        })?
+        .collect();
     grants
 }
 
@@ -3401,8 +3402,7 @@ mod tests {
             "100",
         )
         .unwrap();
-        snapshot_request_folder_grants(&mut conn, "req-a", "chat-a", "C:/Musubi", "101")
-            .unwrap();
+        snapshot_request_folder_grants(&mut conn, "req-a", "chat-a", "C:/Musubi", "101").unwrap();
         conn.execute(
             "INSERT INTO runtime_log_events
              (request_id,chat_id,seq,ts,source,stream,role,category,message)
@@ -3414,7 +3414,9 @@ mod tests {
         assert!(delete_orchestrator_session(&mut conn, "chat-a", 103.0).unwrap());
 
         assert!(load_orchestrator_sessions(&conn).unwrap().is_empty());
-        assert!(list_session_folder_grants(&conn, "chat-a").unwrap().is_empty());
+        assert!(list_session_folder_grants(&conn, "chat-a")
+            .unwrap()
+            .is_empty());
         assert_eq!(list_request_folder_grants(&conn, "req-a").unwrap().len(), 2);
         assert_eq!(
             count(
@@ -3470,24 +3472,26 @@ mod tests {
 
         let current = list_session_folder_grants(&conn, "chat-a").unwrap();
         assert_eq!(
-            current.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            current
+                .iter()
+                .map(|grant| grant.alias.as_str())
+                .collect::<Vec<_>>(),
             vec!["api", "web"]
         );
 
-        snapshot_request_folder_grants(
-            &mut conn,
-            "req-1",
-            "chat-a",
-            "C:/Musubi",
-            "103",
-        )
-        .unwrap();
+        snapshot_request_folder_grants(&mut conn, "req-1", "chat-a", "C:/Musubi", "103").unwrap();
         remove_session_folder_grant(&conn, "chat-a", "g-web").unwrap();
 
-        assert_eq!(list_session_folder_grants(&conn, "chat-a").unwrap().len(), 1);
+        assert_eq!(
+            list_session_folder_grants(&conn, "chat-a").unwrap().len(),
+            1
+        );
         let snapshot = list_request_folder_grants(&conn, "req-1").unwrap();
         assert_eq!(
-            snapshot.iter().map(|grant| grant.alias.as_str()).collect::<Vec<_>>(),
+            snapshot
+                .iter()
+                .map(|grant| grant.alias.as_str())
+                .collect::<Vec<_>>(),
             vec!["musubi", "api", "web"]
         );
         assert_eq!(snapshot[0].canonical_path, "C:/Musubi");
@@ -5335,10 +5339,7 @@ mod tests {
         let mut env = std::collections::HashMap::new();
         env.insert("MUSUBI_ROOT".to_string(), "/musubi-core".to_string());
         env.insert("MUSUBI_DB".to_string(), "/data/audit.db".to_string());
-        env.insert(
-            "MUSUBI_STATE_DB".to_string(),
-            "/data/musubi.db".to_string(),
-        );
+        env.insert("MUSUBI_STATE_DB".to_string(), "/data/musubi.db".to_string());
         env.insert(
             "MUSUBI_FOLDER_GRANTS_JSON".to_string(),
             "[{\"grantId\":\"musubi\"}]".to_string(),
@@ -5384,10 +5385,7 @@ mod tests {
                     "/proj/.musubi/mcp.json".to_string()
                 ),
                 ("MUSUBI_ROOT".to_string(), "/musubi-core".to_string()),
-                (
-                    "MUSUBI_STATE_DB".to_string(),
-                    "/data/musubi.db".to_string()
-                ),
+                ("MUSUBI_STATE_DB".to_string(), "/data/musubi.db".to_string()),
             ],
             "only MUSUBI_* is forwarded explicitly; the rest is inherited"
         );
@@ -5509,30 +5507,18 @@ mod tests {
                 .as_deref(),
             Some("retry")
         );
-        assert!(resume_pipeline_session(
-            &mut state,
-            "pipeline-session",
-            "approve",
-            None,
-            0,
-            21.0,
-        )
-        .is_err());
+        assert!(
+            resume_pipeline_session(&mut state, "pipeline-session", "approve", None, 0, 21.0,)
+                .is_err()
+        );
     }
 
     #[test]
     fn resume_pipeline_decision_rejects_reason_mismatch_without_mutation() {
         let (_audit, mut state) = create_paused_pipeline_fixture();
 
-        let error = resume_pipeline_session(
-            &mut state,
-            "pipeline-session",
-            "grant",
-            None,
-            3,
-            20.0,
-        )
-        .unwrap_err();
+        let error = resume_pipeline_session(&mut state, "pipeline-session", "grant", None, 3, 20.0)
+            .unwrap_err();
 
         assert!(error.contains("does not apply"));
         let pause: (Option<String>, Option<String>) = state
@@ -5565,15 +5551,9 @@ mod tests {
                 )
                 .unwrap();
             let extra = if action == "grant" { 3 } else { 0 };
-            let decision = resume_pipeline_session(
-                &mut state,
-                "pipeline-session",
-                action,
-                None,
-                extra,
-                20.0,
-            )
-            .unwrap();
+            let decision =
+                resume_pipeline_session(&mut state, "pipeline-session", action, None, extra, 20.0)
+                    .unwrap();
             assert_eq!(decision.launch, action != "abort");
         }
     }
