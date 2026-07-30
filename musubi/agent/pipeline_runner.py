@@ -75,6 +75,106 @@ class PipelineWorkerSpec:
     worker_max_output: int | None = None
 
 
+@dataclass(frozen=True)
+class PipelineResumePlan:
+    start_index: int
+    completed_roles: tuple[str, ...]
+    summaries: tuple[str, ...]
+    retry_stage: str | None
+    retry_attempt: int | None
+    user_hint: str | None
+    extra_budget: int
+    force_no_spawns: bool
+
+
+def _plan_pipeline_resume(
+    plan: list[dict[str, Any]],
+    stage_rows: list[dict[str, Any]],
+    pending: dict[str, Any],
+) -> PipelineResumePlan:
+    """Resolve a single consumed decision against append-only stage outputs."""
+    action = pending.get("action")
+    if not action:
+        raise RuntimeError("pipeline has no pending resume action")
+    if action not in {
+        "approve", "retry", "auto_approve_rest", "grant", "force",
+    }:
+        raise RuntimeError(f"Unknown pending pipeline action {action!r}")
+
+    latest: dict[str, dict[str, Any]] = {}
+    for row in stage_rows:
+        if row.get("chunk_id") not in {None, ""}:
+            continue
+        stage = str(row.get("stage") or "")
+        if not stage:
+            continue
+        if stage not in latest or int(row.get("attempt") or 0) > int(
+            latest[stage].get("attempt") or 0
+        ):
+            latest[stage] = row
+
+    completed_indexes = [
+        index
+        for index, step in enumerate(plan)
+        if latest.get(str(step.get("stage") or ""), {}).get("output") is not None
+    ]
+    first_incomplete = next(
+        (
+            index
+            for index, step in enumerate(plan)
+            if latest.get(str(step.get("stage") or ""), {}).get("output") is None
+        ),
+        len(plan),
+    )
+    retry_stage: str | None = None
+    retry_attempt: int | None = None
+    start_index = first_incomplete
+    if action == "retry":
+        if not completed_indexes:
+            raise RuntimeError("retry has no durable completed stage to reopen")
+        start_index = completed_indexes[-1]
+        retry_stage = str(plan[start_index].get("stage") or "")
+        retry_attempt = int(latest[retry_stage].get("attempt") or 0) + 1
+    elif action in {"grant", "force"}:
+        if start_index >= len(plan):
+            raise RuntimeError("budget resume has no incomplete stage to reopen")
+        retry_stage = str(plan[start_index].get("stage") or "")
+        retry_attempt = int(latest.get(retry_stage, {}).get("attempt") or 0) + 1
+
+    summaries: list[str] = []
+    completed_roles: list[str] = []
+    for index, step in enumerate(plan[:start_index]):
+        stage = str(step.get("stage") or "")
+        row = latest.get(stage)
+        if row is None or row.get("output") is None:
+            raise RuntimeError(
+                f"pipeline resume checkpoint is missing output for stage {stage!r}"
+            )
+        raw = row["output"]
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            value = raw
+        rendered = value if isinstance(value, str) else json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"),
+        )
+        summaries.append(f"### {stage}\n{rendered}")
+        completed_roles.append(str(step.get("role") or ""))
+
+    hint = pending.get("user_hint")
+    cleaned_hint = hint.strip() if isinstance(hint, str) and hint.strip() else None
+    return PipelineResumePlan(
+        start_index=start_index,
+        completed_roles=tuple(completed_roles),
+        summaries=tuple(summaries),
+        retry_stage=retry_stage,
+        retry_attempt=retry_attempt,
+        user_hint=cleaned_hint,
+        extra_budget=max(0, int(pending.get("extra_budget") or 0)),
+        force_no_spawns=action == "force",
+    )
+
+
 def _validated_max_turns(value: Any) -> int:
     """Clamp a declared `maxTurns` to `[1, MAX_STAGE_TURNS]`, fail-closed.
 
@@ -139,6 +239,7 @@ async def run_pipeline(
     audit_db_path: Path | None = None,
     strict: bool = False,
     orchestration: Any = None,
+    resume_session_id: str | None = None,
 ) -> str:
     """Summon and run one pipeline. Returns the final stage's summary text.
 
@@ -168,28 +269,76 @@ async def run_pipeline(
         surviving_nonempty_files,
     )
 
-    raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
-    spawned = loads_dict(raw)
-    if spawned.get("status") != "spawned":
-        if spawned.get("error_kind") == "policy_denied":
-            raise PolicyDeniedError(
-                role=str(spawn_args.get("parent_agent_name") or "agent"),
-                tool="musubi_spawn_pipeline",
-                reason=str(spawned.get("error") or "pipeline spawn denied"),
-            )
-        if strict:
-            raise RuntimeError(f"pipeline spawn rejected: {raw}")
-        return raw
-    psid = str(spawned.get("pipeline_session_id", ""))
-    pname = str(spawned.get("pipeline_name", ""))
-    plan = spawned.get("plan") or []
     request = str(spawn_args.get("brief", ""))
+    resume_plan: PipelineResumePlan | None = None
+    if resume_session_id:
+        from composer import active_stages, agent_for_stage
+        from storage import db as state_db
+
+        psid = resume_session_id
+        pname = str(spawn_args.get("pipeline_name") or "")
+        plan = [
+            {"stage": stage, "role": agent_for_stage(pname, stage)}
+            for stage in active_stages(pname)
+            if agent_for_stage(pname, stage)
+        ]
+        if len(plan) < 2:
+            raise RuntimeError(
+                f"pipeline {pname!r} has no resumable registered stage plan"
+            )
+        consumed = _loads(await _call_tool_text(
+            session,
+            "musubi_consume_pending_action",
+            {"session_id": psid},
+        ))
+        if consumed.get("status") != "ok":
+            raise RuntimeError(
+                f"pipeline resume action could not be consumed: {consumed}"
+            )
+        rows = state_db.get_all_stage_rows(psid, compression_db_path)
+        resume_plan = _plan_pipeline_resume(plan, rows, consumed)
+        if resume_plan.retry_stage:
+            incremented = _loads(await _call_tool_text(
+                session,
+                "musubi_increment_attempt",
+                {
+                    "session_id": psid,
+                    "stage": resume_plan.retry_stage,
+                    "user_hint": resume_plan.user_hint,
+                },
+            ))
+            if (
+                incremented.get("status") != "incremented"
+                or int(incremented.get("attempt") or 0)
+                != resume_plan.retry_attempt
+            ):
+                raise RuntimeError(
+                    f"pipeline retry checkpoint could not advance: {incremented}"
+                )
+    else:
+        raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
+        spawned = _loads(raw)
+        if spawned.get("status") != "spawned":
+            if spawned.get("error_kind") == "policy_denied":
+                raise PolicyDeniedError(
+                    role=str(spawn_args.get("parent_agent_name") or "agent"),
+                    tool="musubi_spawn_pipeline",
+                    reason=str(spawned.get("error") or "pipeline spawn denied"),
+                )
+            if strict:
+                raise RuntimeError(f"pipeline spawn rejected: {raw}")
+            return raw
+        psid = str(spawned.get("pipeline_session_id", ""))
+        pname = str(spawned.get("pipeline_name", ""))
+        plan = spawned.get("plan") or []
 
     print(f"[agent]   ⇶ pipeline {pname} ({len(plan)} stages)", file=log)
 
-    summaries: list[str] = []
+    summaries = list(resume_plan.summaries) if resume_plan else []
     pipeline_escalated = False
     for i, step in enumerate(plan):
+        if resume_plan and i < resume_plan.start_index:
+            continue
         stage = str(step.get("stage", ""))
         role = str(step.get("role", ""))
         brief = _stage_brief(request, summaries, i, len(plan))
@@ -297,6 +446,11 @@ async def run_pipeline(
             and psid
             and orchestration is not None
             and getattr(orchestration, "can_spawn_deeper", False)
+            and not (
+                resume_plan
+                and resume_plan.force_no_spawns
+                and i == resume_plan.start_index
+            )
         ):
             spawn_tool = [
                 t for t in tools if t.get("name") == "musubi_spawn_subagent"

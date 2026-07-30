@@ -3434,3 +3434,143 @@ def test_main_builds_repeated_add_folder_manifest(
     ]) == 0
     assert Path.cwd().resolve() == tmp_path.resolve()
     assert os.environ[MANIFEST_ENV] == ""
+
+
+def test_pipeline_resume_checkpoint_requires_pending_exact_identity(
+    tmp_path: Path,
+) -> None:
+    from agent.run import _load_pipeline_resume_checkpoint
+    from session import state
+
+    state_db = tmp_path / "musubi.db"
+    sid = state.create_session(
+        "ship it",
+        state_db,
+        pipeline_name="feature-dev",
+        chat_id="chat-1",
+        request_id="request-1",
+        profile="openai.work",
+        task="ship it",
+    )
+    state.pause_session(sid, "design", "stage_review", state_db)
+    state.resume_session(sid, "approve", state_db)
+
+    checkpoint = _load_pipeline_resume_checkpoint(sid, state_db)
+
+    assert checkpoint == {
+        "session_id": sid,
+        "pipeline_name": "feature-dev",
+        "chat_id": "chat-1",
+        "request_id": "request-1",
+        "profile": "openai.work",
+        "task": "ship it",
+    }
+    state.consume_pending_action(sid, state_db)
+    with pytest.raises(RuntimeError, match="no pending action"):
+        _load_pipeline_resume_checkpoint(sid, state_db)
+
+
+def test_pipeline_resume_rejects_changed_folder_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from agent.run import _validate_resume_folder_manifest
+    from workspace.grants import MANIFEST_ENV
+
+    root = tmp_path / "musubi"
+    other = tmp_path / "other"
+    root.mkdir()
+    other.mkdir()
+    audit = tmp_path / "audit.db"
+    with sqlite3.connect(audit) as conn:
+        conn.execute(
+            "CREATE TABLE request_folder_grants ("
+            "request_id TEXT,grant_id TEXT,alias TEXT,canonical_path TEXT,ordinal INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO request_folder_grants VALUES (?,?,?,?,?)",
+            ("request-1", "musubi", "musubi", str(root), 0),
+        )
+    monkeypatch.setenv(
+        MANIFEST_ENV,
+        json.dumps([{
+            "grantId": "musubi",
+            "alias": "musubi",
+            "canonicalPath": str(other),
+        }]),
+    )
+
+    with pytest.raises(RuntimeError, match="differs"):
+        _validate_resume_folder_manifest("request-1", audit)
+
+
+def test_pipeline_resume_checkpoint_requires_pending_exact_identity(
+    tmp_path: Path,
+) -> None:
+    from agent.run import _load_pipeline_resume_checkpoint
+    from session import state
+
+    state_db = tmp_path / "musubi.db"
+    sid = state.create_session(
+        "ship it",
+        state_db,
+        pipeline_name="feature-dev",
+        chat_id="chat-1",
+        request_id="request-1",
+        profile="openai.work",
+        task="ship it",
+    )
+    state.pause_session(sid, "design", "stage_review", state_db)
+    state.resume_session(sid, "approve", state_db)
+
+    checkpoint = _load_pipeline_resume_checkpoint(sid, state_db)
+
+    assert checkpoint == {
+        "session_id": sid,
+        "pipeline_name": "feature-dev",
+        "chat_id": "chat-1",
+        "request_id": "request-1",
+        "profile": "openai.work",
+        "task": "ship it",
+    }
+    state.consume_pending_action(sid, state_db)
+    with pytest.raises(RuntimeError, match="no pending action"):
+        _load_pipeline_resume_checkpoint(sid, state_db)
+
+
+def test_pipeline_resume_rejects_changed_folder_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    from agent.run import _validate_resume_folder_manifest
+    from workspace.grants import MANIFEST_ENV
+
+    root = tmp_path / "musubi"
+    other = tmp_path / "other"
+    root.mkdir()
+    other.mkdir()
+    audit = tmp_path / "audit.db"
+    with sqlite3.connect(audit) as conn:
+        conn.execute(
+            "CREATE TABLE request_folder_grants ("
+            "request_id TEXT,grant_id TEXT,alias TEXT,canonical_path TEXT,ordinal INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO request_folder_grants VALUES (?,?,?,?,?)",
+            ("request-1", "musubi", "musubi", str(root), 0),
+        )
+    monkeypatch.setenv(
+        MANIFEST_ENV,
+        json.dumps([{
+            "grantId": "musubi",
+            "alias": "musubi",
+            "canonicalPath": str(other),
+        }]),
+    )
+
+    with pytest.raises(RuntimeError, match="differs"):
+        _validate_resume_folder_manifest("request-1", audit)

@@ -1656,7 +1656,14 @@ def musubi_spawn_pipeline(
             "status": "error",
             "error": f"parent session {parent_session_id!r} not found",
         })
-    pipeline_session_id = state.create_session(brief, pipeline_name=pipeline_name)
+    pipeline_session_id = state.create_session(
+        brief,
+        pipeline_name=pipeline_name,
+        chat_id=os.environ.get("MUSUBI_CHAT_ID") or None,
+        request_id=os.environ.get("MUSUBI_REQUEST_ID") or None,
+        profile=os.environ.get("MUSUBI_PIPELINE_PROFILE") or None,
+        task=os.environ.get("MUSUBI_PIPELINE_TASK") or brief,
+    )
     try:
         subagent_audit.record_spawn(
             handle_id=pipeline_session_id,

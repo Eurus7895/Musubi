@@ -5921,6 +5921,9 @@ fn forwarded_spec_env(env: &HashMap<String, String>) -> Vec<(String, String)> {
         "MUSUBI_FOLDER_GRANTS_JSON",
         "MUSUBI_LLM_CONFIG",
         "MUSUBI_MCP_CONFIG",
+        "MUSUBI_CHAT_ID",
+        "MUSUBI_PIPELINE_PROFILE",
+        "MUSUBI_PIPELINE_TASK",
     ] {
         if let Some(val) = nonempty(env, key) {
             spec_env.push((key.to_string(), val));

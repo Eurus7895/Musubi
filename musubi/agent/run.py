@@ -624,6 +624,7 @@ async def run_agent(
     max_tokens: int | None = None,
     tool_surface: str | None = None,
     pipeline: str | None = None,
+    resume_pipeline_session: str | None = None,
     plan_first: bool = False,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
@@ -963,6 +964,7 @@ async def run_agent(
                     budget=budget, stats=stats, audit_db_path=audit_db_path,
                     strict=True,
                     orchestration=orchestration,
+                    resume_session_id=resume_pipeline_session,
                 )
             else:
                 final_answer, _ = await run_unit(
@@ -1895,6 +1897,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--resume-pipeline-session",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    ap.add_argument(
         "--add-folder",
         action="append",
         default=[],
@@ -1915,6 +1922,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    if args.resume_pipeline_session and not args.pipeline:
+        print(
+            "agent-agent: --resume-pipeline-session requires --pipeline",
+            file=sys.stderr,
+        )
+        return 2
     request_id = os.environ.get("MUSUBI_REQUEST_ID", "").strip() or None
     runtime_log: Any = sys.stderr
     if (
@@ -1923,12 +1936,6 @@ def main(argv: list[str] | None = None) -> int:
     ):
         runtime_log = RuntimeLogWriter(sys.stderr, request_id)
 
-    try:
-        vendor, vendor_source = _resolve_vendor(args.profile)
-    except (RuntimeError, ValueError, FileNotFoundError) as exc:
-        print(f"agent-agent: {exc}", file=sys.stderr)
-        return 2
-
     musubi_dir = (args.musubi or _default_musubi_dir()).resolve()
     if not (musubi_dir / "server.py").is_file():
         print(
@@ -1936,6 +1943,38 @@ def main(argv: list[str] | None = None) -> int:
             f"(set --musubi or MUSUBI_ROOT)",
             file=sys.stderr,
         )
+        return 2
+    if args.resume_pipeline_session:
+        try:
+            checkpoint = _load_pipeline_resume_checkpoint(
+                args.resume_pipeline_session,
+                _server_db_path(musubi_dir, _server_env()),
+            )
+            for label, supplied, stored in [
+                ("task", args.task, checkpoint["task"]),
+                ("pipeline", args.pipeline, checkpoint["pipeline_name"]),
+                ("profile", args.profile, checkpoint["profile"]),
+                ("chat", args.chat_id, checkpoint["chat_id"]),
+            ]:
+                if supplied not in {None, "", stored}:
+                    raise RuntimeError(
+                        f"resume {label} does not match the original checkpoint"
+                    )
+            args.task = checkpoint["task"]
+            args.pipeline = checkpoint["pipeline_name"]
+            args.profile = checkpoint["profile"]
+            args.chat_id = checkpoint["chat_id"]
+            _validate_resume_folder_manifest(
+                checkpoint["request_id"],
+                _server_audit_db_path(musubi_dir, _server_env()),
+            )
+        except RuntimeError as exc:
+            print(f"agent-agent: {exc}", file=sys.stderr)
+            return 2
+    try:
+        vendor, vendor_source = _resolve_vendor(args.profile)
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
+        print(f"agent-agent: {exc}", file=sys.stderr)
         return 2
     previous_root = os.environ.get("MUSUBI_ROOT")
     previous_manifest = os.environ.get(MANIFEST_ENV)
@@ -1963,6 +2002,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_tokens=args.max_tokens,
                     tool_surface=args.tool_surface,
                     pipeline=args.pipeline,
+                    resume_pipeline_session=args.resume_pipeline_session,
                     plan_first=args.plan,
                 )
             )
@@ -2064,6 +2104,85 @@ def _server_audit_db_path(musubi_dir: Path, server_env: dict[str, str]) -> Path:
     if root:
         return Path(root) / "data" / "audit.db"
     return musubi_dir / "storage" / "audit.db"
+
+
+def _load_pipeline_resume_checkpoint(
+    session_id: str,
+    db_path: Path,
+) -> dict[str, str]:
+    from session import state
+    from storage import db
+
+    db.init_db(db_path)
+    run = db.get_pipeline_run(session_id, db_path)
+    session = state.get_session(session_id, db_path)
+    if run is None or session is None:
+        raise RuntimeError(f"pipeline resume checkpoint {session_id!r} was not found")
+    if run.get("ended_at") is not None:
+        raise RuntimeError(f"pipeline resume checkpoint {session_id!r} is already final")
+    if not session.get("pending_action"):
+        raise RuntimeError(f"pipeline resume checkpoint {session_id!r} has no pending action")
+    checkpoint = {
+        "session_id": session_id,
+        "pipeline_name": str(run.get("pipeline_name") or "").strip(),
+        "chat_id": str(run.get("chat_id") or "").strip(),
+        "request_id": str(run.get("request_id") or "").strip(),
+        "profile": str(run.get("profile") or "").strip(),
+        "task": str(run.get("task") or "").strip(),
+    }
+    missing = [name for name, value in checkpoint.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "pipeline resume checkpoint is incomplete: " + ", ".join(missing)
+        )
+    return checkpoint
+
+
+def _validate_resume_folder_manifest(request_id: str, audit_db_path: Path) -> None:
+    import sqlite3
+
+    raw = os.environ.get(MANIFEST_ENV, "").strip()
+    if not raw:
+        raise RuntimeError("pipeline resume is missing its original folder manifest")
+    try:
+        current = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"pipeline resume folder manifest is invalid: {exc}") from exc
+    try:
+        with sqlite3.connect(audit_db_path) as conn:
+            rows = conn.execute(
+                "SELECT grant_id,alias,canonical_path "
+                "FROM request_folder_grants "
+                "WHERE request_id=? "
+                "ORDER BY ordinal,grant_id",
+                (request_id,),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"pipeline resume cannot read the original folder snapshot: {exc}"
+        ) from exc
+    if not rows:
+        raise RuntimeError("pipeline resume has no immutable folder snapshot")
+
+    def key(path: object) -> str:
+        return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+    expected = [(str(gid), str(alias), key(path)) for gid, alias, path in rows]
+    try:
+        actual = [
+            (
+                str(item["grantId"]),
+                str(item["alias"]),
+                key(item["canonicalPath"]),
+            )
+            for item in current
+        ]
+    except (TypeError, KeyError) as exc:
+        raise RuntimeError("pipeline resume folder manifest has an invalid shape") from exc
+    if actual != expected:
+        raise RuntimeError(
+            "pipeline resume folder manifest differs from the original request snapshot"
+        )
 
 
 def _current_root_registry(musubi_dir: Path) -> RootRegistry:

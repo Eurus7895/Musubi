@@ -1195,6 +1195,7 @@ fn start_chat_agent(
     task_text: String,
     chat_id: &str,
     pipeline_name: Option<&str>,
+    resume: Option<&musubi_data::PipelineResumeDecision>,
 ) -> Result<(), String> {
     // Fail closed: the operator picked a boundary and it is not in effect.
     // Launching anyway would export the runtime checkout as the workspace and
@@ -1217,50 +1218,61 @@ fn start_chat_agent(
         .map_err(|e| format!("Musubi root is unavailable: {e}"))?;
     let request_manifest = {
         let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-        let session_grants =
-            musubi_data::list_session_folder_grants(&conn, chat_id).map_err(|e| e.to_string())?;
-        let mut aliases = std::collections::HashSet::new();
-        let mut paths = vec![fixed_root.clone()];
-        for grant in session_grants {
-            let alias = normalize_folder_alias(&grant.alias)?;
-            if alias != grant.alias || !aliases.insert(alias) {
-                return Err(format!(
-                    "Folder alias {} is invalid or duplicated.",
-                    grant.alias
-                ));
+        if let Some(checkpoint) = resume {
+            let manifest =
+                musubi_data::list_request_folder_grants(&conn, &checkpoint.request_id)
+                    .map_err(|e| e.to_string())?;
+            if manifest.is_empty() {
+                return Err("Resume failed: original folder snapshot was not found.".into());
             }
-            let stored = PathBuf::from(&grant.canonical_path);
-            let current = stored
-                .canonicalize()
-                .map_err(|e| format!("Folder {} is unavailable: {e}", grant.alias))?;
-            if !current.is_dir() {
-                return Err(format!("Folder {} is no longer a directory.", grant.alias));
+            manifest
+        } else {
+            let session_grants = musubi_data::list_session_folder_grants(&conn, chat_id)
+                .map_err(|e| e.to_string())?;
+            let mut aliases = std::collections::HashSet::new();
+            let mut paths = vec![fixed_root.clone()];
+            for grant in session_grants {
+                let alias = normalize_folder_alias(&grant.alias)?;
+                if alias != grant.alias || !aliases.insert(alias) {
+                    return Err(format!(
+                        "Folder alias {} is invalid or duplicated.",
+                        grant.alias
+                    ));
+                }
+                let stored = PathBuf::from(&grant.canonical_path);
+                let current = stored
+                    .canonicalize()
+                    .map_err(|e| format!("Folder {} is unavailable: {e}", grant.alias))?;
+                if !current.is_dir() {
+                    return Err(format!("Folder {} is no longer a directory.", grant.alias));
+                }
+                if workspace_path_key(&current) != workspace_path_key(&stored) {
+                    return Err(format!(
+                        "Folder {} changed since it was attached; remove and add it again.",
+                        grant.alias
+                    ));
+                }
+                if paths.iter().any(|other| {
+                    is_inside_workspace(&current, other) || is_inside_workspace(other, &current)
+                }) {
+                    return Err(format!(
+                        "Folder {} overlaps another request root.",
+                        grant.alias
+                    ));
+                }
+                paths.push(current);
             }
-            if workspace_path_key(&current) != workspace_path_key(&stored) {
-                return Err(format!(
-                    "Folder {} changed since it was attached; remove and add it again.",
-                    grant.alias
-                ));
-            }
-            if paths.iter().any(|other| {
-                is_inside_workspace(&current, other) || is_inside_workspace(other, &current)
-            }) {
-                return Err(format!(
-                    "Folder {} overlaps another request root.",
-                    grant.alias
-                ));
-            }
-            paths.push(current);
+            musubi_data::snapshot_request_folder_grants(
+                &mut conn,
+                &request_id,
+                chat_id,
+                &fixed_root.display().to_string(),
+                &epoch_secs().to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            musubi_data::list_request_folder_grants(&conn, &request_id)
+                .map_err(|e| e.to_string())?
         }
-        musubi_data::snapshot_request_folder_grants(
-            &mut conn,
-            &request_id,
-            chat_id,
-            &fixed_root.display().to_string(),
-            &epoch_secs().to_string(),
-        )
-        .map_err(|e| e.to_string())?;
-        musubi_data::list_request_folder_grants(&conn, &request_id).map_err(|e| e.to_string())?
     };
 
     let mut env = musubi_data::current_env_map();
@@ -1297,10 +1309,22 @@ fn start_chat_agent(
         .as_deref()
         .and_then(musubi_data::read_llm_default_from_path)
         .unwrap_or_default();
-    let profile = {
+    let profile = if let Some(checkpoint) = resume {
+        checkpoint.profile.clone()
+    } else {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         musubi_data::read_active_profile_for_config(&conn, llm_config_path.as_deref())
     };
+    let effective_profile = if profile.trim().is_empty() {
+        default_profile.clone()
+    } else {
+        profile.clone()
+    };
+    if pipeline_name.is_some() {
+        env.insert("MUSUBI_CHAT_ID".into(), chat_id.to_string());
+        env.insert("MUSUBI_PIPELINE_PROFILE".into(), effective_profile);
+        env.insert("MUSUBI_PIPELINE_TASK".into(), task_text.clone());
+    }
     let mcp_config = launch_root.join(".musubi").join("mcp.json");
     if mcp_config.is_file() {
         env.entry("MUSUBI_MCP_CONFIG".into())
@@ -1310,7 +1334,7 @@ fn start_chat_agent(
         .agent_cli
         .found
         .then(|| PathBuf::from(&setup.agent_cli.path));
-    let spec = musubi_data::build_agent_launch_spec(
+    let mut spec = musubi_data::build_agent_launch_spec(
         &task_text,
         &profile,
         &default_profile,
@@ -1323,6 +1347,10 @@ fn start_chat_agent(
             request_id: Some(&request_id),
         },
     )?;
+    if let Some(checkpoint) = resume {
+        spec.args.push("--resume-pipeline-session".into());
+        spec.args.push(checkpoint.session_id.clone());
+    }
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let db_path = state
@@ -2147,6 +2175,7 @@ fn action(
                         task.to_string(),
                         chat_id,
                         pipeline_name,
+                        None,
                     ) {
                         if let Ok(mut rt) = state.chat_agent.lock() {
                             if rt.chat_id == chat_id {
@@ -2218,6 +2247,57 @@ fn action(
                 &state.project_root,
                 epoch_secs() as f64,
             )?;
+        }
+        "resume_pipeline" => {
+            let session_id = str_arg(0);
+            let decision_action = str_arg(1);
+            let hint = str_arg(2);
+            let extra_budget = args.get(3).and_then(|value| value.as_i64()).unwrap_or(0);
+            let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
+            if rt.running {
+                return Err("Cannot resume a pipeline while another agent is running.".into());
+            }
+            let state_db_path = state
+                .state_db_path
+                .as_deref()
+                .ok_or_else(|| "Pipeline state database is unavailable.".to_string())?;
+            let decision = apply_pipeline_resume_decision(
+                state_db_path,
+                &session_id,
+                &decision_action,
+                (!hint.trim().is_empty()).then_some(hint.as_str()),
+                extra_budget,
+                epoch_secs() as f64,
+            )?;
+            if decision.launch {
+                claim_runtime_owner(
+                    &mut rt,
+                    &decision.chat_id,
+                    "orchestrator",
+                    &decision.pipeline_name,
+                    &decision.task,
+                    epoch_secs(),
+                )?;
+            }
+            drop(rt);
+            if decision.launch {
+                if let Err(error) = start_chat_agent(
+                    app,
+                    state.inner(),
+                    decision.task.clone(),
+                    &decision.chat_id,
+                    Some(&decision.pipeline_name),
+                    Some(&decision),
+                ) {
+                    if let Ok(mut rt) = state.chat_agent.lock() {
+                        if rt.chat_id == decision.chat_id {
+                            rt.running = false;
+                            rt.child = None;
+                        }
+                    }
+                    return Err(error);
+                }
+            }
         }
         "clear_driver_chat" => {
             let chat_id = state.chat_id.lock().map_err(|e| e.to_string())?.clone();
@@ -2412,7 +2492,7 @@ mod tests {
 
     #[test]
     fn resume_pipeline_decision_uses_a_short_lived_writable_state_connection() {
-        let root = std::env::temp_dir().join(format!("musubi-resume-{}", epoch_secs()));
+        let root = std::env::temp_dir().join(format!("musubi-resume-{}", new_request_id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("musubi.db");
         let conn = Connection::open(&path).unwrap();
@@ -3574,6 +3654,7 @@ mod tests {
         assert!(source.contains("fn load_pipeline_recipe("));
         assert!(source.contains("fn validate_pipeline_recipe("));
         assert!(source.contains("fn save_pipeline_recipe("));
+        assert!(source.contains("\"resume_pipeline\" =>"));
         let handler_block = source
             .split_once("invoke_handler(tauri::generate_handler![")
             .unwrap()
