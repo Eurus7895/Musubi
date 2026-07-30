@@ -18,6 +18,8 @@ import pytest
 
 from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
+from agent.scope import BROAD_PRODUCT_QUESTION
+from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState
 from agent.vendors.base import LMResponse, LMRouter
 
@@ -241,7 +243,7 @@ def test_root_compacts_terminal_worker_feedback_to_goal_state_delta(
     assert cycles == 2
     assert "[root-goal-state]" in replay
     assert "intent=exact user intent" in replay
-    assert "… [truncated]" in replay
+    assert TRUNCATION_MARK in replay
     assert raw_marker not in replay
     assert "root goal-state compacted outcomes=1" in log.getvalue()
 
@@ -1581,7 +1583,7 @@ def test_replay_elides_large_tool_rows() -> None:
     big = "A" * (run_mod.REPLAY_TOOL_ROW_MAX_CHARS + 500)
     elided = run_mod._elide_replayed_tool_row(big)
     assert len(elided) < len(big)
-    assert "chars elided on replay" in elided
+    assert TRUNCATION_MARK in elided
 
     history = {"messages": [
         {"id": 1, "role": "user", "content": "make a dashboard", "ts": "t"},
@@ -1590,7 +1592,7 @@ def test_replay_elides_large_tool_rows() -> None:
     messages = run_mod._messages_from_chat_history("sys", history)
     tool_msg = messages[-1]["content"]
     assert tool_msg.startswith("[prior tool result]")
-    assert "chars elided on replay" in tool_msg
+    assert TRUNCATION_MARK in tool_msg
     assert len(tool_msg) < len(big)
 
 
@@ -2578,8 +2580,13 @@ def test_plan_first_directive_injected_into_system_prompt() -> None:
     assert "plan-first" in combined.lower()
 
 
-def test_delete_request_returns_manual_answer_without_llm_calls() -> None:
-    router = FakeRouter([])
+def test_delete_request_now_runs_and_carries_the_warning() -> None:
+    # Was: refused with zero model calls and a list of manual commands. The
+    # turn now proceeds — the hard stop moved to the tool boundary, where the
+    # files can be counted — and the model is told what the gate will do.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
     log = io.StringIO()
 
     answer = asyncio.run(run_agent(
@@ -2590,10 +2597,11 @@ def test_delete_request_returns_manual_answer_without_llm_calls() -> None:
         max_tokens=0,
     ))
 
-    assert router.calls == []
-    assert "I cannot safely delete files from this route" in answer
-    assert "*-dashboard.html" in answer
-    assert "manual_destructive" in log.getvalue()
+    assert answer == "ok"
+    assert len(router.calls) == 1
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "warning=This request reads as removing files" in system_text
+    assert "manual_destructive" not in log.getvalue()
 
 
 def test_greeting_returns_direct_answer_without_llm_calls() -> None:
@@ -2716,9 +2724,62 @@ def test_high_ambiguity_returns_question_without_model_or_worker() -> None:
     answer = run_mod._deterministic_scope_answer("create a new website", hint)
     assert hint.route == "ask_scope"
     assert answer == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
+
+
+def test_clarification_is_asked_once_then_the_answer_is_acted_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # The traced loop (chat gui-orchestrator-…-7bce98a4ecdc): "create a
+    # website" was met with the canned question, and so were BOTH answers the
+    # user typed after it — three turns, zero model calls, zero files, the same
+    # sentence every time. The question is a governance step exactly once; the
+    # next message is the answer and must be acted on.
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat_db = tmp_path / "data" / "musubi.db"
+    chat = "chat-clarify"
+
+    silent = FakeRouter([])
+    first_log = io.StringIO()
+    question = asyncio.run(run_agent(
+        "create a website", silent, _musubi_dir(),
+        log=first_log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert silent.calls == []
+    assert question == (
+        BROAD_PRODUCT_QUESTION
+    )
+    assert "route=ask_scope" in first_log.getvalue()
+    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
+
+    # Turn 2 answers it. Classified alone the answer is still a broad product
+    # request and would have drawn the identical question.
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    second_log = io.StringIO()
+    answer = asyncio.run(run_agent(
+        "i would like to create a weather checking website",
+        router, _musubi_dir(), log=second_log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert answer == "ok"
+    assert len(router.calls) == 1, "the answer must reach the model, not a canned reply"
+    log_text = second_log.getvalue()
+    assert "clarification answered" in log_text
+    assert "route=planner_then_coder_check" in log_text
+    assert "route=ask_scope" not in log_text
+
+    # The root sees the WHOLE intent, not just the fragment typed last.
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "scope=medium_change" in system_text
+    # And the marker is spent: a later broad request gets its own question,
+    # but this one can never be re-asked.
+    assert db.pending_clarification(chat, db_path=chat_db) is None
 
 
 def test_vendor_tool_call_markup_is_never_accepted_as_an_answer() -> None:
@@ -3133,3 +3194,83 @@ def test_turn_cap_without_surviving_files_defers_to_root_analysis(
     assert "deferring to root analysis" in log.getvalue()
     assert "automatic recovery: coder" not in log.getvalue()
     assert answer is not None and answer.startswith("[incomplete]")
+
+
+def test_root_system_prompt_carries_the_evidence_vector() -> None:
+    """Step 1 is observable, not yet enforced: the vector renders, nothing routes."""
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}])
+    ])
+    log = io.StringIO()
+
+    answer = asyncio.run(run_agent(
+        "Update weather-dashboard.html to refresh every 5 minutes",
+        router,
+        _musubi_dir(),
+        log=log,
+        max_tokens=0,
+    ))
+
+    assert answer == "ok"
+    system_text = router.calls[0]["messages"][0]["content"]
+    # Hint first, evidence second — an opinion the root may override, then the
+    # record it must not contradict.
+    assert system_text.index("[agent-routing-scope]") < system_text.index(
+        "[agent-evidence]"
+    )
+    assert "names_workspace_path=" in system_text
+    assert "[agent] evidence:" in log.getvalue()
+
+
+def test_the_evidence_vector_changes_no_route() -> None:
+    """A request naming nothing still routes exactly as it did before step 1."""
+    from agent.evidence import collect
+    from agent.routes import RouteKind
+    from agent.scope import classify_task
+
+    hint = classify_task("Update weather-dashboard.html to refresh every 5 minutes")
+    vector = collect("Update weather-dashboard.html to refresh every 5 minutes")
+
+    # The vector says the target does not exist here; the route is unmoved.
+    assert vector.path_exists is False
+    assert hint.route == RouteKind.SINGLE_CODER
+
+
+def test_a_short_answer_to_the_question_is_still_the_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """PR #164 review: the merge must not depend on how the answer classifies.
+
+    The pending request used to be consulted only when the NEW message itself
+    routed to `ask_scope`. But the question offers "React" and "a single static
+    HTML page" as answers, and with chat history both classify as bare advisory
+    follow-ups. Those turns were answered as advice, and the completed turn
+    wrote a row with no `clarification_request` — clearing the marker and
+    losing the build request permanently.
+    """
+    from storage import db
+
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    chat_db = tmp_path / "data" / "musubi.db"
+    chat = "chat-short-answer"
+
+    asyncio.run(run_agent(
+        "create a website", FakeRouter([]), _musubi_dir(),
+        log=io.StringIO(), max_tokens=0, chat_id=chat,
+    ))
+    assert db.pending_clarification(chat, db_path=chat_db) == "create a website"
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+    log = io.StringIO()
+    answer = asyncio.run(run_agent(
+        "React", router, _musubi_dir(), log=log, max_tokens=0, chat_id=chat,
+    ))
+
+    assert answer == "ok"
+    assert "clarification answered" in log.getvalue()
+    # The root must be told what is being built, not just which framework.
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "advisory" not in system_text.split("route=")[1].split("\n")[0]
+    assert db.pending_clarification(chat, db_path=chat_db) is None

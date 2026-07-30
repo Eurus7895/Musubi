@@ -8,6 +8,7 @@ import {
 import { roleChip, navStyle, auditBtn } from './styleHelpers.js'
 import { fmtClock } from './format.js'
 import { createPipelineDraft, isDirty } from './pipelineBuilder.js'
+import { approvalScope, pendingApproval } from './approvalRequest.js'
 
 function statusForRun(run) {
   const steps = run.steps || []
@@ -1098,6 +1099,22 @@ export function buildViewModel(s, act) {
   const orchestratorHasDriverLog = driverBelongsToOrchestrator && hasDriverLog
   const activeSurfaceLabel = driverSurface === 'pipeline' ? 'Pipeline' : 'Orchestrator'
   const orchestratorBlockedByPipeline = driverRunning && !orchestratorOwnsDriver
+  const composerBlocked = orchestratorOwnsDriver || orchestratorBlockedByPipeline
+    || historicalSessionBlocked || orchestratorPipelineBlocked
+
+  // The Approve button is the composer with one keystroke removed, so it obeys
+  // exactly the composer's conditions: no approving into a busy driver, into a
+  // pipeline's run, or from a historical session you are only reading.
+  const approvalRequest = composerBlocked ? null : pendingApproval(s.chat || [])
+  const approval = approvalRequest
+    && approvalScope(s, approvalRequest.token) !== s.dismissedApproval
+    ? {
+      token: approvalRequest.token,
+      summary: approvalRequest.summary,
+      onApprove: () => act.approveDestructive(approvalRequest.token),
+      onReject: () => act.dismissApproval(approvalRequest.token),
+    }
+    : null
 
   // "What is the agent doing right now?" answered in one object: who is acting,
   // what the act is, how long it has been going, and how to stop it. The banner
@@ -1281,7 +1298,8 @@ export function buildViewModel(s, act) {
         ? 'Agent is running — stop it from the banner to send'
         : (orchestratorPipelineBlocked ? 'Select a runnable pipeline' : 'Send')),
     sendMode: 'send',
-    sendDisabled: orchestratorOwnsDriver || orchestratorBlockedByPipeline || historicalSessionBlocked || orchestratorPipelineBlocked,
+    sendDisabled: composerBlocked,
+    approval,
     inputDisabled: orchestratorBlockedByPipeline || historicalSessionBlocked,
     disabledText: historicalDisabledText || (orchestratorBlockedByPipeline ? `${activeSurfaceLabel} run is active...` : (orchestratorPipelineBlocked ? 'Select a runnable pipeline before sending.' : '')),
     onOpenArtifact: (path) => act.openArtifact(path, 'orchestrator'),

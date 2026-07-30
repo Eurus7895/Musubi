@@ -271,9 +271,20 @@ _PIPELINE_RUNS_COLUMNS: tuple[tuple[str, str], ...] = (
 # `delivered_artifact` records whether a turn ended with files on disk;
 # pre-existing rows default to 0, which reads as "delivered nothing" — safe,
 # because the flag only ever makes the root MORE conservative about planning.
+# `clarification_request` holds the request a turn HALTED on when it answered
+# with the deterministic clarifying question instead of running. The next turn
+# of the same chat reads it, merges the user's answer into it, and routes for
+# real — which is what stops the same canned question being re-emitted forever.
+# Pre-existing rows default to NULL, which reads as "this turn actually ran".
 _AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("request_id", "TEXT"),
     ("delivered_artifact", "INTEGER NOT NULL DEFAULT 0"),
+    ("clarification_request", "TEXT"),
+    # One-time destructive-approval tokens this turn is waiting on, as JSON
+    # `[{token, keys}]`. The NEXT turn matches the token literally against the
+    # user's own message — a model cannot author a user turn, so a match is
+    # proof a human approved exactly these paths.
+    ("pending_destructive", "TEXT"),
 )
 
 # Root-selected skill injection (option 3): the root may name a catalog
@@ -1310,6 +1321,8 @@ def insert_agent_turn(
     request_id: str | None = None,
     db_path: Path | None = None,
     delivered_artifact: bool = False,
+    clarification_request: str | None = None,
+    pending_destructive: str | None = None,
 ) -> None:
     """One row per agent turn. Parallel to insert_stage_metric.
     Caller (TS runner via the musubi_record_agent_turn MCP
@@ -1318,20 +1331,27 @@ def insert_agent_turn(
 
     `delivered_artifact` records whether the turn ended with files on disk,
     which is what a later turn in the same conversation reads to notice that
-    spend is accumulating without progress."""
+    spend is accumulating without progress.
+
+    `clarification_request` records the request a turn HALTED on when it
+    answered with the deterministic clarifying question. `pending_clarification`
+    reads it back on the next turn so the answer is acted on instead of
+    re-questioned."""
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO agent_turns"
             " (chat_id, request_id, parent_session_id, started_at, ended_at,"
             "  model_family, cycles,"
             "  tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,"
-            "  delivered_artifact)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  delivered_artifact, clarification_request, pending_destructive)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 chat_id, request_id, parent_session_id, started_at, ended_at,
                 model_family, cycles,
                 tokens_in_estimate, tokens_out_estimate, lm_ms, total_ms,
                 1 if delivered_artifact else 0,
+                clarification_request or None,
+                pending_destructive or None,
             ),
         )
 
@@ -1374,6 +1394,58 @@ def chat_turn_usage(chat_id: str, db_path: Path | None = None) -> dict:
         "tokens": tokens_in + tokens_out,
         "barren_turns": barren,
     }
+
+
+def pending_clarification(
+    chat_id: str, db_path: Path | None = None,
+) -> str | None:
+    """Return the request this chat is still waiting on an answer for.
+
+    Only the LATEST turn is consulted, and only if that turn halted on the
+    deterministic clarifying question (`clarification_request` non-empty). Any
+    turn that actually ran writes NULL, so the pending state clears itself
+    without a delete — there is no marker to leak into an unrelated later
+    request.
+
+    This is the terminator for the clarification loop: `classify_task` sees one
+    message at a time, so "create a website" and the answer "a weather checking
+    website" both classify as a broad product request and both would be met
+    with the identical canned question, forever. With a pending request on
+    record the driver merges the two and routes for real instead.
+    """
+    if not chat_id:
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT clarification_request FROM agent_turns"
+            " WHERE chat_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    pending = row["clarification_request"]
+    return str(pending) if pending else None
+
+
+def pending_destructive(chat_id: str, db_path: Path | None = None) -> str | None:
+    """Approval tokens the latest turn of `chat_id` is waiting on, or None.
+
+    Latest turn only, exactly like `pending_clarification`: a turn that ran
+    without being gated writes NULL, so an approval cannot be replayed against
+    a later, different set of files.
+    """
+    if not chat_id:
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT pending_destructive FROM agent_turns"
+            " WHERE chat_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    pending = row["pending_destructive"]
+    return str(pending) if pending else None
 
 
 def query_agent_turns(

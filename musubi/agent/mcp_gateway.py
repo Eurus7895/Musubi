@@ -108,16 +108,13 @@ def mcp_config_candidates(
     Exposed so the agent log can show *exactly* where it looked when no
     config is found — the ambiguity is otherwise invisible from the output.
     """
-    candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit))
-    env = os.environ.get("MUSUBI_MCP_CONFIG")
-    if env:
-        candidates.append(Path(env))
-    candidates.append(Path.cwd() / ".mcp.json")
-    candidates.append(Path.cwd() / ".musubi" / "mcp.json")
-    candidates.append(Path.home() / ".musubi" / "mcp.json")
-    return candidates
+    from agent.config import config_candidates
+
+    return config_candidates(
+        explicit, "MUSUBI_MCP_CONFIG",
+        cwd=(".mcp.json", ".musubi/mcp.json"),
+        home=(".musubi/mcp.json",),
+    )
 
 
 def find_mcp_config_path(
@@ -129,10 +126,9 @@ def find_mcp_config_path(
     own project convention) → ./.musubi/mcp.json → ~/.musubi/mcp.json.
     Returns None if none exists (the common case — the feature is opt-in).
     """
-    for c in mcp_config_candidates(explicit):
-        if c.is_file():
-            return c
-    return None
+    from agent.config import first_existing
+
+    return first_existing(mcp_config_candidates(explicit))
 
 
 def load_mcp_servers(
@@ -469,10 +465,16 @@ def _is_spurious_cancel(exc: BaseException) -> bool:
 
 
 def _describe_exc(exc: BaseException) -> str:
-    """One-line cause for the skip log, unwrapping an anyio group to its leaf."""
-    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        leaf = exc.exceptions[0]
-        return f"{type(leaf).__name__}: {leaf}"
+    """One-line cause for the skip log, unwrapping an anyio group to its leaf.
+
+    Unwraps REPEATEDLY, not once. anyio nests groups routinely — a task group
+    inside a task group — and a single unwrap on a two-level nest printed
+    "ExceptionGroup: inner (1 sub-exception)", swallowing the actual cause of
+    the skip. That is the whole value of this line: the operator learns the
+    server was skipped and nothing else unless the leaf reaches the log.
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
 
 

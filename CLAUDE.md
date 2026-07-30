@@ -28,18 +28,18 @@ run-trace post-mortem, never a summary.
 - **State the decision the reader must make.** Give the options, each one's cost, and your
   recommendation. Never bury a fork in prose, and never ask for a decision before supplying what is
   needed to make it.
-- **Mirror language.** Reply in Vietnamese when addressed in Vietnamese; keep technical terms in English.
 
 ## Substrate vs ephemeral
 
 **Substrate (invest):** audit DB tables · `.github/skills/*/SKILL.md` catalog · 3-tier memory ·
 append-only stage store · Hard Invariants · policy engine · `TokenBudgetEnforcer` ·
-`_STAGE_PERMISSIONS` firewall · `musubi_*` tool catalog.
+`_STAGE_PERMISSIONS` firewall · `musubi_*` tool catalog · blast-radius measurement at the tool
+boundary (`agent/blast_radius.py`, `agent/manifest.py`).
 
-**Ephemeral (label + schedule for removal):** the 4-stage pipeline shape · the
-explorer/investigator/reviewer-aux split · correction loop + `validation_feedback` retry · cycle-loop
-guards · path-rules and workspace-root preamble blocks · per-stage tagged scaffolds · worker prompt
-scaffolding.
+**Ephemeral (label + schedule for removal):** the lexical scope layer (`agent/scope.py`) · the 4-stage
+pipeline shape · the explorer/investigator/reviewer-aux split · correction loop +
+`validation_feedback` retry · cycle-loop guards · path-rules and workspace-root preamble blocks ·
+per-stage tagged scaffolds · worker prompt scaffolding.
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration trigger fires.** Per-component
 analysis, removability cost, and cost-lever values → [`docs/roadmap.md`](./docs/roadmap.md)
@@ -55,8 +55,10 @@ text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./do
    firewall, the validator, and the audit DB never call a model or import an LLM SDK. Only the driver
    reaches a model, through `LMRouter` (`agent/vendors/base.py`). Vendors are data in `.musubi/llm.json`.
 2. **Skills are pushed to workers and stages; pulled on demand by the Agent.** Push is not
-   opt-out-able (`SUBAGENT_ROLE_SKILLS` → `subagent.py::build_subagent_system_prompt`); the Agent
-   pulls via `musubi_get_skill`.
+   opt-out-able: `SUBAGENT_ROLE_SKILLS` (`validation/subagent_context.py`) resolves the role's skill
+   into `SubagentContext.role_skill`, which `agent/subagent.py::build_subagent_system_prompt` bakes
+   into the worker's system prompt. A spawn may *override* which skill via `pushed_skill_id`; there
+   is no flag that suppresses the push. The Agent pulls via `musubi_get_skill`.
 3. **Evaluator firewall.** The evaluator sees only the artifact it judges — no request, plan, design,
    or memory.
 5. **Fail-closed policy engine.** Membership and tools both deny by default
@@ -74,8 +76,6 @@ text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./do
   `expires-when:` and stop iterating. Don't refactor ephemera for elegance.
 - **Flat agent catalog at `.github/agents/`.** Pipelines compose by path reference. Role variants need
   3+ documented failures of the canonical agent.
-- **Sizing rule per LM call (not per stage).** Keep each `sendRequest` under ~30k chars; >50k warn;
-  >200k abort. If a stage's natural input exceeds the window, restructure it — don't shrink-and-pray.
 
 ## Branches & Commits — READ BEFORE EVERY `git` COMMAND
 
@@ -110,10 +110,12 @@ text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./do
 
 ## Hooks
 
+Registered in [`hooks.json`](./hooks.json) — that file is the source of truth; this table is a map.
+
 | Hook | Script | Behavior |
 |---|---|---|
-| `SessionStart` | `scripts/session_start.py` | Run `baseline_checks` from `pipeline.yaml` |
+| `SessionStart` | `scripts/session_start.py` | Run `baseline_checks` from the active `.github/pipelines/<name>/pipeline.yaml` |
 | `PreToolUse` | `scripts/pre_tool_use.py` | Policy gate — exit 0 allow, 1 deny |
-| `PostToolUse` | `scripts/post_tool_use.py` | SQLite audit log to `storage/audit.db` |
+| `PostToolUse` | `scripts/post_tool_use.py` | SQLite audit log to `musubi/storage/audit.db` |
 
 **Rule:** "Never send an LLM to do a linter's job." Deterministic checks belong in hooks.

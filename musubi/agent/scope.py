@@ -1,17 +1,41 @@
-"""Deterministic scope hints for the standalone root agent.
+"""Lexical request classification — the pre-model routing layer.
 
-musubi-tier: substrate
-expires-when: never - risk/ambiguity/blast-radius hints are durable routing
-  context even as model quality improves.
+musubi-tier: ephemeral
+expires-when: the root triages its own turn from the evidence vector, leaving
+  this file one deterministic question — is the request destructive? — whose
+  answer is a WARNING to the model, not a refusal. See
+  docs/superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md
+cost-lever: deletes 18 of 19 regexes, assess_request, the pre-run ask_scope
+  halt, BROAD_PRODUCT_QUESTION, and the pending_clarification storage column
+
+What lives here, and why it is temporary
+----------------------------------------
+Every function below answers a question about ENGLISH: is this request broad,
+is it an edit, is it sensitive, does the user want advice or a file. Text is
+the only input and nothing checks the answer, so a wrong verdict is silent —
+which is exactly how "fix the typo in the security section of the README" came
+to read as critical while "wire up Okta" read as routine.
+
+The repository already states the position this file contradicts. From the
+`request-triage` skill pushed to the planner on every run: *"The harness makes
+no judgment about how large or how risky a change is. It cannot."*
+
+What replaces it: the root triages its own turn (it is already a model call),
+the planner declares blast radius in a change manifest, and the substrate
+ENFORCES that declaration deterministically in `agent/manifest.py`. What stays
+here at the end is one branch — destructive or not — emitted as a warning the
+model acts on, with the hard stop measured at the tool boundary where the
+files being touched can actually be counted.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from agent.change_assessment import ChangeAssessment, assess_request
+from agent.manifest import Band, ChangeAssessment
+from agent.routes import RouteKind
 
 
 class ScopeKind(StrEnum):
@@ -30,23 +54,28 @@ class ScopeHint:
     route: str
     reason: str
     requires: tuple[str, ...] = field(default_factory=tuple)
+    #: Non-binding notes for the model. A warning never changes the route: it
+    #: says something the text suggests but cannot establish, and the model is
+    #: free to act on it or not. Anything that must be ENFORCED belongs at the
+    #: tool boundary, where the affected files can be counted.
+    warnings: tuple[str, ...] = field(default_factory=tuple)
     #: Ambiguity/impact/risk bands for a mutation request (None on the casual,
     #: destructive, vague, and read-only branches, which return before the
     #: assessment runs). Carries the one deterministic clarifying question the
-    #: driver returns without a model call when route == "ask_scope".
+    #: driver returns without a model call when route == RouteKind.ASK_SCOPE.
     assessment: ChangeAssessment | None = None
 
     def prompt_block(self) -> str:
         requires = ",".join(self.requires) if self.requires else "none"
         route_guidance = {
-            "advisory": (
+            RouteKind.ADVISORY: (
                 "Advisory route: the user asked to be ADVISED, not for a "
                 "change. Answer directly from your own reasoning in ONE turn. "
                 "Do NOT spawn a worker: the request names no file, so no "
                 "read-only worker can add evidence, and a planner would "
                 "return a change manifest the user never asked for."
             ),
-            "single_explorer": (
+            RouteKind.SINGLE_EXPLORER: (
                 "Read-only route: the user wants to inspect, not change. Spawn "
                 "exactly ONE explorer worker (read-only Read/Grep/Glob) with a "
                 "compact brief to reach the target path or files and summarize "
@@ -54,14 +83,14 @@ class ScopeHint:
                 "attempt any edit. If the path is outside the workspace root or "
                 "does not exist, report that plainly and stop — do not retry."
             ),
-            "single_coder": (
+            RouteKind.SINGLE_CODER: (
                 "Simple route: start with one coder worker using a compact, "
                 "implementation-ready brief. Recommend a skill for the coder "
                 "(musubi_recommend_skills) and pass the best skill_id as "
                 "pushed_skill_id on the spawn. This is an initial routing "
                 "recommendation, not a lifetime worker cap."
             ),
-            "planner_then_coder_check": (
+            RouteKind.PLANNER_THEN_CODER_CHECK: (
                 "Medium route: spawn planner first for scope, acceptance "
                 "criteria, and a change manifest; then spawn coder with that "
                 "plan. Do not ask coder to both plan and implement.\n"
@@ -72,19 +101,15 @@ class ScopeHint:
                 "sent to find its own facts spends its whole turn budget "
                 "reading and returns no manifest at all."
             ),
-            "plan_design_workflow": (
+            RouteKind.PLAN_DESIGN_WORKFLOW: (
                 "Large route: require explicit plan/design/implementation/"
                 "review structure before mutation."
             ),
-            "ask_scope": (
+            RouteKind.ASK_SCOPE: (
                 "Unknown route: ask one clarifying question before spawning."
             ),
-            "direct_answer": (
+            RouteKind.DIRECT_ANSWER: (
                 "Casual route: answer directly in one turn without tools or workers."
-            ),
-            "manual_destructive": (
-                "Destructive route: do not call tools or workers. Warn and give "
-                "manual operator steps instead."
             ),
         }.get(self.route, "Use the route conservatively.")
         return (
@@ -93,7 +118,8 @@ class ScopeHint:
             f"route={self.route}\n"
             f"requires={requires}\n"
             f"reason={self.reason}\n"
-            f"guidance={route_guidance}\n"
+            + "".join(f"warning={w}\n" for w in self.warnings)
+            + f"guidance={route_guidance}\n"
             "[/agent-routing-scope]\n\n"
             "Use this deterministic hint before choosing tools. The root "
             "agent still makes the final role and routing decision. Scope is "
@@ -170,6 +196,91 @@ _PATH_TOKEN_RE = re.compile(
     r"(?i)[a-z]:[\\/][\w.\-\\/]*|[\w.\-]*[\\/][\w.\-/\\]*|"
     r"\b[\w.\-]+\.(?:py|js|jsx|ts|tsx|rs|go|java|html|htm|css|md|json|ya?ml|toml|csv|txt)\b"
 )
+
+
+_BROAD_PRODUCT_RE = re.compile(
+    r"(?i)\b(create|make|build|generate|implement)\b.*\b"
+    r"(website|site|web app|application|app|platform|system)\b"
+)
+_STATIC_FILE_RE = re.compile(
+    r"(?i)\b(static|single[- ]file)\b.*\b(html|website|page)\b|"
+    r"\b[\w.-]+\.html\b"
+)
+_BOUNDED_ARTIFACT_RE = re.compile(
+    r"(?i)\b(create|make|generate|write|build)\b.*\b"
+    r"(file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc)\b"
+)
+_FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
+_MULTIPART_RE = re.compile(
+    r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
+)
+# NOTE: the lexical critical-risk gate was REMOVED. It matched a word, not a
+# change: it refused "fix the typo in the security section of the README" with
+# zero model calls, while "wire up Okta", "add SSO", and "store user passwords"
+# sailed past it. Risk is now declared by the planner in the change manifest
+# (`security_sensitive`), read from the code rather than guessed from the
+# sentence, and enforced deterministically by `assess_manifest`. The
+# sensitive-area vocabulary that remains lives in `agent/scope.py` and has one
+# narrow job: withhold the lone-coder shortcut so a planner reads first.
+
+
+#: The one question a broad product request is stopped for. It asks ONLY what
+#: the gate below can actually act on — the page shape, tested by
+#: `_STATIC_FILE_RE` and `_FRAMEWORK_RE`. The earlier wording led with "What
+#: should the website do?", which nothing here tests: a user who answered it
+#: ("a weather checking website") re-matched `_BROAD_PRODUCT_RE` with no escape
+#: hatch touched, so an earnest answer could not move the route. A question the
+#: asker cannot act on is not a governance step. The content ask stays, demoted
+#: to a second sentence and explicitly optional: it enriches the planner's brief
+#: without deciding anything, and the turn proceeds either way.
+BROAD_PRODUCT_QUESTION = (
+    "Should this be a single static HTML page, or a framework app "
+    "(React, Next.js, Vue, Svelte, or Angular)? Add what the page should "
+    "show in the same reply if you know it — I will build from your answer "
+    "either way."
+)
+
+
+def assess_request(task: str) -> ChangeAssessment:
+    """Bands + route for one raw user request. Pure text analysis, zero LLM.
+
+    This function NEVER returns `plan_design_workflow`: nothing readable from
+    one sentence establishes blast radius, so "large" is decided in exactly one
+    place — `assess_manifest`, from what the planner declares after reading the
+    code. Precedence here: a broad product request without deliverable
+    constraints stops for ONE clarification; bounded static/named artifacts
+    route to a single coder; a framework scaffold with multiple parts is a
+    planned medium change; anything left is a medium change on insufficient
+    evidence.
+    """
+    text = " ".join((task or "").split())
+    if _BROAD_PRODUCT_RE.search(text) and not (
+        _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
+    ):
+        return ChangeAssessment(
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
+            ("broad-product-without-deliverable-constraints",),
+            BROAD_PRODUCT_QUESTION,
+        )
+    if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
+            ("bounded-static-artifact",),
+        )
+    if _BOUNDED_ARTIFACT_RE.search(text) and not _FRAMEWORK_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
+            ("bounded-named-artifact",),
+        )
+    if _FRAMEWORK_RE.search(text) and _MULTIPART_RE.search(text):
+        return ChangeAssessment(
+            Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
+            ("framework-multifile-change",),
+        )
+    return ChangeAssessment(
+        Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
+        RouteKind.PLANNER_THEN_CODER_CHECK, ("insufficient-deterministic-evidence",),
+    )
 
 
 def _mutation_intent(text: str) -> bool:
@@ -249,33 +360,79 @@ _DESTRUCTIVE_FILE_RE = re.compile(
 )
 
 
-def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
+def _clarification_already_spent(
+    assessment: ChangeAssessment | None,
+) -> ScopeHint:
+    """The route to take when the one clarification has already been asked.
+
+    Never `ask_scope`: the user has answered the deterministic question once,
+    and a second identical question is not a governance step — it is a loop
+    that spends a turn and delivers nothing. The request goes to a planner
+    instead, which reads the workspace and asks its own *specific* questions
+    inside a plan rather than re-emitting a canned sentence.
+
+    The assessment rides along with its route downgraded and its clarifying
+    question dropped, so nothing downstream (`GoalState` bands,
+    `_deterministic_scope_answer`) can resurrect the halt. The bands are left
+    exactly as assessed: the request may still be ambiguous, and the planner
+    should see that.
+    """
+    downgraded = (
+        None
+        if assessment is None
+        else replace(
+            assessment,
+            route=RouteKind.PLANNER_THEN_CODER_CHECK,
+            evidence=assessment.evidence + ("clarification-answered",),
+            clarifying_question=None,
+        )
+    )
+    return ScopeHint(
+        kind=ScopeKind.MEDIUM_CHANGE,
+        route=RouteKind.PLANNER_THEN_CODER_CHECK,
+        reason="clarification already asked and answered; plan on what is known",
+        requires=("plan", "implementation", "verification"),
+        assessment=downgraded,
+    )
+
+
+def _classify_route(
+    task: str,
+    *,
+    has_history: bool = False,
+    allow_clarification: bool = True,
+) -> ScopeHint:
     """Classify ONE user message.
 
     `has_history` says only that this `chat_id` already has prior turns — not
     what they were about. It is used in exactly one direction: to route a bare
     conversational follow-up to the cheap advisory answer. Nothing may use it
     to escalate, so a stale or wrong flag can never open a mutation path.
+
+    `allow_clarification=False` says the caller has ALREADY spent this
+    conversation's one deterministic clarification and is passing the merged
+    request (original + the user's answer). Every `ask_scope` return below
+    becomes a planner route instead. Like `has_history`, it moves in exactly
+    one direction — it can only remove a halt, never add one — so a wrong flag
+    costs one planner run and can never block the conversation.
     """
     text = " ".join((task or "").strip().split())
-    low = text.lower()
     if _CASUAL_RE.match(text):
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="direct_answer",
+            route=RouteKind.DIRECT_ANSWER,
             reason="casual chat does not need tools",
         )
-    if _DESTRUCTIVE_FILE_RE.search(text):
-        return ScopeHint(
-            kind=ScopeKind.UNKNOWN,
-            route="manual_destructive",
-            reason="destructive file operation needs explicit operator control",
-            requires=("manual_confirmation",),
-        )
     if not text or _VAGUE_RE.match(text):
+        # An empty message is the one case that still halts after a spent
+        # clarification: there is no merged text to plan from, so the question
+        # is the only move left. Every other vague request carries the prior
+        # turn's content and goes to a planner.
+        if text and not allow_clarification:
+            return _clarification_already_spent(None)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="ask_scope",
+            route=RouteKind.ASK_SCOPE,
             reason="request lacks a concrete target",
             requires=("clarification",),
         )
@@ -298,7 +455,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     ):
         return ScopeHint(
             kind=ScopeKind.ADVISORY,
-            route="advisory",
+            route=RouteKind.ADVISORY,
             reason="consultative question with no deliverable or path target",
         )
 
@@ -314,7 +471,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     if has_history and _is_bare_follow_up(text):
         return ScopeHint(
             kind=ScopeKind.ADVISORY,
-            route="advisory",
+            route=RouteKind.ADVISORY,
             reason="bare follow-up in an ongoing conversation",
         )
 
@@ -333,7 +490,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     ):
         return ScopeHint(
             kind=ScopeKind.INSPECT,
-            route="single_explorer",
+            route=RouteKind.SINGLE_EXPLORER,
             reason="read-only inspection of a path or files",
         )
 
@@ -345,10 +502,12 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     # it: two keywords made "fix typo in auth.py and payment.py" a large
     # feature, while "rewrite the entire user system" scored zero.
     assessment = assess_request(text)
-    if assessment.route == "ask_scope":
+    if assessment.route == RouteKind.ASK_SCOPE:
+        if not allow_clarification:
+            return _clarification_already_spent(assessment)
         return ScopeHint(
             kind=ScopeKind.UNKNOWN,
-            route="ask_scope",
+            route=RouteKind.ASK_SCOPE,
             reason="broad product request without deliverable constraints",
             requires=("clarification",),
             assessment=assessment,
@@ -364,7 +523,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     if has_path and _SIMPLE_EDIT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_EDIT,
-            route="single_coder",
+            route=RouteKind.SINGLE_CODER,
             reason="known file and low-risk edit",
             assessment=assessment,
         )
@@ -372,7 +531,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     if _ARTIFACT_RE.search(text) and not no_shortcut:
         return ScopeHint(
             kind=ScopeKind.SIMPLE_ARTIFACT,
-            route="single_coder",
+            route=RouteKind.SINGLE_CODER,
             reason="concrete low-risk artifact request",
             assessment=assessment,
         )
@@ -380,7 +539,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
     if no_shortcut:
         return ScopeHint(
             kind=ScopeKind.MEDIUM_CHANGE,
-            route="planner_then_coder_check",
+            route=RouteKind.PLANNER_THEN_CODER_CHECK,
             reason="touches a sensitive area; a planner reads before mutation",
             requires=("plan", "implementation", "verification"),
             assessment=assessment,
@@ -388,7 +547,7 @@ def classify_task(task: str, *, has_history: bool = False) -> ScopeHint:
 
     return ScopeHint(
         kind=ScopeKind.MEDIUM_CHANGE,
-        route="planner_then_coder_check",
+        route=RouteKind.PLANNER_THEN_CODER_CHECK,
         reason="concrete change but scope is not obviously tiny",
         requires=("plan", "implementation", "verification"),
         assessment=assessment,
@@ -407,3 +566,46 @@ def is_simple_scope(hint: ScopeHint | None) -> bool:
 # guessing. It matched phrases like "whole app" and "multiple services" — and
 # so scored zero on "rewrite the entire user system" and "migrate all 40
 # services to the new runtime". Size is decided from the planner's manifest.
+
+
+#: What the text SUGGESTS about deletion — never what it establishes. The
+#: sentence cannot say which files a run will remove; only the tool call can,
+#: and `agent/blast_radius.py` counts them there. This note exists so the model
+#: raises the question with the user BEFORE spending a worker on a plan whose
+#: last step the gate will refuse.
+DESTRUCTIVE_WARNING = (
+    "This request reads as removing files. The harness measures every tool "
+    "call and REFUSES any that deletes a file, or that overwrites more than a "
+    "handful in one run, until the user has explicitly approved it. So do not "
+    "plan around a silent deletion: name the exact paths you intend to remove, "
+    "show the user that list, and get a clear go-ahead first."
+)
+
+
+def classify_task(
+    task: str,
+    *,
+    has_history: bool = False,
+    allow_clarification: bool = True,
+) -> ScopeHint:
+    """Classify one message, attaching non-binding warnings.
+
+    The destructive check used to HALT the turn here, answering with manual
+    operator steps. It was measurably the wrong shape: it refused "delete all
+    *-dashboard.html files" — the user saying plainly what they wanted — while
+    `run rm -rf build` did not match its noun list and routed to a coder
+    holding `musubi_run_command`, whose contract states it does no dangerous
+    command detection. The guard blocked the honest request and missed every
+    other path to the same outcome.
+
+    A regex over a sentence is not entitled to refuse; it IS entitled to warn.
+    The refusal now lives in `agent/blast_radius.py`, at the tool call, where
+    the files about to be removed can be counted and named.
+    """
+    hint = _classify_route(
+        task, has_history=has_history, allow_clarification=allow_clarification,
+    )
+    text = " ".join((task or "").strip().split())
+    if _DESTRUCTIVE_FILE_RE.search(text):
+        return replace(hint, warnings=hint.warnings + (DESTRUCTIVE_WARNING,))
+    return hint

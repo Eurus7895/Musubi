@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.change_assessment import Band, assess_manifest, parse_change_manifest
+from agent.manifest import Band, assess_manifest, parse_change_manifest
 
 ELEVEN_FILE_MANIFEST = (
     '<change_manifest>{"files_expected":11,"subsystems":'

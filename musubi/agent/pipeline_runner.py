@@ -34,10 +34,11 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from agent.jsonio import loads_dict
 
 #: Per-stage cycle cap for a pipeline worker. Stages are single-purpose, so a
 #: small budget keeps a runaway stage from burning the whole pipeline. In the
@@ -168,7 +169,7 @@ async def run_pipeline(
     )
 
     raw = await _call_tool_text(session, "musubi_spawn_pipeline", spawn_args)
-    spawned = _loads(raw)
+    spawned = loads_dict(raw)
     if spawned.get("status") != "spawned":
         if spawned.get("error_kind") == "policy_denied":
             raise PolicyDeniedError(
@@ -220,7 +221,7 @@ async def run_pipeline(
             "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
             "pushed_skill_id": stage_skill,
         })
-        st = _loads(stage_raw)
+        st = loads_dict(stage_raw)
         if st.get("status") != "spawned":
             msg = f"[pipeline {pname}] stage {stage!r} could not start: {stage_raw}"
             await _finalize_pipeline(session, psid, "aborted", False)
@@ -263,7 +264,7 @@ async def run_pipeline(
         ctx_raw = await _call_tool_text(session, "musubi_get_subagent_context", {
             "handle_id": handle_id,
         })
-        ctx = _loads(ctx_raw)
+        ctx = loads_dict(ctx_raw)
         if ctx.get("status") != "ok":
             await _call_tool_text(session, "musubi_complete_subagent", {
                 "handle_id": handle_id,
@@ -456,15 +457,13 @@ def _read_stage_agent_md(
     caller fails the stage closed.
     """
     from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
-    from agent.subagent import _default_agents_dir
+    from agent.subagent import _agents_root, read_worker_prompt
 
-    base = agents_dir or _default_agents_dir()
-    root = base.parent.parent if base.name == "agents" else base
-    text = read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
+    text = read_worker_prompt(role, agents_dir)
     if text.strip():
         return text
     return read_agent_prompt(
-        [root], role,
+        [_agents_root(agents_dir)], role,
         purpose=AgentPromptPurpose.PIPELINE_STAGE,
         pipeline_name=pipeline_name,
     )
@@ -504,7 +503,7 @@ async def _recommend_stage_skill(session: Any, role: str, brief: str) -> str | N
             "for_role": role,
             "limit": 1,
         })
-        recommended = _loads(raw).get("recommended") or []
+        recommended = loads_dict(raw).get("recommended") or []
         if recommended:
             skill_id = str(recommended[0].get("skill_id") or "").strip()
             return skill_id or None
@@ -513,17 +512,9 @@ async def _recommend_stage_skill(session: Any, role: str, brief: str) -> str | N
     return None
 
 
-def _loads(raw: str) -> dict[str, Any]:
-    try:
-        obj = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
 def _is_incomplete_tool_outcome(answer: str | None) -> bool:
     """Recognize the typed max-token guard returned by the worker loop."""
     if not isinstance(answer, str) or not answer.startswith("[blocked] "):
         return False
-    payload = _loads(answer.removeprefix("[blocked] "))
+    payload = loads_dict(answer.removeprefix("[blocked] "))
     return payload.get("reason") == "output_too_large_for_single_tool_call"

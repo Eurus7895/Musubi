@@ -59,6 +59,46 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    "no skill evidence"; `planner` has an empty skill allowlist and remains
    skill-less by design.
 
+2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
+   what a request MEANS and starts proving what the record CONTAINS. Governing
+   principle: deciding a turn's triage, scope, or change size is judging — code
+   stops doing it; checking a claim or a measurement is enforcing — code keeps
+   doing it and does more of it.
+   Shipped: the destructive gate (see Completed Tracks) and `agent/evidence.py`
+   — six facts per turn (`names_workspace_path`, `path_exists`,
+   `has_conversation`, `explorer_findings`, `clarification_answered`,
+   `barren_turns`, plus `escaped_paths` for targets outside the workspace root),
+   rendered into the root prompt and logged. **It routes nothing yet**, by
+   design: the distribution is measured before behavior depends on it.
+   Remaining, in order — each depends on the one before, and the deletion lands
+   last because it is the only step that changes the cost profile:
+
+   - **Sufficiency rule (plan step 2).** A `coder` spawn is refused while the
+     evidence vector reports no named workspace path, no explorer findings, and
+     no manifest. This is the enforceable core of "collect enough information
+     first", and the same shape as today's role-order gate, which already
+     refuses a coder before the planner's manifest lands. Fail-closed; the
+     refusal names the legal next role. **First real behaviour change on the
+     routing path** — it belongs in its own PR, where that is the only question
+     on the table.
+   - **Root triage prompt (plan step 3).** Replace the decided route with the
+     evidence vector plus overridable hints. The root states its chosen turn
+     shape in one logged, audited line, so a wrong triage is attributable
+     afterwards instead of invisible.
+   - **Delete the lexical judgment (plan step 4).** `classify_task` drops to two
+     branches — is there work, and is it destructive. Removes `assess_request`,
+     18 of 19 regexes, `_CASUAL_RE`'s zero-token fast path, the pre-run
+     `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
+     the `pending_clarification` column: ~551 lines, and the trigger written
+     into `agent/scope.py`'s `expires-when:`.
+   - **Enforce the declaration (plan step 5).** `manifest_overrun` promoted from
+     a prompt warning to a hard stop on the coder path. With scope
+     LLM-declared, an under-declared radius is the primary abuse channel and
+     must cost the run rather than a paragraph.
+
+   Plan:
+   [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
@@ -67,6 +107,18 @@ enforcement path for the same dimension.
 
 ### Backlog
 
+- **A skipped MCP server should say which one and why.** External servers are
+  fail-open by design — one that is misconfigured, missing, or slow is logged
+  and skipped, never fatal. But the log line (`agent/mcp_gateway.py:313`) prints
+  only the server's name and the exception, which leaves the two questions an
+  operator actually has unanswered: *which transport was it* (a stdio `command`
+  and an HTTP `url` fail for entirely different reasons), and *how long did it
+  wait* — with `timeout_s` defaulting to 30 s, a timeout and an instant refusal
+  read identically. In the traced session this produced
+  `!mcp 'local' skipped: CancelledError`, which named no cause at all; the
+  cause-unwrapping half was fixed in `a689dba`, the transport and elapsed-time
+  half was not. Small and self-contained: add the transport kind and elapsed ms
+  to the line. No behaviour change — the server is skipped either way.
 - **Installer runtime reduction.** Prefer a bundled or locally repairable
   Python core payload so first run does not depend on global `pip install` or
   manual `PATH` edits. Keep network install as a fallback for development
@@ -103,6 +155,31 @@ enforcement path for the same dimension.
 
 ---
 
+## Dissolution candidates
+
+Every `musubi-tier: ephemeral` component, with the trigger that retires it and
+what its removal buys. This is the table `CLAUDE.md` § Substrate vs ephemeral
+points at; the tags in the source files are the source of truth, and this list
+exists so the removal cost is visible in one place rather than by `grep`.
+
+| Component | `expires-when:` | `cost-lever:` |
+|---|---|---|
+| `agent/scope.py` | the root triages its own turn from the evidence vector, leaving one deterministic question — is the request destructive? — whose answer is a warning, not a refusal | 18 of 19 regexes, `assess_request`, the pre-run `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, and the `pending_clarification` column (~551 lines) |
+| `agent/subagent.py` | models gain reliable native multi-agent tool-use | the standalone spawn→run→complete driver (~120 lines) |
+| `session/sub_sessions.py` | models gain reliable native multi-agent tool-use | ~400 lines of lifecycle + cascade-abandon machinery |
+| `agent/pipeline_runner.py` | models orchestrate multi-step pipelines natively | the driver-side stage sequencer (~90 lines) |
+| `memory/session_distiller.py` | the 4-stage pipeline is dissolved | ~250 lines tied to the planner-designer-coder-reviewer shape |
+| `session/correction_loop.py` | models pass verifier checks on first try at 95th-percentile rate | the retry agent + `validation_feedback` pipeline |
+| `.github/agents/**` (14 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
+
+Two triggers dominate: *native multi-agent tool-use* retires the spawn and
+sub-session machinery together (~520 lines), and *the root triages its own turn*
+retires the lexical layer. Neither is scheduled — they fire on model capability,
+not on a date. `scripts/check_musubi_tier.py` fails CI when a new or modified
+file in scope carries no tag, so this list cannot silently fall behind the code.
+
+---
+
 ## Postponed
 
 - **Dissolve the 4-stage pipeline shape.** The staged pipeline shape remains
@@ -112,6 +189,50 @@ enforcement path for the same dimension.
 ---
 
 ## Completed Tracks
+
+- Destruction is gated on a measurement, not on a sentence — the old guard read
+  the user's *sentence* for delete-ish words, so it refused the honest request
+  ("delete all \*.html") while `rm -rf build` reached `musubi_run_command`
+  untouched, whose own contract says *"No 'dangerous command' detection"*. The
+  lexical regex is now a **warning** to the model and routes nothing
+  (`RouteKind.MANUAL_DESTRUCTIVE` was added during the refactor, then deleted
+  once nothing could produce it). The hard stop moved to the tool boundary:
+  `agent/blast_radius.py::measure` resolves what a call would destroy before it
+  runs, counting deletes from argv verbs **in command position** (`grep -r rm .`
+  passes; `find … | xargs rm` does not) and overwrites per `musubi_write_file`,
+  at delete N=1 / overwrite N=5 per run. A command whose targets cannot be
+  resolved statically is `unanalyzable`, which is over threshold — fail-closed.
+  Consent is a token the harness mints (`allow-` + 6 hex over the sorted
+  destruction keys, so one extra file mints a different token and approval
+  cannot silently widen) and matches literally against the **user-role**
+  message; a model cannot author a user turn, so the token is structural proof
+  a human granted it, and it is held in a run-scoped `DestructiveGate` rather
+  than on `Orchestration` — a leaf worker carries no `Orchestration`, so its
+  refusals were recorded nowhere and could never be approved.
+  `_ensure_grant_visible` re-appends any token the model
+  dropped from its answer, and the Console renders Approve/Reject that submit
+  that same token through the ordinary `send_chat` route — one mechanism, two
+  surfaces, no GUI-only authority. Splitting judging from enforcing came with
+  it: `change_assessment.py` → `manifest.py` (substrate, arithmetic over an
+  LLM-declared radius), all 19 lexical regexes into `scope.py` (**re-tiered
+  substrate → ephemeral**, HI #9 ask approved). Plan:
+  [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
+
+- Terminating clarification — the deterministic "stops at one clarification"
+  halt had nothing counting to one. `classify_task` reads a single message, so
+  the answer to *"What should the website do…?"* ("i would like to create a
+  weather checking website") re-matched the same broad-product branch and drew
+  the identical sentence back: three turns, zero model calls, zero files, a
+  fixed point rather than a stall. `agent_turns` now carries
+  `clarification_request` (the request a turn halted on, NULL when the turn
+  ran), `db.pending_clarification` reads it from the latest turn only, and a
+  second `ask_scope` on the same chat merges the pending request with the
+  user's answer and routes it to a planner —
+  `classify_task(…, allow_clarification=False)`, which rewrites every
+  `ask_scope` return and strips the question out of the carried assessment. The
+  escape moves one way only (it can remove a halt, never add one, never widen a
+  route) and fails toward the old behavior if storage is unreadable. Plan:
+  [`2026-07-29-clarification-terminates.md`](./superpowers/plans/2026-07-29-clarification-terminates.md)
 
 - Console now-first Orchestrator and design tokens — the view that answers
   "what is the agent doing right now?" spent ~206 px of stacked chrome before

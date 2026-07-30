@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
 from agent.scope import classify_task
 
@@ -103,7 +104,8 @@ def test_outcome_packet_bounds_unstructured_fallback() -> None:
     )
 
     assert len(packet.summary) <= 800
-    assert packet.summary.endswith("… [truncated]")
+    assert TRUNCATION_MARK in packet.summary
+    assert packet.summary.endswith(" chars]")
 
 
 def test_goal_state_keeps_exact_intent_and_root_only_usage() -> None:
@@ -429,3 +431,27 @@ def test_no_overrun_within_the_declared_radius() -> None:
 
     assert state.manifest_overrun() is None
     assert "manifest_overrun=" not in state.render_decision_block()
+
+
+def test_decision_block_never_shows_a_second_contradictory_route() -> None:
+    # Two components decide the route from the same sentence, and on every
+    # sensitive request they disagree: `assess_request` reads "make a payments
+    # dashboard" as a bounded artifact (single_coder) while `classify_task`
+    # withholds the shortcut (planner_then_coder_check). Rendering both put
+    # two contradictory orders into one prompt. Only the governing route is
+    # shown; the bands still carry what the assessment knows.
+    from agent.scope import classify_task
+
+    task = "make a payments dashboard"
+    hint = classify_task(task)
+    assert hint.assessment is not None
+    assert hint.assessment.route != hint.route, "fixture no longer disagrees"
+
+    state = GoalState.create(
+        intent=task, scope=hint.kind.value, route=hint.route,
+        assessment=hint.assessment,
+    )
+    block = state.render_decision_block()
+
+    assert "ambiguity:low,impact:low,risk:low" in block
+    assert hint.assessment.route not in block

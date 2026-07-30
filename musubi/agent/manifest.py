@@ -1,17 +1,25 @@
-"""Deterministic request and change-manifest assessment.
+"""Deterministic enforcement of a planner-declared change manifest.
 
 musubi-tier: substrate
-expires-when: never - ambiguity, blast radius, and risk gates remain useful
-  independently of model quality.
+expires-when: never - arithmetic over an LLM-declared blast radius is
+  governance, not a compensation for a weak model. A stronger planner makes
+  the DECLARATION better; it does not remove the need to check it.
+
+This file judges nothing about English. Its input is the nine-field JSON a
+planner emits after reading the code, and its output follows from counting:
+files against a ceiling, subsystems against a ceiling, critical flags against
+a deny rule. That is why it survives the deletion of `agent/scope.py`, which
+answers the same question by pattern-matching the user's sentence.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from agent.routes import RouteKind
 
 
 class Band(StrEnum):
@@ -34,74 +42,6 @@ class ChangeAssessment:
     #: when the change is small enough that a wrong default costs one turn to
     #: redirect — never on a critical or multi-file change.
     deferred_unknowns: tuple[str, ...] = ()
-
-
-_BROAD_PRODUCT_RE = re.compile(
-    r"(?i)\b(create|make|build|generate|implement)\b.*\b"
-    r"(website|site|web app|application|app|platform|system)\b"
-)
-_STATIC_FILE_RE = re.compile(
-    r"(?i)\b(static|single[- ]file)\b.*\b(html|website|page)\b|"
-    r"\b[\w.-]+\.html\b"
-)
-_BOUNDED_ARTIFACT_RE = re.compile(
-    r"(?i)\b(create|make|generate|write|build)\b.*\b"
-    r"(file|page|dashboard|report|summary|csv|markdown|json|html|chart|doc)\b"
-)
-_FRAMEWORK_RE = re.compile(r"(?i)\b(next(?:\.js)?|react|vue|svelte|angular)\b")
-_MULTIPART_RE = re.compile(
-    r"(?i)\b(routes?|pages?|shared|navbar|footer|typescript|build check)\b"
-)
-# NOTE: the lexical critical-risk gate was REMOVED. It matched a word, not a
-# change: it refused "fix the typo in the security section of the README" with
-# zero model calls, while "wire up Okta", "add SSO", and "store user passwords"
-# sailed past it. Risk is now declared by the planner in the change manifest
-# (`security_sensitive`), read from the code rather than guessed from the
-# sentence, and enforced deterministically by `assess_manifest`. The
-# sensitive-area vocabulary that remains lives in `agent/scope.py` and has one
-# narrow job: withhold the lone-coder shortcut so a planner reads first.
-
-
-def assess_request(task: str) -> ChangeAssessment:
-    """Bands + route for one raw user request. Pure text analysis, zero LLM.
-
-    This function NEVER returns `plan_design_workflow`: nothing readable from
-    one sentence establishes blast radius, so "large" is decided in exactly one
-    place — `assess_manifest`, from what the planner declares after reading the
-    code. Precedence here: a broad product request without deliverable
-    constraints stops for ONE clarification; bounded static/named artifacts
-    route to a single coder; a framework scaffold with multiple parts is a
-    planned medium change; anything left is a medium change on insufficient
-    evidence.
-    """
-    text = " ".join((task or "").split())
-    if _BROAD_PRODUCT_RE.search(text) and not (
-        _STATIC_FILE_RE.search(text) or _FRAMEWORK_RE.search(text)
-    ):
-        return ChangeAssessment(
-            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
-            ("broad-product-without-deliverable-constraints",),
-            "What should the website do, and should it be a static page or use a specific framework?",
-        )
-    if _STATIC_FILE_RE.search(text) and not _FRAMEWORK_RE.search(text):
-        return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
-            ("bounded-static-artifact",),
-        )
-    if _BOUNDED_ARTIFACT_RE.search(text) and not _FRAMEWORK_RE.search(text):
-        return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
-            ("bounded-named-artifact",),
-        )
-    if _FRAMEWORK_RE.search(text) and _MULTIPART_RE.search(text):
-        return ChangeAssessment(
-            Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
-            ("framework-multifile-change",),
-        )
-    return ChangeAssessment(
-        Band.MEDIUM, Band.MEDIUM, Band.UNKNOWN,
-        "planner_then_coder_check", ("insufficient-deterministic-evidence",),
-    )
 
 
 # ── bounded planner change manifest ──────────────────────────────────────────
@@ -292,7 +232,7 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     if manifest.unknowns and not deferrable:
         listed = ", ".join(manifest.unknowns)
         return ChangeAssessment(
-            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, "ask_scope",
+            Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
             tuple(f"unknown:{item}" for item in manifest.unknowns),
             f"The plan leaves open: {listed}. "
             "Please decide before implementation starts.",
@@ -314,7 +254,7 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             Band.LOW,
             Band.HIGH,
             Band.HIGH if flags else Band.MEDIUM,
-            "plan_design_workflow",
+            RouteKind.PLAN_DESIGN_WORKFLOW,
             evidence,
         )
     if (
@@ -322,12 +262,12 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
         and len(manifest.subsystems) <= 1
     ):
         return ChangeAssessment(
-            Band.LOW, Band.LOW, Band.LOW, "single_coder",
+            Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             (f"files_expected:{manifest.files_expected}",),
             deferred_unknowns=deferred,
         )
     return ChangeAssessment(
-        Band.LOW, Band.MEDIUM, Band.LOW, "planner_then_coder_check",
+        Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
         (
             f"files_expected:{manifest.files_expected}",
             f"subsystems:{len(manifest.subsystems)}",

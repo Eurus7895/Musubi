@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from agent.change_assessment import Band, assess_request
-from agent.scope import ScopeKind, classify_task
+from agent.manifest import Band
+from agent.scope import (
+    BROAD_PRODUCT_QUESTION,
+    ScopeKind,
+    assess_request,
+    classify_task,
+)
 
 
 def test_consultative_question_routes_to_advisory_without_workers() -> None:
@@ -217,12 +222,78 @@ def test_greeting_routes_to_direct_answer_without_workers() -> None:
     assert not hasattr(hint, "max_workers")
 
 
-def test_delete_file_request_routes_to_manual_destructive_answer() -> None:
+def test_delete_request_warns_the_model_instead_of_refusing_the_turn() -> None:
+    # The old branch REFUSED this turn and handed back manual operator steps.
+    # It blocked the user saying plainly what they wanted, while `rm -rf build`
+    # did not match its noun list and reached a coder holding
+    # musubi_run_command. A regex over a sentence may warn; it may not refuse.
+    # The refusal lives in agent/blast_radius.py, where files are counted.
+    from agent.scope import DESTRUCTIVE_WARNING
+
     hint = classify_task("delete all *-dashboard.html files")
 
-    assert hint.kind is ScopeKind.UNKNOWN
-    assert hint.route == "manual_destructive"
-    assert not hasattr(hint, "max_workers")
+    assert hint.route != "manual_destructive", "the halting route is gone"
+    assert DESTRUCTIVE_WARNING in hint.warnings
+    block = hint.prompt_block()
+    assert "warning=This request reads as removing files" in block
+    assert "REFUSES any that deletes a file" in block
+
+    # A request with no deletion in it carries no warning.
+    assert classify_task("create a dashboard file").warnings == ()
+
+
+def test_answered_clarification_never_asks_the_same_question_again() -> None:
+    # The traced loop: turn 1 "create a website" asked the canned question,
+    # turn 2 answered it ("a weather checking website"), and because
+    # `classify_task` reads one message the answer classified identically —
+    # same question, three turns, zero files. With the conversation's one
+    # clarification already spent, the merged request must go to a planner.
+    merged = (
+        "create a website\n\n"
+        "[clarification answer] i would like to create a weather checking website"
+    )
+    assert classify_task(merged).route == "ask_scope"
+
+    hint = classify_task(merged, has_history=True, allow_clarification=False)
+    assert hint.kind is ScopeKind.MEDIUM_CHANGE
+    assert hint.route == "planner_then_coder_check"
+    assert hint.requires == ("plan", "implementation", "verification")
+    # The assessment rides along with the halt stripped out, so nothing
+    # downstream can resurrect the question from it.
+    assert hint.assessment is not None
+    assert hint.assessment.route == "planner_then_coder_check"
+    assert hint.assessment.clarifying_question is None
+    assert "clarification-answered" in hint.assessment.evidence
+
+
+def test_spent_clarification_also_releases_a_vague_follow_up() -> None:
+    # "fix this" halts on its own; as the answer to a question already asked it
+    # carries the prior request's content and must route rather than re-ask.
+    assert classify_task("fix this").route == "ask_scope"
+    assert classify_task(
+        "fix this", allow_clarification=False,
+    ).route == "planner_then_coder_check"
+    # An EMPTY message is the one thing still worth a question: there is no
+    # merged text to plan from.
+    assert classify_task("", allow_clarification=False).route == "ask_scope"
+
+
+def test_spent_clarification_only_removes_halts_never_adds_one() -> None:
+    # The flag may only move routing toward doing the work. Every other route
+    # must classify identically with or without it, so a wrong flag can never
+    # escalate a greeting, an inspection, or a deletion into a mutation.
+    for task in (
+        "hi",
+        "delete all *-dashboard.html files",
+        "open C:\\Workspace\\Musubi",
+        "explain each",
+        "update the header text in landing.html",
+        "add authentication to the app",
+    ):
+        assert (
+            classify_task(task, allow_clarification=False).route
+            == classify_task(task).route
+        ), task
 
 
 # ── deterministic ambiguity/impact/risk assessment ──────────────────────────
@@ -235,9 +306,30 @@ def test_bare_website_creation_requires_clarification() -> None:
     )
     assert result.route == "ask_scope"
     assert result.clarifying_question == (
-        "What should the website do, and should it be a static page or use "
-        "a specific framework?"
+        BROAD_PRODUCT_QUESTION
     )
+
+
+def test_the_clarifying_question_is_one_its_answer_can_settle() -> None:
+    # A question the asker cannot act on is not a governance step. The earlier
+    # wording led with "What should the website do?", which nothing in
+    # `assess_request` tests — so the honest answer "a weather checking
+    # website" re-matched `_BROAD_PRODUCT_RE` with no escape hatch touched and
+    # drew the identical sentence back. Every natural answer to the question as
+    # written must now change the verdict ON ITS OWN, without relying on the
+    # one-question-per-stall escape to break the tie.
+    assert assess_request("create a website").clarifying_question == (
+        BROAD_PRODUCT_QUESTION
+    )
+    for answer, expected in (
+        ("a static page", "single_coder"),
+        ("just a single static page", "single_coder"),
+        ("a static single-file page showing the weather", "single_coder"),
+        ("react", "planner_then_coder_check"),
+        ("next.js please", "planner_then_coder_check"),
+    ):
+        merged = f"create a website\n\n[clarification answer] {answer}"
+        assert classify_task(merged).route == expected, answer
 
 
 def test_constrained_single_file_website_is_simple() -> None:
@@ -314,3 +406,40 @@ def test_ordinary_requests_keep_the_shortcut() -> None:
     # The guard must stay narrow: nothing sensitive, nothing withheld.
     assert classify_task("create a dashboard page").route == "single_coder"
     assert classify_task("update the title in index.html").route == "single_coder"
+
+
+#: Regex count in the lexical routing layer at the moment it was declared
+#: closed for growth. See
+#: docs/superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md —
+#: this layer judges English with pattern matching, the planner's manifest
+#: replaces it, and it is scheduled for deletion.
+LEXICAL_REGEX_CEILING = 19
+
+
+def test_lexical_layer_is_frozen_not_grown() -> None:
+    """The pattern-matching router may be repaired, never extended.
+
+    Fixing a wrong regex keeps the count flat and stays green. ADDING one
+    grows a component that is on the demolition list — the failure is the
+    point: it forces the question "why not in the evidence vector or the
+    planner?" onto a diff, instead of letting the layer quietly accrete the
+    way `_CRITICAL_RISK_RE` and `_LARGE_RISK_RE` did before they drifted
+    apart in 11 places. Raising the ceiling is allowed; doing it silently
+    is not.
+    """
+    import re
+    from pathlib import Path
+
+    lexical = Path(__file__).resolve().parent.parent / "agent"
+    total = sum(
+        len(re.findall(r"^_[A-Z0-9_]+_RE = re\.compile", src, re.M))
+        for src in (
+            (lexical / name).read_text(encoding="utf-8")
+            for name in ("scope.py",)
+        )
+    )
+    assert total <= LEXICAL_REGEX_CEILING, (
+        f"lexical routing layer grew to {total} regexes (ceiling "
+        f"{LEXICAL_REGEX_CEILING}). This layer is scheduled for deletion — "
+        "put new judgment in the planner's manifest or the evidence vector."
+    )

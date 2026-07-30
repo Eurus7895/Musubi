@@ -1,6 +1,7 @@
 // Native DataSource for the Tauri desktop shell. Backend domain snapshots are
 // merged with local Orchestrator composer and Pipeline Studio builder state.
 import { classifyChatCommand, pipelineNameFromCommand } from './chatCommands.js'
+import { approvalScope } from '../model/approvalRequest.js'
 import {
   createPipelineDraft, addStage, moveStage, removeStage, updateStage, updateRecipe,
   setStageSpawns, isDirty, requestTransition, confirmTransition, cancelTransition,
@@ -122,6 +123,43 @@ export default class TauriSource {
       .catch((error) => console.error('[musubi] action ' + kind + ' failed:', error))
   }
 
+  // Every user message leaves by this door — the composer, the Enter key, and
+  // the destructive-approval button alike. Sharing the route is the point: an
+  // approval that took a shortcut would be a consent path the CLI does not
+  // have, and the whole gate rests on approval being an ordinary user turn.
+  _submitChat(raw) {
+    const text = String(raw || '').trim()
+    if (!text) return
+    const requestedChatId = this.state.selectedSession
+      || (this.state.orchestratorChatId === '__pending_orchestrator_session__'
+        ? ''
+        : this.state.viewedOrchestratorChatId || '')
+    const command = classifyChatCommand(text)
+    // The classifier returns a *candidate* name — any single token in the
+    // name position — so the catalog is what decides whether the user
+    // named a recipe. Resolving before the branch is the whole guard:
+    // "use the pipeline runner" parses as 'runner', and taking the
+    // pipeline branch on an unknown name cleared the composer and dropped
+    // the message with nothing sent and no error shown.
+    const namedPipeline = (this.state.pipelineCatalog || [])
+      .find((entry) => entry.name === pipelineNameFromCommand(text))?.name || ''
+    if (command.kind === 'openPipelinePicker' || namedPipeline) {
+      const selected = namedPipeline || this.state.selectedPipeline
+      this._setLocal({ draft: '', runMode: 'pipeline', selectedPipeline: selected || '' })
+      return
+    }
+    const mode = this.state.runMode === 'pipeline' ? 'pipeline' : 'direct'
+    const pipelineName = mode === 'pipeline' ? this.state.selectedPipeline : ''
+    if (mode === 'pipeline') {
+      const entry = (this.state.pipelineCatalog || []).find((item) => item.name === pipelineName)
+      if (!entry?.runnable) return
+    }
+    // The offer is spent once anything is sent: the next turn rewrites the
+    // chat's pending grants, so a stale button must not survive the send.
+    this._setLocal({ draft: '', selectedSession: null, selected: null, dismissedApproval: '' })
+    this._action('send_chat', [text, requestedChatId, mode, pipelineName])
+  }
+
   _recipePayload() {
     const builder = this.state.pipelineBuilder
     return {
@@ -192,36 +230,22 @@ export default class TauriSource {
       },
       cancelAgent: () => this._action('cancel_agent'),
       selectProfile: (name) => this._action('select_profile', [name]),
-      sendChat: () => {
-        const text = String(this.state.draft || '').trim()
-        if (!text) return
-        const requestedChatId = this.state.selectedSession
-          || (this.state.orchestratorChatId === '__pending_orchestrator_session__'
-            ? ''
-            : this.state.viewedOrchestratorChatId || '')
-        const command = classifyChatCommand(text)
-        // The classifier returns a *candidate* name — any single token in the
-        // name position — so the catalog is what decides whether the user
-        // named a recipe. Resolving before the branch is the whole guard:
-        // "use the pipeline runner" parses as 'runner', and taking the
-        // pipeline branch on an unknown name cleared the composer and dropped
-        // the message with nothing sent and no error shown.
-        const namedPipeline = (this.state.pipelineCatalog || [])
-          .find((entry) => entry.name === pipelineNameFromCommand(text))?.name || ''
-        if (command.kind === 'openPipelinePicker' || namedPipeline) {
-          const selected = namedPipeline || this.state.selectedPipeline
-          this._setLocal({ draft: '', runMode: 'pipeline', selectedPipeline: selected || '' })
-          return
-        }
-        const mode = this.state.runMode === 'pipeline' ? 'pipeline' : 'direct'
-        const pipelineName = mode === 'pipeline' ? this.state.selectedPipeline : ''
-        if (mode === 'pipeline') {
-          const entry = (this.state.pipelineCatalog || []).find((item) => item.name === pipelineName)
-          if (!entry?.runnable) return
-        }
-        this._setLocal({ draft: '', selectedSession: null, selected: null })
-        this._action('send_chat', [text, requestedChatId, mode, pipelineName])
-      },
+      sendChat: () => this._submitChat(this.state.draft),
+      // Approval is a user message, not a control channel. It goes through the
+      // same submit as typing, so the backend sees one kind of consent and the
+      // GUI gains no authority the CLI lacks — the token still has to match
+      // one the harness minted, and a stale one simply grants nothing.
+      approveDestructive: (token) => this._submitChat(token),
+      // Refusing needs no message: the gate already stopped the call and the
+      // turn already ended. Rejecting is declining to grant, so it only clears
+      // the offer from the screen.
+      // Scoped to the conversation it was rejected in. A token is a hash of the
+      // destruction key set, so deleting the same path in a different chat
+      // mints the SAME token — comparing tokens alone would silently hide a
+      // brand-new offer because an unrelated chat had declined one.
+      dismissApproval: (token) => this._setLocal({
+        dismissedApproval: approvalScope(this.state, String(token || '')),
+      }),
       openArtifact: (path, surface = 'orchestrator') => this._action('open_artifact', [path, surface]),
 
       newPipelineRecipe: () => this._replaceBuilder(

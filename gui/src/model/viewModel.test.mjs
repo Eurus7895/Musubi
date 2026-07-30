@@ -1250,3 +1250,67 @@ test('clearing a node selection does not evict the operator from a session', () 
   vm.clearNodeSelect()
   assert.deepEqual(calls, ['clearNodeSelect'])
 })
+
+const destructiveRefusal = {
+  role: 'driver',
+  text: 'This would DELETE 3 file(s): build/a.js, build/b.js, build/c.js.\n\n'
+    + 'To approve exactly this and nothing else, reply with: allow-a3f9c1',
+}
+
+test('a pending destructive refusal offers approve and reject beside the chat', () => {
+  const calls = []
+  const act = {
+    ...actions(),
+    approveDestructive: (token) => calls.push(['approve', token]),
+    dismissApproval: (token) => calls.push(['dismiss', token]),
+  }
+  const vm = buildViewModel(baseState({ chat: [{ role: 'you', text: 'clean build' }, destructiveRefusal] }), act)
+
+  assert.equal(vm.approval.token, 'allow-a3f9c1')
+  assert.equal(vm.approval.summary, 'delete 3 file(s)')
+  vm.approval.onApprove()
+  assert.deepEqual(calls, [['approve', 'allow-a3f9c1']])
+})
+
+test('rejecting clears the offer without sending anything', () => {
+  const state = {
+    chat: [destructiveRefusal],
+    orchestratorChatId: 'gui-orchestrator-a',
+    dismissedApproval: 'gui-orchestrator-a allow-a3f9c1',
+  }
+
+  assert.equal(buildViewModel(baseState(state), actions()).approval, null)
+})
+
+test('a rejection in one conversation does not hide the offer in another', () => {
+  // Tokens hash the destruction key set, so deleting the same path in a
+  // different chat mints the SAME token. Comparing tokens alone hid a real
+  // offer because an unrelated conversation had already declined one.
+  const state = {
+    chat: [destructiveRefusal],
+    orchestratorChatId: 'gui-orchestrator-b',
+    dismissedApproval: 'gui-orchestrator-a allow-a3f9c1',
+  }
+
+  assert.equal(buildViewModel(baseState(state), actions()).approval.token, 'allow-a3f9c1')
+})
+
+test('approval obeys the composer, so a busy or read-only surface offers nothing', () => {
+  // The button is the composer minus a keystroke. If the composer cannot send
+  // — driver running, pipeline holding the driver, historical session — then
+  // approving would either be dropped or land in the wrong conversation.
+  const busy = baseState({
+    chat: [destructiveRefusal],
+    driverStatus: { running: true, surface: 'orchestrator', chatId: '', task: 'x', startedAt: 1, stdoutTail: '', stderrTail: '' },
+  })
+  const vm = buildViewModel(busy, actions())
+
+  assert.equal(vm.sendDisabled, true)
+  assert.equal(vm.approval, null)
+})
+
+test('an ordinary answer leaves the composer as the only way to reply', () => {
+  const vm = buildViewModel(baseState({ chat: [{ role: 'driver', text: 'All done.' }] }), actions())
+
+  assert.equal(vm.approval, null)
+})

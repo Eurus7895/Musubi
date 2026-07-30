@@ -22,12 +22,12 @@ spawn tool, so delegation is one level deep.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path
 from typing import Any
 
+from agent.jsonio import loads_dict
 from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
 
 # Symbolic capability (role allow-list) → MCP tool names. The role allow-list
@@ -118,7 +118,7 @@ async def run_subagent(
 
 
     raw = await _call_tool_text(session, "musubi_spawn_subagent", spawn_args)
-    spawn = _loads(raw)
+    spawn = loads_dict(raw)
     if spawn.get("status") != "spawned":
         if spawn.get("error_kind") == "policy_denied":
             raise PolicyDeniedError(
@@ -138,7 +138,7 @@ async def run_subagent(
     ctx_raw = await _call_tool_text(
         session, "musubi_get_subagent_context", {"handle_id": handle_id}
     )
-    ctx = _loads(ctx_raw)
+    ctx = loads_dict(ctx_raw)
     if ctx.get("status") != "ok":
         failure_summary = f"sub-agent context fetch failed: {ctx_raw[:200]}"
         await _safe_complete(
@@ -323,7 +323,7 @@ async def run_subagent(
     complete_raw = await _call_tool_text(
         session, "musubi_complete_subagent", complete_args,
     )
-    comp = _loads(complete_raw)
+    comp = loads_dict(complete_raw)
     # Prefer the harness-verified summary (firewalled / truncated) when present.
     verified = comp.get("summary") if isinstance(comp, dict) else None
     returned_summary = verified or summary
@@ -471,7 +471,7 @@ async def _run_mechanical_gate(
         detail = "no lintable files"
     else:
         raw = await _call_tool_text(session, "musubi_run_lint", {"files": lintable})
-        res = _loads(raw)
+        res = loads_dict(raw)
         if not isinstance(res, dict):
             result, detail = "error", "validator returned no result"
         elif res.get("passed"):
@@ -637,10 +637,26 @@ def _strip_frontmatter(md: str) -> str:
     return after.lstrip("\n")
 
 
-def _read_agent_md(role: str, agents_dir: Path | None) -> str:
+def _agents_root(agents_dir: Path | None) -> Path:
+    """The repo root that holds `.github/agents`, from a possibly-None dir."""
     base = agents_dir or _default_agents_dir()
-    root = base.parent.parent if base.name == "agents" else base
-    return read_agent_prompt([root], role, purpose=AgentPromptPurpose.WORKER)
+    return base.parent.parent if base.name == "agents" else base
+
+
+def read_worker_prompt(role: str, agents_dir: Path | None = None) -> str:
+    """`workers/<role>.agent.md`, or "" when the role has no worker prompt.
+
+    Public because the pipeline runner needs exactly this lookup as the first
+    half of its own two-step resolution, and used to reimplement the three
+    lines rather than call them.
+    """
+    return read_agent_prompt(
+        [_agents_root(agents_dir)], role, purpose=AgentPromptPurpose.WORKER,
+    )
+
+
+def _read_agent_md(role: str, agents_dir: Path | None) -> str:
+    return read_worker_prompt(role, agents_dir)
 
 
 def _default_agents_dir() -> Path:
@@ -649,14 +665,6 @@ def _default_agents_dir() -> Path:
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
-
-
-def _loads(raw: str) -> dict[str, Any]:
-    try:
-        obj = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return obj if isinstance(obj, dict) else {}
 
 
 async def _safe_complete(session: Any, handle_id: str, *, status: str, summary: str) -> None:

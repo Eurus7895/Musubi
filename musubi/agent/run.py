@@ -63,6 +63,16 @@ from agent.goal_state import (
     GoalState,
     root_decision_tools,
 )
+from agent.blast_radius import (
+    DestructiveGate,
+    approved_keys_from,
+    covered_by,
+    describe,
+    encode_pending,
+    exceeds_threshold,
+    grant_token,
+    measure,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
@@ -83,7 +93,11 @@ from agent.mcp_gateway import (
     find_mcp_config_path,
     load_mcp_servers,
     mcp_config_candidates,
+    mcp_tool_to_schema,
 )
+from agent.evidence import collect as collect_evidence
+from agent.routes import RouteKind
+from agent.textfmt import bounded
 from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
@@ -143,6 +157,17 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
 # distinguishable. Same ContextVar pattern as above — no loop-signature changes.
 _worker_log_label: contextvars.ContextVar[str] = (
     contextvars.ContextVar("musubi_worker_log_label", default="root")
+)
+
+# The destructive gate's state for one run. Unlike the two above, this sink is
+# set ONCE by `run_agent` and deliberately NOT re-set per worker: every worker
+# shares it. That is the point — the overwrite ceiling counts across the run,
+# an approval the user grants covers the coder the root dispatches, and a
+# refusal raised inside a leaf reaches the turn record that persists its token.
+# Threading it as a parameter would mean touching ten call sites and would
+# still miss leaves, which are handed `orchestration=None` by design.
+_destructive_gate: contextvars.ContextVar[DestructiveGate | None] = (
+    contextvars.ContextVar("musubi_destructive_gate", default=None)
 )
 
 
@@ -253,6 +278,10 @@ class Orchestration:
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
+    # The destructive gate's state deliberately does NOT live here. See
+    # `_destructive_gate` below: it is run-scoped, and an Orchestration
+    # describes a position in the spawn tree — the one thing the gate must be
+    # blind to, since leaf workers carry no Orchestration at all.
 
     @property
     def enabled(self) -> bool:
@@ -344,7 +373,7 @@ class Orchestration:
             ):
                 self.goal_state.apply_planner_manifest(summary)
                 if self.goal_state.role_chain or (
-                    self.goal_state.route == "plan_design_workflow"
+                    self.goal_state.route == RouteKind.PLAN_DESIGN_WORKFLOW
                 ):
                     # A large change owes designer → coder → reviewer after the
                     # planner. That is four workers, one more than the default
@@ -612,14 +641,52 @@ async def run_agent(
     turn_started_at = time.time()
     stats = AgentRunStats()
     budget = _build_token_budget(max_tokens, log)
-    scope_hint = classify_task(
-        task,
-        has_history=_chat_has_history(
-            chat_id, db_path=context_compression_db_path, log=log,
-        ),
+    # One gate for the whole run, published before any tool can be dispatched.
+    # Every worker reads this same object — root, nested, and the leaf coder
+    # that carries no Orchestration at all.
+    destructive_gate = DestructiveGate()
+    _destructive_gate.set(destructive_gate)
+    has_conversation = _chat_has_history(
+        chat_id, db_path=context_compression_db_path, log=log,
     )
+    # The request the rest of the turn works from. It differs from `task` in
+    # exactly one case: this message is the ANSWER to the one deterministic
+    # clarification, and the pending request is folded back in so the planner
+    # gets the whole intent rather than the fragment the user just typed.
+    #
+    # The pending request is checked BEFORE classifying, not after. Checking
+    # after — gated on the answer itself routing to ASK_SCOPE — assumed every
+    # answer looks as broad as the question. It does not: the question offers
+    # "React" and "a single static HTML page" as answers, and both classify as
+    # bare advisory follow-ups once the chat has history. Those turns were
+    # answered as advice, and because a completed turn writes a row with no
+    # `clarification_request`, the pending marker was cleared and the build the
+    # user actually asked for was lost with it.
+    #
+    # The cost of the other direction is bounded and visible: a user who
+    # ignores the question and asks something unrelated gets their new message
+    # merged with the old request. The merge only ever REMOVES a halt — it
+    # cannot add one, and it cannot widen a route — so a wrong merge costs one
+    # turn, while a wrong drop costs the request.
+    pending = _pending_clarification(
+        chat_id, db_path=context_compression_db_path, log=log,
+    )
+    effective_task = task
+    clarification_answered = bool(pending)
+    if pending:
+        effective_task = f"{pending}\n\n[clarification answer] {task}"
+        scope_hint = classify_task(
+            effective_task, has_history=True, allow_clarification=False,
+        )
+        print(
+            "[agent] clarification answered; merged the pending request "
+            f"and routed to {scope_hint.route} instead of asking again",
+            file=log,
+        )
+    else:
+        scope_hint = classify_task(task, has_history=has_conversation)
     goal_state = GoalState.create(
-        intent=task,
+        intent=effective_task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
@@ -643,7 +710,21 @@ async def run_agent(
             f"{chat_usage['barren_turns']} turns without a file",
             file=log,
         )
-    direct_answer = _deterministic_scope_answer(task, scope_hint, goal_state)
+    # What the RECORD establishes, as distinct from what the sentence suggests.
+    # Nothing routes on this yet — it renders into the root's prompt and prints
+    # one line per turn so the distribution can be measured before any behavior
+    # depends on it. See the plan's step 1.
+    evidence = collect_evidence(
+        effective_task,
+        has_conversation=has_conversation,
+        explorer_findings=_has_explorer_findings(goal_state),
+        clarification_answered=clarification_answered,
+        barren_turns=chat_usage["barren_turns"],
+    )
+    print(evidence.log_line(), file=log)
+    direct_answer = _deterministic_scope_answer(
+        effective_task, scope_hint, goal_state,
+    )
     if direct_answer is not None:
         print(f"[agent] {scope_hint.log_line()}", file=log)
         print(
@@ -669,6 +750,15 @@ async def run_agent(
                 stats=stats,
                 db_path=context_compression_db_path,
                 log=log,
+                # Only an ask_scope halt leaves a question outstanding. A
+                # casual greeting or a destructive-operation warning is a
+                # complete answer, so it must not arm the merge on the next
+                # message.
+                clarification_request=(
+                    effective_task[:MAX_PENDING_CLARIFICATION_CHARS]
+                    if scope_hint.route == RouteKind.ASK_SCOPE
+                    else None
+                ),
             )
         return direct_answer
     params = StdioServerParameters(
@@ -697,7 +787,7 @@ async def run_agent(
 
         gateway = McpGateway()
         mcp_tools = (await session.list_tools()).tools
-        local_tools = [_mcp_to_anthropic_tool(t) for t in mcp_tools]
+        local_tools = [mcp_tool_to_schema(t) for t in mcp_tools]
         surface = _tool_surface(tool_surface)
         visible_local_tools = filter_tool_catalog(local_tools, surface)
         gateway.register_local(session, visible_local_tools)
@@ -745,23 +835,62 @@ async def run_agent(
             f"musubi_total={len(mcp_tools)}, external={n_external})",
             file=log,
         )
+        # The destructive gate measures the calls it can resolve, and it can
+        # only resolve tools whose argument shape it knows. Saying so out loud
+        # is the honest alternative to inferring "is this tool destructive?"
+        # from a schema — an inference nothing could check, and the exact
+        # species of guess this design removes.
+        if external_tools:
+            print(
+                f"[agent] destructive gate covers musubi_write_file and "
+                f"musubi_run_command; {len(external_tools)} external tool(s) "
+                f"are outside it: "
+                f"{', '.join(sorted(str(t.get('name', '?')) for t in external_tools)[:8])}",
+                file=log,
+            )
 
         # Open a parent session up front so the model's sub-agent spawns
         # have a valid parent. The "agent" identity short-circuits the
         # spawn firewall to MAIN_SUBAGENT_ALLOWLIST["agent"] regardless of
         # the session's pipeline tag (policy_engine `_effective_spawn_roles`).
-        parent_session_id = await _open_parent_session(session, task, log, chat_id)
+        parent_session_id = await _open_parent_session(
+            session, effective_task, log, chat_id,
+        )
         orchestration = Orchestration(
             parent_session_id=parent_session_id,
             goal_state=goal_state,
         )
+        # Consent is matched against the RAW user message. A model cannot
+        # author a user turn, so a token found here is proof a human typed it —
+        # and the match is string equality against a value the harness itself
+        # minted, not an interpretation of what the sentence means.
+        approved = approved_keys_from(
+            _pending_destructive(
+                chat_id, db_path=context_compression_db_path, log=log,
+            ),
+            task,
+        )
+        if approved:
+            destructive_gate.approved = approved
+            print(
+                f"[agent] destructive approval accepted for {len(approved)} "
+                f"path(s)",
+                file=log,
+            )
         print(f"[agent] {scope_hint.log_line()}", file=log)
-        system_prompt = build_system_prompt(scope_hint.prompt_block())
+        # Hint first, evidence second: the hint is an opinion the root may
+        # override, the evidence is the record it must not contradict.
+        system_prompt = build_system_prompt(
+            scope_hint.prompt_block() + "\n\n" + evidence.prompt_block()
+        )
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
             print("[agent] plan-first requested (--plan)", file=log)
         initial_messages: list[dict[str, Any]] | None = None
         if chat_id:
+            # The RAW message, not `effective_task`: the pending request the
+            # merge folded in is already on record as its own earlier row, and
+            # replaying it twice would seed the model with a duplicate.
             _append_chat_message(
                 chat_id, "user", task,
                 db_path=context_compression_db_path, log=log,
@@ -798,7 +927,7 @@ async def run_agent(
                     "parent_session_id": parent_session_id,
                     "parent_agent_name": "agent",
                     "pipeline_name": pipeline,
-                    "brief": task,
+                    "brief": effective_task,
                 }
                 print(
                     f"[agent] running pipeline {pipeline!r} directly "
@@ -822,7 +951,7 @@ async def run_agent(
                 final_answer, _ = await run_unit(
                     session, vendor, tools,
                     system_prompt=system_prompt,
-                    user_message=task,
+                    user_message=effective_task,
                     max_cycles=max_cycles, log=log,
                     orchestration=orchestration, gateway=gateway,
                     spawn_catalog=worker_catalog,
@@ -853,6 +982,10 @@ async def run_agent(
         raise RuntimeError(
             f"agent exceeded {max_cycles} cycles without a final answer"
         )
+    if destructive_gate.pending:
+        final_answer = _ensure_grant_visible(
+            final_answer, destructive_gate.pending
+        )
     if chat_id:
         _append_chat_message(
             chat_id, "assistant", final_answer,
@@ -870,6 +1003,11 @@ async def run_agent(
             log=log,
             delivered_artifact=(
                 orchestration is not None and orchestration.delivered_artifact
+            ),
+            pending_destructive=(
+                encode_pending(destructive_gate.pending)
+                if destructive_gate.pending
+                else None
             ),
         )
     _log_turn_usage(log, stats, budget)
@@ -1930,9 +2068,9 @@ def _deterministic_scope_answer(
     scope_hint: ScopeHint,
     goal_state: GoalState | None = None,
 ) -> str | None:
-    if scope_hint.route == "direct_answer":
+    if scope_hint.route == RouteKind.DIRECT_ANSWER:
         return "Hi! How can I help?"
-    if scope_hint.route == "ask_scope":
+    if scope_hint.route == RouteKind.ASK_SCOPE:
         # High ambiguity halts BEFORE any parent session, model call, or worker
         # spawn: one deterministic clarifying question, zero tokens spent.
         assessment = scope_hint.assessment
@@ -1943,16 +2081,6 @@ def _deterministic_scope_answer(
     # that route from text, and when a manifest produces it the goal runs the
     # designer → coder → reviewer chain instead of halting. A large change is
     # more review, not a refusal handed back as a command to type.
-    if scope_hint.route == "manual_destructive":
-        return (
-            "I cannot safely delete files from this route because deletion is "
-            "destructive and there is no interactive confirmation step here.\n\n"
-            "To delete them manually from the workspace root, use one of these:\n"
-            "- In VS Code Explorer: select the matching files and press Delete.\n"
-            "- In PowerShell: `Remove-Item -Force *-dashboard.html`\n"
-            "- In cmd: `del /f *-dashboard.html`\n\n"
-            f"Requested pattern/task: `{task}`"
-        )
     return None
 
 
@@ -2008,6 +2136,27 @@ def _load_chat_history(chat_id: str, *, db_path: Path, log: Any) -> dict[str, An
         return {"messages": [], "total_tokens": 0, "truncated": False}
 
 
+#: Roles whose outcome establishes a fact about the workspace rather than
+#: changing it. A coder's report is not evidence that the target was found —
+#: it is evidence that something was written, which is a different claim.
+_READ_ONLY_EVIDENCE_ROLES = frozenset({"explorer", "investigator", "finder"})
+
+
+def _has_explorer_findings(goal_state: GoalState) -> bool:
+    """True once a read-only worker has reported into this turn.
+
+    Empty at turn start, by construction: a fresh process holds a fresh
+    `GoalState`. That is correct rather than a limitation — evidence gathered
+    in a PREVIOUS turn is only usable if it was written down, and what was
+    written down is the conversation, which `has_conversation` already covers.
+    """
+    return any(
+        outcome.role in _READ_ONLY_EVIDENCE_ROLES
+        and outcome.status not in {"failed", "error"}
+        for outcome in goal_state.outcomes
+    )
+
+
 def _chat_has_history(
     chat_id: str | None, *, db_path: Path, log: Any,
 ) -> bool:
@@ -2033,6 +2182,61 @@ def _chat_has_history(
             file=log,
         )
         return False
+
+
+#: Cap on the pending request carried across turns. A merged brief still has to
+#: fit the per-call sizing rule, and the full original text remains in
+#: `conversation_messages` for replay either way.
+MAX_PENDING_CLARIFICATION_CHARS = 2000
+
+
+def _pending_clarification(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> str | None:
+    """The request whose clarification this chat is still waiting to answer.
+
+    Returns None on any failure, which is the safe direction: the driver then
+    asks the question again rather than merging a request it could not read.
+    """
+    if not chat_id:
+        return None
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.pending_clarification(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] pending clarification read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return None
+
+
+def _pending_destructive(
+    chat_id: str | None, *, db_path: Path, log: Any,
+) -> str | None:
+    """Approval tokens this chat is waiting on, or None on any failure.
+
+    None is the safe direction: an unreadable grant leaves the gate shut.
+    """
+    if not chat_id:
+        return None
+    try:
+        _ensure_core_import_path()
+        from storage import db
+
+        db.init_db(db_path)
+        return db.pending_destructive(chat_id, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - probe must not break the turn
+        print(
+            f"[agent] pending destructive read failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=log,
+        )
+        return None
 
 
 def _chat_turn_usage(
@@ -2097,13 +2301,7 @@ REPLAY_TOOL_ROW_MAX_CHARS = 2000
 
 
 def _elide_replayed_tool_row(content: str) -> str:
-    if len(content) <= REPLAY_TOOL_ROW_MAX_CHARS:
-        return content
-    elided = len(content) - REPLAY_TOOL_ROW_MAX_CHARS
-    return (
-        content[:REPLAY_TOOL_ROW_MAX_CHARS]
-        + f"\n…[{elided} chars elided on replay]"
-    )
+    return bounded(content, REPLAY_TOOL_ROW_MAX_CHARS, collapse=False)
 
 
 def _record_agent_turn(
@@ -2118,6 +2316,8 @@ def _record_agent_turn(
     db_path: Path,
     log: Any,
     delivered_artifact: bool = False,
+    clarification_request: str | None = None,
+    pending_destructive: str | None = None,
 ) -> None:
     try:
         _ensure_core_import_path()
@@ -2138,20 +2338,14 @@ def _record_agent_turn(
             total_ms=int((ended_at - started_at) * 1000),
             db_path=db_path,
             delivered_artifact=delivered_artifact,
+            clarification_request=clarification_request,
+            pending_destructive=pending_destructive,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry is non-fatal
         print(
             f"[agent] agent_turn write failed: {type(exc).__name__}: {exc}",
             file=log,
         )
-
-
-def _mcp_to_anthropic_tool(tool: Any) -> dict[str, Any]:
-    return {
-        "name": tool.name,
-        "description": tool.description or "",
-        "input_schema": tool.inputSchema or {"type": "object", "properties": {}},
-    }
 
 
 def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
@@ -2432,6 +2626,119 @@ def _charge_budget_postflight(
         )
 
 
+#: Grant that lets a run past the destructive gate. The OPERATOR sets it — a
+#: worker cannot set its own env, so this is a human's decision by
+#: construction, not something the model can talk its way into.
+DESTRUCTIVE_GRANT_ENV = "MUSUBI_ALLOW_DESTRUCTIVE"
+
+
+def _destructive_grant() -> bool:
+    return os.environ.get(DESTRUCTIVE_GRANT_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _preflight_destructive_batch(
+    tool_uses: list[dict[str, Any]],
+    *,
+    log: Any,
+) -> dict[str, str]:
+    """Measure each call's blast radius; return refusals keyed by tool_use id.
+
+    This is the hard stop the old lexical guard could never be. It reads the
+    CALL, not the user's sentence, so it sees `rm -rf build` — which the old
+    guard let through to a coder holding `musubi_run_command` — and it counts
+    the files rather than asserting a mood.
+
+    Measurement failures do not silently allow: `measure` never raises, and a
+    delete whose targets cannot be attributed comes back `unanalyzable`, which
+    is over threshold.
+
+    State comes from the run-scoped `_destructive_gate`, never from the caller's
+    `Orchestration`. A leaf worker has no Orchestration, and reading one meant
+    its refusals were recorded nowhere — the user could echo the token and the
+    same deletion would be refused again, indefinitely.
+    """
+    gate = _destructive_gate.get() or DestructiveGate()
+    totals = gate.totals
+    granted = _destructive_grant()
+    refusals: dict[str, str] = {}
+    for tu in tool_uses:
+        name = str(tu.get("name", ""))
+        raw_args = tu.get("input") or {}
+        args = raw_args if isinstance(raw_args, dict) else {}
+        radius = measure(name, args)
+        if radius.is_empty:
+            continue
+        if exceeds_threshold(radius, totals) and not granted:
+            if covered_by(radius, gate.approved):
+                print(
+                    f"[agent] destructive gate: {name} allowed — user approved "
+                    f"these exact paths",
+                    file=log,
+                )
+            else:
+                token = grant_token(radius.keys)
+                reason = (
+                    f"{describe(radius, totals)}\n\n"
+                    f"To approve exactly this and nothing else, reply with: "
+                    f"{token}"
+                )
+                refusals[str(tu.get("id") or "")] = reason
+                gate.pending.append((token, radius.keys))
+                print(
+                    f"[agent] destructive gate: {name} refused ({token}) — "
+                    f"deletes={radius.delete_count} "
+                    f"overwrites={radius.overwrite_count} "
+                    f"unanalyzable={radius.unanalyzable}",
+                    file=log,
+                )
+                continue
+        if granted and exceeds_threshold(radius, totals):
+            print(
+                f"[agent] destructive gate: {name} allowed by "
+                f"{DESTRUCTIVE_GRANT_ENV}",
+                file=log,
+            )
+        totals.add(radius)
+    return refusals
+
+
+def _ensure_grant_visible(
+    answer: str,
+    pending: list[tuple[str, tuple[str, ...]]],
+) -> str:
+    """Guarantee every un-echoed approval token reaches the user.
+
+    The gate's refusal is a TOOL RESULT: the model reads it and then writes the
+    user's answer in its own words. A model that paraphrases the refusal — or
+    judges it not worth mentioning — leaves the user holding no token, and so
+    no way to approve, from either surface. Consent must not depend on the
+    model's diligence, so the harness appends whatever the model dropped.
+
+    `dict.fromkeys` deduplicates while keeping the order the refusals happened
+    in, so two calls hitting the same radius print one line, not two.
+    """
+    missing = [token for token, _ in pending if token not in answer]
+    if not missing:
+        return answer
+    lines = "\n".join(
+        f"To approve exactly this and nothing else, reply with: {token}"
+        for token in dict.fromkeys(missing)
+    )
+    return f"{answer.rstrip()}\n\n{lines}"
+
+
+def _destructive_refusal_answer(reason: str) -> str:
+    payload = {
+        "status": "blocked",
+        "reason": "destructive_change_needs_user_confirmation",
+        "retry_same_strategy": False,
+        "message": reason,
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
 def _preflight_policy_batch(
     tool_uses: list[dict[str, Any]],
     *,
@@ -2531,6 +2838,7 @@ async def _dispatch(
         audit_db_path=audit_db_path,
         log=log,
     )
+    destructive = _preflight_destructive_batch(tool_uses, log=log)
     refused = _spawn_overflow_reasons(
         tool_uses,
         log,
@@ -2548,6 +2856,7 @@ async def _dispatch(
                     vendor=vendor, tools=tools,
                     orchestration=orchestration, gateway=gateway,
                     refused_reason=refused.get(tu.get("id", "")),
+                    destructive_reason=destructive.get(tu.get("id", "")),
                     compression_db_path=compression_db_path,
                     role=role,
                     budget=budget,
@@ -2565,6 +2874,7 @@ async def _dispatch(
                 vendor=vendor, tools=tools,
                 orchestration=orchestration, gateway=gateway,
                 refused_reason=refused.get(tu.get("id", "")),
+                destructive_reason=destructive.get(tu.get("id", "")),
                 compression_db_path=compression_db_path,
                 role=role,
                 budget=budget,
@@ -2613,7 +2923,7 @@ def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
             "compact_artifact",
             "split_files",
             "append_chunks",
-            "ask_scope",
+            RouteKind.ASK_SCOPE,
         ],
         "message": (
             "Model output hit max_tokens while emitting tool calls, so Musubi "
@@ -2723,6 +3033,7 @@ async def _dispatch_one(
     gateway: McpGateway | None,
     refused_reason: str | None = None,
     refused: bool = False,
+    destructive_reason: str | None = None,
     compression_db_path: Path | None = None,
     role: str = "agent",
     budget: TokenBudgetEnforcer | None = None,
@@ -2753,6 +3064,19 @@ async def _dispatch_one(
         if orchestration is not None and orchestration.parent_agent_name
         else role
     )
+    if destructive_reason:
+        # The hard stop, ahead of the tool and ahead of the spawn branch: a
+        # measured, irreversible change does not run until a human says so.
+        blocked = _destructive_refusal_answer(destructive_reason)
+        emit_runtime_log(
+            log, f"[agent]   destructive gate blocked {name}", category="tools",
+        )
+        _safe_record_tool_audit(
+            session_id=session_id, role=call_role, tool=str(name),
+            args=json_args(args), status="refused", db_path=audit_path,
+            result_text=blocked, log=log,
+        )
+        return blocked
     should_audit = is_musubi_tool(name)
     if should_audit:
         decision = evaluate_tool_call(call_role, name)
@@ -3077,7 +3401,7 @@ def _skill_loaded_successfully(text: str) -> bool:
 
 
 def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return bounded(text, limit, collapse=False)
 
 
 def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:

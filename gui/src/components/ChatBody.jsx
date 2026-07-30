@@ -181,6 +181,40 @@ function ProcessMessage({ vals }) {
   )
 }
 
+// The harness refused a destructive call and printed the token that would
+// approve it. Approve sends that token as an ordinary user message — the same
+// thing typing it does — so the Console gains no authority the CLI lacks.
+// Reject sends nothing: the call is already blocked and the turn already over,
+// so declining is simply not granting.
+function ApprovalRow({ approval }) {
+  const base = 'padding:5px 13px;border-radius:var(--r-sm);font-family:var(--sans);font-size:var(--fs-3);cursor:pointer;'
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '2px 16px 8px 16px', flexWrap: 'wrap' }}>
+      <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: '#e86a5f', letterSpacing: '0.02em' }}>
+        awaiting your approval to {approval.summary}
+      </span>
+      <Box
+        as="button"
+        onClick={approval.onApprove}
+        title={'Send ' + approval.token + ' — approves exactly these paths, nothing else'}
+        css={base + 'border:1px solid rgba(232,106,95,0.42);background:rgba(232,106,95,0.14);color:#f0a79f;'}
+        hover="background:rgba(232,106,95,0.24)"
+      >
+        Approve <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, opacity: 0.8 }}>{approval.token}</span>
+      </Box>
+      <Box
+        as="button"
+        onClick={approval.onReject}
+        title="Nothing was destroyed and the run already stopped — this only clears the offer"
+        css={base + 'border:1px solid var(--line-strong);background:rgba(255,255,255,0.04);color:var(--text-2);'}
+        hover="background:rgba(255,255,255,0.09)"
+      >
+        Reject
+      </Box>
+    </div>
+  )
+}
+
 // Scrollable Orchestrator conversation + composer. Pipeline execution now
 // shares this durable conversation instead of owning a Studio chat surface.
 export default function ChatBody({ vals, config = null }) {
@@ -226,6 +260,7 @@ export default function ChatBody({ vals, config = null }) {
             {vals.driverBusy && i === latestUserMessageIndex && <ProcessMessage vals={vals} />}
           </Fragment>
         ))}
+        {vals.approval && <ApprovalRow approval={vals.approval} />}
       </div>
       {/* Run configuration is a start-of-run decision, so it sits with the
           composer rather than in a header band above the evidence. */}
