@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
+from agent.routes import RouteKind
 from agent.scope import classify_task
 
 
@@ -54,10 +55,12 @@ def test_decision_block_omits_conversation_lines_on_a_fresh_chat() -> None:
     assert "conversation_warning=" not in block
 
 
-def test_advisory_root_surface_offers_no_tools() -> None:
-    # An advisory turn is answered by the root itself. Withholding the whole
-    # catalog is what keeps it to one cycle: no spawn, and no
-    # `musubi_recommend_skills` round trip either.
+def test_the_root_surface_widens_only_on_a_planners_verdict() -> None:
+    # The advisory branch that withheld the whole catalog is gone with the
+    # regex that produced it. What remains is an inversion worth pinning: a
+    # turn whose size nobody has established gets the LEAN surface, and the
+    # skill-reading tools arrive only once `assess_manifest` calls the
+    # planner's declaration medium or large.
     tools = [
         {"name": name}
         for name in (
@@ -67,12 +70,14 @@ def test_advisory_root_surface_offers_no_tools() -> None:
             "musubi_get_reference",
         )
     ]
-    state = GoalState.create("explain each", "advisory", "advisory")
 
-    assert state.next_role is None
-    assert root_decision_tools(tools, state) == []
-    # Defensive: not even a recovery phase may hand an advisory turn a tool.
-    assert root_decision_tools(tools, state, recovery_outcome=True) == []
+    unknown = GoalState.create("anything", "unknown", RouteKind.ROOT_DECIDES)
+    lean = {t["name"] for t in root_decision_tools(tools, unknown)}
+    assert lean == {"musubi_spawn_subagent", "musubi_recommend_skills"}
+
+    medium = GoalState.create("anything", "medium_change", RouteKind.PLANNER_THEN_CODER_CHECK)
+    wide = {t["name"] for t in root_decision_tools(tools, medium)}
+    assert "musubi_get_skill" in wide and "musubi_get_reference" in wide
 
 
 def test_outcome_packet_projects_worker_contract() -> None:
@@ -249,22 +254,20 @@ def test_simple_goal_has_no_role_order_constraint() -> None:
     assert state.next_role is None
 
 
-def test_goal_state_retains_initial_request_assessment() -> None:
+def test_a_turn_starts_with_no_assessment_at_all() -> None:
+    # `assess_request` used to hand a ChangeAssessment to every turn before any
+    # model ran. Bands over one sentence are exactly the judgment this track
+    # removed; the only assessment now comes from `apply_planner_manifest`,
+    # after a planner has read code.
     hint = classify_task("Add authentication to the app")
     state = GoalState.create(
-        "Add authentication to the app",
-        hint.kind.value,
-        hint.route,
+        "Add authentication to the app", hint.kind.value, hint.route,
         assessment=hint.assessment,
     )
 
-    assert state.assessment is hint.assessment
-    # Planner-led, not refused: "large" is no longer guessed from the sentence,
-    # so a sensitive request starts with a read-only planner whose manifest
-    # decides the blast radius.
-    assert state.route == "planner_then_coder_check"
-    assert state.next_role == "planner"
-
+    assert hint.assessment is None
+    assert state.assessment is None
+    assert state.next_role is None, "no role order is owed before a manifest"
 
 
 def test_eleven_file_manifest_reclassifies_goal_as_large() -> None:
@@ -433,25 +436,174 @@ def test_no_overrun_within_the_declared_radius() -> None:
     assert "manifest_overrun=" not in state.render_decision_block()
 
 
-def test_decision_block_never_shows_a_second_contradictory_route() -> None:
-    # Two components decide the route from the same sentence, and on every
-    # sensitive request they disagree: `assess_request` reads "make a payments
-    # dashboard" as a bounded artifact (single_coder) while `classify_task`
-    # withholds the shortcut (planner_then_coder_check). Rendering both put
-    # two contradictory orders into one prompt. Only the governing route is
-    # shown; the bands still carry what the assessment knows.
-    from agent.scope import classify_task
-
+def test_the_decision_block_shows_bands_only_once_a_manifest_exists() -> None:
+    # Two components used to decide the route from the same sentence and
+    # disagreed on every sensitive request, putting contradictory orders into
+    # one prompt. There is only one classifier left, and it runs after a
+    # planner reads code — so there is nothing left to contradict.
     task = "make a payments dashboard"
     hint = classify_task(task)
-    assert hint.assessment is not None
-    assert hint.assessment.route != hint.route, "fixture no longer disagrees"
-
     state = GoalState.create(
         intent=task, scope=hint.kind.value, route=hint.route,
         assessment=hint.assessment,
     )
-    block = state.render_decision_block()
 
-    assert "ambiguity:low,impact:low,risk:low" in block
-    assert hint.assessment.route not in block
+    block = state.render_decision_block()
+    assert "ambiguity=" not in block
+    assert "impact=" not in block
+
+
+def _blind_goal() -> GoalState:
+    """A turn where nothing establishes what is being changed."""
+    return GoalState.create("make it faster", "simple_artifact", "single_coder")
+
+
+def test_a_turn_that_establishes_nothing_refuses_a_mutation_worker() -> None:
+    gap = _blind_goal().evidence_gap()
+
+    assert gap is not None
+    # The refusal must be actionable: naming the two roles that can supply what
+    # is missing is what lets the root fix this without asking the user.
+    assert "explorer" in gap and "planner" in gap
+
+
+def test_a_named_target_is_enough() -> None:
+    state = _blind_goal()
+    state.target_named = True
+
+    assert state.evidence_gap() is None
+
+
+def test_an_explorer_report_is_enough() -> None:
+    state = _blind_goal()
+    state.record_outcome(
+        role="explorer", status="done", summary="summary: found src/app.py",
+        touched_files=set(),
+    )
+
+    assert state.evidence_gap() is None
+
+
+def test_an_accepted_manifest_is_not_a_target() -> None:
+    # PR #166 review. `ChangeManifest` carries files_expected, subsystems, and
+    # flags — counts and labels, no paths. A planner may legally declare
+    # `files_expected=0` with no subsystems, so treating "a manifest exists" as
+    # target evidence cleared the gate while identifying nothing. Size is not a
+    # location.
+    state = _blind_goal()
+    state.declared_files_expected = 2
+
+    assert state.evidence_gap() is not None
+
+
+def test_a_planners_own_outcome_is_evidence() -> None:
+    # What the planner establishes is that it READ the workspace, which its
+    # `done` outcome already records. Keying on the outcome also survives the
+    # second hole: `apply_planner_manifest` only runs when next_role ==
+    # "planner", so on a single_coder route — exactly where this gate fires —
+    # a planner spawned to clear it never set declared_files_expected at all,
+    # and the refusal's own advice could not be followed.
+    state = _blind_goal()
+    state.record_outcome(
+        role="planner", status="done", summary="summary: 1 file, agent/run.py",
+        touched_files=set(),
+    )
+
+    assert state.evidence_gap() is None
+
+
+def test_only_a_finished_worker_counts() -> None:
+    # `escalated` (out of cycles) and `abandoned` (cascade-killed) carry no
+    # findings, and a "not failed" test let both open the mutation gate on the
+    # strength of having been spawned.
+    for status in ("escalated", "abandoned", "failed", "error"):
+        state = _blind_goal()
+        state.record_outcome(
+            role="explorer", status=status, summary="summary: ran out",
+            touched_files=set(),
+        )
+        assert state.evidence_gap() is not None, status
+
+
+def test_a_coders_report_does_not_establish_the_target() -> None:
+    # "Something was written" is a different claim from "the target was found".
+    # If a coder's own outcome cleared the gate, one blind spawn would unlock
+    # every spawn after it.
+    state = _blind_goal()
+    state.record_outcome(
+        role="coder", status="done", summary="summary: wrote a file",
+        touched_files={"guess.txt"},
+    )
+
+    assert state.evidence_gap() is not None
+
+
+def test_a_failed_explorer_establishes_nothing() -> None:
+    state = _blind_goal()
+    state.record_outcome(
+        role="explorer", status="failed", summary="summary: could not read it",
+        touched_files=set(),
+    )
+
+    assert state.evidence_gap() is not None
+
+
+def test_the_gate_covers_writers_only() -> None:
+    # Refusing a read-only worker for lack of evidence would refuse the very
+    # thing that supplies it — a deadlock, not a gate.
+    from agent.goal_state import EVIDENCE_ROLES, MUTATION_ROLES
+
+    assert MUTATION_ROLES == {"coder", "designer"}
+    assert not (MUTATION_ROLES & EVIDENCE_ROLES)
+
+
+# ── plan step 5: an exceeded declaration stops the next writer ──────────────
+
+
+def _planned_goal(declared: int) -> GoalState:
+    state = GoalState.create("widen the thing", "medium_change", "planner_then_coder_check")
+    state.target_named = True
+    state.declared_files_expected = declared
+    return state
+
+
+def test_a_declaration_within_its_radius_stops_nothing() -> None:
+    state = _planned_goal(3)
+    state.record_outcome(
+        role="coder", status="done", summary="summary: done",
+        touched_files={"a.py", "b.py"},
+    )
+
+    assert state.overrun_stop() is None
+
+
+def test_an_exceeded_declaration_refuses_the_next_writer() -> None:
+    # With the lexical risk gates gone the manifest is the SOLE input to
+    # routing, so a declaration nobody enforces is trusted rather than
+    # governed: declare one file, clear the cheap route, touch eleven.
+    state = _planned_goal(1)
+    state.record_outcome(
+        role="coder", status="done", summary="summary: done",
+        touched_files={"a.py", "b.py", "c.py"},
+    )
+
+    stop = state.overrun_stop()
+    assert stop is not None
+    assert "declared 1 file(s)" in stop and "touched 3" in stop
+    # Actionable, like every other gate here: it names what can still be done.
+    assert "planner" in stop
+
+
+def test_the_stop_is_not_terminal() -> None:
+    # Making it fatal would throw away completed work to punish a declaration.
+    # What it forbids is one thing: another writer on the same radius.
+    state = _planned_goal(1)
+    state.record_outcome(
+        role="coder", status="done", summary="summary: done",
+        touched_files={"a.py", "b.py"},
+    )
+
+    assert state.overrun_stop() is not None
+    # Re-declaring clears it, which is what the message tells the root to do.
+    state.declared_files_expected = 5
+    assert state.overrun_stop() is None

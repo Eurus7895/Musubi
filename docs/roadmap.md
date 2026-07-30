@@ -73,29 +73,61 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Remaining, in order — each depends on the one before, and the deletion lands
    last because it is the only step that changes the cost profile:
 
-   - **Sufficiency rule (plan step 2).** A `coder` spawn is refused while the
-     evidence vector reports no named workspace path, no explorer findings, and
-     no manifest. This is the enforceable core of "collect enough information
-     first", and the same shape as today's role-order gate, which already
-     refuses a coder before the planner's manifest lands. Fail-closed; the
-     refusal names the legal next role. **First real behaviour change on the
-     routing path** — it belongs in its own PR, where that is the only question
-     on the table.
-   - **Root triage prompt (plan step 3).** Replace the decided route with the
-     evidence vector plus overridable hints. The root states its chosen turn
-     shape in one logged, audited line, so a wrong triage is attributable
-     afterwards instead of invisible.
-   - **Delete the lexical judgment (plan step 4).** `classify_task` drops to two
-     branches — is there work, and is it destructive. Removes `assess_request`,
-     18 of 19 regexes, `_CASUAL_RE`'s zero-token fast path, the pre-run
-     `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, `clarification_request`, and
-     the `pending_clarification` column: ~551 lines, and the trigger written
-     into `agent/scope.py`'s `expires-when:`.
-   - **Enforce the declaration (plan step 5).** `manifest_overrun` promoted from
-     a prompt warning to a hard stop on the coder path. With scope
-     LLM-declared, an under-declared radius is the primary abuse channel and
-     must cost the run rather than a paragraph.
-
+   - ~~**Sufficiency rule (plan step 2).**~~ **Shipped.**
+     `GoalState.evidence_gap()` refuses a `coder` or `designer` spawn while all
+     three are absent: a path named by the request, a read-only worker's
+     report, and an accepted manifest. It answers a different question from the
+     role-order gate — that one asks *is this the right role next*, this one
+     asks *does anyone know what this turn targets* — which matters because a
+     `single_coder` route sets no `next_role`, so "make it faster" reached a
+     coder untouched. Only the request fact is stored; outcomes and the
+     manifest are read live, so the root closes the gap itself within the turn.
+     Known cost: a pure creation request names no path and pays one wasted
+     explorer spawn. Always satisfiable, never a deadlock; if it proves
+     expensive the fix is to move the check to the tool boundary, where
+     `musubi_write_file` already knows whether the path exists.
+   - ~~**Root triage prompt (plan step 3).**~~ **Shipped.** The routing block
+     ended by saying the root owns the decision while its bodies said "Do NOT
+     spawn a worker" — and between a disclaimer and an imperative the
+     imperative wins, so a hint from ~12 regexes was in practice an order. Each
+     entry now reads `suggested_route=` / `Suggests: …` and names what would
+     justify departing from it. Because an overridable hint with no record of
+     the override cannot be audited, `agent/triage.py` asks the root for one
+     line — `[triage] <shape>: <why>` over `conversation | question | inspect |
+     work` — captured mid-loop and stored in `agent_turns.root_triage`. Parsed,
+     never judged: the harness does not check whether a shape was right, and an
+     absent declaration is recorded absent rather than inferred, or an invented
+     shape would be indistinguishable from a stated one.
+   - ~~**Delete the lexical judgment (plan step 4).**~~ **Shipped.**
+     `classify_task` is one regex asking whether a sentence reads like a
+     deletion, answering with a warning that routes nothing. Gone:
+     `assess_request`, 18 regexes, `_CASUAL_RE`'s zero-token fast path, the
+     pre-run `ask_scope` halt, `BROAD_PRODUCT_QUESTION`, the
+     `clarification_request` column and `db.pending_clarification` — **735
+     lines removed against 127 added.** Every turn now starts
+     `RouteKind.ROOT_DECIDES`; only `assess_manifest` narrows it, and only
+     after a planner has read code.
+     Two inversions fell out of it, both improvements: the root's tool surface
+     and token target are now **lean by default** and widen only when a
+     manifest calls the change medium or large — the old code widened by
+     default and narrowed on a lexical hunch. The documented price is paid as
+     stated: "hi" costs one root call, and a test asserts it.
+     **Entry condition was not met.** The roadmap said to wait for
+     `root_triage` rows in volume before removing the fallback; Eurus chose to
+     proceed without them. What the deletion trades on is therefore untested
+     in production: if the root's own triage turns out worse than the regexes
+     were, the evidence to notice it is being collected now rather than
+     beforehand.
+   - ~~**Enforce the declaration (plan step 5).**~~ **Shipped.**
+     `GoalState.overrun_stop()` refuses a further mutation spawn once workers
+     have touched more files than the accepted manifest declared, enforced in
+     `_spawn_overflow_reasons` beside the other gates. Deliberately not
+     terminal: the run keeps what it wrote and may report or re-plan — making
+     it fatal would discard completed work to punish a declaration, and the
+     append-only stage store exists so a wrong attempt is superseded rather
+     than lost. This matters more now than when it was written: with the
+     lexical risk gates gone the manifest is the sole input to routing, so a
+     declaration nobody enforces is trusted rather than governed.
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
@@ -107,18 +139,6 @@ enforcement path for the same dimension.
 
 ### Backlog
 
-- **A skipped MCP server should say which one and why.** External servers are
-  fail-open by design — one that is misconfigured, missing, or slow is logged
-  and skipped, never fatal. But the log line (`agent/mcp_gateway.py:313`) prints
-  only the server's name and the exception, which leaves the two questions an
-  operator actually has unanswered: *which transport was it* (a stdio `command`
-  and an HTTP `url` fail for entirely different reasons), and *how long did it
-  wait* — with `timeout_s` defaulting to 30 s, a timeout and an instant refusal
-  read identically. In the traced session this produced
-  `!mcp 'local' skipped: CancelledError`, which named no cause at all; the
-  cause-unwrapping half was fixed in `a689dba`, the transport and elapsed-time
-  half was not. Small and self-contained: add the transport kind and elapsed ms
-  to the line. No behaviour change — the server is skipped either way.
 - **Installer runtime reduction.** Prefer a bundled or locally repairable
   Python core payload so first run does not depend on global `pip install` or
   manual `PATH` edits. Keep network install as a fallback for development
@@ -189,6 +209,20 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 ---
 
 ## Completed Tracks
+
+- A skipped MCP server now says which one, how, and how long — external
+  servers are fail-open by design, but the log line named only the server and
+  the exception, leaving the two questions an operator actually has
+  unanswered. A stdio `command` that is not installed and an HTTP `url` whose
+  host is unreachable need opposite first moves and produced identical lines;
+  with `timeout_s` defaulting to 30 s, a real timeout and an instant refusal
+  also read the same. The line now carries the elapsed ms, an explicit
+  `(timeout Ns)` marker when the wait reached the ceiling, and
+  `via <stdio|http> <command-or-url>` — never `headers` or `env`, which is
+  where the `${VAR}`-interpolated secrets live, and a test pins that. Completes
+  the defect whose other half (`_describe_exc` losing the cause inside nested
+  `anyio` groups, which produced the traced `!mcp 'local' skipped:
+  CancelledError`) was fixed in `a689dba`.
 
 - Destruction is gated on a measurement, not on a sentence — the old guard read
   the user's *sentence* for delete-ish words, so it refused the honest request

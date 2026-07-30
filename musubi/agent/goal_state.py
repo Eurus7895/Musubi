@@ -28,11 +28,14 @@ MAX_DETAIL_CHARS = 400
 _FIELD_RE = re.compile(
     r"(?im)^\s*(status|summary|verification|remaining_gap)\s*:\s*(.*?)\s*$"
 )
-_SIMPLE_SCOPES = frozenset({"inspect", "simple_edit", "simple_artifact"})
-#: The consultative route (`agent/scope.py`): the user asked to be advised,
-#: not for a change. The root is the whole answer, so its decision phase gets
-#: no tools at all.
-ADVISORY_ROUTE = RouteKind.ADVISORY
+#: Sizes at which the root may want to read full skill text into its OWN
+#: context rather than pushing a skill to the worker it summons. Only
+#: `assess_manifest` produces these, and only after a planner has read code —
+#: so the wider surface is now bought with evidence rather than guessed from
+#: the request. Every turn starts `unknown` and therefore lean, which is the
+#: conservative direction: the previous code widened by default and narrowed on
+#: a lexical hunch.
+_WIDE_SCOPES = frozenset({"medium_change", "large_feature"})
 #: Trailing barren turns before the root is told to stop planning. Three is
 #: the point at which the traced conversation had already spent two planner
 #: round trips and two question walls without a single file on disk.
@@ -48,6 +51,24 @@ LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
 ORDERED_ROLES: frozenset[str] = frozenset(
     {"planner", "designer", "coder", "reviewer"}
 )
+#: Roles that WRITE. The sufficiency gate applies to these and nothing else:
+#: refusing a read-only worker for lack of evidence would refuse the very thing
+#: that supplies it.
+MUTATION_ROLES: frozenset[str] = frozenset({"coder", "designer"})
+#: Roles whose report establishes a fact about the workspace. A coder's report
+#: says something was written, which is a different claim from "the target was
+#: found", so it does not clear the gate. `planner` is here because a planner
+#: reads the workspace before it can commit to a blast radius — its OUTCOME is
+#: the evidence, not its manifest (see `evidence_gap`).
+EVIDENCE_ROLES: frozenset[str] = frozenset(
+    {"explorer", "investigator", "finder", "planner"}
+)
+#: The only status that establishes anything. An allowlist, not a denylist:
+#: workers also finish `escalated` (hit the turn cap) and `abandoned`
+#: (cascade-killed), and both were passing a "not failed" test while carrying
+#: no findings at all — an explorer that ran out of cycles was opening the
+#: mutation gate on the strength of having been spawned.
+_SUCCEEDED: str = "done"
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root ranks the catalog with `musubi_recommend_skills` and
@@ -155,6 +176,12 @@ class GoalState:
     #: lexical risk gates gone, the manifest is the sole input to routing, and
     #: a declaration nobody verifies is trusted rather than governed.
     declared_files_expected: int | None = None
+    #: Did the REQUEST name a path inside the workspace? From the evidence
+    #: vector at turn start (`agent/evidence.py`). Static for the turn — the
+    #: user's sentence does not change while the turn runs — which is why it is
+    #: stored rather than recomputed. The other two inputs to the sufficiency
+    #: gate below are live, and read from this object each time it is asked.
+    target_named: bool = False
 
     @classmethod
     def create(
@@ -164,10 +191,13 @@ class GoalState:
         route: str,
         assessment: ChangeAssessment | None = None,
     ) -> "GoalState":
+        # Same inversion as the tool surface: lean until a manifest says
+        # otherwise. A turn whose size nobody has established yet gets the
+        # smaller target, which is the direction that fails cheap.
         target = (
-            SIMPLE_ROOT_TOKEN_TARGET
-            if scope in _SIMPLE_SCOPES
-            else DEFAULT_ROOT_TOKEN_TARGET
+            DEFAULT_ROOT_TOKEN_TARGET
+            if scope in _WIDE_SCOPES
+            else SIMPLE_ROOT_TOKEN_TARGET
         )
         return cls(
             intent=intent,
@@ -228,6 +258,87 @@ class GoalState:
             manifest.files_expected if manifest is not None else None
         )
         return assessment
+
+    def overrun_stop(self) -> str | None:
+        """Why no further writer may be summoned, or None.
+
+        `manifest_overrun` has always computed this; until now its only
+        consequence was a paragraph in the decision block, which the model was
+        free to read and continue past. With the lexical risk gates gone the
+        manifest is the SOLE input to routing, so a declaration nobody enforces
+        is trusted rather than governed: declare one file, clear the cheap
+        route, touch eleven, and nothing stops the twelfth.
+
+        Deliberately not terminal. The run keeps whatever it has already
+        written and the root may still report, re-plan, or ask — what it may
+        not do is summon another writer on a radius that has already been
+        exceeded. Making it fatal would throw away completed work to punish a
+        declaration, and the append-only stage store exists precisely so a
+        wrong attempt can be superseded rather than lost.
+        """
+        breach = self.manifest_overrun()
+        if breach is None:
+            return None
+        declared, actual = breach
+        return (
+            f"the change has outgrown its plan: the manifest declared "
+            f"{declared} file(s) and workers have touched {actual}. No further "
+            f"writer may be summoned on this radius — report what was touched, "
+            f"or spawn 'planner' to re-declare the remainder"
+        )
+
+    def evidence_gap(self) -> str | None:
+        """Why a mutation worker may not be summoned yet, or None.
+
+        The enforceable core of "collect enough information first". Two ways to
+        know what a turn targets, and a mutation worker needs one:
+
+        1. **the request named it** — a path resolving inside the workspace
+           root, established at turn start by `agent/evidence.py`;
+        2. **somebody looked** — a read-only worker (explorer, investigator,
+           finder, or planner) came back `done`.
+
+        With neither, a coder is being sent at a guess. That is the traced
+        failure in its expensive form: the cheap version asked the same
+        question three times and spent nothing, while this version spawns a
+        worker that writes files nobody asked for, in a place nobody named.
+
+        **An accepted manifest is deliberately NOT one of the ways.** It was,
+        and that was wrong: `ChangeManifest` carries `files_expected`,
+        `subsystems`, and a handful of flags — counts and labels, no paths. A
+        planner can legally declare `files_expected=0` with no subsystems, and
+        that manifest would have cleared this gate while identifying nothing.
+        What the planner establishes is that it READ the workspace, which its
+        `done` outcome already records; the manifest is a size, and size is not
+        a location. Keying on the outcome rather than the manifest also fixes a
+        second hole: `apply_planner_manifest` only runs when
+        `next_role == "planner"`, so on a `single_coder` route — exactly where
+        this gate fires — a planner spawned to clear it never set
+        `declared_files_expected` at all, and the refusal's own advice could
+        not be followed.
+
+        Only `done` counts. Workers also finish `escalated` (out of cycles) and
+        `abandoned` (cascade-killed); both carry no findings, and both were
+        clearing this gate on the strength of having been spawned.
+
+        Fail-closed and cheap to satisfy: the refusal names the roles that can
+        supply what is missing. Read fresh at every spawn, because (2) becomes
+        true DURING a turn — the whole point is that the root can fix this
+        itself rather than returning to the user.
+        """
+        if self.target_named:
+            return None
+        if any(
+            outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
+            for outcome in self.outcomes
+        ):
+            return None
+        return (
+            "nothing establishes what this turn targets: the request names no "
+            "path inside the workspace, and no read-only worker has come back "
+            "with findings. Spawn 'explorer' (or 'planner', which reads before "
+            "it plans) and retry once it reports"
+        )
 
     def manifest_overrun(self) -> tuple[int, int] | None:
         """`(declared, actual)` when mutation exceeded the declared radius.
@@ -366,13 +477,6 @@ def root_decision_tools(
     spawn_exhausted: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
-    if state.route == ADVISORY_ROUTE:
-        # Checked before every other phase: an advisory turn must never reach
-        # a tool. No worker can add evidence to "which auth model should I
-        # pick?" — it names no file to read — so a spawn buys a multi-cycle
-        # round trip that ends in a change manifest the user never asked for.
-        # Withholding the catalog forces the root to answer in ONE cycle.
-        return []
     if recovery_outcome:
         # Recovery is a DECISION phase, not a work phase: a worker failed and
         # the root has to choose whether to replace it. Handing over the whole
@@ -401,6 +505,6 @@ def root_decision_tools(
     # Spawn plus skill *selection* in every scope, so the root can push a
     # skill to the worker it summons even for a simple artifact.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
-    if state.scope not in _SIMPLE_SCOPES:
+    if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

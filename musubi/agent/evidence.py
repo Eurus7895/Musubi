@@ -17,14 +17,14 @@ Concretely, the difference in one line:
     judging   "is this a big change?"        → an opinion, unverifiable
     evidence  "does `agent/run.py` exist?"   → a stat() call
 
-Nothing routes on this vector yet. It renders into the root's prompt beside the
-existing scope hint and prints one log line per turn, so the distribution of
-real conversations can be measured before any behavior depends on it — see
-docs/superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md step 1.
+One of these facts is now ENFORCED, not merely reported:
+`names_workspace_path` is what `GoalState.evidence_gap` reads to decide whether
+a mutation worker may be summoned at all. The rest render into the root's
+prompt and print one log line per turn.
 
 The DB-derived facts are passed IN rather than queried here. `run_agent`
-already reads all three for its own purposes, and a second query path would be
-a second thing to keep true; keeping storage out also leaves this module
+already reads them for its own purposes, and a second query path would be a
+second thing to keep true; keeping storage out also leaves this module
 importable by tests with no database at all.
 """
 
@@ -66,7 +66,7 @@ NO_PROGRESS_TURNS = 3
 
 @dataclass(frozen=True)
 class EvidenceVector:
-    """Six facts about a turn. No field is an opinion about the request."""
+    """Five facts about a turn. No field is an opinion about the request."""
 
     #: A token in the request resolves to a path INSIDE the workspace root.
     #: False both when nothing looks like a path and when what does look like
@@ -85,8 +85,6 @@ class EvidenceVector:
     has_conversation: bool = False
     #: An explorer (or investigator) has already reported into this turn.
     explorer_findings: bool = False
-    #: This turn carries the answer to the one deterministic clarification.
-    clarification_answered: bool = False
     #: Trailing count of turns in this chat that wrote no file.
     barren_turns: int = 0
 
@@ -96,8 +94,7 @@ class EvidenceVector:
 
         The enforceable core of "collect enough information first": no named
         path inside the workspace, nothing on disk, and no worker has looked.
-        Step 2 refuses a coder spawn while this holds; today it is only
-        printed.
+        `GoalState.evidence_gap` refuses a mutation spawn while this holds.
         """
         return not (
             self.names_workspace_path
@@ -112,7 +109,6 @@ class EvidenceVector:
             f"exists={self.path_exists} "
             f"history={self.has_conversation} "
             f"explorer={self.explorer_findings} "
-            f"clarified={self.clarification_answered} "
             f"barren={self.barren_turns} "
             f"target_unknown={self.target_is_unknown}"
         )
@@ -136,7 +132,6 @@ class EvidenceVector:
             f"names_workspace_path={self.names_workspace_path}",
             f"path_exists={self.path_exists}",
             f"has_conversation={self.has_conversation}",
-            f"clarification_answered={self.clarification_answered}",
             f"barren_turns={self.barren_turns}",
         ]
         if self.named_paths:
@@ -169,7 +164,6 @@ def collect(
     *,
     has_conversation: bool = False,
     explorer_findings: bool = False,
-    clarification_answered: bool = False,
     barren_turns: int = 0,
     root: Path | None = None,
 ) -> EvidenceVector:
@@ -182,7 +176,6 @@ def collect(
         named_paths=inside,
         has_conversation=bool(has_conversation),
         explorer_findings=bool(explorer_findings),
-        clarification_answered=bool(clarification_answered),
         barren_turns=max(0, int(barren_turns or 0)),
     )
 

@@ -16,7 +16,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from agent.scope import BROAD_PRODUCT_QUESTION
 from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.run import Orchestration, run_agent
 from agent.subagent import (
@@ -301,7 +300,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
         _text("created: hello.html"),
         _text("done"),
     ])
-    asyncio.run(run_agent("create a file", router, _musubi_dir(), log=io.StringIO()))
+    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=io.StringIO()))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
     child_tools = {t["name"] for t in router.calls[1]["tools"]}
@@ -368,7 +367,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
     ])
 
     answer = asyncio.run(run_agent(
-        "create one policy test artifact",
+        "create policy-test.html",
         router,
         _musubi_dir(),
         log=io.StringIO(),
@@ -591,7 +590,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     ])
 
     answer = asyncio.run(run_agent(
-        "create html dashboard",
+        "create dashboard.html",
         router,
         _musubi_dir(),
         log=io.StringIO(),
@@ -1029,19 +1028,24 @@ def test_run_subagent_threads_frontmatter_output_budget(
 # ── incident regressions (governed scope, budget, recovery) ──────────────────
 
 
-def test_bare_new_website_request_stops_at_clarification() -> None:
-    # The originating incident: "create a new website" must halt at one
-    # deterministic clarification — no parent session, no model call, no worker.
-    from agent import run as run_mod
+def test_a_bare_product_request_no_longer_halts_before_the_model() -> None:
+    """Deleted with plan step 4, and the deletion is the assertion.
+
+    `create a new website` used to be met with a canned question, from a regex
+    that had read nothing. The traced session shows why that could not work:
+    the ANSWER re-matched the same pattern and drew the identical sentence
+    back, three turns for zero model calls and zero files — a fixed point, not
+    a stall. What the halt was groping at is now checked rather than guessed:
+    `GoalState.evidence_gap` refuses a WRITER while nothing establishes the
+    target, and an explorer clears it inside the same turn.
+    """
     from agent.scope import classify_task
+    from agent.routes import RouteKind
 
     hint = classify_task("create a new website")
-    answer = run_mod._deterministic_scope_answer("create a new website", hint)
 
-    assert hint.route == "ask_scope"
-    assert answer == (
-        BROAD_PRODUCT_QUESTION
-    )
+    assert hint.route == RouteKind.ROOT_DECIDES
+    assert hint.assessment is None
 
 
 def test_bounded_scaffold_cannot_be_starved_or_abandon_recovery(

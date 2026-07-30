@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -524,3 +525,70 @@ def test_one_owner_for_the_anthropic_tool_schema() -> None:
         "description": "",
         "input_schema": {"type": "object", "properties": {}},
     }
+
+
+def test_a_skip_line_names_the_transport_and_the_elapsed_time() -> None:
+    """The traced session logged `!mcp 'local' skipped: CancelledError`.
+
+    That named neither what was tried nor how long it waited — and a stdio
+    server whose command is missing needs an opposite first move from an HTTP
+    server whose host is unreachable. Both used to produce the same line.
+    """
+    gw = McpGateway()
+
+    async def opener(_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        raise RuntimeError("boom")
+
+    stdio_log = _connect(
+        gw, [McpServerSpec(name="local", command="npx", args=["-y", "srv"])], opener,
+    )
+    line = next(entry for entry in stdio_log if "skipped" in entry)
+    assert "via stdio npx -y srv" in line
+    assert re.search(r"skipped after \d+ms", line)
+
+    http_log = _connect(
+        gw, [McpServerSpec(name="remote", url="https://mcp.example/api")], opener,
+    )
+    line = next(entry for entry in http_log if "skipped" in entry)
+    assert "via http https://mcp.example/api" in line
+
+
+def test_a_skip_line_never_prints_a_secret() -> None:
+    # `headers` and `env` are where the ${VAR}-interpolated tokens land, so the
+    # line reports the transport target and nothing else from the spec.
+    gw = McpGateway()
+
+    async def opener(_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        raise RuntimeError("boom")
+
+    log = _connect(gw, [McpServerSpec(
+        name="remote",
+        url="https://mcp.example/api",
+        headers={"Authorization": "Bearer super-secret-token"},
+        env={"API_KEY": "another-secret"},
+    )], opener)
+
+    joined = "\n".join(log)
+    assert "super-secret-token" not in joined
+    assert "another-secret" not in joined
+
+
+def test_a_timeout_says_so_rather_than_looking_like_an_instant_failure() -> None:
+    gw = McpGateway()
+
+    async def opener(_stack: AsyncExitStack, spec: McpServerSpec) -> Any:
+        raise RuntimeError("boom")
+
+    # timeout_s=0 makes any elapsed time reach the ceiling, which is the
+    # condition the line reports — a real 30s wait and an instant refusal read
+    # identically without it.
+    log = _connect(gw, [McpServerSpec(name="slow", command="x", timeout_s=0)], opener)
+
+    assert any("(timeout 0s)" in entry for entry in log)
+
+
+def test_transport_is_derived_not_guessed() -> None:
+    assert McpServerSpec(name="a", command="x").transport == "stdio"
+    assert McpServerSpec(name="b", url="http://h").transport == "http"
+    assert McpServerSpec(name="c").transport == "none"
+    assert "no transport configured" in McpServerSpec(name="c").target

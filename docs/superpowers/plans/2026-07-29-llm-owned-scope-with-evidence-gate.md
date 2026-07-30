@@ -1,10 +1,15 @@
 # LLM-owned scope, substrate-owned evidence
 
-**Status: governing principle decided (2026-07-29). Step 0 shipped — the
-destructive gate moved from judging a sentence to measuring a call, and the
-tier change landed with it. Step 1 shipped — the evidence vector is rendered
-and logged, and routes nothing. Steps 2–5 (the sufficiency rule and the
-deletion it unlocks) not started. No open questions.**
+**Status: complete. Steps 0–5 all shipped (2026-07-29/30).** The substrate no
+longer judges what a request means: `classify_task` asks one question and
+answers with a warning, the root declares its own triage, and every gate left
+reads a measurement or a declaration.
+
+One caveat on the record: step 4's entry condition — wait for `root_triage`
+rows in volume before removing the routing fallback — was **not met**. Eurus
+chose to proceed without them. If the root's own triage proves worse than the
+regexes were, the evidence to notice that is being collected now rather than
+beforehand.
 
 ## What shipped (step 0)
 
@@ -407,20 +412,127 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   raises on escape and this needs the escape as data. A test asserts both
   agree, so the vector cannot promise a path the firewall will then refuse.
 
-- [ ] **Step 2 — sufficiency rule for mutation.** `GoalState` gains a
-  deterministic gate: a `coder` spawn is refused while the evidence vector says
-  no workspace path is named *and* no explorer findings and no manifest exist.
-  This is the enforceable core of "collect enough information first" — same
-  shape as today's role-order gate, which already refuses a coder before the
-  planner's manifest lands. Fail-closed; the refusal names the legal next role
-  (`explorer` or `planner`).
+- [x] **Step 2 — sufficiency rule for mutation.** `GoalState.evidence_gap()`
+  refuses a `coder` or `designer` spawn while all three are absent: a workspace
+  path named by the request, a report from a read-only worker, and an accepted
+  change manifest. Enforced in `_spawn_overflow_reasons` beside the role-order
+  gate it mirrors, root only, fail-closed, and the refusal names both roles
+  that can close the gap.
 
-- [ ] **Step 3 — root triage prompt.** Rewrite the routing block: evidence
-  vector + overridable hints instead of a decided route. The root states its
-  chosen turn shape in one line, which is logged and audited so a wrong triage
-  is attributable post-hoc.
+  Two things the writing settled:
 
-- [ ] **Step 4 — delete the lexical judgment.** Reduce `classify_task` to the
+  - **It answers a different question from the role-order gate.** That gate
+    asks *is this the right role next*; this one asks *does anyone know what
+    this turn is about*. A `single_coder` route sets no `next_role` at all, so
+    "make it faster" passed the order gate untouched and reached a coder that
+    wrote files in a place nobody had named. That hole is the reason this step
+    exists, and it is not covered by anything else.
+  - **Only `target_named` is stored; the other two are read live.** The
+    request's text cannot change mid-turn, so it is captured once from the
+    evidence vector. Worker outcomes and the manifest DO change mid-turn, and
+    reading them fresh at every spawn is what lets the root close the gap
+    itself — summon an explorer, then retry the coder in the same turn — rather
+    than having to return to the user.
+
+  **The cost, measured rather than assumed.** Four existing tests failed on
+  this gate, and all four for the same honest reason: their requests
+  (`create a file`, `create a report file`, `create html dashboard`,
+  `create one policy test artifact`) name no path, so the gate refused the
+  coder. That is the gate working, but it exposes a case worth naming — a pure
+  CREATION request has no existing target to find, so the remedy it suggests
+  (summon an explorer) buys nothing except clearing the gate. The gate is
+  always satisfiable, so this is a wasted spawn, never a deadlock; the fixtures
+  were updated to name the file they create, which is what a real request of
+  that shape looks like anyway.
+
+  The harness cannot separate "create something, you pick the name" from
+  "change something, I didn't say what" — both read as `names_workspace_path =
+  false`, and telling them apart means judging the sentence. The layer that
+  CAN tell them apart is the tool boundary, where `musubi_write_file` already
+  knows whether the path exists. **If the wasted spawn on creation requests
+  proves to cost real money, the fix is to move this check down there** — the
+  same move that fixed the destructive gate — rather than to add a lexical
+  exception here. Deferred until there is data; noted so the option is not
+  rediscovered from scratch.
+
+  **What review caught (PR #166).** Three holes in the gate as first written,
+  each reproduced against the code before it was fixed:
+
+  - **An accepted manifest was treated as target evidence.** `ChangeManifest`
+    carries `files_expected`, `subsystems`, and flags — counts and labels, no
+    paths — and a planner may legally declare `files_expected=0` with no
+    subsystems. That manifest cleared the gate while identifying nothing. Size
+    is not a location. What the planner does establish is that it READ the
+    workspace, so the gate now keys on its `done` outcome and `planner` joined
+    `EVIDENCE_ROLES`.
+  - **…which also closed a hole underneath it.** `apply_planner_manifest` runs
+    only when `next_role == "planner"`, and on a `single_coder` route — exactly
+    where this gate fires — `next_role` is `None`. A planner spawned to follow
+    the refusal's own advice therefore never set `declared_files_expected`, and
+    the retried coder was refused again. The advice was unfollowable.
+  - **`escalated` and `abandoned` cleared the gate.** The status test was a
+    denylist (`not in {failed, error}`), and an explorer that runs out of
+    cycles finishes `escalated` carrying no findings — opening the mutation
+    gate on the strength of having been spawned. It is an allowlist now: only
+    `done`.
+
+- [x] **Step 3 — root triage prompt.** Two halves, and the second is what makes
+  the first safe.
+
+  **The hint stopped giving orders.** The block ended by saying the root owns
+  the routing decision while its bodies said *"Do NOT spawn a worker"* and
+  *"Do NOT spawn a planner or coder"*. A model reading both cannot obey both,
+  and between a disclaimer and an imperative the imperative wins — so the
+  trailer was decoration and the hint was, in practice, an order issued by ~12
+  regexes over one sentence. Each entry now says what the route is FOR and what
+  would justify departing from it (`suggested_route=`, `guidance=Suggests: …`),
+  and the trailer states plainly that the hint has read no file, that the
+  evidence block below it is the part that was checked, and that overriding
+  costs nothing.
+
+  **The override became reviewable.** An overridable hint with no record of the
+  override is a hint nobody can audit — the log recorded what the REGEX chose
+  and never what the model did with it, so "the harness mis-routed" and "the
+  model ignored a correct hint" left identical evidence. `agent/triage.py` asks
+  the root for one line, `[triage] <shape>: <why>`, over a closed four-word
+  vocabulary (`conversation | question | inspect | work`). It is captured
+  mid-loop rather than from the final answer, because the line rides alongside
+  the first tool call and by the time an answer exists the declaration has
+  stopped being a plan. Stored in `agent_turns.root_triage`.
+
+  Reading that line is **parsing, not judging**: the harness never checks
+  whether the shape was correct — it cannot — and an absent declaration is
+  recorded as absent rather than inferred from behaviour. A shape the harness
+  invented would be indistinguishable in the column from one the model stated,
+  which would ruin the only record that makes an override reviewable.
+
+  Cost, caught by a ratchet rather than by review: the first draft of the
+  prompt block overran
+  `test_simple_root_two_call_projection_stays_below_3k_tokens` by ~50 tokens
+  (4553 against a 4500 ceiling). The block was trimmed rather than the ceiling
+  raised — that test exists for exactly this.
+
+  **What review caught (PR #166).** Three more, all honesty rather than
+  parsing:
+
+  - **The trailer claimed overriding costs nothing.** On the planner-led routes
+    it does not: `GoalState.create` sets `next_role="planner"` and the
+    role-order gate refuses a writer until the manifest lands. A root that
+    followed the new instruction and recorded a direct-coder override would pay
+    the planner round trip and be refused anyway. The trailer now names that
+    one ordering as enforced instead of implying everything is negotiable.
+  - **A late triage was stored as the plan.** The slot filled on any cycle, so
+    a root that declared nothing first, called tools, saw a worker result and
+    only then emitted `[triage] …` had its CONCLUSION recorded as its
+    intention — destroying the one thing the column is for. Only cycle 0 is
+    read now, and a silent first cycle records absence permanently.
+  - **A failed turn recorded nothing at all.** `_record_agent_turn` sat on the
+    success path only, so a crashed turn — the kind most worth a post-mortem —
+    left no triage, no cycle count, and nothing for `chat_turn_usage` to see.
+    Three failures in a row looked like zero turns to the no-progress breaker.
+    The row is written before the re-raise now.
+
+- [x] **Step 4 — delete the lexical judgment.** SHIPPED: 735 lines removed, 127 added. Reduce `classify_task` to the
   two branches that remain meaningful — is there work to do, and is it
   destructive — by removing `assess_request` and `_BROAD_PRODUCT_RE`,
   `_STATIC_FILE_RE`, `_BOUNDED_ARTIFACT_RE`, `_FRAMEWORK_RE`, `_MULTIPART_RE`,
@@ -432,7 +544,7 @@ module `agent/evidence.py` (layer 2) and net **deletion** in `scope.py` /
   the cost profile changes, so it lands last and behind the measurements from
   step 1.
 
-- [ ] **Step 5 — enforce the declaration.** Promote `manifest_overrun` from a
+- [x] **Step 5 — enforce the declaration.** SHIPPED as `GoalState.overrun_stop`, non-terminal. Promote `manifest_overrun` from a
   prompt warning to a hard stop on the coder path. With scope LLM-declared, an
   under-declared radius is the primary abuse channel and it must cost the run,
   not a paragraph.
