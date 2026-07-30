@@ -458,6 +458,12 @@ async def run_pipeline(
             if spawn_tool:
                 child_tools = child_tools + spawn_tool
                 stage_orch = orchestration.stage_child(role, psid, pname)
+                if (
+                    resume_plan
+                    and resume_plan.extra_budget
+                    and i == resume_plan.start_index
+                ):
+                    stage_orch.max_root_workers += resume_plan.extra_budget
                 stage_spawn_catalog = tools
 
         # Each stage runs against its own fair-share allowance of the shared run
@@ -530,11 +536,19 @@ async def run_pipeline(
                     "turns": 0,
                     "status": "escalated",
                 })
-            await _finalize_pipeline(
-                session, psid,
-                "escalated" if is_budget else "aborted",
-                is_budget,
-            )
+                paused = _loads(await _call_tool_text(
+                    session,
+                    "musubi_pause_session",
+                    {
+                        "session_id": psid,
+                        "stage": stage,
+                        "reason": "budget_exhausted",
+                    },
+                ))
+                if paused.get("status") != "paused":
+                    await _finalize_pipeline(session, psid, "escalated", True)
+            else:
+                await _finalize_pipeline(session, psid, "aborted", False)
             raise
         finally:
             _worker_touched_files.reset(touched_token)

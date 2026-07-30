@@ -53,16 +53,23 @@ def test_retry_reopens_the_latest_durable_stage() -> None:
     assert resume.user_hint == "keep API stable"
 
 
-@pytest.mark.parametrize("action", ["grant", "force"])
-def test_budget_actions_resume_first_incomplete_stage(action: str) -> None:
+@pytest.mark.parametrize(
+    ("action", "extra_budget"),
+    [("grant", 3), ("force", 0)],
+)
+def test_budget_actions_resume_first_incomplete_stage(
+    action: str,
+    extra_budget: int,
+) -> None:
     resume = _plan_pipeline_resume(
         PLAN,
         [row("plan", {"summary": "planned"}), row("design", None)],
-        {"action": action, "user_hint": None, "extra_budget": 3},
+        {"action": action, "user_hint": None, "extra_budget": extra_budget},
     )
 
     assert resume.start_index == 1
     assert resume.force_no_spawns is (action == "force")
+    assert resume.extra_budget == extra_budget
 
 
 def test_resume_rejects_missing_or_unknown_pending_action() -> None:

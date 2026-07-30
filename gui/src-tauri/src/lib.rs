@@ -1219,9 +1219,8 @@ fn start_chat_agent(
     let request_manifest = {
         let mut conn = state.db.lock().map_err(|e| e.to_string())?;
         if let Some(checkpoint) = resume {
-            let manifest =
-                musubi_data::list_request_folder_grants(&conn, &checkpoint.request_id)
-                    .map_err(|e| e.to_string())?;
+            let manifest = musubi_data::list_request_folder_grants(&conn, &checkpoint.request_id)
+                .map_err(|e| e.to_string())?;
             if manifest.is_empty() {
                 return Err("Resume failed: original folder snapshot was not found.".into());
             }
@@ -1725,8 +1724,7 @@ fn open_configured_db() -> OpenedDb {
         match prepare_audit_connection(&resolved) {
             Ok(conn) => {
                 let project_root = resolve_project_root(&env, &cwd, Some(&resolved));
-                let state_db_path =
-                    musubi_data::resolve_state_db_path(&resolved).map(|db| db.path);
+                let state_db_path = musubi_data::resolve_state_db_path(&resolved).map(|db| db.path);
                 let state_db = state_db_path.as_deref().and_then(open_state_db_path);
                 std::env::set_var("MUSUBI_ROOT", &project_root);
                 return OpenedDb {
@@ -2522,15 +2520,8 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let decision = apply_pipeline_resume_decision(
-            &path,
-            "pipeline-1",
-            "approve",
-            None,
-            0,
-            3.0,
-        )
-        .unwrap();
+        let decision =
+            apply_pipeline_resume_decision(&path, "pipeline-1", "approve", None, 0, 3.0).unwrap();
 
         assert!(decision.launch);
         let conn = Connection::open(&path).unwrap();
