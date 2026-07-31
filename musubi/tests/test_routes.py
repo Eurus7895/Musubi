@@ -61,7 +61,7 @@ def test_the_post_plan_routes_are_the_ones_still_produced() -> None:
         assess_manifest(m).route
         for m in (
             _manifest(),
-            _manifest(unknowns=("palette",)),
+            _manifest(blocking_decisions=("palette",)),
             _manifest(files_expected=9),
             _manifest(security_sensitive=True),
             _manifest(files_expected=3, subsystems=("auth", "billing")),
