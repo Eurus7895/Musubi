@@ -8,7 +8,7 @@ canonical; there are no flat files.
 ```
 .github/agents/
 ├── root/
-│   └── agent.agent.md
+│   └── root.agent.md
 ├── workers/
 │   ├── planner.agent.md
 │   ├── designer.agent.md

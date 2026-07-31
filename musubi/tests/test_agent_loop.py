@@ -855,15 +855,15 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_write_file"
     assert "capability Write is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_write_file")
+        ("DENY", "root", "musubi_write_file")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_write_file", "denied")
+        ("root", "musubi_write_file", "denied")
     ]
 
 
@@ -907,10 +907,10 @@ def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
     assert type(caught.value).__name__ == "PolicyDeniedError"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_spawn_subagent")
+        ("DENY", "root", "musubi_spawn_subagent")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_spawn_subagent", "denied")
+        ("root", "musubi_spawn_subagent", "denied")
     ]
 
 
@@ -975,8 +975,8 @@ def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
     assert "Permitted for 'coder'" in payload["reason"]
     assert "omit `pushed_skill_id`" in payload["reason"]
     # Recoverable is not unaudited: the verdict is still a DENY on record.
-    assert ("DENY", "agent", "musubi_spawn_subagent") in _read_policy_rows(audit_db)
-    assert ("agent", "musubi_spawn_subagent", "refused") in _read_tool_rows(audit_db)
+    assert ("DENY", "root", "musubi_spawn_subagent") in _read_policy_rows(audit_db)
+    assert ("root", "musubi_spawn_subagent", "refused") in _read_tool_rows(audit_db)
 
 
 def test_a_recoverable_refusal_lets_the_root_retry_in_the_next_cycle(
@@ -1124,15 +1124,15 @@ def test_dispatch_denies_root_command_with_investigator_hint(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_run_command"
     assert "capability Bash is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_run_command")
+        ("DENY", "root", "musubi_run_command")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_run_command", "denied")
+        ("root", "musubi_run_command", "denied")
     ]
 
 
@@ -1298,14 +1298,14 @@ def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_append_file"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_append_file")
+        ("DENY", "root", "musubi_append_file")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_append_file", "denied")
+        ("root", "musubi_append_file", "denied")
     ]
 
 

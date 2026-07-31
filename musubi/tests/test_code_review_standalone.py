@@ -51,7 +51,7 @@ def test_code_review_roles_not_adhoc_spawnable_by_agent() -> None:
     """Pipeline-internal roles: reachable through `--pipeline code-review`
     only, never as a direct root spawn (locked decision #4)."""
     for role in _ROLES:
-        assert role not in MAIN_SUBAGENT_ALLOWLIST["agent"], role
+        assert role not in MAIN_SUBAGENT_ALLOWLIST["root"], role
         assert check_subagent_allowed("agent", role) is False, role
 
 

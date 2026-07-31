@@ -61,7 +61,7 @@ def test_coder_cannot_load_research_or_docs_writing() -> None:
 
 def test_existing_allowlist_entries_unchanged() -> None:
     """Regression: adding two skills must not silently drop existing ones."""
-    assert AGENT_SKILL_ALLOWLIST["agent"] >= {"agent-routing"}
+    assert AGENT_SKILL_ALLOWLIST["root"] >= {"agent-routing"}
     assert AGENT_SKILL_ALLOWLIST["designer"] >= {
         "api-design", "database-patterns", "documentation",
     }

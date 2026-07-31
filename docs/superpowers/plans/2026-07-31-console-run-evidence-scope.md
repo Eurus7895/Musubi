@@ -191,6 +191,61 @@ role's permitted skills, adds this turn's actual candidates from
 instruction in `agent/context.py` now states that the two ids are different
 arguments and must never carry the same value.
 
+## Follow-up: one name for the depth-0 driver
+
+The same actor answered to three names, and one call site used two of them for
+itself in adjacent lines (`agent/run.py`, launching the driver):
+
+```python
+role="agent",            # → policy_audit.role, every authorization key
+audit_worker_id="root",  # → agent_cycles.worker_id
+audit_stage="agent",
+```
+
+`agent` owned authorization (`policy_engine`, `AGENT_SKILL_ALLOWLIST`,
+`_ROOT_AGENT_TOOLS`), `root` owned runtime scope (`runtime_log.py`,
+`agent_cycles.worker_id`), and `driver` owned console prose. Nothing was
+broken by it, but two presentation layers already paid a translation tax in
+hard-coded string lists — `lib.rs` (`role == "agent" || role == "driver"`) and
+`viewModel.js` (`['agent', 'driver'].includes(...)`) — neither covered by a
+test that would fail if a fourth spelling appeared. The catalog file said it
+best: `.github/agents/root/agent.agent.md`.
+
+**`root` is canonical now.** The rename touches the fail-closed authorization
+key (HI #5), so it is done through one definition and one normalizer rather
+than a search-and-replace:
+
+- `policy_engine.ROOT_ROLE` / `ROOT_ROLE_ALIASES` / `normalize_role()` are the
+  single source of truth; `boundary.py`, `context_builder.py` and `server.py`
+  import them rather than re-deriving.
+- Every membership, capability and skill-allowlist lookup folds through
+  `normalize_role`, so an `agent` string read back out of an append-only
+  ledger still resolves to the one rekeyed entry. **Nothing rewrites history**
+  — old rows keep saying `agent` and still join.
+- **`driver` is deliberately not an alias.** It never carried the root's
+  membership, so aliasing it would grant it the whole spawn firewall — a
+  fail-open change. `normalize_role("driver") == "driver"`, and it is denied.
+- `.github/agents/root/agent.agent.md` → `root.agent.md`, with the legacy
+  filename kept as a fallback candidate: `spawn_allowlist:` frontmatter is
+  authoritative when present, so missing it would silently drop a user's own
+  declared firewall back to the constant.
+- `call_role` is canonicalised before it is written, because `policy_audit`
+  folded through `evaluate_tool_call` and `tool_audit` did not — the two
+  ledgers disagreed about the same call.
+- Both readers now share one predicate (`is_root_actor`) covering all three
+  spellings, so a pre-rename verdict still joins to the root node.
+
+The renaming sweep caught its own regression, which is the argument for doing
+it this way: `_normalize_root_spawn_tool_uses` guards on `role != "agent"` —
+the negated form escaped the first pass, the root's `allowed_tools` strip
+stopped firing, and a coder spawn started intersecting to the empty set. A
+test failure, not a production one.
+
+Out of scope, and left alone deliberately: `--tool-surface agent` names a
+*tool-surface preset* that contrasts with `operator` and `pipeline`, not an
+actor, and `musubi_append_failure_pattern(source="agent")` is a free-text
+provenance label that no role table ever reads.
+
 ## Verification
 
 `1765 passed` (pytest), `190 pass` (node --test), `82 passed` (cargo test).

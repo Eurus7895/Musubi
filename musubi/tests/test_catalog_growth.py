@@ -85,7 +85,7 @@ def test_agent_gains_dispatcher_safe_skills_only() -> None:
     debugging + git-workflow are answerable with read tools; the
     authoring skills (refactoring/typescript) stay coder-only so the
     dispatcher boundary from test_agent_context stays intact."""
-    agent = AGENT_SKILL_ALLOWLIST["agent"]
+    agent = AGENT_SKILL_ALLOWLIST["root"]
     assert {"debugging", "git-workflow"} <= agent
     assert "refactoring" not in agent
     assert "typescript" not in agent
@@ -107,7 +107,7 @@ def test_existing_allowlist_entries_preserved() -> None:
     assert AGENT_SKILL_ALLOWLIST["coder"] >= {
         "python", "testing", "database-patterns", "api-design",
     }
-    assert AGENT_SKILL_ALLOWLIST["agent"] >= {
+    assert AGENT_SKILL_ALLOWLIST["root"] >= {
         "agent-routing", "docs-writing", "research",
     }
 

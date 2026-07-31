@@ -54,7 +54,7 @@ def test_recommend_without_for_role_uses_caller_allowlist() -> None:
         "why does this traceback fail at root cause", "agent",
     ))
     ids = {r["skill_id"] for r in payload["recommended"]}
-    assert ids <= AGENT_SKILL_ALLOWLIST["agent"]
+    assert ids <= AGENT_SKILL_ALLOWLIST["root"]
 
 
 # ── spawn validation (fail-closed) ─────────────────────────────────────────

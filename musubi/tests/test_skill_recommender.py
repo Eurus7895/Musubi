@@ -104,7 +104,9 @@ def test_server_recommend_skills_respects_agent_allowlist(monkeypatch) -> None: 
         agent_name="agent",
     ))
 
-    assert payload["agent_name"] == "agent"
+    # The response echoes the CANONICAL role, so a caller naming itself
+    # by the legacy spelling still sees one identity in the reply.
+    assert payload["agent_name"] == "root"
     assert payload["filtered_by_profile"] is False
     assert [item["skill_id"] for item in payload["recommended"]] == [
         "compression-aware-context",
@@ -133,7 +135,7 @@ def test_server_recommend_skills_applies_project_profile(monkeypatch) -> None:  
         "_load_project_profile",
         lambda: {"language": "python", "secondary_languages": []},
     )
-    monkeypatch.setitem(AGENT_SKILL_ALLOWLIST, "agent", {"python", "rust-only"})
+    monkeypatch.setitem(AGENT_SKILL_ALLOWLIST, "root", {"python", "rust-only"})
 
     payload = json.loads(server.musubi_recommend_skills(
         task="pytest is failing",

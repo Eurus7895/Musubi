@@ -10,6 +10,17 @@ import { fmtClock } from './format.js'
 import { createPipelineDraft, isDirty } from './pipelineBuilder.js'
 import { approvalScope, pendingApproval } from './approvalRequest.js'
 
+// Every spelling the depth-0 driver has ever been recorded under. The
+// substrate writes `root` now (scripts/policy_engine.py::ROOT_ROLE); the
+// append-only ledgers still hold `agent` rows from before the rename, and the
+// console's own prose says `driver`. A verdict must join to the root node
+// under all three or the Policy panel reads empty for history it can see.
+const ROOT_ACTOR_NAMES = new Set(['root', 'agent', 'driver'])
+
+export function isRootActor(role) {
+  return ROOT_ACTOR_NAMES.has(String(role || '').trim().toLowerCase())
+}
+
 function statusForRun(run) {
   const steps = run.steps || []
   if (run.live) return 'running'
@@ -736,7 +747,7 @@ export function buildViewModel(s, act) {
     })
   const sessionWorkerHandles = new Set(sessionScopedAgents.map((agent) => agent.handle))
   ;(s.policy || [])
-    .filter((row) => sessionWorkerHandles.has(row.handle) || (!row.handle && ['agent', 'driver'].includes(row.role)))
+    .filter((row) => sessionWorkerHandles.has(row.handle) || (!row.handle && isRootActor(row.role)))
     .forEach((row) => runtimeLogs.push({
       id: `policy-${row.id}`,
       auditId: row.id,

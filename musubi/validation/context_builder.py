@@ -27,7 +27,18 @@ Per-agent firewall rules:
 
 import os
 import re
+import sys
 from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+# The policy engine owns the canonical role vocabulary (HI #5). This module
+# keys its own firewall tables by the same name and folds every lookup through
+# the same normalizer, so a role read back out of the audit ledger under its
+# legacy spelling still resolves to one entry.
+from policy_engine import ROOT_ROLE, normalize_role  # noqa: E402
 from typing import Any
 
 from memory import memory_loader
@@ -96,7 +107,7 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # committed?" are answerable with read tools and don't blur the
     # generator boundary (test_agent_skill_allowlist_excludes_generator_skills
     # pins that boundary; refactoring/typescript stay coder-only).
-    "agent": {
+    ROOT_ROLE: {
         "agent-routing",
         "compression-aware-context",
         "docs-writing",
@@ -118,7 +129,7 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
 
 def check_skill_permission(agent_name: str, skill_id: str) -> bool:
     """Return True only if the agent is permitted to access the given skill."""
-    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower().strip(), set())
+    allowed = AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set())
     return skill_id in allowed
 
 
@@ -149,7 +160,7 @@ def build_context(
 
     Raises ValueError for unknown agent names.
     """
-    agent = agent_name.lower().strip()
+    agent = normalize_role(agent_name)
 
     if agent == "planner":
         return _context_planner(session_id, db_path)
@@ -161,13 +172,13 @@ def build_context(
         return _context_reviewer(session_id, db_path)
     if agent == "skill-builder":
         return _context_skill_builder(db_path)
-    if agent == "agent":
+    if agent == ROOT_ROLE:
         return _context_agent()
 
     raise ValueError(
         f"Unknown agent {agent_name!r}. "
         "Valid agents: planner, designer, coder, reviewer, skill-builder, "
-        "agent"
+        f"{ROOT_ROLE}"
     )
 
 
@@ -238,7 +249,7 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     # Agent never reads pipeline stages. Pipelines are user-invoked
     # and run in their own session; the agent must not peek at
     # in-flight or completed pipeline state via musubi_read_stage.
-    "agent":  set(),
+    ROOT_ROLE:  set(),
     # Phase H.1 — /code-review pipeline roles.
     # scoper        reads the raw request (diff). No prior stage exists.
     # finder        reads scope (and request) for cross-cutting analysis.

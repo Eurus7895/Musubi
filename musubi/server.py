@@ -60,6 +60,7 @@ from storage import subagent_audit
 from tool_surface import apply_fastmcp_tool_surface
 from validation import context_builder, subagent_context, verifier
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
+from policy_engine import ROOT_ROLE, normalize_role
 
 
 def _add_scripts_to_path() -> None:
@@ -266,7 +267,7 @@ def musubi_read_stage(
     # declares. AGENT_SKILL_ALLOWLIST below intersects against that to
     # block any pipeline.yaml-declared skill the agent isn't permitted to
     # see (firewall).
-    allowed_skills: set[str] = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+    allowed_skills: set[str] = AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set())
     skill_ids: set[str] = {
         sid
         for sid in composer.injected_skill_ids(pipeline_name, stage, agent_name)
@@ -739,7 +740,7 @@ def musubi_get_injected_skills(
     no skill declared, firewall-rejected) — same shape, no error to mishandle.
     """
     declared = composer.injected_skill_ids(pipeline_name, stage, agent_name)
-    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set())
+    allowed = AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set())
     effective = [sid for sid in declared if sid in allowed]
     return json.dumps({
         "status": "ok",
@@ -874,7 +875,7 @@ def musubi_finalize_pipeline_run(
             subagent_audit.record_complete(
                 handle_id=session_id,
                 parent_session_id=str(envelope_spawn.get("parent_session_id", "")),
-                parent_agent_name=str(envelope_spawn.get("parent_agent_name", "agent")),
+                parent_agent_name=str(envelope_spawn.get("parent_agent_name", ROOT_ROLE)),
                 role=str(envelope_spawn.get("role", "pipeline")),
                 brief=str(envelope_spawn.get("brief", "")),
                 final_status=audit_status,
@@ -1129,7 +1130,7 @@ def musubi_get_skill(skill_id: str, agent_name: str) -> str:
     that were not auto-injected for this stage.
     """
     if not check_skill_permission(agent_name, skill_id):
-        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set()))
+        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set()))
         return json.dumps({
             "error": f"Agent '{agent_name}' is not permitted to load skill '{skill_id}'.",
             "allowed_skills": allowed,
@@ -1182,7 +1183,7 @@ def musubi_list_skills(agent_name: str) -> str:
     "filtered_by_profile": bool }.
     """
     key = agent_name.lower().strip()
-    allowed = AGENT_SKILL_ALLOWLIST.get(key, set())
+    allowed = AGENT_SKILL_ALLOWLIST.get(normalize_role(key), set())
     # Filter 1 — allowlist.
     metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
     # Filter 2 — workspace applicability.
@@ -1212,8 +1213,8 @@ def musubi_recommend_skills(
     `pushed_skill_id` from that role's allowlist. Widens nothing — the spawn
     re-validates the id. Unknown `for_role` → no recommendations.
     """
-    key = agent_name.lower().strip()
-    candidate_key = (for_role or "").lower().strip() or key
+    key = normalize_role(agent_name)
+    candidate_key = normalize_role(for_role) or key
     allowed = AGENT_SKILL_ALLOWLIST.get(candidate_key, set())
     metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
     profile = _load_project_profile()
@@ -1317,7 +1318,7 @@ def musubi_get_reference(skill_id: str, reference_name: str, agent_name: str) ->
     Example: musubi_get_reference("python", "async-patterns.md", agent_name="coder")
     """
     if not check_skill_permission(agent_name, skill_id):
-        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(agent_name.lower(), set()))
+        allowed = sorted(AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set()))
         return json.dumps({
             "error": f"Agent '{agent_name}' is not permitted to access skill '{skill_id}'.",
             "allowed_skills": allowed,
@@ -1526,7 +1527,7 @@ def _effective_pushed_skill(role: str, override: str | None) -> str | None:
     chosen = (override or "").strip()
     if chosen:
         return chosen
-    return subagent_context.SUBAGENT_ROLE_SKILLS.get(role.strip())
+    return subagent_context.SUBAGENT_ROLE_SKILLS.get(normalize_role(role))
 
 
 @mcp.tool()
@@ -1655,7 +1656,7 @@ def musubi_spawn_subagent(
                 ),
                 "recommended_skills": list(ticket["skill_ids"]),
             })
-        role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
+        role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
         if skill_choice not in role_skills:
             return json.dumps({
                 "status": "error",
@@ -1854,7 +1855,7 @@ def musubi_spawn_pipeline_stage(
     # the stage still runs, just without a pushed skill.
     skill_choice = (pushed_skill_id or "").strip() or None
     if skill_choice is not None:
-        role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
+        role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
         if skill_choice not in role_skills or skill_loader.get_skill(skill_choice) is None:
             skill_choice = None
     try:

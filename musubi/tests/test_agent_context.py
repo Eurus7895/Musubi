@@ -9,7 +9,7 @@ Covers:
   - scripts/policy_engine.py: agent's spawn_allowlist includes
     the Phase A roles + the pipeline roles, ad-hoc pipeline-role spawns
     intersect tools correctly, denied combinations remain denied.
-  - .github/agents/agent.agent.md frontmatter declares the
+  - .github/agents/root/root.agent.md frontmatter declares the
     expected sees/spawn/budget contract.
   - .github/skills/agent-routing/SKILL.md exists and has the
     required frontmatter.
@@ -143,7 +143,7 @@ def test_agent_skill_allowlist_includes_routing() -> None:
     """The runner pushes agent-routing via inject_skills frontmatter
     and may also call musubi_get_skill('agent-routing') on demand;
     the policy gate must accept that call."""
-    assert "agent-routing" in AGENT_SKILL_ALLOWLIST["agent"]
+    assert "agent-routing" in AGENT_SKILL_ALLOWLIST["root"]
 
 
 def test_agent_skill_allowlist_excludes_generator_skills() -> None:
@@ -153,7 +153,7 @@ def test_agent_skill_allowlist_excludes_generator_skills() -> None:
         "python", "api-design", "testing", "database-patterns",
         "documentation", "code-review",
     }
-    assert AGENT_SKILL_ALLOWLIST["agent"].isdisjoint(forbidden)
+    assert AGENT_SKILL_ALLOWLIST["root"].isdisjoint(forbidden)
 
 
 def test_agent_skill_permission_check() -> None:
@@ -171,12 +171,12 @@ def test_agent_skill_permission_check() -> None:
 # ── Spawn allowlist (locked decision #4) ────────────────────────────────────
 
 def test_agent_spawn_allowlist_includes_phase_a_roles() -> None:
-    roles = set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+    roles = set(MAIN_SUBAGENT_ALLOWLIST["root"])
     assert {"explorer", "investigator", "reviewer-aux"}.issubset(roles)
 
 
 def test_agent_spawn_allowlist_includes_direct_delivery_roles() -> None:
-    roles = set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+    roles = set(MAIN_SUBAGENT_ALLOWLIST["root"])
     assert {"designer", "coder", "reviewer"}.issubset(roles)
     assert "planner" not in roles
 
@@ -194,7 +194,7 @@ def test_agent_cannot_spawn_unknown_role() -> None:
 
 
 def test_agent_can_spawn_each_listed_role() -> None:
-    for role in MAIN_SUBAGENT_ALLOWLIST["agent"]:
+    for role in MAIN_SUBAGENT_ALLOWLIST["root"]:
         assert check_subagent_allowed("agent", role) is True, role
 
 
@@ -257,7 +257,7 @@ def test_reviewer_subagent_is_read_only() -> None:
 
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
-_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
+_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "root.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )

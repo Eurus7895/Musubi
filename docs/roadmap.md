@@ -282,7 +282,16 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   while authorization denials stay terminal and every verdict is still
   audited as a deny. Fixed alongside: `refused_reason` was honoured only
   inside the spawn-with-orchestration branch, so a refused call could still
-  reach the MCP server on any other path. Plan:
+  reach the MCP server on any other path. **The depth-0 driver has one
+  name now:** it answered to `agent` (authorization), `root` (runtime ledger)
+  and `driver` (console prose), with `agent/run.py` passing two of them for
+  itself in adjacent lines and both readers carrying hard-coded spelling lists
+  to join a verdict to a node. `root` is canonical, defined once as
+  `policy_engine.ROOT_ROLE` with a `normalize_role()` that every membership,
+  capability and skill lookup folds through, so append-only rows written as
+  `agent` still resolve and nothing rewrites history. `driver` is pointedly
+  NOT an alias — it never carried the root's membership, so aliasing it would
+  hand it the whole spawn firewall. Plan:
   [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —

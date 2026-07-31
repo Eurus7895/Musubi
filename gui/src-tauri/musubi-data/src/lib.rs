@@ -1807,6 +1807,20 @@ fn parse_cycle_tools(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// The depth-0 driver's id in the runtime ledger and in `agent_cycles`.
+const ROOT_WORKER_ID: &str = "root";
+
+/// True for every spelling the depth-0 driver has ever been recorded under.
+///
+/// The substrate now writes `root` (see `scripts/policy_engine.py::ROOT_ROLE`),
+/// but `policy_audit` and `tool_audit` are append-only, so rows written before
+/// the rename still say `agent`, and the console has always printed `driver`.
+/// All three must join to the same runtime node or a panel reads empty for
+/// history it can see perfectly well.
+fn is_root_actor(role: &str) -> bool {
+    matches!(role, "root" | "agent" | "driver")
+}
+
 fn safe_tool_provenance(tool: &str, args_json: &str) -> (String, String, String) {
     if tool != "musubi_get_skill" {
         return ("tools".into(), String::new(), String::new());
@@ -2687,7 +2701,7 @@ fn load_state_at_with_pipeline_runs(
                 let status: String = row.get(6)?;
                 let worker_id = match workers_by_scope.get(&(session_id.clone(), role.clone())) {
                     Some(handles) if handles.len() == 1 => handles[0].clone(),
-                    _ if role == "agent" || role == "driver" => "root".into(),
+                    _ if is_root_actor(&role) => ROOT_WORKER_ID.into(),
                     _ => String::new(),
                 };
                 let (category, skill_id, detail) = safe_tool_provenance(&tool, &args_json);

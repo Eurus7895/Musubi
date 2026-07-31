@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent.boundary import ROOT_ROLE
 from agent.jsonio import loads_dict
 
 #: Per-stage cycle cap for a pipeline worker. Stages are single-purpose, so a
@@ -322,7 +323,7 @@ async def run_pipeline(
         if spawned.get("status") != "spawned":
             if spawned.get("error_kind") == "policy_denied":
                 raise PolicyDeniedError(
-                    role=str(spawn_args.get("parent_agent_name") or "agent"),
+                    role=str(spawn_args.get("parent_agent_name") or ROOT_ROLE),
                     tool="musubi_spawn_pipeline",
                     reason=str(spawned.get("error") or "pipeline spawn denied"),
                 )

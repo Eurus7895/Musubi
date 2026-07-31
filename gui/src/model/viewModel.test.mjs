@@ -1566,3 +1566,24 @@ test('a turn carries the skills its own agents received', () => {
   assert.deepEqual(turns[0].skills, ['typescript'])
   assert.deepEqual(turns[1].skills, [])
 })
+
+test('a policy verdict joins to the root node under every recorded spelling', () => {
+  // The substrate writes `root` now, but `policy_audit` is append-only: rows
+  // from before the rename say `agent`, and the console's own prose says
+  // `driver`. All three must reach the root node or the Policy panel reads
+  // empty for history it can see perfectly well.
+  const { state } = historySession({
+    policy: [
+      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'r' },
+      { id: 2, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'agent', handle: '', reason: 'r' },
+      { id: 3, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'driver', handle: '', reason: 'r' },
+      { id: 4, ts: 't', verdict: 'ALLOW', tool: 'musubi_grep', role: 'saboteur', handle: '', reason: 'r' },
+    ],
+  })
+  const vm = buildViewModel(state, actions())
+
+  const tools = vm.runtimeLogs.filter((row) => row.category === 'policy').map((row) => row.name)
+  assert.deepEqual(tools.sort(), ['musubi_glob', 'musubi_read_file', 'musubi_write_file'])
+  // A role that is not the driver under any spelling is still not the driver.
+  assert.equal(tools.includes('musubi_grep'), false)
+})

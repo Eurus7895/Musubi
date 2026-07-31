@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent.boundary import ROOT_ROLE
 from agent.jsonio import loads_dict
 from agent.prompt_resolver import AgentPromptPurpose, read_agent_prompt
 from workspace.grants import MANIFEST_ENV, RootRegistry
@@ -123,7 +124,7 @@ async def run_subagent(
     if spawn.get("status") != "spawned":
         if spawn.get("error_kind") == "policy_denied":
             raise PolicyDeniedError(
-                role=str(spawn_args.get("parent_agent_name") or "agent"),
+                role=str(spawn_args.get("parent_agent_name") or ROOT_ROLE),
                 tool="musubi_spawn_subagent",
                 reason=str(spawn.get("error") or "subagent spawn denied"),
             )

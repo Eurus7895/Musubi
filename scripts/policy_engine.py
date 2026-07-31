@@ -30,6 +30,45 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# ── The depth-0 driver's name ─────────────────────────────────────────────
+#
+# One actor, historically three spellings: `agent` (this file and every
+# authorization key), `root` (the runtime ledger and `agent_cycles.worker_id`),
+# and `driver` (console prose). `agent/run.py` used to launch the depth-0
+# worker with `role="agent"` and `audit_worker_id="root"` in adjacent lines,
+# and both the Rust reader and the console view model carried hard-coded lists
+# of the spellings just to join a policy verdict to a runtime node.
+#
+# `root` is now canonical. `agent` is accepted forever on READ, because
+# `policy_audit.role`, `subagent_audit.parent_agent_name` and
+# `sub_sessions.parent_agent_name` are append-only ledgers full of rows that
+# say `agent`, and a stored role is fed back into these very checks.
+#
+# `driver` is deliberately NOT an alias here. It has never been a policy role,
+# so `MAIN_SUBAGENT_ALLOWLIST.get("driver")` returns [] and the spawn is denied
+# fail-closed. Aliasing it to `root` would grant it the root's whole spawn
+# firewall — a fail-open change, which HI #5 forbids. The console may print
+# "driver"; the policy engine must never resolve it.
+ROOT_ROLE = "root"
+
+#: Every spelling that has ever meant the depth-0 driver in a POLICY context.
+#: Adding a name here grants it the root's membership — never add one that did
+#: not already have it.
+ROOT_ROLE_ALIASES: frozenset[str] = frozenset({"root", "agent"})
+
+
+def normalize_role(role: str | None) -> str:
+    """Fold a role name to its canonical spelling, lowercased.
+
+    Every membership and tool lookup in this module goes through it, so a
+    caller holding either spelling — a live `role="root"` or an `agent` string
+    read back out of the audit ledger — resolves to the same entry. A name
+    that is not a root alias is returned lowercased and otherwise untouched,
+    so an unknown role still misses every catalog and is denied.
+    """
+    clean = (role or "").strip().lower()
+    return ROOT_ROLE if clean in ROOT_ROLE_ALIASES else clean
+
 PIPELINE_POLICIES: dict[str, dict[str, list[str]]] = {
     "feature-dev": {
         "planner":  ["Read", "View", "Grep", "Glob"],
@@ -106,7 +145,7 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 #   standalone worker catalog shipped `workers/designer.agent.md` — the
 #   old "ask for /feature-dev instead" rationale was embedded-host-only.
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
-    "agent": [
+    ROOT_ROLE: [
         "explorer", "investigator", "reviewer-aux",
         "designer", "coder", "reviewer",
         "summarizer",
@@ -253,15 +292,33 @@ def _agents_root() -> Path:
 _AGENT_MD_PURPOSE_DIRS = ("root", "workers", "meta")
 
 
+def _role_filenames(role: str) -> list[str]:
+    """`.agent.md` filenames to try for `role`, canonical first.
+
+    The root's catalog entry was `root/agent.agent.md` before the rename, and
+    a user's own checkout or override may still carry that name. Since the
+    frontmatter `spawn_allowlist:` is AUTHORITATIVE when present, missing the
+    legacy filename would silently drop a user's declared firewall back to the
+    constant — a change in effective policy caused by nothing but a rename.
+    """
+    if normalize_role(role) == ROOT_ROLE:
+        return [f"{ROOT_ROLE}.agent.md"] + [
+            f"{alias}.agent.md"
+            for alias in sorted(ROOT_ROLE_ALIASES - {ROOT_ROLE})
+        ]
+    return [f"{role}.agent.md"]
+
+
 def _agent_md_candidates(role: str) -> list[Path]:
     """Candidate `.agent.md` paths for `role` across the purpose-dir catalog."""
     base = _agents_root()
-    filename = f"{role}.agent.md"
-    out = [base / d / filename for d in _AGENT_MD_PURPOSE_DIRS]
-    stages = base / "pipeline-stages"
-    if stages.is_dir():
-        out.extend(sorted(stages.glob(f"*/{filename}")))
-    out.append(base / filename)
+    out: list[Path] = []
+    for filename in _role_filenames(role):
+        out.extend(base / d / filename for d in _AGENT_MD_PURPOSE_DIRS)
+        stages = base / "pipeline-stages"
+        if stages.is_dir():
+            out.extend(sorted(stages.glob(f"*/{filename}")))
+        out.append(base / filename)
     return out
 
 
@@ -304,7 +361,7 @@ def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
     declares the field wins. None when no candidate declares it — the
     caller then falls back to the MAIN_SUBAGENT_ALLOWLIST constant.
     """
-    safe = (role or "").strip().lower()
+    safe = normalize_role(role)
     if not safe or "/" in safe or ".." in safe:
         return None
     for path in _agent_md_candidates(safe):
@@ -327,7 +384,7 @@ def main_subagent_allowlist(agent: str) -> list[str]:
     fm = _frontmatter_spawn_allowlist(agent)
     if fm is not None:
         return list(fm)
-    return list(MAIN_SUBAGENT_ALLOWLIST.get(agent.lower(), []))
+    return list(MAIN_SUBAGENT_ALLOWLIST.get(normalize_role(agent), []))
 
 
 def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[str]:
@@ -342,9 +399,9 @@ def _effective_spawn_roles(main_agent: str, pipeline_name: str | None) -> list[s
     constant fallback), so the literal 'agent' string is no longer special —
     it is just the role whose declared `spawn_allowlist` happens to be broad.
     """
-    agent = main_agent.lower()
+    agent = normalize_role(main_agent)
     firewall = main_subagent_allowlist(agent)
-    if agent == "agent" or pipeline_name is None:
+    if agent == ROOT_ROLE or pipeline_name is None:
         return list(firewall)
     declared = _load_pipeline_spawns(pipeline_name).get(agent)
     if declared is None:
@@ -361,7 +418,7 @@ def check_tool_allowed(pipeline: str, agent: str, tool: str) -> bool:
     pipeline_rules = PIPELINE_POLICIES.get(pipeline)
     if pipeline_rules is None:
         return False
-    allowed = pipeline_rules.get(agent.lower())
+    allowed = pipeline_rules.get(normalize_role(agent))
     if allowed is None:
         return False
     return tool in allowed
@@ -371,9 +428,9 @@ def deny_reason(pipeline: str, agent: str, tool: str) -> str:
     """Return a human-readable reason for a deny decision."""
     if pipeline not in PIPELINE_POLICIES:
         return f"Unknown pipeline: {pipeline!r}"
-    if agent.lower() not in PIPELINE_POLICIES[pipeline]:
+    if normalize_role(agent) not in PIPELINE_POLICIES[pipeline]:
         return f"Agent {agent!r} has no policy entry in pipeline {pipeline!r}"
-    allowed = PIPELINE_POLICIES[pipeline][agent.lower()]
+    allowed = PIPELINE_POLICIES[pipeline][normalize_role(agent)]
     return (
         f"Tool {tool!r} is not permitted for agent {agent!r} in pipeline "
         f"{pipeline!r}. Allowed: {allowed}"
@@ -400,12 +457,12 @@ def check_subagent_allowed(
     main_agent: str, role: str, pipeline_name: str | None = None,
 ) -> bool:
     """True iff `main_agent` may spawn `role` under `pipeline_name`."""
-    return role in _effective_spawn_roles(main_agent, pipeline_name)
+    return normalize_role(role) in _effective_spawn_roles(main_agent, pipeline_name)
 
 
 def get_subagent_tools(role: str) -> list[str]:
     """Tools the role itself is allowed to use. [] if role unknown."""
-    return list(SUBAGENT_POLICIES.get(role, []))
+    return list(SUBAGENT_POLICIES.get(normalize_role(role), []))
 
 
 def effective_subagent_tools(
@@ -422,7 +479,7 @@ def effective_subagent_tools(
     permissions or the role's hard cap. `requested_tools=None` means the
     caller did not narrow further.
     """
-    role_tools = SUBAGENT_POLICIES.get(role)
+    role_tools = SUBAGENT_POLICIES.get(normalize_role(role))
     if role_tools is None:
         return []
     main_set = set(main_tools)
@@ -447,7 +504,7 @@ def subagent_deny_reason(
             f"Valid roles: {sorted(SUBAGENT_POLICIES.keys())}"
         )
     if (
-        main_agent.lower() not in MAIN_SUBAGENT_ALLOWLIST
+        normalize_role(main_agent) not in MAIN_SUBAGENT_ALLOWLIST
         and _frontmatter_spawn_allowlist(main_agent) is None
     ):
         return (
@@ -455,7 +512,7 @@ def subagent_deny_reason(
             f"(fail-closed)."
         )
     effective = _effective_spawn_roles(main_agent, pipeline_name)
-    if pipeline_name and main_agent.lower() != "agent":
+    if pipeline_name and normalize_role(main_agent) != ROOT_ROLE:
         return (
             f"Main agent {main_agent!r} may not spawn role {role!r} under "
             f"pipeline {pipeline_name!r}. "
@@ -475,7 +532,7 @@ def subagent_deny_reason(
 
 _KNOWN_AGENT_NAMES: frozenset[str] = frozenset({
     "planner", "designer", "coder", "reviewer", "skill-builder",
-    "agent", "summarizer",
+    ROOT_ROLE, "summarizer",
     "explorer", "investigator", "reviewer-aux",
     "pipeline-builder",
     # Phase H.1 — /code-review pipeline roles.

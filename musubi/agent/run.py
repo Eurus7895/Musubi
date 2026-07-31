@@ -87,6 +87,7 @@ from agent.budget import (
 )
 from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
 from agent.boundary import (
+    ROOT_ROLE,
     PolicyDecision,
     denied_tool_guidance,
     evaluate_tool_call,
@@ -94,6 +95,7 @@ from agent.boundary import (
     is_musubi_tool,
     json_args,
     record_policy_decision,
+    normalize_role,
     record_tool_audit,
 )
 from agent.mcp_gateway import (
@@ -285,7 +287,7 @@ class Orchestration:
     """
 
     parent_session_id: str | None
-    parent_agent_name: str = "agent"
+    parent_agent_name: str = ROOT_ROLE
     depth: int = 0
     max_depth: int = DEFAULT_MAX_DEPTH
     spawned_workers: int = 0
@@ -585,7 +587,7 @@ async def _auto_recovery_transition(
             vendor=vendor, tools=(spawn_catalog or tools),
             orchestration=orchestration, gateway=gateway,
             compression_db_path=compression_db_path,
-            role="agent",
+            role=ROOT_ROLE,
             scope_hint=scope_hint,
             budget=budget,
             stats=stats,
@@ -944,7 +946,7 @@ async def run_agent(
 
                 spawn_args = {
                     "parent_session_id": parent_session_id or planning_key,
-                    "parent_agent_name": "agent",
+                    "parent_agent_name": ROOT_ROLE,
                     "pipeline_name": pipeline,
                     "brief": effective_task,
                 }
@@ -978,14 +980,14 @@ async def run_agent(
                     salvage_on_exhaust=True,
                     compression_db_path=context_compression_db_path,
                     initial_messages=initial_messages,
-                    role="agent",
+                    role=ROOT_ROLE,
                     scope_hint=scope_hint,
                     stats=stats,
                     budget=budget,
                     audit_db_path=audit_db_path,
                     audit_session_id=parent_session_id,
-                    audit_worker_id="root",
-                    audit_stage="agent",
+                    audit_worker_id=ROOT_ROLE,
+                    audit_stage=ROOT_ROLE,
                 )
         except PolicyDeniedError as exc:
             final_answer = _policy_incomplete(exc)
@@ -1084,7 +1086,7 @@ async def _run_loop(
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
     context_budget_chars: int | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
@@ -1092,7 +1094,7 @@ async def _run_loop(
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
     audit_session_id: str | None = None,
-    audit_worker_id: str = "root",
+    audit_worker_id: str = ROOT_ROLE,
     audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
@@ -1133,7 +1135,7 @@ async def _run_loop(
         # non-recoverable one halts. No LM call happens in the transition, so
         # it neither increments `cycles_used` nor writes an `agent_cycles` row.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
         ):
@@ -1163,14 +1165,14 @@ async def _run_loop(
         cycles_used = cycle + 1
         root_state = (
             orchestration.goal_state
-            if role == "agent"
+            if normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             else None
         )
         recovery_outcome = (
             orchestration.latest_unrecovered_failure()
-            if role == "agent"
+            if normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             else None
@@ -1315,7 +1317,7 @@ async def _run_loop(
             effort.attempts, input_tokens_est,
         )
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -1498,7 +1500,7 @@ async def _run_loop(
             )
         except PolicyDeniedError as exc:
             is_root = (
-                role == "agent"
+                normalize_role(role) == ROOT_ROLE
                 and (orchestration is None or orchestration.depth == 0)
             )
             if not is_root:
@@ -1521,7 +1523,7 @@ async def _run_loop(
             final_answer = _policy_incomplete(exc)
             break
         recovery_halt: str | None = None
-        if role == "agent" and orchestration is not None and orchestration.depth == 0:
+        if normalize_role(role) == ROOT_ROLE and orchestration is not None and orchestration.depth == 0:
             requested_replacement = any(
                 tu.get("name") == "musubi_spawn_subagent" for tu in tool_uses
             )
@@ -1739,7 +1741,7 @@ async def run_unit(
     compression_db_path: Path | None = None,
     context_budget_chars: int | None = None,
     initial_messages: list[dict[str, Any]] | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
@@ -1747,7 +1749,7 @@ async def run_unit(
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
     audit_session_id: str | None = None,
-    audit_worker_id: str = "root",
+    audit_worker_id: str = ROOT_ROLE,
     audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
@@ -2966,7 +2968,11 @@ def _preflight_policy_batch(
     Both are recorded to `policy_audit` as denials. The split is about what the
     caller can do next, never about what the ledger says happened.
     """
-    call_role = (
+    # Canonicalised before it is written anywhere. `policy_audit.role` folds
+    # through `evaluate_tool_call` and `tool_audit.agent` does not, so an
+    # un-normalised value here made the two ledgers disagree about the same
+    # call — one saying `root`, the other `agent`.
+    call_role = normalize_role(
         orchestration.parent_agent_name
         if orchestration is not None and orchestration.parent_agent_name
         else role
@@ -3070,7 +3076,7 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     cycle_index: int = 0,
     budget: TokenBudgetEnforcer | None = None,
@@ -3188,7 +3194,7 @@ def _normalize_root_spawn_tool_uses(
     Nested workers and direct substrate callers retain explicit narrowing.
     """
     if (
-        role != "agent"
+        normalize_role(role) != ROOT_ROLE
         or orchestration is None
         or orchestration.depth != 0
     ):
@@ -3296,7 +3302,7 @@ def _spawn_overflow_reasons(
         # the retired keyword guess, and the refusal names the legal role so
         # the model can comply.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -3324,7 +3330,7 @@ def _spawn_overflow_reasons(
         # "make it faster" passed the order gate and wrote files at a guess.
         # Read fresh — an explorer summoned earlier THIS turn clears it.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -3350,7 +3356,7 @@ def _spawn_overflow_reasons(
             if tu.get("id", "") in overflow:
                 continue
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.spawned_workers >= orchestration.max_root_workers
@@ -3364,7 +3370,7 @@ def _spawn_overflow_reasons(
                 file=log,
             )
             continue
-        if orchestration is not None and role == "agent" and orchestration.depth == 0:
+        if orchestration is not None and normalize_role(role) == ROOT_ROLE and orchestration.depth == 0:
             orchestration.spawned_workers += 1
     return overflow
 
@@ -3382,7 +3388,7 @@ async def _dispatch_one(
     refused: bool = False,
     destructive_reason: str | None = None,
     compression_db_path: Path | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
@@ -3406,7 +3412,11 @@ async def _dispatch_one(
         )
     session_id = orchestration.parent_session_id if orchestration else None
     audit_path = audit_db_path or _default_audit_db_path()
-    call_role = (
+    # Canonicalised before it is written anywhere. `policy_audit.role` folds
+    # through `evaluate_tool_call` and `tool_audit.agent` does not, so an
+    # un-normalised value here made the two ledgers disagree about the same
+    # call — one saying `root`, the other `agent`.
+    call_role = normalize_role(
         orchestration.parent_agent_name
         if orchestration is not None and orchestration.parent_agent_name
         else role
