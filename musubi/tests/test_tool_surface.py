@@ -17,7 +17,7 @@ def _tool(name: str) -> dict:
 
 
 def test_agent_surface_has_expected_count_and_core_tools() -> None:
-    assert len(ROOT_AGENT_TOOL_NAMES) == 15
+    assert len(ROOT_AGENT_TOOL_NAMES) == 18
     assert "musubi_read_file" in ROOT_AGENT_TOOL_NAMES
     # Read-only discovery tools let the agent find files instead of guessing.
     assert "musubi_glob" in ROOT_AGENT_TOOL_NAMES
@@ -25,6 +25,9 @@ def test_agent_surface_has_expected_count_and_core_tools() -> None:
     assert "musubi_recommend_skills" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_retrieve" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_spawn_subagent" in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_begin_direct" in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_begin_plan" in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_commit_plan" in ROOT_AGENT_TOOL_NAMES
 
 
 def test_agent_surface_excludes_whole_pipeline_spawn() -> None:

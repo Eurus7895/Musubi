@@ -45,12 +45,11 @@ def test_agent_can_spawn_phase_a_roles() -> None:
     )
 
 
-def test_agent_can_spawn_pipeline_roles() -> None:
-    """Locked decision #4 — agent may spawn individual pipeline roles
-    ad-hoc but never a whole pipeline."""
-    assert {"planner", "coder", "reviewer"}.issubset(
+def test_agent_can_spawn_direct_delivery_roles() -> None:
+    assert {"designer", "coder", "reviewer"}.issubset(
         set(MAIN_SUBAGENT_ALLOWLIST["agent"])
     )
+    assert "planner" not in MAIN_SUBAGENT_ALLOWLIST["agent"]
 
 
 def test_pipeline_stages_have_phase_g16_allowlist() -> None:
@@ -123,8 +122,9 @@ def test_list_subagent_roles_for_agent() -> None:
     roles = list_subagent_roles("agent")
     assert set(roles) >= {
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "designer", "coder", "reviewer",
     }
+    assert "planner" not in roles
 
 
 def test_list_subagent_roles_for_pipeline_stages_phase_g16() -> None:

@@ -34,7 +34,7 @@ test('Orchestrator is the only session surface and Studio is builder-only', () =
   // "Runtime evidence" was one of six overlapping words for the same thing.
   assert.doesNotMatch(orchestrator, /Runtime evidence/)
   assert.match(orchestrator, /Back to graph/)
-  assert.match(orchestrator, /Request log/)
+  assert.match(orchestrator, /Turn log/)
   assert.match(orchestrator, /Agent log/)
   assert.doesNotMatch(orchestrator, /Parent runs|Session unavailable/)
   assert.match(orchestrator, /TokenEconomics/)

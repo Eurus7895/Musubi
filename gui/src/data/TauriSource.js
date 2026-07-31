@@ -40,7 +40,7 @@ export default class TauriSource {
       subagents: [], agentTurns: [], agentCycles: [], runtimeLogEvents: [], orchestratorSessions: [],
       pipelineRuns: [], events: [], policy: [], audit: [], chat: [], pipeChat: [],
       orchestratorChatId: '', viewedOrchestratorChatId: '', pipelineChatId: '',
-      pipelineCatalog: [], runMode: 'direct', selectedPipeline: '',
+      pipelineCatalog: [], runMode: 'direct', selectedPipeline: '', tokenBudget: '',
       pipelineBuilderCatalog: { presets: [], agents: [] },
       totalSpawned: 0, totalDone: 0, allowCount: 0, denyCount: 0,
       activeProfile: 'anthropic.default', profiles: [], runtimeSource: 'none',
@@ -179,7 +179,13 @@ export default class TauriSource {
     // The offer is spent once anything is sent: the next turn rewrites the
     // chat's pending grants, so a stale button must not survive the send.
     this._setLocal({ draft: '', selectedSession: null, selected: null, dismissedApproval: '' })
-    this._action('send_chat', [text, requestedChatId, mode, pipelineName])
+    this._action('send_chat', [
+      text,
+      requestedChatId,
+      mode,
+      pipelineName,
+      this.state.tokenBudget,
+    ])
   }
 
   _recipePayload() {
@@ -280,6 +286,10 @@ export default class TauriSource {
         if (mode !== 'direct' && mode !== 'pipeline') return
         this._setLocal({ runMode: mode, selectedPipeline: mode === 'direct' ? '' : this.state.selectedPipeline })
       },
+    setTokenBudget: (value) => {
+      const tokenBudget = String(value ?? '').trim()
+      this._setLocal({ tokenBudget })
+    },
       selectPipeline: (name) => {
         if (!(this.state.pipelineCatalog || []).some((entry) => entry.name === name)) return
         this._setLocal({ runMode: 'pipeline', selectedPipeline: name })

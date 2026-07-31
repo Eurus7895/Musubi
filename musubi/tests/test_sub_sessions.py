@@ -704,11 +704,12 @@ def test_mcp_list_subagents_for_agent(mcp_db: Path) -> None:
     payload = json.loads(raw)
     assert payload["main_agent"] == "agent"
     role_names = {r["role"] for r in payload["roles"]}
-    # Phase A.1 roles plus Phase B.1 ad-hoc-spawnable pipeline roles.
+    # Discovery/diagnostic roles plus direct delivery roles.
     assert role_names >= {
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "designer", "coder", "reviewer",
     }
+    assert "planner" not in role_names
     # Each entry exposes the role's tool allow-list as a list. Phase A/B
     # roles each get at least Read; Phase C.2 introduces the text-only
     # summarizer with an empty tools list.

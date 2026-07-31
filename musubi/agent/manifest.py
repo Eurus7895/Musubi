@@ -37,11 +37,6 @@ class ChangeAssessment:
     route: str
     evidence: tuple[str, ...]
     clarifying_question: str | None = None
-    #: Open questions the planner raised that the next worker may settle with
-    #: a sensible default instead of halting the conversation. Non-empty only
-    #: when the change is small enough that a wrong default costs one turn to
-    #: redirect — never on a critical or multi-file change.
-    deferred_unknowns: tuple[str, ...] = ()
 
 
 # ── bounded planner change manifest ──────────────────────────────────────────
@@ -70,17 +65,20 @@ _CRITICAL_FLAGS = (
     "external_side_effects",
     "destructive",
 )
-_MANIFEST_FIELDS = {
+_MANIFEST_REQUIRED_FIELDS = {
     "files_expected",
     "subsystems",
-    "public_contract",
-    "data_migration",
-    "security_sensitive",
-    "external_side_effects",
-    "destructive",
-    "unknowns",
-    "validation_commands",
 }
+_MANIFEST_DEFAULTS: dict[str, Any] = {
+    "public_contract": False,
+    "data_migration": False,
+    "security_sensitive": False,
+    "external_side_effects": False,
+    "destructive": False,
+    "blocking_decisions": [],
+    "validation_commands": 0,
+}
+_MANIFEST_FIELDS = _MANIFEST_REQUIRED_FIELDS | set(_MANIFEST_DEFAULTS)
 
 
 
@@ -93,8 +91,10 @@ class ChangeManifest:
     security_sensitive: bool
     external_side_effects: bool
     destructive: bool
-    unknowns: tuple[str, ...]
+    blocking_decisions: tuple[str, ...]
     validation_commands: int
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -146,6 +146,44 @@ def _require_bool(raw: dict[str, Any], key: str) -> bool:
     return value
 
 
+def parse_change_manifest_object(raw: Any) -> ChangeManifest | None:
+    """Validate a compact manifest object and apply safe field defaults.
+
+    Root owns planning, so forcing it to spell five ``false`` values, an empty
+    decision list, and a zero command count adds formatting failure without
+    adding evidence. The two radius fields remain required. Unknown fields
+    still fail closed so this bounded governance channel cannot silently grow.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not _MANIFEST_REQUIRED_FIELDS.issubset(raw):
+        return None
+    if not set(raw).issubset(_MANIFEST_FIELDS):
+        return None
+    normalized = dict(_MANIFEST_DEFAULTS)
+    normalized.update(raw)
+    try:
+        return ChangeManifest(
+            files_expected=_require_count(normalized, "files_expected"),
+            subsystems=_require_strings(normalized, "subsystems"),
+            public_contract=_require_bool(normalized, "public_contract"),
+            data_migration=_require_bool(normalized, "data_migration"),
+            security_sensitive=_require_bool(normalized, "security_sensitive"),
+            external_side_effects=_require_bool(
+                normalized, "external_side_effects",
+            ),
+            destructive=_require_bool(normalized, "destructive"),
+            blocking_decisions=_require_strings(
+                normalized, "blocking_decisions",
+            ),
+            validation_commands=_require_count(
+                normalized, "validation_commands",
+            ),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def parse_change_manifest(text: str) -> ChangeManifest | None:
     """Extract the single bounded `<change_manifest>` JSON block, or None.
 
@@ -172,19 +210,9 @@ def parse_change_manifest(text: str) -> ChangeManifest | None:
             object_pairs_hook=_unique_object,
             parse_constant=_reject_json_constant,
         )
-        if not isinstance(raw, dict) or set(raw) != _MANIFEST_FIELDS:
+        result = parse_change_manifest_object(raw)
+        if result is None:
             return None
-        result = ChangeManifest(
-            files_expected=_require_count(raw, "files_expected"),
-            subsystems=_require_strings(raw, "subsystems"),
-            public_contract=_require_bool(raw, "public_contract"),
-            data_migration=_require_bool(raw, "data_migration"),
-            security_sensitive=_require_bool(raw, "security_sensitive"),
-            external_side_effects=_require_bool(raw, "external_side_effects"),
-            destructive=_require_bool(raw, "destructive"),
-            unknowns=_require_strings(raw, "unknowns"),
-            validation_commands=_require_count(raw, "validation_commands"),
-        )
     except (
         KeyError,
         TypeError,
@@ -201,14 +229,12 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     """Re-band a planned change from the planner's own manifest.
 
     Precedence:
-      1. Any `unknowns` → ask_scope: an open decision must go back to the
-         user, never be guessed by the next worker. EXCEPT on a change small
-         enough to be cheap to redo — no critical flag and at most
-         `MAX_SIMPLE_FILES` file — where the unknowns are handed to the next
-         worker as `deferred_unknowns` to settle with sensible defaults. A
-         palette or a heading on a one-file page costs one turn to redirect;
-         halting the conversation to ask about every one of them costs the
-         planner's whole plan, which this function would otherwise discard.
+      1. Any `blocking_decisions` → ask_scope. The planner has already used
+         model reasoning to choose every reversible default and reserves this
+         field for decisions that are expensive, irreversible, or unsafe to
+         guess. The harness validates that declaration; it does not reinterpret
+         the user's text or use file count as a proxy for whether a decision is
+         defaultable.
       2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
          `MAX_MEDIUM_SUBSYSTEMS` subsystem spread across more than
          `MAX_SIMPLE_FILES` file → plan_design_workflow: a large blast radius
@@ -224,20 +250,17 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     flags = tuple(
         flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
     )
-    # A blocking unknown is one the next worker cannot safely default. On a
-    # one-file change with no critical flag there is none: a wrong palette or
-    # heading costs a single turn to redirect, whereas halting discards the
-    # plan the planner just spent its whole budget producing.
-    deferrable = not flags and manifest.files_expected <= MAX_SIMPLE_FILES
-    if manifest.unknowns and not deferrable:
-        listed = ", ".join(manifest.unknowns)
+    if manifest.blocking_decisions:
+        listed = ", ".join(manifest.blocking_decisions)
         return ChangeAssessment(
             Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
-            tuple(f"unknown:{item}" for item in manifest.unknowns),
+            tuple(
+                f"blocking-decision:{item}"
+                for item in manifest.blocking_decisions
+            ),
             f"The plan leaves open: {listed}. "
             "Please decide before implementation starts.",
         )
-    deferred = manifest.unknowns
     if (
         flags
         or manifest.files_expected > MAX_MEDIUM_FILES
@@ -264,7 +287,6 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
         return ChangeAssessment(
             Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             (f"files_expected:{manifest.files_expected}",),
-            deferred_unknowns=deferred,
         )
     return ChangeAssessment(
         Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
@@ -272,5 +294,4 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             f"files_expected:{manifest.files_expected}",
             f"subsystems:{len(manifest.subsystems)}",
         ),
-        deferred_unknowns=deferred,
     )

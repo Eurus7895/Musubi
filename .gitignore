@@ -90,6 +90,9 @@ musubi/tests/_orch_regress.db
 # secrets in `env`. The committed template is .musubi/mcp.json.example.
 .musubi/mcp.json
 .mcp.json
+# Conversation-scoped planner output. These runtime artifacts are consumed by
+# workers but never committed as product source.
+.musubi/goals/
 
 # Musubi build output — copy-assets.sh stages .github/ assets and
 # LICENSE into the extension dir for .vsix packaging. Source of truth lives

@@ -131,6 +131,38 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
+3. **Conversation-scoped planning artifacts.** A read-only planner now emits a
+   human `<plan>` and machine `<change_manifest>` as one bounded response; the
+   driver validates and persists them separately as `plan.md` and
+   `manifest.json` under a stable conversation goal key. Runtime planning files
+   are not implementation delivery and do not reset no-progress accounting.
+   The manifest field `blocking_decisions` replaces `unknowns`: the planner
+   chooses reversible defaults in the plan regardless of file count, while the
+   substrate routes only the decisions the model explicitly declares unsafe to
+   guess. This is an incremental goal boundary, not the `/goal` lifecycle
+   command; explicit goal creation/switching remains a separate design.
+
+   Plan:
+   [`2026-07-30-goal-plan-artifacts.md`](./superpowers/plans/2026-07-30-goal-plan-artifacts.md)
+
+4. **Root-owned planning and model-owned dispatch.** Direct orchestration is
+   being collapsed from Root → Planner → manifest-classifier into one Root with
+   two explicit model-selected modes. Direct mode declares `create` or `modify`
+   plus a target path, letting a new artifact proceed without paying for an
+   Explorer merely because the path does not exist. Planning mode gives Root a
+   bounded read-only surface and persists Root's own `plan.md` plus
+   `manifest.json`; the model declares change size and worker order, while the
+   harness validates paths, manifest shape, role membership, order, radius, and
+   a hard worker ceiling. Manifest arithmetic no longer decides whether work is
+   large. Explorer remains workspace discovery; Investigator becomes
+   diagnostics only and cannot establish a mutation target. Skill ranking
+   returns a recommendation ticket; the model chooses the skill, and the ticket
+   prevents repeated recommender calls in one dispatch flow. The Planner role
+   remains only for explicit legacy pipelines until pipeline dissolution.
+
+   Plan:
+   [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
@@ -346,8 +378,8 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   any evidence, and the answer was an 11 px pill between "feature-dev mode" and
   "37 log rows". A Now banner naming the actor, the act, the elapsed time, and
   a labelled **Stop run** is now the largest element on screen; finished
-  requests collapse to one line with absent values rendered as `—` rather than
-  typeset zeros, and the running request expands in place with its last log
+  turns collapse to one line with absent values rendered as `—` rather than
+  typeset zeros, and the running turn expands in place with its last log
   lines. Orange is reclaimed for live attention only (selection became a
   neutral raise plus a blue bar, amber stays escalated), the session rail groups
   by Active / Needs you / Earlier with clock times, and the trust strip's four

@@ -4,29 +4,23 @@ from __future__ import annotations
 
 from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState, OutcomePacket, root_decision_tools
+from agent.manifest import parse_change_manifest_object
 from agent.routes import RouteKind
 from agent.scope import classify_task
 
 
-def test_deferred_unknowns_reach_the_worker_instead_of_halting() -> None:
+def test_decision_block_surfaces_planning_artifact_paths() -> None:
     state = GoalState.create(
         "a simple front end page", "medium_change", "planner_then_coder_check",
     )
-    assessment = state.apply_planner_manifest(
-        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
-        '"public_contract":false,"data_migration":false,'
-        '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["color palette"],'
-        '"validation_commands":1}</change_manifest>'
+    state.planning_artifacts = (
+        ".musubi/goals/abc/plan.md",
+        ".musubi/goals/abc/manifest.json",
     )
-
-    assert assessment.route == "single_coder"
-    assert state.pending_clarification is None  # no halt
-    assert state.next_role == "coder"
-    assert state.deferred_unknowns == ("color palette",)
     block = state.render_decision_block()
-    assert "choose_sensible_defaults=color palette" in block
-    assert "do not ask the user" in block.lower()
+    assert "planning_artifacts=.musubi/goals/abc/plan.md" in block
+    assert ".musubi/goals/abc/manifest.json" in block
+    assert "pass both files to the next worker" in block.lower()
 
 
 def test_decision_block_surfaces_conversation_cost_and_stall() -> None:
@@ -55,15 +49,14 @@ def test_decision_block_omits_conversation_lines_on_a_fresh_chat() -> None:
     assert "conversation_warning=" not in block
 
 
-def test_the_root_surface_widens_only_on_a_planners_verdict() -> None:
-    # The advisory branch that withheld the whole catalog is gone with the
-    # regex that produced it. What remains is an inversion worth pinning: a
-    # turn whose size nobody has established gets the LEAN surface, and the
-    # skill-reading tools arrive only once `assess_manifest` calls the
-    # planner's declaration medium or large.
+def test_the_root_surface_tracks_the_model_owned_mode() -> None:
     tools = [
         {"name": name}
         for name in (
+            "musubi_begin_direct",
+            "musubi_begin_plan",
+            "musubi_read_file",
+            "musubi_commit_plan",
             "musubi_spawn_subagent",
             "musubi_recommend_skills",
             "musubi_get_skill",
@@ -71,12 +64,30 @@ def test_the_root_surface_widens_only_on_a_planners_verdict() -> None:
         )
     ]
 
-    unknown = GoalState.create("anything", "unknown", RouteKind.ROOT_DECIDES)
-    lean = {t["name"] for t in root_decision_tools(tools, unknown)}
-    assert lean == {"musubi_spawn_subagent", "musubi_recommend_skills"}
+    state = GoalState.create("anything", "unknown", RouteKind.ROOT_DECIDES)
+    assert {t["name"] for t in root_decision_tools(tools, state)} == {
+        "musubi_begin_direct",
+        "musubi_begin_plan",
+    }
 
-    medium = GoalState.create("anything", "medium_change", RouteKind.PLANNER_THEN_CODER_CHECK)
-    wide = {t["name"] for t in root_decision_tools(tools, medium)}
+    state.begin_plan()
+    assert {t["name"] for t in root_decision_tools(tools, state)} == {
+        "musubi_read_file",
+        "musubi_commit_plan",
+    }
+
+    manifest = parse_change_manifest_object({
+        "files_expected": 3,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="medium",
+        worker_chain=("coder", "reviewer"),
+        planning_artifacts=("plan.md", "manifest.json"),
+    )
+    wide = {t["name"] for t in root_decision_tools(tools, state)}
     assert "musubi_get_skill" in wide and "musubi_get_reference" in wide
 
 
@@ -144,6 +155,12 @@ def test_simple_root_surface_is_spawn_only() -> None:
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
     )
+    state.begin_direct(
+        target_intent="create",
+        target_path="dashboard.html",
+        target_exists=False,
+        worker_role="coder",
+    )
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
         "musubi_spawn_subagent",
@@ -164,6 +181,18 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
     state = GoalState.create(
         "add authentication", "medium_change", "planner_then_coder_check",
     )
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 3,
+        "subsystems": ["auth"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="medium",
+        worker_chain=("coder", "reviewer"),
+        planning_artifacts=("plan.md", "manifest.json"),
+    )
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
         "musubi_spawn_subagent",
@@ -171,6 +200,66 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
         "musubi_get_skill",
         "musubi_get_reference",
     ]
+
+
+def test_pending_skill_ticket_hides_duplicate_recommendation() -> None:
+    tools = [
+        {"name": "musubi_spawn_subagent"},
+        {"name": "musubi_recommend_skills"},
+    ]
+    state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_direct(
+        target_intent="create",
+        target_path="page.html",
+        target_exists=False,
+        worker_role="coder",
+    )
+
+    assert root_decision_tools(
+        tools, state, recommendation_pending=True,
+    ) == [{"name": "musubi_spawn_subagent"}]
+
+
+def test_plan_flag_rejects_direct_mode() -> None:
+    state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
+    state.plan_required = True
+
+    try:
+        state.begin_direct(
+            target_intent="create",
+            target_path="page.html",
+            target_exists=False,
+            worker_role="coder",
+        )
+    except ValueError as exc:
+        assert "required" in str(exc)
+    else:
+        raise AssertionError("operator-required planning must reject Direct")
+
+
+def test_direct_create_allows_a_new_target_but_modify_requires_existence() -> None:
+    create = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
+    create.begin_direct(
+        target_intent="create",
+        target_path="page.html",
+        target_exists=False,
+        worker_role="coder",
+    )
+    assert create.mode == "direct"
+    assert create.evidence_gap() is None
+
+    modify = GoalState.create("modify page", "unknown", RouteKind.ROOT_DECIDES)
+    try:
+        modify.begin_direct(
+            target_intent="modify",
+            target_path="missing.html",
+            target_exists=False,
+            worker_role="coder",
+        )
+    except ValueError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("modify must fail closed for a missing target")
 
 
 def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
@@ -239,14 +328,15 @@ ELEVEN_FILE_MANIFEST = (
     '<change_manifest>{"files_expected":11,"subsystems":'
     '["config","routes","components","styles"],"public_contract":false,'
     '"data_migration":false,"security_sensitive":false,'
-    '"external_side_effects":false,"destructive":false,"unknowns":[],'
+    '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
     '"validation_commands":2}</change_manifest>'
 )
 
 
-def test_medium_goal_requires_planner_before_coder() -> None:
+def test_medium_hint_does_not_preselect_a_planner_or_worker() -> None:
     state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
-    assert state.next_role == "planner"
+    assert state.mode == "undecided"
+    assert state.next_role is None
 
 
 def test_simple_goal_has_no_role_order_constraint() -> None:
@@ -288,7 +378,7 @@ def test_small_manifest_opens_the_coder_gate() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert state.next_role == "coder"
@@ -307,13 +397,13 @@ def test_missing_manifest_fails_closed_to_clarification() -> None:
     assert "change manifest" in state.pending_clarification
 
 
-def test_manifest_unknowns_set_pending_clarification() -> None:
+def test_manifest_blocking_decisions_set_pending_clarification() -> None:
     state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
     state.apply_planner_manifest(
         '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["deployment target"],'
+        '"destructive":false,"blocking_decisions":["deployment target"],'
         '"validation_commands":1}</change_manifest>'
     )
     assert state.route == "ask_scope"
@@ -395,7 +485,7 @@ def test_manifest_overrun_is_detected_and_surfaced() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert state.declared_files_expected == 1
@@ -422,7 +512,7 @@ def test_no_overrun_within_the_declared_radius() -> None:
         '<change_manifest>{"files_expected":3,"subsystems":["markup"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     state.record_outcome(
@@ -462,9 +552,8 @@ def test_a_turn_that_establishes_nothing_refuses_a_mutation_worker() -> None:
     gap = _blind_goal().evidence_gap()
 
     assert gap is not None
-    # The refusal must be actionable: naming the two roles that can supply what
-    # is missing is what lets the root fix this without asking the user.
-    assert "explorer" in gap and "planner" in gap
+    assert "Explorer" in gap
+    assert "Planning mode" in gap
 
 
 def test_a_named_target_is_enough() -> None:
@@ -496,20 +585,16 @@ def test_an_accepted_manifest_is_not_a_target() -> None:
     assert state.evidence_gap() is not None
 
 
-def test_a_planners_own_outcome_is_evidence() -> None:
-    # What the planner establishes is that it READ the workspace, which its
-    # `done` outcome already records. Keying on the outcome also survives the
-    # second hole: `apply_planner_manifest` only runs when next_role ==
-    # "planner", so on a single_coder route — exactly where this gate fires —
-    # a planner spawned to clear it never set declared_files_expected at all,
-    # and the refusal's own advice could not be followed.
+def test_planner_and_investigator_outcomes_do_not_establish_a_target() -> None:
     state = _blind_goal()
-    state.record_outcome(
-        role="planner", status="done", summary="summary: 1 file, agent/run.py",
-        touched_files=set(),
-    )
-
-    assert state.evidence_gap() is None
+    for role in ("planner", "investigator"):
+        state.record_outcome(
+            role=role,
+            status="done",
+            summary="summary: inspected a symptom",
+            touched_files=set(),
+        )
+        assert state.evidence_gap() is not None
 
 
 def test_only_a_finished_worker_counts() -> None:
@@ -591,7 +676,7 @@ def test_an_exceeded_declaration_refuses_the_next_writer() -> None:
     assert stop is not None
     assert "declared 1 file(s)" in stop and "touched 3" in stop
     # Actionable, like every other gate here: it names what can still be done.
-    assert "planner" in stop
+    assert "Planning turn" in stop
 
 
 def test_the_stop_is_not_terminal() -> None:

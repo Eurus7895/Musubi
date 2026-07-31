@@ -489,6 +489,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .composer { flex: none; padding: var(--s-3) 14px; display: flex; flex-direction: column; gap: var(--s-2); border-top: 1px solid var(--line); }
 .composer__config { display: flex; align-items: center; gap: var(--s-2); }
 .composer__config select { min-width: 0; flex: 1; padding: 6px 26px 6px var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #e5ebf3; background: var(--raised); font: var(--fs-2) var(--mono); }
+.token-budget-control { display: flex; align-items: center; gap: var(--s-2); color: #8a96a6; font: 600 var(--fs-2) var(--sans); white-space: nowrap; }
+.token-budget-control input { width: 92px; padding: 6px var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #e5ebf3; background: var(--raised); font: var(--fs-2) var(--mono); }
 .composer__row { display: flex; align-items: center; gap: var(--s-2); }
 .composer__row > div { flex: 1; min-width: 0; }
 .composer__hint { color: var(--text-3); font: var(--fs-1) var(--sans); }

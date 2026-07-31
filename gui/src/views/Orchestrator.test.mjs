@@ -21,8 +21,8 @@ test('Orchestrator owns editable session folder grants', () => {
   assert.match(source, /fixed harness root|fixed/)
 })
 
-test('center workspace opens request or agent detail and returns to the graph', () => {
-  for (const label of ['Back to graph', 'Request log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
+test('center workspace opens turn or agent detail and returns to the graph', () => {
+  for (const label of ['Back to graph', 'Turn log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
     assert.equal(source.includes(label), true, label)
   }
   assert.match(source, /runtimeGraph/)
@@ -106,9 +106,9 @@ test('the run status strip and run-config band no longer sit above the evidence'
   assert.match(source, /config=\{<RunConfiguration/)
 })
 
-test('the session log is reachable without drilling into a single request', () => {
+test('the session log is reachable without drilling into a single turn', () => {
   // The Timeline/Session log toggle had stylesheet rules but no component, so
-  // the only log surface was per-request — a run spanning several requests
+  // the only log surface was per-turn — a session spanning several turns
   // could not be read end to end.
   assert.match(source, /surface-tabs/)
   assert.match(source, />Timeline</)
@@ -117,20 +117,20 @@ test('the session log is reachable without drilling into a single request', () =
   // Session scope is unscoped by construction: a lingering node selection
   // would silently narrow it back down to that node's rows.
   assert.match(source, /setSelectedNodeId\(null\)/)
-  // Rows carry the request that emitted them, since a row ordinal is useless
-  // once the log spans requests.
-  assert.match(source, /requestLabels/)
+  // Rows carry the turn that emitted them, since a row ordinal is useless
+  // once the log spans turns.
+  assert.match(source, /turnLabels/)
   assert.equal(source.includes('workspaceTab'), false)
 })
 
-test('finished requests collapse to one line and absent values are not zeros', () => {
-  assert.match(source, /function RequestTimeline/)
-  assert.match(source, /function RequestRow/)
+test('finished turns collapse to one line and absent values are not zeros', () => {
+  assert.match(source, /function TurnTimeline/)
+  assert.match(source, /function TurnRow/)
   // A sparse run typesets its noughts like real data unless they are dashed.
   assert.match(source, /metricField/)
   assert.match(source, /'—'/)
   assert.match(source, /is-absent/)
-  // The running request shows its last log lines without leaving the timeline.
+  // The running turn shows its last log lines without leaving the timeline.
   assert.match(source, /function LiveLog/)
   assert.match(source, /LIVE_LOG_LINES/)
   // The 980px cap wasted gutter on a wide display; the pane grows instead.
@@ -156,4 +156,12 @@ test('the session graph carries role identity and a turn ratio, not four grey co
   assert.doesNotMatch(source, /\{node\.turns\}\/\{node\.maxTurns\} turns/)
   // The hint was a full-width dashed box, which reads as an empty drop target.
   assert.match(source, /<p className="timeline-hint">/)
+})
+
+test('the composer exposes an operator-owned token budget for the next turn', () => {
+  assert.match(source, /Token budget/)
+  assert.match(source, /vals\.tokenBudget/)
+  assert.match(source, /vals\.onTokenBudget/)
+  assert.match(source, /type="number"/)
+  assert.match(source, /min="0"/)
 })

@@ -796,9 +796,9 @@ export function buildViewModel(s, act) {
     })),
   }
 
-  // New Console launches carry a durable request_id through the host, root,
-  // workers, and append-only runtime ledger. Project every request in the
-  // selected chat instead of replacing the graph with only the latest turn.
+  // New Console launches carry an internal request_id through the host, root,
+  // workers, and append-only runtime ledger. The operator-facing model is a
+  // continuous session made of turns; the correlation key stays internal.
   const sessionTurns = orchAgentTurns
     .filter((turn) => turn.chatId === activeSessionId)
     .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))
@@ -839,7 +839,7 @@ export function buildViewModel(s, act) {
         .flatMap((run) => run.stages || []),
     ].map((agent) => [agent.handle, agent])).values())
 
-    // Order requests oldest-first. The two available keys are not comparable:
+    // Order turns oldest-first. The two available keys are not comparable:
     // `agent_turns.started_at` is epoch seconds (~1.79e9) while
     // `runtime_log_events.id` is an AUTOINCREMENT rowid (hundreds). Taking
     // whichever exists and sorting the mixture ranked every turn-less request
@@ -847,28 +847,28 @@ export function buildViewModel(s, act) {
     //
     // That is not an edge case: `_record_agent_turn` is called with
     // `ended_at=time.time()` (agent/run.py), so the row is written when the
-    // turn *ends*. The in-flight request therefore never has a turn, always
+    // turn *ends*. The in-flight launch therefore never has a turn, always
     // fell back to the small rowid, and was always sorted as the oldest thing
     // in the session — mislabelled R01 and given the head of the continuation
     // chain, on every run.
     //
     // So rank by tier first. A turn row exists if and only if the turn
     // finished, which makes "has no turn" a reliable marker for "still
-    // running", and a running request is by definition the newest. Within a
-    // tier the keys are homogeneous: epoch seconds for finished requests,
+    // running", and an in-flight turn is by definition the newest. Within a
+    // tier the keys are homogeneous: epoch seconds for finished turns,
     // ledger rowid for in-flight ones.
-    // Sort on the ledger's own rowid, which every request in the new Console
+    // Sort on the ledger's own rowid, which every turn in the new Console
     // has (the host writes a launch line before the process starts) and which
     // is monotonic across the whole session. Legacy requests predating the
     // ledger have only a turn, so they form an earlier block ordered by epoch;
     // the two keys are never compared against each other.
     //
-    // The running request is pinned last by identity, not inferred from a
+    // The running turn is pinned last by identity, not inferred from a
     // missing turn row. `agent_turns` is written with `ended_at=time.time()`
     // so an in-flight request has none — but so does a request whose process
-    // failed to spawn, and treating those alike would park a dead request at
+    // failed to spawn, and treating those alike would park a dead turn at
     // the head of the timeline forever. The driver already reports which
-    // request it owns.
+    // internal launch key it owns.
     const liveRequestId = driverRunning ? String(driverStatusForRuns.requestId || '') : ''
     const requestTier = (request) => {
       if (liveRequestId && request.requestId === liveRequestId) return 2
@@ -887,7 +887,7 @@ export function buildViewModel(s, act) {
       ))
     })
     // Pipeline stages use their pipeline session as parent_session. Attach the
-    // pipeline envelope to the closest preceding root request in this chat.
+    // pipeline envelope to the closest preceding root turn in this chat.
     ;(s.pipelineRuns || [])
       .filter((run) => run.chatId === activeSessionId)
       .forEach((run) => {
@@ -909,7 +909,7 @@ export function buildViewModel(s, act) {
       source: row.source || 'root',
       stream: row.stream || 'stderr',
       agentHandle: row.agentHandle || '',
-      workerId: row.agentHandle || `request:${row.requestId}`,
+      workerId: row.agentHandle || `turn:${row.requestId}`,
       role: clipEvidence(row.role || (row.agentHandle ? 'worker' : 'root'), 60),
       category: clipEvidence(row.category || 'output', 40),
       name: clipEvidence(row.category || row.stream || 'output', 100),
@@ -919,22 +919,22 @@ export function buildViewModel(s, act) {
     }))
 
     const allNodes = []
-    const requestGroups = []
+    const turnGroups = []
     requestEntries.forEach((request, index) => {
-      const requestNodeId = `request:${request.requestId}`
+      const turnNodeId = `turn:${request.requestId}`
       const requestLogs = projectedRuntimeLogs.filter((row) => row.requestId === request.requestId)
       const running = driverStatusForRuns.requestId === request.requestId && driverRunning
       const failedAgent = request.agents.find((agent) => ['failed', 'escalated', 'abandoned'].includes(agent.status))
       const status = running ? 'running' : (failedAgent?.status || 'done')
       const meta = sm[status] || sm.abandoned
-      const requestNode = {
-        id: requestNodeId,
+      const turnNode = {
+        id: turnNodeId,
         requestId: request.requestId,
-        parentId: index > 0 ? `request:${requestEntries[index - 1].requestId}` : null,
-        kind: 'request',
-        role: 'request',
-        label: `Request ${String(index + 1).padStart(2, '0')}`,
-        title: request.turn?.request || request.events.find((event) => event.source === 'host')?.message || 'Runtime request',
+        parentId: index > 0 ? `turn:${requestEntries[index - 1].requestId}` : null,
+        kind: 'turn',
+        role: 'root',
+        label: `Turn ${String(index + 1).padStart(2, '0')}`,
+        title: request.turn?.request || request.events.find((event) => event.source === 'host')?.message || 'Runtime turn',
         brief: request.turn?.request || '',
         status,
         statusLabel: meta.label,
@@ -945,12 +945,12 @@ export function buildViewModel(s, act) {
         tokens: Number(request.turn?.tokensInEstimate || 0) + Number(request.turn?.tokensOutEstimate || 0),
         logCount: requestLogs.length,
       }
-      allNodes.push(requestNode)
+      allNodes.push(turnNode)
       const agentNodes = request.agents.map((agent) => {
         const agentMeta = sm[agent.status] || sm.abandoned
         const exactParent = request.agents.some((candidate) => candidate.handle === agent.parentAgent)
           ? agent.parentAgent
-          : requestNodeId
+          : turnNodeId
         const agentLogs = projectedRuntimeLogs.filter((row) => row.agentHandle === agent.handle)
         return {
           id: agent.handle,
@@ -974,17 +974,17 @@ export function buildViewModel(s, act) {
         }
       })
       allNodes.push(...agentNodes)
-      requestGroups.push({ ...requestNode, agents: agentNodes })
+      turnGroups.push({ ...turnNode, agents: agentNodes })
     })
     projectedRuntimeGraph = {
       mode: activePipelineRun ? 'pipeline' : 'direct',
       pipelineName: activePipelineRun?.pipelineName || '',
-      requests: requestGroups,
+      turns: turnGroups,
       nodes: allNodes,
       edges: allNodes.filter((node) => node.parentId).map((node) => ({
         from: node.parentId,
         to: node.id,
-        relation: node.kind === 'request' ? 'continued' : 'summoned',
+        relation: node.kind === 'turn' ? 'continued' : 'summoned',
       })),
     }
   }
@@ -1348,6 +1348,8 @@ export function buildViewModel(s, act) {
     onNewSession: act.newSession,
     clearDriverDisabled: !!driverStatus.running,
     events: s.events, chat: chatView, draft: s.draft, onDraft: act.onDraft, onDraftKey: act.onDraftKey,
+    tokenBudget: s.tokenBudget || '',
+    onTokenBudget: act.setTokenBudget,
     // Send stays send. It used to swap glyph and colour in place while busy,
     // so the only destructive control in the app sat exactly where the safe
     // one had been — a misclick waiting to happen. Stopping a run is now a

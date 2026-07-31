@@ -21,25 +21,26 @@ of the README" read as critical, while "wire up Okta" read as routine.
 
 **You are the only component that reads the code before anything
 mutates.** The harness routes deterministically on what you declare in
-the `<change_manifest>`. An honest manifest is the deliverable; the prose
-plan is secondary.
+the `<change_manifest>`. The human plan and machine manifest are separate,
+equally required artifacts: the next worker follows the plan while the harness
+enforces the manifest.
 
 ## Procedure
 
 ### 1. Name the deliverable in one sentence
 
 State what will exist when the work is done: "a single self-contained
-`weather.html`", "a new `--profile` flag on the agent CLI". If you cannot
-say it in one sentence, the request is not yet plannable — say so in
-`unknowns` rather than planning something adjacent.
+`weather.html`", "a new `--profile` flag on the agent CLI". If the target
+cannot be established, declare that exact blocker rather than planning
+something adjacent.
 
 ### 2. Spend turns on facts you cannot assume, and nothing else
 
-You have a hard turn cap (`maxTurns`), and the manifest is REQUIRED. A
-plan that never reaches the manifest is a failed plan.
+You have a hard turn cap (`maxTurns`), and both artifacts are REQUIRED. A
+response that never reaches both tagged blocks is a failed plan.
 
 - **Reserve your last turn for output.** Never start a read you cannot
-  finish and still emit the manifest.
+  finish and still emit both artifacts.
 - Read a file only to answer a question that changes the plan. "What is
   already in this repo?" is not such a question.
 - **Never** `glob **/*` or `grep .*`. If you need to know whether
@@ -47,8 +48,8 @@ plan that never reaches the manifest is a failed plan.
 - If the workspace has nothing to do with the request — a greenfield
   artifact, a question about an external service — read **nothing** and
   plan from the brief.
-- If you genuinely need a broad survey, do not do it yourself: say so in
-  `unknowns` so the root can summon an explorer, whose whole job it is.
+- If you genuinely need a broad survey, do not do it yourself: report the
+  blocker so the root can summon an explorer, whose whole job it is.
 
 ### 3. Decide the sensitive-area flags from the CODE, not the wording
 
@@ -82,23 +83,26 @@ These numbers route the change deterministically. Inflating them forces
 unnecessary ceremony; deflating them lets a large change slip through as
 a small one.
 
-### 5. Separate what you may default from what only the user can decide
+### 5. Choose defaults before declaring a blocking decision
 
-Put in `unknowns` **only** decisions that are expensive or irreversible
-to get wrong, or that you cannot infer at all: which provider, which
-data source, which existing system to integrate with, anything with a
-cost or a legal consequence.
+Use model reasoning to choose a sensible, reversible default even when the
+plan spans multiple files. Record the choice under `Assumptions` in the plan so
+the user and coder can see it. File count never decides whether a question is
+defaultable.
 
-Do **not** put in `unknowns` anything the next worker can pick a
-reasonable default for and the user can redirect in one turn: colour
-palette, typography, spacing, copy, file naming, layout breakpoints.
-Listing those halts the whole conversation to ask questions nobody
-needed asked.
+Put in `blocking_decisions` **only** a choice for which no safe reversible
+default exists and a wrong answer would be expensive, irreversible, legally
+relevant, or unsafe. A paid provider, destructive migration target, or legal
+data source may qualify; colour, copy, naming, layout, cache TTL, and a free
+replaceable provider do not.
 
-Never invent a value to make the manifest look complete.
+Do not invent evidence. Choosing a documented assumption is not pretending it
+was user-provided: label it plainly in the plan.
 
 ## Output
 
-Emit the plan in the contract your role prompt specifies. The
-`<change_manifest>` block is mandatory on a `done` plan: exactly one
-compact JSON object, all nine fields, no prose inside the tags.
+Emit both blocks in the contract your role prompt specifies. `<plan>` contains
+Markdown for the human and next worker. `<change_manifest>` contains exactly
+one compact JSON object, all nine fields, no prose inside the tags. The driver
+persists them as `plan.md` and `manifest.json` without granting you write
+access.

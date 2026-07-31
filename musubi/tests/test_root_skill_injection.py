@@ -74,41 +74,69 @@ def parent_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return sid, db_path
 
 
+def _coder_recommendation(task: str = "build the typescript page") -> dict:
+    return json.loads(server.musubi_recommend_skills(
+        task,
+        "agent",
+        for_role="coder",
+    ))
+
+
 def test_spawn_rejects_skill_outside_role_allowlist(parent_session) -> None:
     sid, _ = parent_session
+    recommendation = _coder_recommendation()
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the page",
         pushed_skill_id="agent-routing",  # not in coder's allowlist
+        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "error"
-    assert "not permitted" in out["error"]
+    assert "not permitted" in out["error"] or "not a candidate" in out["error"]
 
 
 def test_spawn_rejects_unknown_skill(parent_session) -> None:
     sid, _ = parent_session
+    recommendation = _coder_recommendation()
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the page",
         pushed_skill_id="typescript-but-typoed",
+        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "error"
-    # Rejected at the allowlist gate before catalog lookup.
-    assert "not permitted" in out["error"] or "not found" in out["error"]
+    assert "not permitted" in out["error"] or "not a candidate" in out["error"]
 
 
-def test_spawn_accepts_valid_pushed_skill_and_stores_it(parent_session) -> None:
-    sid, db_path = parent_session
+def test_spawn_rejects_pushed_skill_without_recommendation_ticket(
+    parent_session,
+) -> None:
+    sid, _ = parent_session
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the typescript page",
         pushed_skill_id="typescript",
+    ))
+    assert out["status"] == "error"
+    assert "recommendation_id" in out["error"]
+
+
+def test_spawn_accepts_valid_pushed_skill_and_stores_it(parent_session) -> None:
+    sid, db_path = parent_session
+    recommendation = _coder_recommendation()
+    out = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid,
+        parent_agent_name="agent",
+        role="coder",
+        brief="build the typescript page",
+        pushed_skill_id="typescript",
+        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "spawned"
     assert out["pushed_skill_id"] == "typescript"
@@ -150,12 +178,14 @@ def test_context_builder_pushed_skill_overrides_native() -> None:
 
 def test_get_subagent_context_tool_surfaces_pushed_skill(parent_session) -> None:
     sid, _ = parent_session
+    recommendation = _coder_recommendation()
     spawn = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the typescript page",
         pushed_skill_id="typescript",
+        recommendation_id=recommendation["recommendation_id"],
     ))
     ctx = json.loads(server.musubi_get_subagent_context(spawn["handle_id"]))
     assert ctx["status"] == "ok"
@@ -172,6 +202,12 @@ def _tools(names: list[str]) -> list[dict]:
 def test_simple_scope_root_sees_spawn_and_recommend() -> None:
     """The headline fix: a simple_artifact root can still select a skill."""
     state = GoalState.create("build dashboard", "simple_artifact", "single_coder")
+    state.begin_direct(
+        target_intent="create",
+        target_path="dashboard.html",
+        target_exists=False,
+        worker_role="coder",
+    )
     tools = _tools([
         "musubi_spawn_subagent",
         "musubi_recommend_skills",
@@ -190,6 +226,19 @@ def test_simple_scope_root_sees_spawn_and_recommend() -> None:
 
 def test_broad_scope_root_also_sees_skill_read_tools() -> None:
     state = GoalState.create("multi-surface change", "medium_change", "planner_then_coder_check")
+    state.begin_plan()
+    from agent.manifest import parse_change_manifest_object
+    manifest = parse_change_manifest_object({
+        "files_expected": 4,
+        "subsystems": ["agent", "storage"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="medium",
+        worker_chain=("coder", "reviewer"),
+        planning_artifacts=("plan.md", "manifest.json"),
+    )
     tools = _tools([
         "musubi_spawn_subagent",
         "musubi_recommend_skills",

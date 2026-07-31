@@ -72,6 +72,7 @@ class BarrierRouter(LMRouter):
         self.completed: set[int] = set()
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        names = {tool["name"] for tool in tools}
         if _is_parent_followup(messages):
             return _text("done")
         idx = _child_index(messages)
@@ -79,6 +80,17 @@ class BarrierRouter(LMRouter):
             self.barrier.wait()  # blocks until all N children are here
             self.completed.add(idx)
             return _text(f"explored worker {idx}")
+        if "musubi_begin_direct" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use",
+                "id": "mode-direct",
+                "name": "musubi_begin_direct",
+                "input": {
+                    "target_intent": "modify",
+                    "target_path": ".",
+                    "worker_role": "explorer",
+                },
+            }])
         return _spawns(self.n)
 
 
@@ -221,6 +233,7 @@ class SequentialRetryRouter(LMRouter):
         self.replacement_context_seen = False
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        names = {tool["name"] for tool in tools}
         idx = _child_index(messages)
         if idx is not None:
             self.children += 1
@@ -232,6 +245,17 @@ class SequentialRetryRouter(LMRouter):
             if self.children == 1:
                 return _text("[incomplete] first worker could not finish")
             return _text("worker finished")
+        if "musubi_begin_direct" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use",
+                "id": "mode-direct",
+                "name": "musubi_begin_direct",
+                "input": {
+                    "target_intent": "create",
+                    "target_path": "dashboard.html",
+                    "worker_role": "coder",
+                },
+            }])
         if self.children < 2:
             return _spawns(1, role="coder")
         return _text("done")

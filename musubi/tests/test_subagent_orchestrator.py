@@ -250,12 +250,26 @@ def _spawn(role: str, brief: str, **extra: Any) -> LMResponse:
     }])
 
 
+def _direct(role: str, path: str, intent: str = "modify") -> LMResponse:
+    return LMResponse(stop_reason="tool_use", content=[{
+        "type": "tool_use",
+        "id": "mode-direct",
+        "name": "musubi_begin_direct",
+        "input": {
+            "target_intent": intent,
+            "target_path": path,
+            "worker_role": role,
+        },
+    }])
+
+
 # ── happy path: spawn → run child → complete → summary fed back ─────────────
 
 
 def test_spawn_runs_child_and_feeds_summary_back() -> None:
     router = FakeRouter([
-        _spawn("explorer", "list the python modules"),   # parent cycle 0
+        _direct("explorer", "."),
+        _spawn("explorer", "list the python modules"),
         _text("explored: found server.py and run.py"),    # child cycle 0 (final)
         _text("done"),                                     # parent cycle 1 (final)
     ])
@@ -264,7 +278,7 @@ def test_spawn_runs_child_and_feeds_summary_back() -> None:
 
     assert answer == "done"
     # Parent's second LM call sees a bounded goal-state delta, not transcript.
-    parent_followup = router.calls[2]["messages"]
+    parent_followup = router.calls[3]["messages"]
     feedback = str(parent_followup)
     assert "[root-goal-state]" in feedback
     assert "explored: found server.py" in feedback
@@ -279,12 +293,13 @@ def test_child_tool_surface_is_restricted() -> None:
     read + glob/grep discovery), never write/run — captured from the
     FakeRouter's second call."""
     router = FakeRouter([
+        _direct("explorer", "."),
         _spawn("explorer", "scan"),
         _text("ok"),
         _text("done"),
     ])
     asyncio.run(run_agent("scan", router, _musubi_dir(), log=io.StringIO()))
-    child_tools = {t["name"] for t in router.calls[1]["tools"]}
+    child_tools = {t["name"] for t in router.calls[2]["tools"]}
     # Read-only explorer: file read + discovery (glob/grep), never write/run.
     assert child_tools == {"musubi_read_file", "musubi_glob", "musubi_grep"}
     assert "musubi_write_file" not in child_tools
@@ -294,21 +309,37 @@ def test_child_tool_surface_is_restricted() -> None:
 
 def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     """The root model sees the small agent surface, while the coder worker is
-    sized from the full local Musubi catalog and can write when policy allows."""
+    sized from the full local Musubi catalog and can write when policy allows.
+
+    A model-authored ``allowed_tools`` list uses MCP names rather than the
+    substrate's symbolic capabilities. Root must not be allowed to starve the
+    role by forwarding that accidental narrowing.
+    """
     router = FakeRouter([
-        _spawn("coder", "create a file"),
+        _direct("coder", "hello.html", "create"),
+        _spawn(
+            "coder",
+            "create a file",
+            allowed_tools=[
+                "musubi_write_file",
+                "musubi_edit_file",
+                "musubi_run_command",
+            ],
+        ),
         _text("created: hello.html"),
         _text("done"),
     ])
-    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=io.StringIO()))
+    log = io.StringIO()
+    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=log))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
-    child_tools = {t["name"] for t in router.calls[1]["tools"]}
+    child_tools = {t["name"] for t in router.calls[2]["tools"]}
 
     assert "musubi_write_file" not in root_tools
     assert "musubi_edit_file" not in root_tools
     assert "musubi_run_command" not in root_tools
     assert {"musubi_write_file", "musubi_edit_file", "musubi_run_command"} <= child_tools
+    assert "ignored model allowed_tools on root spawn" in log.getvalue()
 
 
 # ── deny path: an un-spawnable role surfaces the harness error verbatim ─────
@@ -316,13 +347,14 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
 
 def test_disallowed_role_policy_denial_is_terminal_without_running_child() -> None:
     router = FakeRouter([
+        _direct("coder", "bad-role.txt", "create"),
         _spawn("saboteur", "do something"),
         _text("this response must not be consumed"),
     ])
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
     assert answer.startswith("[incomplete]")
     assert "saboteur" in answer
-    assert len(router.calls) == 1
+    assert len(router.calls) == 2
 
 
 def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> None:
@@ -390,6 +422,7 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     # the child runs its full role budget, exhausts it on tool calls, and the
     # escalation still blocks root success until recovered.
     router = FakeRouter([
+        _direct("explorer", "."),
         _spawn("explorer", "loop", max_turns=1),
     ] + [
         # child cycles 0-5: keeps asking for a tool → exhausts the role cap
@@ -406,8 +439,8 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
-    assert router.calls[7]["tools"] == []
-    fed_back = str(router.calls[8]["messages"])
+    assert router.calls[8]["tools"] == []
+    fed_back = str(router.calls[9]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
     assert "max_turns=6 reached" in fed_back
@@ -584,6 +617,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
         '"retry_same_strategy":false}'
     )
     router = FakeRouter([
+        _direct("coder", "dashboard.html", "create"),
         _spawn("coder", "create html dashboard"),
         _text(blocked),
         _text("done"),
@@ -599,7 +633,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "coder (escalated)" in answer
     assert "output_too_large_for_single_tool_call" in answer
-    fed_back = str(router.calls[2]["messages"])
+    fed_back = str(router.calls[3]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "output_too_large_for_single_tool_call" in fed_back
     assert "blocked" in fed_back

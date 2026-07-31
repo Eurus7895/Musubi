@@ -53,6 +53,7 @@ class LeafCoderRouter(LMRouter):
 
     def __init__(self) -> None:
         self.coder_had_spawn: bool | None = None
+        self.spawned = False
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         names = {t["name"] for t in tools}
@@ -62,9 +63,23 @@ class LeafCoderRouter(LMRouter):
         if "implement X" in brief:
             self.coder_had_spawn = "musubi_spawn_subagent" in names
             return _text("coded directly")
+        if "musubi_begin_direct" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use",
+                "id": "mode-direct",
+                "name": "musubi_begin_direct",
+                "input": {
+                    "target_intent": "create",
+                    "target_path": "report.md",
+                    "worker_role": "coder",
+                },
+            }])
+        if has_tr and not self.spawned:
+            self.spawned = True
+            return _spawn("coder", "implement X")
         if has_tr:
             return _text("done")
-        return _spawn("coder", "implement X")
+        return _text("done")
 
 
 def test_direct_coder_worker_is_leaf_by_default() -> None:

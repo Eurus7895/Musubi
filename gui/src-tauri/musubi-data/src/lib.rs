@@ -4752,6 +4752,47 @@ mod tests {
     }
 
     #[test]
+    fn launch_spec_adds_operator_token_budget() {
+        let spec = build_agent_launch_spec(
+            "task",
+            "",
+            "",
+            None,
+            Path::new("/proj"),
+            &std::collections::HashMap::new(),
+            AgentLaunchScope {
+                max_tokens: Some(240_000),
+                ..AgentLaunchScope::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            spec.args,
+            vec!["task", "--max-tokens", "240000", "--tool-surface", "agent"]
+        );
+    }
+
+    #[test]
+    fn launch_spec_rejects_negative_token_budget() {
+        let error = build_agent_launch_spec(
+            "task",
+            "",
+            "",
+            None,
+            Path::new("/proj"),
+            &std::collections::HashMap::new(),
+            AgentLaunchScope {
+                max_tokens: Some(-1),
+                ..AgentLaunchScope::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("token budget"));
+    }
+
+    #[test]
     fn launch_specs_for_project_sessions_share_the_project_root() {
         let root = PathBuf::from("/proj");
         let env = std::collections::HashMap::new();
@@ -6087,6 +6128,7 @@ pub struct AgentLaunchScope<'a> {
     pub chat_id: Option<&'a str>,
     pub pipeline_name: Option<&'a str>,
     pub request_id: Option<&'a str>,
+    pub max_tokens: Option<i64>,
 }
 
 /// Build the launch spec for the on-demand task launcher.
@@ -6133,6 +6175,13 @@ pub fn build_agent_launch_spec(
         }
         args.push("--pipeline".into());
         args.push(pipeline_name.to_string());
+    }
+    if let Some(max_tokens) = scope.max_tokens {
+        if max_tokens < 0 {
+            return Err("token budget must be zero or a positive integer".into());
+        }
+        args.push("--max-tokens".into());
+        args.push(max_tokens.to_string());
     }
     args.push("--tool-surface".into());
     args.push("agent".into());
