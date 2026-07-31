@@ -37,11 +37,6 @@ class ChangeAssessment:
     route: str
     evidence: tuple[str, ...]
     clarifying_question: str | None = None
-    #: Open questions the planner raised that the next worker may settle with
-    #: a sensible default instead of halting the conversation. Non-empty only
-    #: when the change is small enough that a wrong default costs one turn to
-    #: redirect — never on a critical or multi-file change.
-    deferred_unknowns: tuple[str, ...] = ()
 
 
 # ── bounded planner change manifest ──────────────────────────────────────────
@@ -78,7 +73,7 @@ _MANIFEST_FIELDS = {
     "security_sensitive",
     "external_side_effects",
     "destructive",
-    "unknowns",
+    "blocking_decisions",
     "validation_commands",
 }
 
@@ -93,8 +88,10 @@ class ChangeManifest:
     security_sensitive: bool
     external_side_effects: bool
     destructive: bool
-    unknowns: tuple[str, ...]
+    blocking_decisions: tuple[str, ...]
     validation_commands: int
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -182,7 +179,7 @@ def parse_change_manifest(text: str) -> ChangeManifest | None:
             security_sensitive=_require_bool(raw, "security_sensitive"),
             external_side_effects=_require_bool(raw, "external_side_effects"),
             destructive=_require_bool(raw, "destructive"),
-            unknowns=_require_strings(raw, "unknowns"),
+            blocking_decisions=_require_strings(raw, "blocking_decisions"),
             validation_commands=_require_count(raw, "validation_commands"),
         )
     except (
@@ -201,14 +198,12 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     """Re-band a planned change from the planner's own manifest.
 
     Precedence:
-      1. Any `unknowns` → ask_scope: an open decision must go back to the
-         user, never be guessed by the next worker. EXCEPT on a change small
-         enough to be cheap to redo — no critical flag and at most
-         `MAX_SIMPLE_FILES` file — where the unknowns are handed to the next
-         worker as `deferred_unknowns` to settle with sensible defaults. A
-         palette or a heading on a one-file page costs one turn to redirect;
-         halting the conversation to ask about every one of them costs the
-         planner's whole plan, which this function would otherwise discard.
+      1. Any `blocking_decisions` → ask_scope. The planner has already used
+         model reasoning to choose every reversible default and reserves this
+         field for decisions that are expensive, irreversible, or unsafe to
+         guess. The harness validates that declaration; it does not reinterpret
+         the user's text or use file count as a proxy for whether a decision is
+         defaultable.
       2. Any critical flag, more than `MAX_MEDIUM_FILES` files, or more than
          `MAX_MEDIUM_SUBSYSTEMS` subsystem spread across more than
          `MAX_SIMPLE_FILES` file → plan_design_workflow: a large blast radius
@@ -224,20 +219,17 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
     flags = tuple(
         flag for flag in _CRITICAL_FLAGS if getattr(manifest, flag)
     )
-    # A blocking unknown is one the next worker cannot safely default. On a
-    # one-file change with no critical flag there is none: a wrong palette or
-    # heading costs a single turn to redirect, whereas halting discards the
-    # plan the planner just spent its whole budget producing.
-    deferrable = not flags and manifest.files_expected <= MAX_SIMPLE_FILES
-    if manifest.unknowns and not deferrable:
-        listed = ", ".join(manifest.unknowns)
+    if manifest.blocking_decisions:
+        listed = ", ".join(manifest.blocking_decisions)
         return ChangeAssessment(
             Band.HIGH, Band.UNKNOWN, Band.UNKNOWN, RouteKind.ASK_SCOPE,
-            tuple(f"unknown:{item}" for item in manifest.unknowns),
+            tuple(
+                f"blocking-decision:{item}"
+                for item in manifest.blocking_decisions
+            ),
             f"The plan leaves open: {listed}. "
             "Please decide before implementation starts.",
         )
-    deferred = manifest.unknowns
     if (
         flags
         or manifest.files_expected > MAX_MEDIUM_FILES
@@ -264,7 +256,6 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
         return ChangeAssessment(
             Band.LOW, Band.LOW, Band.LOW, RouteKind.SINGLE_CODER,
             (f"files_expected:{manifest.files_expected}",),
-            deferred_unknowns=deferred,
         )
     return ChangeAssessment(
         Band.LOW, Band.MEDIUM, Band.LOW, RouteKind.PLANNER_THEN_CODER_CHECK,
@@ -272,5 +263,4 @@ def assess_manifest(manifest: ChangeManifest) -> ChangeAssessment:
             f"files_expected:{manifest.files_expected}",
             f"subsystems:{len(manifest.subsystems)}",
         ),
-        deferred_unknowns=deferred,
     )

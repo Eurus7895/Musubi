@@ -2881,7 +2881,7 @@ def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
         '<change_manifest>{"files_expected":11,"subsystems":'
         '["config","routes","components","styles"],"public_contract":false,'
         '"data_migration":false,"security_sensitive":false,'
-        '"external_side_effects":false,"destructive":false,"unknowns":[],'
+        '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
         '"validation_commands":2}</change_manifest>'
     )
 
@@ -2901,7 +2901,7 @@ def test_large_chain_advances_only_on_a_successful_role() -> None:
         '<change_manifest>{"files_expected":11,"subsystems":'
         '["config","routes","components","styles"],"public_contract":false,'
         '"data_migration":false,"security_sensitive":false,'
-        '"external_side_effects":false,"destructive":false,"unknowns":[],'
+        '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
         '"validation_commands":2}</change_manifest>'
     )
 
@@ -2940,7 +2940,7 @@ def test_manifest_clarification_returns_before_any_model_call() -> None:
         '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["deployment target"],'
+        '"destructive":false,"blocking_decisions":["deployment target"],'
         '"validation_commands":1}</change_manifest>'
     )
     orchestration = Orchestration(parent_session_id="root", goal_state=state)

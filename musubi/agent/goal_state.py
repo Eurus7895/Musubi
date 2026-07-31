@@ -165,9 +165,10 @@ class GoalState:
     chat_tokens: int = 0
     #: Trailing count of prior turns that ended without writing a file.
     chat_barren_turns: int = 0
-    #: Planner unknowns small enough for the next worker to settle with a
-    #: sensible default instead of halting the conversation to ask.
-    deferred_unknowns: tuple[str, ...] = ()
+    #: Driver-owned files produced from the planner response. They are planning
+    #: inputs, not delivered user artifacts, and therefore never reset the
+    #: no-progress counter.
+    planning_artifacts: tuple[str, ...] = ()
     #: Roles still owed after `next_role`, in order. Non-empty only on a large
     #: change, where the chain is the whole point of the classification.
     role_chain: tuple[str, ...] = ()
@@ -253,7 +254,6 @@ class GoalState:
             )
             self.role_chain = ()
         self.pending_clarification = assessment.clarifying_question
-        self.deferred_unknowns = assessment.deferred_unknowns
         self.declared_files_expected = (
             manifest.files_expected if manifest is not None else None
         )
@@ -339,6 +339,26 @@ class GoalState:
             "with findings. Spawn 'explorer' (or 'planner', which reads before "
             "it plans) and retry once it reports"
         )
+
+    def reject_planning_artifacts(self, reason: str) -> ChangeAssessment:
+        """Fail closed when the planner did not produce the two-file contract."""
+        assessment = ChangeAssessment(
+            Band.HIGH,
+            Band.UNKNOWN,
+            Band.UNKNOWN,
+            RouteKind.ASK_SCOPE,
+            ("missing-or-invalid-planning-artifacts",),
+            reason,
+        )
+        self.assessment = assessment
+        self.route = assessment.route
+        self.scope = "unknown"
+        self.next_role = None
+        self.role_chain = ()
+        self.pending_clarification = reason
+        self.planning_artifacts = ()
+        self.declared_files_expected = None
+        return assessment
 
     def manifest_overrun(self) -> tuple[int, int] | None:
         """`(declared, actual)` when mutation exceeded the declared radius.
@@ -442,22 +462,21 @@ class GoalState:
                 "widen it further: stop and report what was touched, or "
                 "re-plan the remainder explicitly.\n"
             )
-        defaults = ""
-        if self.deferred_unknowns:
-            listed = ", ".join(self.deferred_unknowns)
-            defaults = (
-                f"choose_sensible_defaults={listed}\n"
-                "Pass these to the worker as decisions IT should make with a "
-                "reasonable default. Do NOT ask the user about them — on a "
-                "change this small a wrong default costs one turn to "
-                "redirect.\n"
+        planning = ""
+        if self.planning_artifacts:
+            planning = (
+                "planning_artifacts="
+                + ",".join(self.planning_artifacts)
+                + "\nPass both files to the next worker. plan.md is the "
+                "implementation contract; manifest.json is the bounded "
+                "governance declaration.\n"
             )
         return (
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
-            f"{order}{bands}{conversation}{stall}{overrun}{defaults}"
+            f"{order}{bands}{conversation}{stall}{overrun}{planning}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"

@@ -131,6 +131,20 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
+3. **Conversation-scoped planning artifacts.** A read-only planner now emits a
+   human `<plan>` and machine `<change_manifest>` as one bounded response; the
+   driver validates and persists them separately as `plan.md` and
+   `manifest.json` under a stable conversation goal key. Runtime planning files
+   are not implementation delivery and do not reset no-progress accounting.
+   The manifest field `blocking_decisions` replaces `unknowns`: the planner
+   chooses reversible defaults in the plan regardless of file count, while the
+   substrate routes only the decisions the model explicitly declares unsafe to
+   guess. This is an incremental goal boundary, not the `/goal` lifecycle
+   command; explicit goal creation/switching remains a separate design.
+
+   Plan:
+   [`2026-07-30-goal-plan-artifacts.md`](./superpowers/plans/2026-07-30-goal-plan-artifacts.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

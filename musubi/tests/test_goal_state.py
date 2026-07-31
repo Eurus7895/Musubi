@@ -8,25 +8,18 @@ from agent.routes import RouteKind
 from agent.scope import classify_task
 
 
-def test_deferred_unknowns_reach_the_worker_instead_of_halting() -> None:
+def test_decision_block_surfaces_planning_artifact_paths() -> None:
     state = GoalState.create(
         "a simple front end page", "medium_change", "planner_then_coder_check",
     )
-    assessment = state.apply_planner_manifest(
-        '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
-        '"public_contract":false,"data_migration":false,'
-        '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["color palette"],'
-        '"validation_commands":1}</change_manifest>'
+    state.planning_artifacts = (
+        ".musubi/goals/abc/plan.md",
+        ".musubi/goals/abc/manifest.json",
     )
-
-    assert assessment.route == "single_coder"
-    assert state.pending_clarification is None  # no halt
-    assert state.next_role == "coder"
-    assert state.deferred_unknowns == ("color palette",)
     block = state.render_decision_block()
-    assert "choose_sensible_defaults=color palette" in block
-    assert "do not ask the user" in block.lower()
+    assert "planning_artifacts=.musubi/goals/abc/plan.md" in block
+    assert ".musubi/goals/abc/manifest.json" in block
+    assert "pass both files to the next worker" in block.lower()
 
 
 def test_decision_block_surfaces_conversation_cost_and_stall() -> None:
@@ -239,7 +232,7 @@ ELEVEN_FILE_MANIFEST = (
     '<change_manifest>{"files_expected":11,"subsystems":'
     '["config","routes","components","styles"],"public_contract":false,'
     '"data_migration":false,"security_sensitive":false,'
-    '"external_side_effects":false,"destructive":false,"unknowns":[],'
+    '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
     '"validation_commands":2}</change_manifest>'
 )
 
@@ -288,7 +281,7 @@ def test_small_manifest_opens_the_coder_gate() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert state.next_role == "coder"
@@ -307,13 +300,13 @@ def test_missing_manifest_fails_closed_to_clarification() -> None:
     assert "change manifest" in state.pending_clarification
 
 
-def test_manifest_unknowns_set_pending_clarification() -> None:
+def test_manifest_blocking_decisions_set_pending_clarification() -> None:
     state = GoalState.create("add route", "medium_change", "planner_then_coder_check")
     state.apply_planner_manifest(
         '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["deployment target"],'
+        '"destructive":false,"blocking_decisions":["deployment target"],'
         '"validation_commands":1}</change_manifest>'
     )
     assert state.route == "ask_scope"
@@ -395,7 +388,7 @@ def test_manifest_overrun_is_detected_and_surfaced() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert state.declared_files_expected == 1
@@ -422,7 +415,7 @@ def test_no_overrun_within_the_declared_radius() -> None:
         '<change_manifest>{"files_expected":3,"subsystems":["markup"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     state.record_outcome(

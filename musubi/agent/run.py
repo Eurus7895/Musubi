@@ -103,6 +103,10 @@ from agent.mcp_gateway import (
     mcp_tool_to_schema,
 )
 from agent.evidence import collect as collect_evidence
+from agent.planning_artifacts import (
+    goal_artifact_key,
+    persist_planning_artifacts,
+)
 from agent.routes import RouteKind
 from agent.triage import (
     encode_triage,
@@ -298,6 +302,7 @@ class Orchestration:
     worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
+    planning_artifact_dir: Path | None = None
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -314,6 +319,7 @@ class Orchestration:
             parent_session_id=self.parent_session_id,
             parent_agent_name=role,
             pipeline_name=self.pipeline_name,
+            planning_artifact_dir=self.planning_artifact_dir,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
@@ -333,6 +339,7 @@ class Orchestration:
             parent_session_id=pipeline_session_id,
             parent_agent_name=role,
             pipeline_name=pipeline_name,
+            planning_artifact_dir=self.planning_artifact_dir,
             depth=self.depth + 1,
             max_depth=self.max_depth,
         )
@@ -383,15 +390,42 @@ class Orchestration:
                 summary=summary,
                 touched_files=touched_files,
             )
-            # Post-plan reclassification: a planner-led goal consumes the
-            # planner's bounded change manifest the moment it lands. The
-            # manifest verdict (not the lexical guess) then owns route, scope,
-            # and the legal next mutation role; a missing/invalid manifest
-            # fails closed to one clarification inside apply_planner_manifest.
+            # Post-plan reclassification: a planner-led goal persists the
+            # plan/manifest pair the moment it lands. The manifest verdict
+            # (not the lexical guess) then owns route, scope, and the legal
+            # next mutation role; a missing/invalid pair fails closed before
+            # a coder can start.
             if role == "planner" and status == "done" and (
                 self.goal_state.next_role == "planner"
             ):
-                self.goal_state.apply_planner_manifest(summary)
+                paths = None
+                if self.planning_artifact_dir is not None:
+                    try:
+                        paths = persist_planning_artifacts(
+                            summary,
+                            self.planning_artifact_dir,
+                        )
+                    except OSError as exc:
+                        self.goal_state.reject_planning_artifacts(
+                            "The planner produced a valid plan, but Musubi "
+                            f"could not persist it: {type(exc).__name__}. "
+                            "Resolve the workspace write error before retrying."
+                        )
+                if self.planning_artifact_dir is None:
+                    # Unit-level orchestration callers may omit persistence;
+                    # production run_agent always supplies the directory.
+                    self.goal_state.apply_planner_manifest(summary)
+                elif paths is None and self.goal_state.pending_clarification is None:
+                    self.goal_state.reject_planning_artifacts(
+                        "The planner must produce both a non-empty <plan> "
+                        "block and one valid <change_manifest> block before "
+                        "implementation can start."
+                    )
+                elif paths is not None:
+                    self.goal_state.planning_artifacts = tuple(
+                        str(path) for path in paths
+                    )
+                    self.goal_state.apply_planner_manifest(summary)
                 if self.goal_state.role_chain or (
                     self.goal_state.route == RouteKind.PLAN_DESIGN_WORKFLOW
                 ):
@@ -822,6 +856,12 @@ async def run_agent(
         orchestration = Orchestration(
             parent_session_id=parent_session_id,
             goal_state=goal_state,
+            planning_artifact_dir=(
+                musubi_dir.parent
+                / ".musubi"
+                / "goals"
+                / goal_artifact_key(chat_id, parent_session_id)
+            ),
         )
         # Consent is matched against the RAW user message. A model cannot
         # author a user turn, so a token found here is proof a human typed it —

@@ -15,7 +15,7 @@ def _manifest(**over: object) -> ChangeManifest:
     base = dict(
         files_expected=1, subsystems=("markup",), public_contract=False,
         data_migration=False, security_sensitive=False,
-        external_side_effects=False, destructive=False, unknowns=(),
+        external_side_effects=False, destructive=False, blocking_decisions=(),
         validation_commands=1,
     )
     base.update(over)
@@ -44,7 +44,7 @@ def test_every_emitted_route_is_a_declared_kind() -> None:
 
     for manifest in (
         _manifest(),
-        _manifest(unknowns=("palette",)),
+        _manifest(blocking_decisions=("palette",)),
         _manifest(files_expected=9),
         _manifest(security_sensitive=True),
         _manifest(files_expected=3, subsystems=("auth", "billing")),

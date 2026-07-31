@@ -8,7 +8,7 @@ ELEVEN_FILE_MANIFEST = (
     '<change_manifest>{"files_expected":11,"subsystems":'
     '["config","routes","components","styles"],"public_contract":false,'
     '"data_migration":false,"security_sensitive":false,'
-    '"external_side_effects":false,"destructive":false,"unknowns":[],'
+    '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
     '"validation_commands":2}</change_manifest>'
 )
 
@@ -23,12 +23,12 @@ def test_manifest_many_files_or_subsystems_is_large() -> None:
     assert result.route == "plan_design_workflow"
 
 
-def test_manifest_unknowns_require_clarification() -> None:
+def test_manifest_blocking_decisions_require_clarification() -> None:
     manifest = parse_change_manifest(
         '<change_manifest>{"files_expected":3,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["deployment target"],'
+        '"destructive":false,"blocking_decisions":["deployment target"],'
         '"validation_commands":1}</change_manifest>'
     )
     assert manifest is not None
@@ -47,7 +47,7 @@ def test_single_file_single_subsystem_manifest_is_simple() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["pages"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert manifest is not None
@@ -56,41 +56,38 @@ def test_single_file_single_subsystem_manifest_is_simple() -> None:
     assert result.impact is Band.LOW
 
 
-def test_unknowns_on_a_one_file_change_are_deferred_not_blocking() -> None:
-    # Halting to ask about a palette on a one-file page discards the plan the
-    # planner just spent its whole budget producing. The coder defaults them
-    # instead; a wrong default costs one turn to redirect.
+def test_blocking_decisions_are_model_declared_not_file_count_guessed() -> None:
+    # The planner owns the semantic judgment. Once it calls a decision
+    # blocking, the harness respects that declaration even on one file; a
+    # reversible choice belongs in plan.md assumptions, not in this field.
     manifest = parse_change_manifest(
         '<change_manifest>{"files_expected":1,"subsystems":["markup"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
         '"destructive":false,'
-        '"unknowns":["color palette","typography scale"],'
+        '"blocking_decisions":["licensed data source"],'
         '"validation_commands":1}</change_manifest>'
     )
     assert manifest is not None
     result = assess_manifest(manifest)
 
-    assert result.route == "single_coder"
-    assert result.clarifying_question is None
-    assert result.deferred_unknowns == ("color palette", "typography scale")
+    assert result.route == "ask_scope"
+    assert "licensed data source" in (result.clarifying_question or "")
 
 
-def test_unknowns_still_block_a_critical_or_multi_file_change() -> None:
-    # The relaxation is scoped to small, cheap-to-redo changes. A critical
-    # flag or a multi-file blast radius keeps the fail-closed halt.
+def test_blocking_decisions_also_block_critical_and_multi_file_changes() -> None:
     critical = parse_change_manifest(
         '<change_manifest>{"files_expected":1,"subsystems":["auth"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":true,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["token lifetime"],'
+        '"destructive":false,"blocking_decisions":["token lifetime"],'
         '"validation_commands":1}</change_manifest>'
     )
     multi_file = parse_change_manifest(
         '<change_manifest>{"files_expected":4,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":["deployment target"],'
+        '"destructive":false,"blocking_decisions":["deployment target"],'
         '"validation_commands":1}</change_manifest>'
     )
     assert critical is not None and multi_file is not None
@@ -99,7 +96,6 @@ def test_unknowns_still_block_a_critical_or_multi_file_change() -> None:
         result = assess_manifest(manifest)
         assert result.route == "ask_scope"
         assert result.clarifying_question is not None
-        assert result.deferred_unknowns == ()
 
 
 def test_single_file_many_subsystems_is_not_large() -> None:
@@ -112,7 +108,7 @@ def test_single_file_many_subsystems_is_not_large() -> None:
         '"subsystems":["markup","styling","content"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert manifest is not None
@@ -130,7 +126,7 @@ def test_single_file_many_subsystems_stays_large_when_flagged() -> None:
         '"subsystems":["markup","styling","content"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":true,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert manifest is not None
@@ -148,7 +144,7 @@ def test_multi_file_many_subsystems_is_still_large() -> None:
         '"subsystems":["routes","components","styles"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert manifest is not None
@@ -161,7 +157,7 @@ def test_critical_boolean_manifest_is_large_even_when_small() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["auth"],'
         '"public_contract":false,"data_migration":true,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     assert manifest is not None
@@ -175,7 +171,7 @@ def test_negative_counts_fail_closed() -> None:
         '<change_manifest>{"files_expected":-1,"subsystems":[],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":0}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":0}'
         '</change_manifest>'
     ) is None
 
@@ -187,7 +183,7 @@ def test_non_boolean_critical_flag_fails_closed() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["auth"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":"true","external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     ) is None
 
@@ -199,14 +195,14 @@ def test_duplicate_manifest_blocks_fail_closed() -> None:
         '<change_manifest>{"files_expected":1,"subsystems":["routes"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":1}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":1}'
         '</change_manifest>'
     )
     large = (
         '<change_manifest>{"files_expected":9,"subsystems":["a","b","c"],'
         '"public_contract":false,"data_migration":false,'
         '"security_sensitive":false,"external_side_effects":false,'
-        '"destructive":false,"unknowns":[],"validation_commands":2}'
+        '"destructive":false,"blocking_decisions":[],"validation_commands":2}'
         '</change_manifest>'
     )
     assert parse_change_manifest(small + "\n" + large) is None
@@ -219,7 +215,7 @@ VALID_MANIFEST = (
     '{"files_expected":1,"subsystems":[" routes ","routes"],'
     '"public_contract":false,"data_migration":false,'
     '"security_sensitive":false,"external_side_effects":false,'
-    '"destructive":false,"unknowns":[" deployment "],'
+    '"destructive":false,"blocking_decisions":[" deployment "],'
     '"validation_commands":1}'
 )
 
@@ -229,7 +225,7 @@ def test_manifest_requires_exact_schema_and_exact_json_types() -> None:
     manifest = parse_change_manifest(_manifest(VALID_MANIFEST))
     assert manifest is not None
     assert manifest.subsystems == ("routes",)
-    assert manifest.unknowns == ("deployment",)
+    assert manifest.blocking_decisions == ("deployment",)
 
     malformed = (
         VALID_MANIFEST.replace('"validation_commands":1', '"extra":0,"validation_commands":1'),
