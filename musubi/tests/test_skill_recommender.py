@@ -144,3 +144,70 @@ def test_server_recommend_skills_applies_project_profile(monkeypatch) -> None:  
 
     assert payload["filtered_by_profile"] is True
     assert [item["skill_id"] for item in payload["recommended"]] == ["python"]
+
+
+# ── the request elects; the conversation only breaks ties ──────────────────
+
+
+def _web_and_py() -> list[SkillMeta]:
+    return [
+        _meta("web-ui", title="Web UI",
+              triggers=["html", "css", "dashboard", "chart", "responsive"]),
+        _meta("python", title="Python", triggers=["pytest", "traceback"]),
+    ]
+
+
+def test_context_alone_cannot_elect_a_skill() -> None:
+    """The defect this pins: on turn 3 of a chat that had built an HTML
+    dashboard, "change the language of the application" matched no skill at
+    all, while the context summary hit five `web-ui` triggers for a score of
+    200 — capped to confidence 0.99. The root asked which skill fitted, was
+    told `web-ui` with near-certainty, and pushed it into a coder that was
+    there to change some strings."""
+    context = (
+        "Earlier the user asked for a weather dashboard. index.html was "
+        "created with a responsive css layout and a chart of temperatures."
+    )
+    out = recommend_skills(
+        "change the language of the application",
+        _web_and_py(),
+        context_summary=context,
+    )
+    assert out == []
+
+
+def test_context_still_breaks_a_tie_between_requested_skills() -> None:
+    """It is not ignored — it just cannot outvote the request. Both skills
+    match the request once; the context is what separates them."""
+    context = "the project is an html dashboard with css and a chart"
+    out = recommend_skills(
+        "fix the chart traceback",
+        _web_and_py(),
+        context_summary=context,
+    )
+    assert [item.skill_id for item in out] == ["web-ui", "python"]
+    assert "from conversation context" in " ".join(out[0].reasons)
+
+
+def test_confidence_reflects_the_request_not_the_history() -> None:
+    """It used to saturate: five context hits scored 200 and every such skill
+    reported 0.99, so the number carried no information about whether the
+    REQUEST matched. It is computed from the request score alone now, and a
+    long history cannot inflate it."""
+    skills = _web_and_py()
+    long_context = " ".join(["html css dashboard chart responsive"] * 20)
+
+    weak = recommend_skills("add a chart", skills, context_summary=long_context)
+    strong = recommend_skills(
+        "make the dashboard chart responsive", skills, context_summary="",
+    )
+
+    assert weak[0].skill_id == "web-ui" and strong[0].skill_id == "web-ui"
+    assert weak[0].confidence < strong[0].confidence
+
+
+def test_tools_used_this_turn_still_count_as_request_signal() -> None:
+    out = recommend_skills(
+        "keep going", _web_and_py(), tools_used=["pytest"], context_summary="",
+    )
+    assert [item.skill_id for item in out] == ["python"]

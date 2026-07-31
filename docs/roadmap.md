@@ -291,7 +291,16 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   capability and skill lookup folds through, so append-only rows written as
   `agent` still resolve and nothing rewrites history. `driver` is pointedly
   NOT an alias — it never carried the root's membership, so aliasing it would
-  hand it the whole spawn firewall. Plan:
+  hand it the whole spawn firewall. **Skill ranking stopped scoring the
+  conversation instead of the request:** `recommend_skills` concatenated the
+  task and `context_summary` into one bag of text, so on turn 3 of a chat that
+  had built an HTML dashboard, "change the language of the application"
+  matched no skill on its own while the context hit five `web-ui` triggers for
+  a score of 200 — capped to `confidence: 0.99` and pushed into a coder that
+  was there to change strings. The request elects now and context is a
+  quarter-weight tiebreaker that can never elect alone; confidence derives
+  from the request score, so it discriminates instead of saturating. No test
+  had ever exercised `context_summary`. Plan:
   [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —

@@ -246,9 +246,45 @@ Out of scope, and left alone deliberately: `--tool-surface agent` names a
 actor, and `musubi_append_failure_pattern(source="agent")` is a free-text
 provenance label that no role table ever reads.
 
+## Follow-up: the ranker scored the conversation, not the request
+
+Reported: *"why does it choose web-ui for the changing language of
+application"*. The log agrees — `skill pushed=web-ui agent=coder` on a turn
+whose request was to change the display language.
+
+`recommend_skills` concatenated the request, the `context_summary` and the
+tools into ONE bag of text and scored it as a unit
+(`skills/recommender.py:38`). Nothing distinguished "what is being asked now"
+from "what this conversation has been about". Reproduced exactly:
+
+| input | web-ui score | result |
+|---|---|---|
+| request alone | 0 | *no skill matches* |
+| request + 272-char context | **200** (html, css, dashboard, chart, responsive) | `web-ui` @ **0.99** |
+
+The root asked which skill fitted, was told `web-ui` with near-certainty, and
+pushed it into a coder that was there to change some strings. It behaved
+correctly on the answer it was given.
+
+Two compounding faults. First, weight: on turn 3 the context was ~50× the
+request, so history outvoted the ask, and the longer the conversation ran the
+more confidently wrong the ranker became. Second, `confidence = min(0.99,
+score/100)` **saturated** — five context hits reached the cap, so the number
+carried no information about whether the request matched at all.
+
+**Step:** the request elects, the conversation only breaks ties. A skill needs
+a signal from the request (or from the tools this turn actually used) to be a
+candidate; context is then worth a quarter weight as a tiebreaker and its
+matches are labelled `(from conversation context)` in `reasons`; `confidence`
+is computed from the request score alone. After: "change the language" → no
+recommendation, "make the dashboard responsive" → `web-ui` @ 0.80, "add a
+chart" → `web-ui` @ 0.40, "fix the failing pytest traceback" → `debugging`,
+`testing`. No test had ever exercised `context_summary` — which is how this
+shipped.
+
 ## Verification
 
-`1765 passed` (pytest), `190 pass` (node --test), `82 passed` (cargo test).
+`1774 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
 Each new test was confirmed to fail against the pre-change code. The two
 existing terminal-denial pins — an unauthorised spawn role, and a root
 reaching for `musubi_write_file` — still pass unchanged, which is what says

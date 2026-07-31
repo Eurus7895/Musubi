@@ -24,6 +24,12 @@ class SkillRecommendation:
 
 _WORD_RE = re.compile(r"[a-z0-9_./:-]+")
 
+#: Divisor applied to a skill's context-only score before it is added to the
+#: request score. Conversation history is evidence about the PROJECT, not about
+#: what is being asked now, so it may break a tie between two skills the
+#: request already matched — never outvote the request itself.
+_CONTEXT_WEIGHT_DIVISOR = 4
+
 
 def recommend_skills(
     task: str,
@@ -33,16 +39,47 @@ def recommend_skills(
     tools_used: list[str] | None = None,
     limit: int = 5,
 ) -> list[SkillRecommendation]:
-    """Rank matching skills using deterministic text and tool-use signals."""
+    """Rank matching skills using deterministic text and tool-use signals.
+
+    The REQUEST elects; the conversation may only break ties.
+
+    Both used to be concatenated into one bag of text and scored together, so a
+    skill that matched nothing in the request could still be returned at
+    maximum confidence on the strength of the history behind it. Observed: on
+    turn 3 of a chat that had built an HTML weather dashboard, "change the
+    language of the application" matched no skill at all, while the 272-char
+    context summary hit five `web-ui` triggers (html, css, dashboard, chart,
+    responsive) for a score of 200 — capped to `confidence: 0.99`. The root
+    asked which skill fitted, was told `web-ui` with near-certainty, and
+    pushed it into a coder that was there to change some strings. The longer
+    the conversation, the more confidently wrong the answer got.
+
+    So a skill must earn a signal from the request (or the tools this turn
+    actually used) to be a candidate at all. Context is then worth a quarter
+    weight as a tiebreaker, and `confidence` is computed from the request score
+    alone — a number that stops saturating and starts meaning "how much of
+    what was asked for does this skill cover".
+    """
     tools = [tool for tool in (tools_used or []) if tool]
-    text = _normalize(" ".join([task or "", context_summary or "", " ".join(tools)]))
+    request_text = _normalize(" ".join([task or "", " ".join(tools)]))
+    context_text = _normalize(context_summary or "")
     scored: list[tuple[int, int, SkillRecommendation]] = []
 
     for index, meta in enumerate(skills):
-        score, reasons = _score_skill(meta, text, tools)
-        if score <= 0:
+        request_score, reasons = _score_skill(meta, request_text, tools)
+        if request_score <= 0:
+            # Context cannot elect a skill the request never asked for.
             continue
-        confidence = min(0.99, round(score / 100, 2))
+        context_score, context_reasons = (
+            _score_skill(meta, context_text, []) if context_text else (0, [])
+        )
+        score = request_score + context_score // _CONTEXT_WEIGHT_DIVISOR
+        if context_reasons:
+            reasons = reasons + [
+                f"{reason} (from conversation context)"
+                for reason in context_reasons
+            ]
+        confidence = min(0.99, round(request_score / 100, 2))
         scored.append((
             score,
             index,
@@ -50,7 +87,7 @@ def recommend_skills(
                 skill_id=meta.skill_id,
                 title=meta.title,
                 confidence=confidence,
-                reasons=reasons,
+                reasons=reasons[:4],
             ),
         ))
 
