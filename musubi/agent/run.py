@@ -3031,6 +3031,12 @@ async def _dispatch(
     spawns BEFORE launch so a single turn cannot fan out without bound. Direct
     root runs also share a classifier-independent cumulative worker ceiling.
     """
+    tool_uses = _normalize_root_spawn_tool_uses(
+        tool_uses,
+        role=role,
+        orchestration=orchestration,
+        log=log,
+    )
     _preflight_policy_batch(
         tool_uses,
         role=role,
@@ -3099,6 +3105,53 @@ async def _dispatch(
             "content": content,
         })
     return results
+
+
+def _normalize_root_spawn_tool_uses(
+    tool_uses: list[dict[str, Any]],
+    *,
+    role: str,
+    orchestration: Orchestration | None,
+    log: Any,
+) -> list[dict[str, Any]]:
+    """Remove model-owned tool narrowing from depth-zero Root spawns.
+
+    Worker capabilities are owned by ``SUBAGENT_POLICIES[role]``. The Root
+    model chooses a worker role and skill, but it does not own that role's tool
+    surface. In particular, MCP tool names such as ``musubi_write_file`` are
+    not the symbolic capability names (``Write``) accepted by the substrate;
+    forwarding a model-authored ``allowed_tools`` list can therefore intersect
+    to an empty set and starve an otherwise valid Coder.
+
+    Nested workers and direct substrate callers retain explicit narrowing.
+    """
+    if (
+        role != "agent"
+        or orchestration is None
+        or orchestration.depth != 0
+    ):
+        return tool_uses
+
+    normalized: list[dict[str, Any]] = []
+    for tool_use in tool_uses:
+        raw_input = tool_use.get("input")
+        if (
+            tool_use.get("name") != "musubi_spawn_subagent"
+            or not isinstance(raw_input, dict)
+            or "allowed_tools" not in raw_input
+        ):
+            normalized.append(tool_use)
+            continue
+        clean_input = dict(raw_input)
+        clean_input.pop("allowed_tools", None)
+        normalized.append({**tool_use, "input": clean_input})
+        emit_runtime_log(
+            log,
+            "[agent] ignored model allowed_tools on root spawn; "
+            "the worker role policy owns its tool surface",
+            category="policy",
+        )
+    return normalized
 
 
 def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:

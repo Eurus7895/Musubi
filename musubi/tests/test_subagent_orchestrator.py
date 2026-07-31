@@ -309,14 +309,28 @@ def test_child_tool_surface_is_restricted() -> None:
 
 def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     """The root model sees the small agent surface, while the coder worker is
-    sized from the full local Musubi catalog and can write when policy allows."""
+    sized from the full local Musubi catalog and can write when policy allows.
+
+    A model-authored ``allowed_tools`` list uses MCP names rather than the
+    substrate's symbolic capabilities. Root must not be allowed to starve the
+    role by forwarding that accidental narrowing.
+    """
     router = FakeRouter([
         _direct("coder", "hello.html", "create"),
-        _spawn("coder", "create a file"),
+        _spawn(
+            "coder",
+            "create a file",
+            allowed_tools=[
+                "musubi_write_file",
+                "musubi_edit_file",
+                "musubi_run_command",
+            ],
+        ),
         _text("created: hello.html"),
         _text("done"),
     ])
-    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=io.StringIO()))
+    log = io.StringIO()
+    asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=log))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
     child_tools = {t["name"] for t in router.calls[2]["tools"]}
@@ -325,6 +339,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     assert "musubi_edit_file" not in root_tools
     assert "musubi_run_command" not in root_tools
     assert {"musubi_write_file", "musubi_edit_file", "musubi_run_command"} <= child_tools
+    assert "ignored model allowed_tools on root spawn" in log.getvalue()
 
 
 # ── deny path: an un-spawnable role surfaces the harness error verbatim ─────
