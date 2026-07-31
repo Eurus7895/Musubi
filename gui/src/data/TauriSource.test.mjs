@@ -806,3 +806,42 @@ test('deleting the open recipe clears the editor, and a refusal surfaces as a fi
   // The editor keeps the recipe that was never removed.
   assert.equal(source.state.pipelineBuilder.draft.name, 'code-review')
 })
+
+test('New Pipeline yields a blank draft that a late load cannot overwrite', async () => {
+  // Reported as "it creates a blank space but changes to code-review
+  // immediately". The only way that can happen is a load resolving after the
+  // reset and winning, so both orderings are pinned here.
+  const recipe = {
+    name: 'code-review', description: 'Review a branch or PR', version: '1.0.0',
+    baselineChecks: [], correction: null, stages: [{ preset: 'plan' }, { preset: 'check' }],
+  }
+  const blank = (source) => {
+    const builder = source.state.pipelineBuilder
+    assert.equal(builder.draft.name, '')
+    assert.equal(builder.savedRecipe.name, '')
+    assert.deepEqual(builder.draft.stages, [])
+    assert.equal(builder.pendingTransition, null)
+  }
+
+  // Load settles first, then New.
+  const settled = new TauriSource({})
+  settled._invoke = async () => recipe
+  await settled.actions.loadPipelineRecipe('code-review')
+  assert.equal(settled.state.pipelineBuilder.draft.name, 'code-review')
+  settled.actions.newPipelineRecipe()
+  blank(settled)
+
+  // New lands while the load is still in flight. _beginBuilderOperation stamps
+  // a generation and newPipelineRecipe bumps it, so the stale result is
+  // dropped instead of repainting the recipe over the blank draft.
+  const racing = new TauriSource({})
+  let release
+  racing._invoke = () => new Promise((resolve) => { release = () => resolve(recipe) })
+  const inflight = racing.actions.loadPipelineRecipe('code-review')
+  racing.actions.newPipelineRecipe()
+  blank(racing)
+  release()
+  await inflight
+  blank(racing)
+  assert.equal(racing.state.pipelineBuilder.loading, false)
+})
