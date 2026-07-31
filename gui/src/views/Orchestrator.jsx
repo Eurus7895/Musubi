@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import ChatBody from '../components/ChatBody.jsx'
 import NewSessionButton from '../components/NewSessionButton.jsx'
 import TokenEconomics from '../components/TokenEconomics.jsx'
+import { tokenShareOf } from './requestMetrics.js'
 
 const REQUEST_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
 const AGENT_LOG_FILTERS = ['All', 'Model', 'Tools', 'Skills', 'Policy', 'stdout', 'stderr']
@@ -23,6 +24,22 @@ function metricField(value, suffix) {
 function Metric({ value, suffix }) {
   const field = metricField(value, suffix)
   return <span className={field.absent ? 'is-absent' : ''}>{field.value}</span>
+}
+
+// The bar names the edge the panel is on, the chevron names the direction it
+// will move. A bare ← / → character carried only the second half, so two
+// controls that do opposite things — hide the left rail, collapse the right
+// panel — pointed the same way. Navigation arrows in body copy ("← Back to
+// graph") stay text: they point at a destination, not at a panel edge.
+function PanelIcon({ side, direction }) {
+  const bar = side === 'left' ? 'M5 5 V19' : 'M19 5 V19'
+  const chevron = direction === 'right' ? 'M10 8 L14 12 L10 16' : 'M14 8 L10 12 L14 16'
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true">
+      <path d={bar} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d={chevron} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 export default function Orchestrator({ vals }) {
@@ -98,6 +115,24 @@ export default function Orchestrator({ vals }) {
     <div className={`orchestrator-console${sessionsHidden ? ' sessions-hidden' : ''}${conversationCollapsed ? ' conversation-collapsed' : ''}`}>
       {!sessionsHidden && <SessionsRail vals={vals} onHide={vals.onToggleSessions} />}
       <main className="orchestrator-workspace">
+        {/* The rail's own header carries the hide control, at the rail's
+            top-left corner. Once hidden that header unmounts, so this takes
+            its place — at the same coordinate, half a pixel apart, so the
+            gesture round-trips where it started rather than sending you to
+            the activity bar to guess. The activity bar's Orchestrator button
+            also toggles the rail (viewModel.js selOrch), but it is a
+            navigation icon that changes meaning by context; this is not. */}
+        {sessionsHidden && (
+          <button
+            type="button"
+            className="rail-toggle"
+            aria-label="Show sessions"
+            title="Show sessions"
+            onClick={vals.onToggleSessions}
+          >
+            <PanelIcon side="left" direction="right" />
+          </button>
+        )}
         <NowBanner
           now={vals.nowRun}
           onStop={vals.onStopRun}
@@ -107,21 +142,6 @@ export default function Orchestrator({ vals }) {
           }}
         />
         <div className="session-strip">
-          {/* The rail's own header carries a ← to hide it. Once hidden that
-              button goes with it, leaving nothing on screen to say the pane
-              can come back. This → takes its place in the same corner, so the
-              gesture round-trips where it started rather than sending you to
-              the activity bar to guess. */}
-          {sessionsHidden && (
-            <button
-              className="rail-toggle"
-              aria-label="Show sessions"
-              title="Show sessions"
-              onClick={vals.onToggleSessions}
-            >
-              →
-            </button>
-          )}
           <div className="session-strip__id">
             <strong>{vals.runs.find((run) => run.selected)?.title || vals.sessionTitle}</strong>
             <span>{vals.sessionTitle.toLowerCase()} · {vals.sessionSubtitle}</span>
@@ -366,8 +386,22 @@ function SessionsRail({ vals, onHide }) {
   return (
     <aside className="session-rail">
       <header>
-        <strong>Sessions</strong>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Hide leads the header rather than trailing it. At the right edge it
+            sat 213px from the console's left, so restoring the rail from the
+            workspace corner could not return the gesture to where it started;
+            at the left edge both controls share one coordinate. */}
+        <div className="session-rail__title">
+          <button
+            type="button"
+            aria-label="Hide sessions"
+            title="Hide sessions"
+            onClick={onHide}
+          >
+            <PanelIcon side="left" direction="left" />
+          </button>
+          <strong>Sessions</strong>
+        </div>
+        <div className="session-rail__meta">
           <span>{vals.runs.length}</span>
           <button
             type="button"
@@ -381,7 +415,6 @@ function SessionsRail({ vals, onHide }) {
           >
             Clean all
           </button>
-          <button aria-label="Hide sessions" onClick={onHide}>←</button>
         </div>
       </header>
       <div className="session-rail__list">
@@ -453,40 +486,72 @@ function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
             {!!request.agents?.length && (
               <div className="request-agents">
                 {request.agents.map((agent) => (
-                  <RequestRow key={agent.id} node={agent} selectedId={selectedId} onSelect={onSelectNode} />
+                  <RequestRow
+                    key={agent.id}
+                    node={agent}
+                    selectedId={selectedId}
+                    onSelect={onSelectNode}
+                    // Relative to the heaviest worker in this request, not to
+                    // the session: the comparison an operator makes is "which
+                    // of these workers cost the turn", and a session-wide
+                    // denominator flattens every row of a cheap request.
+                    tokenShare={tokenShareOf(agent, request.agents)}
+                  />
                 ))}
               </div>
             )}
           </div>
         ))}
-        <div className="timeline-hint">
+        <p className="timeline-hint">
           Finished requests collapse to one line. Open any row for its full log — the timeline stays.
-        </div>
+        </p>
       </div>
     </div>
   )
 }
 
-function RequestRow({ node, order, selectedId, onSelect }) {
+// Every worker row carried the same three grey mono counts, so "6/6 turns" and
+// "2/6 turns" — a worker that spent its whole budget and one a third of the way
+// in — were the same shape. Turns now draw their ratio as a rule under the
+// number, the heaviest worker in a request gets typographic weight instead of a
+// fourth number, and the role hues already in :root colour the rail: the log
+// lines have used them since they shipped, the graph never did.
+function RequestRow({ node, order, selectedId, onSelect, tokenShare = 0 }) {
   const live = node.status === 'running'
   const isAgent = node.kind === 'agent'
   const label = order
     ? `R${String(order).padStart(2, '0')} · ${node.title || node.label}`
     : (node.title || node.label)
+  const roleClass = isAgent ? ` is-agent role-${node.role || 'worker'}` : ''
   return (
     <button
-      className={`request-row status-${node.status}${live ? ' is-live' : ''}${node.id === selectedId ? ' is-selected' : ''}`}
+      className={`request-row status-${node.status}${live ? ' is-live' : ''}${node.id === selectedId ? ' is-selected' : ''}${roleClass}`}
       onClick={() => onSelect(node)}
       title={node.title || node.label}
     >
       <i />
       <strong>{label}</strong>
       {isAgent && node.maxTurns
-        ? <span>{node.turns}/{node.maxTurns} turns</span>
+        ? <TurnMeter turns={node.turns} max={node.maxTurns} />
         : <Metric value={node.tools} suffix="tools" />}
-      <Metric value={node.tokens} suffix="tok" />
+      <span className={`request-row__tokens${tokenShare >= 1 ? ' is-peak' : ''}`}>
+        <Metric value={node.tokens} suffix="tok" />
+      </span>
       {live ? <span>now</span> : <Metric value={node.logCount} suffix="rows" />}
     </button>
+  )
+}
+
+// A worker at its turn cap has nothing left to spend, which is the difference
+// between "finished" and "ran out" — the bare ratio never showed it.
+function TurnMeter({ turns, max }) {
+  const done = Math.max(0, Math.min(Number(turns) || 0, Number(max) || 0))
+  const ratio = max > 0 ? done / max : 0
+  return (
+    <span className={`turn-meter${ratio >= 1 ? ' is-spent' : ''}`}>
+      <i style={{ transform: `scaleX(${ratio})` }} />
+      {done}/{max} turns
+    </span>
   )
 }
 
@@ -582,12 +647,36 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabe
 
 function ConversationPanel({ vals, collapsed, onToggle }) {
   const skills = Array.from(new Set(Object.values(vals.skillsByWorker || {}).flat()))
-  if (collapsed) return <aside className="conversation-panel is-collapsed"><button aria-label="Expand conversation" onClick={onToggle}>←</button><span>Conversation</span></aside>
+  // The expanded panel's toggle rides a 48px header band. Collapsing used to
+  // drop that band and leave the button a bare flex child under a 14px pad, so
+  // it came back 4.5px below and 2.5px inboard of where the hand let go, and
+  // the header rule that runs across the console stopped at this panel's edge.
+  // Keeping the band in both states is what pins the round trip to one
+  // coordinate — the same fix the sessions rail got, applied to the pane it
+  // was never applied to.
+  if (collapsed) {
+    return (
+      <aside className="conversation-panel is-collapsed">
+        <header className="conversation-panel__header">
+          <button
+            type="button"
+            className="collapse-button"
+            aria-label="Expand conversation"
+            title="Expand conversation"
+            onClick={onToggle}
+          >
+            <PanelIcon side="right" direction="left" />
+          </button>
+        </header>
+        <span>Conversation</span>
+      </aside>
+    )
+  }
   return (
     <aside className="conversation-panel">
       <header className="conversation-panel__header">
         <strong>Conversation</strong>
-        <div><NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} /><button className="collapse-button" aria-label="Collapse conversation" onClick={onToggle}>→</button></div>
+        <div><NewSessionButton onClick={vals.onNewSession} disabled={vals.clearDriverDisabled} /><button type="button" className="collapse-button" aria-label="Collapse conversation" title="Collapse conversation" onClick={onToggle}><PanelIcon side="right" direction="right" /></button></div>
       </header>
       <div className="skills-used"><span>Skills used</span>{skills.length ? skills.map((skill) => <i key={skill}>{skill}</i>) : <small>No successful skill calls recorded</small>}</div>
       <TokenEconomics economics={vals.driverSummary?.economics} />

@@ -1435,3 +1435,34 @@ test('a blocked workspace boundary outranks a transient picker message', () => {
   // The folder button stays usable while blocked — it is the recovery path.
   assert.equal(blocked.workspaceSwitchDisabled, false)
 })
+
+test('the Studio lists saved recipes and refuses to delete repository-owned ones', () => {
+  const state = baseState({
+    view: 'pipeline',
+    pipelineCatalog: [
+      { name: 'code-review', description: 'Shipped', stages: ['scope'], runnable: true, protected: true },
+      { name: 'my-flow', description: 'Mine', stages: ['plan'], runnable: true, protected: false },
+    ],
+    pipelineBuilder: {
+      step: 'basics',
+      draft: { name: 'code-review', stages: [] },
+      savedRecipe: { name: 'code-review', stages: [] },
+      selectedStageIndex: null, findings: [], saveResult: null,
+      loading: false, pendingTransition: null,
+    },
+  })
+
+  const open = buildViewModel(state, {}).pipelineBuilder
+  assert.deepEqual(open.saved.map((entry) => entry.name), ['code-review', 'my-flow'])
+  assert.equal(open.saved.find((entry) => entry.name === 'code-review').open, true)
+  // Editing a shipped recipe is allowed — save preserves its tier block and
+  // credit budget. Deleting it is not.
+  assert.equal(open.deletable, false)
+
+  state.pipelineBuilder.savedRecipe = { name: 'my-flow', stages: [] }
+  assert.equal(buildViewModel(state, {}).pipelineBuilder.deletable, true)
+
+  // Nothing open is nothing to delete.
+  state.pipelineBuilder.savedRecipe = { name: '', stages: [] }
+  assert.equal(buildViewModel(state, {}).pipelineBuilder.deletable, false)
+})

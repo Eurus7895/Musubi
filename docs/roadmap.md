@@ -210,6 +210,53 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 
 ## Completed Tracks
 
+- Pipeline Studio can reopen a recipe, and updating one no longer destroys it —
+  `load_pipeline_recipe` had existed since the Studio shipped and reached
+  `actions.onLoad`, but nothing ever rendered a control that called it, so the
+  three recipes in `.github/pipelines/` could not be opened and read as fixed
+  presets. Wiring Open alone would have been destructive: the Studio models six
+  keys and rendered from those alone, while `code-review/pipeline.yaml` carries
+  `level`, `max_credits: 20`, `warn_at`, and the `musubi-tier` header block that
+  **Hard Invariant #9** requires — Open-then-Save would have deleted all six
+  lines. Saving now carries across the leading comment block and every top-level
+  key the model does not own, so an update is lossless; a save under a new name
+  still starts clean, which is what makes Clone a new recipe rather than a copy
+  of the original's tag and credit budget. Because the renderer emits no
+  comments, a `musubi-tier` tag is an exact marker for "checked in and
+  hand-authored" — no git dependency, no schema change, no hard-coded name list
+  — so `delete_pipeline_recipe` refuses tagged recipes fail-closed and Remove is
+  disabled with a reason before the click. Clone is a local rename that writes
+  nothing until Save. Plan:
+  [`2026-07-31-pipeline-studio-recipe-management.md`](./superpowers/plans/2026-07-31-pipeline-studio-recipe-management.md)
+
+- Console panel toggles round-trip, and geometry is testable — hiding the
+  sessions rail unmounted the header that carried the hide control, and the
+  show control that replaced it rendered *after* the Now banner, so its
+  position was a function of banner height: the gesture closed at (213, 23.5)
+  and reopened at (36, 132) mid-run or (36, 79.5) at rest. Hide now leads its
+  header and show is pinned to the workspace corner — **207.6 px of travel
+  became 0.5 px**, the same at both breakpoints. The conversation panel carried
+  the same defect on the opposite edge: collapsing dropped its 48 px header band
+  outright, leaving the toggle a bare flex child under a 14 px pad, so it
+  returned at cy 28 and 23.5 px from the console edge rather than the 23.5 and
+  26 it left from — **5.2 px of round-trip travel, now 0 on both axes**, with
+  the console's header rule running unbroken across the panel in either state.
+  Below 1180 px the rail header
+  had been overflowing its 58 px column by 30.3 px and painting the hide button
+  on top of the banner's live dot, because the media query dropped the label
+  and the count but not "Clean all"; it fits now. The four bare `←` / `→`
+  characters became one icon whose bar names the edge the panel is on and whose
+  chevron names the way it will move, centred in its box rather than riding the
+  text baseline 1.5 px high. Every button group has a hover state, including
+  `.pause-panel__actions` — the one place an operator commits an irreversible
+  decision on a halted pipeline — and the four hover literals duplicated across
+  the sheet became tokens. None of this could have failed a check: the console
+  suite reads the JSX as a string, and a substring carries no coordinate, so
+  `Orchestrator.geometry.test.mjs` drives headless Chromium over a DOM fixture
+  and asserts the coordinates directly. Presentation only: no substrate,
+  policy, audit, `LMRouter`, or Tauri path changed. Plan:
+  [`2026-07-30-console-panel-toggle-affordances.md`](./superpowers/plans/2026-07-30-console-panel-toggle-affordances.md)
+
 - A skipped MCP server now says which one, how, and how long — external
   servers are fail-open by design, but the log line named only the server and
   the exception, leaving the two questions an operator actually has

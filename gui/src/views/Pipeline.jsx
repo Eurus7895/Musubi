@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { readStageDrop, readSpawnRole, STAGE_MIME, INDEX_MIME, SPAWN_MIME } from './stageDrag.js'
 
 const STEPS = ['basics', 'stages', 'handoffs', 'validate']
 const STEP_LABELS = { basics: 'Basics', stages: 'Stages', handoffs: 'Handoffs', validate: 'Validate' }
@@ -36,6 +37,20 @@ export default function Pipeline({ vals }) {
           <p>Build a governed sequential recipe. Execution happens in Orchestrator.</p>
         </div>
         <div className="pipeline-studio__actions">
+          <button className="ui-button" onClick={actions.onClone} disabled={builder.loading || !draft.name}>Clone</button>
+          {/* Repository-owned recipes carry a musubi-tier tag and the backend
+              refuses to delete them; say so on the button rather than after
+              the click. Confirm first either way — this removes a directory. */}
+          <button
+            className="ui-button ui-button--danger"
+            onClick={() => { if (confirmRemoval(builder.savedRecipe?.name)) actions.onDelete(builder.savedRecipe.name) }}
+            disabled={builder.loading || !builder.deletable}
+            title={builder.savedRecipe?.name && !builder.deletable
+              ? 'Repository-owned recipe — delete it in git, not here'
+              : 'Remove this pipeline from .github/pipelines'}
+          >
+            Remove
+          </button>
           <button className="ui-button" onClick={actions.onNew}>＋ New Pipeline</button>
           <button className="ui-button ui-button--primary" onClick={actions.onSave} disabled={builder.loading || hasErrors}>Save Pipeline</button>
         </div>
@@ -50,7 +65,12 @@ export default function Pipeline({ vals }) {
       </nav>
 
       <section className="pipeline-studio__body">
-        {activeStep === 'basics' && <Basics draft={draft} onUpdateRecipe={actions.onUpdateRecipe} />}
+        {activeStep === 'basics' && (
+          <Basics
+            draft={draft} onUpdateRecipe={actions.onUpdateRecipe}
+            saved={builder.saved || []} loading={builder.loading} onLoad={actions.onLoad}
+          />
+        )}
         {activeStep === 'stages' && (
           <Stages
             builder={builder} draft={draft} library={library} query={query} setQuery={setQuery}
@@ -69,7 +89,6 @@ export default function Pipeline({ vals }) {
           <Validate
             draft={draft} findings={builder.findings || []} clientErrors={clientErrors}
             saveResult={builder.saveResult} loading={builder.loading} onValidate={actions.onValidate}
-            onSave={actions.onSave} hasErrors={hasErrors}
           />
         )}
       </section>
@@ -91,25 +110,67 @@ export default function Pipeline({ vals }) {
   )
 }
 
-function Basics({ draft, onUpdateRecipe }) {
+function Basics({ draft, onUpdateRecipe, saved, loading, onLoad }) {
   const correction = draft.correction || {}
   return (
-    <div className="builder-panel builder-panel--narrow" data-step="basics">
-      <PanelHeading title="Recipe identity" copy="These fields belong to pipeline.yaml and are validated before save." />
-      <div className="builder-form-grid">
-        <Field label="Pipeline name" hint="lowercase, digits and hyphens">
-          <input value={draft.name || ''} onChange={(event) => onUpdateRecipe({ name: event.target.value })} placeholder="feature-dev" />
-        </Field>
-        <Field label="Version"><input value={draft.version || ''} onChange={(event) => onUpdateRecipe({ version: event.target.value })} placeholder="1" /></Field>
-        <Field label="Description" wide><textarea value={draft.description || ''} onChange={(event) => onUpdateRecipe({ description: event.target.value })} rows={3} /></Field>
-        <Field label="Baseline checks" hint="one deterministic command per line" wide>
-          <textarea value={(draft.baselineChecks || []).join('\n')} onChange={(event) => onUpdateRecipe({ baselineChecks: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean) })} rows={4} placeholder="npm test" />
-        </Field>
-        <Field label="Correction attempts" hint="0 disables correction">
-          <input type="number" min="0" value={correction.max_retries || 0} onChange={(event) => onUpdateRecipe({ correction: { ...correction, max_retries: Number(event.target.value) } })} />
-        </Field>
+    <div className="basics-workspace" data-step="basics">
+      <RecipeList saved={saved} loading={loading} onLoad={onLoad} />
+      <div className="builder-panel">
+        <PanelHeading title="Recipe identity" copy="These fields belong to pipeline.yaml and are validated before save." />
+        <div className="builder-form-grid">
+          <Field label="Pipeline name" hint="lowercase, digits and hyphens">
+            <input value={draft.name || ''} onChange={(event) => onUpdateRecipe({ name: event.target.value })} placeholder="feature-dev" />
+          </Field>
+          <Field label="Version"><input value={draft.version || ''} onChange={(event) => onUpdateRecipe({ version: event.target.value })} placeholder="1" /></Field>
+          <Field label="Description" wide><textarea value={draft.description || ''} onChange={(event) => onUpdateRecipe({ description: event.target.value })} rows={3} /></Field>
+          <Field label="Baseline checks" hint="one deterministic command per line" wide>
+            <textarea value={(draft.baselineChecks || []).join('\n')} onChange={(event) => onUpdateRecipe({ baselineChecks: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean) })} rows={4} placeholder="npm test" />
+          </Field>
+          <Field label="Correction attempts" hint="0 disables correction">
+            <input type="number" min="0" value={correction.max_retries || 0} onChange={(event) => onUpdateRecipe({ correction: { ...correction, max_retries: Number(event.target.value) } })} />
+          </Field>
+        </div>
       </div>
     </div>
+  )
+}
+
+function confirmRemoval(name) {
+  return !!name && window.confirm(
+    `Remove pipeline "${name}"? Its directory under .github/pipelines is deleted. Audit history is unaffected.`,
+  )
+}
+
+// `loadPipelineRecipe` shipped with the first version of the Studio and nothing
+// ever rendered it, so a recipe could be saved but never reopened — which is
+// what made the shipped presets look read-only.
+//
+// It sits beside the identity form rather than in the header for the same
+// reason the agent catalogue sits beside the stage lane: it is the material you
+// are choosing from on this step, not a global action. A collapsed select also
+// showed one name at a time, so which recipes exist — and which of them the
+// repository owns — was only visible while the menu was open.
+function RecipeList({ saved, loading, onLoad }) {
+  return (
+    <aside className="recipe-list">
+      <PanelHeading title="Saved recipes" copy="Open one to edit it in place." />
+      {saved.length ? saved.map((entry) => (
+        <button
+          key={entry.name}
+          type="button"
+          className={entry.open ? 'recipe-list__item is-open' : 'recipe-list__item'}
+          disabled={loading}
+          onClick={() => onLoad(entry.name)}
+        >
+          <strong>{entry.name}</strong>
+          <small>{entry.description || 'No description'}</small>
+          <span>
+            {entry.stages.length} {entry.stages.length === 1 ? 'stage' : 'stages'}
+            {entry.protected ? ' · repository' : ''}
+          </span>
+        </button>
+      )) : <div className="recipe-list__empty">No saved recipes yet</div>}
+    </aside>
   )
 }
 
@@ -119,8 +180,16 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
   const selectedPreset = (builder.library?.presets || []).find((item) => item.id === selected?.preset)
   const resolvedAgentName = selected?.agent || selectedPreset?.agent
   const contract = (builder.library?.agents || []).find((item) => item.name === resolvedAgentName)
-  const readPayload = (event) => {
-    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-stage')) } catch { return null }
+  // A drop on a card is either a reorder or an insert at that position; a drop
+  // on lane background appends. The card claims the event only once it knows
+  // which gesture it is, so anything it does not handle still reaches the lane.
+  const onCardDrop = (event, index) => {
+    const drop = readStageDrop(event.dataTransfer)
+    if (!drop) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (drop.kind === 'move') onMoveStage(drop.from, index)
+    else onAddStage(drop.payload, index)
   }
   return (
     <div className="stages-workspace" data-step="stages">
@@ -130,16 +199,16 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
         <LibraryGroup title="Presets" items={library.presets} kind="preset" onAddStage={onAddStage} />
         <LibraryGroup title="Agents" items={library.agents} kind="agent" onAddStage={onAddStage} />
       </aside>
-      <section className="stage-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const payload = readPayload(event); if (payload) onAddStage(payload) }}>
+      <section className="stage-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const drop = readStageDrop(event.dataTransfer); if (drop?.kind === 'insert') onAddStage(drop.payload) }}>
         <PanelHeading title="Ordered primary stages" copy="Primary stages execute sequentially in this order." />
         {!draft.stages?.length && <div className="empty-drop">Drop a runnable preset or agent here</div>}
         {(draft.stages || []).map((stage, index) => (
           <article
             key={`${stage.preset || stage.agent}-${index}`}
             className={selectedIndex === index ? 'stage-card is-selected' : 'stage-card'}
-            draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-index', String(index))}
+            draggable onDragStart={(event) => event.dataTransfer.setData(INDEX_MIME, String(index))}
             onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => { event.preventDefault(); event.stopPropagation(); const raw = event.dataTransfer.getData('application/x-musubi-index'); if (!raw) return; const from = Number(raw); if (Number.isInteger(from)) onMoveStage(from, index) }}
+            onDrop={(event) => onCardDrop(event, index)}
             onClick={() => onSelectStage(index)}
           >
             <span className="stage-card__handle">⠿</span><span className="stage-card__index">{String(index + 1).padStart(2, '0')}</span>
@@ -176,25 +245,22 @@ function LibraryGroup({ title, items, kind, onAddStage }) {
     const payload = kind === 'preset' ? { kind, id: item.id } : { kind, agent: item.name }
     return <button
       key={item.id || item.name} className={blocked ? 'library-item is-blocked' : 'library-item'} disabled={blocked}
-      draggable={!blocked} onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-stage', JSON.stringify(payload))}
+      draggable={!blocked} onDragStart={(event) => event.dataTransfer.setData(STAGE_MIME, JSON.stringify(payload))}
       onClick={() => !blocked && onAddStage(payload)} title={item.blockedReason || ''}
     ><span><strong>{item.id || item.displayLabel || item.name}</strong><small>{item.agent || item.name}</small></span><em>{blocked ? 'blocked' : '+'}</em></button>
   })}</div>
 }
 
 function Handoffs({ draft, agents, onAddSpawn, onRemoveSpawn }) {
-  const readRole = (event) => {
-    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-spawn')).role } catch { return '' }
-  }
   return (
     <div className="builder-panel" data-step="handoffs">
       <PanelHeading title="Handoffs and nested workers" copy="The primary backbone is sequential. Nested roles are allowlists, not guaranteed work." />
       <div className="handoff-layout">
-        <aside className="spawn-library"><h3>Spawnable agents</h3>{agents.map((agent) => <button key={agent.name} draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-spawn', JSON.stringify({ role: agent.name }))}>{agent.displayLabel || agent.name}<span>drag</span></button>)}</aside>
+        <aside className="spawn-library"><h3>Spawnable agents</h3>{agents.map((agent) => <button key={agent.name} draggable onDragStart={(event) => event.dataTransfer.setData(SPAWN_MIME, JSON.stringify({ role: agent.name }))}>{agent.displayLabel || agent.name}<span>drag</span></button>)}</aside>
         <div className="handoff-chain">
           {(draft.stages || []).map((stage, index) => <div className="handoff-stage" key={`${stage.preset || stage.agent}-${index}`}>
             <div className="handoff-stage__node"><span>{String(index + 1).padStart(2, '0')}</span><strong>{stage.preset || stage.agent}</strong>{index < draft.stages.length - 1 && <em>sequential handoff ↓</em>}</div>
-            <div className="spawn-cluster" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const role = readRole(event); if (role) onAddSpawn(index, role) }}>
+            <div className="spawn-cluster" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const role = readSpawnRole(event.dataTransfer); if (role) onAddSpawn(index, role) }}>
               <label>May spawn</label>
               {(stage.spawns || []).map((role) => <button key={role} onClick={() => onRemoveSpawn(index, role)}>{role} ×</button>)}
               {!stage.spawns?.length && <span>Drop an agent role</span>}
@@ -207,10 +273,13 @@ function Handoffs({ draft, agents, onAddSpawn, onRemoveSpawn }) {
   )
 }
 
-function Validate({ draft, findings, clientErrors, saveResult, loading, onValidate, onSave, hasErrors }) {
+function Validate({ draft, findings, clientErrors, saveResult, loading, onValidate }) {
   return (
     <div className="builder-panel" data-step="validate">
-      <div className="validate-toolbar"><PanelHeading title="Validate recipe" copy="Backend validation is authoritative and fail-closed." /><div><button className="ui-button" onClick={onValidate} disabled={loading}>Validate</button><button className="ui-button ui-button--primary" onClick={onSave} disabled={loading || hasErrors}>Save Pipeline</button></div></div>
+      <div className="validate-toolbar"><PanelHeading title="Validate recipe" copy="Backend validation is authoritative and fail-closed." />{/* Save lives once, in the header, where it is reachable from every step.
+            A second copy here read as a different action on the step that
+            happens to mention saving. */}
+        <div><button className="ui-button" onClick={onValidate} disabled={loading}>Validate</button></div></div>
       <div className="validate-grid">
         <section><h3>Final recipe topology</h3><div className="final-topology">{(draft.stages || []).map((stage, index) => <div key={index}><span>{String(index + 1).padStart(2, '0')}</span><strong>{stage.preset || stage.agent || 'unresolved'}</strong><small>{stage.spawns?.length ? `may spawn ${stage.spawns.join(', ')}` : 'no nested workers'}</small></div>)}</div></section>
         <section><h3>Findings</h3>{!clientErrors.length && !findings.length ? <div className="finding finding--ok">No findings. Run backend validation before save.</div> : <>{clientErrors.map((message) => <div className="finding finding--error" key={message}>{message}</div>)}{findings.map((finding, index) => <div className={`finding finding--${finding.severity}`} key={`${finding.field}-${index}`}><strong>{finding.step || 'recipe'} · {finding.field || 'general'}</strong>{finding.message}</div>)}</>}</section>

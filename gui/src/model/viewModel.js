@@ -355,6 +355,10 @@ export function buildViewModel(s, act) {
     stages: entry.stages || [],
     runnable: !!entry.runnable,
     blockedReason: entry.blockedReason || '',
+    // Carries a musubi-tier tag, so it is one of the repository's own recipes.
+    // The backend refuses to delete it; the Studio disables Remove to say so
+    // before the click rather than after.
+    protected: !!entry.protected,
     selected: entry.name === s.selectedPipeline,
     onSelect: () => act.selectPipeline?.(entry.name),
   }))
@@ -1263,6 +1267,20 @@ export function buildViewModel(s, act) {
       },
       dirty: isDirty(pipelineBuilderState.draft, pipelineBuilderState.savedRecipe),
       selectedStage: pipelineBuilderState.draft?.stages?.[pipelineBuilderState.selectedStageIndex] || null,
+      // The recipes already on disk, so the Studio can open one and update it
+      // in place. The backing action existed from the start; nothing rendered
+      // it, which is why a saved pipeline could not be reopened.
+      saved: pipelineOptions.map((entry) => ({
+        name: entry.name,
+        description: entry.description,
+        stages: entry.stages,
+        protected: entry.protected,
+        open: entry.name === pipelineBuilderState.savedRecipe?.name,
+      })),
+      // Editing a repository-owned recipe is fine — save preserves its tier
+      // block and credit budget. Deleting it is not.
+      deletable: !!pipelineBuilderState.savedRecipe?.name
+        && !pipelineOptions.find((entry) => entry.name === pipelineBuilderState.savedRecipe?.name)?.protected,
       actions: {
         onNew: act.newPipelineRecipe,
         onClose: act.closePipelineRecipe,
@@ -1276,6 +1294,8 @@ export function buildViewModel(s, act) {
         onAddSpawn: act.addPipelineSpawn,
         onRemoveSpawn: act.removePipelineSpawn,
         onLoad: act.loadPipelineRecipe,
+        onClone: act.clonePipelineRecipe,
+        onDelete: act.deletePipelineRecipe,
         onValidate: act.validatePipelineRecipe,
         onSave: act.savePipelineRecipe,
         onConfirmTransition: act.confirmPipelineTransition,

@@ -150,6 +150,9 @@ pub struct PipelineCatalogEntry {
     pub stages: Vec<String>,
     pub runnable: bool,
     pub blocked_reason: String,
+    /// Carries a `musubi-tier` tag, so it is one of the repository's own
+    /// recipes rather than something the Studio minted. Deleting it is refused.
+    pub protected: bool,
 }
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -226,12 +229,14 @@ pub fn read_studio_pipeline_catalog(project_root: &Path) -> Vec<PipelineCatalogE
                     }
                 })
                 .collect();
+            let protected = pipeline_is_protected(project_root, &name);
             Some(PipelineCatalogEntry {
                 name: recipe.name,
                 description: recipe.description,
                 stages,
                 runnable: true,
                 blocked_reason: String::new(),
+                protected,
             })
         })
         .collect()
@@ -522,8 +527,12 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
     Ok(recipe)
 }
 
-fn render_pipeline_recipe(recipe: &PipelineRecipe) -> Result<String, String> {
-    serde_yaml::to_string(&PipelineOutputDocument {
+fn render_pipeline_recipe(
+    recipe: &PipelineRecipe,
+    comments: &str,
+    extras: &serde_yaml::Mapping,
+) -> Result<String, String> {
+    let mut document = serde_yaml::to_value(PipelineOutputDocument {
         name: &recipe.name,
         description: &recipe.description,
         version: &recipe.version,
@@ -531,7 +540,15 @@ fn render_pipeline_recipe(recipe: &PipelineRecipe) -> Result<String, String> {
         stages: &recipe.stages,
         correction: &recipe.correction,
     })
-    .map_err(|error| format!("failed to render pipeline YAML: {error}"))
+    .map_err(|error| format!("failed to render pipeline YAML: {error}"))?;
+    if let serde_yaml::Value::Mapping(mapping) = &mut document {
+        for (key, value) in extras {
+            mapping.insert(key.clone(), value.clone());
+        }
+    }
+    let body = serde_yaml::to_string(&document)
+        .map_err(|error| format!("failed to render pipeline YAML: {error}"))?;
+    Ok(format!("{comments}{body}"))
 }
 
 fn safe_relative_reference(value: &str) -> bool {
@@ -1224,6 +1241,130 @@ fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Keys the Studio's own model owns and therefore re-renders from the draft.
+///
+/// `generator`/`evaluator` are on the list even though the model has no field
+/// for them: they are the legacy stage shape, `read_pipeline_recipe` already
+/// folds them into `stages`, and preserving them alongside the `stages:` the
+/// Studio writes would leave two contradictory stage lists in one file.
+const STUDIO_OWNED_PIPELINE_KEYS: [&str; 8] = [
+    "name",
+    "description",
+    "version",
+    "baseline_checks",
+    "stages",
+    "correction",
+    "generator",
+    "evaluator",
+];
+
+/// A recipe carrying a `musubi-tier` tag is one of the repository's own,
+/// checked in and governed by Hard Invariant #9. `render_pipeline_recipe`
+/// emits no comments, so a Studio-minted recipe can never carry the tag —
+/// which makes the tag an exact marker for "shipped" needing no git
+/// dependency, no schema change, and no hard-coded name list.
+pub fn pipeline_is_protected(project_root: &Path, name: &str) -> bool {
+    let Ok(target) = checked_pipeline_path(project_root, name, false) else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(&target) else {
+        return false;
+    };
+    let tagged = leading_comment_lines(&raw).any(|line| {
+        line.trim_start()
+            .trim_start_matches('#')
+            .trim_start()
+            .starts_with("musubi-tier:")
+    });
+    tagged
+}
+
+fn leading_comment_lines(raw: &str) -> impl Iterator<Item = &str> {
+    raw.lines().take_while(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with('#') || trimmed.is_empty()
+    })
+}
+
+/// What a hand-authored recipe carries that the Studio's six modelled fields do
+/// not: the `musubi-tier` header block, and top-level keys like `max_credits`
+/// (the credit budget), `warn_at`, and `level`. Rendering from the model alone
+/// would delete all of it, so overwriting a recipe of the same name carries it
+/// across. A save under a new name starts clean.
+fn preserved_pipeline_prelude(target: &Path) -> (String, serde_yaml::Mapping) {
+    let mut extras = serde_yaml::Mapping::new();
+    let Ok(raw) = std::fs::read_to_string(target) else {
+        return (String::new(), extras);
+    };
+    let comments = leading_comment_lines(&raw).collect::<Vec<_>>().join("\n");
+    let comments = if comments.contains('#') {
+        format!("{}\n", comments.trim_end())
+    } else {
+        String::new()
+    };
+    if let Ok(serde_yaml::Value::Mapping(existing)) =
+        serde_yaml::from_str::<serde_yaml::Value>(&raw)
+    {
+        for (key, value) in existing {
+            let owned = key
+                .as_str()
+                .is_some_and(|name| STUDIO_OWNED_PIPELINE_KEYS.contains(&name));
+            if !owned {
+                extras.insert(key, value);
+            }
+        }
+    }
+    (comments, extras)
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineDeleteResult {
+    pub deleted: bool,
+    pub catalog_refreshed: bool,
+    pub path: String,
+    pub error: String,
+}
+
+/// Removes a Studio-minted recipe directory. Fail-closed in the same shape as
+/// the rest of the pipeline surface: an unsafe name, a missing recipe, or a
+/// `musubi-tier`-tagged recipe returns an error rather than touching the disk.
+pub fn delete_pipeline_recipe(project_root: &Path, name: &str) -> PipelineDeleteResult {
+    let mut result = PipelineDeleteResult::default();
+    let target = match checked_pipeline_path(project_root, name, false) {
+        Ok(target) => target,
+        Err(error) => {
+            result.error = error;
+            return result;
+        }
+    };
+    if !target.exists() {
+        result.error = format!("pipeline {name:?} does not exist");
+        return result;
+    }
+    if pipeline_is_protected(project_root, name) {
+        result.error = format!("pipeline {name:?} is repository-owned and cannot be deleted");
+        return result;
+    }
+    let Some(directory) = target.parent() else {
+        result.error = "pipeline target has no parent".into();
+        return result;
+    };
+    if let Err(error) = std::fs::remove_dir_all(directory) {
+        result.error = format!("failed to remove pipeline directory: {error}");
+        return result;
+    }
+    result.deleted = true;
+    result.path = directory.to_string_lossy().to_string();
+    result.catalog_refreshed = !read_studio_pipeline_catalog(project_root)
+        .iter()
+        .any(|entry| entry.name == name);
+    if !result.catalog_refreshed {
+        result.error = "deleted_but_refresh_failed".into();
+    }
+    result
+}
+
 pub fn save_pipeline_recipe(project_root: &Path, recipe: &PipelineRecipe) -> PipelineSaveResult {
     save_pipeline_recipe_with_replacer(project_root, recipe, &atomic_replace)
 }
@@ -1246,15 +1387,19 @@ fn save_pipeline_recipe_with_replacer(
         result.error = "pipeline recipe validation failed".into();
         return result;
     }
-    let rendered = match render_pipeline_recipe(recipe) {
-        Ok(rendered) => rendered,
+    let target = match checked_pipeline_path(project_root, &recipe.name, true) {
+        Ok(target) => target,
         Err(error) => {
             result.error = error;
             return result;
         }
     };
-    let target = match checked_pipeline_path(project_root, &recipe.name, true) {
-        Ok(target) => target,
+    // Overwriting an existing recipe keeps everything the Studio does not
+    // model. Without this, updating a checked-in preset would silently drop its
+    // credit budget and its musubi-tier tag.
+    let (comments, extras) = preserved_pipeline_prelude(&target);
+    let rendered = match render_pipeline_recipe(recipe, &comments, &extras) {
+        Ok(rendered) => rendered,
         Err(error) => {
             result.error = error;
             return result;
@@ -4947,7 +5092,7 @@ mod tests {
         assert_eq!(recipe.stages[0].agent, "coder");
         assert_eq!(recipe.stages[0].stage, "implement");
         assert_eq!(recipe.stages[0].spawns, vec!["explorer"]);
-        let rendered = render_pipeline_recipe(&recipe).unwrap();
+        let rendered = render_pipeline_recipe(&recipe, "", &serde_yaml::Mapping::new()).unwrap();
         assert!(rendered.contains("stages:"));
         assert!(!rendered.contains("generator:"));
         assert!(!rendered.contains("allowedTools"));
@@ -4956,6 +5101,124 @@ mod tests {
         std::fs::write(dir.join("pipeline.yaml"), rendered).unwrap();
         let reread = read_pipeline_recipe(&root, "custom-flow").unwrap();
         assert_eq!(reread.stages, recipe.stages);
+    }
+
+    /// A hand-authored recipe: a musubi-tier header block and three top-level
+    /// keys the Studio has no field for. Mirrors code-review/pipeline.yaml.
+    fn write_tagged_recipe(root: &Path, name: &str) {
+        let dir = root.join(".github").join("pipelines").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("pipeline.yaml"),
+            format!(
+                "# musubi-tier: ephemeral\n\
+                 # expires-when: the 4-stage pipeline is dissolved\n\
+                 # cost-lever: deletes the whole pipeline runtime\n\
+                 name: {name}\n\
+                 description: A governed recipe\n\
+                 version: 1.0.0\n\
+                 level: 2\n\
+                 max_credits: 20\n\
+                 warn_at: 0.8\n\
+                 stages:\n  - preset: plan\n  - preset: check\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn updating_a_tagged_recipe_keeps_its_tier_block_and_unmodelled_keys() {
+        let root = temp_dir("pipeline-recipe-preserve-prelude");
+        write_recipe_fixture(&root);
+        write_tagged_recipe(&root, "code-review");
+        let mut recipe = read_pipeline_recipe(&root, "code-review").unwrap();
+        recipe.description = "Edited in the Studio".into();
+
+        assert!(save_pipeline_recipe(&root, &recipe).saved);
+
+        let written =
+            std::fs::read_to_string(root.join(".github/pipelines/code-review/pipeline.yaml"))
+                .unwrap();
+        // The edit lands...
+        assert!(written.contains("description: Edited in the Studio"));
+        // ...and nothing the Studio does not model is lost. Rendering from the
+        // six modelled fields alone used to drop every line below.
+        assert!(written.starts_with("# musubi-tier: ephemeral\n"));
+        assert!(written.contains("# cost-lever: deletes the whole pipeline runtime"));
+        assert!(written.contains("max_credits: 20"));
+        assert!(written.contains("warn_at: 0.8"));
+        assert!(written.contains("level: 2"));
+        // The legacy stage keys are the one thing deliberately not carried:
+        // `stages:` supersedes them.
+        assert!(!written.contains("generator:"));
+        assert_eq!(
+            read_pipeline_recipe(&root, "code-review").unwrap().stages,
+            recipe.stages
+        );
+    }
+
+    #[test]
+    fn saving_under_a_new_name_starts_from_a_clean_file() {
+        let root = temp_dir("pipeline-recipe-clone-clean");
+        write_recipe_fixture(&root);
+        write_tagged_recipe(&root, "code-review");
+        let mut recipe = read_pipeline_recipe(&root, "code-review").unwrap();
+        recipe.name = "code-review-copy".into();
+
+        assert!(save_pipeline_recipe(&root, &recipe).saved);
+
+        // A clone is a new recipe, not a second copy of the original's
+        // governance tag or its credit budget.
+        let written =
+            std::fs::read_to_string(root.join(".github/pipelines/code-review-copy/pipeline.yaml"))
+                .unwrap();
+        assert!(!written.contains("musubi-tier"));
+        assert!(!written.contains("max_credits"));
+        assert!(!pipeline_is_protected(&root, "code-review-copy"));
+        assert!(pipeline_is_protected(&root, "code-review"));
+    }
+
+    #[test]
+    fn deleting_refuses_repository_owned_recipes_and_removes_studio_ones() {
+        let root = temp_dir("pipeline-recipe-delete");
+        write_recipe_fixture(&root);
+        write_tagged_recipe(&root, "code-review");
+        assert!(save_pipeline_recipe(&root, &valid_pipeline_recipe("my-flow")).saved);
+
+        let refused = delete_pipeline_recipe(&root, "code-review");
+        assert!(!refused.deleted);
+        assert!(refused.error.contains("repository-owned"));
+        assert!(root
+            .join(".github/pipelines/code-review/pipeline.yaml")
+            .exists());
+
+        let removed = delete_pipeline_recipe(&root, "my-flow");
+        assert!(removed.deleted, "{}", removed.error);
+        assert!(removed.catalog_refreshed);
+        assert!(!root.join(".github/pipelines/my-flow").exists());
+
+        // Fail-closed on the paths that never name a real recipe.
+        assert!(!delete_pipeline_recipe(&root, "my-flow").deleted);
+        assert!(!delete_pipeline_recipe(&root, "../escape").deleted);
+        assert!(!delete_pipeline_recipe(&root, "").deleted);
+    }
+
+    #[test]
+    fn the_catalog_marks_which_recipes_are_repository_owned() {
+        let root = temp_dir("pipeline-catalog-protected");
+        write_recipe_fixture(&root);
+        write_tagged_recipe(&root, "code-review");
+        assert!(save_pipeline_recipe(&root, &valid_pipeline_recipe("my-flow")).saved);
+
+        let catalog = read_studio_pipeline_catalog(&root);
+        let protected = |name: &str| {
+            catalog
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| entry.protected)
+        };
+        assert_eq!(protected("code-review"), Some(true));
+        assert_eq!(protected("my-flow"), Some(false));
     }
 
     #[test]
@@ -4982,7 +5245,8 @@ mod tests {
         assert!(save_pipeline_recipe(&root, &recipe).saved);
         let path = root.join(".github/pipelines/safe-flow/pipeline.yaml");
         let before = std::fs::read_to_string(&path).unwrap();
-        let expected_temp = render_pipeline_recipe(&recipe).unwrap();
+        let expected_temp =
+            render_pipeline_recipe(&recipe, "", &serde_yaml::Mapping::new()).unwrap();
         let observed_temp = std::rc::Rc::new(std::cell::RefCell::new(None));
         let captured_temp = observed_temp.clone();
 
@@ -5159,7 +5423,7 @@ mod tests {
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(
                 directory.join("pipeline.yaml"),
-                render_pipeline_recipe(&recipe).unwrap(),
+                render_pipeline_recipe(&recipe, "", &serde_yaml::Mapping::new()).unwrap(),
             )
             .unwrap();
 

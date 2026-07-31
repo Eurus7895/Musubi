@@ -745,3 +745,103 @@ test('an empty approval token is not a message', () => {
 
   assert.deepEqual(calls, [])
 })
+
+test('cloning mints an unused name locally and writes nothing until save', async () => {
+  const source = new TauriSource({})
+  const calls = []
+  source._invoke = async (command, payload) => { calls.push({ command, payload }); return null }
+  source._setLocal({ pipelineCatalog: [{ name: 'code-review' }, { name: 'code-review-copy' }] })
+  source._setBuilder({
+    draft: { name: 'code-review', stages: [{ preset: 'plan' }] },
+    savedRecipe: { name: 'code-review', stages: [{ preset: 'plan' }] },
+  })
+
+  source.actions.clonePipelineRecipe()
+
+  const builder = source.state.pipelineBuilder
+  // -copy is taken, so it steps to -copy-2 rather than colliding.
+  assert.equal(builder.draft.name, 'code-review-copy-2')
+  assert.deepEqual(builder.draft.stages, [{ preset: 'plan' }])
+  // Cleared, so the header reads Unsaved and Save creates a new directory
+  // instead of overwriting the recipe this was cloned from.
+  assert.equal(builder.savedRecipe.name, '')
+  assert.deepEqual(calls, [], 'clone must not touch the backend')
+})
+
+test('cloning a clone does not stack -copy suffixes', () => {
+  const source = new TauriSource({})
+  source._setLocal({ pipelineCatalog: [] })
+  source._setBuilder({ draft: { name: 'my-flow-copy-2', stages: [] }, savedRecipe: { name: '', stages: [] } })
+
+  source.actions.clonePipelineRecipe()
+
+  assert.equal(source.state.pipelineBuilder.draft.name, 'my-flow-copy')
+})
+
+test('deleting the open recipe clears the editor, and a refusal surfaces as a finding', async () => {
+  const source = new TauriSource({})
+  let result = { deleted: true, catalogRefreshed: true, path: '/p', error: '' }
+  source._invoke = async () => result
+  source._setBuilder({
+    draft: { name: 'my-flow', stages: [{ preset: 'plan' }] },
+    savedRecipe: { name: 'my-flow', stages: [{ preset: 'plan' }] },
+  })
+
+  await source.actions.deletePipelineRecipe('my-flow')
+
+  // The recipe is gone, so the draft has nowhere to save to.
+  assert.equal(source.state.pipelineBuilder.draft.name, '')
+  assert.equal(source.state.pipelineBuilder.savedRecipe.name, '')
+  assert.deepEqual(source.state.pipelineBuilder.findings, [])
+
+  // A backend refusal must not silently look like success.
+  result = { deleted: false, error: 'pipeline "code-review" is repository-owned and cannot be deleted' }
+  source._setBuilder({ draft: { name: 'code-review', stages: [] }, savedRecipe: { name: 'code-review', stages: [] } })
+
+  await source.actions.deletePipelineRecipe('code-review')
+
+  const [finding] = source.state.pipelineBuilder.findings
+  assert.equal(finding.severity, 'error')
+  assert.match(finding.message, /repository-owned/)
+  // The editor keeps the recipe that was never removed.
+  assert.equal(source.state.pipelineBuilder.draft.name, 'code-review')
+})
+
+test('New Pipeline yields a blank draft that a late load cannot overwrite', async () => {
+  // Reported as "it creates a blank space but changes to code-review
+  // immediately". The only way that can happen is a load resolving after the
+  // reset and winning, so both orderings are pinned here.
+  const recipe = {
+    name: 'code-review', description: 'Review a branch or PR', version: '1.0.0',
+    baselineChecks: [], correction: null, stages: [{ preset: 'plan' }, { preset: 'check' }],
+  }
+  const blank = (source) => {
+    const builder = source.state.pipelineBuilder
+    assert.equal(builder.draft.name, '')
+    assert.equal(builder.savedRecipe.name, '')
+    assert.deepEqual(builder.draft.stages, [])
+    assert.equal(builder.pendingTransition, null)
+  }
+
+  // Load settles first, then New.
+  const settled = new TauriSource({})
+  settled._invoke = async () => recipe
+  await settled.actions.loadPipelineRecipe('code-review')
+  assert.equal(settled.state.pipelineBuilder.draft.name, 'code-review')
+  settled.actions.newPipelineRecipe()
+  blank(settled)
+
+  // New lands while the load is still in flight. _beginBuilderOperation stamps
+  // a generation and newPipelineRecipe bumps it, so the stale result is
+  // dropped instead of repainting the recipe over the blank draft.
+  const racing = new TauriSource({})
+  let release
+  racing._invoke = () => new Promise((resolve) => { release = () => resolve(recipe) })
+  const inflight = racing.actions.loadPipelineRecipe('code-review')
+  racing.actions.newPipelineRecipe()
+  blank(racing)
+  release()
+  await inflight
+  blank(racing)
+  assert.equal(racing.state.pipelineBuilder.loading, false)
+})

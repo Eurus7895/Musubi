@@ -151,10 +151,17 @@ jobs:
           node-version: "22"
 
       - name: Test — node:test
-        # Pure logic tests over the chat command classifier, the Tauri data
-        # source contract, the pipeline builder model, and the view models.
-        # No dependencies and no DOM: the view tests read the .jsx sources as
-        # text and assert on structure, so `npm ci` and a browser are both
-        # unnecessary. Tests marked `todo` document known defects and report
-        # without failing the run.
+        # Logic tests over the chat command classifier, the Tauri data source
+        # contract, the pipeline builder model, and the view models. No
+        # dependencies: the view tests read the .jsx sources as text and assert
+        # on structure, so `npm ci` is unnecessary.
+        #
+        # Orchestrator.geometry.test.mjs is the exception — a coordinate cannot
+        # be asserted against a source string, so it drives the runner's
+        # preinstalled Chrome over a DOM fixture. It finds a browser via
+        # CHROME_BIN or the usual install paths and self-skips where there is
+        # none, so it stays green on a machine without one.
+        #
+        # Tests marked `todo` document known defects and report without
+        # failing the run.
         run: npm test

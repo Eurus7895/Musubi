@@ -439,6 +439,47 @@ export default class TauriSource {
           }))
         }
       },
+      // A clone is a local rename, not a write. It mints an unused name and
+      // clears savedRecipe, so the draft reads Unsaved and the existing Save
+      // path — the only validated way onto disk — creates the new directory.
+      // Nothing is written until you press Save, and the recipe cloned from is
+      // never the save target.
+      clonePipelineRecipe: () => {
+        const draft = this.state.pipelineBuilder?.draft
+        if (!draft?.name) return
+        const taken = new Set((this.state.pipelineCatalog || []).map((entry) => entry.name))
+        const stem = String(draft.name).replace(/-copy(-\d+)?$/, '')
+        let name = `${stem}-copy`
+        for (let suffix = 2; taken.has(name); suffix += 1) name = `${stem}-copy-${suffix}`
+        this._setBuilder({
+          draft: { ...structuredClone(draft), name },
+          savedRecipe: createPipelineDraft(),
+          findings: [], saveResult: null, selectedStageIndex: null,
+        })
+      },
+      deletePipelineRecipe: async (name) => {
+        if (!this._invoke || !name) return
+        const generation = this._beginBuilderOperation()
+        try {
+          const result = await this._invoke('delete_pipeline_recipe', { name })
+          this._finishBuilderOperation(generation, (builder) => {
+            if (!result?.deleted) {
+              return { ...builder, findings: [{ severity: 'error', step: 'delete', field: '', message: result?.error || 'delete failed' }] }
+            }
+            // Deleting the recipe currently open leaves the editor holding a
+            // draft with nowhere to save to, so reset it to a blank one.
+            const open = builder.savedRecipe?.name === name
+            return {
+              ...builder, findings: [], saveResult: null,
+              ...(open ? { draft: createPipelineDraft(), savedRecipe: createPipelineDraft(), selectedStageIndex: null } : {}),
+            }
+          })
+        } catch (error) {
+          this._finishBuilderOperation(generation, (builder) => ({
+            ...builder, findings: [errorFinding(error, 'delete')],
+          }))
+        }
+      },
       savePipelineRecipe: async () => {
         if (!this._invoke) return
         const recipe = this._recipePayload()

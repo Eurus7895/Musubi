@@ -1932,6 +1932,21 @@ fn save_pipeline_recipe_at(
     musubi_data::save_pipeline_recipe(project_root, recipe)
 }
 
+#[tauri::command]
+fn delete_pipeline_recipe(
+    name: String,
+    state: tauri::State<AppState>,
+) -> Result<musubi_data::PipelineDeleteResult, String> {
+    Ok(delete_pipeline_recipe_at(&state.project_root, &name))
+}
+
+fn delete_pipeline_recipe_at(
+    project_root: &Path,
+    name: &str,
+) -> musubi_data::PipelineDeleteResult {
+    musubi_data::delete_pipeline_recipe(project_root, name)
+}
+
 fn resolve_orchestrator_launch(
     text: &str,
     mode: &str,
@@ -2386,7 +2401,8 @@ pub fn run() {
             choose_workspace,
             load_pipeline_recipe,
             validate_pipeline_recipe,
-            save_pipeline_recipe
+            save_pipeline_recipe,
+            delete_pipeline_recipe
         ])
         .setup(|app| {
             // Poll the audit.db and push live snapshots to the UI.
@@ -3439,6 +3455,7 @@ mod tests {
             stages: vec!["plan".into(), "build".into()],
             runnable: true,
             blocked_reason: String::new(),
+            protected: false,
         }
     }
 
@@ -3645,6 +3662,7 @@ mod tests {
         assert!(source.contains("fn load_pipeline_recipe("));
         assert!(source.contains("fn validate_pipeline_recipe("));
         assert!(source.contains("fn save_pipeline_recipe("));
+        assert!(source.contains("fn delete_pipeline_recipe("));
         assert!(source.contains("\"resume_pipeline\" =>"));
         let handler_block = source
             .split_once("invoke_handler(tauri::generate_handler![")
@@ -3657,6 +3675,7 @@ mod tests {
             "load_pipeline_recipe",
             "validate_pipeline_recipe",
             "save_pipeline_recipe",
+            "delete_pipeline_recipe",
         ] {
             assert!(handler_block.contains(handler));
         }

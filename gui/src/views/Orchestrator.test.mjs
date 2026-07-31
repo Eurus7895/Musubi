@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { tokenShareOf } from './requestMetrics.js'
 
 const source = await readFile(new URL('./Orchestrator.jsx', import.meta.url), 'utf8')
 
@@ -134,4 +135,25 @@ test('finished requests collapse to one line and absent values are not zeros', (
   assert.match(source, /LIVE_LOG_LINES/)
   // The 980px cap wasted gutter on a wide display; the pane grows instead.
   assert.equal(source.includes('request-graph'), false)
+})
+
+test('token share marks the heaviest worker and nothing else', () => {
+  const workers = [{ tokens: 32981 }, { tokens: 15852 }, { tokens: 51337 }]
+  assert.equal(tokenShareOf(workers[2], workers), 1)
+  assert.ok(tokenShareOf(workers[0], workers) < 1)
+  // A lone worker is not the peak of itself, and a request that burned nothing
+  // has no peak to mark — both would otherwise bold every row they contain.
+  assert.equal(tokenShareOf(workers[0], [workers[0]]), 0)
+  assert.equal(tokenShareOf({ tokens: 0 }, [{ tokens: 0 }, { tokens: 0 }]), 0)
+  assert.equal(tokenShareOf({ tokens: 5 }, null), 0)
+})
+
+test('the session graph carries role identity and a turn ratio, not four grey counts', () => {
+  // The role hues have been in :root since the log lines shipped; the graph
+  // rendered every worker the same grey until now.
+  assert.match(source, /role-\$\{node\.role \|\| 'worker'\}/)
+  assert.match(source, /<TurnMeter turns=\{node\.turns\} max=\{node\.maxTurns\} \/>/)
+  assert.doesNotMatch(source, /\{node\.turns\}\/\{node\.maxTurns\} turns/)
+  // The hint was a full-width dashed box, which reads as an empty drop target.
+  assert.match(source, /<p className="timeline-hint">/)
 })
