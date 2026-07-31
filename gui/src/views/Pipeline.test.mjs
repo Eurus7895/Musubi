@@ -66,3 +66,20 @@ test('Pipeline Studio never offers to delete a repository-owned recipe', () => {
   assert.match(source, /Repository-owned recipe/)
   assert.match(source, /disabled=\{builder\.loading \|\| !builder\.deletable\}/)
 })
+
+test('Save Pipeline is offered once, from the header', () => {
+  // Validate used to carry a second primary Save beside its Validate button,
+  // so the Validate step showed two identical calls to action.
+  assert.equal(source.match(/Save Pipeline/g).length, 1)
+  assert.match(source, /validate-toolbar.*onClick=\{onValidate\}/s)
+})
+
+test('saved recipes are listed beside the identity form, not collapsed in the header', () => {
+  assert.match(source, /className="basics-workspace"/)
+  assert.match(source, /<RecipeList saved=\{saved\}/)
+  // A select showed one name at a time; the list shows every recipe, its stage
+  // count, and which ones the repository owns without being opened.
+  assert.match(source, /recipe-list__item/)
+  assert.match(source, /entry\.protected \? ' · repository' : ''/)
+  assert.doesNotMatch(source, /<select/)
+})
