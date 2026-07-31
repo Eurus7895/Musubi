@@ -88,7 +88,12 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 @keyframes rowin { from { transform: translateY(-4px); } to { transform: none; } }
 
 .pipeline-studio { flex: 1; min-height: 0; overflow: auto; padding: 22px 26px 30px; background: radial-gradient(circle at 52% -10%, rgba(36, 76, 108, .12), transparent 36%), #0d1117; }
-.pipeline-studio__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; max-width: 1500px; margin: 0 auto 18px; }
+/* The Studio used to cap its three bands at 1500px and centre them, which
+   left dead gutters on a wide window while the Stages and Handoffs grids —
+   the ones that actually want room — were the columns being squeezed. The
+   page fills the pane; the identity form caps itself instead, since a
+   1400px-wide single-line name field is not more readable than a 900px one. */
+.pipeline-studio__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin: 0 0 18px; }
 .pipeline-studio__eyebrow { font: 600 10px/1.2 'IBM Plex Mono', monospace; color: #ff9b3d; letter-spacing: .12em; text-transform: uppercase; }
 .pipeline-studio__title-row { display: flex; align-items: center; gap: 10px; margin-top: 5px; }
 .pipeline-studio h1 { margin: 0; font-size: 23px; letter-spacing: -.03em; }
@@ -116,16 +121,16 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .ui-button--primary { color: #181106; background: #f5a647; border-color: #ffbd72; }
 .ui-button--danger { color: var(--danger-hi); border-color: rgba(232,106,95,.45); background: rgba(232,106,95,.12); }
 .ui-button:disabled { opacity: .42; cursor: not-allowed; }
-.pipeline-steps { max-width: 1500px; margin: 0 auto 15px; padding: 7px; display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; border: 1px solid rgba(255,255,255,.07); border-radius: 11px; background: #101721; }
+.pipeline-steps { margin: 0 0 15px; padding: 7px; display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 6px; border: 1px solid rgba(255,255,255,.07); border-radius: 11px; background: #101721; }
 .pipeline-step { padding: 10px 12px; border: 1px solid transparent; border-radius: 8px; color: #7d8795; background: transparent; text-align: left; font-weight: 600; cursor: pointer; }
 .pipeline-step span { margin-right: 9px; color: #596576; font: 10px 'IBM Plex Mono', monospace; }
 .pipeline-step.is-active { color: #f5f7fa; border-color: rgba(255,155,61,.35); background: rgba(255,155,61,.09); }
 .pipeline-step.is-active span { color: #ff9b3d; }
-.pipeline-studio__body { max-width: 1500px; min-height: 580px; margin: 0 auto; }
+.pipeline-studio__body { min-height: 580px; }
 .builder-panel, .agent-library, .stage-lane, .stage-inspector { border: 1px solid rgba(255,255,255,.075); border-radius: 13px; background: #101721; }
 .builder-panel { padding: 20px; }
 .panel-heading h2 { margin: 0; color: #edf1f7; font-size: 15px; }
-.builder-form-grid { display: grid; grid-template-columns: 1fr 180px; gap: 16px; margin-top: 22px; }
+.builder-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 16px; margin-top: 22px; max-width: 1100px; }
 .builder-field { display: flex; flex-direction: column; gap: 7px; color: #c8d0dc; font-size: 11px; font-weight: 600; }
 .builder-field.is-wide { grid-column: 1 / -1; }
 .builder-field input, .builder-field textarea, .library-search { width: 100%; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 10px 11px; color: #e9edf4; background: #0c121b; outline: none; font: 12px/1.4 'IBM Plex Sans', sans-serif; resize: vertical; }
@@ -360,17 +365,45 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .request-live-log code { min-width: 0; overflow: hidden; color: #c3ccd8; text-overflow: ellipsis; white-space: nowrap; }
 .request-live-log__empty { color: var(--text-3); font: var(--fs-2) var(--mono); }
 
-.request-agents { margin: 2px 0 var(--s-1) var(--s-5); padding-left: 22px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid rgba(95, 139, 174, .42); }
+/* The tree rule is gone. Indentation already says "child of the row above",
+   and the role rail says which kind of worker — a 1px elbow drawn outside the
+   row added a third statement of the same fact and was the cheapest-looking
+   thing on the pane. */
+.request-agents { margin: 2px 0 var(--s-1) var(--s-5); display: flex; flex-direction: column; gap: 3px; }
 .request-agents .request-row { min-height: 38px; }
-.request-agents .request-row::before { content: ''; position: absolute; left: -23px; width: 22px; border-top: 1px solid rgba(95, 139, 174, .42); }
-.request-agents .request-row { position: relative; }
+
+/* Role hue on the rail, not the text: the label keeps full contrast while the
+   run still reads at a glance as planner / host / worker. These hues have been
+   in :root since the log lines shipped; the graph never used them. */
+.request-row.is-agent { border-left: 2px solid var(--role-worker); }
+.request-row.is-agent > i { background: var(--role-worker); }
+.request-row.is-agent.role-planner { border-left-color: var(--role-planner); }
+.request-row.is-agent.role-planner > i { background: var(--role-planner); }
+.request-row.is-agent.role-host { border-left-color: var(--role-host); }
+.request-row.is-agent.role-host > i { background: var(--role-host); }
+.request-row.is-agent.status-failed, .request-row.is-agent.status-denied { border-left-color: var(--danger); }
+
+/* A proportion drawn as a 2px rule under the number, not as a filled block
+   behind it — a block reads as selection, and at 11px it buried the digits it
+   was meant to qualify. scaleX keeps the paint off the layout path; these rows
+   re-render on every 1100ms poll. */
+.turn-meter { position: relative; display: inline-block; padding-bottom: 3px; color: var(--text-3); font: var(--fs-2) var(--mono); white-space: nowrap; }
+.turn-meter > i { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; border-radius: var(--r-pill); transform-origin: left center; background: var(--info); opacity: .55; }
+.turn-meter.is-spent { color: var(--warn); }
+.turn-meter.is-spent > i { background: var(--warn); opacity: .75; }
+.request-row__tokens { display: inline-block; white-space: nowrap; }
+/* The heaviest worker in a request is the one worth finding; it gets weight
+   rather than a bar, so the column stays a column of numbers. */
+.request-row__tokens.is-peak > span { color: var(--text-2); font-weight: 600; }
 
 .role-chip { padding: 1px var(--s-1); flex: none; border: 1px solid rgba(83, 199, 191, .22); border-radius: var(--r-sm); color: var(--role-worker); background: rgba(0, 154, 145, .1); font: var(--fs-1) var(--mono); text-transform: uppercase; }
 .role-chip.role-planner { color: var(--role-planner); border-color: rgba(166, 112, 220, .28); background: rgba(112, 67, 154, .14); }
 .role-chip.role-host { color: var(--role-host); border-color: rgba(52, 180, 226, .26); background: rgba(28, 126, 162, .13); }
 .role-chip.role-policy { color: var(--role-worker); }
 
-.timeline-hint { margin-top: 18px; padding: 11px 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--text-3); font: var(--fs-2) var(--sans); text-align: center; }
+/* A full-width dashed box reads as an empty drop target waiting to be filled.
+   This is a footnote about how the list behaves, so it looks like one. */
+.timeline-hint { margin: var(--s-4) 0 0; color: var(--text-3); font: var(--fs-1) var(--sans); text-align: center; }
 .runtime-empty { min-height: 220px; display: grid; place-items: center; color: var(--text-3); font-size: var(--fs-2); }
 
 /* Drill-in keeps the timeline: detail is a pane beside it, not instead of it. */

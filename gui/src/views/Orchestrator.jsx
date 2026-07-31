@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import ChatBody from '../components/ChatBody.jsx'
 import NewSessionButton from '../components/NewSessionButton.jsx'
 import TokenEconomics from '../components/TokenEconomics.jsx'
+import { tokenShareOf } from './requestMetrics.js'
 
 const REQUEST_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
 const AGENT_LOG_FILTERS = ['All', 'Model', 'Tools', 'Skills', 'Policy', 'stdout', 'stderr']
@@ -485,40 +486,72 @@ function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
             {!!request.agents?.length && (
               <div className="request-agents">
                 {request.agents.map((agent) => (
-                  <RequestRow key={agent.id} node={agent} selectedId={selectedId} onSelect={onSelectNode} />
+                  <RequestRow
+                    key={agent.id}
+                    node={agent}
+                    selectedId={selectedId}
+                    onSelect={onSelectNode}
+                    // Relative to the heaviest worker in this request, not to
+                    // the session: the comparison an operator makes is "which
+                    // of these workers cost the turn", and a session-wide
+                    // denominator flattens every row of a cheap request.
+                    tokenShare={tokenShareOf(agent, request.agents)}
+                  />
                 ))}
               </div>
             )}
           </div>
         ))}
-        <div className="timeline-hint">
+        <p className="timeline-hint">
           Finished requests collapse to one line. Open any row for its full log — the timeline stays.
-        </div>
+        </p>
       </div>
     </div>
   )
 }
 
-function RequestRow({ node, order, selectedId, onSelect }) {
+// Every worker row carried the same three grey mono counts, so "6/6 turns" and
+// "2/6 turns" — a worker that spent its whole budget and one a third of the way
+// in — were the same shape. Turns now draw their ratio as a rule under the
+// number, the heaviest worker in a request gets typographic weight instead of a
+// fourth number, and the role hues already in :root colour the rail: the log
+// lines have used them since they shipped, the graph never did.
+function RequestRow({ node, order, selectedId, onSelect, tokenShare = 0 }) {
   const live = node.status === 'running'
   const isAgent = node.kind === 'agent'
   const label = order
     ? `R${String(order).padStart(2, '0')} · ${node.title || node.label}`
     : (node.title || node.label)
+  const roleClass = isAgent ? ` is-agent role-${node.role || 'worker'}` : ''
   return (
     <button
-      className={`request-row status-${node.status}${live ? ' is-live' : ''}${node.id === selectedId ? ' is-selected' : ''}`}
+      className={`request-row status-${node.status}${live ? ' is-live' : ''}${node.id === selectedId ? ' is-selected' : ''}${roleClass}`}
       onClick={() => onSelect(node)}
       title={node.title || node.label}
     >
       <i />
       <strong>{label}</strong>
       {isAgent && node.maxTurns
-        ? <span>{node.turns}/{node.maxTurns} turns</span>
+        ? <TurnMeter turns={node.turns} max={node.maxTurns} />
         : <Metric value={node.tools} suffix="tools" />}
-      <Metric value={node.tokens} suffix="tok" />
+      <span className={`request-row__tokens${tokenShare >= 1 ? ' is-peak' : ''}`}>
+        <Metric value={node.tokens} suffix="tok" />
+      </span>
       {live ? <span>now</span> : <Metric value={node.logCount} suffix="rows" />}
     </button>
+  )
+}
+
+// A worker at its turn cap has nothing left to spend, which is the difference
+// between "finished" and "ran out" — the bare ratio never showed it.
+function TurnMeter({ turns, max }) {
+  const done = Math.max(0, Math.min(Number(turns) || 0, Number(max) || 0))
+  const ratio = max > 0 ? done / max : 0
+  return (
+    <span className={`turn-meter${ratio >= 1 ? ' is-spent' : ''}`}>
+      <i style={{ transform: `scaleX(${ratio})` }} />
+      {done}/{max} turns
+    </span>
   )
 }
 
