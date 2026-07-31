@@ -36,6 +36,9 @@ function findChrome() {
 
 const chrome = findChrome()
 
+// A panel toggle glyph. Only its box matters here, not which way it points.
+const ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none"><path d="M19 5 V19" stroke="currentColor" stroke-width="1.7"/><path d="M10 8 L14 12 L10 16" stroke="currentColor" stroke-width="1.7"/></svg>'
+
 const BANNER = `
   <div class="now-banner"><i class="live-dot"></i><div class="now-banner__body">
     <div class="now-banner__headline"><h1>Explorer is reading policy_engine.py</h1><span class="now-banner__elapsed">2m 04s</span></div>
@@ -60,7 +63,9 @@ const FIXTURE = `<!doctype html><html><head><link rel="stylesheet" href="file://
     <div class="session-rail__meta"><span>4</span><button class="session-clean">Clean all</button></div>
   </header><div class="session-rail__list"></div></aside>
   <main class="orchestrator-workspace">${BANNER}${STRIP}<section class="runtime-evidence"></section></main>
-  <aside class="conversation-panel"></aside>
+  <aside class="conversation-panel"><header class="conversation-panel__header"><strong>Conversation</strong>
+    <div><button class="ui-button">New session</button><button class="collapse-button" id="collapse" aria-label="Collapse conversation">${ICON}</button></div>
+  </header></aside>
 </div></div>
 <div class="probe"><div class="orchestrator-console sessions-hidden" id="hidden">
   <main class="orchestrator-workspace">
@@ -68,12 +73,27 @@ const FIXTURE = `<!doctype html><html><head><link rel="stylesheet" href="file://
     ${BANNER}${STRIP}<section class="runtime-evidence"></section></main>
   <aside class="conversation-panel"></aside>
 </div></div>
+<div class="probe"><div class="orchestrator-console conversation-collapsed" id="shut">
+  <aside class="session-rail"><header>
+    <div class="session-rail__title"><button aria-label="Hide sessions">${ICON}</button><strong>Sessions</strong></div>
+    <div class="session-rail__meta"><span>4</span><button class="session-clean">Clean all</button></div>
+  </header><div class="session-rail__list"></div></aside>
+  <main class="orchestrator-workspace">${BANNER}${STRIP}<section class="runtime-evidence"></section></main>
+  <aside class="conversation-panel is-collapsed"><header class="conversation-panel__header">
+    <button class="collapse-button" id="expand" aria-label="Expand conversation">${ICON}</button>
+  </header><span>Conversation</span></aside>
+</div></div>
 <pre id="probe-out"></pre>
 <script>
 const rel = (el, hostId) => {
   const r = el.getBoundingClientRect(), h = document.getElementById(hostId).getBoundingClientRect()
   return { x1: r.left - h.left, x2: r.right - h.left, y1: r.top - h.top, y2: r.bottom - h.top,
-           cx: r.left - h.left + r.width / 2, cy: r.top - h.top + r.height / 2, w: r.width, h: r.height }
+           cx: r.left - h.left + r.width / 2, cy: r.top - h.top + r.height / 2, w: r.width, h: r.height,
+           // The conversation panel is anchored to the console's right edge and
+           // changes width when it collapses, so its toggle only round-trips
+           // against that edge — measuring from the left would compare the
+           // 420px column to the 48px one and call a fixed button moved.
+           rcx: h.right - (r.left + r.width / 2) }
 }
 const rail = document.querySelector('#open .session-rail').getBoundingClientRect()
 const header = document.querySelector('#open .session-rail header')
@@ -82,6 +102,10 @@ const btn = document.getElementById('hide').getBoundingClientRect()
 document.getElementById('probe-out').textContent = 'PROBE' + JSON.stringify({
   hide: rel(document.getElementById('hide'), 'open'),
   show: rel(document.getElementById('show'), 'hidden'),
+  collapse: rel(document.getElementById('collapse'), 'open'),
+  expand: rel(document.getElementById('expand'), 'shut'),
+  headerBands: ['#open .conversation-panel__header', '#shut .conversation-panel__header']
+    .map((sel) => { const e = document.querySelector(sel); return e ? e.getBoundingClientRect().height : null }),
   dot: rel(document.querySelector('#hidden .live-dot'), 'hidden'),
   headerSpill: header.scrollWidth - header.clientWidth,
   railWidth: rail.width,
@@ -110,6 +134,23 @@ test('hiding and showing the sessions rail round-trips to one coordinate', { ski
     assert.ok(Math.abs(m.hide.cx - m.show.cx) <= 4, `x drift at ${width}px: ${m.hide.cx} vs ${m.show.cx}`)
     assert.ok(Math.abs(m.hide.cy - m.show.cy) <= 4, `y drift at ${width}px: ${m.hide.cy} vs ${m.show.cy}`)
   }
+})
+
+test('collapsing and expanding the conversation panel round-trips to one coordinate', { skip: !chrome && 'no chromium found' }, () => {
+  for (const width of [1600, 1100]) {
+    const m = measure(width)
+    // Collapsing used to drop the panel's 48px header and leave the toggle a
+    // bare flex child under a 14px pad: it came back at cy 28 instead of 23.5
+    // and 23.5px from the console edge instead of 26.
+    assert.ok(Math.abs(m.collapse.rcx - m.expand.rcx) <= 1, `x drift at ${width}px: ${m.collapse.rcx} vs ${m.expand.rcx}`)
+    assert.ok(Math.abs(m.collapse.cy - m.expand.cy) <= 1, `y drift at ${width}px: ${m.collapse.cy} vs ${m.expand.cy}`)
+  }
+})
+
+test('the conversation panel keeps its header band in both states', { skip: !chrome && 'no chromium found' }, () => {
+  // The band is what puts the toggle on a row and continues the console's
+  // header rule across the panel. Collapsed used to have no header element.
+  assert.deepEqual(measure(1600).headerBands, [48, 48])
 })
 
 test('the rail header fits its column at every width', { skip: !chrome && 'no chromium found' }, () => {

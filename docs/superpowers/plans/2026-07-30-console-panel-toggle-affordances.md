@@ -84,8 +84,22 @@ test so the next regression fails a check instead of an eye.
    header does not overflow its column, the toggle does not intersect the live
    dot, and the glyph is centred. Skip when no Chromium is present.
 
+9. Give the collapsed conversation panel the header band it was dropping. Step 1
+   fixed the sessions rail; the panel on the opposite edge had the same defect
+   and kept it. `ConversationPanel`'s collapsed branch rendered the toggle as a
+   bare child of `.conversation-panel.is-collapsed`, positioned by
+   `padding-top: 14px` instead of by a header, so it sat at cy 28 against the
+   expanded header's 23.5 and 26 px from the console's right edge against 23.5 —
+   and the header rule that runs across the console stopped at the panel. The
+   collapsed branch now renders the same `.conversation-panel__header`, with
+   `justify-content: flex-end` because a single child under the shared
+   `space-between` would park at the left edge. Measure the panel from the
+   console's *right* edge: it is right-anchored and its column changes 420 px →
+   48 px, so a left-relative comparison would call a fixed button moved.
+
 ## Result
 
-Round-trip travel **207.6 px → 0.5 px**, identical at both breakpoints. Header
-overflow **30.3 px → 0**. Presentation only: no substrate, policy, audit,
-`LMRouter`, or Tauri command path is touched.
+Round-trip travel **207.6 px → 0.5 px** for the sessions rail and **5.2 px → 0**
+for the conversation panel, identical at both breakpoints. Header overflow
+**30.3 px → 0**. Presentation only: no substrate, policy, audit, `LMRouter`, or
+Tauri command path is touched.

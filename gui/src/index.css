@@ -218,8 +218,8 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
    and 8px from the bottom — 1.5px high — with text-align rounding splitting the
    width 7/6. Flex centring is what fixes it; padding:0 only stops the glyph
    overflowing the 14px content box the UA padding leaves behind. */
-.session-rail header button, .collapse-button, .rail-toggle, .conversation-panel.is-collapsed > button { width: 28px; height: 28px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
-.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover, .conversation-panel.is-collapsed > button:hover { color: var(--text); border-color: var(--line-hover); }
+.session-rail header button, .collapse-button, .rail-toggle { width: 28px; height: 28px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--text-2); background: var(--raised); cursor: pointer; }
+.session-rail header button:hover, .collapse-button:hover, .rail-toggle:hover { color: var(--text); border-color: var(--line-hover); }
 .session-rail header .session-clean { width: auto; padding: 0 8px; color: var(--danger); font: 600 var(--fs-1) var(--sans); }
 .session-rail header button:disabled, .session-delete:disabled { opacity: .38; cursor: not-allowed; }
 .session-rail__list { flex: 1; min-height: 0; padding-bottom: var(--s-2); overflow: auto; }
@@ -429,8 +429,11 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 
 .conversation-panel { border-left: 1px solid var(--line); }
 .conversation-panel__header > div:last-child { display: flex; align-items: center; gap: 7px; }
-.conversation-panel.is-collapsed { align-items: center; padding-top: 14px; gap: 15px; }
-.conversation-panel.is-collapsed span { color: var(--text-3); font: var(--fs-2) var(--mono); writing-mode: vertical-rl; }
+/* One child, so the shared header's space-between would park the toggle at the
+   left edge; flex-end lands it on the same 26px-from-the-panel-edge centre the
+   expanded header gives it. */
+.conversation-panel.is-collapsed .conversation-panel__header { justify-content: flex-end; }
+.conversation-panel.is-collapsed span { margin-top: 15px; align-self: center; color: var(--text-3); font: var(--fs-2) var(--mono); writing-mode: vertical-rl; }
 .skills-used { margin: var(--s-3) var(--s-3) 0; padding: var(--s-2) var(--s-2); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--well); }
 .skills-used > span { margin-right: 3px; color: var(--text-3); font: var(--fs-1) var(--mono); text-transform: uppercase; }
 .skills-used small { color: var(--text-3); font-size: var(--fs-1); }

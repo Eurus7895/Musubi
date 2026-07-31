@@ -216,7 +216,13 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   position was a function of banner height: the gesture closed at (213, 23.5)
   and reopened at (36, 132) mid-run or (36, 79.5) at rest. Hide now leads its
   header and show is pinned to the workspace corner — **207.6 px of travel
-  became 0.5 px**, the same at both breakpoints. Below 1180 px the rail header
+  became 0.5 px**, the same at both breakpoints. The conversation panel carried
+  the same defect on the opposite edge: collapsing dropped its 48 px header band
+  outright, leaving the toggle a bare flex child under a 14 px pad, so it
+  returned at cy 28 and 23.5 px from the console edge rather than the 23.5 and
+  26 it left from — **5.2 px of round-trip travel, now 0 on both axes**, with
+  the console's header rule running unbroken across the panel in either state.
+  Below 1180 px the rail header
   had been overflowing its 58 px column by 30.3 px and painting the hide button
   on top of the banner's live dot, because the media query dropped the label
   and the count but not "Clean all"; it fits now. The four bare `←` / `→`

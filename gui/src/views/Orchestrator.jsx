@@ -614,7 +614,31 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabe
 
 function ConversationPanel({ vals, collapsed, onToggle }) {
   const skills = Array.from(new Set(Object.values(vals.skillsByWorker || {}).flat()))
-  if (collapsed) return <aside className="conversation-panel is-collapsed"><button type="button" aria-label="Expand conversation" title="Expand conversation" onClick={onToggle}><PanelIcon side="right" direction="left" /></button><span>Conversation</span></aside>
+  // The expanded panel's toggle rides a 48px header band. Collapsing used to
+  // drop that band and leave the button a bare flex child under a 14px pad, so
+  // it came back 4.5px below and 2.5px inboard of where the hand let go, and
+  // the header rule that runs across the console stopped at this panel's edge.
+  // Keeping the band in both states is what pins the round trip to one
+  // coordinate — the same fix the sessions rail got, applied to the pane it
+  // was never applied to.
+  if (collapsed) {
+    return (
+      <aside className="conversation-panel is-collapsed">
+        <header className="conversation-panel__header">
+          <button
+            type="button"
+            className="collapse-button"
+            aria-label="Expand conversation"
+            title="Expand conversation"
+            onClick={onToggle}
+          >
+            <PanelIcon side="right" direction="left" />
+          </button>
+        </header>
+        <span>Conversation</span>
+      </aside>
+    )
+  }
   return (
     <aside className="conversation-panel">
       <header className="conversation-panel__header">
