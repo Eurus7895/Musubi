@@ -177,7 +177,7 @@ test('projects evidence-backed runtime graph logs and successful skill provenanc
   assert.equal(JSON.stringify(vm.runtimeLogs).includes('rawArgs'), false)
 })
 
-test('projects every request and its exact agents as append-only session history', () => {
+test('projects every turn and its exact agents as append-only session history', () => {
   const first = agent(1, 'root-1', 'done', 'planner', 'gui-orchestrator-history')
   const second = agent(2, 'root-2', 'done', 'coder', 'gui-orchestrator-history')
   const vm = buildViewModel(baseState({
@@ -201,17 +201,17 @@ test('projects every request and its exact agents as append-only session history
   }), actions())
 
   assert.deepEqual(vm.runtimeGraph.nodes.map((node) => [node.id, node.parentId]), [
-    ['request:request-1', null],
-    [first.handle, 'request:request-1'],
-    ['request:request-2', 'request:request-1'],
-    [second.handle, 'request:request-2'],
+    ['turn:request-1', null],
+    [first.handle, 'turn:request-1'],
+    ['turn:request-2', 'turn:request-1'],
+    [second.handle, 'turn:request-2'],
   ])
-  assert.equal(vm.runtimeGraph.requests.length, 2)
+  assert.equal(vm.runtimeGraph.turns.length, 2)
   assert.equal(vm.runtimeLogs.filter((row) => row.requestId === 'request-1').length, 2)
   assert.equal(vm.runtimeLogs.find((row) => row.agentHandle === second.handle).message, '[agent] write ok')
 })
 
-test('the in-flight request sorts newest, not oldest, despite having no turn row', () => {
+test('the in-flight turn sorts newest despite having no completed turn row', () => {
   // agent_turns is written with ended_at=time.time(), so a running request has
   // no turn row at all. Sorting on `turn.startedAt || events[0].id` compared
   // epoch seconds against an AUTOINCREMENT rowid, so the running request —
@@ -234,14 +234,14 @@ test('the in-flight request sorts newest, not oldest, despite having no turn row
   }), actions())
 
   assert.deepEqual(
-    vm.runtimeGraph.requests.map((request) => request.requestId),
+    vm.runtimeGraph.turns.map((turn) => turn.requestId),
     ['req-old', 'req-mid', 'req-live'],
   )
-  // Numbering is chronological, so the live request takes the highest R-number.
-  assert.equal(vm.runtimeGraph.requests[2].label, 'Request 03')
+  // Numbering is chronological, so the live turn takes the highest T-number.
+  assert.equal(vm.runtimeGraph.turns[2].label, 'Turn 03')
   // And it continues the chain rather than heading it.
-  assert.equal(vm.runtimeGraph.requests[0].parentId, null)
-  assert.equal(vm.runtimeGraph.requests[2].parentId, 'request:req-mid')
+  assert.equal(vm.runtimeGraph.turns[0].parentId, null)
+  assert.equal(vm.runtimeGraph.turns[2].parentId, 'turn:req-mid')
 })
 
 test('includes pipeline stages launched by an Orchestrator chat in the runtime graph', () => {
@@ -1234,7 +1234,7 @@ test('a failed turn-less request does not masquerade as the live one', () => {
 
   // Chronological by ledger rowid, with the driver's own request pinned last.
   assert.deepEqual(
-    vm.runtimeGraph.requests.map((request) => request.requestId),
+    vm.runtimeGraph.turns.map((turn) => turn.requestId),
     ['req-old', 'req-dead', 'req-new', 'req-live'],
   )
 })

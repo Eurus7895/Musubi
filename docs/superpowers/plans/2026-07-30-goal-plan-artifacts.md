@@ -119,3 +119,27 @@ The focused test suite must prove:
 - planning files do not count as delivered implementation;
 - missing `plan.md` keeps the coder gate closed;
 - blocking decisions no longer depend on file count.
+
+## Follow-up: session turns and operator token budget
+
+The same conversation should not expose a second lifecycle called a
+"request". The durable `request_id` remains an internal correlation key because
+runtime log rows, folder-grant snapshots, and completed agent turns need an
+append-only join key. The Console projects those records as:
+
+```text
+session → turns → workers
+```
+
+It labels root activity as `Turn 01`, `Turn 02`, and so on, while keeping the
+internal key available for diagnostics and audit joins.
+
+The total token budget is also a launch boundary, not a model decision. The
+Console composer therefore accepts an optional budget for the next turn and
+forwards it to the driver as `--max-tokens`. Blank uses the configured default,
+0 disables the cap, and a positive integer overrides the default. Negative or
+non-integer input fails before launch.
+
+The root receives a stable explanation of these controls so it can answer
+budget questions accurately. It deliberately receives no mutation tool for its
+own enclosing budget; self-modifying governance would make the cap ineffective.

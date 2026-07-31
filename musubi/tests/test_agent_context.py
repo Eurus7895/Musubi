@@ -286,6 +286,17 @@ def test_stable_root_prompt_declares_goal_state_controller_contract() -> None:
     assert "stop when the goal is satisfied" in prompt
 
 
+def test_stable_root_prompt_explains_operator_owned_token_budget() -> None:
+    prompt = build_system_prompt().lower()
+
+    assert "no tool to change the token budget" in prompt
+    assert "`token budget`" in prompt
+    assert "`--max-tokens n`" in prompt
+    assert "`musubi_agent_max_tokens`" in prompt
+    assert "0 disables the cap" in prompt
+    assert "worker `max_turns`" in prompt
+
+
 @pytest.mark.parametrize("worker_file", [
     _CODER_WORKER_FILE,
     _PLANNER_WORKER_FILE,

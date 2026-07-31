@@ -1195,6 +1195,7 @@ fn start_chat_agent(
     task_text: String,
     chat_id: &str,
     pipeline_name: Option<&str>,
+    max_tokens: Option<i64>,
     resume: Option<&musubi_data::PipelineResumeDecision>,
 ) -> Result<(), String> {
     // Fail closed: the operator picked a boundary and it is not in effect.
@@ -1344,6 +1345,7 @@ fn start_chat_agent(
             chat_id: Some(chat_id),
             pipeline_name,
             request_id: Some(&request_id),
+            max_tokens,
         },
     )?;
     if let Some(checkpoint) = resume {
@@ -1987,17 +1989,32 @@ fn dispatch_orchestrator_send<Prepare, Launch>(
     requested_chat_id: &str,
     mode: &str,
     pipeline_name: &str,
+    max_tokens: Option<i64>,
     catalog: &[musubi_data::PipelineCatalogEntry],
     prepare: Prepare,
     launch: Launch,
 ) -> Result<(), String>
 where
     Prepare: FnOnce(&str, &str, Option<&str>) -> Result<String, String>,
-    Launch: FnOnce(&str, &str, Option<&str>) -> Result<(), String>,
+    Launch: FnOnce(&str, &str, Option<&str>, Option<i64>) -> Result<(), String>,
 {
     let (task, pipeline_name) = resolve_orchestrator_launch(text, mode, pipeline_name, catalog)?;
     let chat_id = prepare(&task, requested_chat_id, pipeline_name.as_deref())?;
-    launch(&task, &chat_id, pipeline_name.as_deref())
+    launch(&task, &chat_id, pipeline_name.as_deref(), max_tokens)
+}
+
+fn parse_token_budget(raw: &str) -> Result<Option<i64>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let budget = value
+        .parse::<i64>()
+        .map_err(|_| "Token budget must be a whole number.".to_string())?;
+    if budget < 0 {
+        return Err("Token budget must be zero or a positive integer.".into());
+    }
+    Ok(Some(budget))
 }
 
 fn normalize_folder_alias(raw: &str) -> Result<String, String> {
@@ -2156,11 +2173,13 @@ fn action(
             let catalog = musubi_data::read_studio_pipeline_catalog(&state.project_root);
             let text = str_arg(0);
             let requested_chat_id = str_arg(1);
+            let max_tokens = parse_token_budget(&str_arg(4))?;
             dispatch_orchestrator_send(
                 &text,
                 &requested_chat_id,
                 &str_arg(2),
                 &str_arg(3),
+                max_tokens,
                 &catalog,
                 |task, requested_chat_id, pipeline_name| {
                     let mut rt = state.chat_agent.lock().map_err(|e| e.to_string())?;
@@ -2181,13 +2200,14 @@ fn action(
                         epoch_secs(),
                     )
                 },
-                |task, chat_id, pipeline_name| {
+                |task, chat_id, pipeline_name, max_tokens| {
                     if let Err(e) = start_chat_agent(
                         app,
                         state.inner(),
                         task.to_string(),
                         chat_id,
                         pipeline_name,
+                        max_tokens,
                         None,
                     ) {
                         if let Ok(mut rt) = state.chat_agent.lock() {
@@ -2300,6 +2320,7 @@ fn action(
                     decision.task.clone(),
                     &decision.chat_id,
                     Some(&decision.pipeline_name),
+                    None,
                     Some(&decision),
                 ) {
                     if let Ok(mut rt) = state.chat_agent.lock() {
@@ -3806,6 +3827,7 @@ mod tests {
             "gui-orchestrator-project-exact",
             "direct",
             "ignored",
+            Some(240_000),
             &[],
             |task, requested, pipeline| {
                 events.borrow_mut().push(format!(
@@ -3814,10 +3836,11 @@ mod tests {
                 ));
                 Ok(requested.to_string())
             },
-            |task, chat_id, pipeline| {
+            |task, chat_id, pipeline, max_tokens| {
                 events.borrow_mut().push(format!(
-                    "launch:{task}:{chat_id}:{}",
-                    pipeline.unwrap_or("none")
+                    "launch:{task}:{chat_id}:{}:{}",
+                    pipeline.unwrap_or("none"),
+                    max_tokens.unwrap_or_default(),
                 ));
                 Ok(())
             },
@@ -3828,7 +3851,7 @@ mod tests {
             events.into_inner(),
             vec![
                 "prepare:ship:gui-orchestrator-project-exact:none",
-                "launch:ship:gui-orchestrator-project-exact:none",
+                "launch:ship:gui-orchestrator-project-exact:none:240000",
             ]
         );
     }
@@ -3843,6 +3866,7 @@ mod tests {
             "gui-orchestrator-project-exact",
             "pipeline",
             "feature-dev",
+            None,
             &catalog,
             |task, requested, pipeline| {
                 events.borrow_mut().push(format!(
@@ -3851,10 +3875,11 @@ mod tests {
                 ));
                 Ok(requested.to_string())
             },
-            |task, chat_id, pipeline| {
+            |task, chat_id, pipeline, max_tokens| {
                 events.borrow_mut().push(format!(
-                    "launch:{task}:{chat_id}:{}",
-                    pipeline.unwrap_or("none")
+                    "launch:{task}:{chat_id}:{}:{}",
+                    pipeline.unwrap_or("none"),
+                    max_tokens.map_or_else(|| "default".into(), |value| value.to_string()),
                 ));
                 Ok(())
             },
@@ -3865,9 +3890,18 @@ mod tests {
             events.into_inner(),
             vec![
                 "prepare:ship:gui-orchestrator-project-exact:feature-dev",
-                "launch:ship:gui-orchestrator-project-exact:feature-dev",
+                "launch:ship:gui-orchestrator-project-exact:feature-dev:default",
             ]
         );
+    }
+
+    #[test]
+    fn token_budget_parser_preserves_default_and_accepts_operator_caps() {
+        assert_eq!(parse_token_budget("").unwrap(), None);
+        assert_eq!(parse_token_budget(" 240000 ").unwrap(), Some(240_000));
+        assert_eq!(parse_token_budget("0").unwrap(), Some(0));
+        assert!(parse_token_budget("-1").is_err());
+        assert!(parse_token_budget("many").is_err());
     }
 
     #[test]

@@ -4,9 +4,9 @@ import NewSessionButton from '../components/NewSessionButton.jsx'
 import TokenEconomics from '../components/TokenEconomics.jsx'
 import { tokenShareOf } from './requestMetrics.js'
 
-const REQUEST_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
+const TURN_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
 const AGENT_LOG_FILTERS = ['All', 'Model', 'Tools', 'Skills', 'Policy', 'stdout', 'stderr']
-// How many log lines the running request shows without a click. Three is what
+// How many log lines the running turn shows without a click. Three is what
 // fits above the fold beside the banner; more and the timeline stops being one.
 const LIVE_LOG_LINES = 3
 
@@ -51,8 +51,8 @@ export default function Orchestrator({ vals }) {
   const [logFilter, setLogFilter] = useState('all')
   const [logQuery, setLogQuery] = useState('')
   // Timeline is the structure; Log is every line this session emitted, across
-  // all its requests. Without it the only way to read a log was to drill into
-  // one request, which cannot show a run that spans several.
+  // all its turns. Without it the only way to read a log was to drill into
+  // one turn, which cannot show a session that spans several.
   const [surfaceTab, setSurfaceTab] = useState('timeline')
   const nodes = vals.runtimeGraph?.nodes || []
 
@@ -67,7 +67,7 @@ export default function Orchestrator({ vals }) {
     const needle = logQuery.trim().toLowerCase()
     return (vals.runtimeLogs || []).filter((row) => {
       const sameScope = !selectedNode
-        || (selectedNode.kind === 'request'
+        || (selectedNode.kind === 'turn'
           ? row.requestId === selectedNode.requestId
           : (row.agentHandle || row.workerId) === selectedNode.id)
       const sameCategory = logFilter === 'all'
@@ -87,7 +87,7 @@ export default function Orchestrator({ vals }) {
     setDetailTab('overview')
     setLogFilter('all')
     setLogQuery('')
-    if (node.kind === 'request' || node.id === 'root') vals.clearNodeSelect?.()
+    if (node.kind === 'turn' || node.id === 'root') vals.clearNodeSelect?.()
     else vals.onSelectRuntimeNode?.(node.id)
   }
 
@@ -103,11 +103,11 @@ export default function Orchestrator({ vals }) {
     }
   }
   const showingLog = surfaceTab === 'log' && !selectedNode
-  // R-numbers are positional, matching the labels the timeline renders.
-  const requestLabels = useMemo(() => new Map(
-    (vals.runtimeGraph?.requests || []).map((request, index) => [
-      request.requestId,
-      `R${String(index + 1).padStart(2, '0')}`,
+  // T-numbers are positional, matching the labels the timeline renders.
+  const turnLabels = useMemo(() => new Map(
+    (vals.runtimeGraph?.turns || []).map((turn, index) => [
+      turn.requestId,
+      `T${String(index + 1).padStart(2, '0')}`,
     ]),
   ), [vals.runtimeGraph])
 
@@ -180,15 +180,15 @@ export default function Orchestrator({ vals }) {
               />
             : showingLog
               ? <RuntimeLogs
-                  node={{ kind: 'request' }}
+                  node={{ kind: 'turn' }}
                   rows={matchingLogs}
                   filter={logFilter}
                   onFilter={setLogFilter}
                   query={logQuery}
                   onQuery={setLogQuery}
-                  requestLabels={requestLabels}
+                  turnLabels={turnLabels}
                 />
-              : <RequestTimeline
+              : <TurnTimeline
                   graph={vals.runtimeGraph}
                   logs={vals.runtimeLogs}
                   selectedId={selectedNodeId}
@@ -453,19 +453,19 @@ function SessionCard({ run }) {
   )
 }
 
-// A finished request is one line. The running one is expanded in place with
+// A finished turn is one line. The running one is expanded in place with
 // its last log lines, so "what is it doing" needs neither a click nor a
 // context switch away from the timeline.
-function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
-  const requests = graph.requests || []
-  if (!requests.length) {
+function TurnTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
+  const turns = graph.turns || []
+  if (!turns.length) {
     const nodes = graph.nodes || []
     if (!nodes.length) return <div className="runtime-empty">No audited runtime nodes for this session.</div>
     return (
       <div className="runtime-graph">
         <div className="request-timeline">
           {nodes.map((node) => (
-            <RequestRow key={node.id} node={node} selectedId={selectedId} onSelect={onSelectNode} />
+            <TurnRow key={node.id} node={node} selectedId={selectedId} onSelect={onSelectNode} />
           ))}
         </div>
       </div>
@@ -474,28 +474,28 @@ function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
   return (
     <div className="runtime-graph">
       <div className="request-timeline">
-        {[...requests].reverse().map((request, index) => (
-          <div key={request.id}>
-            <RequestRow
-              node={request}
-              order={requests.length - index}
+        {[...turns].reverse().map((turn, index) => (
+          <div key={turn.id}>
+            <TurnRow
+              node={turn}
+              order={turns.length - index}
               selectedId={selectedId}
               onSelect={onSelectNode}
             />
-            {request.status === 'running' && <LiveLog requestId={request.requestId} logs={logs} />}
-            {!!request.agents?.length && (
+            {turn.status === 'running' && <LiveLog requestId={turn.requestId} logs={logs} />}
+            {!!turn.agents?.length && (
               <div className="request-agents">
-                {request.agents.map((agent) => (
-                  <RequestRow
+                {turn.agents.map((agent) => (
+                  <TurnRow
                     key={agent.id}
                     node={agent}
                     selectedId={selectedId}
                     onSelect={onSelectNode}
-                    // Relative to the heaviest worker in this request, not to
+                    // Relative to the heaviest worker in this turn, not to
                     // the session: the comparison an operator makes is "which
-                    // of these workers cost the turn", and a session-wide
+                    // of these workers cost this turn", and a session-wide
                     // denominator flattens every row of a cheap request.
-                    tokenShare={tokenShareOf(agent, request.agents)}
+                    tokenShare={tokenShareOf(agent, turn.agents)}
                   />
                 ))}
               </div>
@@ -503,7 +503,7 @@ function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
           </div>
         ))}
         <p className="timeline-hint">
-          Finished requests collapse to one line. Open any row for its full log — the timeline stays.
+          Finished turns collapse to one line. Open any row for its full log — the timeline stays.
         </p>
       </div>
     </div>
@@ -513,14 +513,14 @@ function RequestTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
 // Every worker row carried the same three grey mono counts, so "6/6 turns" and
 // "2/6 turns" — a worker that spent its whole budget and one a third of the way
 // in — were the same shape. Turns now draw their ratio as a rule under the
-// number, the heaviest worker in a request gets typographic weight instead of a
+// number, the heaviest worker in a turn gets typographic weight instead of a
 // fourth number, and the role hues already in :root colour the rail: the log
 // lines have used them since they shipped, the graph never did.
-function RequestRow({ node, order, selectedId, onSelect, tokenShare = 0 }) {
+function TurnRow({ node, order, selectedId, onSelect, tokenShare = 0 }) {
   const live = node.status === 'running'
   const isAgent = node.kind === 'agent'
   const label = order
-    ? `R${String(order).padStart(2, '0')} · ${node.title || node.label}`
+    ? `T${String(order).padStart(2, '0')} · ${node.title || node.label}`
     : (node.title || node.label)
   const roleClass = isAgent ? ` is-agent role-${node.role || 'worker'}` : ''
   return (
@@ -568,20 +568,20 @@ function LiveLog({ requestId, logs }) {
           <span className={`role-chip role-${row.role}`}>{String(row.role || row.source || 'root').toUpperCase()}</span>
           <code>{row.message}</code>
         </div>
-      )) : <div className="request-live-log__empty">No log lines yet for this request.</div>}
+      )) : <div className="request-live-log__empty">No log lines yet for this turn.</div>}
     </div>
   )
 }
 
 function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuery, onBack }) {
-  const isRequest = node.kind === 'request'
-  const logLabel = isRequest ? 'Request log' : 'Agent log'
+  const isTurn = node.kind === 'turn'
+  const logLabel = isTurn ? 'Turn log' : 'Agent log'
   return (
     <div className="runtime-detail">
       <div className="runtime-detail__header">
         <button className="runtime-detail__back" onClick={onBack}>← Back to graph</button>
         <div className="runtime-detail__title">
-          <div><span className="workspace-kicker">{isRequest ? 'Whole request' : 'This agent only'}</span><h1>{node.title || node.label}</h1></div>
+          <div><span className="workspace-kicker">{isTurn ? 'Whole turn' : 'This agent only'}</span><h1>{node.title || node.label}</h1></div>
           <code>{node.requestId || node.id}</code>
         </div>
         <div className="runtime-detail__tabs" role="tablist">
@@ -590,13 +590,13 @@ function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuer
         </div>
       </div>
       {tab === 'overview'
-        ? <RuntimeOverview node={node} isRequest={isRequest} onOpenLog={() => onTab('log')} />
+        ? <RuntimeOverview node={node} isTurn={isTurn} onOpenLog={() => onTab('log')} />
         : <RuntimeLogs node={node} rows={rows} filter={filter} onFilter={onFilter} query={query} onQuery={onQuery} />}
     </div>
   )
 }
 
-function RuntimeOverview({ node, isRequest, onOpenLog }) {
+function RuntimeOverview({ node, isTurn, onOpenLog }) {
   const metrics = [
     { label: 'Role', value: node.role, absent: false },
     { label: 'Turns', value: node.turns + (node.maxTurns ? ` / ${node.maxTurns}` : ''), absent: false },
@@ -609,20 +609,20 @@ function RuntimeOverview({ node, isRequest, onOpenLog }) {
       <div className="runtime-overview__hero">
         <span className={`runtime-node__status status-${node.status}`}>● {node.statusLabel}</span>
         <h2>{node.brief || node.title || node.label}</h2>
-        <p>{isRequest ? 'Overview covers the root and every agent summoned by this request.' : 'Overview and metrics for this exact agent handle.'}</p>
+        <p>{isTurn ? 'Overview covers the root and every agent summoned during this turn.' : 'Overview and metrics for this exact agent handle.'}</p>
       </div>
       <div className="runtime-overview__metrics">
         {metrics.map(({ label, value, absent }) => (
           <div key={label}><span>{label}</span><strong className={absent ? 'is-absent' : ''}>{value}</strong></div>
         ))}
       </div>
-      <button className="ui-button runtime-overview__log" onClick={onOpenLog}>Open {isRequest ? 'Request log' : 'Agent log'} →</button>
+      <button className="ui-button runtime-overview__log" onClick={onOpenLog}>Open {isTurn ? 'Turn log' : 'Agent log'} →</button>
     </div>
   )
 }
 
-function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabels = null }) {
-  const filters = node.kind === 'request' ? REQUEST_LOG_FILTERS : AGENT_LOG_FILTERS
+function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, turnLabels = null }) {
+  const filters = node.kind === 'turn' ? TURN_LOG_FILTERS : AGENT_LOG_FILTERS
   return (
     <div className="runtime-logs">
       <div className="runtime-logs__controls">
@@ -632,9 +632,9 @@ function RuntimeLogs({ node, rows, filter, onFilter, query, onQuery, requestLabe
       <div className="runtime-log-list">
         {rows.length ? rows.map((row, index) => (
           <article key={row.id} className={`runtime-log-line category-${row.category}`}>
-            {/* Session scope spans requests, so a row ordinal says nothing —
-                carry which request emitted the line instead. */}
-            <b>{requestLabels ? (requestLabels.get(row.requestId) || '··') : String(index + 1).padStart(2, '0')}</b>
+            {/* Session scope spans turns, so a row ordinal says nothing —
+                carry which turn emitted the line instead. */}
+            <b>{turnLabels ? (turnLabels.get(row.requestId) || '··') : String(index + 1).padStart(2, '0')}</b>
             <time>{row.ts || '—'}</time>
             <span className={`role-${row.role}`}>{String(row.role || row.source || 'root').toUpperCase()}</span>
             <code>{row.message || row.detail || ''}</code>
@@ -709,6 +709,20 @@ function RunConfiguration({ vals }) {
             </select>
           )
           : <span className="composer__hint">The driver chooses governed workers as evidence requires.</span>}
+        <label className="token-budget-control">
+          <span>Token budget</span>
+          <input
+            type="number"
+            min="0"
+            step="1000"
+            value={vals.tokenBudget || ''}
+            placeholder="default"
+            aria-label="Token budget for the next turn"
+            title="Blank uses the configured default; 0 disables the cap."
+            disabled={vals.inputDisabled}
+            onChange={(event) => vals.onTokenBudget?.(event.target.value)}
+          />
+        </label>
       </div>
     </div>
   )

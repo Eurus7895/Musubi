@@ -253,7 +253,7 @@ test('immediate send after New ignores stale viewed session until new-session ac
   assert.equal(source.state.viewedOrchestratorChatId, '')
   assert.deepEqual(calls, [
     { kind: 'new_session', args: ['orchestrator'] },
-    { kind: 'send_chat', args: ['start fresh', '', 'direct', ''] },
+    { kind: 'send_chat', args: ['start fresh', '', 'direct', '', ''] },
   ])
 })
 
@@ -271,11 +271,11 @@ test('immediate send after selecting history uses local selection before backend
 
   assert.deepEqual(calls, [
     { kind: 'select_session', args: ['gui-orchestrator-project-history'] },
-    { kind: 'send_chat', args: ['continue history', 'gui-orchestrator-project-history', 'direct', ''] },
+    { kind: 'send_chat', args: ['continue history', 'gui-orchestrator-project-history', 'direct', '', ''] },
   ])
 })
 
-test('direct sendChat forwards exact four-argument contract and viewed chat id', () => {
+test('direct sendChat forwards turn configuration and viewed chat id', () => {
   const { source, calls } = sourceWithActionSpy()
   source._setLocal({
     draft: '  continue this session  ',
@@ -287,10 +287,26 @@ test('direct sendChat forwards exact four-argument contract and viewed chat id',
 
   assert.deepEqual(calls, [{
     kind: 'send_chat',
-    args: ['continue this session', 'gui-orchestrator-project-old', 'direct', ''],
+    args: ['continue this session', 'gui-orchestrator-project-old', 'direct', '', ''],
   }])
   assert.equal(source.state.selectedSession, null)
   assert.equal(source.state.draft, '')
+})
+
+test('sendChat forwards the operator token budget for the next turn', () => {
+  const { source, calls } = sourceWithActionSpy()
+  source._setLocal({
+    draft: 'continue',
+    selectedSession: 'gui-orchestrator-project-old',
+    tokenBudget: '240000',
+  })
+
+  source.actions.sendChat()
+
+  assert.deepEqual(calls, [{
+    kind: 'send_chat',
+    args: ['continue', 'gui-orchestrator-project-old', 'direct', '', '240000'],
+  }])
 })
 
 test('pipeline send requires a registered runnable recipe', () => {
@@ -311,7 +327,7 @@ test('pipeline send requires a registered runnable recipe', () => {
   source.actions.sendChat()
   assert.deepEqual(calls, [{
     kind: 'send_chat',
-    args: ['ship it', 'gui-orchestrator-project-old', 'pipeline', 'feature-dev'],
+    args: ['ship it', 'gui-orchestrator-project-old', 'pipeline', 'feature-dev', ''],
   }])
 })
 
@@ -364,7 +380,7 @@ for (const order of [
 
     assert.deepEqual(calls, [{
       kind: 'send_chat',
-      args: [order, 'gui-orchestrator-project-old', 'direct', ''],
+      args: [order, 'gui-orchestrator-project-old', 'direct', '', ''],
     }])
     assert.equal(source.state.runMode, 'direct')
     assert.equal(source.state.selectedPipeline, '')
@@ -713,7 +729,7 @@ test('approving a destruction sends the token as an ordinary user message', () =
   // channel to the gate; consent is a user turn or it is nothing.
   assert.deepEqual(calls, [{
     kind: 'send_chat',
-    args: ['allow-a3f9c1', 'gui-orchestrator-project', 'direct', ''],
+    args: ['allow-a3f9c1', 'gui-orchestrator-project', 'direct', '', ''],
   }])
 })
 

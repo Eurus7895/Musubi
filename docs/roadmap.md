@@ -360,8 +360,8 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   any evidence, and the answer was an 11 px pill between "feature-dev mode" and
   "37 log rows". A Now banner naming the actor, the act, the elapsed time, and
   a labelled **Stop run** is now the largest element on screen; finished
-  requests collapse to one line with absent values rendered as `—` rather than
-  typeset zeros, and the running request expands in place with its last log
+  turns collapse to one line with absent values rendered as `—` rather than
+  typeset zeros, and the running turn expands in place with its last log
   lines. Orange is reclaimed for live attention only (selection became a
   neutral raise plus a blue bar, amber stays escalated), the session rail groups
   by Active / Needs you / Earlier with clock times, and the trust strip's four
