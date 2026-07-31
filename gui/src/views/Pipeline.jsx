@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { readStageDrop, readSpawnRole, STAGE_MIME, INDEX_MIME, SPAWN_MIME } from './stageDrag.js'
 
 const STEPS = ['basics', 'stages', 'handoffs', 'validate']
 const STEP_LABELS = { basics: 'Basics', stages: 'Stages', handoffs: 'Handoffs', validate: 'Validate' }
@@ -165,8 +166,16 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
   const selectedPreset = (builder.library?.presets || []).find((item) => item.id === selected?.preset)
   const resolvedAgentName = selected?.agent || selectedPreset?.agent
   const contract = (builder.library?.agents || []).find((item) => item.name === resolvedAgentName)
-  const readPayload = (event) => {
-    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-stage')) } catch { return null }
+  // A drop on a card is either a reorder or an insert at that position; a drop
+  // on lane background appends. The card claims the event only once it knows
+  // which gesture it is, so anything it does not handle still reaches the lane.
+  const onCardDrop = (event, index) => {
+    const drop = readStageDrop(event.dataTransfer)
+    if (!drop) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (drop.kind === 'move') onMoveStage(drop.from, index)
+    else onAddStage(drop.payload, index)
   }
   return (
     <div className="stages-workspace" data-step="stages">
@@ -176,16 +185,16 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
         <LibraryGroup title="Presets" items={library.presets} kind="preset" onAddStage={onAddStage} />
         <LibraryGroup title="Agents" items={library.agents} kind="agent" onAddStage={onAddStage} />
       </aside>
-      <section className="stage-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const payload = readPayload(event); if (payload) onAddStage(payload) }}>
+      <section className="stage-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const drop = readStageDrop(event.dataTransfer); if (drop?.kind === 'insert') onAddStage(drop.payload) }}>
         <PanelHeading title="Ordered primary stages" copy="Primary stages execute sequentially in this order." />
         {!draft.stages?.length && <div className="empty-drop">Drop a runnable preset or agent here</div>}
         {(draft.stages || []).map((stage, index) => (
           <article
             key={`${stage.preset || stage.agent}-${index}`}
             className={selectedIndex === index ? 'stage-card is-selected' : 'stage-card'}
-            draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-index', String(index))}
+            draggable onDragStart={(event) => event.dataTransfer.setData(INDEX_MIME, String(index))}
             onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => { event.preventDefault(); event.stopPropagation(); const raw = event.dataTransfer.getData('application/x-musubi-index'); if (!raw) return; const from = Number(raw); if (Number.isInteger(from)) onMoveStage(from, index) }}
+            onDrop={(event) => onCardDrop(event, index)}
             onClick={() => onSelectStage(index)}
           >
             <span className="stage-card__handle">⠿</span><span className="stage-card__index">{String(index + 1).padStart(2, '0')}</span>
@@ -222,25 +231,22 @@ function LibraryGroup({ title, items, kind, onAddStage }) {
     const payload = kind === 'preset' ? { kind, id: item.id } : { kind, agent: item.name }
     return <button
       key={item.id || item.name} className={blocked ? 'library-item is-blocked' : 'library-item'} disabled={blocked}
-      draggable={!blocked} onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-stage', JSON.stringify(payload))}
+      draggable={!blocked} onDragStart={(event) => event.dataTransfer.setData(STAGE_MIME, JSON.stringify(payload))}
       onClick={() => !blocked && onAddStage(payload)} title={item.blockedReason || ''}
     ><span><strong>{item.id || item.displayLabel || item.name}</strong><small>{item.agent || item.name}</small></span><em>{blocked ? 'blocked' : '+'}</em></button>
   })}</div>
 }
 
 function Handoffs({ draft, agents, onAddSpawn, onRemoveSpawn }) {
-  const readRole = (event) => {
-    try { return JSON.parse(event.dataTransfer.getData('application/x-musubi-spawn')).role } catch { return '' }
-  }
   return (
     <div className="builder-panel" data-step="handoffs">
       <PanelHeading title="Handoffs and nested workers" copy="The primary backbone is sequential. Nested roles are allowlists, not guaranteed work." />
       <div className="handoff-layout">
-        <aside className="spawn-library"><h3>Spawnable agents</h3>{agents.map((agent) => <button key={agent.name} draggable onDragStart={(event) => event.dataTransfer.setData('application/x-musubi-spawn', JSON.stringify({ role: agent.name }))}>{agent.displayLabel || agent.name}<span>drag</span></button>)}</aside>
+        <aside className="spawn-library"><h3>Spawnable agents</h3>{agents.map((agent) => <button key={agent.name} draggable onDragStart={(event) => event.dataTransfer.setData(SPAWN_MIME, JSON.stringify({ role: agent.name }))}>{agent.displayLabel || agent.name}<span>drag</span></button>)}</aside>
         <div className="handoff-chain">
           {(draft.stages || []).map((stage, index) => <div className="handoff-stage" key={`${stage.preset || stage.agent}-${index}`}>
             <div className="handoff-stage__node"><span>{String(index + 1).padStart(2, '0')}</span><strong>{stage.preset || stage.agent}</strong>{index < draft.stages.length - 1 && <em>sequential handoff ↓</em>}</div>
-            <div className="spawn-cluster" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const role = readRole(event); if (role) onAddSpawn(index, role) }}>
+            <div className="spawn-cluster" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const role = readSpawnRole(event.dataTransfer); if (role) onAddSpawn(index, role) }}>
               <label>May spawn</label>
               {(stage.spawns || []).map((role) => <button key={role} onClick={() => onRemoveSpawn(index, role)}>{role} ×</button>)}
               {!stage.spawns?.length && <span>Drop an agent role</span>}

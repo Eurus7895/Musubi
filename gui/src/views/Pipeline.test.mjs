@@ -39,7 +39,11 @@ test('Stages does not duplicate the Validate topology preview', () => {
 test('Pipeline Studio preserves runtime correction keys and guards drag reorder payloads', () => {
   assert.match(source, /correction\.max_retries/)
   assert.doesNotMatch(source, /correction\.maxAttempts/)
-  assert.match(source, /if \(!raw\) return/)
+  // The payload guard used to be an inline `if (!raw) return` this asserted by
+  // spelling. A string match cannot tell a guard that works from one that
+  // silently drops a gesture, which is what it was doing — see stageDrag.test.
+  assert.match(source, /readStageDrop\(event\.dataTransfer\)/)
+  assert.doesNotMatch(source, /getData\('application\/x-musubi/)
 })
 
 test('Pipeline Studio can open, clone and remove a saved recipe', () => {
