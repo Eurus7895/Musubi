@@ -4769,13 +4769,7 @@ mod tests {
 
         assert_eq!(
             spec.args,
-            vec![
-                "task",
-                "--max-tokens",
-                "240000",
-                "--tool-surface",
-                "agent"
-            ]
+            vec!["task", "--max-tokens", "240000", "--tool-surface", "agent"]
         );
     }
 

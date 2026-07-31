@@ -289,7 +289,7 @@ def test_stable_root_prompt_declares_goal_state_controller_contract() -> None:
 def test_stable_root_prompt_explains_operator_owned_token_budget() -> None:
     prompt = build_system_prompt().lower()
 
-    assert "no tool to change the token budget" in prompt
+    assert "cannot change your enclosing budget" in prompt
     assert "`token budget`" in prompt
     assert "`--max-tokens n`" in prompt
     assert "`musubi_agent_max_tokens`" in prompt

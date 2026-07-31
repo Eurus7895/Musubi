@@ -79,14 +79,11 @@ _ACCEPTANCE_NOTE = (
 )
 
 _OPERATOR_CONTROL_NOTE = (
-    "Runtime limits are operator-owned. You have no tool to change the token "
-    "budget of the enclosing turn. If asked how to change it, answer with the "
-    "actual operator controls: Console users set `Token budget` beside the "
-    "execution mode before sending the next turn; CLI users pass "
-    "`--max-tokens N`; `MUSUBI_AGENT_MAX_TOKENS` is the fallback. A blank "
-    "Console value uses the configured default and 0 disables the cap. Do not "
-    "confuse this turn budget with worker `max_turns`, timeouts, or a model's "
-    "per-response output-token ceiling."
+    "Token budgets are operator-owned; you cannot change your enclosing "
+    "budget. If asked: Console `Token budget` sets the next turn; CLI "
+    "`--max-tokens N`; fallback `MUSUBI_AGENT_MAX_TOKENS`; blank uses the "
+    "default; 0 disables the cap. Do not confuse it with worker `max_turns`, "
+    "timeouts, or per-response output limits."
 )
 
 _STABLE_SYSTEM_PROMPT = "\n\n".join(
