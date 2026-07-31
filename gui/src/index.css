@@ -95,7 +95,12 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .pipeline-studio__header p, .panel-heading p { margin: 5px 0 0; color: #788493; font-size: 12px; }
 .pipeline-studio__name, .pipeline-studio__dirty { padding: 3px 8px; border-radius: 6px; font: 10px/1.3 'IBM Plex Mono', monospace; border: 1px solid rgba(255,155,61,.3); color: #ffb66f; background: rgba(255,155,61,.08); }
 .pipeline-studio__dirty { color: #e3b341; border-color: rgba(227,179,65,.3); background: rgba(227,179,65,.08); }
-.pipeline-studio__actions, .pipeline-confirm__actions, .validate-toolbar > div { display: flex; gap: 8px; }
+.pipeline-studio__actions, .pipeline-confirm__actions, .validate-toolbar > div { display: flex; align-items: center; gap: 8px; }
+.pipeline-open { display: flex; align-items: center; gap: 6px; }
+.pipeline-open > span { color: var(--text-3); font: var(--fs-1) var(--mono); text-transform: uppercase; letter-spacing: .09em; }
+.pipeline-open select { padding: 8px var(--s-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #d5dbe4; background: #171f2b; font: 600 var(--fs-2)/1 var(--sans); cursor: pointer; }
+.pipeline-open select:hover:enabled { border-color: var(--line-hover); }
+.pipeline-open select:disabled { color: var(--text-3); cursor: not-allowed; }
 /* The one reusable button in the app. Promoted out of Pipeline Studio so
    every view can use it; sans, because a button label is language. */
 .ui-button { padding: 9px var(--s-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: #d5dbe4; background: #171f2b; font: 600 var(--fs-2)/1 var(--sans); cursor: pointer; white-space: nowrap; }

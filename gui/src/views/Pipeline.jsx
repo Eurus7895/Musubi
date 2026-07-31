@@ -36,6 +36,21 @@ export default function Pipeline({ vals }) {
           <p>Build a governed sequential recipe. Execution happens in Orchestrator.</p>
         </div>
         <div className="pipeline-studio__actions">
+          <OpenRecipe saved={builder.saved || []} loading={builder.loading} onLoad={actions.onLoad} />
+          <button className="ui-button" onClick={actions.onClone} disabled={builder.loading || !draft.name}>Clone</button>
+          {/* Repository-owned recipes carry a musubi-tier tag and the backend
+              refuses to delete them; say so on the button rather than after
+              the click. Confirm first either way — this removes a directory. */}
+          <button
+            className="ui-button ui-button--danger"
+            onClick={() => { if (confirmRemoval(builder.savedRecipe?.name)) actions.onDelete(builder.savedRecipe.name) }}
+            disabled={builder.loading || !builder.deletable}
+            title={builder.savedRecipe?.name && !builder.deletable
+              ? 'Repository-owned recipe — delete it in git, not here'
+              : 'Remove this pipeline from .github/pipelines'}
+          >
+            Remove
+          </button>
           <button className="ui-button" onClick={actions.onNew}>＋ New Pipeline</button>
           <button className="ui-button ui-button--primary" onClick={actions.onSave} disabled={builder.loading || hasErrors}>Save Pipeline</button>
         </div>
@@ -110,6 +125,37 @@ function Basics({ draft, onUpdateRecipe }) {
         </Field>
       </div>
     </div>
+  )
+}
+
+function confirmRemoval(name) {
+  return !!name && window.confirm(
+    `Remove pipeline "${name}"? Its directory under .github/pipelines is deleted. Audit history is unaffected.`,
+  )
+}
+
+// `loadPipelineRecipe` shipped with the first version of the Studio and nothing
+// ever rendered it, so a recipe could be saved but never reopened — which is
+// what made the shipped presets look read-only. A select is enough: the list is
+// short, and switching already routes through the unsaved-changes guard.
+function OpenRecipe({ saved, loading, onLoad }) {
+  const open = saved.find((entry) => entry.open)
+  return (
+    <label className="pipeline-open">
+      <span>Open</span>
+      <select
+        value={open?.name || ''}
+        disabled={loading || !saved.length}
+        onChange={(event) => { if (event.target.value) onLoad(event.target.value) }}
+      >
+        <option value="">{saved.length ? 'Select a recipe…' : 'No saved recipes'}</option>
+        {saved.map((entry) => (
+          <option key={entry.name} value={entry.name}>
+            {entry.name}{entry.protected ? ' · repository' : ''}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
 

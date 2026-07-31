@@ -41,3 +41,24 @@ test('Pipeline Studio preserves runtime correction keys and guards drag reorder 
   assert.doesNotMatch(source, /correction\.maxAttempts/)
   assert.match(source, /if \(!raw\) return/)
 })
+
+test('Pipeline Studio can open, clone and remove a saved recipe', () => {
+  // `onLoad` existed in the view model from the start with nothing rendering
+  // it, so a saved recipe could never be reopened. All four verbs are present.
+  for (const action of ['onLoad', 'onClone', 'onDelete', 'onNew']) {
+    assert.match(source, new RegExp(action))
+  }
+  assert.match(source, /Clone/)
+  assert.match(source, /Remove/)
+  // Removing deletes a directory, so it confirms first — the same pattern the
+  // Orchestrator's Clean all uses.
+  assert.match(source, /window\.confirm/)
+  assert.match(source, /builder\.deletable/)
+})
+
+test('Pipeline Studio never offers to delete a repository-owned recipe', () => {
+  // The backend refuses a musubi-tier-tagged recipe; the button says so before
+  // the click rather than surfacing an error after it.
+  assert.match(source, /Repository-owned recipe/)
+  assert.match(source, /disabled=\{builder\.loading \|\| !builder\.deletable\}/)
+})

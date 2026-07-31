@@ -210,6 +210,25 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 
 ## Completed Tracks
 
+- Pipeline Studio can reopen a recipe, and updating one no longer destroys it —
+  `load_pipeline_recipe` had existed since the Studio shipped and reached
+  `actions.onLoad`, but nothing ever rendered a control that called it, so the
+  three recipes in `.github/pipelines/` could not be opened and read as fixed
+  presets. Wiring Open alone would have been destructive: the Studio models six
+  keys and rendered from those alone, while `code-review/pipeline.yaml` carries
+  `level`, `max_credits: 20`, `warn_at`, and the `musubi-tier` header block that
+  **Hard Invariant #9** requires — Open-then-Save would have deleted all six
+  lines. Saving now carries across the leading comment block and every top-level
+  key the model does not own, so an update is lossless; a save under a new name
+  still starts clean, which is what makes Clone a new recipe rather than a copy
+  of the original's tag and credit budget. Because the renderer emits no
+  comments, a `musubi-tier` tag is an exact marker for "checked in and
+  hand-authored" — no git dependency, no schema change, no hard-coded name list
+  — so `delete_pipeline_recipe` refuses tagged recipes fail-closed and Remove is
+  disabled with a reason before the click. Clone is a local rename that writes
+  nothing until Save. Plan:
+  [`2026-07-31-pipeline-studio-recipe-management.md`](./superpowers/plans/2026-07-31-pipeline-studio-recipe-management.md)
+
 - Console panel toggles round-trip, and geometry is testable — hiding the
   sessions rail unmounted the header that carried the hide control, and the
   show control that replaced it rendered *after* the Now banner, so its
