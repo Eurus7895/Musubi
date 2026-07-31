@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from agent.manifest import Band, assess_manifest, parse_change_manifest
+from agent.manifest import (
+    Band,
+    assess_manifest,
+    parse_change_manifest,
+    parse_change_manifest_object,
+)
 
 ELEVEN_FILE_MANIFEST = (
     '<change_manifest>{"files_expected":11,"subsystems":'
@@ -11,6 +16,27 @@ ELEVEN_FILE_MANIFEST = (
     '"external_side_effects":false,"destructive":false,"blocking_decisions":[],'
     '"validation_commands":2}</change_manifest>'
 )
+
+
+def test_compact_object_defaults_nonessential_fields() -> None:
+    manifest = parse_change_manifest_object({
+        "files_expected": 2,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    assert manifest.files_expected == 2
+    assert manifest.public_contract is False
+    assert manifest.security_sensitive is False
+    assert manifest.blocking_decisions == ()
+    assert manifest.validation_commands == 0
+
+
+def test_compact_object_rejects_unknown_fields() -> None:
+    assert parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+        "harness_guess": "large",
+    }) is None
 
 
 def test_manifest_many_files_or_subsystems_is_large() -> None:

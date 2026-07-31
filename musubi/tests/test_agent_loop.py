@@ -129,7 +129,7 @@ def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
     assert state.root_tokens_out == 100
 
 
-def test_simple_root_cycle_sees_spawn_only_goal_surface() -> None:
+def test_root_first_cycle_sees_only_mode_declarations() -> None:
     from agent import run as run_mod
 
     state = GoalState.create(
@@ -147,6 +147,8 @@ def test_simple_root_cycle_sees_spawn_only_goal_surface() -> None:
         }
         for name in (
             "musubi_read_file",
+            "musubi_begin_direct",
+            "musubi_begin_plan",
             "musubi_spawn_subagent",
             "musubi_get_skill",
         )
@@ -170,7 +172,8 @@ def test_simple_root_cycle_sees_spawn_only_goal_surface() -> None:
     ))
 
     assert [tool["name"] for tool in router.calls[0]["tools"]] == [
-        "musubi_spawn_subagent",
+        "musubi_begin_direct",
+        "musubi_begin_plan",
     ]
 
 
@@ -282,11 +285,10 @@ def test_simple_root_two_call_projection_stays_below_3k_tokens() -> None:
         first_call["messages"], first_call["tools"],
     ) + run_mod._estimate_input_tokens(second_messages, first_call["tools"])
 
-    # Simple-scope root sees spawn + skill *selection* (option 3): it may push
-    # a skill to the worker it summons. Content-loading skill tools stay out.
+    # The first call exposes only the model-owned Direct/Planning decision.
     assert {tool["name"] for tool in first_call["tools"]} == {
-        "musubi_spawn_subagent",
-        "musubi_recommend_skills",
+        "musubi_begin_direct",
+        "musubi_begin_plan",
     }
     # Adding skill selection to a simple root costs ~1k tokens across the
     # two-call projection (the recommend tool def rides both calls). That is a
@@ -1581,12 +1583,12 @@ def test_system_prompt_has_root_sizing_ladder_and_write_strategy() -> None:
     from agent.context import build_system_prompt
 
     prompt = build_system_prompt().lower()
-    # R1 — the root sizes the request itself (scope is a hint) and bakes the
-    # large-artifact write strategy into the coder brief.
-    assert "hint" in prompt
-    assert "shallowest path" in prompt
-    assert "planner" in prompt and "designer" in prompt
-    assert "append_file" in prompt
+    # Root owns both the mode and the size decision; the harness does not infer
+    # either from the user's response text.
+    assert "musubi_begin_direct" in prompt
+    assert "musubi_begin_plan" in prompt
+    assert "small/medium/large" in prompt
+    assert "do not spawn a planner" in prompt
     assert "utf-8" in prompt
 
 
@@ -2318,12 +2320,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
 
     assert answer == "ok"
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    # Lean by default now. The skill-READING tools used to be handed over
-    # whenever a regex failed to call the request simple; a turn whose size
-    # nobody has established yet gets the smaller surface, and it widens only
-    # once `assess_manifest` classifies the planner's declaration as medium or
-    # large. The widening is bought with evidence rather than guessed.
-    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
+    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
     assert "musubi_write_file" not in names
     assert "musubi_edit_file" not in names
     assert "musubi_run_command" not in names
@@ -2347,18 +2344,11 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    # Lean by default now. The skill-READING tools used to be handed over
-    # whenever a regex failed to call the request simple; a turn whose size
-    # nobody has established yet gets the smaller surface, and it widens only
-    # once `assess_manifest` classifies the planner's declaration as medium or
-    # large. The widening is bought with evidence rather than guessed.
-    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
+    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
 
 
 def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
-    # A read-only "reach to a path" request is a simple scope: the root gets the
-    # spawn + skill-selection surface but NOT the skill-reading tools it would
-    # only need for its own broader work.
+    # Text semantics do not change the first-cycle tool surface.
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])
@@ -2369,7 +2359,7 @@ def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
     ))
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_recommend_skills", "musubi_spawn_subagent"}
+    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
     assert "musubi_get_skill" not in names
 
 
@@ -2541,9 +2531,9 @@ def test_the_root_prompt_carries_no_pre_model_route() -> None:
     # The verdicts a regex used to hand over are gone from the prompt.
     for gone in ("suggested_route=", "scope=simple_edit", "guidance="):
         assert gone not in system_text, gone
-    # What it does carry is checkable.
+    # What it does carry is checkable; free-text structured triage is gone.
     assert "[agent-evidence]" in system_text
-    assert "[agent-triage]" in system_text
+    assert "[agent-triage]" not in system_text
 
 
 def test_spawn_overflow_uses_flat_cap_regardless_of_scope() -> None:
@@ -2591,10 +2581,11 @@ def test_plan_first_directive_injected_into_system_prompt() -> None:
     from agent import run as run_mod
     from agent.context import build_system_prompt
 
-    assert "planner" in run_mod._PLAN_FIRST_DIRECTIVE.lower()
+    assert "musubi_begin_plan" in run_mod._PLAN_FIRST_DIRECTIVE
+    assert "musubi_commit_plan" in run_mod._PLAN_FIRST_DIRECTIVE
     combined = f"{build_system_prompt('scope')}\n\n{run_mod._PLAN_FIRST_DIRECTIVE}"
     assert "--plan" in combined
-    assert "plan-first" in combined.lower()
+    assert "planning mode" in combined.lower()
 
 
 def test_delete_request_now_runs_and_carries_the_warning() -> None:
@@ -2866,7 +2857,7 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     assert orchestration.spawned_workers == 0
     replay = str(router.calls[1]["messages"])
     assert "refused" in replay
-    assert "planner" in replay
+    assert "Planning mode" in replay
 
 
 def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
@@ -3529,7 +3520,8 @@ def test_a_blind_coder_spawn_is_refused_and_names_the_way_out(
     )
 
     assert "s1" in refusals
-    assert "explorer" in refusals["s1"] and "planner" in refusals["s1"]
+    assert "Explorer" in refusals["s1"]
+    assert "Planning mode" in refusals["s1"]
     # A read-only worker is never blocked — it is how the gap gets closed.
     explorer = [{
         "id": "s2", "name": "musubi_spawn_subagent",
@@ -3597,10 +3589,10 @@ def test_a_request_naming_a_path_reaches_a_coder_directly(
     ) == {}
 
 
-def test_the_roots_triage_reaches_the_turn_record(
+def test_new_turns_do_not_record_free_text_root_triage(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Plan step 3: an overridable hint needs a record of the override."""
+    """Mode tools replace response-text parsing for new direct turns."""
     from storage import db
 
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
@@ -3621,16 +3613,13 @@ def test_the_roots_triage_reaches_the_turn_record(
         log=log, max_tokens=0, chat_id=chat,
     ))
 
-    # The root is asked for it...
-    assert "[agent-triage]" in router.calls[0]["messages"][0]["content"]
-    # ...it is logged when given...
-    assert "root triage: question" in log.getvalue()
-    # ...and it lands in the row, next to what the turn actually did.
+    assert "[agent-triage]" not in router.calls[0]["messages"][0]["content"]
+    assert "root triage: question" not in log.getvalue()
     with db._connect(tmp_path / "data" / "musubi.db") as conn:
         row = conn.execute(
             "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
         ).fetchone()
-    assert row["root_triage"].startswith("question: ")
+    assert row["root_triage"] is None
 
 
 def test_a_turn_with_no_triage_records_none(
@@ -3661,15 +3650,10 @@ def test_a_turn_with_no_triage_records_none(
     assert row["root_triage"] is None
 
 
-def test_a_late_triage_is_not_recorded_as_the_plan(
+def test_legacy_triage_text_is_never_recorded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """PR #166 review: hindsight must not be stored as foresight.
-
-    A root that declares nothing on its first cycle, calls tools, sees a worker
-    result and only THEN emits `[triage] …` is stating a conclusion. Recording
-    it in the same column would destroy the one thing the column is for.
-    """
+    """Structured mode tools replace parsing response text at every cycle."""
     from storage import db
 
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
@@ -3691,21 +3675,11 @@ def test_a_late_triage_is_not_recorded_as_the_plan(
         ).fetchone()
     assert row["root_triage"] is None
 
-    from agent import run as run_mod
-
-    # The capture site itself refuses anything after the first cycle: the slot
-    # is written exactly once, on cycle 0, and a later cycle cannot revisit it.
-    source = (Path(run_mod.__file__)).read_text(encoding="utf-8")
-    assert "if role == \"agent\" and cycle == 0:" in source
-
-
-def test_a_failed_turn_still_records_what_it_planned(
+def test_a_failed_turn_still_records_a_row_without_text_triage(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    # PR #166 review: a crashed turn is the one most worth reading afterwards,
-    # and it used to leave no row at all — no triage, no cycles, and nothing
-    # for chat_turn_usage to count, so three failures in a row looked like zero
-    # turns to the no-progress breaker.
+    # A crashed turn remains observable, but response text is not interpreted
+    # as a structured mode/plan declaration.
     from storage import db
 
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
@@ -3715,9 +3689,6 @@ def test_a_failed_turn_still_records_what_it_planned(
         def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
             if not self.calls:
                 self.calls.append({"messages": messages, "tools": tools})
-                # Triage rides alongside the first tool call, which is where a
-                # real root emits it — so the turn is already "planned" when
-                # the next vendor call dies.
                 return LMResponse(stop_reason="tool_use", content=[
                     {"type": "text", "text": "[triage] work: dashboard.html"},
                     {
@@ -3741,7 +3712,7 @@ def test_a_failed_turn_still_records_what_it_planned(
         rows = conn.execute(
             "SELECT root_triage FROM agent_turns WHERE chat_id = ?", (chat,),
         ).fetchall()
-    assert rows and rows[0]["root_triage"] is not None
+    assert rows and rows[0]["root_triage"] is None
 
 
 def test_an_overrun_declaration_refuses_the_next_writer_in_the_loop() -> None:

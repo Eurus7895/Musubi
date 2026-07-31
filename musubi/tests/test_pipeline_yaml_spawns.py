@@ -65,7 +65,8 @@ def test_agent_ignores_pipeline_arg() -> None:
     orch_with_pipe = sorted(p.list_subagent_roles("agent", "feature-dev"))
     assert orch == orch_with_pipe
     assert "explorer" in orch
-    assert "planner" in orch  # ad-hoc pipeline roles still spawnable
+    assert "coder" in orch
+    assert "planner" not in orch  # Root owns planning in direct sessions.
 
 
 # ── firewall narrows pipeline declarations ───────────────────────────────────

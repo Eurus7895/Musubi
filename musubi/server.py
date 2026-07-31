@@ -31,6 +31,7 @@ Skill auto-injection:
     is part of the tool response.
 """
 
+import hashlib
 import json
 import os
 import shlex
@@ -106,6 +107,11 @@ except Exception:
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 mcp = FastMCP("musubi")
+
+# Recommendation tickets bind one model choice to the exact role/candidate set
+# the deterministic ranker returned. Process-local is sufficient: a parent
+# session and every worker spawn it drives live in this one MCP process.
+_SKILL_RECOMMENDATION_TICKETS: dict[str, dict[str, Any]] = {}
 
 
 # ── State tools ───────────────────────────────────────────────────────────────
@@ -1219,19 +1225,84 @@ def musubi_recommend_skills(
         tools_used=tools_used or [],
         limit=limit,
     )
+    candidates = [
+        {
+            "skill_id": item.skill_id,
+            "title": item.title,
+            "confidence": item.confidence,
+            "reasons": item.reasons,
+        }
+        for item in recommended
+    ]
+    ticket_source = json.dumps(
+        {
+            "task": " ".join((task or "").split()),
+            "role": candidate_key,
+            "candidates": [item["skill_id"] for item in candidates],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    recommendation_id = hashlib.sha256(
+        ticket_source.encode("utf-8")
+    ).hexdigest()[:20]
+    _SKILL_RECOMMENDATION_TICKETS[recommendation_id] = {
+        "role": candidate_key,
+        "skill_ids": tuple(item["skill_id"] for item in candidates),
+    }
+    while len(_SKILL_RECOMMENDATION_TICKETS) > 256:
+        _SKILL_RECOMMENDATION_TICKETS.pop(
+            next(iter(_SKILL_RECOMMENDATION_TICKETS))
+        )
     return json.dumps({
         "agent_name": key,
         "for_role": candidate_key,
-        "recommended": [
-            {
-                "skill_id": item.skill_id,
-                "title": item.title,
-                "confidence": item.confidence,
-                "reasons": item.reasons,
-            }
-            for item in recommended
-        ],
+        "recommendation_id": recommendation_id,
+        "recommended": candidates,
         "filtered_by_profile": profile is not None,
+    })
+
+
+@mcp.tool()
+def musubi_begin_direct(
+    target_intent: str,
+    target_path: str,
+    worker_role: str = "coder",
+) -> str:
+    """Declare Direct mode; the driver validates path facts and records state."""
+    return json.dumps({
+        "status": "declared",
+        "mode": "direct",
+        "target_intent": target_intent,
+        "target_path": target_path,
+        "worker_role": worker_role,
+    })
+
+
+@mcp.tool()
+def musubi_begin_plan(deliverable: str) -> str:
+    """Declare Planning mode; the driver opens bounded Root read tools."""
+    return json.dumps({
+        "status": "declared",
+        "mode": "planning",
+        "deliverable": deliverable,
+    })
+
+
+@mcp.tool()
+def musubi_commit_plan(
+    plan_markdown: str,
+    change_manifest: dict[str, Any],
+    change_size: str,
+    worker_chain: list[str],
+) -> str:
+    """Submit Root's plan contract; the driver persists and governs it."""
+    return json.dumps({
+        "status": "submitted",
+        "change_size": change_size,
+        "worker_chain": worker_chain,
+        "plan_chars": len(plan_markdown),
+        "manifest_fields": sorted(change_manifest),
     })
 
 
@@ -1456,6 +1527,7 @@ def musubi_spawn_subagent(
     wall_clock_timeout_s: int = sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
     output_schema: str | None = None,
     pushed_skill_id: str | None = None,
+    recommendation_id: str | None = None,
 ) -> str:
     """Spawn a sub-agent run. Returns a handle_id the parent can await.
 
@@ -1464,13 +1536,8 @@ def musubi_spawn_subagent(
       2. parent_agent_name must list role in MAIN_SUBAGENT_ALLOWLIST.
       3. effective_tools = SUBAGENT_POLICIES[role] ∩ allowed_tools.
          Empty intersection → reject; the sub-agent would have nothing to do.
-      4. pushed_skill_id, when given, must be in the worker role's skill
-         allowlist (AGENT_SKILL_ALLOWLIST[role]) and resolve to a real
-         SKILL.md. This is the option-3 injection point: the root selects a
-         catalog skill for the worker and it is pushed into the worker's
-         system prompt. The allowlist is the same firewall the pull path
-         uses (HI #3) — the root can never push a skill the role could not
-         itself load, and a direct worker still has no skill tool of its own.
+      4. pushed_skill_id, when given, must belong to the supplied
+         recommendation_id, the worker role's allowlist, and the catalog.
 
     Four-layer timeouts are recorded on the row:
       - max_turns                 (caller arg)
@@ -1544,6 +1611,36 @@ def musubi_spawn_subagent(
     #    can only push a skill the role is authorised for.
     skill_choice = (pushed_skill_id or "").strip() or None
     if skill_choice is not None:
+        ticket_id = (recommendation_id or "").strip()
+        ticket = _SKILL_RECOMMENDATION_TICKETS.get(ticket_id)
+        if ticket is None:
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": (
+                    "A pushed skill requires the recommendation_id returned "
+                    "by musubi_recommend_skills."
+                ),
+            })
+        if ticket["role"] != role.lower().strip():
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": (
+                    f"Recommendation {ticket_id!r} belongs to role "
+                    f"{ticket['role']!r}, not {role!r}."
+                ),
+            })
+        if skill_choice not in ticket["skill_ids"]:
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": (
+                    f"Skill {skill_choice!r} was not a candidate in "
+                    f"recommendation {ticket_id!r}."
+                ),
+                "recommended_skills": list(ticket["skill_ids"]),
+            })
         role_skills = AGENT_SKILL_ALLOWLIST.get(role.lower().strip(), set())
         if skill_choice not in role_skills:
             return json.dumps({
@@ -1611,6 +1708,7 @@ def musubi_spawn_subagent(
         "per_turn_timeout_s": per_turn_timeout_s,
         "wall_clock_timeout_s": wall_clock_timeout_s,
         "pushed_skill_id": skill_choice,
+        "recommendation_id": (recommendation_id or "").strip() or None,
     })
 
 

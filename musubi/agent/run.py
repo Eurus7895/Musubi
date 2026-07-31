@@ -102,17 +102,14 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
+from agent.manifest import parse_change_manifest_object
 from agent.evidence import collect as collect_evidence
 from agent.planning_artifacts import (
     goal_artifact_key,
     persist_planning_artifacts,
+    persist_planning_contract,
 )
 from agent.routes import RouteKind
-from agent.triage import (
-    encode_triage,
-    parse_triage,
-)
-from agent.triage import prompt_block as triage_prompt_block
 from agent.textfmt import bounded
 from agent.scope import ScopeHint, classify_task
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
@@ -131,6 +128,7 @@ DEFAULT_MAX_ROOT_WORKERS = 3
 #: planner → designer → coder → reviewer (four workers, one more than the
 #: default), plus headroom for a single recovery replacement.
 DEFAULT_MAX_ROOT_WORKERS_LARGE = 6
+MAX_ROOT_WORKERS_HARD = 8
 DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
 #: No-progress budget breaker: if the root run has spent at least this fraction
@@ -145,9 +143,10 @@ DEFAULT_NO_PROGRESS_BUDGET_RATIO = 0.7
 # opt-in replaces the retired regex force (a keyword guess used to refuse the
 # coder and demand a planner at cycle 0); now the user declares plan-first.
 _PLAN_FIRST_DIRECTIVE = (
-    "The user explicitly requested a plan-first workflow (--plan). Before "
-    "spawning any `coder` worker, spawn role `planner` and pass its summary to "
-    "the coder; never let the coder both plan and implement."
+    "The user explicitly requested Planning mode (--plan). Your first tool "
+    "call must be `musubi_begin_plan`; `musubi_begin_direct` is invalid. Read "
+    "the bounded workspace facts yourself, then commit plan.md, manifest.json, "
+    "change size, and the ordered worker chain with `musubi_commit_plan`."
 )
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
@@ -185,15 +184,6 @@ _worker_log_label: contextvars.ContextVar[str] = (
 _destructive_gate: contextvars.ContextVar[DestructiveGate | None] = (
     contextvars.ContextVar("musubi_destructive_gate", default=None)
 )
-
-# The root's declared turn shape, captured mid-loop and written to the turn
-# record. A one-element list because the loop only ever fills it in — a
-# ContextVar holding an immutable value would need re-setting from inside a
-# function the loop does not own. `None` means "not collecting" (worker runs).
-_root_triage: contextvars.ContextVar[list[tuple[str, str] | None] | None] = (
-    contextvars.ContextVar("musubi_root_triage", default=None)
-)
-
 
 #: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
 #: that is itself allowed to spawn may summon workers one level down. With the
@@ -255,6 +245,7 @@ class WorkerOutcome:
     #: contract — a direct worker carries no native skill tool, so dropping it
     #: would resume the artifact without the pushed procedure.
     pushed_skill_id: str | None = None
+    recommendation_id: str | None = None
 
 
 def decide_recovery(
@@ -303,6 +294,9 @@ class Orchestration:
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
     planning_artifact_dir: Path | None = None
+    open_recommendation_id: str | None = None
+    open_recommendation_role: str | None = None
+    open_recommendation_skills: tuple[str, ...] = ()
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -371,6 +365,7 @@ class Orchestration:
         brief: str = "",
         failure_kind: FailureKind | None = None,
         pushed_skill_id: str | None = None,
+        recommendation_id: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -381,6 +376,7 @@ class Orchestration:
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=pushed_skill_id,
+            recommendation_id=recommendation_id,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -569,6 +565,8 @@ async def _auto_recovery_transition(
         }
         if outcome.pushed_skill_id:
             recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
+        if outcome.recommendation_id:
+            recovery_input["recommendation_id"] = outcome.recommendation_id
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
@@ -708,8 +706,6 @@ async def run_agent(
     # that carries no Orchestration at all.
     destructive_gate = DestructiveGate()
     _destructive_gate.set(destructive_gate)
-    triage_slot: list[tuple[str, str] | None] = [None]
-    _root_triage.set(triage_slot)
     has_conversation = _chat_has_history(
         chat_id, db_path=context_compression_db_path, log=log,
     )
@@ -725,6 +721,7 @@ async def run_agent(
         route=scope_hint.route,
         assessment=scope_hint.assessment,
     )
+    goal_state.plan_required = plan_first
     chat_usage = _chat_turn_usage(
         chat_id, db_path=context_compression_db_path, log=log,
     )
@@ -853,6 +850,12 @@ async def run_agent(
         parent_session_id = await _open_parent_session(
             session, effective_task, log, chat_id,
         )
+        planning_key = (
+            chat_id
+            or parent_session_id
+            or request_id
+            or f"run-{time.time_ns()}"
+        )
         orchestration = Orchestration(
             parent_session_id=parent_session_id,
             goal_state=goal_state,
@@ -860,7 +863,7 @@ async def run_agent(
                 musubi_dir.parent
                 / ".musubi"
                 / "goals"
-                / goal_artifact_key(chat_id, parent_session_id)
+                / goal_artifact_key(chat_id, planning_key)
             ),
         )
         # Consent is matched against the RAW user message. A model cannot
@@ -890,8 +893,6 @@ async def run_agent(
             + evidence.prompt_block()
             + "\n\n"
             + registry.prompt_block()
-            + "\n"
-            + triage_prompt_block()
         )
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
@@ -934,7 +935,7 @@ async def run_agent(
                 from agent import pipeline_runner
 
                 spawn_args = {
-                    "parent_session_id": parent_session_id,
+                    "parent_session_id": parent_session_id or planning_key,
                     "parent_agent_name": "agent",
                     "pipeline_name": pipeline,
                     "brief": effective_task,
@@ -1006,7 +1007,7 @@ async def run_agent(
             delivered_artifact=(
                 orchestration is not None and orchestration.delivered_artifact
             ),
-            root_triage=encode_triage(triage_slot[0]),
+            root_triage=None,
         )
     if loop_error is not None:
         raise RuntimeError(_clean_error(loop_error)) from None
@@ -1041,7 +1042,7 @@ async def run_agent(
                 if destructive_gate.pending
                 else None
             ),
-            root_triage=encode_triage(triage_slot[0]),
+            root_triage=None,
         )
     _log_turn_usage(log, stats, budget)
     return final_answer
@@ -1179,7 +1180,7 @@ async def _run_loop(
         if root_state is not None:
             if root_state.pending_clarification:
                 print(
-                    "[agent] planner manifest requires clarification; "
+                    "[agent] committed plan requires clarification; "
                     "no model call",
                     file=log,
                 )
@@ -1220,6 +1221,10 @@ async def _run_loop(
                 recovery_outcome=recovery_outcome is not None,
                 decision_only=recovery_decision_only,
                 spawn_exhausted=spawn_exhausted,
+                recommendation_pending=bool(
+                    orchestration
+                    and orchestration.open_recommendation_id
+                ),
             )
             if spawn_exhausted and orchestration is not None:
                 # No tools are offered this cycle; make the intent explicit so
@@ -1339,32 +1344,6 @@ async def _run_loop(
             text = ""
         if text:
             last_text = text  # remember even when the model also called a tool
-        # The root's triage line usually rides ALONGSIDE its first tool call,
-        # so it is read here rather than from the final answer — by the time an
-        # answer exists the turn is over and the declaration has stopped being
-        # a plan. First one wins (`parse_triage`); later cycles cannot rewrite
-        # what the turn was planned around.
-        # Only the FIRST root response is read. A declaration that arrives
-        # after the root has seen a worker result is a conclusion, not a plan,
-        # and storing it in the same column would present hindsight as
-        # foresight — destroying the one thing the column is for. A first cycle
-        # that declares nothing records nothing, permanently.
-        if role == "agent" and cycle == 0:
-            slot = _root_triage.get()
-            if slot is not None:
-                declared = parse_triage(text) if text else None
-                slot[0] = declared
-                if declared is not None:
-                    print(
-                        f"[agent] root triage: {declared[0]} — {declared[1]}",
-                        file=log,
-                    )
-                else:
-                    print(
-                        "[agent] root triage: not declared on the first cycle",
-                        file=log,
-                    )
-
         try:
             _charge_budget_postflight(
                 budget, usage.tokens_in + usage.tokens_out, log,
@@ -3382,6 +3361,29 @@ async def _dispatch_one(
         return result
 
     if (
+        name in {
+            "musubi_begin_direct",
+            "musubi_begin_plan",
+            "musubi_commit_plan",
+        }
+        and orchestration is not None
+        and orchestration.depth == 0
+        and orchestration.goal_state is not None
+    ):
+        result = _handle_root_control_tool(name, args, orchestration)
+        _safe_record_tool_audit(
+            session_id=session_id,
+            role=call_role,
+            tool=name,
+            args=json_args(args),
+            status=_tool_result_audit_status(result),
+            db_path=audit_path,
+            result_text=result,
+            log=log,
+        )
+        return result
+
+    if (
         name == "musubi_spawn_pipeline"
         and orchestration is not None
         and orchestration.enabled
@@ -3442,6 +3444,41 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
             return result
+        ticket_id = str(args.get("recommendation_id") or "").strip()
+        if orchestration.open_recommendation_id:
+            if ticket_id != orchestration.open_recommendation_id:
+                result = json.dumps({
+                    "status": "refused",
+                    "reason": (
+                        "spawn must consume the open recommendation_id "
+                        f"{orchestration.open_recommendation_id!r}"
+                    ),
+                })
+                _safe_record_tool_audit(
+                    session_id=session_id, role=call_role, tool=name,
+                    args=json_args(args), status="refused", db_path=audit_path,
+                    result_text=result, log=log,
+                )
+                return result
+            spawn_role = str(args.get("role") or "").strip()
+            if spawn_role != orchestration.open_recommendation_role:
+                result = json.dumps({
+                    "status": "refused",
+                    "reason": (
+                        f"recommendation belongs to role "
+                        f"{orchestration.open_recommendation_role!r}, "
+                        f"not {spawn_role!r}"
+                    ),
+                })
+                _safe_record_tool_audit(
+                    session_id=session_id, role=call_role, tool=name,
+                    args=json_args(args), status="refused", db_path=audit_path,
+                    result_text=result, log=log,
+                )
+                return result
+            orchestration.open_recommendation_id = None
+            orchestration.open_recommendation_role = None
+            orchestration.open_recommendation_skills = ()
         worker_args = args
         spawn_role = str(args.get("role", ""))
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
@@ -3506,6 +3543,27 @@ async def _dispatch_one(
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
+        if (
+            name == "musubi_recommend_skills"
+            and orchestration is not None
+            and orchestration.depth == 0
+        ):
+            try:
+                payload = json.loads(text)
+                ticket = str(payload.get("recommendation_id") or "").strip()
+                recommended = payload.get("recommended") or []
+                if ticket:
+                    orchestration.open_recommendation_id = ticket
+                    orchestration.open_recommendation_role = str(
+                        payload.get("for_role") or ""
+                    )
+                    orchestration.open_recommendation_skills = tuple(
+                        str(item.get("skill_id"))
+                        for item in recommended
+                        if isinstance(item, dict) and item.get("skill_id")
+                    )
+            except (TypeError, ValueError):
+                pass
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)
@@ -3533,6 +3591,126 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+def _handle_root_control_tool(
+    name: str,
+    args: dict[str, Any],
+    orchestration: Orchestration,
+) -> str:
+    """Apply model-owned mode/plan declarations to driver-owned goal state."""
+    state = orchestration.goal_state
+    assert state is not None
+    try:
+        if name == "musubi_begin_plan":
+            deliverable = str(args.get("deliverable") or "").strip()
+            if not deliverable:
+                raise ValueError("deliverable must be a non-empty string")
+            state.begin_plan()
+            return json.dumps({
+                "status": "ok",
+                "mode": state.mode,
+                "deliverable": deliverable,
+            })
+
+        if name == "musubi_begin_direct":
+            target_intent = str(args.get("target_intent") or "").strip()
+            target_path = str(args.get("target_path") or "").strip()
+            worker_role = str(args.get("worker_role") or "coder").strip()
+            if not target_path:
+                raise ValueError("target_path must be a non-empty string")
+            root_alias, relative = _split_declared_target(target_path)
+            registry = _runtime_root_registry()
+            resolved = registry.resolve(root_alias, relative)
+            exists = resolved.exists()
+            state.begin_direct(
+                target_intent=target_intent,
+                target_path=(
+                    relative if root_alias == "musubi"
+                    else f"{root_alias}::{relative}"
+                ),
+                target_exists=exists,
+                worker_role=worker_role,
+            )
+            return json.dumps({
+                "status": "ok",
+                "mode": state.mode,
+                "target_intent": state.target_intent,
+                "target_path": state.target_path,
+                "target_exists": exists,
+                "next_role": state.next_role,
+            })
+
+        plan_markdown = str(args.get("plan_markdown") or "")
+        manifest_object = args.get("change_manifest")
+        manifest = parse_change_manifest_object(manifest_object)
+        if manifest is None:
+            raise ValueError("change_manifest is invalid")
+        change_size = str(args.get("change_size") or "").strip()
+        raw_chain = args.get("worker_chain")
+        if not isinstance(raw_chain, list):
+            raise ValueError("worker_chain must be an array")
+        chain = tuple(str(role).strip() for role in raw_chain)
+        # Validate model declaration before any artifact reaches disk.
+        if change_size not in {"small", "medium", "large"}:
+            raise ValueError("change_size must be small, medium, or large")
+        if not chain or any(role not in ORDERED_ROLES for role in chain):
+            raise ValueError(
+                f"worker_chain roles must be in {sorted(ORDERED_ROLES)}"
+            )
+        if not any(role in MUTATION_ROLES for role in chain):
+            raise ValueError("worker_chain must contain a mutation role")
+        needed = orchestration.spawned_workers + len(chain) + 1
+        if needed > MAX_ROOT_WORKERS_HARD:
+            raise ValueError(
+                f"declared chain needs {needed} worker slots including "
+                f"recovery; hard ceiling is {MAX_ROOT_WORKERS_HARD}"
+            )
+        if orchestration.planning_artifact_dir is None:
+            raise ValueError("planning artifact directory is unavailable")
+        persisted = persist_planning_contract(
+            plan_markdown,
+            manifest_object,
+            orchestration.planning_artifact_dir,
+        )
+        if persisted is None:
+            raise ValueError("plan_markdown or change_manifest is invalid")
+        paths, artifacts = persisted
+        state.commit_root_plan(
+            manifest=artifacts.manifest,
+            change_size=change_size,
+            worker_chain=chain,
+            planning_artifacts=(str(path) for path in paths),
+        )
+        orchestration.max_root_workers = max(
+            orchestration.max_root_workers, needed,
+        )
+        return json.dumps({
+            "status": "ok",
+            "mode": state.mode,
+            "change_size": state.change_size,
+            "worker_chain": list(chain),
+            "next_role": state.next_role,
+            "max_root_workers": orchestration.max_root_workers,
+            "planning_artifacts": list(state.planning_artifacts),
+        })
+    except (OSError, ValueError) as exc:
+        return json.dumps({"status": "error", "error": str(exc)})
+
+
+def _split_declared_target(target: str) -> tuple[str, str]:
+    if "::" not in target:
+        return "musubi", target
+    root, relative = target.split("::", 1)
+    if not root.strip() or not relative.strip():
+        raise ValueError("target_path must use ROOT::relative/path")
+    return root.strip(), relative.strip()
+
+
+def _runtime_root_registry() -> RootRegistry:
+    root = Path(os.environ.get("MUSUBI_ROOT") or Path.cwd()).resolve()
+    raw = os.environ.get(MANIFEST_ENV, "").strip()
+    return RootRegistry.from_json(raw, root) if raw else RootRegistry.build(root)
 
 
 def _tool_wrote_ok(text: str) -> bool:

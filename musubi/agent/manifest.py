@@ -65,17 +65,20 @@ _CRITICAL_FLAGS = (
     "external_side_effects",
     "destructive",
 )
-_MANIFEST_FIELDS = {
+_MANIFEST_REQUIRED_FIELDS = {
     "files_expected",
     "subsystems",
-    "public_contract",
-    "data_migration",
-    "security_sensitive",
-    "external_side_effects",
-    "destructive",
-    "blocking_decisions",
-    "validation_commands",
 }
+_MANIFEST_DEFAULTS: dict[str, Any] = {
+    "public_contract": False,
+    "data_migration": False,
+    "security_sensitive": False,
+    "external_side_effects": False,
+    "destructive": False,
+    "blocking_decisions": [],
+    "validation_commands": 0,
+}
+_MANIFEST_FIELDS = _MANIFEST_REQUIRED_FIELDS | set(_MANIFEST_DEFAULTS)
 
 
 
@@ -143,6 +146,44 @@ def _require_bool(raw: dict[str, Any], key: str) -> bool:
     return value
 
 
+def parse_change_manifest_object(raw: Any) -> ChangeManifest | None:
+    """Validate a compact manifest object and apply safe field defaults.
+
+    Root owns planning, so forcing it to spell five ``false`` values, an empty
+    decision list, and a zero command count adds formatting failure without
+    adding evidence. The two radius fields remain required. Unknown fields
+    still fail closed so this bounded governance channel cannot silently grow.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not _MANIFEST_REQUIRED_FIELDS.issubset(raw):
+        return None
+    if not set(raw).issubset(_MANIFEST_FIELDS):
+        return None
+    normalized = dict(_MANIFEST_DEFAULTS)
+    normalized.update(raw)
+    try:
+        return ChangeManifest(
+            files_expected=_require_count(normalized, "files_expected"),
+            subsystems=_require_strings(normalized, "subsystems"),
+            public_contract=_require_bool(normalized, "public_contract"),
+            data_migration=_require_bool(normalized, "data_migration"),
+            security_sensitive=_require_bool(normalized, "security_sensitive"),
+            external_side_effects=_require_bool(
+                normalized, "external_side_effects",
+            ),
+            destructive=_require_bool(normalized, "destructive"),
+            blocking_decisions=_require_strings(
+                normalized, "blocking_decisions",
+            ),
+            validation_commands=_require_count(
+                normalized, "validation_commands",
+            ),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def parse_change_manifest(text: str) -> ChangeManifest | None:
     """Extract the single bounded `<change_manifest>` JSON block, or None.
 
@@ -169,19 +210,9 @@ def parse_change_manifest(text: str) -> ChangeManifest | None:
             object_pairs_hook=_unique_object,
             parse_constant=_reject_json_constant,
         )
-        if not isinstance(raw, dict) or set(raw) != _MANIFEST_FIELDS:
+        result = parse_change_manifest_object(raw)
+        if result is None:
             return None
-        result = ChangeManifest(
-            files_expected=_require_count(raw, "files_expected"),
-            subsystems=_require_strings(raw, "subsystems"),
-            public_contract=_require_bool(raw, "public_contract"),
-            data_migration=_require_bool(raw, "data_migration"),
-            security_sensitive=_require_bool(raw, "security_sensitive"),
-            external_side_effects=_require_bool(raw, "external_side_effects"),
-            destructive=_require_bool(raw, "destructive"),
-            blocking_decisions=_require_strings(raw, "blocking_decisions"),
-            validation_commands=_require_count(raw, "validation_commands"),
-        )
     except (
         KeyError,
         TypeError,

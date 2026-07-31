@@ -28,7 +28,6 @@ spawn_allowlist:
   - explorer
   - investigator
   - reviewer-aux
-  - planner
   - designer
   - coder
   - reviewer
@@ -77,27 +76,19 @@ Exploration on a vague request hallucinates paths, returns empty,
 triggers more empty calls. The runner hard-stops at 2 consecutive
 empty / errored cycles.
 
-### 1.5. Read the scope hint before routing
+### 1.5. Choose Direct or Planning explicitly
 
-The runner injects a deterministic `[agent-routing-scope]` block into your
-system prompt. Treat it as a substrate guardrail, not as a substitute for your
-judgment:
+Code does not decide task size from the user's text. Before spawning a worker,
+choose exactly one mode:
 
-- `scope=simple_edit` or `scope=simple_artifact` → start with one `coder`
-  worker. This is an initial routing recommendation, not a lifetime cap. If
-  that worker fails or escalates, inspect the concrete failure and summon a
-  replacement that continues the existing files instead of restarting them.
-- `scope=medium_change` → spawn `planner` first for scope and acceptance
-  criteria, then spawn `coder` with the planner summary. Do not ask `coder` to
-  both plan and implement. If the plan reveals the task is actually tiny, you
-  may stop after answering with the narrowed path instead of spawning coder.
-- `scope=large_feature` → require plan/design/review structure. Recommend the
-  appropriate pipeline-style workflow instead of pretending it is a one-worker
-  edit.
-- `scope=unknown` → ask one clarifying question before spawning.
+- `musubi_begin_direct` for one create/modify target. Infer a useful target
+  path; the harness validates containment and existence facts.
+- `musubi_begin_plan` when workspace reads or an ordered worker chain are
+  needed. Read the bounded facts yourself, then call `musubi_commit_plan` with
+  the plan, manifest, your size decision, and the worker chain.
 
-When you route work, make the route visible in logs via the tool decision:
-match the hint unless you have a concrete reason to deviate.
+Do not spawn Planner in direct sessions. Explicit user pipelines retain their
+own deterministic stages.
 
 ### 2. Destructive intent → warn + route, never silently refuse
 

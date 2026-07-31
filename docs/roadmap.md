@@ -145,6 +145,24 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-30-goal-plan-artifacts.md`](./superpowers/plans/2026-07-30-goal-plan-artifacts.md)
 
+4. **Root-owned planning and model-owned dispatch.** Direct orchestration is
+   being collapsed from Root → Planner → manifest-classifier into one Root with
+   two explicit model-selected modes. Direct mode declares `create` or `modify`
+   plus a target path, letting a new artifact proceed without paying for an
+   Explorer merely because the path does not exist. Planning mode gives Root a
+   bounded read-only surface and persists Root's own `plan.md` plus
+   `manifest.json`; the model declares change size and worker order, while the
+   harness validates paths, manifest shape, role membership, order, radius, and
+   a hard worker ceiling. Manifest arithmetic no longer decides whether work is
+   large. Explorer remains workspace discovery; Investigator becomes
+   diagnostics only and cannot establish a mutation target. Skill ranking
+   returns a recommendation ticket; the model chooses the skill, and the ticket
+   prevents repeated recommender calls in one dispatch flow. The Planner role
+   remains only for explicit legacy pipelines until pipeline dissolution.
+
+   Plan:
+   [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

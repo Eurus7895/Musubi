@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 
-from agent.goal_state import GoalState
 from agent.planning_artifacts import (
     MAX_PLAN_BYTES,
     goal_artifact_key,
     parse_planning_artifacts,
+    persist_planning_contract,
     persist_planning_artifacts,
 )
-from agent.run import Orchestration
 
 
 def _planner_output(*, plan: str = "# Plan\n\nImplement it.") -> str:
@@ -72,52 +71,34 @@ def test_goal_key_is_stable_across_conversation_turns() -> None:
     )
 
 
-def test_planner_outcome_persists_files_without_marking_delivery(tmp_path) -> None:
-    state = GoalState.create(
-        "build the app", "medium_change", "planner_then_coder_check",
+def test_root_contract_persists_compact_manifest_with_defaults(tmp_path) -> None:
+    persisted = persist_planning_contract(
+        plan_markdown="# Plan\n\nImplement it.",
+        manifest_object={
+            "files_expected": 2,
+            "subsystems": ["agent"],
+        },
+        target_dir=tmp_path / "goal",
     )
-    orchestration = Orchestration(
-        parent_session_id="root",
-        goal_state=state,
-        planning_artifact_dir=tmp_path / "goal",
-    )
+    assert persisted is not None
+    (plan_path, manifest_path), artifacts = persisted
 
-    orchestration.record_worker_outcome(
-        role="planner",
-        status="done",
-        summary=_planner_output(),
-        touched_files=(),
-    )
-
-    assert (tmp_path / "goal" / "plan.md").is_file()
-    assert (tmp_path / "goal" / "manifest.json").is_file()
-    assert state.next_role == "coder"
-    assert len(state.planning_artifacts) == 2
-    assert orchestration.delivered_artifact is False
+    assert plan_path.read_text(encoding="utf-8") == "# Plan\n\nImplement it.\n"
+    assert artifacts.manifest.files_expected == 2
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["files_expected"] == 2
+    assert manifest["security_sensitive"] is False
+    assert manifest["blocking_decisions"] == []
 
 
-def test_missing_plan_fails_closed_before_coder(tmp_path) -> None:
-    state = GoalState.create(
-        "build the app", "medium_change", "planner_then_coder_check",
+def test_root_contract_rejects_missing_plan_before_writing(tmp_path) -> None:
+    persisted = persist_planning_contract(
+        plan_markdown="  ",
+        manifest_object={
+            "files_expected": 2,
+            "subsystems": ["agent"],
+        },
+        target_dir=tmp_path / "goal",
     )
-    orchestration = Orchestration(
-        parent_session_id="root",
-        goal_state=state,
-        planning_artifact_dir=tmp_path / "goal",
-    )
-    manifest_only = _planner_output().replace(
-        "<plan># Plan\n\nImplement it.</plan>\n",
-        "",
-    )
-
-    orchestration.record_worker_outcome(
-        role="planner",
-        status="done",
-        summary=manifest_only,
-        touched_files=(),
-    )
-
-    assert state.route == "ask_scope"
-    assert state.next_role is None
-    assert state.pending_clarification is not None
+    assert persisted is None
     assert not (tmp_path / "goal").exists()

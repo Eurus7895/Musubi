@@ -175,11 +175,10 @@ def test_agent_spawn_allowlist_includes_phase_a_roles() -> None:
     assert {"explorer", "investigator", "reviewer-aux"}.issubset(roles)
 
 
-def test_agent_spawn_allowlist_includes_pipeline_roles() -> None:
-    """Locked decision #4 — agent may spawn individual pipeline
-    roles ad-hoc."""
+def test_agent_spawn_allowlist_includes_direct_delivery_roles() -> None:
     roles = set(MAIN_SUBAGENT_ALLOWLIST["agent"])
-    assert {"planner", "coder", "reviewer"}.issubset(roles)
+    assert {"designer", "coder", "reviewer"}.issubset(roles)
+    assert "planner" not in roles
 
 
 def test_agent_can_spawn_designer() -> None:
@@ -199,19 +198,18 @@ def test_agent_can_spawn_each_listed_role() -> None:
         assert check_subagent_allowed("agent", role) is True, role
 
 
-def test_agent_list_includes_six_roles() -> None:
+def test_agent_list_includes_direct_roles() -> None:
     roles = list_subagent_roles("agent")
     assert set(roles) >= {
         "explorer", "investigator", "reviewer-aux",
-        "planner", "coder", "reviewer",
+        "designer", "coder", "reviewer",
     }
 
 
 def test_agent_deny_reason_for_unknown_role_lists_pipeline_roles() -> None:
     msg = subagent_deny_reason("agent", "ghost")
     assert "ghost" in msg
-    # The message lists valid roles; pipeline roles must appear now.
-    assert "coder" in msg or "planner" in msg
+    assert "coder" in msg
 
 
 # ── Pipeline-role tool sets (intersection sanity) ───────────────────────────
@@ -341,7 +339,7 @@ def test_agent_agent_lists_direct_worker_spawn_roles() -> None:
     text = _AGENT_FILE.read_text(encoding="utf-8")
     for role in (
         "explorer", "investigator", "reviewer-aux",
-        "planner", "designer", "coder", "reviewer",
+        "designer", "coder", "reviewer",
     ):
         assert f"- {role}" in text, f"spawn_allowlist missing {role!r}"
 

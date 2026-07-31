@@ -108,7 +108,7 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 MAIN_SUBAGENT_ALLOWLIST: dict[str, list[str]] = {
     "agent": [
         "explorer", "investigator", "reviewer-aux",
-        "planner", "designer", "coder", "reviewer",
+        "designer", "coder", "reviewer",
         "summarizer",
     ],
     "planner":  [],

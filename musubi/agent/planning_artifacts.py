@@ -15,7 +15,11 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from agent.manifest import ChangeManifest, parse_change_manifest
+from agent.manifest import (
+    ChangeManifest,
+    parse_change_manifest,
+    parse_change_manifest_object,
+)
 
 MAX_PLAN_BYTES = 64 * 1024
 _PLAN_OPEN = "<plan>"
@@ -88,6 +92,40 @@ def persist_planning_artifacts(
     _atomic_write(plan_path, artifacts.plan_markdown.rstrip() + "\n")
     _atomic_write(manifest_path, manifest_text)
     return plan_path, manifest_path
+
+
+def persist_planning_contract(
+    plan_markdown: str,
+    manifest_object: object,
+    target_dir: Path,
+) -> tuple[tuple[Path, Path], PlanningArtifacts] | None:
+    """Persist Root's structured plan contract without planner response tags."""
+    plan = str(plan_markdown or "").strip()
+    if not plan:
+        return None
+    try:
+        if len(plan.encode("utf-8")) > MAX_PLAN_BYTES:
+            return None
+    except UnicodeEncodeError:
+        return None
+    manifest = parse_change_manifest_object(manifest_object)
+    if manifest is None:
+        return None
+    target_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = target_dir / "plan.md"
+    manifest_path = target_dir / "manifest.json"
+    manifest_text = json.dumps(
+        asdict(manifest),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    _atomic_write(plan_path, plan.rstrip() + "\n")
+    _atomic_write(manifest_path, manifest_text)
+    return (
+        (plan_path, manifest_path),
+        PlanningArtifacts(plan_markdown=plan, manifest=manifest),
+    )
 
 
 def _atomic_write(path: Path, content: str) -> None:
