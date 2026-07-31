@@ -597,11 +597,18 @@ function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuer
 }
 
 function RuntimeOverview({ node, isTurn, onOpenLog }) {
+  // A turn's token figure includes every worker it summoned — the driver hands
+  // one counter to the root and all its workers — so the row beneath it is a
+  // PART of the number above, never an addend. Naming both makes the
+  // containment readable instead of leaving two figures that look summable.
   const metrics = [
     { label: 'Role', value: node.role, absent: false },
     { label: 'Turns', value: node.turns + (node.maxTurns ? ` / ${node.maxTurns}` : ''), absent: false },
     { label: 'Tools', ...metricField(node.tools) },
-    { label: 'Tokens', ...metricField(node.tokens) },
+    { label: node.tokensAreInclusive ? 'Tokens · turn total' : 'Tokens', ...metricField(node.tokens) },
+    ...(node.tokensAreInclusive
+      ? [{ label: 'Tokens · root only', ...metricField(node.ownTokens) }]
+      : []),
     { label: 'Log rows', ...metricField(node.logCount) },
   ]
   return (

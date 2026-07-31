@@ -67,7 +67,9 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Shipped: the destructive gate (see Completed Tracks) and `agent/evidence.py`
    — six facts per turn (`names_workspace_path`, `path_exists`,
    `has_conversation`, `explorer_findings`, `clarification_answered`,
-   `barren_turns`, plus `escaped_paths` for targets outside the workspace root),
+   `barren_turns`, plus `escaped_paths` for targets outside every root the
+   request was granted — the harness root and any folder attached to the
+   session),
    rendered into the root prompt and logged. **It routes nothing yet**, by
    design: the distribution is measured before behavior depends on it.
    Remaining, in order — each depends on the one before, and the deletion lands
@@ -241,6 +243,35 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 ---
 
 ## Completed Tracks
+
+- Run evidence is conversation-scoped, attributable, and says which quantity it
+  is showing. Three operator reports from one session, three separate defects,
+  none of them the model. **Attached folders were unreachable in the prompt:**
+  `agent/evidence.py` measured path containment against the `musubi` root
+  alone, so a folder the operator had just granted rendered as
+  `outside_workspace=… (no worker can reach these; say so and stop)` directly
+  above the roots listing that offered it — and `goal_state.target_named`,
+  fed from the same field, additionally blocked a mutation worker at that
+  folder. Containment is measured against every granted root now; a contained
+  path is named `<alias>/<rest>` and the block states that the alias is the
+  tool's `root=` argument. **Token figures were not comparable:** the driver
+  hands one `AgentRunStats` to the root and every worker under it, so a turn's
+  recorded tokens already contain its workers'; printing that above each
+  worker's own made two figures look additive when one contains the other.
+  Both now come from `agent_cycles`, the turn node carries `ownTokens`, and the
+  overview labels them *turn total* / *root only*. Underneath it, the reader
+  took the **oldest** 120 `agent_turns` rows (`ORDER BY id ASC LIMIT 120`), so
+  past 120 turns the Console stopped seeing new ones at all — recent sessions
+  read "no agent activity yet" and their token ledger under-reported.
+  **Skills and policy read empty on sessions that used both:** HI #2's push is
+  not opt-out-able, but only the root's rare per-spawn *override* was audited,
+  the push emits no tool call and so wrote nothing to the runtime ledger,
+  ALLOW verdicts were recorded but never emitted, and the view model replaced
+  the whole derived log stream with the ledger projection while scoping skills
+  to the latest root turn instead of the conversation. Each of those four is
+  closed; `SubagentContext` gained `role_skill_id` so a pushed skill is
+  nameable at all. Plan:
+  [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —
   `load_pipeline_recipe` had existed since the Studio shipped and reached

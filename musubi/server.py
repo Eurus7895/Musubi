@@ -1515,6 +1515,20 @@ def musubi_distill_session(session_id: str) -> str:
 _AWAIT_POLL_S: float = float(os.environ.get("MUSUBI_SUBAGENT_POLL_S", "0.25"))
 
 
+def _effective_pushed_skill(role: str, override: str | None) -> str | None:
+    """The skill id this spawn actually bakes into the worker's prompt.
+
+    Mirrors `build_subagent_context`'s resolution order exactly — override
+    first, then the role's native push — so the audit row and the prompt can
+    never disagree about what the worker received. Returns None when the role
+    pushes nothing and the root chose nothing.
+    """
+    chosen = (override or "").strip()
+    if chosen:
+        return chosen
+    return subagent_context.SUBAGENT_ROLE_SKILLS.get(role.strip())
+
+
 @mcp.tool()
 def musubi_spawn_subagent(
     parent_session_id: str,
@@ -1678,6 +1692,15 @@ def musubi_spawn_subagent(
     # Phase A.3 — durable spawn audit row. The chat-marker side is
     # extension-side (Phase A.3 TS work); this guarantees the spawn is
     # provable post-hoc even if the marker scrolls off-screen.
+    #
+    # The audited value is the EFFECTIVE push, not the override. HI #2 makes
+    # the push non-opt-out-able: when the root names no skill, the role's
+    # native one still goes into the worker's system prompt. Recording only
+    # `skill_choice` therefore left every default push unaudited, and the
+    # console — which has no other source for it — reported "No successful
+    # skill calls recorded" for sessions in which a skill was pushed to every
+    # worker. `sub_sessions` keeps storing the override, because
+    # `build_subagent_context` resolves the default from the role itself.
     try:
         subagent_audit.record_spawn(
             handle_id=handle_id,
@@ -1688,7 +1711,7 @@ def musubi_spawn_subagent(
             allowed_tools=effective_tools,
             max_turns=max_turns,
             wall_clock_timeout_s=wall_clock_timeout_s,
-            pushed_skill_id=skill_choice,
+            pushed_skill_id=_effective_pushed_skill(role, skill_choice),
         )
     except Exception:
         # Audit failure must not silently drop a spawn — but it also must
@@ -2099,7 +2122,9 @@ def musubi_get_subagent_context(handle_id: str) -> str:
     (Phase A.3) calls this once per spawn and uses the result verbatim.
 
     Result on success:
-      { status: 'ok', brief, role, role_skill, allowed_tools }
+      { status: 'ok', brief, role, role_skill, role_skill_id, allowed_tools }
+    `role_skill_id` names the skill whose text is in `role_skill`, so the
+    caller can log and audit what was pushed instead of only holding prose.
     Result on missing handle:
       { status: 'error', error: 'handle … not found' }
     """
@@ -2124,6 +2149,7 @@ def musubi_get_subagent_context(handle_id: str) -> str:
         "brief": ctx.brief,
         "role": ctx.role,
         "role_skill": ctx.role_skill,
+        "role_skill_id": ctx.role_skill_id,
         "allowed_tools": list(ctx.allowed_tools),
     })
 

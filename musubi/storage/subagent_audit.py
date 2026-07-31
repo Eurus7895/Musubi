@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS subagent_audit (
     tools_used           TEXT,                     -- JSON array
     summary_truncated    INTEGER,                  -- 0/1
     verification_errors  TEXT,                     -- JSON array
-    pushed_skill_id      TEXT                      -- root-selected skill pushed at spawn (option 3)
+    pushed_skill_id      TEXT                      -- effective skill pushed into the worker prompt: the root's override when it made one, else the role's native push
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_audit_ts
     ON subagent_audit (ts);
@@ -141,9 +141,13 @@ def record_spawn(
 ) -> None:
     """Persist one row marking a sub-agent spawn.
 
-    `pushed_skill_id` records the root-selected skill injected into the
-    worker's prompt (option 3). It has no tool-call of its own, so the
-    spawn row is the only place a Console can prove the worker received it.
+    `pushed_skill_id` records the EFFECTIVE skill injected into the
+    worker's prompt — the root's per-spawn override when it made one,
+    otherwise the role's native push (HI #2, which is not opt-out-able).
+    It has no tool-call of its own, so the spawn row is the only place a
+    Console can prove the worker received it; recording only the override
+    left every default push unauditable and every such session reading
+    "no skill used".
     """
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
     with _connect(db_path) as conn:

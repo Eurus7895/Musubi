@@ -742,11 +742,18 @@ async def run_agent(
             file=log,
         )
     # What the RECORD establishes, as distinct from what the sentence suggests.
+    # Measured against EVERY root this request was granted, not just the
+    # harness root. `registry` already holds the folders the operator attached
+    # to this session; without it the vector reported each of them as
+    # unreachable and `prompt_block` told the root agent to refuse the folder
+    # the operator had just handed it, one block above the registry listing
+    # that said the opposite.
     evidence = collect_evidence(
         effective_task,
         has_conversation=has_conversation,
         explorer_findings=_has_explorer_findings(goal_state),
         barren_turns=chat_usage["barren_turns"],
+        roots=tuple((grant.alias, grant.path) for grant in registry.grants),
     )
     print(evidence.log_line(), file=log)
     # One fact crosses from observation into enforcement: did the request name
@@ -3366,6 +3373,19 @@ async def _dispatch_one(
     if should_audit:
         decision = evaluate_tool_call(call_role, name)
         _safe_record_policy(decision, db_path=audit_path, log=log)
+        if decision.allowed:
+            # Allows were recorded to `policy_audit` but never emitted, so the
+            # only policy line that ever reached the runtime ledger was a
+            # denial. A console filtered to Policy therefore read empty on
+            # every clean run — the gate proving itself exactly when it has
+            # nothing to refuse is what the operator needs to see, and
+            # `policy_audit` cannot supply it per-turn (it carries no session
+            # or request column, and the console reads only its last 50 rows).
+            emit_runtime_log(
+                log,
+                f"[agent]   policy allow {name} (role={call_role})",
+                category="policy",
+            )
         if not decision.allowed:
             denied = (
                 f"[policy denied] {decision.reason}"

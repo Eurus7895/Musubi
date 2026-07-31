@@ -75,7 +75,16 @@ def test_g1_role_only_sees_brief_role_role_skill_allowed_tools(role: str) -> Non
     that could surface parent state. If a refactor adds a field, this
     test must be updated *intentionally*."""
     ctx = build_subagent_context("brief", role)
-    expected_attrs = {"brief", "role", "role_skill", "allowed_tools"}
+    # Pin updated intentionally: `role_skill_id` names the catalog skill whose
+    # text is already in `role_skill`. It is public catalog metadata about the
+    # payload the worker was handed, not parent state — the worker can read
+    # the SKILL.md itself, so its id reveals nothing the brief did not. It was
+    # added because a pushed skill otherwise left no name anywhere: the audit
+    # ledger and the console could not say WHICH skill a worker received
+    # (HI #2 pushes it; HI #8 says no spawn is silent).
+    expected_attrs = {
+        "brief", "role", "role_skill", "role_skill_id", "allowed_tools",
+    }
     actual_attrs = {f for f in dir(ctx) if not f.startswith("_")}
     # asdict() includes only dataclass fields; dir() may include
     # frozen-dataclass machinery — restrict to dataclass fields.

@@ -93,6 +93,13 @@ class SubagentContext:
     role: str
     role_skill: str | None
     allowed_tools: tuple[str, ...]
+    #: The catalog id of the skill in `role_skill` — the root's per-spawn
+    #: override when it made one, otherwise the role's native push. Carried
+    #: separately because `role_skill` is SKILL.md prose: nothing downstream
+    #: could name what was pushed, so a role-default push left no trace in the
+    #: audit ledger or the console, and every session read "no skill used"
+    #: however many were pushed (HI #2 pushes; HI #8 says no spawn is silent).
+    role_skill_id: str | None = None
 
 
 def build_subagent_context(
@@ -155,6 +162,10 @@ def build_subagent_context(
         role=role_key,
         role_skill=role_skill,
         allowed_tools=tuple(SUBAGENT_POLICIES[role_key]),
+        # Only when the text actually loaded. A stale id whose SKILL.md is
+        # missing pushed nothing, and reporting it as pushed would make the
+        # console assert a procedure the worker never received.
+        role_skill_id=chosen if role_skill is not None else None,
     )
 
 
@@ -164,7 +175,7 @@ def context_keys() -> set[str]:
     Used by tests to assert the firewall hasn't accidentally widened —
     add a field here only after a deliberate design discussion.
     """
-    return {"brief", "role", "role_skill", "allowed_tools"}
+    return {"brief", "role", "role_skill", "role_skill_id", "allowed_tools"}
 
 
 def assert_no_session_leakage(payload: Any) -> None:

@@ -86,7 +86,7 @@ async def run_subagent(
         _worker_touched_files,
         run_unit,
     )
-    from agent.runtime_log import runtime_worker_scope
+    from agent.runtime_log import emit_runtime_log, runtime_worker_scope
 
     # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
     # _spec): the role prompt is resolved BEFORE the spawn so its declared
@@ -157,6 +157,7 @@ async def run_subagent(
 
     brief = str(ctx.get("brief", ""))
     role_skill = ctx.get("role_skill")
+    role_skill_id = str(ctx.get("role_skill_id") or "")
     allowed = ctx.get("allowed_tools") or []
 
     worker_max_output = _frontmatter_max_output_tokens(agent_md)
@@ -200,6 +201,18 @@ async def run_subagent(
     label_token = _worker_log_label.set(f"{role}#{handle_id[:8]}")
     try:
         with runtime_worker_scope(role, handle_id):
+            # A pushed skill is the one thing a worker receives that leaves no
+            # tool call behind — `build_subagent_system_prompt` bakes it in. So
+            # it never reached the runtime ledger, and the console's per-agent
+            # Skills view was empty for every worker that did not additionally
+            # PULL a skill with `musubi_get_skill`. Emitted inside the worker
+            # scope so the record carries this exact handle (HI #2 + HI #8).
+            if role_skill_id:
+                emit_runtime_log(
+                    log,
+                    f"[agent]   skill pushed={role_skill_id} agent={role}",
+                    category="skills",
+                )
             answer, turns = await run_unit(
                 session, vendor, child_tools,
                 system_prompt=system_prompt,

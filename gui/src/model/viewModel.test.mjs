@@ -1466,3 +1466,103 @@ test('the Studio lists saved recipes and refuses to delete repository-owned ones
   state.pipelineBuilder.savedRecipe = { name: '', stages: [] }
   assert.equal(buildViewModel(state, {}).pipelineBuilder.deletable, false)
 })
+
+// ── evidence is session-wide, and every source survives the projection ──────
+
+function historySession(overrides = {}) {
+  // Two turns. The FIRST summons a worker and pushes it a skill; the SECOND
+  // (the latest) does nothing but answer. That is the shape the console got
+  // wrong: scoping evidence to the latest root turn hid everything the
+  // session had actually done.
+  const coder = agent(1, 'root-1', 'done', 'coder', 'gui-orchestrator-wide')
+  coder.pushedSkill = 'typescript'
+  return {
+    coder,
+    state: baseState({
+      orchestratorChatId: 'gui-orchestrator-wide',
+      selectedSession: 'gui-orchestrator-wide',
+      orchestratorSessions: [{
+        chatId: 'gui-orchestrator-wide', title: 'wide', lastRequest: 'and now explain it',
+        rootTurns: 2, workers: 1,
+      }],
+      subagents: [coder],
+      agentTurns: [
+        { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-wide', parentSession: 'root-1', request: 'build it', startedAt: 100, cycles: 3, tokensInEstimate: 800, tokensOutEstimate: 200 },
+        { id: 2, requestId: 'request-2', chatId: 'gui-orchestrator-wide', parentSession: 'root-2', request: 'explain it', startedAt: 200, cycles: 1, tokensInEstimate: 40, tokensOutEstimate: 10 },
+      ],
+      agentCycles: [
+        { sessionId: 'root-1', stage: 'agent', workerId: 'root', cycleIdx: 0, lmMs: 5, tokensIn: 200, cachedInputTokens: 0, tokensOut: 50, tokenSource: 'provider', toolNames: ['musubi_spawn_subagent'], cycleStatus: 'ok' },
+        { sessionId: 'root-1', stage: 'coder', workerId: coder.handle, cycleIdx: 0, lmMs: 9, tokensIn: 600, cachedInputTokens: 0, tokensOut: 150, tokenSource: 'provider', toolNames: ['musubi_write_file'], cycleStatus: 'final' },
+        { sessionId: 'root-2', stage: 'agent', workerId: 'root', cycleIdx: 0, lmMs: 3, tokensIn: 40, cachedInputTokens: 0, tokensOut: 10, tokenSource: 'provider', toolNames: [], cycleStatus: 'final' },
+      ],
+      runtimeLogEvents: [
+        { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-wide', seq: 1, ts: 'epoch:100', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch 1' },
+        { id: 2, requestId: 'request-2', chatId: 'gui-orchestrator-wide', seq: 1, ts: 'epoch:200', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch 2' },
+      ],
+      ...overrides,
+    }),
+  }
+}
+
+test('skills recorded on an earlier turn still count as used by the session', () => {
+  const { coder, state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  // Scoped to the latest root turn, this map was empty and the conversation
+  // panel read "No successful skill calls recorded" for a session that pushed
+  // a skill into the only worker it ran.
+  assert.deepEqual(vm.skillsByWorker[coder.handle], ['typescript'])
+})
+
+test('the request projection keeps audit-derived logs instead of replacing them', () => {
+  const { coder, state } = historySession({
+    policy: [{ id: 30, ts: '10:00:03', verdict: 'ALLOW', tool: 'musubi_write_file', role: 'coder', handle: 'h1', reason: 'capability Write allowed for role coder' }],
+    toolEvidence: [
+      { id: 20, ts: '10:00:01', sessionId: 'root-1', chatId: 'gui-orchestrator-wide', role: 'coder', workerId: 'h1', tool: 'musubi_write_file', category: 'tools', status: 'ok', skillId: '', detail: 'wrote index.html' },
+    ],
+  })
+  const vm = buildViewModel(state, actions())
+
+  const categories = new Set(vm.runtimeLogs.map((row) => row.category))
+  // The ledger only ever carries what the stderr framer wrote. Skills pushed
+  // at spawn, policy verdicts, and per-cycle model rows come from elsewhere
+  // and used to be dropped wholesale by the projection.
+  assert.equal(categories.has('skills'), true)
+  assert.equal(categories.has('policy'), true)
+  assert.equal(categories.has('model'), true)
+  // Still request-scoped, so the per-turn log stays a per-turn log.
+  const pushed = vm.runtimeLogs.find((row) => row.category === 'skills')
+  assert.equal(pushed.requestId, 'request-1')
+  assert.equal(pushed.agentHandle, coder.handle)
+  // And the ledger's own rows survive alongside them.
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'host'), true)
+})
+
+test('a turn reports the tokens it spent including its workers, and its own share', () => {
+  const { state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+  assert.deepEqual(turns.map((node) => node.tokens), [1000, 50])
+  // The first turn's 1000 CONTAINS the coder's 750 — the driver hands one
+  // counter to the root and every worker under it. Stating the root's own
+  // share is what stops the two figures reading as addends.
+  assert.deepEqual(turns.map((node) => node.ownTokens), [250, 50])
+  assert.equal(turns[0].tokensAreInclusive, true)
+  const worker = vm.runtimeGraph.nodes.find((node) => node.kind === 'agent')
+  assert.equal(worker.tokens, 750)
+  // Session total = the sum of the turn totals, with nothing counted twice.
+  assert.equal(
+    vm.driverSummary.economics.inputTokens + vm.driverSummary.economics.outputTokens,
+    turns.reduce((sum, node) => sum + node.tokens, 0),
+  )
+})
+
+test('a turn carries the skills its own agents received', () => {
+  const { state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+  assert.deepEqual(turns[0].skills, ['typescript'])
+  assert.deepEqual(turns[1].skills, [])
+})

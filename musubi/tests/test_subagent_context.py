@@ -36,7 +36,13 @@ def test_signature_does_not_accept_session_id_or_db_path() -> None:
 
 
 def test_context_keys_is_closed_set() -> None:
-    assert context_keys() == {"brief", "role", "role_skill", "allowed_tools"}
+    # `role_skill_id` names the catalog skill already carried as text in
+    # `role_skill` — catalog metadata, never parent state. Added so a pushed
+    # skill is nameable downstream: without it the audit ledger and the
+    # console had no way to say which skill a worker received.
+    assert context_keys() == {
+        "brief", "role", "role_skill", "role_skill_id", "allowed_tools",
+    }
 
 
 def test_subagent_context_is_frozen() -> None:

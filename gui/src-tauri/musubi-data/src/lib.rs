@@ -2392,12 +2392,19 @@ fn load_state_at_with_pipeline_runs(
         } else {
             "''"
         };
+        // Newest 120, then reversed back into ascending order — the same
+        // shape `agent_cycles` uses below. `ORDER BY id ASC LIMIT 120` took
+        // the OLDEST 120 turns in the whole database: past that many turns
+        // the console stopped seeing any new one, so recent sessions rendered
+        // as "no agent activity yet", their timelines lost rows, and the
+        // per-session token ledger silently dropped every turn beyond the cap
+        // while the cycle-derived economics kept counting them.
         let mut tstmt = agent_turn_conn.prepare(&format!(
             "SELECT id, {request_id_expr}, chat_id, parent_session_id, started_at, model_family, cycles, \
                     tokens_in_estimate, tokens_out_estimate \
-             FROM agent_turns ORDER BY id ASC LIMIT 120"
+             FROM agent_turns ORDER BY id DESC LIMIT 120"
         ))?;
-        st.agent_turns = tstmt
+        let mut turns = tstmt
             .query_map([], |r| {
                 Ok(AgentTurn {
                     id: r.get(0)?,
@@ -2413,6 +2420,8 @@ fn load_state_at_with_pipeline_runs(
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        turns.reverse();
+        st.agent_turns = turns;
     }
 
     if table_exists(conn, "runtime_log_events")? {
@@ -3926,6 +3935,31 @@ mod tests {
         assert_eq!(st.agent_turns.len(), 1);
         assert_eq!(st.agent_turns[0].parent_session, "direct-session");
         assert_eq!(st.agent_turns[0].cycles, 1);
+    }
+
+    #[test]
+    fn agent_turns_keep_the_newest_when_the_cap_is_reached() {
+        // The cap used to take the OLDEST 120 rows, so a console past 120
+        // turns never saw another new one: fresh sessions rendered as "no
+        // agent activity yet" and their token ledger came back empty.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        for id in 1..=130 {
+            conn.execute(
+                "INSERT INTO agent_turns\
+                 (id,chat_id,parent_session_id,started_at,model_family,cycles,tokens_in_estimate,tokens_out_estimate,lm_ms,total_ms)\
+                 VALUES(?1,'chat-a',?2,?3,'deepseek',1,100,20,300,500)",
+                rusqlite::params![id, format!("session-{id}"), id as f64],
+            )
+            .unwrap();
+        }
+
+        let st = load_state(&conn).unwrap();
+
+        assert_eq!(st.agent_turns.len(), 120);
+        // Ascending order is preserved, and the window ends at the newest row.
+        assert_eq!(st.agent_turns[0].parent_session, "session-11");
+        assert_eq!(st.agent_turns[119].parent_session, "session-130");
     }
 
     #[test]

@@ -190,6 +190,80 @@ def test_get_subagent_context_tool_surfaces_pushed_skill(parent_session) -> None
     ctx = json.loads(server.musubi_get_subagent_context(spawn["handle_id"]))
     assert ctx["status"] == "ok"
     assert ctx["role_skill"] == skill_loader.get_skill("typescript")
+    assert ctx["role_skill_id"] == "typescript"
+
+
+# ── the push is auditable, override or not (HI #2 push, HI #8 no silence) ──
+
+
+def test_context_names_the_skill_it_pushed_not_only_its_text() -> None:
+    """`role_skill` is prose; nothing downstream could say WHICH skill it is.
+
+    Every consumer — the runtime log, the audit ledger, the console's Skills
+    panel — needs the id. Without it a role-default push was invisible, and a
+    session that pushed a skill to every worker still read "No successful
+    skill calls recorded".
+    """
+    explorer = subagent_context.build_subagent_context(brief="x", role="explorer")
+    assert explorer.role_skill_id == "explorer"
+
+    coder = subagent_context.build_subagent_context(brief="x", role="coder")
+    assert coder.role_skill is None
+    assert coder.role_skill_id is None
+
+
+def _audited_push(handle_id: str, audit_db: Path) -> str | None:
+    from storage import subagent_audit
+
+    rows = [
+        row for row in subagent_audit.query_events(
+            handle_id=handle_id, db_path=audit_db,
+        )
+        if row["event"] == "spawned"
+    ]
+    assert len(rows) == 1
+    return rows[0]["pushed_skill_id"]
+
+
+def test_spawn_audits_the_role_default_push_with_no_override(
+    parent_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HI #2's push is not opt-out-able, so it is not un-auditable either.
+
+    Before this, `subagent_audit.pushed_skill_id` held only the root's
+    explicit override. A spawn that took the role's native skill — the normal
+    case — recorded NULL, so the console had no source for what the worker was
+    actually given, and its Skills panel read empty for every such session.
+    """
+    sid, _ = parent_session
+    audit_db = tmp_path / "spawn-audit.db"
+    monkeypatch.setenv("MUSUBI_AUDIT_DB", str(audit_db))
+
+    out = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid,
+        parent_agent_name="agent",
+        role="explorer",
+        brief="find where the loop dispatches tools",
+    ))
+    assert out["status"] == "spawned"
+    assert _audited_push(out["handle_id"], audit_db) == "explorer"
+
+
+def test_spawn_audits_nothing_when_the_role_pushes_nothing(
+    parent_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid, _ = parent_session
+    audit_db = tmp_path / "spawn-audit.db"
+    monkeypatch.setenv("MUSUBI_AUDIT_DB", str(audit_db))
+
+    out = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid,
+        parent_agent_name="agent",
+        role="coder",
+        brief="write the page",
+    ))
+    assert out["status"] == "spawned"
+    assert _audited_push(out["handle_id"], audit_db) is None
 
 
 # ── skill selection is available to the root in every scope ────────────────

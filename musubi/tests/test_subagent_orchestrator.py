@@ -168,6 +168,76 @@ def test_run_subagent_attributes_child_log_lines_to_exact_handle(
     assert child["agent_handle"] == "worker-exact-123"
 
 
+def test_run_subagent_logs_the_skill_it_pushed_into_the_worker_prompt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """A pushed skill is the one thing a worker gets that makes no tool call.
+
+    `build_subagent_system_prompt` bakes it in, so nothing reached the runtime
+    ledger and the console's per-agent Skills view was empty for every worker
+    that did not additionally PULL one with `musubi_get_skill` — which is most
+    of them, since HI #2's push exists precisely so the worker need not ask.
+    """
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"worker-skill-1",'
+                    '"role":"explorer","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"scan it",'
+                    '"role_skill":"# Explorer","role_skill_id":"explorer",'
+                    '"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"recorded","final_status":"done",'
+                    '"summary":"finished"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        return "finished", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Explorer")
+    raw = io.StringIO()
+    log = RuntimeLogWriter(raw, request_id="request-1")
+
+    asyncio.run(run_subagent(
+        Session(),
+        {"role": "explorer", "brief": "scan it", "parent_session_id": "parent"},
+        FakeRouter([]),
+        [],
+        log,
+        agents_dir=tmp_path,
+        orchestration=Orchestration(parent_session_id="parent"),
+    ))
+
+    events = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in raw.getvalue().split("\n")
+        if line
+    ]
+    pushed = [row for row in events if row["category"] == "skills"]
+    assert len(pushed) == 1
+    assert pushed[0]["message"] == "[agent]   skill pushed=explorer agent=explorer"
+    # Attributed to the exact handle, so the console can scope it to one node.
+    assert pushed[0]["agent_handle"] == "worker-skill-1"
+
+
 def test_run_subagent_records_policy_failure_without_replacement(
     monkeypatch,
     tmp_path: Path,

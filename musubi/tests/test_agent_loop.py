@@ -1033,6 +1033,57 @@ def test_dispatch_allows_coder_write_and_records_post_tool_audit(
     ]
 
 
+def test_dispatch_emits_the_allow_verdict_to_the_runtime_ledger(
+    tmp_path: Path,
+) -> None:
+    """A clean run must still be able to show the gate deciding.
+
+    Only denials were emitted, so a console filtered to Policy read "no
+    matching log lines" on every session that broke no rule — the gate
+    proving itself is precisely what an operator opens that filter for.
+    `policy_audit` cannot answer per-turn: it carries no session or request
+    column and the console reads only its most recent rows.
+    """
+    from agent import run as run_mod
+    from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
+
+    session = _FakeToolSession("stored")
+    stream = io.StringIO()
+    writer = RuntimeLogWriter(stream, "request-1")
+
+    asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-allowed",
+                "name": "musubi_write_file",
+                "input": {"path": "x.py", "content": "print('x')"},
+            },
+            session,
+            writer,
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    # Split on "\n", never splitlines(): the protocol prefix starts with the
+    # RECORD SEPARATOR \x1e, which str.splitlines() treats as a line break of
+    # its own and would tear every envelope in half.
+    records = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in stream.getvalue().split("\n")
+        if line
+    ]
+    policy = [row for row in records if row["category"] == "policy"]
+    assert len(policy) == 1
+    assert "policy allow musubi_write_file" in policy[0]["message"]
+    assert "role=coder" in policy[0]["message"]
+
+
 def test_dispatch_injects_prior_failure_into_replacement_worker_brief(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3197,6 +3248,47 @@ def test_root_system_prompt_carries_the_evidence_vector() -> None:
     )
     assert "names_workspace_path=" in system_text
     assert "[agent] evidence:" in log.getvalue()
+
+
+def test_an_attached_folder_is_not_reported_as_out_of_reach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two prompt blocks used to contradict each other, loudest first.
+
+    `registry.prompt_block()` listed the attached folder as an available root;
+    `evidence.prompt_block()`, printed ABOVE it, measured containment against
+    the harness root alone, so the same folder appeared under
+    `outside_workspace=… (no worker can reach these; say so and stop)`. The
+    root agent obeyed the imperative and refused the folder the operator had
+    just handed it, telling the user to run the command by hand instead.
+    """
+    from workspace.grants import MANIFEST_ENV
+
+    harness_root = _musubi_dir().parent.resolve()
+    attached = (tmp_path / "bamf-updater").resolve()
+    attached.mkdir()
+    monkeypatch.setenv(MANIFEST_ENV, json.dumps([
+        {"grantId": "musubi", "alias": "musubi", "canonicalPath": str(harness_root)},
+        {"grantId": "g1", "alias": "bamf-updater", "canonicalPath": str(attached)},
+    ]))
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}])
+    ])
+    asyncio.run(run_agent(
+        f"Remove {attached}",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "outside_granted_roots" not in system_text
+    assert "names_workspace_path=True" in system_text
+    assert "paths=bamf-updater" in system_text
+    # And the roots listing still says how to address it.
+    assert "bamf-updater: " in system_text
 
 
 def test_the_evidence_vector_is_the_only_thing_left_to_route_on() -> None:

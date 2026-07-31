@@ -621,11 +621,35 @@ export function buildViewModel(s, act) {
     : null
   const sessionSteps = rootStep ? [rootStep, ...workerSessionSteps] : workerSessionSteps
 
-  const activeEvidenceSessions = new Set([
+  // Every parent session this CONVERSATION has opened, not just the latest
+  // one. A chat mints one parent session per root turn, so scoping evidence to
+  // `rootTurn.parentSession` scoped it to the newest turn: a session whose last
+  // turn spawned nothing reported zero workers, zero skills, and an empty
+  // activity list however much work the earlier turns did.
+  const sessionParentSessions = new Set([
+    ...orchAgentTurns
+      .filter((turn) => turn.chatId === activeSessionId)
+      .map((turn) => turn.parentSession),
+    ...(s.pipelineRuns || [])
+      .filter((run) => run.chatId === activeSessionId)
+      .map((run) => run.sessionId),
     rootTurn?.parentSession,
     activeRunRaw?.turn?.parentSession,
     activePipelineRun?.sessionId,
   ].filter(Boolean))
+  // Same widening for the agent set the evidence panels read. The graph keeps
+  // using `activeSessionAgents` (the latest turn) for its node layout; what
+  // must not be latest-turn-only is the record of what ran in this session.
+  const sessionScopedAgents = Array.from(new Map([
+    ...orchSubagents.filter((agent) => (
+      agent.chatId === activeSessionId || sessionParentSessions.has(agent.parentSession)
+    )),
+    ...(s.pipelineRuns || [])
+      .filter((run) => run.chatId === activeSessionId)
+      .flatMap((run) => run.stages || []),
+    ...activeSessionAgents,
+  ].map((agent) => [agent.handle, agent])).values())
+  const activeEvidenceSessions = sessionParentSessions
   const activeWorkerHandles = new Set(activeSessionAgents.map((agent) => agent.handle))
   const toolEvidence = (s.toolEvidence || []).filter((row) => (
     (row.chatId && row.chatId === activeSessionId)
@@ -637,12 +661,12 @@ export function buildViewModel(s, act) {
     if (!skillsByWorker[row.workerId]) skillsByWorker[row.workerId] = []
     if (!skillsByWorker[row.workerId].includes(row.skillId)) skillsByWorker[row.workerId].push(row.skillId)
   })
-  // Root-selected skills pushed into a worker at spawn (option 3) have no
-  // musubi_get_skill tool-call, so they never reach `toolEvidence`. Fold the
-  // spawn-row `pushedSkill` into the same per-worker skill map + log stream so
-  // the node badge, "Skills used" panel, and audited-activity list show them
-  // exactly like a pulled skill.
-  activeSessionAgents.forEach((agent) => {
+  // Skills pushed into a worker at spawn (HI #2) have no musubi_get_skill
+  // tool-call, so they never reach `toolEvidence`. Fold the spawn-row
+  // `pushedSkill` into the same per-worker skill map + log stream so the node
+  // badge, "Skills used" panel, and audited-activity list show them exactly
+  // like a pulled skill.
+  sessionScopedAgents.forEach((agent) => {
     if (!agent.pushedSkill || !agent.handle) return
     if (!skillsByWorker[agent.handle]) skillsByWorker[agent.handle] = []
     if (!skillsByWorker[agent.handle].includes(agent.pushedSkill)) {
@@ -654,6 +678,7 @@ export function buildViewModel(s, act) {
     id: `tool-${row.id}`,
     auditId: row.id,
     ts: row.ts || '',
+    sessionId: row.sessionId || '',
     workerId: row.workerId || '',
     role: clipEvidence(row.role || 'worker', 60),
     category: row.category === 'skills' ? 'skills' : 'tools',
@@ -661,12 +686,13 @@ export function buildViewModel(s, act) {
     status: clipEvidence(String(row.status || 'unknown').toLowerCase(), 40),
     detail: clipEvidence(row.detail || ''),
   }))
-  activeSessionAgents.forEach((agent) => {
+  sessionScopedAgents.forEach((agent) => {
     if (!agent.pushedSkill || !agent.handle) return
     runtimeLogs.push({
       id: `pushed-skill-${agent.handle}`,
       auditId: agent.id ?? null,
       ts: '',
+      sessionId: agent.parentSession || '',
       workerId: agent.handle,
       role: clipEvidence(agent.role || 'worker', 60),
       category: 'skills',
@@ -683,6 +709,7 @@ export function buildViewModel(s, act) {
         id: `model-${row.sessionId}-${workerId}-${row.cycleIdx}`,
         auditId: null,
         ts: '',
+        sessionId: row.sessionId || '',
         workerId,
         role: row.stage || (workerId === 'root' ? 'root' : 'worker'),
         category: 'model',
@@ -697,6 +724,7 @@ export function buildViewModel(s, act) {
           id: `cycle-tool-${row.sessionId}-${workerId}-${row.cycleIdx}-${index}`,
           auditId: null,
           ts: '',
+          sessionId: row.sessionId || '',
           workerId,
           role: row.stage || 'worker',
           category: tool === 'musubi_get_skill' ? 'skills' : 'tools',
@@ -706,12 +734,17 @@ export function buildViewModel(s, act) {
         })
       })
     })
+  const sessionWorkerHandles = new Set(sessionScopedAgents.map((agent) => agent.handle))
   ;(s.policy || [])
-    .filter((row) => activeWorkerHandles.has(row.handle) || (!row.handle && ['agent', 'driver'].includes(row.role)))
+    .filter((row) => sessionWorkerHandles.has(row.handle) || (!row.handle && ['agent', 'driver'].includes(row.role)))
     .forEach((row) => runtimeLogs.push({
       id: `policy-${row.id}`,
       auditId: row.id,
       ts: row.ts || '',
+      // `policy_audit` carries no session or request column, so a verdict can
+      // only be attributed by handle. Root verdicts (no handle) stay
+      // unattributed and land on the newest turn in the projection below.
+      sessionId: '',
       workerId: row.handle || 'root',
       role: clipEvidence(row.role || 'worker', 60),
       category: 'policy',
@@ -900,7 +933,7 @@ export function buildViewModel(s, act) {
         })
       })
 
-    projectedRuntimeLogs = sessionLedger.map((row) => ({
+    const ledgerLogs = sessionLedger.map((row) => ({
       id: `runtime-${row.id}`,
       auditId: null,
       requestId: row.requestId,
@@ -918,6 +951,71 @@ export function buildViewModel(s, act) {
       detail: row.message || '',
     }))
 
+    // The ledger USED to replace `runtimeLogs` outright. That silently threw
+    // away every other evidence source the console has — the tool ledger
+    // (`tool_audit`), the policy verdicts (`policy_audit`), the per-cycle model
+    // rows (`agent_cycles`), and the skills pushed at spawn — because none of
+    // them is written by the stderr framer. The effect the operator saw: the
+    // Agent-log Skills and Policy tabs said "No matching log lines for this
+    // scope" on every session, however many skills were pushed and however
+    // many verdicts were recorded. Merge instead of replace.
+    //
+    // A derived row has no request_id of its own, so it is attributed the only
+    // two ways the data allows: by worker handle, or by the parent session the
+    // turn opened. Anything attributable to neither (a root policy verdict —
+    // `policy_audit` has no session column at all) rides on the newest turn,
+    // which is where an operator looking for "what just happened" opens first.
+    const requestIdForHandle = new Map()
+    const requestIdForParentSession = new Map()
+    requestEntries.forEach((request) => {
+      request.agents.forEach((agent) => {
+        if (agent.handle) requestIdForHandle.set(agent.handle, request.requestId)
+      })
+      if (request.turn?.parentSession) {
+        requestIdForParentSession.set(request.turn.parentSession, request.requestId)
+      }
+    })
+    const newestRequestId = requestEntries[requestEntries.length - 1]?.requestId || ''
+    const derivedLogs = runtimeLogs.map((row) => {
+      const handle = row.workerId && row.workerId !== 'root' ? row.workerId : ''
+      const requestId = requestIdForHandle.get(handle)
+        || requestIdForParentSession.get(row.sessionId)
+        || newestRequestId
+      return {
+        ...row,
+        requestId,
+        seq: 0,
+        source: handle ? 'worker' : 'root',
+        stream: 'audit',
+        agentHandle: handle,
+        workerId: handle || `turn:${requestId}`,
+        message: row.detail || row.name || '',
+      }
+    }).filter((row) => row.requestId)
+    projectedRuntimeLogs = [...derivedLogs, ...ledgerLogs]
+
+    // Token totals per parent session, split into the root's own cycles and
+    // everything the turn spent including its workers.
+    //
+    // `agent_turns.tokens_*_estimate` comes from one `AgentRunStats` that
+    // `agent/subagent.py` hands to every worker it runs (`stats=stats`), so a
+    // turn's recorded figure ALREADY contains its workers'. Printing that
+    // number on the turn row beside each worker's own made the two look
+    // additive when one contains the other: a turn reading 90,025 above a
+    // single worker reading 75,696 invites 165,721, which is not a quantity
+    // that exists. Both numbers now come from `agent_cycles`, the one ledger
+    // with a row per model call, so "turn total = its own cycles + its
+    // workers'" holds by construction and the row can say which it is showing.
+    const cyclesByParentSession = new Map()
+    ;(s.agentCycles || []).forEach((row) => {
+      const key = row.sessionId
+      if (!key) return
+      if (!cyclesByParentSession.has(key)) cyclesByParentSession.set(key, { total: 0, own: 0 })
+      const bucket = cyclesByParentSession.get(key)
+      const spent = Math.max(0, Number(row.tokensIn) || 0) + Math.max(0, Number(row.tokensOut) || 0)
+      bucket.total += spent
+      if (!row.workerId || row.workerId === 'root') bucket.own += spent
+    })
     const allNodes = []
     const turnGroups = []
     requestEntries.forEach((request, index) => {
@@ -927,6 +1025,14 @@ export function buildViewModel(s, act) {
       const failedAgent = request.agents.find((agent) => ['failed', 'escalated', 'abandoned'].includes(agent.status))
       const status = running ? 'running' : (failedAgent?.status || 'done')
       const meta = sm[status] || sm.abandoned
+      const turnCycles = cyclesByParentSession.get(request.turn?.parentSession)
+      const estimatedTurnTokens = Number(request.turn?.tokensInEstimate || 0)
+        + Number(request.turn?.tokensOutEstimate || 0)
+      const turnTokens = turnCycles ? turnCycles.total : estimatedTurnTokens
+      const turnSkills = Array.from(new Set(
+        request.agents.flatMap((agent) => skillsByWorker[agent.handle] || [])
+          .concat(skillsByWorker.root || []),
+      ))
       const turnNode = {
         id: turnNodeId,
         requestId: request.requestId,
@@ -941,8 +1047,13 @@ export function buildViewModel(s, act) {
         turns: Number(request.turn?.cycles || 0),
         maxTurns: null,
         tools: requestLogs.filter((row) => row.category === 'tools').length,
-        skills: [],
-        tokens: Number(request.turn?.tokensInEstimate || 0) + Number(request.turn?.tokensOutEstimate || 0),
+        skills: turnSkills,
+        // Inclusive of every worker this turn summoned — see the note above
+        // `cyclesByParentSession`. `ownTokens` is the root's share of it, so
+        // the overview can state the containment instead of implying a sum.
+        tokens: turnTokens,
+        ownTokens: turnCycles ? turnCycles.own : estimatedTurnTokens,
+        tokensAreInclusive: true,
         logCount: requestLogs.length,
       }
       allNodes.push(turnNode)
