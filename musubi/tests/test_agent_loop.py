@@ -914,6 +914,146 @@ def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
     ]
 
 
+def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
+    tmp_path: Path,
+) -> None:
+    """An optional argument's wrong value is not an authorization failure.
+
+    Observed: the root passed the ticket id into `pushed_skill_id`, the
+    argument policy denied it through the same terminal channel that answers
+    "this role may not call this tool", and the turn ended 4 cycles and 12,383
+    tokens in having produced nothing. The caller WAS authorised to spawn a
+    coder; one string in a field it could have omitted entirely was wrong.
+    """
+    from agent import run as run_mod
+
+    session = _FakeToolSession("read result")
+    audit_db = tmp_path / "audit.db"
+    tool_uses = [
+        {
+            "id": "allowed-read",
+            "name": "musubi_read_file",
+            "input": {"path": "README.md"},
+        },
+        {
+            "id": "bad-skill-spawn",
+            "name": "musubi_spawn_subagent",
+            "input": {
+                "role": "coder",
+                "brief": "build it",
+                "recommendation_id": "7eb54567802b6738d489",
+                "pushed_skill_id": "7eb54567802b6738d489",
+            },
+        },
+    ]
+
+    results = asyncio.run(
+        run_mod._dispatch(
+            session,
+            tool_uses,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(
+                parent_session_id="parent",
+                parent_agent_name="agent",
+            ),
+            gateway=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    # The sound sibling still ran; only the malformed call was refused.
+    assert session.calls == [("musubi_read_file", {"path": "README.md"})]
+    refusal = next(
+        block for block in results if block["tool_use_id"] == "bad-skill-spawn"
+    )
+    payload = json.loads(refusal["content"])
+    assert payload["status"] == "refused"
+    # The message must be enough to fix the call without guessing.
+    assert "recommendation_id, not a skill_id" in payload["reason"]
+    assert "Permitted for 'coder'" in payload["reason"]
+    assert "omit `pushed_skill_id`" in payload["reason"]
+    # Recoverable is not unaudited: the verdict is still a DENY on record.
+    assert ("DENY", "agent", "musubi_spawn_subagent") in _read_policy_rows(audit_db)
+    assert ("agent", "musubi_spawn_subagent", "refused") in _read_tool_rows(audit_db)
+
+
+def test_a_recoverable_refusal_lets_the_root_retry_in_the_next_cycle(
+    tmp_path: Path,
+) -> None:
+    """The whole point of the split: cycle 2 exists."""
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "bad-skill-spawn",
+            "name": "musubi_spawn_subagent",
+            "input": {
+                "role": "coder",
+                "brief": "build it",
+                "pushed_skill_id": "7eb54567802b6738d489",
+            },
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": "corrected and finished",
+        }]),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [],
+            [{"role": "user", "content": "build it"}],
+            max_cycles=4,
+            log=io.StringIO(),
+            orchestration=Orchestration(
+                parent_session_id="parent",
+                parent_agent_name="agent",
+            ),
+            role="agent",
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert answer == "corrected and finished"
+    assert cycles == 2
+    assert len(router.calls) == 2
+
+
+def test_an_unauthorised_spawn_role_is_still_terminal(tmp_path: Path) -> None:
+    """The split must not soften authorization. No retry makes the caller a
+    different role, so that denial still ends the turn."""
+    from agent import run as run_mod
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(
+            run_mod._dispatch(
+                _FakeToolSession(),
+                [{
+                    "id": "denied-spawn-role",
+                    "name": "musubi_spawn_subagent",
+                    "input": {"role": "saboteur", "brief": "forged"},
+                }],
+                io.StringIO(),
+                vendor=None,
+                tools=[],
+                orchestration=Orchestration(
+                    parent_session_id="parent",
+                    parent_agent_name="agent",
+                ),
+                gateway=None,
+                audit_db_path=tmp_path / "audit.db",
+            )
+        )
+
+    assert type(caught.value).__name__ == "PolicyDeniedError"
+
+
 def test_root_policy_denial_is_terminal_after_one_lm_response(
     tmp_path: Path,
 ) -> None:

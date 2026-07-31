@@ -87,6 +87,7 @@ from agent.budget import (
 )
 from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
 from agent.boundary import (
+    PolicyDecision,
     denied_tool_guidance,
     evaluate_tool_call,
     evaluate_argument_policy,
@@ -2953,7 +2954,18 @@ def _preflight_policy_batch(
     orchestration: Orchestration | None,
     audit_db_path: Path | None,
     log: Any,
-) -> None:
+) -> dict[str, str]:
+    """Refuse the batch before any sibling launches — but only where warranted.
+
+    Returns `{tool_use_id: reason}` for calls whose ARGUMENTS were refused;
+    those flow into the same per-call refusal channel the spawn caps use, so
+    the model reads the reason as a tool result and can correct it on the next
+    cycle. An authorization denial still raises `PolicyDeniedError` and ends
+    the turn, because no retry can make the caller a different role.
+
+    Both are recorded to `policy_audit` as denials. The split is about what the
+    caller can do next, never about what the ledger says happened.
+    """
     call_role = (
         orchestration.parent_agent_name
         if orchestration is not None and orchestration.parent_agent_name
@@ -2961,6 +2973,7 @@ def _preflight_policy_batch(
     )
     session_id = orchestration.parent_session_id if orchestration else None
     audit_path = audit_db_path or _default_audit_db_path()
+    refused: dict[str, str] = {}
     for tu in tool_uses:
         name = str(tu.get("name", ""))
         if not is_musubi_tool(name):
@@ -2981,16 +2994,28 @@ def _preflight_policy_batch(
                 decision = argument_decision
         if decision.allowed:
             continue
+        reason = _enrich_policy_reason(decision, args, orchestration)
         denied = (
-            f"[policy denied] {decision.reason}"
+            f"[policy denied] {reason}"
             f"{denied_tool_guidance(call_role, name)}"
         )
         emit_runtime_log(
             log,
-            f"[agent]   policy denied {name}: {decision.reason}",
+            f"[agent]   policy denied {name}: {reason}",
             category="policy",
         )
         _safe_record_policy(decision, db_path=audit_path, log=log)
+        if decision.recoverable:
+            # Refuse THIS call, not the batch: a sibling spawn with sound
+            # arguments has done nothing wrong, and the model needs the
+            # reason back as a tool result to correct the one that has.
+            # `_dispatch_one` writes the tool_audit row for the refusal.
+            print(
+                f"[agent]   ⨯ refused worker: {reason}",
+                file=log,
+            )
+            refused[str(tu.get("id", ""))] = reason
+            continue
         _safe_record_tool_audit(
             session_id=session_id,
             role=call_role,
@@ -3004,8 +3029,35 @@ def _preflight_policy_batch(
         raise PolicyDeniedError(
             role=call_role,
             tool=name,
-            reason=decision.reason,
+            reason=reason,
         )
+    return refused
+
+
+def _enrich_policy_reason(
+    decision: PolicyDecision,
+    args: dict[str, Any],
+    orchestration: Orchestration | None,
+) -> str:
+    """Add the turn's own open recommendation to a skill refusal, when there is one.
+
+    `evaluate_argument_policy` is pure and DB-free, so the widest thing it can
+    name is the role's whole skill allowlist. The driver, meanwhile, already
+    holds the exact shortlist the ranker just offered for this spawn — it has
+    been recorded in `open_recommendation_skills` since recommendations
+    shipped and read by nothing. Naming those candidates turns "pick a legal
+    skill" into "pick one of these three".
+    """
+    reason = decision.reason
+    if not decision.recoverable or orchestration is None:
+        return reason
+    if "pushed_skill_id" not in reason:
+        return reason
+    candidates = orchestration.open_recommendation_skills
+    role = str(args.get("role") or "").strip()
+    if candidates and orchestration.open_recommendation_role == role:
+        return f"{reason} This turn's recommendation offered: {list(candidates)}."
+    return reason
 
 
 async def _dispatch(
@@ -3044,7 +3096,7 @@ async def _dispatch(
         orchestration=orchestration,
         log=log,
     )
-    _preflight_policy_batch(
+    argument_refusals = _preflight_policy_batch(
         tool_uses,
         role=role,
         orchestration=orchestration,
@@ -3060,6 +3112,9 @@ async def _dispatch(
         cycle_index=cycle_index,
         orchestration=orchestration,
     )
+    # An argument refusal outranks a width or role-order one: it is the reason
+    # THIS call cannot run as written, and the model needs it back verbatim.
+    refused.update(argument_refusals)
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
         for tu in tool_uses:
@@ -3369,6 +3424,23 @@ async def _dispatch_one(
             result_text=blocked, log=log,
         )
         return blocked
+    if refused_reason:
+        # A refusal is a decision not to make this call, so it lands ahead of
+        # the tool and ahead of every branch below.
+        #
+        # It used to live INSIDE the spawn-with-orchestration branch, which
+        # held only because the sole source of refusals — the per-role width
+        # and role-order caps — cannot fire with orchestration off. Argument
+        # refusals can fire in any configuration, and on that path a refused
+        # spawn fell straight through to the MCP server: the call the harness
+        # had just declined to make was made anyway.
+        result = json.dumps({"status": "refused", "reason": refused_reason})
+        _safe_record_tool_audit(
+            session_id=session_id, role=call_role, tool=str(name),
+            args=json_args(args), status="refused", db_path=audit_path,
+            result_text=result, log=log,
+        )
+        return result
     should_audit = is_musubi_tool(name)
     if should_audit:
         decision = evaluate_tool_call(call_role, name)
@@ -3381,6 +3453,11 @@ async def _dispatch_one(
             # nothing to refuse is what the operator needs to see, and
             # `policy_audit` cannot supply it per-turn (it carries no session
             # or request column, and the console reads only its last 50 rows).
+            #
+            # Suppressed for an already-refused call: role/tool authorization
+            # did pass, but the preflight has just logged why the ARGUMENTS
+            # did not, and an "allow" line under that denial reads as a
+            # contradiction rather than as the two checks it actually is.
             emit_runtime_log(
                 log,
                 f"[agent]   policy allow {name} (role={call_role})",
@@ -3506,17 +3583,8 @@ async def _dispatch_one(
         and vendor is not None
         and tools is not None
     ):
-        if refused_reason:
-            result = (
-                '{"status": "refused", "reason": '
-                f"{json.dumps(refused_reason)}" + "}"
-            )
-            _safe_record_tool_audit(
-                session_id=session_id, role=call_role, tool=name,
-                args=json_args(args), status="refused", db_path=audit_path,
-                result_text=result, log=log,
-            )
-            return result
+        # `refused_reason` is handled above, before any branch — a refused call
+        # must not reach the server on any path, orchestrated or not.
         ticket_id = str(args.get("recommendation_id") or "").strip()
         if orchestration.open_recommendation_id:
             if ticket_id != orchestration.open_recommendation_id:

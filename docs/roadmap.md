@@ -270,7 +270,19 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   the whole derived log stream with the ledger projection while scoping skills
   to the latest root turn instead of the conversation. Each of those four is
   closed; `SubagentContext` gained `role_skill_id` so a pushed skill is
-  nameable at all. Plan:
+  nameable at all. **A wrong argument stopped being a terminal policy
+  failure:** `evaluate_argument_policy` routed optional-argument denials
+  through `PolicyDeniedError`, the channel built for "this role may not call
+  this tool", so a root that put a `recommendation_id` into `pushed_skill_id`
+  ended its turn 4 cycles and 12,383 tokens in over a field it could have
+  omitted. `PolicyDecision` carries `recoverable` now: argument-shaped
+  denials return through the per-call refusal channel with the legal values
+  named — including this turn's own ranker candidates, which
+  `open_recommendation_skills` had held unread since recommendations shipped —
+  while authorization denials stay terminal and every verdict is still
+  audited as a deny. Fixed alongside: `refused_reason` was honoured only
+  inside the spawn-with-orchestration branch, so a refused call could still
+  reach the MCP server on any other path. Plan:
   [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —

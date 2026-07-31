@@ -135,7 +135,66 @@ scope from the latest turn to the whole conversation.
 - **HI #8** (no silent sub-agents): strengthened — a spawn's pushed skill was
   a silent part of the spawn.
 
+## Follow-up: a wrong argument must not be a terminal policy failure
+
+A later run died like this:
+
+    [agent]   policy denied musubi_spawn_subagent: Skill '7eb54567802b6738d489'
+              is not permitted for worker role 'coder'.
+    [agent] usage cycles=4 … in_tokens=7604 out_tokens=4779
+    [incomplete] policy denied for role 'agent' while calling
+              'musubi_spawn_subagent': …
+
+`7eb54567802b6738d489` is twenty hex characters — the shape of a
+`recommendation_id` (`sha256(...)[:20]`, `server.py::musubi_recommend_skills`).
+The root put the ticket id in the skill field. The instruction it was following
+made that a reasonable misreading: *"pass its `recommendation_id` and your
+chosen candidate as `pushed_skill_id`"* places the two ids adjacent with the
+choice buried between them.
+
+**The design assumption that broke.** `PolicyDeniedError` is documented as
+*"Terminal policy control flow"* and it is right for what it was built for: a
+role reaching for a capability it does not have. Retrying cannot make the
+caller a different role, so the run ends. `evaluate_argument_policy` then
+reused that same terminal channel for **argument validation** — and
+`pushed_skill_id` is an *optional* field on a call whose role, target role, and
+tool intersection were all authorised. One wrong string in a slot the model
+could have left empty ended the turn 4 cycles and 12,383 tokens in.
+
+The asymmetry proving the point: the same rule reached through the MCP server
+(`server.py:1628`) returns `{"status":"error","error_kind":"policy_denied",
+"allowed_skills":[…]}` — recoverable, with the legal values attached. The
+driver's preflight raised instead. Same rule, two verdicts, harsher one first.
+
+Two further defects surfaced while fixing it:
+
+- `refused_reason` was honoured only *inside* the spawn-with-orchestration
+  branch of `_dispatch_one`. That held while the only refusals were the width
+  and role-order caps, which cannot fire with orchestration off. Argument
+  refusals fire in any configuration, and on that path a refused spawn fell
+  through to the MCP server — the call the harness had just declined to make
+  was made anyway.
+- `Orchestration.open_recommendation_skills` has held the exact shortlist the
+  ranker offered since recommendations shipped, and nothing ever read it.
+
+**Steps:** `PolicyDecision` gains `recoverable`; the two argument-shaped checks
+(`allowed_tools` intersection, `pushed_skill_id`) set it, while
+`check_subagent_allowed` stays terminal. `_preflight_policy_batch` returns
+`{tool_use_id: reason}` for recoverable denials into the existing per-call
+refusal channel — so a sound sibling in the same batch still runs — and raises
+only for authorization. Both are still recorded to `policy_audit` as denials:
+the split governs what the caller may do next, never what the ledger says.
+The refusal message names the recommendation-id swap explicitly, lists the
+role's permitted skills, adds this turn's actual candidates from
+`open_recommendation_skills`, and points out that omitting the field is legal.
+`refused_reason` moves ahead of every branch in `_dispatch_one`. The
+instruction in `agent/context.py` now states that the two ids are different
+arguments and must never carry the same value.
+
 ## Verification
 
-`1762 passed` (pytest), `190 pass` (node --test), `82 passed` (cargo test).
-Each new console test was confirmed to fail against the pre-change code.
+`1765 passed` (pytest), `190 pass` (node --test), `82 passed` (cargo test).
+Each new test was confirmed to fail against the pre-change code. The two
+existing terminal-denial pins — an unauthorised spawn role, and a root
+reaching for `musubi_write_file` — still pass unchanged, which is what says
+the recoverable split did not soften authorization.

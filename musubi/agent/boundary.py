@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -25,6 +26,19 @@ class PolicyDecision:
     role: str
     tool: str
     reason: str
+    #: True when the denial is about the VALUES in this call rather than the
+    #: caller's authority to make it. Both still deny and both are audited
+    #: identically; they differ only in what the caller can do next.
+    #:
+    #: "role `agent` may not call `musubi_write_file`" cannot be fixed by
+    #: retrying — the model has no way to become a different role, so the run
+    #: ends. "skill 'x' is not permitted for role 'coder'" is one wrong string
+    #: in an OPTIONAL argument of an otherwise authorised call; the model can
+    #: correct it on the next cycle for the price of one round-trip. Routing
+    #: the second through the terminal channel ended a turn 4 cycles and
+    #: 12,383 tokens in, having delivered nothing, over a field the caller was
+    #: free to omit entirely.
+    recoverable: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -281,8 +295,10 @@ def evaluate_argument_policy(
                 tool_name,
                 (
                     f"No tools available for sub-agent role {target_role!r} "
-                    "after intersecting with caller's allow-list."
+                    "after intersecting with caller's allow-list. Omit "
+                    "`allowed_tools` — the worker role owns its tool surface."
                 ),
+                recoverable=True,
             )
 
     pushed_skill = args.get("pushed_skill_id")
@@ -293,12 +309,50 @@ def evaluate_argument_policy(
                 "DENY",
                 clean_role,
                 tool_name,
-                (
-                    f"Skill {skill_id!r} is not permitted for worker role "
-                    f"{target_role!r}."
+                _pushed_skill_denial(
+                    skill_id, target_role, args.get("recommendation_id"),
                 ),
+                recoverable=True,
             )
     return None
+
+
+#: A `recommendation_id` is `sha256(...)[:20]` (`server.py::
+#: musubi_recommend_skills`), so it is exactly twenty hex characters — a shape
+#: no skill id in the catalog has. Matching it lets the refusal name the
+#: mistake instead of only its symptom.
+_RECOMMENDATION_ID_RE = re.compile(r"^[0-9a-f]{20}$")
+
+
+def _pushed_skill_denial(
+    skill_id: str, target_role: str, recommendation_id: Any,
+) -> str:
+    """Say what to pass instead, not only that this value was wrong.
+
+    The bare form of this message — "Skill 'x' is not permitted for worker role
+    'coder'" — is true and useless: it names neither the legal values nor the
+    likeliest cause. The observed failure was the model passing the ticket id
+    into the skill field, which the message could not distinguish from a
+    genuinely unauthorised skill.
+    """
+    from validation.context_builder import AGENT_SKILL_ALLOWLIST
+
+    lines = [
+        f"Skill {skill_id!r} is not permitted for worker role "
+        f"{target_role!r}."
+    ]
+    ticket = recommendation_id.strip() if isinstance(recommendation_id, str) else ""
+    if skill_id == ticket or _RECOMMENDATION_ID_RE.fullmatch(skill_id):
+        lines.append(
+            "That value is a recommendation_id, not a skill_id. "
+            "`recommendation_id` carries the ticket; `pushed_skill_id` carries "
+            "one `skill_id` you picked from that ticket's `recommended` list."
+        )
+    permitted = sorted(AGENT_SKILL_ALLOWLIST.get(target_role, set()))
+    if permitted:
+        lines.append(f"Permitted for {target_role!r}: {permitted}.")
+    lines.append("Or omit `pushed_skill_id` — the role's own skill is pushed anyway.")
+    return " ".join(lines)
 
 
 def denied_tool_guidance(role: str, tool_name: str) -> str:
