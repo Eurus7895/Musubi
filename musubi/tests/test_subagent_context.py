@@ -16,7 +16,6 @@ import pytest
 from skills import skill_loader
 from validation import subagent_context
 from validation.subagent_context import (
-    SUBAGENT_ROLE_SKILLS,
     SubagentContext,
     assert_no_session_leakage,
     build_subagent_context,
@@ -45,8 +44,25 @@ def test_context_keys_is_closed_set() -> None:
     }
 
 
+def test_context_requires_explicit_model_selected_skill() -> None:
+    with pytest.raises(ValueError, match="pushed_skill_id"):
+        build_subagent_context("scan", "explorer")
+
+
+def test_explicit_missing_skill_fails_closed(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    with pytest.raises(ValueError, match="not found"):
+        build_subagent_context(
+            "scan", "explorer", pushed_skill_id="explorer",
+            skills_dir=skills_dir,
+        )
+
+
 def test_subagent_context_is_frozen() -> None:
-    ctx = build_subagent_context("x", "explorer")
+    ctx = build_subagent_context(
+        "x", "explorer", pushed_skill_id="explorer",
+    )
     with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
         ctx.brief = "tampered"  # type: ignore[misc]
 
@@ -62,7 +78,8 @@ def test_build_returns_only_brief_role_skill_and_tools(
         "# Explorer\n\nRead-only scan of the repo.\n", encoding="utf-8"
     )
     ctx = build_subagent_context(
-        "scan src/ for FooClass", "explorer", skills_dir=skills_dir
+        "scan src/ for FooClass", "explorer",
+        pushed_skill_id="explorer", skills_dir=skills_dir,
     )
     assert isinstance(ctx, SubagentContext)
     assert ctx.brief == "scan src/ for FooClass"
@@ -72,34 +89,11 @@ def test_build_returns_only_brief_role_skill_and_tools(
     assert ctx.allowed_tools == ("Read", "View", "Grep", "Glob")
 
 
-def test_role_skill_is_none_when_skill_file_missing(tmp_path: Path) -> None:
-    """Phase A.2 ships the table; Phase A.3 lands the SKILL.md files.
-    Until then, role_skill is None — never a fallback skill."""
-    empty_skills = tmp_path / "skills"
-    empty_skills.mkdir()
-    ctx = build_subagent_context(
-        "x", "investigator", skills_dir=empty_skills
-    )
-    assert ctx.role_skill is None
-    assert ctx.role == "investigator"
-
-
 def test_brief_is_stripped_of_whitespace() -> None:
-    ctx = build_subagent_context("  scan  ", "explorer")
+    ctx = build_subagent_context(
+        "  scan  ", "explorer", pushed_skill_id="explorer",
+    )
     assert ctx.brief == "scan"
-
-
-def test_each_role_has_a_registered_skill_id() -> None:
-    """Every role in SUBAGENT_POLICIES must have an entry in
-    SUBAGENT_ROLE_SKILLS — even if the SKILL.md file does not exist
-    yet. This keeps Phase A.2 and Phase A.3 in lockstep."""
-    from policy_engine import SUBAGENT_POLICIES
-    for role in SUBAGENT_POLICIES:
-        assert role in SUBAGENT_ROLE_SKILLS, (
-            f"role {role!r} has a tool policy but no entry in "
-            f"SUBAGENT_ROLE_SKILLS — add a skill_id (or `None`) before "
-            f"shipping the role."
-        )
 
 
 # ── failure-mode rejections ─────────────────────────────────────────────────

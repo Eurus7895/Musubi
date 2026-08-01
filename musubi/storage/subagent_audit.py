@@ -36,7 +36,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Mapping
 
 # Mirror scripts/post_tool_use.py's path resolution so both writers
 # converge on the same audit.db file.
@@ -73,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_subagent_audit_parent
     ON subagent_audit (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_subagent_audit_handle
     ON subagent_audit (handle_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_audit_event_once
+    ON subagent_audit (handle_id, event);
 """
 
 
@@ -152,7 +154,7 @@ def record_spawn(
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO subagent_audit ("
+            "INSERT OR IGNORE INTO subagent_audit ("
             " ts, handle_id, parent_session_id, parent_agent_name,"
             " role, brief, event,"
             " allowed_tools, max_turns, wall_clock_timeout_s, pushed_skill_id"
@@ -165,6 +167,30 @@ def record_spawn(
                 (pushed_skill_id.strip() if pushed_skill_id else None),
             ),
         )
+
+
+def deliver_spawn_obligation(
+    obligation: Mapping[str, Any], db_path: Path | None = None,
+) -> None:
+    """Deliver a durable spawn outbox payload to the append-only audit DB."""
+    payload = obligation.get("payload", obligation)
+    if not isinstance(payload, Mapping):
+        raise ValueError("spawn audit obligation payload must be a mapping")
+    record_spawn(
+        handle_id=str(payload["handle_id"]),
+        parent_session_id=str(payload["parent_session_id"]),
+        parent_agent_name=str(payload["parent_agent_name"]),
+        role=str(payload["role"]),
+        brief=str(payload["brief"]),
+        allowed_tools=list(payload.get("allowed_tools") or []),
+        max_turns=int(payload["max_turns"]),
+        wall_clock_timeout_s=int(payload["wall_clock_timeout_s"]),
+        pushed_skill_id=(
+            str(payload["pushed_skill_id"])
+            if payload.get("pushed_skill_id") else None
+        ),
+        db_path=db_path,
+    )
 
 
 def record_complete(

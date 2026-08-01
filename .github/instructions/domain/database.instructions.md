@@ -91,4 +91,5 @@ CREATE TABLE IF NOT EXISTS fail_patterns (
 );
 ```
 
-Query count before triggering Skill-Builder — threshold is 3 occurrences.
+Query counts to surface a recurring pattern for human review; the default
+threshold is 3 occurrences. Detection never authors or applies a patch.

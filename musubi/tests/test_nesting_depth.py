@@ -25,9 +25,12 @@ def _text(s: str) -> LMResponse:
 
 
 def _spawn(role: str, brief: str) -> LMResponse:
+    selected_skill = {"coder": "python"}.get(role, role)
     return LMResponse(stop_reason="tool_use", content=[{
         "type": "tool_use", "id": f"spawn-{role}", "name": "musubi_spawn_subagent",
-        "input": {"role": role, "brief": brief},
+        "input": {
+            "role": role, "brief": brief, "pushed_skill_id": selected_skill,
+        },
     }])
 
 

@@ -38,6 +38,7 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -194,7 +195,6 @@ def musubi_read_stage(
       - designer:      plan only
       - coder:         plan + design; for review → fix_instructions only
       - reviewer:      plan + design + code
-      - skill-builder: no stage access
 
     `chunk_id` (Phase G.1.7) scopes the `user_hint` lookup to a specific
     chunk's output stage so a chunked coder/reviewer retry surfaces the
@@ -1184,7 +1184,8 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
          request; UX optimisation, not security. Degrades to a no-op when
          no profile is available.
 
-    Returns JSON { "skills": [{"skill_id", "title", "description"}, ...],
+    Returns JSON { "skills": [{"skill_id", "title", "description",
+    "version", "content_hash", "completion_contract"}, ...],
     "agent_name": ..., "for_role": ..., "filtered_by_profile": bool }.
     """
     key = normalize_role(agent_name)
@@ -1202,6 +1203,16 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
             # The one sentence the model needs to choose. Bodies stay behind
             # `musubi_get_skill`; a catalog listing is not a skill dump.
             "description": m.description,
+            "version": m.version,
+            "content_hash": m.content_hash,
+            "completion_contract": {
+                "required_output_fields": list(
+                    m.completion_contract.required_output_fields
+                ),
+                "required_check_types": list(
+                    m.completion_contract.required_check_types
+                ),
+            },
         }
         for m in applicable
     ]
@@ -1465,18 +1476,45 @@ def musubi_distill_session(session_id: str) -> str:
 _AWAIT_POLL_S: float = float(os.environ.get("MUSUBI_SUBAGENT_POLL_S", "0.25"))
 
 
-def _effective_pushed_skill(role: str, override: str | None) -> str | None:
-    """The skill id this spawn actually bakes into the worker's prompt.
+def _durable_spawn_evidence(
+    payload: dict[str, Any], *, abandon_worker: bool = True,
+) -> dict[str, Any] | None:
+    """Deliver HI #8 spawn evidence before exposing a runnable handle."""
+    now = datetime.now(timezone.utc).isoformat()
+    obligation_id = _db.record_audit_obligation(
+        kind="worker_spawn",
+        handle_id=str(payload["handle_id"]),
+        payload=payload,
+        created_at=now,
+    )
+    try:
+        subagent_audit.deliver_spawn_obligation(payload)
+        _db.mark_audit_obligation_delivered(obligation_id, now)
+        return None
+    except Exception as exc:
+        _db.mark_audit_obligation_failed(obligation_id, str(exc))
+        if abandon_worker:
+            _db.abandon_sub_session(str(payload["handle_id"]), now)
+        return {
+            "status": "error",
+            "error_kind": "audit_unavailable",
+            "error": f"spawn audit evidence unavailable: {exc}",
+            "handle_id": str(payload["handle_id"]),
+            "audit_obligation_id": obligation_id,
+        }
 
-    Mirrors `build_subagent_context`'s resolution order exactly — override
-    first, then the role's native push — so the audit row and the prompt can
-    never disagree about what the worker received. Returns None when the role
-    pushes nothing and the root chose nothing.
-    """
-    chosen = (override or "").strip()
-    if chosen:
-        return chosen
-    return subagent_context.SUBAGENT_ROLE_SKILLS.get(normalize_role(role))
+
+def _relay_pending_spawn_evidence() -> None:
+    """Retry pending outbox items without making abandoned workers runnable."""
+    now = datetime.now(timezone.utc).isoformat()
+    for obligation in _db.get_audit_obligations(status="pending"):
+        if obligation.get("kind") != "worker_spawn":
+            continue
+        try:
+            subagent_audit.deliver_spawn_obligation(obligation)
+            _db.mark_audit_obligation_delivered(int(obligation["id"]), now)
+        except Exception as exc:
+            _db.mark_audit_obligation_failed(int(obligation["id"]), str(exc))
 
 
 @mcp.tool()
@@ -1499,8 +1537,9 @@ def musubi_spawn_subagent(
       2. parent_agent_name must list role in MAIN_SUBAGENT_ALLOWLIST.
       3. effective_tools = SUBAGENT_POLICIES[role] ∩ allowed_tools.
          Empty intersection → reject; the sub-agent would have nothing to do.
-      4. pushed_skill_id, when given, must belong to the
-         the worker role's allowlist and the catalog.
+      4. pushed_skill_id is required and must belong to the worker role's
+         allowlist and the catalog. The model chooses; the harness validates
+         and injects exactly that choice.
 
     Four-layer timeouts are recorded on the row:
       - max_turns                 (caller arg)
@@ -1577,25 +1616,30 @@ def musubi_spawn_subagent(
     #    ticket minted by a ranker. That was procedural, not protective — it
     #    constrained WHERE the root got the name, never WHICH names are legal,
     #    and the two checks below already answer the latter on their own.
-    skill_choice = (pushed_skill_id or "").strip() or None
-    if skill_choice is not None:
-        role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
-        if skill_choice not in role_skills:
-            return json.dumps({
-                "status": "error",
-                "error_kind": "policy_denied",
-                "error": (
-                    f"Skill {skill_choice!r} is not permitted for worker role "
-                    f"{role!r}."
-                ),
-                "allowed_skills": sorted(role_skills),
-            })
-        if skill_loader.get_skill(skill_choice) is None:
-            return json.dumps({
-                "status": "error",
-                "error": f"Skill {skill_choice!r} not found in the catalog.",
-                "available_skills": [s.skill_id for s in skill_loader.list_skills()],
-            })
+    skill_choice = (pushed_skill_id or "").strip()
+    if not skill_choice:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "policy_denied",
+            "error": "pushed_skill_id must name the model-selected skill",
+        })
+    role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
+    if skill_choice not in role_skills:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "policy_denied",
+            "error": (
+                f"Skill {skill_choice!r} is not permitted for worker role "
+                f"{role!r}."
+            ),
+            "allowed_skills": sorted(role_skills),
+        })
+    if skill_loader.get_skill(skill_choice) is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"Skill {skill_choice!r} not found in the catalog.",
+            "available_skills": [s.skill_id for s in skill_loader.list_skills()],
+        })
 
     try:
         handle_id = sub_sessions.spawn(
@@ -1617,32 +1661,22 @@ def musubi_spawn_subagent(
     # extension-side (Phase A.3 TS work); this guarantees the spawn is
     # provable post-hoc even if the marker scrolls off-screen.
     #
-    # The audited value is the EFFECTIVE push, not the override. HI #2 makes
-    # the push non-opt-out-able: when the root names no skill, the role's
-    # native one still goes into the worker's system prompt. Recording only
-    # `skill_choice` therefore left every default push unaudited, and the
-    # console — which has no other source for it — reported "No successful
-    # skill calls recorded" for sessions in which a skill was pushed to every
-    # worker. `sub_sessions` keeps storing the override, because
-    # `build_subagent_context` resolves the default from the role itself.
-    try:
-        subagent_audit.record_spawn(
-            handle_id=handle_id,
-            parent_session_id=parent_session_id,
-            parent_agent_name=parent_agent_name,
-            role=role,
-            brief=brief,
-            allowed_tools=effective_tools,
-            max_turns=max_turns,
-            wall_clock_timeout_s=wall_clock_timeout_s,
-            pushed_skill_id=_effective_pushed_skill(role, skill_choice),
-        )
-    except Exception:
-        # Audit failure must not silently drop a spawn — but it also must
-        # not block the spawn itself. We swallow here and rely on the
-        # extension's own pre-spawn marker for visibility; durable audit
-        # for this run is lost only if the audit DB is unwritable.
-        pass
+    # Audit exactly the model-selected skill. The same id is persisted on the
+    # worker row and loaded into its immutable context; there is no role
+    # default for the audit and runtime to disagree about.
+    audit_error = _durable_spawn_evidence({
+        "handle_id": handle_id,
+        "parent_session_id": parent_session_id,
+        "parent_agent_name": parent_agent_name,
+        "role": role,
+        "brief": brief,
+        "allowed_tools": effective_tools,
+        "max_turns": max_turns,
+        "wall_clock_timeout_s": wall_clock_timeout_s,
+        "pushed_skill_id": skill_choice,
+    })
+    if audit_error is not None:
+        return json.dumps(audit_error)
 
     return json.dumps({
         "status": "spawned",
@@ -1708,19 +1742,23 @@ def musubi_spawn_pipeline(
         profile=os.environ.get("MUSUBI_PIPELINE_PROFILE") or None,
         task=os.environ.get("MUSUBI_PIPELINE_TASK") or brief,
     )
-    try:
-        subagent_audit.record_spawn(
-            handle_id=pipeline_session_id,
-            parent_session_id=parent_session_id,
-            parent_agent_name=parent_agent_name,
-            role=f"pipeline:{pipeline_name}",
-            brief=brief,
-            allowed_tools=[],
-            max_turns=len(plan),
-            wall_clock_timeout_s=0,
+    audit_error = _durable_spawn_evidence({
+        "handle_id": pipeline_session_id,
+        "parent_session_id": parent_session_id,
+        "parent_agent_name": parent_agent_name,
+        "role": f"pipeline:{pipeline_name}",
+        "brief": brief,
+        "allowed_tools": [],
+        "max_turns": len(plan),
+        "wall_clock_timeout_s": 0,
+        "pushed_skill_id": None,
+    }, abandon_worker=False)
+    if audit_error is not None:
+        _db.finalize_pipeline_run(
+            pipeline_session_id, time.time(), "aborted", 0, 0,
+            False, False, 0,
         )
-    except Exception:
-        pass
+        return json.dumps(audit_error)
     return json.dumps({
         "status": "spawned",
         "pipeline_session_id": pipeline_session_id,
@@ -1772,14 +1810,28 @@ def musubi_spawn_pipeline_stage(
         tools = _policy.get_subagent_tools(role)
     # Root-selected skill for this stage (option 3 extended to pipelines).
     # Validate against the stage role's skill allowlist and the catalog before
-    # recording — fail-closed, so the runner can only push a skill the role is
-    # authorised for. An unknown/unauthorised choice is dropped, not fatal:
-    # the stage still runs, just without a pushed skill.
-    skill_choice = (pushed_skill_id or "").strip() or None
-    if skill_choice is not None:
-        role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
-        if skill_choice not in role_skills or skill_loader.get_skill(skill_choice) is None:
-            skill_choice = None
+    # recording — fail-closed, so the runner must pass one model-selected
+    # skill and the harness injects exactly that id without substitution.
+    skill_choice = (pushed_skill_id or "").strip()
+    if not skill_choice:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "policy_denied",
+            "error": "pushed_skill_id must name the model-selected skill",
+        })
+    role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
+    if skill_choice not in role_skills:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "policy_denied",
+            "error": f"Skill {skill_choice!r} is not permitted for worker role {role!r}.",
+            "allowed_skills": sorted(role_skills),
+        })
+    if skill_loader.get_skill(skill_choice) is None:
+        return json.dumps({
+            "status": "error",
+            "error": f"Skill {skill_choice!r} not found in the catalog.",
+        })
     try:
         handle_id = sub_sessions.spawn(
             parent_session_id=pipeline_session_id,
@@ -1795,20 +1847,19 @@ def musubi_spawn_pipeline_stage(
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
-    try:
-        subagent_audit.record_spawn(
-            handle_id=handle_id,
-            parent_session_id=pipeline_session_id,
-            parent_agent_name=f"pipeline:{pipeline_name}",
-            role=role,
-            brief=brief,
-            allowed_tools=tools,
-            max_turns=max_turns,
-            wall_clock_timeout_s=sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
-            pushed_skill_id=skill_choice,
-        )
-    except Exception:
-        pass
+    audit_error = _durable_spawn_evidence({
+        "handle_id": handle_id,
+        "parent_session_id": pipeline_session_id,
+        "parent_agent_name": f"pipeline:{pipeline_name}",
+        "role": role,
+        "brief": brief,
+        "allowed_tools": tools,
+        "max_turns": max_turns,
+        "wall_clock_timeout_s": sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
+        "pushed_skill_id": skill_choice,
+    })
+    if audit_error is not None:
+        return json.dumps(audit_error)
     return json.dumps({
         "status": "spawned",
         "handle_id": handle_id,
@@ -2102,6 +2153,7 @@ def musubi_query_subagent_events(
                        summary_truncated, verification_errors.
     """
     try:
+        _relay_pending_spawn_evidence()
         events = subagent_audit.query_events(
             parent_session_id=parent_session_id,
             handle_id=handle_id,

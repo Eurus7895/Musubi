@@ -398,7 +398,10 @@ def test_root_stops_immediately_when_last_replacement_exhausts_ceiling(
             content=[{
                 "type": "tool_use", "id": "last-worker",
                 "name": "musubi_spawn_subagent",
-                "input": {"role": "coder", "brief": "finish it"},
+                "input": {
+                    "role": "coder", "brief": "finish it",
+                    "pushed_skill_id": "python",
+                },
             }],
         ),
         LMResponse(
@@ -972,7 +975,7 @@ def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
     assert payload["status"] == "refused"
     # The message must be enough to fix the call without guessing.
     assert "Permitted for 'coder'" in payload["reason"]
-    assert "omit `pushed_skill_id`" in payload["reason"]
+    assert "never defaults, substitutes, or drops" in payload["reason"]
     # Recoverable is not unaudited: the verdict is still a DENY on record.
     assert ("DENY", "root", "musubi_spawn_subagent") in _read_policy_rows(audit_db)
     assert ("root", "musubi_spawn_subagent", "refused") in _read_tool_rows(audit_db)
@@ -3018,7 +3021,10 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
             content=[{
                 "type": "tool_use", "id": "c1",
                 "name": "musubi_spawn_subagent",
-                "input": {"role": "coder", "brief": "implement the route"},
+                "input": {
+                    "role": "coder", "brief": "implement the route",
+                    "pushed_skill_id": "python",
+                },
             }],
         ),
         LMResponse(

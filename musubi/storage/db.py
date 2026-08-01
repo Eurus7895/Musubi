@@ -8,7 +8,9 @@ expires-when: never — Append-only audit substrate; SQLite + WAL.
 import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator
 
@@ -47,7 +49,44 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     user_hint       TEXT,
     chunk_id        TEXT,
     schema_version  TEXT NOT NULL DEFAULT 'v1',
+    phase           TEXT NOT NULL DEFAULT 'pending',
+    contract_json   TEXT,
+    contract_hash   TEXT,
+    selected_skill_id TEXT,
+    selected_skill_version TEXT,
+    selected_skill_hash TEXT,
+    worker_handle_id TEXT,
+    artifact_manifest_json TEXT,
+    gate_result_json TEXT,
+    gate_written_at TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS stage_attempt_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    session_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    chunk_id TEXT,
+    attempt INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    worker_handle_id TEXT,
+    contract_hash TEXT,
+    detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stage_attempt_events_identity
+    ON stage_attempt_events(session_id, stage, chunk_id, attempt, id);
+CREATE TABLE IF NOT EXISTS stage_command_results (
+    execution_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    command_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    exit_code INTEGER,
+    stdout TEXT NOT NULL,
+    stderr TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    recorded_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS schema_migrations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +144,18 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_parent
     ON sub_sessions (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
+CREATE TABLE IF NOT EXISTS audit_obligations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    handle_id    TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    delivered_at TEXT,
+    error        TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_obligations_kind_handle
+    ON audit_obligations (kind, handle_id);
 CREATE TABLE IF NOT EXISTS conversation_messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id    TEXT    NOT NULL,
@@ -276,6 +327,16 @@ _STAGE_OUTPUT_COLUMNS: tuple[tuple[str, str], ...] = (
     # upgrade through `validation/schema_migrations` when the stored
     # version differs from CURRENT_SCHEMA_VERSION.
     ("schema_version", "TEXT NOT NULL DEFAULT 'v1'"),
+    ("phase", "TEXT NOT NULL DEFAULT 'pending'"),
+    ("contract_json", "TEXT"),
+    ("contract_hash", "TEXT"),
+    ("selected_skill_id", "TEXT"),
+    ("selected_skill_version", "TEXT"),
+    ("selected_skill_hash", "TEXT"),
+    ("worker_handle_id", "TEXT"),
+    ("artifact_manifest_json", "TEXT"),
+    ("gate_result_json", "TEXT"),
+    ("gate_written_at", "TEXT"),
 )
 
 # Provider identity added after the original stage_metrics schema.
@@ -364,6 +425,15 @@ def init_db(db_path: Path | None = None) -> None:
         _migrate_columns(conn, "agent_turns", _AGENT_TURNS_COLUMNS)
         _migrate_columns(conn, "pipeline_runs", _PIPELINE_RUNS_COLUMNS)
         _migrate_columns(conn, "sub_sessions", _SUB_SESSIONS_COLUMNS)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stage_outputs_without_chunk "
+            "ON stage_outputs(session_id, stage, attempt) WHERE chunk_id IS NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_stage_outputs_with_chunk "
+            "ON stage_outputs(session_id, stage, chunk_id, attempt) "
+            "WHERE chunk_id IS NOT NULL"
+        )
 
 
 @contextmanager
@@ -560,6 +630,196 @@ def get_agent_versions(
 
 # ── stage_outputs ─────────────────────────────────────────────────────────
 
+_STAGE_PHASES: tuple[str, ...] = (
+    "pending", "preflight_running", "contract_frozen", "worker_running",
+    "worker_complete", "gate_running", "passed", "retryable_failed",
+    "gate_error", "exhausted", "escalated",
+)
+_WRITE_ONCE_ATTEMPT_FIELDS = frozenset({
+    "contract_json", "contract_hash", "selected_skill_id",
+    "selected_skill_version", "selected_skill_hash", "worker_handle_id",
+    "output", "artifact_manifest_json", "gate_result_json", "gate_written_at",
+})
+
+
+@dataclass(frozen=True)
+class StageAttemptIdentity:
+    session_id: str
+    stage: str
+    attempt: int
+    chunk_id: str | None = None
+
+
+def _identity_where(identity: StageAttemptIdentity) -> tuple[str, tuple[Any, ...]]:
+    return (
+        "session_id = ? AND stage = ? AND chunk_id IS ? AND attempt = ?",
+        (identity.session_id, identity.stage, identity.chunk_id, identity.attempt),
+    )
+
+
+def transition_stage_attempt(
+    identity: StageAttemptIdentity,
+    expected_phase: str,
+    next_phase: str,
+    event: str,
+    detail: dict[str, Any],
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """CAS one phase and append its event in the same transaction."""
+    if expected_phase not in _STAGE_PHASES or next_phase not in _STAGE_PHASES:
+        raise ValueError("unknown stage attempt phase")
+    if _STAGE_PHASES.index(next_phase) <= _STAGE_PHASES.index(expected_phase):
+        raise ValueError("stage attempt phase must move forward")
+    where, params = _identity_where(identity)
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            f"SELECT * FROM stage_outputs WHERE {where}", params,
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"stage attempt not found: {identity}")
+        if row["phase"] != expected_phase:
+            raise ValueError(
+                f"expected phase {expected_phase!r}, found {row['phase']!r}"
+            )
+        updated = conn.execute(
+            f"UPDATE stage_outputs SET phase = ? WHERE {where} AND phase = ?",
+            (next_phase, *params, expected_phase),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("stage attempt transition lost a concurrent race")
+        conn.execute(
+            "INSERT INTO stage_attempt_events "
+            "(ts, session_id, stage, chunk_id, attempt, event, "
+            "worker_handle_id, contract_hash, detail_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                time.time(), identity.session_id, identity.stage,
+                identity.chunk_id, identity.attempt, event,
+                row["worker_handle_id"], row["contract_hash"],
+                json.dumps(detail, sort_keys=True),
+            ),
+        )
+        result = conn.execute(
+            f"SELECT * FROM stage_outputs WHERE {where}", params,
+        ).fetchone()
+    return dict(result) if result is not None else {}
+
+
+def write_stage_attempt_once(
+    identity: StageAttemptIdentity,
+    field: str,
+    value: Any,
+    *,
+    db_path: Path | None = None,
+) -> None:
+    if field not in _WRITE_ONCE_ATTEMPT_FIELDS:
+        raise ValueError(f"field {field!r} is not an attempt write-once field")
+    where, params = _identity_where(identity)
+    encoded = (
+        json.dumps(value, sort_keys=True)
+        if field in {"artifact_manifest_json", "gate_result_json"}
+        and not isinstance(value, str)
+        else value
+    )
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE stage_outputs SET {field} = ? "
+            f"WHERE {where} AND {field} IS NULL",
+            (encoded, *params),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"{field} is write-once or attempt does not exist")
+
+
+def create_next_stage_attempt(
+    identity: StageAttemptIdentity,
+    expected_attempt: int,
+    detail: dict[str, Any],
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Atomically create the next append-only attempt from a known latest."""
+    with _connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT MAX(attempt) AS latest FROM stage_outputs "
+            "WHERE session_id = ? AND stage = ? AND chunk_id IS ?",
+            (identity.session_id, identity.stage, identity.chunk_id),
+        ).fetchone()
+        latest = int(row["latest"] or 0)
+        if latest != expected_attempt or identity.attempt != expected_attempt:
+            raise ValueError(
+                f"stale attempt writer: expected {expected_attempt}, latest {latest}"
+            )
+        new_attempt = latest + 1
+        conn.execute(
+            "INSERT INTO stage_outputs "
+            "(session_id, stage, attempt, status, phase, chunk_id) "
+            "VALUES (?, ?, ?, 'pending', 'pending', ?)",
+            (identity.session_id, identity.stage, new_attempt, identity.chunk_id),
+        )
+        conn.execute(
+            "INSERT INTO stage_attempt_events "
+            "(ts, session_id, stage, chunk_id, attempt, event, detail_json) "
+            "VALUES (?, ?, ?, ?, ?, 'retry_created', ?)",
+            (
+                time.time(), identity.session_id, identity.stage,
+                identity.chunk_id, new_attempt, json.dumps(detail, sort_keys=True),
+            ),
+        )
+    return new_attempt
+
+
+def get_stage_attempt_events(
+    identity: StageAttemptIdentity, *, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM stage_attempt_events WHERE session_id = ? "
+            "AND stage = ? AND chunk_id IS ? AND attempt = ? ORDER BY id",
+            (identity.session_id, identity.stage, identity.chunk_id, identity.attempt),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["detail"] = json.loads(item.pop("detail_json"))
+        result.append(item)
+    return result
+
+
+def get_stage_command_result(
+    execution_id: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM stage_command_results WHERE execution_id = ?",
+            (execution_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_stage_command_result(
+    result: dict[str, Any], db_path: Path | None = None,
+) -> None:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO stage_command_results "
+            "(execution_id, session_id, stage, attempt, command_id, status, "
+            "exit_code, stdout, stderr, duration_ms, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                result["execution_id"], result["session_id"], result["stage"],
+                result["attempt"], result["command_id"], result["status"],
+                result.get("exit_code"), result.get("stdout", ""),
+                result.get("stderr", ""), result.get("duration_ms", 0),
+                result.get("recorded_at", time.time()),
+            ),
+        )
+
 def insert_stage(
     session_id: str,
     stage: str,
@@ -752,6 +1012,20 @@ def get_all_stage_rows(
     return [dict(r) for r in rows]
 
 
+def get_stage_names(
+    session_id: str, db_path: Path | None = None,
+) -> list[str]:
+    """Return seeded stage names in recipe insertion order."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT stage, MIN(id) AS first_id FROM stage_outputs "
+            "WHERE session_id = ? AND chunk_id IS NULL "
+            "GROUP BY stage ORDER BY first_id",
+            (session_id,),
+        ).fetchall()
+    return [str(row["stage"]) for row in rows]
+
+
 def set_stage_in_progress(
     session_id: str, stage: str, attempt: int, db_path: Path | None = None,
     *,
@@ -911,6 +1185,82 @@ def get_sub_session(
         result["result_structured"] = json.loads(result["result_structured"])
     result["escalated"] = bool(result["escalated"])
     return result
+
+
+def record_audit_obligation(
+    *, kind: str, handle_id: str, payload: dict[str, Any], created_at: str,
+    db_path: Path | None = None,
+) -> int:
+    """Persist one idempotent audit outbox item and return its id."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO audit_obligations "
+            "(created_at, kind, handle_id, payload_json, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (created_at, kind, handle_id, json.dumps(payload, sort_keys=True)),
+        )
+        row = conn.execute(
+            "SELECT id FROM audit_obligations WHERE kind = ? AND handle_id = ?",
+            (kind, handle_id),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("audit obligation was not persisted")
+    return int(row["id"])
+
+
+def mark_audit_obligation_delivered(
+    obligation_id: int, delivered_at: str, db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE audit_obligations SET status = 'delivered', "
+            "delivered_at = ?, error = NULL WHERE id = ?",
+            (delivered_at, obligation_id),
+        )
+
+
+def mark_audit_obligation_failed(
+    obligation_id: int, error: str, db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE audit_obligations SET status = 'pending', error = ? "
+            "WHERE id = ?",
+            (error[:2000], obligation_id),
+        )
+
+
+def get_audit_obligations(
+    *, status: str | None = None, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        if status is None:
+            rows = conn.execute(
+                "SELECT * FROM audit_obligations ORDER BY id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM audit_obligations WHERE status = ? ORDER BY id",
+                (status,),
+            ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json"))
+        result.append(item)
+    return result
+
+
+def abandon_sub_session(
+    handle_id: str, completed_at: str, db_path: Path | None = None,
+) -> None:
+    """Make an undeliverable reserved worker permanently non-runnable."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE sub_sessions SET status = 'abandoned', completed_at = ? "
+            "WHERE handle_id = ? AND status = 'running'",
+            (completed_at, handle_id),
+        )
 
 
 def update_sub_session_result(

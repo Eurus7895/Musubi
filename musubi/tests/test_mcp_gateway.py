@@ -122,8 +122,13 @@ def test_malformed_json_raises(tmp_path: Path) -> None:
         load_mcp_servers(cfg)
 
 
-def test_no_config_file_returns_empty() -> None:
-    assert load_mcp_servers("/nonexistent/mcp.json") == []
+def test_no_config_file_returns_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MUSUBI_MCP_CONFIG", raising=False)
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert load_mcp_servers(tmp_path / "nonexistent" / "mcp.json") == []
 
 
 def test_env_var_interpolation(

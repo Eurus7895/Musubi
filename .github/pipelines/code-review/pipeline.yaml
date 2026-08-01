@@ -2,65 +2,26 @@
 # expires-when: the 4-stage pipeline is dissolved (gated on item-10 eval data)
 # cost-lever: deletes the whole pipeline runtime + its agent set
 name: code-review
-description: Review a branch or PR — scope → findings → synthesis
-version: 1.0.0
+description: Review a branch or PR - scope to findings to synthesis
+version: 2.0.0
 level: 2
 
-# Phase J.3 — credit budget. Lower than feature-dev because code-review
-# is structurally smaller (3 stages, scoper input is bounded by diff size,
-# no chunk-by-chunk coder loop). Halts and asks for `/continue` if the
-# diff is large enough to exhaust the cap.
 max_credits: 20
 warn_at: 0.8
-
-# Code-review takes a diff (branch vs origin/dev, or a PR number) as input.
-# Unlike feature-dev's request → plan → … chain, no design stage exists:
-# the artifact being reviewed already exists. The stages collapse to:
-#   scope     — parse the diff into a file list with priorities
-#   findings  — gather raw per-file analyses
-#   synthesis — fan out reviewer-aux per file, then aggregate the report
-#
-# The `stage:` field per agent is what PR 2a's composer reads to build the
-# stage chain. The synthesizer fans out reviewer-aux sub-agents (declared
-# under `spawns:`); per-file fan-out is invoked by the TS runner using
-# the `scope` stage's `files` array.
 
 baseline_checks:
   - type: file_read
     path: .git
-    error: "Cannot read .git — code-review requires a git working tree."
+    error: "Cannot read .git - code-review requires a git working tree."
 
-generator:
-  agents:
-    - name: scoper
-      stage: scope
-      agent: agents/workers/scoper.agent.md
-      skill: skills/pr-scope-detection/SKILL.md
-      # scoper has no sub-agents — diff parsing is deterministic enough that
-      # spawning a lookup wouldn't add value.
-    - name: finder
-      stage: findings
-      agent: agents/workers/finder.agent.md
-      skill: skills/per-file-review/SKILL.md
-      # finder reads the diff itself; reviewer-aux fan-out happens at the
-      # synthesizer stage so the synthesizer can aggregate per-file output.
-
-evaluator:
-  name: synthesizer
-  stage: synthesis
-  agent: agents/workers/synthesizer.agent.md
-  skill: skills/code-review/SKILL.md
-  # Per-file fan-out: the runner walks scope.files and spawns one
-  # reviewer-aux per high/medium-priority file, then the synthesizer
-  # aggregates the per-file outputs into the final ranked report.
-  spawns: [reviewer-aux]
-
-correction:
-  max_retries: 1
-  escalate_message: "Code review needs human attention — synthesis disagreed with per-file findings."
-  # Critical or high findings don't trigger a retry of synthesis itself;
-  # the report is the artifact, and any issues it surfaces are the point
-  # of the run. The correction loop exists only to catch synthesis-level
-  # malformation (e.g. dropped a high-priority file from the final report).
-  escalate_on_critical: false
-  escalate_on_categories: []
+stages:
+  - agent: scoper
+    stage: scope
+    max_iterations: 1
+  - agent: finder
+    stage: findings
+    max_iterations: 1
+  - agent: synthesizer
+    stage: synthesis
+    spawns: [reviewer-aux]
+    max_iterations: 1

@@ -345,6 +345,7 @@ def test_install_console_gui_reports_missing_msvc_linker_on_windows(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
+    monkeypatch.setattr(sw, "_has_msvc_linker", lambda: False)
 
     ok, message = sw.install_console_gui(tmp_path, run=fake_run)
 

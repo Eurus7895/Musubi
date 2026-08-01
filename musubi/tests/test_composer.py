@@ -14,16 +14,16 @@ import server
 
 # ── pure composer.injected_skill_ids ─────────────────────────────────────────
 
-def test_feature_dev_designer_gets_api_design() -> None:
-    assert composer.injected_skill_ids("feature-dev", "plan", "designer") == ["api-design"]
+def test_feature_dev_recipe_does_not_select_designer_skill() -> None:
+    assert composer.injected_skill_ids("feature-dev", "plan", "designer") == []
 
 
-def test_feature_dev_coder_gets_python() -> None:
-    assert composer.injected_skill_ids("feature-dev", "design", "coder") == ["python"]
+def test_feature_dev_recipe_does_not_select_coder_skill() -> None:
+    assert composer.injected_skill_ids("feature-dev", "design", "coder") == []
 
 
-def test_feature_dev_reviewer_gets_code_review() -> None:
-    assert composer.injected_skill_ids("feature-dev", "code", "reviewer") == ["code-review"]
+def test_feature_dev_recipe_does_not_select_reviewer_skill() -> None:
+    assert composer.injected_skill_ids("feature-dev", "code", "reviewer") == []
 
 
 def test_planner_reading_request_has_no_skill() -> None:
@@ -54,8 +54,8 @@ def test_unknown_agent_returns_empty() -> None:
 
 
 def test_case_insensitive_agent_name() -> None:
-    assert composer.injected_skill_ids("feature-dev", "design", "Coder") == ["python"]
-    assert composer.injected_skill_ids("feature-dev", "code", "REVIEWER") == ["code-review"]
+    assert composer.output_stage_for_agent("feature-dev", "Coder") == "code"
+    assert composer.output_stage_for_agent("feature-dev", "REVIEWER") == "review"
 
 
 # ── synthetic pipeline.yaml: validate edge cases ─────────────────────────────
@@ -78,6 +78,106 @@ def _write_preset_yaml(tmp_path: Path, name: str, body: dict) -> Path:
     with path.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(body, fh)
     return path
+
+
+def test_load_pipeline_contract_projects_governed_stage_ceilings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping governed fields would let the runner exceed the recipe."""
+    _write_pipeline_yaml(tmp_path, "weather-flow", {
+        "name": "weather-flow",
+        "checks": {
+            "project-tests": {
+                "type": "command",
+                "argv": ["npm", "test"],
+                "timeout_seconds": 120,
+            },
+        },
+        "stages": [
+            {"agent": "planner", "stage": "plan"},
+            {
+                "agent": "coder",
+                "stage": "build",
+                "spawns": ["explorer"],
+                "allowed_checks": [
+                    "file_created_or_modified", "dom_count", "named_command",
+                ],
+                "allowed_commands": ["project-tests"],
+                "max_iterations": 3,
+            },
+            {"agent": "reviewer", "stage": "review"},
+        ],
+    })
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    contract = composer.load_pipeline_contract("weather-flow")
+
+    assert contract.commands["project-tests"].argv == ("npm", "test")
+    assert contract.commands["project-tests"].timeout_seconds == 120
+    assert contract.stages[1].allowed_checks == (
+        "file_created_or_modified", "dom_count", "named_command",
+    )
+    assert contract.stages[1].allowed_commands == ("project-tests",)
+    assert contract.stages[1].max_iterations == 3
+    assert composer.stage_recipe("weather-flow", "build") == contract.stages[1]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda body: body["stages"].append(
+            {"agent": "reviewer", "stage": "build"}
+        ), "duplicate stage"),
+        (lambda body: body["stages"][1].update(max_iterations=0),
+         "max_iterations"),
+        (lambda body: body["stages"][1].update(max_iterations=4),
+         "max_iterations"),
+        (lambda body: body["stages"][1].update(
+            max_iterations=2, allowed_checks=[]
+        ), "allowed_checks"),
+        (lambda body: body["stages"][1].update(
+            allowed_checks=["model_judgement"]
+        ), "unknown check"),
+        (lambda body: body["stages"][1].update(
+            allowed_commands=["missing-command"]
+        ), "unknown command"),
+        (lambda body: body["stages"][1].update(unexpected=True),
+         "unknown field"),
+    ],
+)
+def test_load_pipeline_contract_rejects_unsafe_governed_declarations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: object,
+    message: str,
+) -> None:
+    """Malformed ceilings must make a recipe unrunnable, never fail soft."""
+    body = {
+        "name": "strict-flow",
+        "checks": {
+            "project-tests": {
+                "type": "command", "argv": ["npm", "test"],
+                "timeout_seconds": 60,
+            },
+        },
+        "stages": [
+            {"agent": "planner", "stage": "plan"},
+            {
+                "agent": "coder", "stage": "build",
+                "allowed_checks": ["named_command"],
+                "allowed_commands": ["project-tests"],
+                "max_iterations": 2,
+            },
+        ],
+    }
+    mutate(body)  # type: ignore[operator]
+    _write_pipeline_yaml(tmp_path, "strict-flow", body)
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    composer.reset_cache()
+
+    with pytest.raises(composer.PipelineRecipeError, match=message):
+        composer.load_pipeline_contract("strict-flow")
 
 
 def test_flat_explicit_stage_projection_preserves_spawn_allowlist(
@@ -286,15 +386,15 @@ def test_missing_yaml_module_falls_back_to_defaults(
 
 # ── musubi_get_injected_skills MCP tool ─────────────────────────────────────
 
-def test_mcp_tool_feature_dev_designer() -> None:
+def test_mcp_tool_does_not_reintroduce_recipe_selected_skill() -> None:
     raw = server.musubi_get_injected_skills("feature-dev", "plan", "designer")
     out = json.loads(raw)
     assert out["status"] == "ok"
-    assert out["skill_ids"] == ["api-design"]
+    assert out["skill_ids"] == []
     assert out["pipeline_name"] == "feature-dev"
 
 
-def test_mcp_tool_firewall_blocks_disallowed() -> None:
+def test_mcp_tool_returns_no_static_feature_dev_skill() -> None:
     """If a pipeline.yaml declares a skill outside the agent's allowlist, the
     MCP tool drops it. We can't trivially test this against feature-dev
     (every declaration is allowed by AGENT_SKILL_ALLOWLIST), but we can pin
@@ -307,7 +407,7 @@ def test_mcp_tool_firewall_blocks_disallowed() -> None:
     # The contract is: server.musubi_get_injected_skills returns []
     # when allowlist denies. Smoke against feature-dev's clean case here.
     out = json.loads(server.musubi_get_injected_skills("feature-dev", "design", "coder"))
-    assert "python" in out["skill_ids"]
+    assert out["skill_ids"] == []
 
 
 def test_mcp_tool_unknown_pipeline_returns_empty_list() -> None:

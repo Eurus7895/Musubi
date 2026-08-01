@@ -1,6 +1,10 @@
 ---
 name: web-ui
+version: 1.0.0
 description: Build self-contained, accessible, responsive web UI — semantic HTML, modern CSS layout, vanilla-JS interactivity, and embedded charts. Use when the user asks for an HTML page, dashboard, report, landing page, chart/graph, or any browser-rendered artifact.
+completion-contract:
+  required-output-fields: [summary, artifacts]
+  required-check-types: [file_created_or_modified]
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 triggers:

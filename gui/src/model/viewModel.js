@@ -932,6 +932,7 @@ export function buildViewModel(s, act) {
     })
     // Pipeline stages use their pipeline session as parent_session. Attach the
     // pipeline envelope to the closest preceding root turn in this chat.
+    const requestIdForPipelineSession = new Map()
     ;(s.pipelineRuns || [])
       .filter((run) => run.chatId === activeSessionId)
       .forEach((run) => {
@@ -939,6 +940,7 @@ export function buildViewModel(s, act) {
           .reverse()
           .find((request) => Number(request.turn?.startedAt || 0) <= Number(run.startedAt || 0))
         if (!owner) return
+        requestIdForPipelineSession.set(run.sessionId, owner.requestId)
         ;(run.stages || []).forEach((agent) => {
           if (!owner.agents.some((entry) => entry.handle === agent.handle)) owner.agents.push(agent)
         })
@@ -961,6 +963,25 @@ export function buildViewModel(s, act) {
       message: row.message || '',
       detail: row.message || '',
     }))
+    const stageLogs = (s.stageAttemptEvents || [])
+      .filter((row) => requestIdForPipelineSession.has(row.sessionId))
+      .map((row) => ({
+        id: `stage-${row.sessionId}-${row.id}`,
+        auditId: null,
+        requestId: requestIdForPipelineSession.get(row.sessionId),
+        seq: Number(row.id || 0),
+        ts: row.ts || '',
+        source: 'gate',
+        stream: 'audit',
+        agentHandle: '',
+        workerId: `turn:${requestIdForPipelineSession.get(row.sessionId)}`,
+        role: row.stage || 'stage',
+        category: 'gates',
+        name: row.event || 'stage event',
+        status: row.event || 'stage',
+        message: `${row.stage} Â· attempt ${row.attempt} Â· ${row.event}${row.contractHash ? ` Â· ${row.contractHash.slice(0, 19)}` : ''}`,
+        detail: row.detailJson || '',
+      }))
 
     // The ledger USED to replace `runtimeLogs` outright. That silently threw
     // away every other evidence source the console has — the tool ledger
@@ -1003,7 +1024,22 @@ export function buildViewModel(s, act) {
         message: row.detail || row.name || '',
       }
     }).filter((row) => row.requestId)
-    projectedRuntimeLogs = [...derivedLogs, ...ledgerLogs]
+    const requestIdForObligation = new Map(requestIdForHandle)
+    const obligationLogs = (s.auditObligations || [])
+      .filter((row) => requestIdForObligation.has(row.handleId))
+      .map((row) => ({
+        id: `obligation-${row.id}`,
+        auditId: row.id,
+        requestId: requestIdForObligation.get(row.handleId),
+        seq: Number(row.id || 0), ts: row.createdAt || '',
+        source: 'host', stream: 'audit', agentHandle: '',
+        workerId: `turn:${requestIdForObligation.get(row.handleId)}`,
+        role: 'host', category: 'gates', name: row.kind,
+        status: row.status,
+        message: `spawn evidence ${row.status} Â· ${row.handleId}${row.error ? ` Â· ${row.error}` : ''}`,
+        detail: row.error || '',
+      }))
+    projectedRuntimeLogs = [...derivedLogs, ...ledgerLogs, ...stageLogs, ...obligationLogs]
 
     // Token totals per parent session, split into the root's own cycles and
     // everything the turn spent including its workers.
@@ -1032,6 +1068,19 @@ export function buildViewModel(s, act) {
     requestEntries.forEach((request, index) => {
       const turnNodeId = `turn:${request.requestId}`
       const requestLogs = projectedRuntimeLogs.filter((row) => row.requestId === request.requestId)
+      const requestPipelineSessions = new Set(
+        Array.from(requestIdForPipelineSession.entries())
+          .filter(([, requestId]) => requestId === request.requestId)
+          .map(([sessionId]) => sessionId),
+      )
+      const stageAttempts = (s.stageAttempts || []).filter((attemptRow) => (
+        requestPipelineSessions.has(attemptRow.sessionId)
+      ))
+      const latestAttempt = stageAttempts[stageAttempts.length - 1] || null
+      let frozenGoal = ''
+      let latestVerdict = ''
+      try { frozenGoal = JSON.parse(latestAttempt?.contractJson || '{}').goal || '' } catch { frozenGoal = '' }
+      try { latestVerdict = JSON.parse(latestAttempt?.gateResultJson || '{}').status || '' } catch { latestVerdict = '' }
       const running = driverStatusForRuns.requestId === request.requestId && driverRunning
       const failedAgent = request.agents.find((agent) => ['failed', 'escalated', 'abandoned'].includes(agent.status))
       const status = running ? 'running' : (failedAgent?.status || 'done')
@@ -1050,7 +1099,7 @@ export function buildViewModel(s, act) {
         parentId: index > 0 ? `turn:${requestEntries[index - 1].requestId}` : null,
         kind: 'turn',
         role: 'root',
-        label: `Turn ${String(index + 1).padStart(2, '0')}`,
+        label: `Request ${String(index + 1).padStart(2, '0')}`,
         title: request.turn?.request || request.events.find((event) => event.source === 'host')?.message || 'Runtime turn',
         brief: request.turn?.request || '',
         status,
@@ -1066,6 +1115,14 @@ export function buildViewModel(s, act) {
         ownTokens: turnCycles ? turnCycles.own : estimatedTurnTokens,
         tokensAreInclusive: true,
         logCount: requestLogs.length,
+        goal: frozenGoal,
+        contractHash: latestAttempt?.contractHash || '',
+        phase: latestAttempt?.phase || '',
+        verdict: latestVerdict,
+        stageAttempts,
+        pendingAudit: (s.auditObligations || []).filter((row) => (
+          row.status === 'pending' && request.agents.some((agent) => agent.handle === row.handleId)
+        )).length,
       }
       allNodes.push(turnNode)
       const agentNodes = request.agents.map((agent) => {
@@ -1074,6 +1131,7 @@ export function buildViewModel(s, act) {
           ? agent.parentAgent
           : turnNodeId
         const agentLogs = projectedRuntimeLogs.filter((row) => row.agentHandle === agent.handle)
+        const agentAttempt = (s.stageAttempts || []).find((row) => row.workerHandleId === agent.handle)
         return {
           id: agent.handle,
           requestId: request.requestId,
@@ -1093,6 +1151,16 @@ export function buildViewModel(s, act) {
             .filter((cycle) => cycle.workerId === agent.handle)
             .reduce((sum, cycle) => sum + Number(cycle.tokensIn || 0) + Number(cycle.tokensOut || 0), 0),
           logCount: agentLogs.length,
+          goal: (() => {
+            try { return JSON.parse(agentAttempt?.contractJson || '{}').goal || '' } catch { return '' }
+          })(),
+          contractHash: agentAttempt?.contractHash || '',
+          phase: agentAttempt?.phase || '',
+          verdict: (() => {
+            try { return JSON.parse(agentAttempt?.gateResultJson || '{}').status || '' } catch { return '' }
+          })(),
+          selectedSkill: agentAttempt?.selectedSkillId || '',
+          attempt: Number(agentAttempt?.attempt || 0),
         }
       })
       allNodes.push(...agentNodes)

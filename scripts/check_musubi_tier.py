@@ -50,7 +50,7 @@ SCOPE_PATTERNS = [
 EXCLUDE_DIR_PARTS = {"tests", "__pycache__", "node_modules", "dist", "out"}
 
 TIER_RE = re.compile(r"musubi-tier:\s*(substrate|ephemeral)", re.IGNORECASE)
-EXPIRES_RE = re.compile(r"expires-when:\s*\S", re.IGNORECASE)
+EXPIRES_RE = re.compile(r"expires-when:\s*([^\r\n]+)", re.IGNORECASE)
 COST_LEVER_RE = re.compile(r"cost-lever:\s*\S", re.IGNORECASE)
 
 
@@ -76,6 +76,12 @@ def check_file(path: Path) -> list[str]:
             failures.append(f"{path}: ephemeral file missing `expires-when:`")
         if not COST_LEVER_RE.search(text):
             failures.append(f"{path}: ephemeral file missing `cost-lever:`")
+    else:
+        expires = EXPIRES_RE.search(text)
+        if not expires or not expires.group(1).strip().lower().startswith("never"):
+            failures.append(
+                f"{path}: substrate file must declare `expires-when: never`"
+            )
     return failures
 
 

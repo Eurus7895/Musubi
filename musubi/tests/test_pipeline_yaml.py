@@ -1,7 +1,4 @@
-"""Tests for .github/pipelines/feature-dev/pipeline.yaml (Week 3b).
-
-Validates the YAML structure matches the contract in CLAUDE.md.
-"""
+"""Contract tests for the shipped feature-dev recipe."""
 
 from __future__ import annotations
 
@@ -9,66 +6,50 @@ from pathlib import Path
 
 import yaml
 
+import composer
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_GITHUB_DIR = _REPO_ROOT / ".github"
-_PIPELINE_DIR = _GITHUB_DIR / "pipelines" / "feature-dev"
-_PIPELINE_YAML = _PIPELINE_DIR / "pipeline.yaml"
+_PIPELINE_YAML = _REPO_ROOT / ".github" / "pipelines" / "feature-dev" / "pipeline.yaml"
 
 
 def _load() -> dict:
-    with open(_PIPELINE_YAML, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    with _PIPELINE_YAML.open(encoding="utf-8") as stream:
+        return yaml.safe_load(stream)
 
 
-def test_pipeline_yaml_exists() -> None:
-    assert _PIPELINE_YAML.is_file()
-
-
-def test_pipeline_yaml_has_required_top_level_keys() -> None:
+def test_feature_dev_uses_flat_stages_without_runtime_skill_or_correction() -> None:
     cfg = _load()
-    for key in ("name", "description", "version", "level", "generator", "evaluator", "correction"):
-        assert key in cfg, f"Missing top-level key {key!r}"
+    assert [entry["stage"] for entry in cfg["stages"]] == [
+        "plan", "design", "code", "review",
+    ]
+    assert "generator" not in cfg
+    assert "evaluator" not in cfg
+    assert "correction" not in cfg
+    assert all("skill" not in entry for entry in cfg["stages"])
 
 
-def test_pipeline_name_is_feature_dev() -> None:
-    assert _load()["name"] == "feature-dev"
+def test_feature_dev_code_stage_declares_bounded_acceptance_ceiling() -> None:
+    contract = composer.load_pipeline_contract("feature-dev")
+    code = next(stage for stage in contract.stages if stage.stage == "code")
+    assert code.agent == "coder"
+    assert code.max_iterations == 3
+    assert code.spawns == ("explorer", "investigator")
+    assert code.allowed_checks == (
+        "file_exists", "file_created_or_modified", "dom_count",
+        "dom_distinct_text", "dom_text_set", "lint_clean",
+    )
 
 
-def test_level_is_two_because_multi_agent() -> None:
-    cfg = _load()
-    # CLAUDE.md Week 3b: multi-agent pipeline requires level: 2.
-    assert cfg["level"] == 2
+def test_feature_dev_non_mutating_stages_run_once() -> None:
+    contract = composer.load_pipeline_contract("feature-dev")
+    assert {stage.stage: stage.max_iterations for stage in contract.stages} == {
+        "plan": 1, "design": 1, "code": 3, "review": 1,
+    }
 
 
-def test_generator_uses_plural_agents_list() -> None:
-    gen = _load()["generator"]
-    assert "agents" in gen, "Level-2 pipeline must use plural generator.agents"
-    assert isinstance(gen["agents"], list)
-    assert len(gen["agents"]) >= 2
-
-
-def test_generator_agent_paths_resolve() -> None:
-    # `agent:` paths are relative to .github/ (agents now live in a shared
-    # catalog at .github/agents/, not under each pipeline dir).
-    for item in _load()["generator"]["agents"]:
-        agent_file = _GITHUB_DIR / item["agent"]
-        assert agent_file.is_file(), f"Missing agent file {agent_file}"
-
-
-def test_evaluator_agent_path_resolves() -> None:
-    ev_path = _GITHUB_DIR / _load()["evaluator"]["agent"]
-    assert ev_path.is_file(), f"Missing evaluator agent file {ev_path}"
-
-
-def test_correction_max_retries_positive() -> None:
-    corr = _load()["correction"]
-    assert isinstance(corr["max_retries"], int)
-    assert corr["max_retries"] >= 1
-
-
-def test_baseline_checks_is_list() -> None:
-    cfg = _load()
-    checks = cfg.get("baseline_checks") or []
-    assert isinstance(checks, list)
-    for c in checks:
-        assert "type" in c
+def test_feature_dev_baseline_checks_remain_declarative() -> None:
+    assert _load().get("baseline_checks") == [{
+        "type": "file_read",
+        "path": "src/",
+        "error": "Cannot read src/ - ensure workspace root contains source.",
+    }]

@@ -707,8 +707,14 @@ test('builder add-stage never falls through from blocked presets to runnable age
   source.actions.addPipelineStage({ kind: 'agent', agent: 'coder' })
 
   assert.deepEqual(source.state.pipelineBuilder.draft.stages, [
-    { preset: 'plan', agent: '', stage: '', spawns: [] },
-    { preset: '', agent: 'coder', stage: 'code', spawns: [] },
+    {
+      preset: 'plan', agent: '', stage: '', spawns: [],
+      maxIterations: 1, allowedChecks: [], allowedCommands: [],
+    },
+    {
+      preset: '', agent: 'coder', stage: 'code', spawns: [],
+      maxIterations: 1, allowedChecks: [], allowedCommands: [],
+    },
   ])
 })
 

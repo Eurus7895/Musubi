@@ -56,11 +56,16 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    the one-line description each SKILL.md already declares — and chooses; the
    harness lists, it does not rank. Every catalog entry therefore needs a
    description that distinguishes it, which is now the load-bearing metadata
-   (`triggers:` was for the deleted ranker). Pipeline stages have no model to
-   choose for them and are the compliance path, so they run the skill their
-   recipe declares — `pipeline.yaml`'s `generator.agents[].skill` /
-   `evaluator.skill`, intersected with the role allowlist — falling back to the
-   role's `SUBAGENT_ROLE_SKILLS` push, and reporting a stage that has neither.
+   (`triggers:` was for the deleted ranker). The current pipeline path still
+   chooses from recipe declarations and role defaults because no model runs
+   before a stage prompt is built. That is transitional and does not satisfy
+   the final ownership rule. The stage-goal track adds a bounded driver-side
+   preflight: the model selects the stage skill, while the harness only lists,
+   validates, injects, and audits it. Missing or invalid selection fails closed;
+   the harness never supplies, substitutes, drops, or defaults a skill. The
+   extra preflight call is an explicit adapter with its own expiry trigger; the
+   model-owned selection and enforcement boundary remain after that adapter is
+   removed.
 
 2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
    what a request MEANS and starts proving what the record CONTAINS. Governing
@@ -168,33 +173,30 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
 
-5. **Stage goals and the stage loop.** *Proposed — spec written, not started.*
-   A pipeline stage runs exactly once and nothing checks whether it achieved
-   anything: its status is `"done" if answer is not None`, which asks whether
-   the worker produced text. The `correction:` block both shipped recipes
-   declare is dead — `musubi_get_correction_rules` is in the allowed-tool list
-   and nothing under `agent/` calls it — so the reviewer's verdict is recorded
-   and acted on by nobody. A stage will declare a `goal:` (prose, for the
-   model) and an `exit_when:` predicate (for the harness), and repeat until the
-   predicate holds or a declared `max_iterations` is spent, then escalate.
-   The predicate has two tiers and the order is load-bearing: deterministic
-   facts first (`file_exists`, `lint_clean`, `command`), then a `reviewer`
-   verdict — which does not breach HI #1, because the runner spawns a **worker**
-   and reads a structured `status` field rather than judging prose, the same
-   *parse, never judge* rule as `root_triage`. What the harness must never do is
-   read `goal:` and decide whether it was met; that is the judgement this track
-   deleted `assess_request` and the skill ranker for. Intra-stage routing stays
-   model-owned — the lead agent summons helpers through the `spawns:` it already
-   has — so "several agents per stage" needs no new machinery; the goal, the
-   check and the loop do. `stage_outputs` is already keyed by `attempt`, so
-   HI #7 holds by construction. Blocked on the Studio recipe model, which
-   carries four stage fields and cannot represent `skill:` today, let alone
-   three more. `max_iterations` defaults to 1, so no existing recipe changes
-   behaviour until it opts in.
-   Plan:
-   [`2026-08-01-stage-goal-loop.md`](./superpowers/plans/2026-08-01-stage-goal-loop.md) ·
+5. **Implemented: model-authored stage goals, substrate-enforced acceptance.**
+   Before a stage attempt, a bounded driver model preflight selects the role's skill
+   and, for an opt-in non-evaluator stage, translates the current task into a
+   structured acceptance contract. The harness validates and freezes that
+   declaration, injects the selected skill, runs only deterministic predicates,
+   and persists every attempt and gate transition. Task-specific goals never
+   live statically in `pipeline.yaml`;
+   recipes declare the allowed checker and command ceilings, iteration cap,
+   helper roles, and budgets. A failed gate creates a new append-only attempt;
+   exhaustion or infrastructure failure escalates and stops the pipeline.
+   V1 contains no LLM reviewer predicate over the goal: the final evaluator
+   remains firewalled to the artifact under HI #3, and its structured fail or
+   escalate verdict stops rather than silently succeeding. Deterministic
+   acceptance remains substrate; the automatic retry loop is separately tagged
+   ephemeral with a measurable first-pass-success expiry trigger. The work also
+   generalizes the legacy four-stage attempt store, adds crash-safe gate
+   checkpoints and events, extends Pipeline Studio losslessly, and depends on
+   the durable HI #8 audit obligation before a worker may start.
+
    Design:
-   [`2026-08-01-stage-goal-loop-design.md`](./superpowers/specs/2026-08-01-stage-goal-loop-design.md)
+   [`2026-08-01-stage-goals-and-loop-design.md`](./superpowers/specs/2026-08-01-stage-goals-and-loop-design.md)
+
+   Plan:
+   [`2026-08-01-stage-goals-and-loop.md`](./superpowers/plans/2026-08-01-stage-goals-and-loop.md)
 
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
@@ -254,8 +256,9 @@ exists so the removal cost is visible in one place rather than by `grep`.
 | `session/sub_sessions.py` | models gain reliable native multi-agent tool-use | ~400 lines of lifecycle + cascade-abandon machinery |
 | `agent/pipeline_runner.py` | models orchestrate multi-step pipelines natively | the driver-side stage sequencer (~90 lines) |
 | `memory/session_distiller.py` | the 4-stage pipeline is dissolved | ~250 lines tied to the planner-designer-coder-reviewer shape |
-| `session/correction_loop.py` | models pass verifier checks on first try at 95th-percentile rate | the retry agent + `validation_feedback` pipeline |
-| `.github/agents/**` (14 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
+| `automatic-stage-retry` in `agent/pipeline_runner.py` | latest 500 eligible attempts: at least 95% pass on attempt 1, Wilson 95% lower bound at least 93%, and no P0/P1 incident in the window was prevented only by retry | repeat workers, retry preflights, cross-attempt feedback, and resume branches |
+| `agent/stage_preflight.py` | worker runtime can require model selection and load one permitted skill before work tools without a separate model call or harness default | one model call per stage attempt |
+| `.github/agents/**` (12 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
 
 Two triggers dominate: *native multi-agent tool-use* retires the spawn and
 sub-session machinery together (~520 lines), and *the root triages its own turn*
@@ -341,15 +344,15 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   `musubi_list_skills(for_role=…)` returning each permitted skill's one-line
   description for the model to choose from. The ticket constrained where the
   root got a name, never which names are legal, and the allowlist and catalog
-  checks that do answer that are untouched. Pipeline stages take their role's
-  declared skill instead — `pipeline.yaml` has carried
-  `generator.agents[].skill` since feature-dev shipped and the standalone
-  runner simply never read it, so every stage of both shipped pipelines now
-  runs a prepared skill where the ranker supplied one for a single role out of
-  seven. `dev-lite` was removed with it: a sample recipe sitting in
+  checks that do answer that are untouched. Pipeline stage recipes expose the
+  role's permitted skill catalog to the model. The model selects one exact
+  skill id during preflight; the harness validates its allowlist membership,
+  version and content hash, then injects that selected skill without choosing,
+  defaulting, substituting or dropping it. `dev-lite` was removed with the
+  ranker: a sample recipe sitting in
   `.github/pipelines/` is indistinguishable from a supported one — it appeared
   in the console catalog, in `--pipeline` help and in the README beside
-  `feature-dev` — and it was the only stage left with no prepared skill. The
+  `feature-dev`. The
   preset MECHANISM stays; the test that covered it now authors its own recipe
   over the real catalog instead of leaning on a shipped sample.
   **The recipe survives a save now.** Pipeline Studio models four stage fields

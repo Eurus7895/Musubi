@@ -113,7 +113,7 @@ def test_reviewer_escalate_reason_wrong_type_rejected() -> None:
 
 
 def test_unknown_agent_passes_without_schema() -> None:
-    result = verifier.validate({"anything": True}, "skill-builder")
+    result = verifier.validate({"anything": True}, "unknown-worker")
     assert result.valid is True
 
 

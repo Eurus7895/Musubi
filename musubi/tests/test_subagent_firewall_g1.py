@@ -42,6 +42,17 @@ from policy_engine import SUBAGENT_POLICIES  # noqa: E402  # isort: skip
 
 
 G1_RUNNER_ROLES = ("explorer", "investigator", "reviewer-aux")
+G1_SELECTED_SKILLS = {
+    "explorer": "explorer",
+    "investigator": "investigator",
+    "reviewer-aux": "reviewer-aux",
+}
+
+
+def _context(brief: str, role: str, **kwargs: object):
+    return build_subagent_context(
+        brief, role, pushed_skill_id=G1_SELECTED_SKILLS[role], **kwargs,
+    )
 
 
 @pytest.mark.parametrize("role", G1_RUNNER_ROLES)
@@ -49,7 +60,7 @@ def test_g1_role_context_has_only_closed_set_keys(role: str) -> None:
     """Each runner role's SubagentContext must expose exactly the
     closed `context_keys()` set — no parent state, no sibling state,
     no session_id."""
-    ctx = build_subagent_context("locate the foo bar", role)
+    ctx = _context("locate the foo bar", role)
     payload = asdict(ctx)
     assert set(payload.keys()) == context_keys(), (
         f"{role}: payload keys {sorted(payload.keys())} drifted from "
@@ -62,7 +73,7 @@ def test_g1_role_allowed_tools_match_policy_byte_for_byte(role: str) -> None:
     """The runner uses ctx.allowed_tools to drive the LM tool surface.
     Policy + context must agree exactly — anything else is an
     accidental privilege widening / narrowing."""
-    ctx = build_subagent_context("brief", role)
+    ctx = _context("brief", role)
     assert tuple(ctx.allowed_tools) == tuple(SUBAGENT_POLICIES[role]), (
         f"{role}: allowed_tools={ctx.allowed_tools} does not match "
         f"SUBAGENT_POLICIES[{role!r}]={SUBAGENT_POLICIES[role]}"
@@ -74,7 +85,7 @@ def test_g1_role_only_sees_brief_role_role_skill_allowed_tools(role: str) -> Non
     """Type-level pin: `SubagentContext` must not grow new attributes
     that could surface parent state. If a refactor adds a field, this
     test must be updated *intentionally*."""
-    ctx = build_subagent_context("brief", role)
+    ctx = _context("brief", role)
     # Pin updated intentionally: `role_skill_id` names the catalog skill whose
     # text is already in `role_skill`. It is public catalog metadata about the
     # payload the worker was handed, not parent state — the worker can read
@@ -106,7 +117,7 @@ def test_brief_with_parent_state_payload_stays_opaque_text() -> None:
         "design": {"modules": ["leak2"]},
         "code":   {"files_modified": ["leak3"]},
     })
-    ctx = build_subagent_context(parent_blob, "explorer")
+    ctx = _context(parent_blob, "explorer")
     assert ctx.brief == parent_blob
     payload = asdict(ctx)
     # The firewall should NOT have lifted plan/design/code into top-level
@@ -124,8 +135,8 @@ def test_g1_role_skill_is_either_string_or_none(role: str, tmp_path: Path) -> No
     dict / list / structured payload that could carry parent state."""
     empty_skills = tmp_path / "skills"
     empty_skills.mkdir()
-    ctx = build_subagent_context("x", role, skills_dir=empty_skills)
-    assert ctx.role_skill is None or isinstance(ctx.role_skill, str)
+    with pytest.raises(ValueError, match="not found"):
+        _context("x", role, skills_dir=empty_skills)
 
 
 @pytest.mark.parametrize("forbidden", [
@@ -160,5 +171,5 @@ def test_subagent_context_to_dict_keys_equal_context_keys() -> None:
     against context_keys(). asdict(SubagentContext) must produce the
     exact set the runner expects, otherwise a JSON round-trip could
     drop or add fields silently."""
-    ctx = build_subagent_context("b", "reviewer-aux")
+    ctx = _context("b", "reviewer-aux")
     assert set(asdict(ctx).keys()) == context_keys()

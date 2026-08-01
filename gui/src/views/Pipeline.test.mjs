@@ -24,6 +24,13 @@ test('Pipeline Studio owns stage drag-drop and nested May spawn editing', () => 
   assert.match(source, /Runs in parallel only when summoned in the same worker turn\./)
 })
 
+test('Pipeline Studio exposes governed stage and command ceilings', () => {
+  for (const text of [
+    'Max iterations', 'Allowed checks', 'Allowed commands',
+    'Named commands', 'Exact argv', 'Timeout seconds',
+  ]) assert.match(source, new RegExp(text))
+})
+
 test('Pipeline Studio contains no execution chat or run-history surface', () => {
   for (const legacy of ['Chat · pipeline', 'New pipeline session', 'Studio runs', 'Pipeline run history', 'sendPipelineTask']) {
     assert.equal(source.includes(legacy), false, legacy)

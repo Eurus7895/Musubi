@@ -36,6 +36,13 @@ def test_list_for_coder_role_surfaces_coder_skills() -> None:
     assert ids <= AGENT_SKILL_ALLOWLIST["coder"]
     assert "typescript" in ids
 
+    web_ui = next(row for row in payload["skills"] if row["skill_id"] == "web-ui")
+    assert web_ui["version"] == "1.0.0"
+    assert web_ui["content_hash"].startswith("sha256:")
+    assert web_ui["completion_contract"]["required_check_types"] == [
+        "file_created_or_modified",
+    ]
+
 
 def test_list_unknown_role_returns_nothing() -> None:
     """Fail-closed: an unknown role has no allowlist entry, so it gets no
@@ -133,13 +140,9 @@ def test_context_builder_pushes_root_selected_skill() -> None:
     assert ctx.role_skill == skill_loader.get_skill("typescript")
 
 
-def test_context_builder_defaults_to_native_role_skill() -> None:
-    """No pushed skill → the role's native SUBAGENT_ROLE_SKILLS push (or None
-    for coder, which has no native skill)."""
-    coder = subagent_context.build_subagent_context(brief="x", role="coder")
-    assert coder.role_skill is None
-    explorer = subagent_context.build_subagent_context(brief="x", role="explorer")
-    assert explorer.role_skill == skill_loader.get_skill("explorer")
+def test_context_builder_rejects_an_omitted_model_choice() -> None:
+    with pytest.raises(ValueError, match="model-selected skill"):
+        subagent_context.build_subagent_context(brief="x", role="explorer")
 
 
 def test_context_builder_pushed_skill_overrides_native() -> None:
@@ -176,12 +179,10 @@ def test_context_names_the_skill_it_pushed_not_only_its_text() -> None:
     session that pushed a skill to every worker still read "No successful
     skill calls recorded".
     """
-    explorer = subagent_context.build_subagent_context(brief="x", role="explorer")
+    explorer = subagent_context.build_subagent_context(
+        brief="x", role="explorer", pushed_skill_id="explorer",
+    )
     assert explorer.role_skill_id == "explorer"
-
-    coder = subagent_context.build_subagent_context(brief="x", role="coder")
-    assert coder.role_skill is None
-    assert coder.role_skill_id is None
 
 
 def _audited_push(handle_id: str, audit_db: Path) -> str | None:
@@ -197,16 +198,9 @@ def _audited_push(handle_id: str, audit_db: Path) -> str | None:
     return rows[0]["pushed_skill_id"]
 
 
-def test_spawn_audits_the_role_default_push_with_no_override(
+def test_spawn_requires_the_models_explicit_skill_choice(
     parent_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HI #2's push is not opt-out-able, so it is not un-auditable either.
-
-    Before this, `subagent_audit.pushed_skill_id` held only the root's
-    explicit override. A spawn that took the role's native skill — the normal
-    case — recorded NULL, so the console had no source for what the worker was
-    actually given, and its Skills panel read empty for every such session.
-    """
     sid, _ = parent_session
     audit_db = tmp_path / "spawn-audit.db"
     monkeypatch.setenv("MUSUBI_AUDIT_DB", str(audit_db))
@@ -217,11 +211,12 @@ def test_spawn_audits_the_role_default_push_with_no_override(
         role="explorer",
         brief="find where the loop dispatches tools",
     ))
-    assert out["status"] == "spawned"
-    assert _audited_push(out["handle_id"], audit_db) == "explorer"
+    assert out["status"] == "error"
+    assert out["error_kind"] == "policy_denied"
+    assert "model-selected skill" in out["error"]
 
 
-def test_spawn_audits_nothing_when_the_role_pushes_nothing(
+def test_spawn_audits_the_exact_model_selected_skill(
     parent_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sid, _ = parent_session
@@ -233,9 +228,38 @@ def test_spawn_audits_nothing_when_the_role_pushes_nothing(
         parent_agent_name="agent",
         role="coder",
         brief="write the page",
+        pushed_skill_id="web-ui",
     ))
     assert out["status"] == "spawned"
-    assert _audited_push(out["handle_id"], audit_db) is None
+    assert _audited_push(out["handle_id"], audit_db) == "web-ui"
+
+
+def test_spawn_audit_failure_abandons_worker_and_keeps_outbox(
+    parent_session, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid, db_path = parent_session
+
+    def fail_delivery(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise OSError("audit disk unavailable")
+
+    monkeypatch.setattr(
+        server.subagent_audit, "deliver_spawn_obligation", fail_delivery,
+    )
+    out = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid,
+        parent_agent_name="agent",
+        role="coder",
+        brief="write the page",
+        pushed_skill_id="web-ui",
+    ))
+
+    assert out["status"] == "error"
+    assert out["error_kind"] == "audit_unavailable"
+    from storage import db
+    worker = db.get_sub_session(out["handle_id"], db_path)
+    assert worker is not None and worker["status"] == "abandoned"
+    pending = db.get_audit_obligations(status="pending", db_path=db_path)
+    assert [row["handle_id"] for row in pending] == [out["handle_id"]]
 
 
 # ── skill selection is available to the root in every scope ────────────────

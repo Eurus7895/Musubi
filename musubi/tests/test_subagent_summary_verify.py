@@ -174,6 +174,7 @@ def _spawn_explorer(parent: str, output_schema: str | None = None) -> str:
         parent_agent_name="agent",
         role="explorer",
         brief="scan",
+        pushed_skill_id="explorer",
         output_schema=output_schema,
     )
     return json.loads(raw)["handle_id"]

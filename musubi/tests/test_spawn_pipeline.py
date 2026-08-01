@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,48 @@ def _musubi_dir() -> Path:
 
 def _text(s: str) -> LMResponse:
     return LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": s}])
+
+
+def _preflight_response(messages: list[dict[str, Any]]) -> LMResponse | None:
+    if not (
+        messages
+        and isinstance(messages[0].get("content"), str)
+        and "STAGE PREFLIGHT" in messages[0]["content"]
+    ):
+        return None
+    payload = next(
+        json.loads(message["content"])
+        for message in messages
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), str)
+        and "\"role\"" in message["content"]
+    )
+    role = payload["role"]
+    skill = {
+        "planner": "request-triage", "designer": "api-design",
+        "coder": "python", "reviewer": "code-review",
+        "scoper": "pr-scope-detection", "finder": "per-file-review",
+        "synthesizer": "code-review",
+    }[role]
+    exit_when = []
+    if role == "coder":
+        root = Path(os.environ.get("MUSUBI_ROOT") or _musubi_dir().parent)
+        candidate = next((path for path in root.rglob("*") if path.is_file()), None)
+        relative = (
+            candidate.relative_to(root).as_posix() if candidate else "README.md"
+        )
+        exit_when = [{
+            "type": "file_exists", "root": "musubi", "path": relative,
+        }]
+    if payload.get("frozen_contract_hash"):
+        return _text(json.dumps({
+            "skill_id": skill,
+            "contract_hash": payload["frozen_contract_hash"],
+        }))
+    return _text(json.dumps({
+        "skill_id": skill, "goal": "complete the bounded stage",
+        "exit_when": exit_when,
+    }))
 
 
 def _spawn_pipeline(name: str, brief: str) -> LMResponse:
@@ -61,6 +104,9 @@ class PipelineRouter(LMRouter):
         self.reviewer_brief: str = ""
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        preflight = _preflight_response(messages)
+        if preflight is not None:
+            return preflight
         brief = _brief_text(messages)
         if brief is None:
             if _has_tool_result(messages):
@@ -69,7 +115,9 @@ class PipelineRouter(LMRouter):
         if "Evaluate the output of the prior stage" in brief:
             self.reviewer_brief = brief
             self.order.append("reviewer")
-            return _text("review: PASS")
+            return _text(json.dumps({
+                "status": "pass", "summary": "review: PASS", "verdict": "pass",
+            }))
         # Generator stages are told apart by how many prior summaries they see.
         n_prior = brief.count("### ")
         if n_prior == 0:
@@ -170,7 +218,7 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -234,7 +282,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -337,7 +385,7 @@ def test_run_pipeline_runtime_policy_denial_aborts_before_later_stage(
                 "status": "spawned", "pipeline_session_id": "pipe-runtime-policy",
                 "pipeline_name": "feature-dev", "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_list_skills":
@@ -450,7 +498,7 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -471,6 +519,10 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
 
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         captured_prompts.append(kwargs["system_prompt"])
+        if kwargs["role"] == "reviewer":
+            return json.dumps({
+                "status": "pass", "summary": "stage done", "verdict": "pass",
+            }), 1
         return "stage done", 1
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
@@ -488,87 +540,6 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
         assert "SKILL-CONTENT-XYZ" in prompt, "role_skill not pushed into stage prompt"
         assert "## Skill (pushed by harness)" in prompt
 
-
-def test_pipeline_stages_run_the_skill_their_recipe_declares() -> None:
-    """A pipeline is the compliance path: the procedure is written down.
-
-    `pipeline.yaml` has carried `generator.agents[].skill` / `evaluator.skill`
-    since feature-dev shipped. The standalone runner never read them — it
-    folded the role name into the task text and asked a ranker, which returned
-    None for six of the seven stage roles while the recipe held the right
-    answer the whole time.
-    """
-    import io
-
-    from agent.pipeline_runner import _prepared_stage_skill
-
-    log = io.StringIO()
-    # Declared in the recipe → pushed verbatim.
-    assert _prepared_stage_skill("feature-dev", "designer", log) == "api-design"
-    assert _prepared_stage_skill("feature-dev", "coder", log) == "python"
-    assert _prepared_stage_skill("feature-dev", "reviewer", log) == "code-review"
-    assert _prepared_stage_skill("code-review", "scoper", log) == "pr-scope-detection"
-    assert _prepared_stage_skill("code-review", "finder", log) == "per-file-review"
-    assert _prepared_stage_skill("code-review", "synthesizer", log) == "code-review"
-
-
-def test_a_role_default_covers_a_stage_the_recipe_leaves_undeclared() -> None:
-    """feature-dev declares `skill: null` for the planner, and the role's own
-    push supplies `request-triage`. Returning None is correct: the id is
-    resolved by `build_subagent_context`, not pushed."""
-    import io
-
-    from agent.pipeline_runner import _prepared_stage_skill
-    from validation.subagent_context import (
-        SUBAGENT_ROLE_SKILLS,
-        build_subagent_context,
-    )
-
-    log = io.StringIO()
-    assert _prepared_stage_skill("feature-dev", "planner", log) is None
-    assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
-    assert build_subagent_context(brief="b", role="planner").role_skill_id == (
-        "request-triage"
-    )
-    assert "prepared skill=request-triage (role default)" in log.getvalue()
-
-
-def test_a_stage_with_no_prepared_skill_is_reported_not_hidden() -> None:
-    """A preset-composed recipe declares no skill, and `coder` has no role
-    default because its skill is task-dependent. That is a real gap in a
-    recipe — it is named on the policy channel so it is auditable, rather than
-    passing silently as it did when a ranker returned None."""
-    import io
-
-    from agent.pipeline_runner import _prepared_stage_skill
-
-    log = io.StringIO()
-    # An unknown pipeline declares nothing, which is the same resolution path
-    # a preset-composed recipe takes.
-    assert _prepared_stage_skill("no-such-recipe", "coder", log) is None
-    assert "no prepared skill" in log.getvalue()
-
-
-def test_a_recipe_cannot_widen_the_role_allowlist() -> None:
-    """`pipeline.yaml` declares; it never widens (HI #3). A declared skill the
-    role may not receive is dropped and the drop is logged — a silently
-    ignored compliance declaration would be worse than a missing one."""
-    import io
-
-    from agent import pipeline_runner
-
-    log = io.StringIO()
-    original = pipeline_runner_declared = None
-    import composer
-
-    original = composer.declared_stage_skill
-    try:
-        composer.declared_stage_skill = lambda pn, role: "agent-routing"
-        # agent-routing is root-only; the coder may not receive it.
-        assert pipeline_runner._prepared_stage_skill("feature-dev", "coder", log) is None
-        assert "is not in the role's allowlist; dropped" in log.getvalue()
-    finally:
-        composer.declared_stage_skill = original
 
 def test_pipeline_stage_threads_frontmatter_output_budget(
     monkeypatch: pytest.MonkeyPatch,
@@ -766,6 +737,9 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
         model = "truncated-1"
 
         def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+            preflight = _preflight_response(messages)
+            if preflight is not None:
+                return preflight
             return LMResponse(stop_reason="max_tokens", content=[{
                 "type": "tool_use", "id": "partial-write",
                 "name": "musubi_write_file",
@@ -1026,6 +1000,7 @@ def test_pipeline_readonly_stage_at_cap_sends_no_manifest(
     """A stage that mutated nothing has no verifiable claim — fail-closed,
     the substrate's turn-cap coercion stands for it."""
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    (tmp_path / "existing.txt").write_text("fixture", encoding="utf-8")
     completions: list[dict[str, Any]] = []
     _single_coder_stage_fakes(
         monkeypatch, completions,
@@ -1055,7 +1030,7 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "code", "role": "coder"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -1086,8 +1061,8 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
         lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
     )
 
-    # A 1-token run budget: the first stage's preflight halts before any model
-    # call, so run_unit raises TokenBudgetExhaustedError.
+    # A 1-token run budget: the first stage's accounted preflight exhausts the
+    # shared budget before a worker handle is opened.
     parent = TokenBudgetEnforcer(1)
 
     with pytest.raises(TokenBudgetExhaustedError):
@@ -1098,11 +1073,9 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
             PipelineRouter(), [], io.StringIO(), strict=True, budget=parent,
         ))
 
-    # Only the first stage was reached. Its evidence stays escalated, while the
-    # pipeline remains paused rather than losing its resumable checkpoint.
-    assert len(completions) == 1
-    assert completions[0]["handle_id"] == "h-code"
-    assert completions[0]["status"] == "escalated"
+    # No worker exists to complete. The pipeline remains paused rather than
+    # losing its resumable checkpoint.
+    assert completions == []
     assert pauses == [{
         "session_id": "pipe-broke",
         "stage": "code",
@@ -1130,7 +1103,7 @@ def _nesting_fakes(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "code", "role": "coder"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -1155,6 +1128,10 @@ def _nesting_fakes(
 
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         captured.append({"tools": args[2], **kwargs})
+        if kwargs["role"] == "reviewer":
+            return json.dumps({
+                "status": "pass", "summary": "stage done", "verdict": "pass",
+            }), 1
         return "stage done", 1
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
@@ -1190,7 +1167,7 @@ def test_stage_with_spawn_roles_gets_spawn_tool_and_stage_orchestration(
     caller."""
     from agent.run import Orchestration
 
-    captured = _nesting_fakes(monkeypatch, {"code": ["explorer"], "check": []})
+    captured = _nesting_fakes(monkeypatch, {"code": ["explorer"], "review": []})
     _run(Orchestration(parent_session_id="root-sid"), captured)
 
     coder, reviewer = captured
@@ -1216,7 +1193,7 @@ def test_stage_without_spawn_roles_field_stays_leaf(
     strict leaves — fail-closed compatibility."""
     from agent.run import Orchestration
 
-    captured = _nesting_fakes(monkeypatch, {"code": None, "check": None})
+    captured = _nesting_fakes(monkeypatch, {"code": None, "review": None})
     _run(Orchestration(parent_session_id="root-sid"), captured)
 
     for stage in captured:
@@ -1235,7 +1212,7 @@ def test_stage_leaf_when_caller_out_of_depth(
     from agent.run import Orchestration
 
     captured = _nesting_fakes(
-        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+        monkeypatch, {"code": ["explorer"], "review": ["reviewer-aux"]},
     )
     _run(
         Orchestration(parent_session_id="root-sid", depth=2, max_depth=2),
@@ -1252,7 +1229,7 @@ def test_run_pipeline_without_orchestration_keeps_leaves(
     """Default orchestration=None keeps every stage a strict leaf even when
     the server advertises spawn_roles — existing callers are unaffected."""
     captured = _nesting_fakes(
-        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+        monkeypatch, {"code": ["explorer"], "review": ["reviewer-aux"]},
     )
     _run(None, captured)
 
@@ -1277,6 +1254,9 @@ class NestingRouter(LMRouter):
         self.tool_surfaces: list[set[str]] = []
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        preflight = _preflight_response(messages)
+        if preflight is not None:
+            return preflight
         self.tool_surfaces.append({t["name"] for t in tools})
         if not self._responses:
             raise AssertionError("NestingRouter ran out of canned responses")
@@ -1286,7 +1266,7 @@ class NestingRouter(LMRouter):
 def _spawn_worker(role: str, brief: str) -> LMResponse:
     return LMResponse(stop_reason="tool_use", content=[{
         "type": "tool_use", "id": "sp-1", "name": "musubi_spawn_subagent",
-        "input": {"role": role, "brief": brief},
+        "input": {"role": role, "brief": brief, "pushed_skill_id": role},
     }])
 
 
@@ -1301,7 +1281,7 @@ def test_pipeline_stage_spawns_declared_worker_end_to_end() -> None:
         _text("code: wrote moduleX"),               # coder stage
         _spawn_worker("reviewer-aux", "check moduleX"),  # reviewer stage c0
         _text("aux: file verdict OK"),              # reviewer-aux child
-        _text("review: PASS"),                      # reviewer stage c1
+        _text(json.dumps({"status": "pass", "summary": "review: PASS", "verdict": "pass"})),
     ])
     answer = asyncio.run(run_agent(
         "ship it", router, _musubi_dir(), log=io.StringIO(),
@@ -1344,12 +1324,12 @@ def test_spawn_pipeline_stage_returns_effective_spawn_roles(
 
     code = json.loads(server.musubi_spawn_pipeline_stage(
         pipeline_session_id=psid, pipeline_name="feature-dev",
-        stage="code", brief="b",
+        stage="code", brief="b", pushed_skill_id="web-ui",
     ))
     assert code["spawn_roles"] == ["explorer", "investigator"]
 
     plan = json.loads(server.musubi_spawn_pipeline_stage(
         pipeline_session_id=psid, pipeline_name="feature-dev",
-        stage="plan", brief="b",
+        stage="plan", brief="b", pushed_skill_id="request-triage",
     ))
     assert plan["spawn_roles"] == []

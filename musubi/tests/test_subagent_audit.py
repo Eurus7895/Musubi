@@ -49,6 +49,7 @@ def test_record_spawn_persists_all_fields(audit_db: Path) -> None:
         parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
+        pushed_skill_id="explorer",
         allowed_tools=["Read", "Grep"],
         max_turns=8,
         wall_clock_timeout_s=300,
@@ -209,9 +210,10 @@ def test_server_spawn_writes_audit_row(
         parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
+        pushed_skill_id="explorer",
     )
     spawn = json.loads(raw)
-    assert spawn["status"] == "spawned"
+    assert spawn["status"] == "spawned", spawn
 
     rows = subagent_audit.query_events(parent_session_id=parent)
     assert len(rows) == 1
@@ -232,6 +234,7 @@ def test_server_complete_writes_audit_row(
         parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
+        pushed_skill_id="explorer",
     )
     h = json.loads(spawn_raw)["handle_id"]
 
@@ -258,6 +261,7 @@ def test_server_records_escalation_in_audit(
         role="explorer",
         brief="x",
         max_turns=3,  # the cap
+        pushed_skill_id="explorer",
     )
     h = json.loads(spawn_raw)["handle_id"]
     # turns=3 >= max_turns → harness coerces to escalated.
@@ -279,6 +283,7 @@ def test_server_records_verification_failure(
         parent_agent_name="agent",
         role="explorer",
         brief="x",
+        pushed_skill_id="explorer",
     )
     h = json.loads(spawn_raw)["handle_id"]
     server.musubi_complete_subagent(
@@ -300,6 +305,7 @@ def test_server_records_truncation(audit_db: Path, state_db: Path) -> None:
         parent_agent_name="agent",
         role="explorer",
         brief="x",
+        pushed_skill_id="explorer",
     )
     h = json.loads(spawn_raw)["handle_id"]
     server.musubi_complete_subagent(
@@ -331,7 +337,7 @@ def test_no_silent_sub_agents_full_lifecycle(
         spawn = json.loads(server.musubi_spawn_subagent(
             parent_session_id=parent,
             parent_agent_name="agent",
-            role=role, brief=brief,
+            role=role, brief=brief, pushed_skill_id=role,
         ))
         handles.append(spawn["handle_id"])
         server.musubi_complete_subagent(
@@ -360,7 +366,7 @@ def test_query_tool_returns_events_for_parent(
     json.loads(server.musubi_spawn_subagent(
         parent_session_id=parent,
         parent_agent_name="agent",
-        role="explorer", brief="x",
+        role="explorer", brief="x", pushed_skill_id="explorer",
     ))
     raw = server.musubi_query_subagent_events(parent_session_id=parent)
     payload = json.loads(raw)
@@ -375,12 +381,12 @@ def test_query_tool_filters_by_handle(
     h1 = json.loads(server.musubi_spawn_subagent(
         parent_session_id=parent,
         parent_agent_name="agent",
-        role="explorer", brief="a",
+        role="explorer", brief="a", pushed_skill_id="explorer",
     ))["handle_id"]
     json.loads(server.musubi_spawn_subagent(
         parent_session_id=parent,
         parent_agent_name="agent",
-        role="investigator", brief="b",
+        role="investigator", brief="b", pushed_skill_id="investigator",
     ))
     raw = server.musubi_query_subagent_events(handle_id=h1)
     payload = json.loads(raw)

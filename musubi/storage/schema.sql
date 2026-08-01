@@ -56,7 +56,48 @@ CREATE TABLE IF NOT EXISTS stage_outputs (
     user_hint       TEXT,               -- optional: one-line retry hint from the gate UI
     chunk_id        TEXT,               -- optional: per-task chunk identifier (e.g. 'T1')
     schema_version  TEXT NOT NULL DEFAULT 'v1',
+    phase           TEXT NOT NULL DEFAULT 'pending',
+    contract_json   TEXT,
+    contract_hash   TEXT,
+    selected_skill_id TEXT,
+    selected_skill_version TEXT,
+    selected_skill_hash TEXT,
+    worker_handle_id TEXT,
+    artifact_manifest_json TEXT,
+    gate_result_json TEXT,
+    gate_written_at TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stage_outputs_without_chunk
+    ON stage_outputs(session_id, stage, attempt) WHERE chunk_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stage_outputs_with_chunk
+    ON stage_outputs(session_id, stage, chunk_id, attempt) WHERE chunk_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS stage_attempt_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    session_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    chunk_id TEXT,
+    attempt INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    worker_handle_id TEXT,
+    contract_hash TEXT,
+    detail_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stage_attempt_events_identity
+    ON stage_attempt_events(session_id, stage, chunk_id, attempt, id);
+CREATE TABLE IF NOT EXISTS stage_command_results (
+    execution_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    command_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    exit_code INTEGER,
+    stdout TEXT NOT NULL,
+    stderr TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    recorded_at REAL NOT NULL
 );
 
 -- Single-row pointer to the most recent active session (crash recovery).
@@ -113,6 +154,22 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_parent
     ON sub_sessions (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
+
+-- Durable outbox for audit evidence that must exist before a worker becomes
+-- runnable (HI #8). A failed delivery remains pending and the reserved worker
+-- is abandoned; recovery may deliver evidence but never resurrect the run.
+CREATE TABLE IF NOT EXISTS audit_obligations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    handle_id    TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    delivered_at TEXT,
+    error        TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_obligations_kind_handle
+    ON audit_obligations (kind, handle_id);
 
 -- Conversation messages (Phase C.1). One row per user / assistant / tool /
 -- system turn in an agent chat. The agent runner replays the

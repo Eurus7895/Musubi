@@ -78,7 +78,7 @@ musubi/
     context_builder.py
     verifier.py
     executor.py
-    correction_loop.py
+    stage_gate.py
     skill_loader.py
     memory/
     storage/

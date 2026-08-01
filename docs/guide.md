@@ -289,7 +289,7 @@ returns only a compact summary, so the orchestrator's context stays small.
   runs a turn-capped child loop on a **firewalled brief** and **restricted tool
   surface**, verifies the summary on completion, then feeds just that summary
   back. Every spawn is policy-checked and audited (`musubi_query_subagent_events`).
-- **Catalog modes.** Root, direct worker, pipeline-stage, and meta-agent prompts
+- **Catalog modes.** Root, direct worker, and pipeline-stage prompts
   live under separate `.github/agents/` purpose directories. Direct standalone
   workers use `workers/<role>.agent.md`; pipeline stages resolve
   `workers/<role>.agent.md` first, then

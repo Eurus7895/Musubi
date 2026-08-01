@@ -314,9 +314,14 @@ def _text(s: str) -> LMResponse:
 
 
 def _spawn(role: str, brief: str, **extra: Any) -> LMResponse:
+    selected_skill = {"coder": "web-ui"}.get(role, role)
     return LMResponse(stop_reason="tool_use", content=[{
         "type": "tool_use", "id": "spawn-1", "name": "musubi_spawn_subagent",
-        "input": {"role": role, "brief": brief, **extra},
+        "input": {
+            "role": role, "brief": brief,
+            "pushed_skill_id": selected_skill,
+            **extra,
+        },
     }])
 
 
@@ -456,8 +461,9 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
         return outcome
 
     monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
-    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSUBI_ROOT", str(_musubi_dir().parent))
     router = FakeRouter([
+        _direct("coder", "policy-test.html", "create"),
         _spawn("coder", "attempt a forbidden session operation"),
         LMResponse(stop_reason="tool_use", content=[{
             "type": "tool_use",
@@ -477,7 +483,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
 
     assert answer.startswith("[incomplete]")
     assert "non-recoverable policy failure" in answer
-    assert len(router.calls) == 2
+    assert len(router.calls) == 3
     coder_outcomes = [outcome for outcome in recorded if outcome.role == "coder"]
     assert len(coder_outcomes) == 1
     assert coder_outcomes[0].status == "escalated"
@@ -523,7 +529,7 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     from agent import run as run_mod
     from workspace.grants import MANIFEST_ENV, FolderGrant, RootRegistry
 
-    musubi_root = _musubi_dir()
+    musubi_root = _musubi_dir().parent
     audit_db = tmp_path / "audit.db"
     state_db = tmp_path / "musubi.db"
     monkeypatch.setattr(run_mod, "_server_audit_db_path", lambda *_args: audit_db)
@@ -542,6 +548,7 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         "summary: primary coder left recovery.html ready for continuation\n"
     )
     router = FakeRouter([
+        _direct("coder", "recovery.html", "create"),
         _spawn("coder", "create recovery.html"),
         LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use", "id": "write-recovery",
@@ -576,8 +583,8 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert (tmp_path / "recovery.html").read_text(encoding="utf-8") == (
         "<!doctype html><title>Recovery</title>"
     )
-    assert len(router.calls) == 12
-    forced_final_call = router.calls[9]
+    assert len(router.calls) == 13
+    forced_final_call = router.calls[10]
     assert forced_final_call["tools"] == []
     forced_final_tool_uses = [
         block
@@ -658,16 +665,16 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert "Prior status: escalated" in sub_sessions[1]["brief"]
     assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
 
-    assert len(cycle_rows) == len(router.calls) == 12
-    assert [row["worker_id"] for row in cycle_rows].count("root") == 2
+    assert len(cycle_rows) == len(router.calls) == 13
+    assert [row["worker_id"] for row in cycle_rows].count("root") == 3
     assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
     assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
     assert [row["worker_id"] for row in cycle_rows] == [
-        *[primary_handle] * 9, "root", replacement_handle, "root",
+        "root", *[primary_handle] * 9, "root", replacement_handle, "root",
     ]
     assert [
         row["cycle_idx"] for row in cycle_rows if row["worker_id"] == "root"
-    ] == [0, 1]
+    ] == [0, 1, 2]
     assert [
         row["cycle_idx"]
         for row in cycle_rows

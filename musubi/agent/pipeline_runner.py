@@ -4,6 +4,12 @@ musubi-tier: ephemeral
 expires-when: models orchestrate multi-step pipelines natively
 cost-lever: deletes the driver-side stage sequencer (~90 lines)
 
+automatic-stage-retry:
+  musubi-tier: ephemeral
+  expires-when: latest 500 eligible attempts have at least 95% first-pass
+    success, Wilson 95% lower bound at least 93%, and no P0/P1 saved only by retry
+  cost-lever: removes repeat workers, retry preflights, feedback, and resume branches
+
 A pipeline is an ordered chain of workers (composer reads the chain from
 `.github/pipelines/<name>/pipeline.yaml`). When the model calls
 `musubi_spawn_pipeline`, this runner:
@@ -35,10 +41,12 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import composer
 from agent.boundary import ROOT_ROLE
 from agent.jsonio import loads_dict
 
@@ -338,8 +346,14 @@ async def run_pipeline(
 
     summaries = list(resume_plan.summaries) if resume_plan else []
     pipeline_escalated = False
-    for i, step in enumerate(plan):
+    attempts: dict[str, int] = {}
+    frozen_contracts: dict[str, Any] = {}
+    failure_evidence: dict[str, str] = {}
+    i = 0
+    while i < len(plan):
+        step = plan[i]
         if resume_plan and i < resume_plan.start_index:
+            i += 1
             continue
         stage = str(step.get("stage", ""))
         role = str(step.get("role", ""))
@@ -359,15 +373,83 @@ async def run_pipeline(
                 raise RuntimeError(msg) from exc
             return msg
 
-        # A pipeline is the compliance path: its procedure is DECLARED in the
-        # recipe, never chosen at runtime. There is no model here to choose,
-        # and the ranker this replaces was not choosing either — it folded the
-        # role name into the task text so a role-canonical skill would match,
-        # a role→skill lookup written as a text search, which returned None
-        # for six of the seven stage roles while `pipeline.yaml` had been
-        # declaring the right answer in `generator.agents[].skill` /
-        # `evaluator.skill` since feature-dev shipped.
-        stage_skill = _prepared_stage_skill(pname, role, log)
+        # The model owns skill and goal selection. The harness supplies only
+        # the role-filtered catalog and recipe ceilings, then freezes the first
+        # valid contract. Retry calls may change skill only when its observable
+        # requirements fit the same frozen contract hash.
+        from agent.stage_preflight import run_stage_preflight
+        from skills import skill_loader
+        from validation.context_builder import AGENT_SKILL_ALLOWLIST
+        from workspace.grants import MANIFEST_ENV, RootRegistry
+
+        recipe_contract = composer.load_pipeline_contract(pname)
+        recipe = next(
+            (candidate for candidate in recipe_contract.stages if candidate.stage == stage),
+            None,
+        )
+        if recipe is None:
+            await _finalize_pipeline(session, psid, "aborted", False)
+            raise RuntimeError(f"pipeline {pname!r} has no strict recipe for stage {stage!r}")
+        attempt = attempts.get(stage, 1)
+        allowed_skill_ids = AGENT_SKILL_ALLOWLIST.get(role.strip().lower(), set())
+        catalog = [
+            meta for meta in skill_loader.list_skills()
+            if meta.skill_id in allowed_skill_ids
+        ]
+        if not catalog:
+            await _finalize_pipeline(session, psid, "aborted", False)
+            raise RuntimeError(f"stage {stage!r} role {role!r} has no selectable skills")
+        root_path = Path(os.environ.get("MUSUBI_ROOT") or Path.cwd()).resolve()
+        manifest = os.environ.get(MANIFEST_ENV, "")
+        roots = (
+            RootRegistry.from_json(manifest, root_path)
+            if manifest else RootRegistry.build(root_path)
+        )
+        try:
+            preflight = run_stage_preflight(
+                vendor, role, brief, catalog, recipe, roots=roots,
+                frozen_contract=frozen_contracts.get(stage),
+                failure_evidence=failure_evidence.get(stage),
+                budget=budget, log=log, stats=stats,
+                audit_db_path=audit_db_path, session_id=psid,
+                stage=stage, attempt=attempt,
+            )
+        except RuntimeError as exc:
+            if type(exc).__name__ in {
+                "BudgetExhaustedError", "TokenBudgetExhaustedError",
+            }:
+                paused = loads_dict(await _call_tool_text(
+                    session, "musubi_pause_session", {
+                        "session_id": psid, "stage": stage,
+                        "reason": "budget_exhausted",
+                    },
+                ))
+                if paused.get("status") != "paused":
+                    await _finalize_pipeline(session, psid, "escalated", True)
+                raise
+            await _finalize_pipeline(session, psid, "escalated", True)
+            raise RuntimeError(
+                f"[pipeline {pname}] stage {stage!r} preflight failed: {exc}"
+            ) from exc
+        frozen_contracts.setdefault(stage, preflight.contract)
+        stage_skill = preflight.skill.skill_id
+        _record_preflight_checkpoint(
+            psid, stage, attempt, preflight, compression_db_path,
+        )
+        if role not in {"reviewer", "synthesizer"}:
+            brief = (
+                f"{brief}\n\n## Frozen stage goal\n{preflight.contract.goal}\n\n"
+                f"Contract hash: {preflight.contract.contract_hash}\n"
+                f"Acceptance predicates: {json.dumps(list(preflight.contract.exit_when), ensure_ascii=False)}"
+            )
+        from validation.stage_gate import fingerprint_file
+        stage_snapshot: dict[str, Any] = {}
+        for predicate in preflight.contract.exit_when:
+            if "root" in predicate and "path" in predicate:
+                key = f"{predicate['root']}:{predicate['path']}"
+                stage_snapshot[key] = fingerprint_file(
+                    roots.resolve(str(predicate["root"]), str(predicate["path"]))
+                )
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
             "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
@@ -387,6 +469,9 @@ async def run_pipeline(
                 raise RuntimeError(msg)
             return msg
         handle_id = str(st.get("handle_id", ""))
+        _record_worker_started_checkpoint(
+            psid, stage, attempt, handle_id, compression_db_path,
+        )
         # The server echoes the cap it recorded in the spawn row + audit. If it
         # ever diverges from the requested spec, the run would silently audit a
         # different cap than it enforces — fail the stage closed instead.
@@ -590,7 +675,140 @@ async def run_pipeline(
         await _call_tool_text(
             session, "musubi_complete_subagent", complete_payload,
         )
+        _record_worker_complete_checkpoint(
+            psid, stage, attempt, handle_id, answer, touched,
+            compression_db_path,
+        )
+
+        structured_output: dict[str, Any] | None = None
+        try:
+            parsed_answer = json.loads(answer)
+            if isinstance(parsed_answer, dict):
+                structured_output = parsed_answer
+        except (json.JSONDecodeError, TypeError):
+            structured_output = None
+        missing_outputs = [
+            field for field in preflight.contract.required_output_fields
+            if structured_output is None or field not in structured_output
+        ]
+        if role in {"reviewer", "synthesizer"}:
+            verdict = (
+                str(structured_output.get("status") or "").strip().lower()
+                if structured_output else ""
+            )
+            if verdict != "pass":
+                _escalate_attempt_checkpoint(
+                    psid, stage, attempt, "worker_complete",
+                    "evaluator_non_pass", {"verdict": verdict or "malformed"},
+                    compression_db_path,
+                )
+                await _finalize_pipeline(session, psid, "escalated", True)
+                msg = (
+                    f"[pipeline {pname}] evaluator stage {stage!r} returned "
+                    f"non-pass status {verdict or 'malformed'}"
+                )
+                if strict:
+                    raise RuntimeError(msg)
+                return msg
+
+        command_results: dict[str, Any] = {}
+        command_ids = {
+            str(predicate.get("command_id") or "")
+            for predicate in preflight.contract.exit_when
+            if predicate.get("type") == "named_command"
+        }
+        if command_ids:
+            if compression_db_path is None or audit_db_path is None:
+                command_results.update({
+                    command_id: {
+                        "status": "error",
+                        "message": "named command persistence is unavailable",
+                    }
+                    for command_id in command_ids
+                })
+            else:
+                from agent.stage_command import run_named_command
+                for command_id in sorted(command_ids):
+                    command_results[command_id] = await run_named_command(
+                        recipe_contract.commands[command_id], role=role,
+                        session_id=psid, stage=stage, attempt=attempt,
+                        roots=roots, state_db_path=compression_db_path,
+                        audit_db_path=audit_db_path, log=log,
+                    )
+        if any(
+            predicate.get("type") == "lint_clean"
+            for predicate in preflight.contract.exit_when
+        ):
+            if compression_db_path is None or audit_db_path is None:
+                command_results["lint_clean"] = {
+                    "status": "error", "message": "lint persistence is unavailable",
+                }
+            else:
+                from agent.stage_command import run_lint_check
+                lint_paths = sorted(touched)
+                command_results["lint_clean"] = await run_lint_check(
+                    lint_paths, role=role, session_id=psid, stage=stage,
+                    attempt=attempt, roots=roots,
+                    state_db_path=compression_db_path,
+                    audit_db_path=audit_db_path, log=log,
+                )
+
+        from validation.stage_gate import CheckResult, GateResult, evaluate_stage_gate
+        gate = evaluate_stage_gate(
+            preflight.contract, stage_snapshot,
+            [{"root": "musubi", "path": path} for path in sorted(touched)],
+            command_runner=lambda command_id: command_results.get(command_id, {
+                "status": "error", "message": f"command {command_id!r} was not run",
+            }),
+            roots=roots,
+        )
+        if missing_outputs:
+            gate = GateResult("fail", gate.checks + (CheckResult(
+                "required_output_fields", "fail",
+                f"worker output omitted required fields: {missing_outputs}",
+                {"missing": missing_outputs},
+            ),))
+        _record_gate_checkpoint(
+            psid, stage, attempt, gate, compression_db_path,
+        )
+        if gate.status == "gate_error":
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "gate_error", "gate_escalated", {},
+                compression_db_path,
+            )
+            await _finalize_pipeline(session, psid, "escalated", True)
+            raise RuntimeError(
+                f"[pipeline {pname}] stage {stage!r} acceptance gate error"
+            )
+        if gate.status == "fail":
+            evidence = json.dumps([
+                {"type": check.type, "message": check.message,
+                 "evidence": check.evidence}
+                for check in gate.checks if check.status != "pass"
+            ], ensure_ascii=False)[:8192]
+            failure_evidence[stage] = evidence
+            if attempt >= recipe.max_iterations:
+                _escalate_attempt_checkpoint(
+                    psid, stage, attempt, "retryable_failed", "stage_exhausted",
+                    {"max_iterations": recipe.max_iterations},
+                    compression_db_path, next_phase="exhausted",
+                )
+                await _finalize_pipeline(session, psid, "escalated", True)
+                msg = (
+                    f"[pipeline {pname}] stage {stage!r} exhausted "
+                    f"{recipe.max_iterations} attempts"
+                )
+                if strict:
+                    raise RuntimeError(msg)
+                return msg
+            attempts[stage] = attempt + 1
+            _create_retry_checkpoint(
+                psid, stage, attempt, evidence, compression_db_path,
+            )
+            continue
+
         summaries.append(f"### {stage}\n{answer}")
+        i += 1
 
     await _finalize_pipeline(
         session, psid,
@@ -655,75 +873,153 @@ def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> st
     return f"{request}\n\n## Prior stage outputs\n\n{joined}"
 
 
-def _prepared_stage_skill(
-    pipeline_name: str, role: str, log: Any,
-) -> str | None:
-    """The skill this stage is required to run, resolved from declarations only.
-
-    Order, most specific first:
-
-      1. `pipeline.yaml`'s `generator.agents[].skill` / `evaluator.skill` for
-         this role — the recipe's own compliance statement, and the reason a
-         pipeline is auditable: the procedure is written down before the run.
-      2. The role's native push, `SUBAGENT_ROLE_SKILLS[role]` (HI #2). Applied
-         by `build_subagent_context` when nothing is pushed, so returning None
-         here still yields it.
-
-    Nothing scores anything. A recipe declaration that the role's allowlist
-    does not permit is dropped rather than honoured — `pipeline.yaml` declares,
-    it never widens (HI #3) — and the drop is logged, because a silently
-    ignored compliance declaration is worse than a missing one.
-
-    A stage that resolves to no skill at either level is a gap in the recipe,
-    not an error in the run: it is reported on the policy channel so it is
-    visible and auditable, and the stage proceeds on its role prompt alone.
-    """
-    from agent.run import _ensure_core_import_path
-
-    _ensure_core_import_path()
-    import composer
-    from agent.runtime_log import emit_runtime_log
-    from validation.context_builder import AGENT_SKILL_ALLOWLIST
-    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-
-    declared = composer.declared_stage_skill(pipeline_name, role)
-    if declared:
-        permitted = AGENT_SKILL_ALLOWLIST.get(role.strip().lower(), set())
-        if declared in permitted:
-            emit_runtime_log(
-                log,
-                f"[pipeline {pipeline_name}] stage {role}: "
-                f"prepared skill={declared} (declared in pipeline.yaml)",
-                category="skills",
-            )
-            return declared
-        emit_runtime_log(
-            log,
-            f"[pipeline {pipeline_name}] stage {role}: declared skill "
-            f"{declared!r} is not in the role's allowlist; dropped",
-            category="policy",
-        )
-    native = SUBAGENT_ROLE_SKILLS.get(role.strip().lower())
-    if native:
-        emit_runtime_log(
-            log,
-            f"[pipeline {pipeline_name}] stage {role}: "
-            f"prepared skill={native} (role default)",
-            category="skills",
-        )
-        return None  # build_subagent_context resolves the native push itself
-    emit_runtime_log(
-        log,
-        f"[pipeline {pipeline_name}] stage {role}: no prepared skill — "
-        "the recipe declares none and the role has no default",
-        category="policy",
-    )
-    return None
-
-
 def _is_incomplete_tool_outcome(answer: str | None) -> bool:
     """Recognize the typed max-token guard returned by the worker loop."""
     if not isinstance(answer, str) or not answer.startswith("[blocked] "):
         return False
     payload = loads_dict(answer.removeprefix("[blocked] "))
     return payload.get("reason") == "output_too_large_for_single_tool_call"
+
+
+def _attempt_row_exists(
+    session_id: str, stage: str, attempt: int, db_path: Path | None,
+) -> bool:
+    if db_path is None:
+        return False
+    from storage import db
+    return db.get_stage_row(session_id, stage, attempt, db_path) is not None
+
+
+def _record_preflight_checkpoint(
+    session_id: str, stage: str, attempt: int, preflight: Any,
+    db_path: Path | None,
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from storage import db
+    identity = db.StageAttemptIdentity(session_id, stage, attempt)
+    row = db.get_stage_row(session_id, stage, attempt, db_path)
+    if row and row.get("phase") == "pending":
+        db.transition_stage_attempt(
+            identity, "pending", "preflight_running", "preflight_accepted",
+            {"calls": preflight.calls}, db_path=db_path,
+        )
+    for field, value in (
+        ("contract_json", preflight.contract.canonical_json),
+        ("contract_hash", preflight.contract.contract_hash),
+        ("selected_skill_id", preflight.skill.skill_id),
+        ("selected_skill_version", preflight.skill.version),
+        ("selected_skill_hash", preflight.skill.content_hash),
+    ):
+        db.write_stage_attempt_once(identity, field, value, db_path=db_path)
+    db.transition_stage_attempt(
+        identity, "preflight_running", "contract_frozen", "contract_frozen",
+        {"contract_hash": preflight.contract.contract_hash}, db_path=db_path,
+    )
+
+
+def _record_worker_started_checkpoint(
+    session_id: str, stage: str, attempt: int, handle_id: str,
+    db_path: Path | None,
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from storage import db
+    identity = db.StageAttemptIdentity(session_id, stage, attempt)
+    db.write_stage_attempt_once(identity, "worker_handle_id", handle_id, db_path=db_path)
+    db.transition_stage_attempt(
+        identity, "contract_frozen", "worker_running", "worker_started",
+        {"handle_id": handle_id}, db_path=db_path,
+    )
+
+
+def _record_worker_complete_checkpoint(
+    session_id: str, stage: str, attempt: int, handle_id: str, answer: str,
+    touched: set[str], db_path: Path | None,
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from storage import db
+    identity = db.StageAttemptIdentity(session_id, stage, attempt)
+    db.write_stage_attempt_once(identity, "output", answer, db_path=db_path)
+    db.write_stage_attempt_once(
+        identity, "artifact_manifest_json",
+        [{"root": "musubi", "path": path} for path in sorted(touched)],
+        db_path=db_path,
+    )
+    db.transition_stage_attempt(
+        identity, "worker_running", "worker_complete", "worker_completed",
+        {"handle_id": handle_id}, db_path=db_path,
+    )
+
+
+def _record_gate_checkpoint(
+    session_id: str, stage: str, attempt: int, gate: Any,
+    db_path: Path | None,
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from datetime import datetime, timezone
+    from storage import db
+    identity = db.StageAttemptIdentity(session_id, stage, attempt)
+    db.transition_stage_attempt(
+        identity, "worker_complete", "gate_running", "gate_started", {},
+        db_path=db_path,
+    )
+    payload = {
+        "status": gate.status,
+        "checks": [
+            {"type": item.type, "status": item.status,
+             "message": item.message, "evidence": dict(item.evidence)}
+            for item in gate.checks
+        ],
+    }
+    db.write_stage_attempt_once(
+        identity, "gate_result_json", payload, db_path=db_path,
+    )
+    db.write_stage_attempt_once(
+        identity, "gate_written_at", datetime.now(timezone.utc).isoformat(),
+        db_path=db_path,
+    )
+    next_phase = {
+        "pass": "passed", "fail": "retryable_failed",
+        "gate_error": "gate_error",
+    }[gate.status]
+    db.transition_stage_attempt(
+        identity, "gate_running", next_phase, "gate_verdict", payload,
+        db_path=db_path,
+    )
+
+
+def _create_retry_checkpoint(
+    session_id: str, stage: str, attempt: int, evidence: str,
+    db_path: Path | None,
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from storage import db
+    identity = db.StageAttemptIdentity(session_id, stage, attempt)
+    db.create_next_stage_attempt(
+        identity, attempt, {"failure_evidence": evidence}, db_path=db_path,
+    )
+
+
+def _escalate_attempt_checkpoint(
+    session_id: str,
+    stage: str,
+    attempt: int,
+    expected_phase: str,
+    event: str,
+    detail: dict[str, Any],
+    db_path: Path | None,
+    *,
+    next_phase: str = "escalated",
+) -> None:
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        return
+    from storage import db
+
+    db.transition_stage_attempt(
+        db.StageAttemptIdentity(session_id, stage, attempt),
+        expected_phase, next_phase, event, detail, db_path=db_path,
+    )

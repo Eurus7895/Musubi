@@ -191,7 +191,7 @@ if not result.get("ok"):
 
 ---
 
-## Correction Loop Specific Patterns
+## Stage Attempt Loop Patterns
 
 ### Fix Instructions Must Be Specific
 

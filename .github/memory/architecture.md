@@ -34,23 +34,21 @@ Constraints imposed by one-file mode:
 - Reviewer: **code only** (Week 3a evaluator firewall — no request, plan, design,
   Tier 1 memory, or dynamic `required_skills` injection; only the static
   `code-review` skill is auto-injected)
-- Skill-Builder: no stage access — only sees fail patterns via separate mechanism
+- No meta-agent receives stage access; fail patterns remain evidence for humans.
 
-## Correction Loop
+## Stage Loop
 
-Max 3 attempts per code stage. After 3 failures → escalate with full context.
-Pattern detector records every non-pass review issue; at threshold (3 across distinct
-sessions) triggers Skill-Builder to write a proposed patch to `.github/agents/proposed/`.
-Human reviews and applies via `proposed_patch_applier.py`.
+Each stage has an explicit attempt ceiling and deterministic acceptance gate.
+Failed attempts are append-only evidence; exhaustion escalates with full context.
+No meta-agent silently authors corrective prompts or patches.
 
 ## Pipeline Directory Layout (Week 3b)
 
 Each pipeline lives at `.github/pipelines/<name>/` with its own
 `pipeline.yaml`, `agents/`, and `README.md`. `feature-dev` ships at
-`level: 2` (4-agent generator + separate evaluator). The legacy
-`.github/agents/` path is retained for rollback and still hosts
-`skill-builder.agent.md`; `state.AGENTS_DIRS` globs the pipeline
-directory first and falls back to the legacy path.
+`level: 2` (4-agent generator + separate evaluator). The shared
+`.github/agents/` path remains available for worker definitions;
+`state.AGENTS_DIRS` globs the pipeline directory first and falls back to it.
 
 ## Routing & Hooks (Phase D)
 

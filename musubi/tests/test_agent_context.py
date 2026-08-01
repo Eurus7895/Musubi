@@ -305,7 +305,7 @@ def test_decision_workers_report_remaining_gap(worker_file: Path) -> None:
 
 
 def test_catalog_has_no_flat_agent_files() -> None:
-    """The catalog is fully purpose-organised (root/, workers/, meta/):
+    """The catalog is fully purpose-organised (root/, workers/):
     a flat .agent.md would be dead weight no resolver prefers — the last
     host that read flat paths was the removed extension."""
     agents = _REPO_ROOT / ".github" / "agents"
@@ -403,7 +403,7 @@ def test_agent_routing_skill_has_name_frontmatter() -> None:
     assert "name: agent-routing" in text
 
 
-# ── SUBAGENT_ROLE_SKILLS lockstep with new pipeline roles ──────────────────
+# ── Model-selected skills remain allowlisted and fail closed ───────────────
 
 def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
     text = _SKILL_FILE.read_text(encoding="utf-8")
@@ -415,23 +415,16 @@ def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
     assert "investigator" in text
 
 
-def test_pipeline_roles_register_the_right_role_skill() -> None:
-    """Generator roles carry their procedure in the agent.md body, so they
-    register `None` and let the root push a fitting skill per spawn.
+def test_pipeline_roles_have_catalog_allowlists_not_harness_defaults() -> None:
+    """Roles expose a bounded catalog; no harness role-to-skill default exists."""
+    from validation.context_builder import AGENT_SKILL_ALLOWLIST
+    from validation import subagent_context
 
-    Two exceptions, both because nothing chooses for them. The planner is the
-    only component that reads code before anything mutates and the harness
-    routes deterministically on the manifest it emits, so its triage procedure
-    is PUSHED (HI #2). The reviewer declares `code-review` because a pipeline
-    stage has no root to choose for it — that was the single pick the deleted
-    skill ranker ever really made, now stated as data instead of derived from
-    a text search over the role name."""
-    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    for role in ("coder", "designer"):
-        assert role in SUBAGENT_ROLE_SKILLS, role
-        assert SUBAGENT_ROLE_SKILLS[role] is None, role
-    assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
-    assert SUBAGENT_ROLE_SKILLS["reviewer"] == "code-review"
+    assert not hasattr(subagent_context, "SUBAGENT_ROLE_SKILLS")
+    assert "request-triage" in AGENT_SKILL_ALLOWLIST["planner"]
+    assert "code-review" in AGENT_SKILL_ALLOWLIST["reviewer"]
+    assert AGENT_SKILL_ALLOWLIST["coder"]
+    assert AGENT_SKILL_ALLOWLIST["designer"]
 
 
 # ── No regressions: non-agent paths unchanged ────────────────────────
@@ -454,8 +447,11 @@ def test_summarizer_role_has_no_tools() -> None:
 
 def test_summarizer_role_has_skill() -> None:
     """C.2 — summarizer's procedure is pushed via a SKILL.md."""
-    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    assert SUBAGENT_ROLE_SKILLS.get("summarizer") == "summarizer"
+    from validation.subagent_context import build_subagent_context
+    ctx = build_subagent_context(
+        "compress this context", "summarizer", pushed_skill_id="summarizer",
+    )
+    assert ctx.role_skill_id == "summarizer"
 
 
 def test_summarizer_agent_file_exists() -> None:

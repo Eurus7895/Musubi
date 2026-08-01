@@ -21,9 +21,19 @@ const recipe = () => ({
   version: '1',
   baselineChecks: ['node --test'],
   correction: { enabled: true },
+  checks: {
+    projectTests: { type: 'command', argv: ['npm', 'test'], timeoutSeconds: 120 },
+  },
   stages: [
-    { preset: 'planner', agent: 'planner', stage: 'plan', spawns: ['Researcher'] },
-    { preset: 'coder', agent: 'coder', stage: 'build', spawns: ['Reviewer-Aux'] },
+    {
+      preset: 'planner', agent: 'planner', stage: 'plan', spawns: ['Researcher'],
+      maxIterations: 1, allowedChecks: [], allowedCommands: [],
+    },
+    {
+      preset: 'coder', agent: 'coder', stage: 'build', spawns: ['Reviewer-Aux'],
+      maxIterations: 3, allowedChecks: ['DOM_COUNT'],
+      allowedCommands: ['projectTests'],
+    },
   ],
   resolvedContracts: [{ step: 'plan', allowedTools: ['Read'] }],
   findings: [{ severity: 'warning', message: 'backend-owned' }],
@@ -38,7 +48,12 @@ test('normalizes recipe-owned fields without mutating the input', () => {
   assert.deepEqual(input, before)
   assert.deepEqual(draft.stages[0], {
     preset: 'planner', agent: 'planner', stage: 'plan', spawns: ['researcher'],
+    maxIterations: 1, allowedChecks: [], allowedCommands: [],
   })
+  assert.deepEqual(draft.stages[1].allowedChecks, ['dom_count'])
+  assert.deepEqual(draft.stages[1].allowedCommands, ['projectTests'])
+  assert.equal(draft.stages[1].maxIterations, 3)
+  assert.deepEqual(draft.checks, input.checks)
   assert.deepEqual(draft.baselineChecks, ['node --test'])
   assert.deepEqual(draft.correction, { enabled: true })
   assert.equal('resolvedContracts' in draft, false)

@@ -1,7 +1,7 @@
 ---
 applyTo: "**"
 priority: P1
-description: Universal ethics rules — no harmful code, no deception, no privilege escalation, scope transparency, and Skill-Builder change boundaries. Cannot be overridden by any lower-priority instruction.
+description: Universal ethics rules — no harmful code, no deception, no privilege escalation, scope transparency, and human-reviewed behavior changes. Cannot be overridden by any lower-priority instruction.
 ---
 
 # Ethics Instructions — Universal (P1, never overridden)
@@ -48,9 +48,8 @@ any lower priority level may override them.
   in `implementation_notes`.
 - Never hide errors, failed steps, or known limitations in output.
 
-## Proposed Changes (Skill-Builder)
+## Behavior Changes
 
-- Skill-Builder may only write to `.github/agents/proposed/`. It may not directly
-  modify any `.agent.md` file in `.github/agents/`.
-- Proposed changes must include the triggering evidence (session IDs, failure counts).
-- No proposed change may weaken security or ethics rules.
+- Recurring failure evidence must include its session IDs and counts.
+- The harness must not author or apply agent prompts or skills from that evidence.
+- No behavior change may weaken security or ethics rules.

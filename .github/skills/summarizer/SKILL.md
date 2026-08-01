@@ -1,8 +1,8 @@
 ---
 name: summarizer
 description: >
-  Procedure for the Summarizer sub-agent. Pushed by the harness through
-  validation/subagent_context.SUBAGENT_ROLE_SKILLS["summarizer"].
+  Procedure available to the Summarizer sub-agent. The model selects it from
+  the permitted catalog; the harness validates and injects that exact choice.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---

@@ -1,7 +1,7 @@
 ---
 applyTo: "**"
 priority: P4
-description: Project architecture decisions — zero LLM inside harness, append-only state, structural context firewall, subprocess-first execution, single-file prompt assembly, Skill-Builder human approval gate, MCP stdio transport, and SQLite storage rationale.
+description: Project architecture decisions — zero LLM inside harness, append-only state, structural context firewall, subprocess-first execution, single-file prompt assembly, human-reviewed failure evidence, MCP stdio transport, and SQLite storage rationale.
 ---
 
 # Architecture Decisions — Project (P4)
@@ -9,7 +9,7 @@ description: Project architecture decisions — zero LLM inside harness, append-
 ## Zero LLM Inside Harness
 
 Every harness component (`state.py`, `context_builder.py`, `verifier.py`,
-`executor.py`, `correction_loop.py`, `skill_loader.py`, `pattern_detector.py`)
+`executor.py`, `stage_gate.py`, `skill_loader.py`, `pattern_detector.py`)
 is pure Python with zero LLM calls. Copilot is the only LLM. This is not
 a performance decision — it is a correctness and reproducibility decision.
 Deterministic harness + LLM agent = auditable system.
@@ -42,12 +42,10 @@ All agent context is assembled by `context_builder.py`. No other file
 constructs prompts or context dicts. This is enforced by code review and
 is the mechanism that makes the context firewall work.
 
-## Skill-Builder Cannot Auto-Apply Changes
+## Failure Evidence Cannot Auto-Modify Behavior
 
-Skill-Builder writes to `.github/agents/proposed/` only. A human must
-review and apply the patch. This is a deliberate safety gate — the system
-can propose improvements to itself but cannot silently change its own
-behavior.
+Recurring failure patterns are evidence for human review. The harness does not
+author or apply agent prompts, skills, or behavior changes from those patterns.
 
 ## MCP stdio Transport
 

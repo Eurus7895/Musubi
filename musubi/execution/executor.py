@@ -11,6 +11,7 @@ Called by server.py musubi_run_lint / musubi_run_typecheck / musubi_run_tests.
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -153,7 +154,7 @@ def run_lint(files: list[str], *, cwd: Path | None = None) -> LintResult:
         return LintResult(passed=True)
 
     returncode, stdout, stderr = _run(
-        ["ruff", "check", "--output-format=json", "--", *files],
+        [sys.executable, "-m", "ruff", "check", "--output-format=json", "--", *files],
         cwd=cwd,
     )
     raw = stdout or stderr
@@ -166,7 +167,7 @@ def run_typecheck(files: list[str]) -> TypeCheckResult:
     if not files:
         return TypeCheckResult(passed=True)
 
-    returncode, stdout, stderr = _run(["mypy", "--", *files])
+    returncode, stdout, stderr = _run([sys.executable, "-m", "mypy", "--", *files])
     raw = stdout + stderr
     errors = _parse_mypy_output(stdout)
     return TypeCheckResult(passed=returncode == 0, errors=errors, raw=raw)
@@ -175,7 +176,7 @@ def run_typecheck(files: list[str]) -> TypeCheckResult:
 def run_tests(test_dir: str) -> RunResult:
     """Run pytest in test_dir. Returns structured RunResult."""
     returncode, stdout, stderr = _run(
-        ["python", "-m", "pytest", test_dir, "-v", "--tb=short"],
+        [sys.executable, "-m", "pytest", test_dir, "-v", "--tb=short"],
         cwd=Path(test_dir).parent if Path(test_dir).is_dir() else None,
     )
     raw = stdout + stderr

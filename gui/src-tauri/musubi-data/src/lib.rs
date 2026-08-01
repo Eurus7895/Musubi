@@ -1,4 +1,5 @@
 //! musubi-tier: substrate
+//! expires-when: never - the read-only evidence projection is durable UI substrate
 //!
 //! Musubi data core — reads the governance substrate's `audit.db` (append-only
 //! SQLite) into the `State` object the console UI renders. Pure data: no LLM, no
@@ -23,7 +24,7 @@
 //! The reader is tolerant of a fresh DB (empty tables → empty surfaces) and of
 //! either a REAL or a TEXT `ts`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,9 @@ pub struct State {
     pub agent_turns: Vec<AgentTurn>,
     pub agent_cycles: Vec<AgentCycle>,
     pub runtime_log_events: Vec<RuntimeLogEvent>,
+    pub stage_attempts: Vec<StageAttemptEvidence>,
+    pub stage_attempt_events: Vec<StageAttemptEvent>,
+    pub audit_obligations: Vec<AuditObligation>,
     pub tool_evidence: Vec<ToolEvidence>,
     pub orchestrator_sessions: Vec<OrchestratorSession>,
     pub session_folder_grants: Vec<FolderGrant>,
@@ -257,18 +261,48 @@ pub struct PipelineRecipe {
     pub version: String,
     pub baseline_checks: Vec<serde_yaml::Value>,
     pub correction: serde_yaml::Value,
+    pub checks: BTreeMap<String, PipelineCommandRecipe>,
     pub stages: Vec<PipelineStageRecipe>,
     pub resolved_contracts: Vec<ResolvedStageContract>,
     pub findings: Vec<PipelineFinding>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PipelineStageRecipe {
     pub preset: String,
     pub agent: String,
     pub stage: String,
     pub spawns: Vec<String>,
+    pub max_iterations: u8,
+    pub allowed_checks: Vec<String>,
+    pub allowed_commands: Vec<String>,
+}
+
+impl Default for PipelineStageRecipe {
+    fn default() -> Self {
+        Self {
+            preset: String::new(),
+            agent: String::new(),
+            stage: String::new(),
+            spawns: vec![],
+            max_iterations: 1,
+            allowed_checks: vec![],
+            allowed_commands: vec![],
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PipelineCommandRecipe {
+    #[serde(rename = "type")]
+    pub command_type: String,
+    pub argv: Vec<String>,
+    #[serde(alias = "timeout_seconds")]
+    pub timeout_seconds: u32,
+    pub root: String,
+    pub cwd: String,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -316,6 +350,8 @@ struct PipelineDocument {
     #[serde(default)]
     correction: serde_yaml::Value,
     #[serde(default)]
+    checks: BTreeMap<String, RawPipelineCommand>,
+    #[serde(default)]
     stages: Vec<RawPipelineStage>,
     #[serde(default)]
     generator: Option<LegacyGenerator>,
@@ -340,7 +376,32 @@ struct RawPipelineStage {
     stage: String,
     #[serde(default)]
     spawns: serde_yaml::Value,
+    #[serde(default = "default_max_iterations")]
+    max_iterations: u8,
+    #[serde(default)]
+    allowed_checks: Vec<String>,
+    #[serde(default)]
+    allowed_commands: Vec<String>,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPipelineCommand {
+    #[serde(rename = "type")]
+    command_type: String,
+    argv: Vec<String>,
+    #[serde(default = "default_command_timeout")]
+    timeout_seconds: u32,
+    #[serde(default = "default_command_root")]
+    root: String,
+    #[serde(default = "default_command_cwd")]
+    cwd: String,
+}
+
+fn default_max_iterations() -> u8 { 1 }
+fn default_command_timeout() -> u32 { 60 }
+fn default_command_root() -> String { "musubi".into() }
+fn default_command_cwd() -> String { ".".into() }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -371,10 +432,44 @@ struct PipelineOutputDocument<'a> {
     version: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     baseline_checks: &'a Vec<serde_yaml::Value>,
-    stages: &'a Vec<PipelineStageRecipe>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    checks: BTreeMap<&'a String, PipelineCommandOutput<'a>>,
+    stages: Vec<PipelineStageOutput<'a>>,
     #[serde(skip_serializing_if = "yaml_value_is_null")]
     correction: &'a serde_yaml::Value,
 }
+
+#[derive(Serialize)]
+struct PipelineCommandOutput<'a> {
+    #[serde(rename = "type")]
+    command_type: &'a str,
+    argv: &'a Vec<String>,
+    timeout_seconds: u32,
+    #[serde(skip_serializing_if = "is_default_command_root")]
+    root: &'a str,
+    #[serde(skip_serializing_if = "is_default_command_cwd")]
+    cwd: &'a str,
+}
+
+#[derive(Serialize)]
+struct PipelineStageOutput<'a> {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    preset: &'a String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    agent: &'a String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    stage: &'a String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    spawns: &'a Vec<String>,
+    max_iterations: u8,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allowed_checks: &'a Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allowed_commands: &'a Vec<String>,
+}
+
+fn is_default_command_root(value: &&str) -> bool { *value == "musubi" }
+fn is_default_command_cwd(value: &&str) -> bool { *value == "." }
 
 #[derive(Clone)]
 struct EffectiveStage {
@@ -449,6 +544,19 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
     let _legacy_ignored = (document.level, document.max_credits, document.warn_at);
     let mut findings = Vec::new();
     let mut role_skills = Vec::new();
+    let checks = document
+        .checks
+        .into_iter()
+        .map(|(command_id, raw)| {
+            (command_id, PipelineCommandRecipe {
+                command_type: raw.command_type,
+                argv: raw.argv,
+                timeout_seconds: raw.timeout_seconds,
+                root: raw.root,
+                cwd: raw.cwd,
+            })
+        })
+        .collect();
     let stages = if !document.stages.is_empty() {
         document
             .stages
@@ -462,6 +570,9 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
                     agent: raw.agent,
                     stage: raw.stage,
                     spawns: spawns_from_value(raw.spawns, &step, &mut findings),
+                    max_iterations: raw.max_iterations,
+                    allowed_checks: raw.allowed_checks,
+                    allowed_commands: raw.allowed_commands,
                 }
             })
             .collect()
@@ -497,6 +608,9 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
                     agent: role,
                     stage,
                     spawns: spawns_from_value(raw.spawns, &step, &mut findings),
+                    max_iterations: 1,
+                    allowed_checks: vec![],
+                    allowed_commands: vec![],
                 }
             })
             .collect()
@@ -507,6 +621,7 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
         version: document.version,
         baseline_checks: document.baseline_checks,
         correction: document.correction,
+        checks,
         stages,
         resolved_contracts: vec![],
         findings,
@@ -532,12 +647,31 @@ fn render_pipeline_recipe(
     comments: &str,
     extras: &serde_yaml::Mapping,
 ) -> Result<String, String> {
+    let checks = recipe.checks.iter().map(|(command_id, command)| {
+        (command_id, PipelineCommandOutput {
+            command_type: &command.command_type,
+            argv: &command.argv,
+            timeout_seconds: command.timeout_seconds,
+            root: &command.root,
+            cwd: &command.cwd,
+        })
+    }).collect();
+    let stages = recipe.stages.iter().map(|stage| PipelineStageOutput {
+        preset: &stage.preset,
+        agent: &stage.agent,
+        stage: &stage.stage,
+        spawns: &stage.spawns,
+        max_iterations: stage.max_iterations,
+        allowed_checks: &stage.allowed_checks,
+        allowed_commands: &stage.allowed_commands,
+    }).collect();
     let mut document = serde_yaml::to_value(PipelineOutputDocument {
         name: &recipe.name,
         description: &recipe.description,
         version: &recipe.version,
         baseline_checks: &recipe.baseline_checks,
-        stages: &recipe.stages,
+        checks,
+        stages,
         correction: &recipe.correction,
     })
     .map_err(|error| format!("failed to render pipeline YAML: {error}"))?;
@@ -1006,6 +1140,16 @@ fn evaluator_like(stage: &EffectiveStage, recipe_stage: &PipelineStageRecipe) ->
         || recipe_stage.preset == "check"
 }
 
+const STAGE_CHECK_TYPES: [&str; 7] = [
+    "file_exists",
+    "file_created_or_modified",
+    "dom_count",
+    "dom_distinct_text",
+    "dom_text_set",
+    "lint_clean",
+    "named_command",
+];
+
 pub fn validate_pipeline_recipe(
     project_root: &Path,
     recipe: &PipelineRecipe,
@@ -1025,12 +1169,64 @@ pub fn validate_pipeline_recipe(
             "pipeline requires at least two stages",
         ));
     }
+    for (command_id, command) in &recipe.checks {
+        let step = format!("checks.{command_id}");
+        if !valid_pipeline_name(command_id) {
+            findings.push(finding(&step, "commandId", "command id must be lowercase kebab-case"));
+        }
+        if command.command_type != "command" {
+            findings.push(finding(&step, "type", "named check type must be command"));
+        }
+        if command.argv.is_empty() || command.argv.iter().any(|arg| arg.is_empty()) {
+            findings.push(finding(&step, "argv", "argv must contain non-empty strings"));
+        }
+        if command.timeout_seconds == 0 {
+            findings.push(finding(&step, "timeoutSeconds", "timeout must be positive"));
+        }
+        if !safe_relative_reference(&command.cwd) || !valid_pipeline_name(&command.root) {
+            findings.push(finding(&step, "root", "root and cwd must stay within a named root"));
+        }
+    }
     let firewall = read_spawn_firewall(project_root);
     let mut seen_agents = HashSet::new();
     let mut seen_stages = HashSet::new();
     let mut effective = Vec::new();
     for (index, recipe_stage) in recipe.stages.iter().enumerate() {
         let step = format!("stages[{index}]");
+        if !(1..=3).contains(&recipe_stage.max_iterations) {
+            findings.push(finding(
+                &step,
+                "maxIterations",
+                "maxIterations must be between 1 and 3",
+            ));
+        }
+        if recipe_stage.max_iterations > 1 && recipe_stage.allowed_checks.is_empty() {
+            findings.push(finding(
+                &step,
+                "allowedChecks",
+                "multiple iterations require at least one deterministic check",
+            ));
+        }
+        let mut seen_checks = HashSet::new();
+        for check in &recipe_stage.allowed_checks {
+            if !STAGE_CHECK_TYPES.contains(&check.as_str()) || !seen_checks.insert(check) {
+                findings.push(finding(
+                    &step,
+                    "allowedChecks",
+                    format!("unknown or duplicate check {check:?}"),
+                ));
+            }
+        }
+        let mut seen_commands = HashSet::new();
+        for command in &recipe_stage.allowed_commands {
+            if !recipe.checks.contains_key(command) || !seen_commands.insert(command) {
+                findings.push(finding(
+                    &step,
+                    "allowedCommands",
+                    format!("unknown or duplicate command {command:?}"),
+                ));
+            }
+        }
         let one = PipelineRecipe {
             stages: vec![recipe_stage.clone()],
             ..PipelineRecipe::default()
@@ -1296,11 +1492,12 @@ fn atomic_replace(temp: &Path, target: &Path) -> std::io::Result<()> {
 /// for them: they are the legacy stage shape, `read_pipeline_recipe` already
 /// folds them into `stages`, and preserving them alongside the `stages:` the
 /// Studio writes would leave two contradictory stage lists in one file.
-const STUDIO_OWNED_PIPELINE_KEYS: [&str; 8] = [
+const STUDIO_OWNED_PIPELINE_KEYS: [&str; 9] = [
     "name",
     "description",
     "version",
     "baseline_checks",
+    "checks",
     "stages",
     "correction",
     "generator",
@@ -1617,6 +1814,48 @@ pub struct AgentCycle {
     pub token_source: String,
     pub tool_names: Vec<String>,
     pub cycle_status: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageAttemptEvidence {
+    pub session_id: String,
+    pub stage: String,
+    pub attempt: i64,
+    pub phase: String,
+    pub contract_json: String,
+    pub contract_hash: String,
+    pub selected_skill_id: String,
+    pub selected_skill_version: String,
+    pub selected_skill_hash: String,
+    pub worker_handle_id: String,
+    pub gate_result_json: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageAttemptEvent {
+    pub id: i64,
+    pub ts: String,
+    pub session_id: String,
+    pub stage: String,
+    pub attempt: i64,
+    pub event: String,
+    pub worker_handle_id: String,
+    pub contract_hash: String,
+    pub detail_json: String,
+}
+
+#[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditObligation {
+    pub id: i64,
+    pub created_at: String,
+    pub kind: String,
+    pub handle_id: String,
+    pub status: String,
+    pub delivered_at: String,
+    pub error: String,
 }
 
 #[derive(Serialize, Default, Debug, Clone, PartialEq, Eq)]
@@ -2759,6 +2998,63 @@ fn load_state_at_with_pipeline_runs(
                 .into_iter()
                 .flatten()
                 .collect();
+        }
+
+        if table_exists(state_conn, "stage_outputs")?
+            && column_exists(state_conn, "stage_outputs", "phase")?
+        {
+            let mut stmt = state_conn.prepare(
+                "SELECT session_id,stage,attempt,COALESCE(phase,'pending'),
+                        COALESCE(contract_json,''),COALESCE(contract_hash,''),
+                        COALESCE(selected_skill_id,''),
+                        COALESCE(selected_skill_version,''),
+                        COALESCE(selected_skill_hash,''),
+                        COALESCE(worker_handle_id,''),
+                        COALESCE(gate_result_json,'')
+                 FROM stage_outputs ORDER BY id ASC",
+            )?;
+            st.stage_attempts = stmt
+                .query_map([], |r| Ok(StageAttemptEvidence {
+                    session_id: r.get(0)?, stage: r.get(1)?, attempt: r.get(2)?,
+                    phase: r.get(3)?, contract_json: r.get(4)?,
+                    contract_hash: r.get(5)?, selected_skill_id: r.get(6)?,
+                    selected_skill_version: r.get(7)?, selected_skill_hash: r.get(8)?,
+                    worker_handle_id: r.get(9)?, gate_result_json: r.get(10)?,
+                }))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+        if table_exists(state_conn, "stage_attempt_events")? {
+            let mut stmt = state_conn.prepare(
+                "SELECT id,ts,session_id,stage,attempt,event,
+                        COALESCE(worker_handle_id,''),COALESCE(contract_hash,''),
+                        COALESCE(detail_json,'')
+                 FROM stage_attempt_events ORDER BY id ASC",
+            )?;
+            st.stage_attempt_events = stmt
+                .query_map([], |r| {
+                    let ts = r.get::<_, Value>(1)?;
+                    Ok(StageAttemptEvent {
+                        id: r.get(0)?, ts: fmt_ts(&ts), session_id: r.get(2)?,
+                        stage: r.get(3)?, attempt: r.get(4)?, event: r.get(5)?,
+                        worker_handle_id: r.get(6)?, contract_hash: r.get(7)?,
+                        detail_json: r.get(8)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+        if table_exists(state_conn, "audit_obligations")? {
+            let mut stmt = state_conn.prepare(
+                "SELECT id,created_at,kind,handle_id,status,
+                        COALESCE(delivered_at,''),COALESCE(error,'')
+                 FROM audit_obligations ORDER BY id ASC",
+            )?;
+            st.audit_obligations = stmt
+                .query_map([], |r| Ok(AuditObligation {
+                    id: r.get(0)?, created_at: r.get(1)?, kind: r.get(2)?,
+                    handle_id: r.get(3)?, status: r.get(4)?,
+                    delivered_at: r.get(5)?, error: r.get(6)?,
+                }))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
         }
     }
 
@@ -4388,6 +4684,50 @@ mod tests {
     }
 
     #[test]
+    fn stage_attempt_gate_and_pending_audit_evidence_project_from_state_db() {
+        let audit = Connection::open_in_memory().unwrap();
+        let state = Connection::open_in_memory().unwrap();
+        init_schema(&audit).unwrap();
+        state.execute_batch(
+            "CREATE TABLE stage_outputs(
+                id INTEGER PRIMARY KEY, session_id TEXT, stage TEXT, attempt INTEGER,
+                phase TEXT, contract_json TEXT, contract_hash TEXT,
+                selected_skill_id TEXT, selected_skill_version TEXT,
+                selected_skill_hash TEXT, worker_handle_id TEXT,
+                gate_result_json TEXT);
+             CREATE TABLE stage_attempt_events(
+                id INTEGER PRIMARY KEY, ts REAL, session_id TEXT, stage TEXT,
+                attempt INTEGER, event TEXT, worker_handle_id TEXT,
+                contract_hash TEXT, detail_json TEXT);
+             CREATE TABLE audit_obligations(
+                id INTEGER PRIMARY KEY, created_at TEXT, kind TEXT,
+                handle_id TEXT, status TEXT, delivered_at TEXT, error TEXT);",
+        ).unwrap();
+        state.execute(
+            "INSERT INTO stage_outputs VALUES(
+                1,'pipe-1','code',2,'passed','{\"goal\":\"five cities\"}',
+                'sha256:contract','web-ui','1.0.0','sha256:skill','worker-2',
+                '{\"status\":\"pass\"}')", [],
+        ).unwrap();
+        state.execute(
+            "INSERT INTO stage_attempt_events VALUES(
+                7,1000.0,'pipe-1','code',2,'gate_verdict','worker-2',
+                'sha256:contract','{\"status\":\"pass\"}')", [],
+        ).unwrap();
+        state.execute(
+            "INSERT INTO audit_obligations VALUES(
+                9,'2026-08-01T00:00:00Z','worker_spawn','worker-2','pending',NULL,'offline')",
+            [],
+        ).unwrap();
+
+        let snapshot = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
+        assert_eq!(snapshot.stage_attempts.len(), 1);
+        assert_eq!(snapshot.stage_attempts[0].selected_skill_id, "web-ui");
+        assert_eq!(snapshot.stage_attempt_events[0].event, "gate_verdict");
+        assert_eq!(snapshot.audit_obligations[0].status, "pending");
+    }
+
+    #[test]
     fn pipeline_run_ancestry_resolves_exact_chat_and_child_stages() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -5236,18 +5576,21 @@ mod tests {
             version: "1.0.0".into(),
             baseline_checks: vec![],
             correction: serde_yaml::Value::Null,
+            checks: BTreeMap::new(),
             stages: vec![
                 PipelineStageRecipe {
                     preset: "plan".into(),
                     agent: String::new(),
                     stage: String::new(),
                     spawns: vec![],
+                    ..PipelineStageRecipe::default()
                 },
                 PipelineStageRecipe {
                     preset: "check".into(),
                     agent: String::new(),
                     stage: String::new(),
                     spawns: vec![],
+                    ..PipelineStageRecipe::default()
                 },
             ],
             resolved_contracts: vec![],
@@ -5281,6 +5624,53 @@ mod tests {
         std::fs::write(dir.join("pipeline.yaml"), rendered).unwrap();
         let reread = read_pipeline_recipe(&root, "custom-flow").unwrap();
         assert_eq!(reread.stages, recipe.stages);
+    }
+
+    #[test]
+    fn pipeline_recipe_round_trips_governed_acceptance_ceilings() {
+        let root = temp_dir("pipeline-recipe-stage-ceilings");
+        write_recipe_fixture(&root);
+        let dir = root.join(".github").join("pipelines").join("weather-flow");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("pipeline.yaml"),
+            "name: weather-flow\nchecks:\n  project-tests:\n    type: command\n    argv: [npm, test]\n    timeout_seconds: 120\nstages:\n  - preset: plan\n  - preset: build\n    max_iterations: 3\n    allowed_checks: [dom_count, named_command]\n    allowed_commands: [project-tests]\n  - preset: check\n",
+        )
+        .unwrap();
+
+        let recipe = read_pipeline_recipe(&root, "weather-flow").unwrap();
+
+        assert_eq!(recipe.checks["project-tests"].argv, vec!["npm", "test"]);
+        assert_eq!(recipe.checks["project-tests"].timeout_seconds, 120);
+        assert_eq!(recipe.stages[1].max_iterations, 3);
+        assert_eq!(recipe.stages[1].allowed_checks, vec!["dom_count", "named_command"]);
+        assert_eq!(recipe.stages[1].allowed_commands, vec!["project-tests"]);
+
+        let rendered = render_pipeline_recipe(&recipe, "", &serde_yaml::Mapping::new()).unwrap();
+        assert!(rendered.contains("max_iterations: 3"));
+        assert!(rendered.contains("allowed_checks:"));
+        assert!(rendered.contains("allowed_commands:"));
+        assert!(rendered.contains("project-tests:"));
+        assert!(!rendered.contains("maxIterations"));
+    }
+
+    #[test]
+    fn pipeline_recipe_rejects_invalid_acceptance_ceilings() {
+        let root = temp_dir("pipeline-recipe-invalid-ceilings");
+        write_recipe_fixture(&root);
+        let mut recipe = valid_pipeline_recipe("invalid-ceilings");
+        recipe.stages[0].max_iterations = 4;
+        recipe.stages[0].allowed_checks = vec!["model_judgement".into()];
+        recipe.stages[0].allowed_commands = vec!["missing-command".into()];
+
+        let findings = validate_pipeline_recipe(&root, &recipe);
+
+        for field in ["maxIterations", "allowedChecks", "allowedCommands"] {
+            assert!(
+                findings.iter().any(|finding| finding.step == "stages[0]" && finding.field == field),
+                "missing {field}: {findings:?}",
+            );
+        }
     }
 
     /// A hand-authored recipe: a musubi-tier header block and three top-level
@@ -5674,6 +6064,7 @@ mod tests {
                 agent: String::new(),
                 stage: String::new(),
                 spawns: vec![spawn.into()],
+                ..PipelineStageRecipe::default()
             };
 
             let findings = validate_pipeline_recipe(&root, &recipe);
@@ -5696,30 +6087,35 @@ mod tests {
                 agent: String::new(),
                 stage: String::new(),
                 spawns: vec![],
+                ..PipelineStageRecipe::default()
             },
             PipelineStageRecipe {
                 preset: String::new(),
                 agent: "ghost".into(),
                 stage: "ghost-stage".into(),
                 spawns: vec![],
+                ..PipelineStageRecipe::default()
             },
             PipelineStageRecipe {
                 preset: "plan".into(),
                 agent: "coder".into(),
                 stage: "same".into(),
                 spawns: vec!["ghost-spawn".into()],
+                ..PipelineStageRecipe::default()
             },
             PipelineStageRecipe {
                 preset: "build".into(),
                 agent: "coder".into(),
                 stage: "same".into(),
                 spawns: vec![],
+                ..PipelineStageRecipe::default()
             },
             PipelineStageRecipe {
                 preset: "plan".into(),
                 agent: String::new(),
                 stage: String::new(),
                 spawns: vec![],
+                ..PipelineStageRecipe::default()
             },
         ];
 
@@ -6460,25 +6856,18 @@ mod recipe_fidelity_tests {
     }
 
     #[test]
-    fn saving_over_a_declared_recipe_is_refused_rather_than_lossy() {
-        // Measured before this guard: open feature-dev, save it, and all four
-        // `skill:` declarations vanish while plan/code/review become
-        // planner/coder/reviewer. Those declarations are what the substrate
-        // reads to decide each stage's procedure.
+    fn saving_over_shipped_flat_recipe_preserves_acceptance_ceilings() {
         let root = scratch("declared");
         let path = root.join(".github/pipelines/feature-dev/pipeline.yaml");
-        let before = std::fs::read_to_string(&path).unwrap();
 
         let recipe = read_pipeline_recipe(&root, "feature-dev").unwrap();
         let saved = save_pipeline_recipe(&root, &recipe);
 
-        assert!(!saved.saved, "a lossy save must be refused");
-        assert!(saved.error.contains("skill"), "{}", saved.error);
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            before,
-            "the recipe on disk must be untouched",
-        );
+        assert!(saved.saved, "{}", saved.error);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("max_iterations: 3"));
+        assert!(written.contains("allowed_checks:"));
+        assert!(!written.contains("skill:"));
         let _ = std::fs::remove_dir_all(root);
     }
 

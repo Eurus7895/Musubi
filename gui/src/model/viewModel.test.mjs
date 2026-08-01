@@ -39,6 +39,9 @@ function baseState(overrides = {}) {
     agentTurns: [],
     agentCycles: [],
     runtimeLogEvents: [],
+    stageAttempts: [],
+    stageAttemptEvents: [],
+    auditObligations: [],
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
@@ -238,7 +241,7 @@ test('the in-flight turn sorts newest despite having no completed turn row', () 
     ['req-old', 'req-mid', 'req-live'],
   )
   // Numbering is chronological, so the live turn takes the highest T-number.
-  assert.equal(vm.runtimeGraph.turns[2].label, 'Turn 03')
+  assert.equal(vm.runtimeGraph.turns[2].label, 'Request 03')
   // And it continues the chain rather than heading it.
   assert.equal(vm.runtimeGraph.turns[0].parentId, null)
   assert.equal(vm.runtimeGraph.turns[2].parentId, 'turn:req-mid')
@@ -260,6 +263,37 @@ test('includes pipeline stages launched by an Orchestrator chat in the runtime g
   assert.equal(vm.runtimeGraph.mode, 'pipeline')
   assert.equal(vm.runtimeGraph.pipelineName, 'code-review')
   assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === stage.handle), true)
+})
+
+test('projects stage contracts and gates into request evidence but not agent logs', () => {
+  const stage = agent(44, 'pipeline-stage-ledger', 'done', 'coder', 'gui-orchestrator-stage-ledger')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-stage-ledger',
+    selectedSession: 'gui-orchestrator-stage-ledger',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-stage-ledger', title: 'weather', lastRequest: 'weather', rootTurns: 1, workers: 1 }],
+    agentTurns: [{ id: 1, requestId: 'req-weather', chatId: 'gui-orchestrator-stage-ledger', parentSession: 'root-weather', request: 'five cities', startedAt: 100 }],
+    runtimeLogEvents: [{ id: 1, requestId: 'req-weather', chatId: 'gui-orchestrator-stage-ledger', seq: 1, ts: 'epoch:100', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'launch' }],
+    pipelineRuns: [{ sessionId: 'pipeline-stage-ledger', chatId: 'gui-orchestrator-stage-ledger', pipelineName: 'feature-dev', brief: 'five cities', startedAt: 101, status: 'success', stages: [stage] }],
+    stageAttempts: [{
+      sessionId: 'pipeline-stage-ledger', stage: 'code', attempt: 1,
+      phase: 'passed', contractJson: JSON.stringify({ goal: 'Render five cities' }),
+      contractHash: 'sha256:contract', selectedSkillId: 'web-ui',
+      selectedSkillVersion: '1.0.0', selectedSkillHash: 'sha256:skill',
+      workerHandleId: stage.handle, gateResultJson: JSON.stringify({ status: 'pass' }),
+    }],
+    stageAttemptEvents: [{ id: 1, ts: '10:00:01', sessionId: 'pipeline-stage-ledger', stage: 'code', attempt: 1, event: 'gate_verdict', workerHandleId: stage.handle, contractHash: 'sha256:contract', detailJson: '{"status":"pass"}' }],
+    auditObligations: [{ id: 2, createdAt: '10:00:00', kind: 'worker_spawn', handleId: stage.handle, status: 'pending', deliveredAt: '', error: 'audit offline' }],
+  }), actions())
+
+  const request = vm.runtimeGraph.turns[0]
+  const worker = vm.runtimeGraph.nodes.find((node) => node.id === stage.handle)
+  assert.equal(request.goal, 'Render five cities')
+  assert.equal(request.contractHash, 'sha256:contract')
+  assert.equal(request.verdict, 'pass')
+  assert.equal(request.pendingAudit, 1)
+  assert.equal(worker.selectedSkill, 'web-ui')
+  assert.equal(vm.runtimeLogs.some((row) => row.requestId === 'req-weather' && row.category === 'gates'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.agentHandle === stage.handle && row.category === 'gates'), false)
 })
 
 test('does not attach an older pipeline run to a newer direct root turn', () => {

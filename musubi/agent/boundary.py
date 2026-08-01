@@ -319,16 +319,24 @@ def evaluate_argument_policy(
             )
 
     pushed_skill = args.get("pushed_skill_id")
-    if isinstance(pushed_skill, str) and pushed_skill.strip():
-        skill_id = pushed_skill.strip()
-        if not check_skill_permission(target_role, skill_id):
-            return PolicyDecision(
-                "DENY",
-                clean_role,
-                tool_name,
-                _pushed_skill_denial(skill_id, target_role),
-                recoverable=True,
-            )
+    if not isinstance(pushed_skill, str) or not pushed_skill.strip():
+        return PolicyDecision(
+            "DENY",
+            clean_role,
+            tool_name,
+            "pushed_skill_id must name the model-selected skill; list the "
+            "worker role's catalog, choose one, and retry the spawn.",
+            recoverable=True,
+        )
+    skill_id = pushed_skill.strip()
+    if not check_skill_permission(target_role, skill_id):
+        return PolicyDecision(
+            "DENY",
+            clean_role,
+            tool_name,
+            _pushed_skill_denial(skill_id, target_role),
+            recoverable=True,
+        )
     return None
 
 
@@ -349,7 +357,10 @@ def _pushed_skill_denial(skill_id: str, target_role: str) -> str:
     permitted = sorted(AGENT_SKILL_ALLOWLIST.get(normalize_role(target_role), set()))
     if permitted:
         lines.append(f"Permitted for {target_role!r}: {permitted}.")
-    lines.append("Or omit `pushed_skill_id` — the role's own skill is pushed anyway.")
+    lines.append(
+        "Choose one permitted skill explicitly; the harness never defaults, "
+        "substitutes, or drops the model's choice."
+    )
     return " ".join(lines)
 
 

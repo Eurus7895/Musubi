@@ -289,7 +289,7 @@ def _agents_root() -> Path:
 #: Purpose subdirectories scanned for a role's `.agent.md`, in precedence
 #: order. Mirrors `musubi/agent/prompt_resolver.py`; the flat file stays the
 #: last candidate for the legacy copies the feature-frozen extension reads.
-_AGENT_MD_PURPOSE_DIRS = ("root", "workers", "meta")
+_AGENT_MD_PURPOSE_DIRS = ("root", "workers")
 
 
 def _role_filenames(role: str) -> list[str]:
@@ -356,7 +356,7 @@ def _parse_spawn_allowlist_file(path: Path) -> list[str] | None:
 def _frontmatter_spawn_allowlist(role: str) -> list[str] | None:
     """`spawn_allowlist` from the role's `.agent.md` frontmatter.
 
-    Scans the purpose-dir catalog (`root/`, `workers/`, `meta/`,
+    Scans the purpose-dir catalog (`root/`, `workers/`,
     `pipeline-stages/*/`, then the flat legacy file); the first file that
     declares the field wins. None when no candidate declares it — the
     caller then falls back to the MAIN_SUBAGENT_ALLOWLIST constant.
@@ -531,10 +531,9 @@ def subagent_deny_reason(
 # early instead of at the first runtime tool call hours into a session.
 
 _KNOWN_AGENT_NAMES: frozenset[str] = frozenset({
-    "planner", "designer", "coder", "reviewer", "skill-builder",
+    "planner", "designer", "coder", "reviewer",
     ROOT_ROLE, "summarizer",
     "explorer", "investigator", "reviewer-aux",
-    "pipeline-builder",
     # Phase H.1 — /code-review pipeline roles.
     "scoper", "finder", "synthesizer",
 })

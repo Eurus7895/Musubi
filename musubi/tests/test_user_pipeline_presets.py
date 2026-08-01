@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,22 @@ class PresetFlowRouter(LMRouter):
         self.reviewer_brief = ""
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        if any(
+            message.get("role") == "system"
+            and "STAGE PREFLIGHT" in str(message.get("content"))
+            for message in messages
+        ):
+            payload = json.loads(messages[1]["content"])
+            skill = {
+                "planner": "request-triage",
+                "coder": "python",
+                "reviewer": "code-review",
+            }[payload["role"]]
+            return _text(json.dumps({
+                "skill_id": skill,
+                "goal": f"complete {payload['role']} stage",
+                "exit_when": [],
+            }))
         brief = _brief_text(messages)
         if brief is None:
             if _has_tool_result(messages):

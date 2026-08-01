@@ -1,4 +1,5 @@
 //! musubi-tier: substrate
+//! expires-when: never - the desktop bridge is the native operator boundary
 //!
 //! Tauri desktop shell for the Musubi console.
 //!
@@ -3730,11 +3731,15 @@ mod tests {
             epoch_secs()
         ));
         copy_tree(&source_root.join(".github"), &project_root.join(".github"));
+        copy_tree(&source_root.join("scripts"), &project_root.join("scripts"));
 
         let mut recipe = load_pipeline_recipe_at(&project_root, "feature-dev").unwrap();
         recipe.name = "ipc-test".into();
         let findings = validate_pipeline_recipe_at(&project_root, &recipe);
-        assert!(!findings.iter().any(|finding| finding.severity == "error"));
+        assert!(
+            !findings.iter().any(|finding| finding.severity == "error"),
+            "{findings:?}"
+        );
         let saved = save_pipeline_recipe_at(&project_root, &recipe);
         assert!(saved.saved, "{}", saved.error);
         assert!(saved.catalog_refreshed);
