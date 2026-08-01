@@ -412,6 +412,45 @@ def injected_skill_ids(
     return []
 
 
+def declared_stage_skill(pipeline_name: str, role: str) -> str | None:
+    """The skill id `pipeline.yaml` declares for `role`, or None.
+
+    A pipeline is the compliance path: its stages are a written recipe, and
+    every stage's procedure is meant to be declared in that recipe rather than
+    chosen at runtime. `generator.agents[].skill` and `evaluator.skill` have
+    carried those declarations since feature-dev shipped — the standalone
+    runner simply never read them, and asked a text ranker instead.
+
+    This differs from `injected_skill_ids` in the question it answers.
+    That one asks "which skill accompanies agent X when it READS stage Y",
+    gated on `_prior_stage`, and serves the stage-read injection path. This
+    one asks the flat question a spawn needs: *what does the recipe say this
+    role runs?*
+
+    Returns None for a missing/malformed recipe, an unlisted role, or an
+    explicit `skill: null`. The caller intersects with AGENT_SKILL_ALLOWLIST —
+    a recipe declares, it never widens (HI #3).
+    """
+    agent = (role or "").strip().lower()
+    if not agent:
+        return None
+    data = _load_pipeline_yaml(pipeline_name)
+    if not data:
+        return None
+    ev = data.get("evaluator") or {}
+    if isinstance(ev, dict) and (ev.get("name") or "reviewer").lower() == agent:
+        return _skill_path_to_id(ev.get("skill")) or None
+    gen = data.get("generator") or {}
+    agents = gen.get("agents") if isinstance(gen, dict) else None
+    if isinstance(agents, list):
+        for entry in agents:
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("name") or "").lower() == agent:
+                return _skill_path_to_id(entry.get("skill")) or None
+    return None
+
+
 def validate_catalog() -> list[str]:
     """Validate the preset catalog and every preset-composed pipeline against
     the agent catalog. Fail-closed: an unknown agent, an unresolvable preset

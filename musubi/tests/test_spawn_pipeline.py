@@ -489,40 +489,84 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
         assert "## Skill (pushed by harness)" in prompt
 
 
-def test_pipeline_stages_take_their_role_declared_skill() -> None:
-    """A pipeline stage no longer asks a ranker which skill to use.
+def test_pipeline_stages_run_the_skill_their_recipe_declares() -> None:
+    """A pipeline is the compliance path: the procedure is written down.
 
-    The runner used to fold the role name into the task text and ask
-    `musubi_recommend_skills` for the top hit — a role→skill lookup table
-    written as a text search, which returned None for six of the seven stage
-    roles. `build_subagent_context` already resolves
-    `SUBAGENT_ROLE_SKILLS[role]` when no id is pushed, which is HI #2's own
-    mechanism and needs no scoring.
+    `pipeline.yaml` has carried `generator.agents[].skill` / `evaluator.skill`
+    since feature-dev shipped. The standalone runner never read them — it
+    folded the role name into the task text and asked a ranker, which returned
+    None for six of the seven stage roles while the recipe held the right
+    answer the whole time.
     """
-    from agent import pipeline_runner
+    import io
+
+    from agent.pipeline_runner import _prepared_stage_skill
+
+    log = io.StringIO()
+    # Declared in the recipe → pushed verbatim.
+    assert _prepared_stage_skill("feature-dev", "designer", log) == "api-design"
+    assert _prepared_stage_skill("feature-dev", "coder", log) == "python"
+    assert _prepared_stage_skill("feature-dev", "reviewer", log) == "code-review"
+    assert _prepared_stage_skill("code-review", "scoper", log) == "pr-scope-detection"
+    assert _prepared_stage_skill("code-review", "finder", log) == "per-file-review"
+    assert _prepared_stage_skill("code-review", "synthesizer", log) == "code-review"
+
+
+def test_a_role_default_covers_a_stage_the_recipe_leaves_undeclared() -> None:
+    """feature-dev declares `skill: null` for the planner, and the role's own
+    push supplies `request-triage`. Returning None is correct: the id is
+    resolved by `build_subagent_context`, not pushed."""
+    import io
+
+    from agent.pipeline_runner import _prepared_stage_skill
     from validation.subagent_context import (
         SUBAGENT_ROLE_SKILLS,
         build_subagent_context,
     )
 
-    # The ranker helper is gone, and the stage spawn sends no skill id.
-    assert not hasattr(pipeline_runner, "_recommend_stage_skill")
-    source = Path(pipeline_runner.__file__).read_text(encoding="utf-8")
-    stage_call = source[source.index('"musubi_spawn_pipeline_stage"'):][:300]
-    assert "pushed_skill_id" not in stage_call
+    log = io.StringIO()
+    assert _prepared_stage_skill("feature-dev", "planner", log) is None
+    assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
+    assert build_subagent_context(brief="b", role="planner").role_skill_id == (
+        "request-triage"
+    )
+    assert "prepared skill=request-triage (role default)" in log.getvalue()
 
-    # The substrate resolves each stage role's declared skill instead —
-    # including the one real pick the ranker used to make.
-    assert SUBAGENT_ROLE_SKILLS["reviewer"] == "code-review"
-    for role, expected in [
-        ("planner", "request-triage"),
-        ("reviewer", "code-review"),
-        ("scoper", "pr-scope-detection"),
-        ("finder", "per-file-review"),
-        ("synthesizer", "code-review"),
-    ]:
-        ctx = build_subagent_context(brief="stage work", role=role)
-        assert ctx.role_skill_id == expected, role
+
+def test_a_stage_with_no_prepared_skill_is_reported_not_hidden() -> None:
+    """dev-lite composes from presets, which declare no skill, and `coder` has
+    no role default because its skill is task-dependent. That is a real gap in
+    a recipe — it is named on the policy channel so it is auditable, rather
+    than passing silently as it did when a ranker returned None."""
+    import io
+
+    from agent.pipeline_runner import _prepared_stage_skill
+
+    log = io.StringIO()
+    assert _prepared_stage_skill("dev-lite", "coder", log) is None
+    assert "no prepared skill" in log.getvalue()
+
+
+def test_a_recipe_cannot_widen_the_role_allowlist() -> None:
+    """`pipeline.yaml` declares; it never widens (HI #3). A declared skill the
+    role may not receive is dropped and the drop is logged — a silently
+    ignored compliance declaration would be worse than a missing one."""
+    import io
+
+    from agent import pipeline_runner
+
+    log = io.StringIO()
+    original = pipeline_runner_declared = None
+    import composer
+
+    original = composer.declared_stage_skill
+    try:
+        composer.declared_stage_skill = lambda pn, role: "agent-routing"
+        # agent-routing is root-only; the coder may not receive it.
+        assert pipeline_runner._prepared_stage_skill("feature-dev", "coder", log) is None
+        assert "is not in the role's allowlist; dropped" in log.getvalue()
+    finally:
+        composer.declared_stage_skill = original
 
 def test_pipeline_stage_threads_frontmatter_output_budget(
     monkeypatch: pytest.MonkeyPatch,

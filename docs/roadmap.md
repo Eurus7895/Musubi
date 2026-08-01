@@ -57,8 +57,10 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    harness lists, it does not rank. Every catalog entry therefore needs a
    description that distinguishes it, which is now the load-bearing metadata
    (`triggers:` was for the deleted ranker). Pipeline stages have no model to
-   choose for them, so they take their role's declared `SUBAGENT_ROLE_SKILLS`
-   entry.
+   choose for them and are the compliance path, so they run the skill their
+   recipe declares — `pipeline.yaml`'s `generator.agents[].skill` /
+   `evaluator.skill`, intersected with the role allowlist — falling back to the
+   role's `SUBAGENT_ROLE_SKILLS` push, and reporting a stage that has neither.
 
 2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
    what a request MEANS and starts proving what the record CONTAINS. Governing
@@ -312,8 +314,15 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   description for the model to choose from. The ticket constrained where the
   root got a name, never which names are legal, and the allowlist and catalog
   checks that do answer that are untouched. Pipeline stages take their role's
-  declared skill instead; `skill_router.applicable_skills` stays, because it
-  judges the project rather than the request. Plan:
+  declared skill instead — `pipeline.yaml` has carried
+  `generator.agents[].skill` since feature-dev shipped and the standalone
+  runner simply never read it, so every stage of both shipped pipelines now
+  runs a prepared skill where the ranker supplied one for a single role out of
+  seven. Nothing carries a confidence: the listing is ids, titles and
+  descriptions, because a score is the harness stating an opinion about a
+  request it is not entitled to have one about.
+  `skill_router.applicable_skills` stays, because it judges the project rather
+  than the request. Plan:
   [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —

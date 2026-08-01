@@ -315,20 +315,56 @@ and still do, fail-closed. It was also the direct cause of a lost turn: two
 adjacent string arguments, one of which is a 20-hex ticket id, and the model
 put the wrong one in the wrong slot.
 
-**Pipelines** stopped asking too. `_recommend_stage_skill` folded the role
-name into the task text so a role-canonical skill would match — a role→skill
-lookup table written as a text search, which returned None for six of the
-seven stage roles. Stages now take `SUBAGENT_ROLE_SKILLS[role]`, resolved by
-`build_subagent_context` exactly as HI #2 already does, and `reviewer` gained
-the `code-review` declaration that was the ranker's only real pick. The
-planner *gains* its skill in pipelines, which the ranker had been dropping.
+**No confidence anywhere.** The listing carries `skill_id`, `title`,
+`description` — no score, no ranking, no ordering that implies one. Selection
+is the model's alone, so there is nothing for a number to express: a score is
+the harness stating an opinion about a request it is not entitled to have one
+about. (Unrelated and untouched: the `confidence: high|medium|low` field a
+*worker* self-reports in its structured output, `validation/verifier.py:73`.
+That is a worker describing its own result, not the harness ranking a
+request.)
+
+**Pipelines run the skill their recipe declares.** A pipeline is the
+compliance path — its procedure is written down before the run, not chosen
+during it. `pipeline.yaml` has carried `generator.agents[].skill` and
+`evaluator.skill` since feature-dev shipped; the standalone runner never read
+them, and asked the ranker instead. `composer.declared_stage_skill` is the
+flat per-role lookup that was missing (`injected_skill_ids` answers a
+different question — which skill accompanies an agent when it READS a stage,
+gated on `_prior_stage`). `_prepared_stage_skill` resolves, most specific
+first:
+
+1. the recipe's declaration, intersected with the role's allowlist — a recipe
+   declares, it never widens (HI #3), and a dropped declaration is logged
+   because a silently ignored compliance statement is worse than a missing one;
+2. the role's native push (`SUBAGENT_ROLE_SKILLS`, HI #2), left to
+   `build_subagent_context` to resolve;
+3. neither — reported on the policy channel so the gap is auditable.
+
+Every stage of both shipped pipelines now runs a prepared skill, where the
+ranker had supplied one for a single role out of seven:
+
+| stage | ranker | now | source |
+|---|---|---|---|
+| feature-dev planner | — | `request-triage` | role default |
+| feature-dev designer | — | `api-design` | recipe |
+| feature-dev coder | — | `python` | recipe |
+| feature-dev reviewer | `code-review` | `code-review` | recipe |
+| code-review scoper | — | `pr-scope-detection` | recipe |
+| code-review finder | — | `per-file-review` | recipe |
+| code-review synthesizer | — | `code-review` | recipe |
+
+`dev-lite` composes from presets, which declare no skill, and its `coder`
+stage has no role default because a coder's skill is task-dependent. That gap
+is now named on the policy channel rather than passing silently as a ranker
+`None`.
 
 Kept, because it judges the PROJECT rather than the request:
 `skill_router.applicable_skills` still hides a Python skill in a Rust repo.
 
 ## Verification
 
-`1763 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
+`1766 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
 Each new test was confirmed to fail against the pre-change code. The two
 existing terminal-denial pins — an unauthorised spawn role, and a root
 reaching for `musubi_write_file` — still pass unchanged, which is what says

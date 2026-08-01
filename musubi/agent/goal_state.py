@@ -67,9 +67,8 @@ _SPAWN_TOOL = "musubi_spawn_subagent"
 # it returns ids, titles and one-line descriptions, never skill bodies — so it
 # does not blow the simple-scope root-token target.
 #
-# The harness used to RANK this catalog and hand back a confidence. That is
-# deciding what a request is about, which no substrate code is entitled to do;
-# the listing is a fact, the ranking was a judgement.
+# The listing is a fact; a ranking would be a judgement about what the request
+# is about, which no substrate code is entitled to make. The model selects.
 _SKILL_SELECT_TOOL = "musubi_list_skills"
 _BEGIN_DIRECT_TOOL = "musubi_begin_direct"
 _BEGIN_PLAN_TOOL = "musubi_begin_plan"

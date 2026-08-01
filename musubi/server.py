@@ -1168,17 +1168,13 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
     root can choose a `pushed_skill_id` (HI #2's push). Defaults to the
     caller's own allowlist.
 
-    The harness lists; the model chooses. There used to be a
-    `musubi_recommend_skills` that scored the request text and returned ranked
-    candidates with a confidence, and it decided what a request was ABOUT —
-    a judgement no substrate code is entitled to make (HI #1 in spirit, and
-    the position the repository already took when it deleted `assess_request`).
-    It also did it badly: it scored the request and the conversation summary as
-    one bag of text, so on turn 3 of a chat that had built an HTML dashboard,
-    "change the language of the application" matched nothing on its own while
-    the history scored `web-ui` at 0.99.
+    The harness lists; the model chooses. Each entry carries an id, a title
+    and one line of description — no score, no ranking, and no ordering that
+    implies one. Selection is the model's alone, so there is nothing here for
+    a number to express: a score would be the harness stating an opinion about
+    a request it is not entitled to have one about.
 
-    Two filters compose, in order, and both remain:
+    Two filters compose, in order, and both are firewalls, not opinions:
       1. The agent allowlist (AGENT_SKILL_ALLOWLIST) — the security
          firewall (HI #3). Never relaxed.
       2. Workspace applicability (MVP item 6 / Track D.3) — the skill
@@ -1578,12 +1574,9 @@ def musubi_spawn_subagent(
     #    allowlist, and it must exist in the catalog.
     #
     #    A third check used to sit in front of them: the id had to appear in a
-    #    `recommendation_id` ticket minted by `musubi_recommend_skills`. That
-    #    was procedural, not protective — it constrained WHERE the root got the
-    #    name, never WHICH names are legal, and the two checks below already
-    #    answer the latter on their own. It also cost a turn: passing the
-    #    ticket id into `pushed_skill_id` is an easy confusion between two
-    #    adjacent string arguments, and it was denied as a policy violation.
+    #    ticket minted by a ranker. That was procedural, not protective — it
+    #    constrained WHERE the root got the name, never WHICH names are legal,
+    #    and the two checks below already answer the latter on their own.
     skill_choice = (pushed_skill_id or "").strip() or None
     if skill_choice is not None:
         role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())

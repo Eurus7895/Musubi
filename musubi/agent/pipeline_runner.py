@@ -359,16 +359,19 @@ async def run_pipeline(
                 raise RuntimeError(msg) from exc
             return msg
 
-        # A pipeline stage takes its role's DECLARED skill
-        # (`SUBAGENT_ROLE_SKILLS`), resolved by `build_subagent_context` when
-        # no id is pushed. There is no model here to choose, and the ranker
-        # this replaces was not really choosing either: it folded the role name
-        # into the task text so that a role-canonical skill would match, which
-        # is a role→skill lookup table written as a text search. It returned
-        # None for six of the seven stage roles.
+        # A pipeline is the compliance path: its procedure is DECLARED in the
+        # recipe, never chosen at runtime. There is no model here to choose,
+        # and the ranker this replaces was not choosing either — it folded the
+        # role name into the task text so a role-canonical skill would match,
+        # a role→skill lookup written as a text search, which returned None
+        # for six of the seven stage roles while `pipeline.yaml` had been
+        # declaring the right answer in `generator.agents[].skill` /
+        # `evaluator.skill` since feature-dev shipped.
+        stage_skill = _prepared_stage_skill(pname, role, log)
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
             "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
+            "pushed_skill_id": stage_skill,
         })
         st = loads_dict(stage_raw)
         if st.get("status") != "spawned":
@@ -650,6 +653,72 @@ def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> st
         )
     joined = "\n\n".join(summaries)
     return f"{request}\n\n## Prior stage outputs\n\n{joined}"
+
+
+def _prepared_stage_skill(
+    pipeline_name: str, role: str, log: Any,
+) -> str | None:
+    """The skill this stage is required to run, resolved from declarations only.
+
+    Order, most specific first:
+
+      1. `pipeline.yaml`'s `generator.agents[].skill` / `evaluator.skill` for
+         this role — the recipe's own compliance statement, and the reason a
+         pipeline is auditable: the procedure is written down before the run.
+      2. The role's native push, `SUBAGENT_ROLE_SKILLS[role]` (HI #2). Applied
+         by `build_subagent_context` when nothing is pushed, so returning None
+         here still yields it.
+
+    Nothing scores anything. A recipe declaration that the role's allowlist
+    does not permit is dropped rather than honoured — `pipeline.yaml` declares,
+    it never widens (HI #3) — and the drop is logged, because a silently
+    ignored compliance declaration is worse than a missing one.
+
+    A stage that resolves to no skill at either level is a gap in the recipe,
+    not an error in the run: it is reported on the policy channel so it is
+    visible and auditable, and the stage proceeds on its role prompt alone.
+    """
+    from agent.run import _ensure_core_import_path
+
+    _ensure_core_import_path()
+    import composer
+    from agent.runtime_log import emit_runtime_log
+    from validation.context_builder import AGENT_SKILL_ALLOWLIST
+    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
+
+    declared = composer.declared_stage_skill(pipeline_name, role)
+    if declared:
+        permitted = AGENT_SKILL_ALLOWLIST.get(role.strip().lower(), set())
+        if declared in permitted:
+            emit_runtime_log(
+                log,
+                f"[pipeline {pipeline_name}] stage {role}: "
+                f"prepared skill={declared} (declared in pipeline.yaml)",
+                category="skills",
+            )
+            return declared
+        emit_runtime_log(
+            log,
+            f"[pipeline {pipeline_name}] stage {role}: declared skill "
+            f"{declared!r} is not in the role's allowlist; dropped",
+            category="policy",
+        )
+    native = SUBAGENT_ROLE_SKILLS.get(role.strip().lower())
+    if native:
+        emit_runtime_log(
+            log,
+            f"[pipeline {pipeline_name}] stage {role}: "
+            f"prepared skill={native} (role default)",
+            category="skills",
+        )
+        return None  # build_subagent_context resolves the native push itself
+    emit_runtime_log(
+        log,
+        f"[pipeline {pipeline_name}] stage {role}: no prepared skill — "
+        "the recipe declares none and the role has no default",
+        category="policy",
+    )
+    return None
 
 
 def _is_incomplete_tool_outcome(answer: str | None) -> bool:
