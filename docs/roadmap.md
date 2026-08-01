@@ -168,6 +168,34 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
 
+5. **Stage goals and the stage loop.** *Proposed — spec written, not started.*
+   A pipeline stage runs exactly once and nothing checks whether it achieved
+   anything: its status is `"done" if answer is not None`, which asks whether
+   the worker produced text. The `correction:` block both shipped recipes
+   declare is dead — `musubi_get_correction_rules` is in the allowed-tool list
+   and nothing under `agent/` calls it — so the reviewer's verdict is recorded
+   and acted on by nobody. A stage will declare a `goal:` (prose, for the
+   model) and an `exit_when:` predicate (for the harness), and repeat until the
+   predicate holds or a declared `max_iterations` is spent, then escalate.
+   The predicate has two tiers and the order is load-bearing: deterministic
+   facts first (`file_exists`, `lint_clean`, `command`), then a `reviewer`
+   verdict — which does not breach HI #1, because the runner spawns a **worker**
+   and reads a structured `status` field rather than judging prose, the same
+   *parse, never judge* rule as `root_triage`. What the harness must never do is
+   read `goal:` and decide whether it was met; that is the judgement this track
+   deleted `assess_request` and the skill ranker for. Intra-stage routing stays
+   model-owned — the lead agent summons helpers through the `spawns:` it already
+   has — so "several agents per stage" needs no new machinery; the goal, the
+   check and the loop do. `stage_outputs` is already keyed by `attempt`, so
+   HI #7 holds by construction. Blocked on the Studio recipe model, which
+   carries four stage fields and cannot represent `skill:` today, let alone
+   three more. `max_iterations` defaults to 1, so no existing recipe changes
+   behaviour until it opts in.
+   Plan:
+   [`2026-08-01-stage-goal-loop.md`](./superpowers/plans/2026-08-01-stage-goal-loop.md) ·
+   Design:
+   [`2026-08-01-stage-goal-loop-design.md`](./superpowers/specs/2026-08-01-stage-goal-loop-design.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input characters, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
