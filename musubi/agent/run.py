@@ -1906,7 +1906,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="NAME",
         help=(
             "Run the named pipeline directly (a linear recipe under "
-            ".github/pipelines/<name>, e.g. feature-dev or dev-lite) with the "
+            ".github/pipelines/<name>, e.g. feature-dev or code-review) with the "
             "task as its brief, instead of the model-routed single-agent loop. "
             "Pipelines needing per-file fan-out (e.g. code-review) are not "
             "supported by this deterministic runner."

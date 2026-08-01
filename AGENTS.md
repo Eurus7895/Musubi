@@ -38,7 +38,6 @@ native operator surfaces:
 |---|---|---|
 | feature-dev | `agent "<task>" --pipeline feature-dev` | ✅ planner → designer → coder → reviewer + evaluator firewall |
 | code-review | `agent "<diff>" --pipeline code-review` | ✅ scoper → finder → synthesizer (evaluator, reviewer-aux fan-out) |
-| dev-lite | `agent "<task>" --pipeline dev-lite` | ✅ plan → build → check, composed from presets — sample user pipeline |
 
 Pipelines are recipes of workers composed from presets
 (`.github/pipelines/presets/`), run deterministically via `--pipeline` or

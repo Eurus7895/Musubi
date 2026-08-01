@@ -3731,7 +3731,7 @@ mod tests {
         ));
         copy_tree(&source_root.join(".github"), &project_root.join(".github"));
 
-        let mut recipe = load_pipeline_recipe_at(&project_root, "dev-lite").unwrap();
+        let mut recipe = load_pipeline_recipe_at(&project_root, "feature-dev").unwrap();
         recipe.name = "ipc-test".into();
         let findings = validate_pipeline_recipe_at(&project_root, &recipe);
         assert!(!findings.iter().any(|finding| finding.severity == "error"));

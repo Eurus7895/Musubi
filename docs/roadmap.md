@@ -318,7 +318,12 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   `generator.agents[].skill` since feature-dev shipped and the standalone
   runner simply never read it, so every stage of both shipped pipelines now
   runs a prepared skill where the ranker supplied one for a single role out of
-  seven. Nothing carries a confidence: the listing is ids, titles and
+  seven. `dev-lite` was removed with it: a sample recipe sitting in
+  `.github/pipelines/` is indistinguishable from a supported one — it appeared
+  in the console catalog, in `--pipeline` help and in the README beside
+  `feature-dev` — and it was the only stage left with no prepared skill. The
+  preset MECHANISM stays; the test that covered it now authors its own recipe
+  over the real catalog instead of leaning on a shipped sample. Nothing carries a confidence: the listing is ids, titles and
   descriptions, because a score is the harness stating an opinion about a
   request it is not entitled to have one about.
   `skill_router.applicable_skills` stays, because it judges the project rather

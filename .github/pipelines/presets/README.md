@@ -27,7 +27,7 @@ permissions — a stage worker's tools come from the agent's own caps.
 `<name>/pipeline.yaml`:
 
 ```yaml
-name: dev-lite
+name: my-flow
 stages:
   - preset: plan
   - preset: build

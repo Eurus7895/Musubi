@@ -332,8 +332,8 @@ building block — a role plus its default stage. A pipeline drops presets into 
 `stages:` list:
 
 ```yaml
-# .github/pipelines/dev-lite/pipeline.yaml
-name: dev-lite
+# .github/pipelines/my-flow/pipeline.yaml   (yours — nothing ships here)
+name: my-flow
 stages:
   - preset: plan      # planner
   - preset: build     # coder

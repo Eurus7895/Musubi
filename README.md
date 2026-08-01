@@ -34,7 +34,7 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 | Surface | When | What you get |
 |---|---|---|
 | `agent "<task>"` (standalone CLI) | any task, any LLM | agent loop over `LMRouter` with the **worker model** — parallel workers with depth-2 nesting; any vendor (anthropic / openai / deepseek / azure-on-prem / ollama), model-agnostic. Configure with `musubi setup`. |
-| `agent "<brief>" --pipeline <name>` | deterministic staged runs | the governed pipeline recipes (`feature-dev`, `code-review`, `dev-lite`, or your own presets) with the evaluator firewall and stage audit |
+| `agent "<brief>" --pipeline <name>` | deterministic staged runs | the governed pipeline recipes (`feature-dev`, `code-review`, or your own, composed from presets) with the evaluator firewall and stage audit |
 | Console (GUI) | start, observe, and resume governed sessions | native Tauri operator surface; launches the standalone driver on explicit submission and reads orchestration/audit state from `audit.db` |
 
 Every surface drives the **same** substrate (audit, firewall, policy,

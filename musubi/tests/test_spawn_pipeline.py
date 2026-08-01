@@ -534,16 +534,18 @@ def test_a_role_default_covers_a_stage_the_recipe_leaves_undeclared() -> None:
 
 
 def test_a_stage_with_no_prepared_skill_is_reported_not_hidden() -> None:
-    """dev-lite composes from presets, which declare no skill, and `coder` has
-    no role default because its skill is task-dependent. That is a real gap in
-    a recipe — it is named on the policy channel so it is auditable, rather
-    than passing silently as it did when a ranker returned None."""
+    """A preset-composed recipe declares no skill, and `coder` has no role
+    default because its skill is task-dependent. That is a real gap in a
+    recipe — it is named on the policy channel so it is auditable, rather than
+    passing silently as it did when a ranker returned None."""
     import io
 
     from agent.pipeline_runner import _prepared_stage_skill
 
     log = io.StringIO()
-    assert _prepared_stage_skill("dev-lite", "coder", log) is None
+    # An unknown pipeline declares nothing, which is the same resolution path
+    # a preset-composed recipe takes.
+    assert _prepared_stage_skill("no-such-recipe", "coder", log) is None
     assert "no prepared skill" in log.getvalue()
 
 
