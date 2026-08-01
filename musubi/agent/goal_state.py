@@ -61,11 +61,16 @@ EVIDENCE_ROLES: frozenset[str] = frozenset(
 _SUCCEEDED: str = "done"
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
-# artifacts: the root ranks the catalog with `musubi_recommend_skills` and
-# passes the chosen `pushed_skill_id` into the spawn (option 3). This is one
-# cheap tool definition — it returns ids + titles, not skill bodies — so it
+# artifacts: the root LISTS the worker role's catalog with
+# `musubi_list_skills(for_role=…)` and passes the id it chooses as
+# `pushed_skill_id` on the spawn (HI #2's push). One cheap tool definition —
+# it returns ids, titles and one-line descriptions, never skill bodies — so it
 # does not blow the simple-scope root-token target.
-_SKILL_SELECT_TOOL = "musubi_recommend_skills"
+#
+# The harness used to RANK this catalog and hand back a confidence. That is
+# deciding what a request is about, which no substrate code is entitled to do;
+# the listing is a fact, the ranking was a judgement.
+_SKILL_SELECT_TOOL = "musubi_list_skills"
 _BEGIN_DIRECT_TOOL = "musubi_begin_direct"
 _BEGIN_PLAN_TOOL = "musubi_begin_plan"
 _COMMIT_PLAN_TOOL = "musubi_commit_plan"
@@ -567,7 +572,6 @@ def root_decision_tools(
     recovery_outcome: bool = False,
     decision_only: bool = False,
     spawn_exhausted: bool = False,
-    recommendation_pending: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
     if recovery_outcome:
@@ -607,8 +611,6 @@ def root_decision_tools(
         ]
     # Spawn plus skill selection after Direct or a committed plan.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
-    if recommendation_pending:
-        allowed.discard(_SKILL_SELECT_TOOL)
     if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

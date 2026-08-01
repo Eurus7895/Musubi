@@ -58,7 +58,7 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
             "musubi_read_file",
             "musubi_commit_plan",
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
             "musubi_get_reference",
         )
@@ -173,7 +173,7 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
         for name in (
             "musubi_read_file",
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
             "musubi_get_reference",
         )
@@ -196,16 +196,19 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
         "musubi_spawn_subagent",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
         "musubi_get_skill",
         "musubi_get_reference",
     ]
 
 
-def test_pending_skill_ticket_hides_duplicate_recommendation() -> None:
+def test_skill_listing_stays_offered_alongside_the_spawn() -> None:
+    """There is no ticket to consume any more, so nothing withholds the
+    listing after one call. The root may list, decide, and spawn in the same
+    phase; listing twice costs a cheap tool call, not a policy state machine."""
     tools = [
         {"name": "musubi_spawn_subagent"},
-        {"name": "musubi_recommend_skills"},
+        {"name": "musubi_list_skills"},
     ]
     state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
     state.begin_direct(
@@ -215,9 +218,7 @@ def test_pending_skill_ticket_hides_duplicate_recommendation() -> None:
         worker_role="coder",
     )
 
-    assert root_decision_tools(
-        tools, state, recommendation_pending=True,
-    ) == [{"name": "musubi_spawn_subagent"}]
+    assert root_decision_tools(tools, state) == tools
 
 
 def test_plan_flag_rejects_direct_mode() -> None:
@@ -271,7 +272,7 @@ def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
-        {"name": "musubi_recommend_skills"},
+        {"name": "musubi_list_skills"},
     ]
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
@@ -279,7 +280,7 @@ def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
 
     assert [t["name"] for t in root_decision_tools(
         tools, state, recovery_outcome=True,
-    )] == ["musubi_spawn_subagent", "musubi_recommend_skills"]
+    )] == ["musubi_spawn_subagent", "musubi_list_skills"]
     assert root_decision_tools(
         tools, state, recovery_outcome=True, decision_only=True,
     ) == [{"name": "musubi_spawn_subagent"}]
@@ -293,7 +294,7 @@ def test_spawn_exhausted_root_surface_offers_no_tools() -> None:
         {"name": name}
         for name in (
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
         )
     ]

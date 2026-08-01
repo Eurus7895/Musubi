@@ -282,9 +282,53 @@ chart" → `web-ui` @ 0.40, "fix the failing pytest traceback" → `debugging`,
 `testing`. No test had ever exercised `context_summary` — which is how this
 shipped.
 
+## Follow-up: the ranker is deleted; the model chooses
+
+Weighting the request over the context made the ranker less wrong. It did not
+make it entitled. Scoring text to decide what a request is ABOUT is a
+judgement, and this repository already took the position that code does not
+make it — `agent/scope.py`'s own docstring records the deletion of
+`assess_request` and nineteen regexes for exactly that reason, and the
+`request-triage` skill states it outright: *"The harness makes no judgment
+about how large or how risky a change is. It cannot."* The recommender was the
+same mechanism wearing a confidence score, and its `expires-when: never —
+skill selection is catalog routing, not model logic` was falsified by the
+first trace that hit it.
+
+**Deleted:** `musubi/skills/recommender.py`, `musubi_recommend_skills`, the
+`_SKILL_RECOMMENDATION_TICKETS` store, the `recommendation_id` argument, the
+`Orchestration.open_recommendation_*` state, the driver-side ticket
+enforcement, and the `recommendation_pending` tool-withholding gate.
+**831 lines removed against 226 added.**
+
+**Replaced by:** `musubi_list_skills(agent_name, for_role=…)`, which returns
+each permitted skill's `skill_id`, `title` and the one-line `description` its
+SKILL.md already declared and the catalog never exposed. The harness lists
+facts; the model chooses. The root instruction now says to judge the listing
+against what the user is asking for *now*, and states plainly that pushing
+nothing is the right answer when nothing fits.
+
+**The ticket went with it.** It required `pushed_skill_id` to appear in a
+ranked ticket, which constrained WHERE the root got a name and never WHICH
+names are legal — the allowlist and catalog checks answer that independently
+and still do, fail-closed. It was also the direct cause of a lost turn: two
+adjacent string arguments, one of which is a 20-hex ticket id, and the model
+put the wrong one in the wrong slot.
+
+**Pipelines** stopped asking too. `_recommend_stage_skill` folded the role
+name into the task text so a role-canonical skill would match — a role→skill
+lookup table written as a text search, which returned None for six of the
+seven stage roles. Stages now take `SUBAGENT_ROLE_SKILLS[role]`, resolved by
+`build_subagent_context` exactly as HI #2 already does, and `reviewer` gained
+the `code-review` declaration that was the ranker's only real pick. The
+planner *gains* its skill in pipelines, which the ranker had been dropping.
+
+Kept, because it judges the PROJECT rather than the request:
+`skill_router.applicable_skills` still hides a Python skill in a Rust repo.
+
 ## Verification
 
-`1774 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
+`1763 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
 Each new test was confirmed to fail against the pre-change code. The two
 existing terminal-denial pins — an unauthorised spawn role, and a root
 reaching for `musubi_write_file` — still pass unchanged, which is what says

@@ -248,7 +248,6 @@ class WorkerOutcome:
     #: contract — a direct worker carries no native skill tool, so dropping it
     #: would resume the artifact without the pushed procedure.
     pushed_skill_id: str | None = None
-    recommendation_id: str | None = None
 
 
 def decide_recovery(
@@ -297,9 +296,6 @@ class Orchestration:
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
     planning_artifact_dir: Path | None = None
-    open_recommendation_id: str | None = None
-    open_recommendation_role: str | None = None
-    open_recommendation_skills: tuple[str, ...] = ()
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -368,7 +364,6 @@ class Orchestration:
         brief: str = "",
         failure_kind: FailureKind | None = None,
         pushed_skill_id: str | None = None,
-        recommendation_id: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -379,7 +374,6 @@ class Orchestration:
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=pushed_skill_id,
-            recommendation_id=recommendation_id,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -568,8 +562,6 @@ async def _auto_recovery_transition(
         }
         if outcome.pushed_skill_id:
             recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
-        if outcome.recommendation_id:
-            recovery_input["recommendation_id"] = outcome.recommendation_id
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
@@ -1231,10 +1223,6 @@ async def _run_loop(
                 recovery_outcome=recovery_outcome is not None,
                 decision_only=recovery_decision_only,
                 spawn_exhausted=spawn_exhausted,
-                recommendation_pending=bool(
-                    orchestration
-                    and orchestration.open_recommendation_id
-                ),
             )
             if spawn_exhausted and orchestration is not None:
                 # No tools are offered this cycle; make the intent explicit so
@@ -3000,7 +2988,7 @@ def _preflight_policy_batch(
                 decision = argument_decision
         if decision.allowed:
             continue
-        reason = _enrich_policy_reason(decision, args, orchestration)
+        reason = decision.reason
         denied = (
             f"[policy denied] {reason}"
             f"{denied_tool_guidance(call_role, name)}"
@@ -3038,32 +3026,6 @@ def _preflight_policy_batch(
             reason=reason,
         )
     return refused
-
-
-def _enrich_policy_reason(
-    decision: PolicyDecision,
-    args: dict[str, Any],
-    orchestration: Orchestration | None,
-) -> str:
-    """Add the turn's own open recommendation to a skill refusal, when there is one.
-
-    `evaluate_argument_policy` is pure and DB-free, so the widest thing it can
-    name is the role's whole skill allowlist. The driver, meanwhile, already
-    holds the exact shortlist the ranker just offered for this spawn — it has
-    been recorded in `open_recommendation_skills` since recommendations
-    shipped and read by nothing. Naming those candidates turns "pick a legal
-    skill" into "pick one of these three".
-    """
-    reason = decision.reason
-    if not decision.recoverable or orchestration is None:
-        return reason
-    if "pushed_skill_id" not in reason:
-        return reason
-    candidates = orchestration.open_recommendation_skills
-    role = str(args.get("role") or "").strip()
-    if candidates and orchestration.open_recommendation_role == role:
-        return f"{reason} This turn's recommendation offered: {list(candidates)}."
-    return reason
 
 
 async def _dispatch(
@@ -3595,41 +3557,6 @@ async def _dispatch_one(
     ):
         # `refused_reason` is handled above, before any branch — a refused call
         # must not reach the server on any path, orchestrated or not.
-        ticket_id = str(args.get("recommendation_id") or "").strip()
-        if orchestration.open_recommendation_id:
-            if ticket_id != orchestration.open_recommendation_id:
-                result = json.dumps({
-                    "status": "refused",
-                    "reason": (
-                        "spawn must consume the open recommendation_id "
-                        f"{orchestration.open_recommendation_id!r}"
-                    ),
-                })
-                _safe_record_tool_audit(
-                    session_id=session_id, role=call_role, tool=name,
-                    args=json_args(args), status="refused", db_path=audit_path,
-                    result_text=result, log=log,
-                )
-                return result
-            spawn_role = str(args.get("role") or "").strip()
-            if spawn_role != orchestration.open_recommendation_role:
-                result = json.dumps({
-                    "status": "refused",
-                    "reason": (
-                        f"recommendation belongs to role "
-                        f"{orchestration.open_recommendation_role!r}, "
-                        f"not {spawn_role!r}"
-                    ),
-                })
-                _safe_record_tool_audit(
-                    session_id=session_id, role=call_role, tool=name,
-                    args=json_args(args), status="refused", db_path=audit_path,
-                    result_text=result, log=log,
-                )
-                return result
-            orchestration.open_recommendation_id = None
-            orchestration.open_recommendation_role = None
-            orchestration.open_recommendation_skills = ()
         worker_args = args
         spawn_role = str(args.get("role", ""))
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
@@ -3694,27 +3621,6 @@ async def _dispatch_one(
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
-        if (
-            name == "musubi_recommend_skills"
-            and orchestration is not None
-            and orchestration.depth == 0
-        ):
-            try:
-                payload = json.loads(text)
-                ticket = str(payload.get("recommendation_id") or "").strip()
-                recommended = payload.get("recommended") or []
-                if ticket:
-                    orchestration.open_recommendation_id = ticket
-                    orchestration.open_recommendation_role = str(
-                        payload.get("for_role") or ""
-                    )
-                    orchestration.open_recommendation_skills = tuple(
-                        str(item.get("skill_id"))
-                        for item in recommended
-                        if isinstance(item, dict) and item.get("skill_id")
-                    )
-            except (TypeError, ValueError):
-                pass
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)

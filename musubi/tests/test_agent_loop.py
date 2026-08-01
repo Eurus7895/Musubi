@@ -919,11 +919,12 @@ def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
 ) -> None:
     """An optional argument's wrong value is not an authorization failure.
 
-    Observed: the root passed the ticket id into `pushed_skill_id`, the
-    argument policy denied it through the same terminal channel that answers
-    "this role may not call this tool", and the turn ended 4 cycles and 12,383
-    tokens in having produced nothing. The caller WAS authorised to spawn a
-    coder; one string in a field it could have omitted entirely was wrong.
+    Observed: the root put a skill id the coder may not receive into
+    `pushed_skill_id`, the argument policy denied it through the same terminal
+    channel that answers "this role may not call this tool", and the turn
+    ended 4 cycles and 12,383 tokens in having produced nothing. The caller
+    WAS authorised to spawn a coder; one string in a field it could have
+    omitted entirely was wrong.
     """
     from agent import run as run_mod
 
@@ -941,8 +942,7 @@ def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
             "input": {
                 "role": "coder",
                 "brief": "build it",
-                "recommendation_id": "7eb54567802b6738d489",
-                "pushed_skill_id": "7eb54567802b6738d489",
+                "pushed_skill_id": "agent-routing",
             },
         },
     ]
@@ -971,7 +971,6 @@ def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
     payload = json.loads(refusal["content"])
     assert payload["status"] == "refused"
     # The message must be enough to fix the call without guessing.
-    assert "recommendation_id, not a skill_id" in payload["reason"]
     assert "Permitted for 'coder'" in payload["reason"]
     assert "omit `pushed_skill_id`" in payload["reason"]
     # Recoverable is not unaudited: the verdict is still a DENY on record.
@@ -993,7 +992,7 @@ def test_a_recoverable_refusal_lets_the_root_retry_in_the_next_cycle(
             "input": {
                 "role": "coder",
                 "brief": "build it",
-                "pushed_skill_id": "7eb54567802b6738d489",
+                "pushed_skill_id": "agent-routing",
             },
         }]),
         LMResponse(stop_reason="end_turn", content=[{

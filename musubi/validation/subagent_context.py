@@ -68,7 +68,9 @@ SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
     "planner":      "request-triage",
     "designer":     None,
     "coder":        None,
-    "reviewer":     None,
+    # The only pick the deleted ranker ever really made for a pipeline
+    # stage, now declared instead of derived from a text search.
+    "reviewer":     "code-review",
     # Phase C.2 — summarizer drives the 90% reactive-compaction branch.
     # The procedure lives in `.github/skills/summarizer/SKILL.md`.
     "summarizer":   "summarizer",

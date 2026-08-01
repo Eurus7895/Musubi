@@ -130,7 +130,6 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_get_pipeline_stages",
     "musubi_query_schema_migrations",
     "musubi_list_skills",
-    "musubi_recommend_skills",
     "musubi_begin_direct",
     "musubi_begin_plan",
     "musubi_commit_plan",
@@ -327,31 +326,19 @@ def evaluate_argument_policy(
                 "DENY",
                 clean_role,
                 tool_name,
-                _pushed_skill_denial(
-                    skill_id, target_role, args.get("recommendation_id"),
-                ),
+                _pushed_skill_denial(skill_id, target_role),
                 recoverable=True,
             )
     return None
 
 
-#: A `recommendation_id` is `sha256(...)[:20]` (`server.py::
-#: musubi_recommend_skills`), so it is exactly twenty hex characters — a shape
-#: no skill id in the catalog has. Matching it lets the refusal name the
-#: mistake instead of only its symptom.
-_RECOMMENDATION_ID_RE = re.compile(r"^[0-9a-f]{20}$")
-
-
-def _pushed_skill_denial(
-    skill_id: str, target_role: str, recommendation_id: Any,
-) -> str:
+def _pushed_skill_denial(skill_id: str, target_role: str) -> str:
     """Say what to pass instead, not only that this value was wrong.
 
     The bare form of this message — "Skill 'x' is not permitted for worker role
-    'coder'" — is true and useless: it names neither the legal values nor the
-    likeliest cause. The observed failure was the model passing the ticket id
-    into the skill field, which the message could not distinguish from a
-    genuinely unauthorised skill.
+    'coder'" — is true and useless: it names no legal value. `musubi_list_skills
+    (for_role=…)` returns exactly this set, so the refusal names it too rather
+    than sending the model back for a round-trip it can be spared.
     """
     from validation.context_builder import AGENT_SKILL_ALLOWLIST
 
@@ -359,14 +346,7 @@ def _pushed_skill_denial(
         f"Skill {skill_id!r} is not permitted for worker role "
         f"{target_role!r}."
     ]
-    ticket = recommendation_id.strip() if isinstance(recommendation_id, str) else ""
-    if skill_id == ticket or _RECOMMENDATION_ID_RE.fullmatch(skill_id):
-        lines.append(
-            "That value is a recommendation_id, not a skill_id. "
-            "`recommendation_id` carries the ticket; `pushed_skill_id` carries "
-            "one `skill_id` you picked from that ticket's `recommended` list."
-        )
-    permitted = sorted(AGENT_SKILL_ALLOWLIST.get(target_role, set()))
+    permitted = sorted(AGENT_SKILL_ALLOWLIST.get(normalize_role(target_role), set()))
     if permitted:
         lines.append(f"Permitted for {target_role!r}: {permitted}.")
     lines.append("Or omit `pushed_skill_id` — the role's own skill is pushed anyway.")

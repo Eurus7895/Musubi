@@ -249,8 +249,7 @@ async def run_subagent(
                 brief=brief,
                 failure_kind=FailureKind.POLICY,
                 pushed_skill_id=spawn_args.get("pushed_skill_id"),
-                recommendation_id=spawn_args.get("recommendation_id"),
-            )
+                )
         return policy_summary
     except Exception as exc:
         if type(exc).__name__ in {
@@ -274,7 +273,6 @@ async def run_subagent(
                     brief=brief,
                     failure_kind=FailureKind.BUDGET,
                     pushed_skill_id=spawn_args.get("pushed_skill_id"),
-                    recommendation_id=spawn_args.get("recommendation_id"),
                 )
         raise
     finally:
@@ -369,7 +367,6 @@ async def run_subagent(
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=spawn_args.get("pushed_skill_id"),
-            recommendation_id=spawn_args.get("recommendation_id"),
         )
     return returned_summary
 

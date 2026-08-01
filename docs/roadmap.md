@@ -46,18 +46,19 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    (`debugging`, `git-workflow`) so the generator boundary holds. `web-ui` is
    deliberately universal so an HTML/CSS artifact emitted from a non-JS repo
    still matches it — closing the dashboard case where no catalog skill applied.
-   Every prior catalog entry was backfilled with `triggers:` so the recommender
-   can rank the whole catalog, not just the newest skills.
+   Every prior catalog entry carries a `description:` — the line the model
+   chooses on now that nothing ranks the catalog.
    Reachability closed: a direct worker carries no skill tool, so grown catalog
    entries were previously unreachable by workers. The root now selects a skill
    per spawned worker and pushes it (option 3, see Completed track below), so
    catalog growth reaches workers without adding a skill tool to their lean
-   surface. Extended to pipeline stages: the deterministic runner recommends a
-   skill per stage (`musubi_recommend_skills(for_role=…)`, zero-LLM) and pushes
-   it through `musubi_spawn_pipeline_stage` so feature-dev stages
-   (designer/coder/reviewer) carry role-appropriate procedure instead of showing
-   "no skill evidence"; `planner` has an empty skill allowlist and remains
-   skill-less by design.
+   surface. The root reads `musubi_list_skills(for_role=…)` — id, title, and
+   the one-line description each SKILL.md already declares — and chooses; the
+   harness lists, it does not rank. Every catalog entry therefore needs a
+   description that distinguishes it, which is now the load-bearing metadata
+   (`triggers:` was for the deleted ranker). Pipeline stages have no model to
+   choose for them, so they take their role's declared `SUBAGENT_ROLE_SKILLS`
+   entry.
 
 2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
    what a request MEANS and starts proving what the record CONTAINS. Governing
@@ -157,9 +158,9 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    harness validates paths, manifest shape, role membership, order, radius, and
    a hard worker ceiling. Manifest arithmetic no longer decides whether work is
    large. Explorer remains workspace discovery; Investigator becomes
-   diagnostics only and cannot establish a mutation target. Skill ranking
-   returns a recommendation ticket; the model chooses the skill, and the ticket
-   prevents repeated recommender calls in one dispatch flow. The Planner role
+   diagnostics only and cannot establish a mutation target. Skill selection is a
+   catalog LISTING the model chooses from — nothing ranks it and no ticket
+   gates it. The Planner role
    remains only for explicit legacy pipelines until pipeline dissolution.
 
    Plan:
@@ -300,7 +301,19 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   was there to change strings. The request elects now and context is a
   quarter-weight tiebreaker that can never elect alone; confidence derives
   from the request score, so it discriminates instead of saturating. No test
-  had ever exercised `context_summary`. Plan:
+  had ever exercised `context_summary`. **Then the ranker was deleted
+  outright.** Weighting the request over the context made it less wrong, not
+  entitled: scoring text to decide what a request is ABOUT is the same
+  judgement this track already deleted `assess_request` for, and its
+  `expires-when: never` tag was falsified by the first trace that hit it.
+  `musubi_recommend_skills`, the recommendation ticket, and the per-stage
+  pipeline ranker are gone — **831 lines removed against 226** — replaced by
+  `musubi_list_skills(for_role=…)` returning each permitted skill's one-line
+  description for the model to choose from. The ticket constrained where the
+  root got a name, never which names are legal, and the allowlist and catalog
+  checks that do answer that are untouched. Pipeline stages take their role's
+  declared skill instead; `skill_router.applicable_skills` stays, because it
+  judges the project rather than the request. Plan:
   [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —

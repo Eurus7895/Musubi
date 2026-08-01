@@ -417,15 +417,21 @@ def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
 
 def test_pipeline_roles_register_the_right_role_skill() -> None:
     """Generator roles carry their procedure in the agent.md body, so they
-    register `None`. The planner is the exception: it is the only component
-    that reads code before anything mutates, and the harness routes
-    deterministically on the manifest it emits, so its triage procedure is
-    PUSHED (HI #2) rather than left to the role prompt."""
+    register `None` and let the root push a fitting skill per spawn.
+
+    Two exceptions, both because nothing chooses for them. The planner is the
+    only component that reads code before anything mutates and the harness
+    routes deterministically on the manifest it emits, so its triage procedure
+    is PUSHED (HI #2). The reviewer declares `code-review` because a pipeline
+    stage has no root to choose for it — that was the single pick the deleted
+    skill ranker ever really made, now stated as data instead of derived from
+    a text search over the role name."""
     from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    for role in ("coder", "reviewer", "designer"):
+    for role in ("coder", "designer"):
         assert role in SUBAGENT_ROLE_SKILLS, role
         assert SUBAGENT_ROLE_SKILLS[role] is None, role
     assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
+    assert SUBAGENT_ROLE_SKILLS["reviewer"] == "code-review"
 
 
 # ── No regressions: non-agent paths unchanged ────────────────────────

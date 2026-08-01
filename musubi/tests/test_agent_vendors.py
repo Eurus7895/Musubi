@@ -150,7 +150,7 @@ def test_openai_messages_mixed_tool_results_and_text_keeps_all_results() -> None
         {
             "role": "assistant",
             "content": [
-                {"type": "tool_use", "id": "t1", "name": "musubi_recommend_skills", "input": {}},
+                {"type": "tool_use", "id": "t1", "name": "musubi_list_skills", "input": {}},
                 {"type": "tool_use", "id": "t2", "name": "musubi_glob", "input": {}},
             ],
         },

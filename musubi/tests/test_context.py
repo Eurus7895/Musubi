@@ -32,7 +32,7 @@ def test_system_prompt_carries_terse_instruction() -> None:
 def test_system_prompt_mentions_skill_recommendations() -> None:
     prompt = build_system_prompt()
 
-    assert "musubi_recommend_skills" in prompt
+    assert "musubi_list_skills" in prompt
     # Option 3: the root recommends a skill for a worker and pushes it via the
     # spawn, rather than reading skill bodies into its own context.
     assert "pushed_skill_id" in prompt

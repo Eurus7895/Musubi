@@ -17,12 +17,12 @@ def _tool(name: str) -> dict:
 
 
 def test_agent_surface_has_expected_count_and_core_tools() -> None:
-    assert len(ROOT_AGENT_TOOL_NAMES) == 18
+    assert len(ROOT_AGENT_TOOL_NAMES) == 17
     assert "musubi_read_file" in ROOT_AGENT_TOOL_NAMES
     # Read-only discovery tools let the agent find files instead of guessing.
     assert "musubi_glob" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_grep" in ROOT_AGENT_TOOL_NAMES
-    assert "musubi_recommend_skills" in ROOT_AGENT_TOOL_NAMES
+    assert "musubi_list_skills" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_retrieve" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_spawn_subagent" in ROOT_AGENT_TOOL_NAMES
     assert "musubi_begin_direct" in ROOT_AGENT_TOOL_NAMES
@@ -72,12 +72,12 @@ def test_filter_tool_catalog_preserves_order_and_filters_local_names() -> None:
     tools = [
         _tool("musubi_write_stage"),
         _tool("musubi_read_file"),
-        _tool("musubi_recommend_skills"),
+        _tool("musubi_list_skills"),
     ]
 
     assert [t["name"] for t in filter_tool_catalog(tools, "agent")] == [
         "musubi_read_file",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
     ]
 
 
@@ -94,7 +94,7 @@ def test_apply_fastmcp_tool_surface_filters_tool_manager() -> None:
     manager = SimpleNamespace(_tools={
         "musubi_write_stage": object(),
         "musubi_read_file": object(),
-        "musubi_recommend_skills": object(),
+        "musubi_list_skills": object(),
     })
     mcp = SimpleNamespace(_tool_manager=manager)
 
@@ -102,5 +102,5 @@ def test_apply_fastmcp_tool_surface_filters_tool_manager() -> None:
 
     assert set(manager._tools) == {
         "musubi_read_file",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
     }

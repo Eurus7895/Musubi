@@ -15,7 +15,6 @@ ROOT_AGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "musubi_glob",
     "musubi_grep",
     "musubi_list_skills",
-    "musubi_recommend_skills",
     "musubi_begin_direct",
     "musubi_begin_plan",
     "musubi_commit_plan",

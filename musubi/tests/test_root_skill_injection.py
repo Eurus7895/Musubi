@@ -1,7 +1,7 @@
 """Tests for root-selected skill injection into workers (option 3).
 
 musubi-tier: substrate test — pins the option-3 contract:
-  - the root can rank a *worker role's* skills via `for_role`;
+  - the root can LIST a *worker role's* skills via `for_role`;
   - a validated `pushed_skill_id` threads spawn → DB row → subagent context
     and lands as the worker's `role_skill`;
   - the spawn firewall (HI #3/#5) rejects a skill outside the worker role's
@@ -23,37 +23,32 @@ from skills import skill_loader
 from validation import subagent_context
 from validation.context_builder import AGENT_SKILL_ALLOWLIST
 
-# ── recommend_skills honours for_role ──────────────────────────────────────
+# ── list_skills honours for_role ───────────────────────────────────────────
 
 
-def test_recommend_for_coder_role_surfaces_coder_skills() -> None:
-    """The root (agent) asks for coder skills; the ranked set is drawn from
-    the coder allowlist, not the agent's own."""
-    payload = json.loads(server.musubi_recommend_skills(
-        "write a typescript react dashboard component",
-        "agent",
-        for_role="coder",
-    ))
+def test_list_for_coder_role_surfaces_coder_skills() -> None:
+    """The root asks for the coder's catalog; the set is drawn from the coder
+    allowlist, not the root's own."""
+    payload = json.loads(server.musubi_list_skills("agent", for_role="coder"))
     assert payload["for_role"] == "coder"
-    ids = {r["skill_id"] for r in payload["recommended"]}
-    # typescript is coder-only; the agent's own allowlist could never surface it.
+    ids = {r["skill_id"] for r in payload["skills"]}
+    # typescript is coder-only; the root's own allowlist could never surface it.
     assert ids <= AGENT_SKILL_ALLOWLIST["coder"]
     assert "typescript" in ids
 
 
-def test_recommend_unknown_role_returns_nothing() -> None:
-    payload = json.loads(server.musubi_recommend_skills(
-        "anything", "agent", for_role="nonexistent-role",
+def test_list_unknown_role_returns_nothing() -> None:
+    """Fail-closed: an unknown role has no allowlist entry, so it gets no
+    catalog rather than the caller's."""
+    payload = json.loads(server.musubi_list_skills(
+        "agent", for_role="nonexistent-role",
     ))
-    assert payload["recommended"] == []
+    assert payload["skills"] == []
 
 
-def test_recommend_without_for_role_uses_caller_allowlist() -> None:
-    """Back-compat: omitting for_role ranks the caller's own skills."""
-    payload = json.loads(server.musubi_recommend_skills(
-        "why does this traceback fail at root cause", "agent",
-    ))
-    ids = {r["skill_id"] for r in payload["recommended"]}
+def test_list_without_for_role_uses_caller_allowlist() -> None:
+    payload = json.loads(server.musubi_list_skills("agent"))
+    ids = {r["skill_id"] for r in payload["skills"]}
     assert ids <= AGENT_SKILL_ALLOWLIST["root"]
 
 
@@ -74,24 +69,16 @@ def parent_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return sid, db_path
 
 
-def _coder_recommendation(task: str = "build the typescript page") -> dict:
-    return json.loads(server.musubi_recommend_skills(
-        task,
-        "agent",
-        for_role="coder",
-    ))
 
 
 def test_spawn_rejects_skill_outside_role_allowlist(parent_session) -> None:
     sid, _ = parent_session
-    recommendation = _coder_recommendation()
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the page",
         pushed_skill_id="agent-routing",  # not in coder's allowlist
-        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "error"
     assert "not permitted" in out["error"] or "not a candidate" in out["error"]
@@ -99,44 +86,31 @@ def test_spawn_rejects_skill_outside_role_allowlist(parent_session) -> None:
 
 def test_spawn_rejects_unknown_skill(parent_session) -> None:
     sid, _ = parent_session
-    recommendation = _coder_recommendation()
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the page",
         pushed_skill_id="typescript-but-typoed",
-        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "error"
     assert "not permitted" in out["error"] or "not a candidate" in out["error"]
 
 
-def test_spawn_rejects_pushed_skill_without_recommendation_ticket(
+def test_spawn_accepts_a_permitted_skill_without_any_ticket(
     parent_session,
 ) -> None:
-    sid, _ = parent_session
-    out = json.loads(server.musubi_spawn_subagent(
-        parent_session_id=sid,
-        parent_agent_name="agent",
-        role="coder",
-        brief="build the typescript page",
-        pushed_skill_id="typescript",
-    ))
-    assert out["status"] == "error"
-    assert "recommendation_id" in out["error"]
-
-
-def test_spawn_accepts_valid_pushed_skill_and_stores_it(parent_session) -> None:
+    """The recommendation ticket is gone. It constrained WHERE the root got a
+    name, never WHICH names are legal — the allowlist and catalog checks below
+    answer that on their own, and the ticket cost a turn when its id was
+    confused with the skill id."""
     sid, db_path = parent_session
-    recommendation = _coder_recommendation()
     out = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
-        parent_agent_name="agent",
+        parent_agent_name="root",
         role="coder",
         brief="build the typescript page",
         pushed_skill_id="typescript",
-        recommendation_id=recommendation["recommendation_id"],
     ))
     assert out["status"] == "spawned"
     assert out["pushed_skill_id"] == "typescript"
@@ -178,14 +152,12 @@ def test_context_builder_pushed_skill_overrides_native() -> None:
 
 def test_get_subagent_context_tool_surfaces_pushed_skill(parent_session) -> None:
     sid, _ = parent_session
-    recommendation = _coder_recommendation()
     spawn = json.loads(server.musubi_spawn_subagent(
         parent_session_id=sid,
         parent_agent_name="agent",
         role="coder",
         brief="build the typescript page",
         pushed_skill_id="typescript",
-        recommendation_id=recommendation["recommendation_id"],
     ))
     ctx = json.loads(server.musubi_get_subagent_context(spawn["handle_id"]))
     assert ctx["status"] == "ok"
@@ -273,7 +245,7 @@ def _tools(names: list[str]) -> list[dict]:
     return [{"name": n} for n in names]
 
 
-def test_simple_scope_root_sees_spawn_and_recommend() -> None:
+def test_simple_scope_root_sees_spawn_and_listing() -> None:
     """The headline fix: a simple_artifact root can still select a skill."""
     state = GoalState.create("build dashboard", "simple_artifact", "single_coder")
     state.begin_direct(
@@ -284,14 +256,14 @@ def test_simple_scope_root_sees_spawn_and_recommend() -> None:
     )
     tools = _tools([
         "musubi_spawn_subagent",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
         "musubi_get_skill",
         "musubi_get_reference",
         "musubi_write_file",
     ])
     visible = {t["name"] for t in root_decision_tools(tools, state)}
     assert "musubi_spawn_subagent" in visible
-    assert "musubi_recommend_skills" in visible
+    assert "musubi_list_skills" in visible
     # Content-loading skill tools stay out of a simple-scope root turn.
     assert "musubi_get_skill" not in visible
     # And non-skill mutation tools never reach the root decision surface.
@@ -315,9 +287,9 @@ def test_broad_scope_root_also_sees_skill_read_tools() -> None:
     )
     tools = _tools([
         "musubi_spawn_subagent",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
         "musubi_get_skill",
         "musubi_get_reference",
     ])
     visible = {t["name"] for t in root_decision_tools(tools, state)}
-    assert {"musubi_recommend_skills", "musubi_get_skill", "musubi_get_reference"} <= visible
+    assert {"musubi_list_skills", "musubi_get_skill", "musubi_get_reference"} <= visible

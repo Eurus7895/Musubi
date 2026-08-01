@@ -54,7 +54,6 @@ from session import chunks as session_chunks
 from session import conversations, state, sub_sessions
 from skills import router as skill_router
 from skills import skill_loader
-from skills.recommender import recommend_skills
 from storage import db as _db
 from storage import subagent_audit
 from tool_surface import apply_fastmcp_tool_surface
@@ -112,7 +111,6 @@ mcp = FastMCP("musubi")
 # Recommendation tickets bind one model choice to the exact role/candidate set
 # the deterministic ranker returned. Process-local is sufficient: a parent
 # session and every worker spawn it drives live in this one MCP process.
-_SKILL_RECOMMENDATION_TICKETS: dict[str, dict[str, Any]] = {}
 
 
 # ── State tools ───────────────────────────────────────────────────────────────
@@ -1163,103 +1161,58 @@ def _load_project_profile() -> dict[str, Any] | None:
 
 
 @mcp.tool()
-def musubi_list_skills(agent_name: str) -> str:
-    """Return the catalog of skills the calling agent may load.
+def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
+    """Return the catalog of skills an agent may load, with descriptions.
 
-    Week 4 Day 3 — enables direct-mode pull-on-demand. The extension injects
-    the catalog into the system prompt so the LLM knows which skill_ids it
-    may request via musubi_get_skill / musubi_get_reference mid-response.
+    Set `for_role` to list a WORKER role's skills before spawning it, so the
+    root can choose a `pushed_skill_id` (HI #2's push). Defaults to the
+    caller's own allowlist.
 
-    Two filters compose, in order:
+    The harness lists; the model chooses. There used to be a
+    `musubi_recommend_skills` that scored the request text and returned ranked
+    candidates with a confidence, and it decided what a request was ABOUT —
+    a judgement no substrate code is entitled to make (HI #1 in spirit, and
+    the position the repository already took when it deleted `assess_request`).
+    It also did it badly: it scored the request and the conversation summary as
+    one bag of text, so on turn 3 of a chat that had built an HTML dashboard,
+    "change the language of the application" matched nothing on its own while
+    the history scored `web-ui` at 0.99.
+
+    Two filters compose, in order, and both remain:
       1. The agent allowlist (AGENT_SKILL_ALLOWLIST) — the security
          firewall (HI #3). Never relaxed.
       2. Workspace applicability (MVP item 6 / Track D.3) — the skill
          router drops skills whose `applies-to` declaration doesn't match
          the project profile, so the model never sees a Python skill in a
-         Rust repo. UX optimisation, not security; degrades to a no-op
-         when no profile is available.
+         Rust repo. Deterministic and about the PROJECT, not about the
+         request; UX optimisation, not security. Degrades to a no-op when
+         no profile is available.
 
-    Returns JSON { "skills": [{"skill_id", "title"}, ...], "agent_name": ...,
-    "filtered_by_profile": bool }.
+    Returns JSON { "skills": [{"skill_id", "title", "description"}, ...],
+    "agent_name": ..., "for_role": ..., "filtered_by_profile": bool }.
     """
-    key = agent_name.lower().strip()
-    allowed = AGENT_SKILL_ALLOWLIST.get(normalize_role(key), set())
+    key = normalize_role(agent_name)
+    candidate_key = normalize_role(for_role) or key
+    allowed = AGENT_SKILL_ALLOWLIST.get(candidate_key, set())
     # Filter 1 — allowlist.
     metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
     # Filter 2 — workspace applicability.
     profile = _load_project_profile()
     applicable = skill_router.applicable_skills(profile, metas)
-    catalog = [{"skill_id": m.skill_id, "title": m.title} for m in applicable]
-    return json.dumps({
-        "agent_name": key,
-        "skills": catalog,
-        "filtered_by_profile": profile is not None,
-    })
-
-
-@mcp.tool()
-def musubi_recommend_skills(
-    task: str,
-    agent_name: str,
-    context_summary: str = "",
-    tools_used: list[str] | None = None,
-    limit: int = 5,
-    for_role: str | None = None,
-) -> str:
-    """Rank catalog skills for a task; returns ids/titles only, never bodies.
-
-    Defaults to the caller's (`agent_name`) allowlist. Set `for_role` to rank
-    a worker's skills before a spawn (option 3): the root picks a
-    `pushed_skill_id` from that role's allowlist. Widens nothing — the spawn
-    re-validates the id. Unknown `for_role` → no recommendations.
-    """
-    key = normalize_role(agent_name)
-    candidate_key = normalize_role(for_role) or key
-    allowed = AGENT_SKILL_ALLOWLIST.get(candidate_key, set())
-    metas = [m for m in skill_loader.list_skills() if m.skill_id in allowed]
-    profile = _load_project_profile()
-    applicable = skill_router.applicable_skills(profile, metas)
-    recommended = recommend_skills(
-        task,
-        applicable,
-        context_summary=context_summary,
-        tools_used=tools_used or [],
-        limit=limit,
-    )
-    candidates = [
+    catalog = [
         {
-            "skill_id": item.skill_id,
-            "title": item.title,
-            "confidence": item.confidence,
-            "reasons": item.reasons,
+            "skill_id": m.skill_id,
+            "title": m.title,
+            # The one sentence the model needs to choose. Bodies stay behind
+            # `musubi_get_skill`; a catalog listing is not a skill dump.
+            "description": m.description,
         }
-        for item in recommended
+        for m in applicable
     ]
-    ticket_source = json.dumps(
-        {
-            "task": " ".join((task or "").split()),
-            "role": candidate_key,
-            "candidates": [item["skill_id"] for item in candidates],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    recommendation_id = hashlib.sha256(
-        ticket_source.encode("utf-8")
-    ).hexdigest()[:20]
-    _SKILL_RECOMMENDATION_TICKETS[recommendation_id] = {
-        "role": candidate_key,
-        "skill_ids": tuple(item["skill_id"] for item in candidates),
-    }
-    while len(_SKILL_RECOMMENDATION_TICKETS) > 256:
-        _SKILL_RECOMMENDATION_TICKETS.pop(
-            next(iter(_SKILL_RECOMMENDATION_TICKETS))
-        )
     return json.dumps({
         "agent_name": key,
         "for_role": candidate_key,
-        "recommendation_id": recommendation_id,
-        "recommended": candidates,
+        "skills": catalog,
         "filtered_by_profile": profile is not None,
     })
 
@@ -1542,7 +1495,6 @@ def musubi_spawn_subagent(
     wall_clock_timeout_s: int = sub_sessions.DEFAULT_WALL_CLOCK_TIMEOUT_S,
     output_schema: str | None = None,
     pushed_skill_id: str | None = None,
-    recommendation_id: str | None = None,
 ) -> str:
     """Spawn a sub-agent run. Returns a handle_id the parent can await.
 
@@ -1551,8 +1503,8 @@ def musubi_spawn_subagent(
       2. parent_agent_name must list role in MAIN_SUBAGENT_ALLOWLIST.
       3. effective_tools = SUBAGENT_POLICIES[role] ∩ allowed_tools.
          Empty intersection → reject; the sub-agent would have nothing to do.
-      4. pushed_skill_id, when given, must belong to the supplied
-         recommendation_id, the worker role's allowlist, and the catalog.
+      4. pushed_skill_id, when given, must belong to the
+         the worker role's allowlist and the catalog.
 
     Four-layer timeouts are recorded on the row:
       - max_turns                 (caller arg)
@@ -1621,41 +1573,19 @@ def musubi_spawn_subagent(
             ),
         })
 
-    # 4. Root-selected skill (option 3). Validate against the worker role's
-    #    allowlist and catalog before recording it — fail-closed so the root
-    #    can only push a skill the role is authorised for.
+    # 4. Root-selected skill (HI #2's push). Two fail-closed checks, both of
+    #    which are the actual firewall: the id must be in the worker role's
+    #    allowlist, and it must exist in the catalog.
+    #
+    #    A third check used to sit in front of them: the id had to appear in a
+    #    `recommendation_id` ticket minted by `musubi_recommend_skills`. That
+    #    was procedural, not protective — it constrained WHERE the root got the
+    #    name, never WHICH names are legal, and the two checks below already
+    #    answer the latter on their own. It also cost a turn: passing the
+    #    ticket id into `pushed_skill_id` is an easy confusion between two
+    #    adjacent string arguments, and it was denied as a policy violation.
     skill_choice = (pushed_skill_id or "").strip() or None
     if skill_choice is not None:
-        ticket_id = (recommendation_id or "").strip()
-        ticket = _SKILL_RECOMMENDATION_TICKETS.get(ticket_id)
-        if ticket is None:
-            return json.dumps({
-                "status": "error",
-                "error_kind": "policy_denied",
-                "error": (
-                    "A pushed skill requires the recommendation_id returned "
-                    "by musubi_recommend_skills."
-                ),
-            })
-        if ticket["role"] != role.lower().strip():
-            return json.dumps({
-                "status": "error",
-                "error_kind": "policy_denied",
-                "error": (
-                    f"Recommendation {ticket_id!r} belongs to role "
-                    f"{ticket['role']!r}, not {role!r}."
-                ),
-            })
-        if skill_choice not in ticket["skill_ids"]:
-            return json.dumps({
-                "status": "error",
-                "error_kind": "policy_denied",
-                "error": (
-                    f"Skill {skill_choice!r} was not a candidate in "
-                    f"recommendation {ticket_id!r}."
-                ),
-                "recommended_skills": list(ticket["skill_ids"]),
-            })
         role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
         if skill_choice not in role_skills:
             return json.dumps({
@@ -1732,7 +1662,6 @@ def musubi_spawn_subagent(
         "per_turn_timeout_s": per_turn_timeout_s,
         "wall_clock_timeout_s": wall_clock_timeout_s,
         "pushed_skill_id": skill_choice,
-        "recommendation_id": (recommendation_id or "").strip() or None,
     })
 
 
