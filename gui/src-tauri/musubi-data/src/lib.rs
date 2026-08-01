@@ -751,10 +751,47 @@ fn extract_quoted_strings(line: &str) -> Vec<String> {
     values
 }
 
+/// Module-level `NAME = "literal"` bindings, so a dict keyed by a CONSTANT
+/// still resolves.
+///
+/// This reader models the fail-closed spawn firewall by scraping Python
+/// source, which makes it sensitive to edits that change nothing semantically.
+/// `MAIN_SUBAGENT_ALLOWLIST` was keyed `"agent"` until the depth-0 role was
+/// renamed and the key became the `ROOT_ROLE` constant — a bare identifier the
+/// key detector below skipped, silently dropping the root's whole entry from
+/// the scraped map. Nothing looked it up (pipeline stages are workers, never
+/// the root) so no validation changed, which is exactly why it would have sat
+/// there unnoticed.
+fn read_python_string_constants(raw: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || !trimmed.contains('=') {
+            continue;
+        }
+        let Some((name, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            continue;
+        }
+        if let Some(value) = extract_quoted_strings(trimmed).into_iter().next() {
+            out.entry(name.to_string()).or_insert(value);
+        }
+    }
+    out
+}
+
 fn read_spawn_firewall(project_root: &Path) -> HashMap<String, Vec<String>> {
     let Ok(raw) = std::fs::read_to_string(project_root.join("scripts/policy_engine.py")) else {
         return HashMap::new();
     };
+    let constants = read_python_string_constants(&raw);
     let Some(start) = raw.find("MAIN_SUBAGENT_ALLOWLIST:") else {
         return HashMap::new();
     };
@@ -765,12 +802,24 @@ fn read_spawn_firewall(project_root: &Path) -> HashMap<String, Vec<String>> {
         if trimmed == "}" {
             break;
         }
+        if trimmed.starts_with('#') {
+            continue;
+        }
         let quoted = extract_quoted_strings(trimmed);
         if trimmed.contains(':') {
-            if let Some(key) = quoted.first() {
+            // The key is the first quoted string on the line, or — when the
+            // dict is keyed by a constant — that constant's resolved value.
+            let (key, values): (Option<String>, &[String]) = match trimmed.split_once(':') {
+                Some((head, _)) if extract_quoted_strings(head).is_empty() => (
+                    constants.get(head.trim()).cloned(),
+                    quoted.as_slice(),
+                ),
+                _ => (quoted.first().cloned(), quoted.get(1..).unwrap_or(&[])),
+            };
+            if let Some(key) = key {
                 current = Some(key.clone());
                 result.entry(key.clone()).or_insert_with(Vec::new);
-                for role in quoted.iter().skip(1) {
+                for role in values {
                     result.entry(key.clone()).or_default().push(role.clone());
                 }
             }
@@ -1291,6 +1340,28 @@ fn leading_comment_lines(raw: &str) -> impl Iterator<Item = &str> {
 /// (the credit budget), `warn_at`, and `level`. Rendering from the model alone
 /// would delete all of it, so overwriting a recipe of the same name carries it
 /// across. A save under a new name starts clean.
+/// Why saving over `target` would lose information the Studio cannot model.
+///
+/// None when the target is new, or already in the flat `stages:` shape the
+/// Studio round-trips losslessly.
+fn unrepresentable_recipe_reason(target: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(target).ok()?;
+    let serde_yaml::Value::Mapping(existing) = serde_yaml::from_str(&raw).ok()? else {
+        return None;
+    };
+    let has = |key: &str| existing.contains_key(serde_yaml::Value::String(key.into()));
+    if has("stages") || !(has("generator") || has("evaluator")) {
+        return None;
+    }
+    Some(format!(
+        "{} is written in the generator/evaluator shape, which declares a \
+         per-stage `skill:` the Studio cannot represent. Saving would drop \
+         those declarations. Edit the YAML directly, or save under a new name.",
+        target.display()
+    ))
+}
+
+
 fn preserved_pipeline_prelude(target: &Path) -> (String, serde_yaml::Mapping) {
     let mut extras = serde_yaml::Mapping::new();
     let Ok(raw) = std::fs::read_to_string(target) else {
@@ -1397,6 +1468,26 @@ fn save_pipeline_recipe_with_replacer(
     // Overwriting an existing recipe keeps everything the Studio does not
     // model. Without this, updating a checked-in preset would silently drop its
     // credit budget and its musubi-tier tag.
+    //
+    // That preservation covers TOP-LEVEL keys only, via `extras`. Stage-level
+    // fields have no such route: `PipelineStageRecipe` models four fields
+    // (preset/agent/stage/spawns) and the renderer emits exactly those, so a
+    // recipe written in the `generator:`/`evaluator:` shape loses every
+    // `skill:` declaration and every canonical `stage:` name the moment it is
+    // saved back. Measured on feature-dev: four skill declarations
+    // (api-design, python, code-review, and an explicit null) became none, and
+    // plan/code/review became planner/coder/reviewer.
+    //
+    // Those declarations are the pipeline's compliance statement — the
+    // substrate reads them to decide what procedure each stage runs
+    // (`composer.declared_stage_skill`). Silently dropping them turns a
+    // governed recipe into an ungoverned one on a round-trip nobody would
+    // think to check. Refuse instead: the Studio may not rewrite a recipe into
+    // a shape that cannot carry what the recipe already says.
+    if let Some(reason) = unrepresentable_recipe_reason(&target) {
+        result.error = reason;
+        return result;
+    }
     let (comments, extras) = preserved_pipeline_prelude(&target);
     let rendered = match render_pipeline_recipe(recipe, &comments, &extras) {
         Ok(rendered) => rendered,
@@ -6309,4 +6400,110 @@ fn resolve_llm_config_path(
         dir = d.parent();
     }
     Some(project_config)
+}
+
+#[cfg(test)]
+mod recipe_fidelity_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn repo_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "musubi-recipe-fidelity-{}-{}",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        copy_tree(&repo_root().join(".github"), &root.join(".github"));
+        copy_tree(&repo_root().join("scripts"), &root.join("scripts"));
+        root
+    }
+
+    #[test]
+    fn the_scraped_firewall_survives_a_constant_keyed_entry() {
+        // `MAIN_SUBAGENT_ALLOWLIST` is keyed by the `ROOT_ROLE` constant since
+        // the depth-0 role was renamed. A key detector that only recognises
+        // string literals drops that entry entirely and no validation notices,
+        // because pipeline stages are workers and never look the root up.
+        let root = scratch("firewall");
+        let firewall = read_spawn_firewall(&root);
+
+        let root_entry = firewall
+            .get("root")
+            .unwrap_or_else(|| panic!("root missing from scraped firewall: {firewall:?}"));
+        assert!(root_entry.contains(&"coder".to_string()), "{root_entry:?}");
+        assert!(root_entry.contains(&"explorer".to_string()), "{root_entry:?}");
+        // The literal-keyed entries still parse exactly as before.
+        assert_eq!(
+            firewall.get("coder"),
+            Some(&vec!["explorer".to_string(), "investigator".to_string()])
+        );
+        assert_eq!(firewall.get("planner"), Some(&vec![]));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_over_a_declared_recipe_is_refused_rather_than_lossy() {
+        // Measured before this guard: open feature-dev, save it, and all four
+        // `skill:` declarations vanish while plan/code/review become
+        // planner/coder/reviewer. Those declarations are what the substrate
+        // reads to decide each stage's procedure.
+        let root = scratch("declared");
+        let path = root.join(".github/pipelines/feature-dev/pipeline.yaml");
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let recipe = read_pipeline_recipe(&root, "feature-dev").unwrap();
+        let saved = save_pipeline_recipe(&root, &recipe);
+
+        assert!(!saved.saved, "a lossy save must be refused");
+        assert!(saved.error.contains("skill"), "{}", saved.error);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "the recipe on disk must be untouched",
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_flat_recipe_still_round_trips_and_a_new_name_still_saves() {
+        // The guard is about what the target file already says, not about the
+        // recipe in hand: composing under a new name stays allowed, and the
+        // flat shape the Studio owns round-trips as it always did.
+        let root = scratch("flat");
+        let flat = root.join(".github/pipelines/flat-flow");
+        std::fs::create_dir_all(&flat).unwrap();
+        std::fs::write(
+            flat.join("pipeline.yaml"),
+            "name: flat-flow\nstages:\n  - preset: plan\n  - preset: build\n  - preset: check\n",
+        )
+        .unwrap();
+
+        let recipe = read_pipeline_recipe(&root, "flat-flow").unwrap();
+        assert!(save_pipeline_recipe(&root, &recipe).saved);
+
+        // Saving a declared recipe under a NEW name writes a new file, so
+        // nothing existing is overwritten and nothing is lost.
+        let mut renamed = read_pipeline_recipe(&root, "feature-dev").unwrap();
+        renamed.name = "copied-flow".into();
+        assert!(save_pipeline_recipe(&root, &renamed).saved);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

@@ -362,9 +362,47 @@ is now named on the policy channel rather than passing silently as a ranker
 Kept, because it judges the PROJECT rather than the request:
 `skill_router.applicable_skills` still hides a Python skill in a Rust repo.
 
+## Follow-up: the recipe is the compliance artifact, so it must survive a save
+
+Two defects found while answering "what does a recipe look like", both proved
+by running the round-trip rather than reading it.
+
+**The Studio rewrote a declared recipe into a shape that cannot hold its
+declarations.** `.github/pipelines/*/pipeline.yaml` comes in two shapes: the
+declared one (`generator:` / `evaluator:`, with a per-agent `skill:`) that both
+shipped recipes use, and the flat `stages:` one composed from presets that the
+Pipeline Studio reads and writes. `PipelineStageRecipe` models four fields —
+`preset`, `agent`, `stage`, `spawns` — and the renderer emits exactly those.
+Measured on feature-dev, open-then-save produced:
+
+    BEFORE  skill: null · skills/api-design · skills/python · skills/code-review
+    AFTER   (none)
+
+and turned the canonical stage names `plan` / `code` / `review` into
+`planner` / `coder` / `reviewer`, because the loader falls back to the role
+name when `stage:` is absent and does not replicate composer's mapping. Top
+level keys survive through `extras`; stage-level ones have no such route.
+
+Those declarations are what `composer.declared_stage_skill` reads to decide
+each stage's procedure — the pipeline's compliance statement. A round-trip
+nobody would think to check turned a governed recipe into an ungoverned one.
+`save_pipeline_recipe` now refuses rather than truncates: a recipe already
+written in the declared shape may not be overwritten from the Studio's model.
+Saving under a new name still works, and the flat shape still round-trips.
+
+**A constant-keyed dict fell out of the scraped firewall.** `read_spawn_firewall`
+models the fail-closed spawn allowlist by text-scraping
+`scripts/policy_engine.py` for `MAIN_SUBAGENT_ALLOWLIST`. Its key detector only
+recognised string literals, so when the depth-0 rename made the first key the
+`ROOT_ROLE` constant, the root's whole entry vanished from the map. Nothing
+looked it up — pipeline stages are workers, never the root — so no validation
+changed, which is precisely why it would have sat there. The scraper resolves
+module-level `NAME = "literal"` bindings now, and a test pins that the root
+entry is present with its spawn list.
+
 ## Verification
 
-`1766 passed` (pytest), `191 pass` (node --test), `82 passed` (cargo test).
+`1766 passed` (pytest), `191 pass` (node --test), `85 passed` (cargo test).
 Each new test was confirmed to fail against the pre-change code. The two
 existing terminal-denial pins — an unauthorised spawn role, and a root
 reaching for `musubi_write_file` — still pass unchanged, which is what says

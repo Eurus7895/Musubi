@@ -323,7 +323,17 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
   in the console catalog, in `--pipeline` help and in the README beside
   `feature-dev` — and it was the only stage left with no prepared skill. The
   preset MECHANISM stays; the test that covered it now authors its own recipe
-  over the real catalog instead of leaning on a shipped sample. Nothing carries a confidence: the listing is ids, titles and
+  over the real catalog instead of leaning on a shipped sample.
+  **The recipe survives a save now.** Pipeline Studio models four stage fields
+  and rewrote the declared `generator:`/`evaluator:` shape into the flat one,
+  dropping every per-stage `skill:` and turning plan/code/review into
+  planner/coder/reviewer — measured on feature-dev. Those declarations are the
+  compliance statement the substrate reads, so a save that cannot carry them is
+  refused rather than truncated; a new name and the flat shape are unaffected.
+  Alongside it, `read_spawn_firewall` scrapes `policy_engine.py` for the spawn
+  allowlist and its key detector only understood string literals, so the
+  depth-0 rename silently dropped the root's entry from the map; it resolves
+  constant keys now, with a test. Nothing carries a confidence: the listing is ids, titles and
   descriptions, because a score is the harness stating an opinion about a
   request it is not entitled to have one about.
   `skill_router.applicable_skills` stays, because it judges the project rather
