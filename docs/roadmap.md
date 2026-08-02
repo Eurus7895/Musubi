@@ -198,8 +198,26 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-01-stage-goals-and-loop.md`](./superpowers/plans/2026-08-01-stage-goals-and-loop.md)
 
+6. **Approved design: runtime convergence repair.** A production-like run
+   exposed two independent convergence failures after stage preflight began
+   working: cumulative plan/design handoff made the coder's protected input
+   26,615 characters against a 16,000-character hard cap, and the direct root
+   spent 188,778/200,000 tokens retrying an underspecified plan tool contract
+   before any worker spawned. The repair is deliberately split. P0 makes stage
+   input token-oriented with an 8,000-token operational ceiling (32,000-character
+   compatibility fallback), forwards only the immediate passed predecessor,
+   makes substrate completion status authoritative, and extends the durable
+   audit outbox to worker completions. P1 publishes one closed manifest/role
+   schema, returns typed corrections, stops after three consecutive contract
+   failures, covers pre-worker control loops in the no-progress breaker, and
+   projects control results into Request Log. Full stage output remains in the
+   append-only store; the model still selects every skill.
+
+   Design:
+   [`2026-08-02-runtime-convergence-repair-design.md`](./superpowers/specs/2026-08-02-runtime-convergence-repair-design.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
-pipeline-stage turn caps, model-input characters, and total stage allowances;
+pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
 worker-count and continuation-spawn policy. Do not introduce a second parser or
 enforcement path for the same dimension.
