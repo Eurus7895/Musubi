@@ -10,13 +10,53 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from composer import StageRecipe
 from skills.skill_loader import SkillMeta
-from validation.stage_contract import FrozenStageContract, validate_and_freeze_contract
+from validation.stage_contract import (
+    FrozenStageContract,
+    validate_and_freeze_contract,
+)
 from workspace.grants import RootRegistry
+
+_PREDICATE_SCHEMAS: dict[str, dict[str, Any]] = {
+    "file_exists": {
+        "required": {"type": "file_exists", "root": "string", "path": "string"},
+    },
+    "file_created_or_modified": {
+        "required": {
+            "type": "file_created_or_modified", "root": "string", "path": "string",
+        },
+    },
+    "dom_count": {
+        "required": {
+            "type": "dom_count", "root": "string", "path": "string",
+            "selector": "supported static CSS selector", "equals": "non-negative integer",
+        },
+    },
+    "dom_distinct_text": {
+        "required": {
+            "type": "dom_distinct_text", "root": "string", "path": "string",
+            "selector": "supported static CSS selector", "equals": "non-negative integer",
+        },
+    },
+    "dom_text_set": {
+        "required": {
+            "type": "dom_text_set", "root": "string", "path": "string",
+            "selector": "supported static CSS selector", "equals": "array of strings",
+        },
+    },
+    "lint_clean": {
+        "required": {"type": "lint_clean", "paths": "changed"},
+        "optional": {"allow_skipped": "boolean"},
+    },
+    "named_command": {
+        "required": {"type": "named_command", "command_id": "string"},
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -72,16 +112,50 @@ def run_stage_preflight(
         }
         for skill in catalog
     ]
+    predicate_schemas = {
+        check_type: _PREDICATE_SCHEMAS[check_type]
+        for check_type in recipe.allowed_checks
+    }
+    if frozen_contract is not None:
+        response_contract = {
+            "required": ["skill_id", "contract_hash"],
+            "omit": ["goal", "exit_when"],
+        }
+        stage_instruction = (
+            "Echo the frozen contract_hash and do not provide goal or exit_when. "
+        )
+    elif recipe.allowed_checks:
+        response_contract = {
+            "required": ["skill_id", "goal", "exit_when"],
+            "exit_when": "array of predicate objects matching predicate_schemas",
+        }
+        stage_instruction = (
+            "Provide goal and exit_when as an array of predicate objects matching "
+            "predicate_schemas. "
+        )
+    else:
+        response_contract = {
+            "required": ["skill_id"],
+            "omit": ["goal", "exit_when"],
+        }
+        stage_instruction = (
+            "This stage has no acceptance predicates; return skill_id only and "
+            "omit goal and exit_when. "
+        )
     system = (
         "STAGE PREFLIGHT. Return one JSON object only. You choose exactly one "
         "skill_id from the catalog. The harness does not choose for you. "
-        "On the first attempt also provide goal and exit_when predicates "
-        "within the recipe ceilings. You have no tools in this call."
+        + stage_instruction
+        + "Use only the provided root aliases, check types, and command IDs. "
+        "You have no tools in this call."
     )
     payload = {
         "role": role, "brief": brief, "catalog": projection,
         "allowed_checks": list(recipe.allowed_checks),
         "allowed_commands": list(recipe.allowed_commands),
+        "available_roots": [grant.alias for grant in roots.grants],
+        "predicate_schemas": predicate_schemas,
+        "response_contract": response_contract,
         "max_iterations": recipe.max_iterations,
         "frozen_contract_hash": (
             frozen_contract.contract_hash if frozen_contract else None
@@ -151,6 +225,11 @@ def run_stage_preflight(
                 {"role": "user", "content": json.dumps({
                     "error": last_error,
                     "instruction": "Return one corrected JSON object only.",
+                    "allowed_checks": list(recipe.allowed_checks),
+                    "allowed_commands": list(recipe.allowed_commands),
+                    "available_roots": [grant.alias for grant in roots.grants],
+                    "predicate_schemas": predicate_schemas,
+                    "response_contract": response_contract,
                 })},
             ])
     raise RuntimeError(f"stage preflight invalid after correction: {last_error}")

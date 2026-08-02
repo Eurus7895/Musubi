@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from composer import StageRecipe
 from skills.skill_loader import SkillMeta
@@ -63,7 +64,7 @@ def validate_and_freeze_contract(
     if skill_id != skill_meta.skill_id:
         raise ValueError("skill_id does not match the validated catalog selection")
     goal = str(raw.get("goal") or "").strip()
-    predicates = raw.get("exit_when")
+    predicates = raw.get("exit_when", [])
     if not isinstance(predicates, list):
         raise ValueError("exit_when must be a list")
     if predicates and not goal:
