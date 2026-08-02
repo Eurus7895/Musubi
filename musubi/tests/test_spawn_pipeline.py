@@ -179,6 +179,119 @@ def test_middle_stage_brief_uses_only_immediate_predecessor() -> None:
     assert "### plan" not in brief
 
 
+def test_pipeline_stage_with_a_blank_answer_is_not_recorded_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported failure: a planner cut off mid-thought returned `""`. The
+    runner's `answer is not None` test called that `done`, the harness then
+    refused its read-only turn-cap waiver because the summary was empty, and
+    the run died two layers away with no trace of the real cause."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-blank",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "design", "role": "designer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": args["stage"], "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "   ", 4
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert completions[0]["status"] == "escalated"
+    # The summary the harness stores must name the cause, not be blank.
+    assert "empty result" in completions[0]["summary"]
+    assert "terminal status" in result
+
+
+def test_pipeline_stage_blocked_by_text_truncation_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`output_too_large_for_single_response` is the text-channel twin of the
+    tool-call truncation marker; the stage must treat both as no result."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    blocked = "[blocked] " + json.dumps({
+        "status": "blocked",
+        "reason": "output_too_large_for_single_response",
+    })
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-trunc",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-plan",
+                "role": "plan", "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return blocked, 2
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert completions[0]["status"] == "failed"
+    assert result.startswith("[blocked] ")
+
+
 def test_pipeline_rejects_oversized_designer_handoff_before_coder_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

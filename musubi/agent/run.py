@@ -1325,7 +1325,12 @@ async def _run_loop(
                 tokens_in=usage.tokens_in,
                 tokens_out=usage.tokens_out,
             )
-        messages.append({"role": "assistant", "content": resp.content})
+        # An empty assistant turn is not a message. Several OpenAI-compatible
+        # endpoints reject a content-less assistant entry on the NEXT request,
+        # so a vendor that returns nothing would poison the whole conversation
+        # rather than just wasting its own cycle.
+        if resp.content:
+            messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(
@@ -1390,6 +1395,77 @@ async def _run_loop(
                 "root ended recovery without a successful replacement worker",
             )
             break
+
+        # Truncation is checked BEFORE the "no tool calls → this is the final
+        # answer" branch. A response cut off at the output cap is never final,
+        # whether it was cut mid-tool-call or mid-sentence; ordering these the
+        # other way meant a truncated TEXT answer was recorded as a clean
+        # `final` cycle and handed downstream as a complete result.
+        if resp.stop_reason == "max_tokens" and not tool_uses:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="truncated",
+                log=log,
+            )
+            print(
+                "[agent] max_tokens truncated the text answer "
+                f"({len(text)} chars kept, none dispatched). Answer shorter: "
+                "lead with the required output and drop narrative.",
+                file=log,
+            )
+            if cycle + 1 >= max_cycles:
+                final_answer = _truncated_text_answer(text)
+                break
+            messages.append({
+                "role": "user",
+                "content": _TRUNCATED_TEXT_RETRY,
+            })
+            continue
+
+        if not tool_uses and not text.strip():
+            # No tool call, no words, and not a truncation — the vendor
+            # returned an empty turn. Accepting it as the final answer is how
+            # an empty string reaches a completion boundary and is recorded as
+            # a success; fail it here where the cause is still visible.
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=0,
+                cycle_status="empty",
+                log=log,
+            )
+            print(
+                f"[agent] {role}: empty model turn "
+                f"(stop={resp.stop_reason}, out_tokens={usage.tokens_out}); "
+                "not an answer",
+                file=log,
+            )
+            if cycle + 1 >= max_cycles:
+                final_answer = _empty_response_answer(resp.stop_reason)
+                break
+            messages.append({
+                "role": "user",
+                "content": _EMPTY_RESPONSE_RETRY,
+            })
+            continue
 
         if not tool_uses:
             _safe_record_agent_cycle(
@@ -3229,6 +3305,65 @@ def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
             "use ordered musubi_append_file chunks when one file is unavoidable; "
             "do not switch to a generator script unless the user asked for one "
             "or explicitly accepts that fallback."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
+#: Fed back to a model whose TEXT answer was cut at the output cap. Short on
+#: purpose: it is prepended to a conversation that is already at the cap.
+_TRUNCATED_TEXT_RETRY = (
+    "[harness] Your previous answer hit the output-token cap before it "
+    "finished, so none of it was kept. Answer again and fit the cap: lead "
+    "with the required output fields, keep reasoning out of the response, "
+    "and cut supporting prose rather than required sections."
+)
+
+#: Fed back to a model that returned no content at all.
+_EMPTY_RESPONSE_RETRY = (
+    "[harness] Your previous turn contained no tool call and no text. "
+    "Respond with either one tool call or your final answer."
+)
+
+
+def _truncated_text_answer(partial: str) -> str:
+    """Typed marker for a text answer cut off at the output cap.
+
+    Shares the `[blocked]` prefix with `_truncated_tool_call_answer` so every
+    caller that already treats that prefix as non-final (`agent/subagent.py`'s
+    failure typing, the pipeline runner's incomplete check) keeps working
+    without knowing which channel was truncated.
+    """
+    payload = {
+        "status": "blocked",
+        "reason": "output_too_large_for_single_response",
+        "retry_same_strategy": False,
+        "recommended_strategies": [
+            "compact_answer",
+            "drop_supporting_prose",
+            RouteKind.ASK_SCOPE,
+        ],
+        "partial_chars": len(partial),
+        "message": (
+            "The model hit max_tokens while writing its answer, so the "
+            "partial text was not accepted as a result. A reasoning model "
+            "spends this same cap on its thinking channel, so raise the "
+            "role's maxOutputTokens or reduce what the answer must contain."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
+def _empty_response_answer(stop_reason: str) -> str:
+    """Typed marker for a vendor turn that carried neither text nor a call."""
+    payload = {
+        "status": "blocked",
+        "reason": "empty_model_response",
+        "retry_same_strategy": False,
+        "stop_reason": str(stop_reason or "unknown"),
+        "message": (
+            "The vendor returned no content blocks. Nothing was recorded as "
+            "an answer."
         ),
     }
     return "[blocked] " + json.dumps(payload, separators=(",", ":"))

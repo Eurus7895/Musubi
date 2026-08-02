@@ -157,11 +157,40 @@ def _coerce_tool_result_content(value: Any) -> str:
 # ── Response side: OpenAI wire → Anthropic-shaped ───────────────────────────
 
 
+#: Fields a reasoning model may use for its thinking channel, in preference
+#: order. DeepSeek's reasoning family answers with `reasoning_content` beside
+#: `content`; other OpenAI-compatible gateways relay the same text as
+#: `reasoning`.
+_REASONING_FIELDS: tuple[str, ...] = ("reasoning_content", "reasoning")
+
+
+def reasoning_text(message: Any) -> str:
+    """Return the thinking-channel text of an assistant message, or ``""``.
+
+    Kept separate from `content` because the two are not interchangeable: this
+    is what the model thought, not what it chose to say.
+    """
+    for field in _REASONING_FIELDS:
+        value = _get(message, field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
     """OpenAI assistant message → Anthropic content blocks.
 
     Accepts either a wire dict (curl transport, parsed JSON) or an SDK message
     object (SDK transport) — both expose `content` and `tool_calls`.
+
+    A reasoning model that is cut off at `finish_reason="length"` while still
+    thinking answers with an EMPTY `content`, no `tool_calls`, and every
+    completion token in its thinking channel. Reading only the first two
+    fields turned that into a zero-block response — a paid, logged, silently
+    discarded call that the agent loop then accepted as a finished answer. The
+    thinking text is surfaced last and only when nothing else survives, so a
+    normal response is byte-identical to before and reasoning is never
+    preferred over what the model actually chose to say.
     """
     blocks: list[dict[str, Any]] = []
     text = _get(message, "content") or ""
@@ -179,6 +208,10 @@ def openai_message_to_blocks(message: Any) -> list[dict[str, Any]]:
             "name": _get(fn, "name"),
             "input": args,
         })
+    if not blocks:
+        thinking = reasoning_text(message)
+        if thinking:
+            blocks.append({"type": "text", "text": thinking})
     return blocks
 
 

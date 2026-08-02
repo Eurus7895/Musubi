@@ -2215,6 +2215,146 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert session.calls == []
 
 
+def test_run_loop_does_not_accept_a_truncated_text_answer_as_final() -> None:
+    """The pipeline `plan` stage failure: the model was writing its answer in
+    the TEXT channel and was cut at the output cap. The truncation check used
+    to sit BELOW the "no tool calls → final answer" branch, so the amputated
+    half-answer was recorded as a clean completion and handed downstream."""
+    from agent import run as run_mod
+
+    truncated = LMResponse(
+        stop_reason="max_tokens",
+        content=[{"type": "text", "text": "## Plan\n1. Read the reposi"}],
+    )
+    # Two canned responses for one cycle: a read-only role starts at the effort
+    # floor, so the first truncation triggers the retry at the ceiling.
+    router = FakeRouter([truncated, truncated])
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router,
+            [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=1, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert [call["max_tokens"] for call in router.calls] == [2048, 16384]
+
+    assert answer is not None
+    assert answer.startswith("[blocked] ")
+    payload = json.loads(answer.removeprefix("[blocked] "))
+    assert payload["reason"] == "output_too_large_for_single_response"
+    assert payload["retry_same_strategy"] is False
+    assert cycles == 1
+
+
+def test_run_loop_retries_a_truncated_text_answer_while_cycles_remain() -> None:
+    """With turns left the loop must ask for a shorter answer rather than
+    accept the fragment — and the retry has to reach the model."""
+    from agent import run as run_mod
+
+    truncated = LMResponse(
+        stop_reason="max_tokens",
+        content=[{"type": "text", "text": "## Plan\n1. Read the reposi"}],
+    )
+    router = FakeRouter([
+        truncated,  # at the effort floor
+        truncated,  # the automatic retry at the ceiling
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "short plan"}]),
+    ])
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=2, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer == "short plan"
+    assert cycles == 2
+    # FakeRouter records the live message list by reference, so assert on the
+    # conversation it ended up sending rather than on a per-call snapshot.
+    sent = router.calls[-1]["messages"]
+    assert any(
+        message["role"] == "user"
+        and "output-token cap" in str(message["content"])
+        for message in sent
+    )
+
+
+def test_run_loop_rejects_an_empty_model_turn() -> None:
+    """A vendor turn with neither text nor a tool call is not an answer. It
+    used to become `final_answer = ""`, which a stage then reported as `done`
+    with an empty summary — unrecoverable two layers later."""
+    from agent import run as run_mod
+
+    router = FakeRouter([LMResponse(stop_reason="end_turn", content=[])])
+
+    answer, _ = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=1, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer is not None
+    assert answer.startswith("[blocked] ")
+    assert json.loads(answer.removeprefix("[blocked] "))["reason"] == (
+        "empty_model_response"
+    )
+
+
+def test_run_loop_never_replays_an_empty_assistant_turn() -> None:
+    """An assistant entry with no content blocks is rejected by several
+    OpenAI-compatible endpoints, so an empty vendor turn must not be written
+    into the conversation the NEXT call replays."""
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[]),
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    answer, _ = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=2, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer == "ok"
+    replayed = router.calls[1]["messages"]
+    assert all(
+        message["role"] != "assistant" or message["content"]
+        for message in replayed
+    )
+
+
+def test_empty_turn_audits_as_empty_not_final(tmp_path: Path) -> None:
+    """The audit row has to disagree with a `final` verdict, or `agent_cycles`
+    reports the run that produced nothing as a success."""
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("audit empty turn", p)
+
+    asyncio.run(run_mod._run_loop(
+        _FakeToolSession(), FakeRouter([LMResponse(stop_reason="end_turn", content=[])]),
+        [], [{"role": "user", "content": "plan"}],
+        max_cycles=1, log=io.StringIO(), compression_db_path=p,
+        audit_session_id=sid, audit_worker_id="root", audit_stage="plan",
+    ))
+
+    assert db.query_agent_cycles(sid, db_path=p)[0]["cycle_status"] == "empty"
+
+
 def test_truncated_tool_call_audit_does_not_count_dropped_tool(
     tmp_path: Path,
 ) -> None:

@@ -223,6 +223,30 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    [`2026-08-02-pipeline-runtime-integrity.md`](./superpowers/plans/2026-08-02-pipeline-runtime-integrity.md) and
    [`2026-08-02-root-planning-convergence.md`](./superpowers/plans/2026-08-02-root-planning-convergence.md)
 
+7. **Implemented: truncated and empty model turns fail where they happen.**
+   The next run on the repaired pipeline died at stage 1 of 4 with an
+   unattributable `escalated`. One truncated DeepSeek response had crossed
+   four layers as an empty success: the OpenAI wire converter discarded the
+   `reasoning_content` a cut-off reasoning model returns instead of `content`,
+   the agent loop's "no tool calls → final answer" branch ran ahead of its
+   truncation check and recorded the resulting empty turn as a clean `final`
+   cycle, and the runner's `answer is not None` test reported the blank result
+   as `done` — which then failed the harness's non-empty-summary requirement
+   for the read-only turn-cap waiver. Each layer now reports accurately: the
+   wire recovers the thinking channel as a last resort, the loop retries or
+   returns a typed `[blocked]` marker for a truncated or empty turn, and a
+   blank stage answer is `escalated` with a summary that names the cause. The
+   substrate's turn-cap coercion and terminal-status gate are unchanged and
+   stay fail-closed. A planning role's `maxOutputTokens` no longer restates
+   `MAX_STAGE_HANDOFF_CHARS`: at the effort floor it silently disabled the
+   retry-at-ceiling rescue for every read-only role, so planner and designer
+   move to 8,192 and the deterministic byte gate keeps owning handoff size.
+   Verification: 1,759 regressions pass; Ruff and mypy findings unchanged on
+   every touched file; no paid model smoke run.
+
+   Plan:
+   [`2026-08-03-truncated-and-empty-model-turns.md`](./superpowers/plans/2026-08-03-truncated-and-empty-model-turns.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

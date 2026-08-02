@@ -72,6 +72,16 @@ PIPELINE_TRANSPORT_MARGIN_TOKENS = 1_024
 # Planner and designer output becomes the next stage's protected prompt. Keep
 # that projection independently bounded; full historical output remains in the
 # append-only stage ledger rather than being silently truncated here.
+#
+# THIS is the bound on how much a planning stage may hand forward — not the
+# role's `maxOutputTokens`. Setting that token cap to the byte equivalent of
+# this limit (2048 tokens ≈ 8 KiB) looked like the same rule stated twice, but
+# it is not: a reasoning model spends the SAME output cap on its thinking
+# channel, so a cap sized for the visible answer leaves nothing for the answer
+# itself, and it also collapses `resolve_effort_bounds`' floor onto its ceiling
+# (agent/context.py), which silently disables the retry-at-ceiling rescue for
+# every read-only role. Keep the token cap generous and let this deterministic
+# byte gate do the bounding.
 MAX_STAGE_HANDOFF_CHARS = 8_000
 
 
@@ -840,10 +850,21 @@ async def run_pipeline(
                     f"pipeline stage {stage!r} ended with an incomplete tool call"
                 )
             return answer
-        status = "done" if answer is not None else "escalated"
+        # A blank answer is not a completion. `answer is not None` alone let an
+        # empty string through as `done`, which then failed the harness's
+        # non-empty-summary requirement for the read-only turn-cap waiver and
+        # surfaced as an unexplained `escalated` two layers away.
+        blank_answer = isinstance(answer, str) and not answer.strip()
+        status = "escalated" if answer is None or blank_answer else "done"
         if answer is None:
             pipeline_escalated = True
             answer = f"[stage {stage}] exceeded {spec.max_cycles} cycles"
+        elif blank_answer:
+            pipeline_escalated = True
+            answer = (
+                f"[stage {stage}] produced an empty result after "
+                f"{turns} turn(s); nothing was recorded as output"
+            )
         if not isinstance(answer, str):
             # Keep the MCP completion boundary type-safe even if a custom
             # adapter returns a decoded structured final value.
@@ -894,9 +915,14 @@ async def run_pipeline(
             await _finalize_pipeline(
                 session, psid, pipeline_final_status, pipeline_final_escalated,
             )
+            # Name the runner-side status too. When the two disagree the cause
+            # is a harness coercion (turn cap, wall clock, verifier); when they
+            # agree the stage itself failed, and the reader should stop looking
+            # for a coercion that never happened.
             msg = (
                 f"[pipeline {pname}] stage {stage!r} harness recorded terminal "
-                f"status {final_status} (completion={completion_status or 'missing'}; "
+                f"status {final_status} (runner reported {status}; "
+                f"completion={completion_status or 'missing'}; "
                 f"detail={detail})"
             )
             if strict:
@@ -1142,12 +1168,22 @@ def _stage_brief(
     return f"{request}\n\n## Prior stage output\n\n{predecessor_output}"
 
 
+#: Typed `[blocked]` reasons the worker loop emits when a cycle produced no
+#: usable result. All of them mean the same thing to a stage: there is no
+#: answer here, so the stage must not be recorded as a completion.
+_BLOCKED_INCOMPLETE_REASONS: frozenset[str] = frozenset({
+    "output_too_large_for_single_tool_call",
+    "output_too_large_for_single_response",
+    "empty_model_response",
+})
+
+
 def _is_incomplete_tool_outcome(answer: str | None) -> bool:
-    """Recognize the typed max-token guard returned by the worker loop."""
+    """Recognize the typed no-result guards returned by the worker loop."""
     if not isinstance(answer, str) or not answer.startswith("[blocked] "):
         return False
     payload = loads_dict(answer.removeprefix("[blocked] "))
-    return payload.get("reason") == "output_too_large_for_single_tool_call"
+    return payload.get("reason") in _BLOCKED_INCOMPLETE_REASONS
 
 
 def _attempt_row_exists(

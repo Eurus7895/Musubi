@@ -237,6 +237,56 @@ def test_openai_blocks_from_wire_dict() -> None:
     ]
 
 
+def test_openai_blocks_recover_reasoning_when_nothing_else_survives() -> None:
+    """A reasoning model cut off mid-thought returns empty `content`, no
+    `tool_calls`, and every completion token in `reasoning_content`. Reading
+    only the first two fields produced a zero-block response the agent loop
+    then accepted as a finished (empty) answer."""
+    msg = SimpleNamespace(
+        content="",
+        tool_calls=None,
+        reasoning_content="Step 1: enumerate the cities. Step 2: pick a",
+    )
+    assert openai_message_to_blocks(msg) == [
+        {
+            "type": "text",
+            "text": "Step 1: enumerate the cities. Step 2: pick a",
+        }
+    ]
+
+
+def test_openai_blocks_recover_reasoning_from_wire_dict() -> None:
+    """Same recovery through the curl transport's parsed-dict shape, and via
+    the alternate `reasoning` field name some gateways relay."""
+    assert openai_message_to_blocks({"content": None, "reasoning": "thinking"}) == [
+        {"type": "text", "text": "thinking"}
+    ]
+
+
+def test_openai_blocks_never_prefer_reasoning_over_a_real_answer() -> None:
+    """Reasoning is a last resort, never a substitute: a message that carries
+    content or a tool call must convert exactly as it did before."""
+    msg = SimpleNamespace(
+        content="the answer",
+        tool_calls=None,
+        reasoning_content="the thinking",
+    )
+    assert openai_message_to_blocks(msg) == [{"type": "text", "text": "the answer"}]
+
+    call = SimpleNamespace(id="t1", function=SimpleNamespace(name="fn", arguments="{}"))
+    tool_msg = SimpleNamespace(
+        content=None, tool_calls=[call], reasoning_content="the thinking"
+    )
+    assert [b["type"] for b in openai_message_to_blocks(tool_msg)] == ["tool_use"]
+
+
+def test_openai_blocks_blank_reasoning_stays_empty() -> None:
+    """Whitespace is not a recovered answer — the empty response must remain
+    empty so the loop's empty-turn guard is the thing that reports it."""
+    msg = SimpleNamespace(content="", tool_calls=None, reasoning_content="   ")
+    assert openai_message_to_blocks(msg) == []
+
+
 def test_finish_reason_length_maps_to_max_tokens_even_with_tool_calls() -> None:
     assert finish_reason_to_stop("length") == "max_tokens"
 
