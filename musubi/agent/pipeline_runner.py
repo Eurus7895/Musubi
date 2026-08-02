@@ -62,8 +62,65 @@ MAX_STAGE_TURNS = DEFAULT_STAGE_MAX_CYCLES
 
 # Pipeline stages are deliberately narrower than a root-agent turn. Keeping
 # their context below the root default limits repeated glob/grep/file reads
-# from consuming the shared run budget before later stages can execute.
-PIPELINE_CONTEXT_BUDGET = 16_000
+# from consuming the shared run budget before later stages can execute.  The
+# compatibility cap is characters because the model-input fitter measures the
+# serialized request in characters; the operational policy is token based.
+PIPELINE_CONTEXT_BUDGET_TOKENS = 8_000
+PIPELINE_CONTEXT_BUDGET = PIPELINE_CONTEXT_BUDGET_TOKENS * 4
+PIPELINE_TRANSPORT_MARGIN_TOKENS = 1_024
+
+# Planner and designer output becomes the next stage's protected prompt. Keep
+# that projection independently bounded; full historical output remains in the
+# append-only stage ledger rather than being silently truncated here.
+MAX_STAGE_HANDOFF_CHARS = 8_000
+
+
+def resolve_pipeline_context_budget_chars(
+    vendor: Any,
+    worker_max_output: int | None,
+    can_mutate: bool,
+) -> int:
+    """Return the safe serialized-input cap for one pipeline stage.
+
+    A profile can declare the model's total context window.  When it does, the
+    stage reserves its resolved output ceiling and protocol margin before using
+    at most 80% of what remains.  A missing declaration deliberately falls
+    back to the compatibility cap; no guessed provider limits are used.
+    """
+    from agent.context import resolve_effort_bounds
+
+    _, reserved_output = resolve_effort_bounds(
+        can_mutate=can_mutate,
+        worker_max_output=worker_max_output,
+        model_output_override=getattr(vendor, "max_output_tokens", None),
+    )
+    window = getattr(vendor, "context_window_tokens", None)
+    if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+        return PIPELINE_CONTEXT_BUDGET
+    safe_tokens = window - reserved_output - PIPELINE_TRANSPORT_MARGIN_TOKENS
+    return max(
+        0,
+        min(PIPELINE_CONTEXT_BUDGET_TOKENS, safe_tokens * 80 // 100) * 4,
+    )
+
+
+def stage_input_breakdown(
+    system_prompt: str,
+    child_tools: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Measure the immutable first-call payload for a pipeline stage.
+
+    The numbers use the same JSON serialization as ``fit_model_input`` so an
+    operator-facing failure states which protected component consumed the cap.
+    """
+    messages = [{"role": "user", "content": system_prompt}]
+    prompt_chars = len(json.dumps(messages, ensure_ascii=False, default=str))
+    tool_chars = len(json.dumps(child_tools, ensure_ascii=False, default=str))
+    return {
+        "prompt_chars": prompt_chars,
+        "tool_chars": tool_chars,
+        "total_chars": prompt_chars + tool_chars,
+    }
 
 
 @dataclass(frozen=True)
@@ -357,7 +414,12 @@ async def run_pipeline(
             continue
         stage = str(step.get("stage", ""))
         role = str(step.get("role", ""))
-        brief = _stage_brief(request, summaries, i, len(plan))
+        brief = _stage_brief(
+            request,
+            summaries[-1] if summaries else None,
+            i,
+            len(plan),
+        )
 
         # Resolve + validate the worker contract BEFORE spawning: a missing
         # role prompt or a bad `maxTurns` fails the pipeline closed without ever
@@ -477,15 +539,19 @@ async def run_pipeline(
         # different cap than it enforces — fail the stage closed instead.
         recorded_cap = st.get("max_turns")
         if recorded_cap is not None and int(recorded_cap) != spec.max_cycles:
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": (
-                    f"[stage {stage}] recorded cap {recorded_cap} != "
-                    f"requested {spec.max_cycles}"
-                ),
-                "turns": 0,
-                "status": "failed",
-            })
+            summary = (
+                f"[stage {stage}] recorded cap {recorded_cap} != "
+                f"requested {spec.max_cycles}"
+            )
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=summary,
+                turns=0, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "cap_mismatch",
+                {"recorded_cap": recorded_cap, "requested_cap": spec.max_cycles},
+                compression_db_path,
+            )
             await _finalize_pipeline(session, psid, "aborted", False)
             msg = (
                 f"[pipeline {pname}] stage {stage!r} cap mismatch: "
@@ -503,12 +569,16 @@ async def run_pipeline(
         })
         ctx = loads_dict(ctx_raw)
         if ctx.get("status") != "ok":
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": f"[stage {stage}] context fetch failed: {ctx_raw[:200]}",
-                "turns": 0,
-                "status": "failed",
-            })
+            summary = f"[stage {stage}] context fetch failed: {ctx_raw[:200]}"
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=summary,
+                turns=0, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "context_fetch_failed",
+                {"context_status": str(ctx.get("status") or "missing")},
+                compression_db_path,
+            )
             await _finalize_pipeline(session, psid, "aborted", False)
             msg = f"[pipeline {pname}] stage {stage!r} context fetch failed: {ctx_raw}"
             if strict:
@@ -554,6 +624,70 @@ async def run_pipeline(
                     stage_orch.max_root_workers += resume_plan.extra_budget
                 stage_spawn_catalog = tools
 
+        # Account for the final, possibly nested tool surface before the first
+        # stage model call. The worker prompt is a protected first user message,
+        # so no fitter may silently trim its role, pushed skill, brief, or tool
+        # definitions to make it fit.
+        from agent.context import ContextBudgetExceededError, fit_model_input
+        from agent.run import ORDER_SENSITIVE_FILE_TOOLS
+        stage_context_budget_chars = min(
+            spec.context_budget_chars,
+            resolve_pipeline_context_budget_chars(
+                vendor,
+                spec.worker_max_output,
+                any(
+                    tool.get("name") in ORDER_SENSITIVE_FILE_TOOLS
+                    for tool in child_tools
+                ),
+            ),
+        )
+        if stage_context_budget_chars <= 0:
+            summary = (
+                f"[stage {stage}] model context window cannot reserve the "
+                "stage output and transport margin"
+            )
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=summary,
+                turns=0, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "context_window_too_small",
+                {"budget_chars": stage_context_budget_chars}, compression_db_path,
+            )
+            await _finalize_pipeline(session, psid, "aborted", False)
+            if strict:
+                raise RuntimeError(summary)
+            return summary
+        stage_initial_messages = [{"role": "user", "content": system_prompt}]
+        try:
+            stage_initial_messages = fit_model_input(
+                stage_initial_messages,
+                child_tools,
+                budget_chars=stage_context_budget_chars,
+                compression_db_path=compression_db_path,
+            )
+        except ContextBudgetExceededError as exc:
+            breakdown = stage_input_breakdown(system_prompt, child_tools)
+            summary = (
+                f"[stage {stage}] protected input exceeds "
+                f"{stage_context_budget_chars} chars "
+                f"(total={exc.total_chars}, prompt={breakdown['prompt_chars']}, "
+                f"tools={breakdown['tool_chars']})"
+            )
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=summary,
+                turns=0, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "protected_input_overflow",
+                {"budget_chars": stage_context_budget_chars, **breakdown},
+                compression_db_path,
+            )
+            await _finalize_pipeline(session, psid, "aborted", False)
+            if strict:
+                raise RuntimeError(summary) from exc
+            return summary
+
         # Each stage runs against its own fair-share allowance of the shared run
         # budget (charged straight through to the parent). An early planner or
         # designer loop is capped at its slice and cannot spend coder/reviewer's
@@ -581,9 +715,10 @@ async def run_pipeline(
             answer, turns = await run_unit(
                 session, vendor, child_tools,
                 system_prompt=system_prompt, user_message=None,
+                initial_messages=stage_initial_messages,
                 max_cycles=spec.max_cycles, log=log,
                 compression_db_path=compression_db_path,
-                context_budget_chars=spec.context_budget_chars,
+                context_budget_chars=stage_context_budget_chars,
                 role=role,
                 stats=stats,
                 budget=stage_budget,
@@ -597,12 +732,14 @@ async def run_pipeline(
             )
         except PolicyDeniedError as exc:
             policy_summary = _policy_incomplete(exc)
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": policy_summary,
-                "turns": 0,
-                "status": "escalated",
-            })
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=policy_summary,
+                turns=0, status="escalated",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "policy_denied",
+                {"role": exc.role, "tool": exc.tool}, compression_db_path,
+            )
             await _finalize_pipeline(session, psid, "aborted", False)
             raise
         except Exception as exc:
@@ -618,12 +755,15 @@ async def run_pipeline(
                     f"{getattr(budget, 'remaining', '?')})",
                     file=log,
                 )
-                await _call_tool_text(session, "musubi_complete_subagent", {
-                    "handle_id": handle_id,
-                    "summary": f"[stage {stage}] budget exhausted: {exc}",
-                    "turns": 0,
-                    "status": "escalated",
-                })
+                await _complete_pipeline_stage(
+                    session, handle_id=handle_id,
+                    summary=f"[stage {stage}] budget exhausted: {exc}",
+                    turns=0, status="escalated",
+                )
+                _escalate_attempt_checkpoint(
+                    psid, stage, attempt, "worker_running", "budget_exhausted",
+                    {}, compression_db_path,
+                )
                 paused = loads_dict(await _call_tool_text(
                     session,
                     "musubi_pause_session",
@@ -636,17 +776,64 @@ async def run_pipeline(
                 if paused.get("status") != "paused":
                     await _finalize_pipeline(session, psid, "escalated", True)
             else:
+                await _complete_pipeline_stage(
+                    session,
+                    handle_id=handle_id,
+                    summary=(
+                        f"[stage {stage}] worker runtime failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    turns=0,
+                    status="failed",
+                )
+                _escalate_attempt_checkpoint(
+                    psid, stage, attempt, "worker_running", "worker_exception",
+                    {"exception": type(exc).__name__}, compression_db_path,
+                )
                 await _finalize_pipeline(session, psid, "aborted", False)
             raise
         finally:
             _worker_touched_files.reset(touched_token)
+        if answer is not None and not isinstance(answer, str):
+            # Some vendor adapters surface a decoded JSON final block. The MCP
+            # completion contract is text, and downstream evaluator parsing
+            # already expects JSON text, so preserve the value losslessly.
+            answer = json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
+        if (
+            role in {"planner", "designer"}
+            and isinstance(answer, str)
+            and len(answer.encode("utf-8")) > MAX_STAGE_HANDOFF_CHARS
+        ):
+            handoff_bytes = len(answer.encode("utf-8"))
+            summary = (
+                f"[stage {stage}] handoff exceeds {MAX_STAGE_HANDOFF_CHARS} "
+                f"UTF-8 bytes ({handoff_bytes} bytes)"
+            )
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=summary,
+                turns=turns, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "handoff_too_large",
+                {
+                    "handoff_bytes": handoff_bytes,
+                    "handoff_limit_bytes": MAX_STAGE_HANDOFF_CHARS,
+                },
+                compression_db_path,
+            )
+            await _finalize_pipeline(session, psid, "aborted", False)
+            if strict:
+                raise RuntimeError(summary)
+            return summary
         if _is_incomplete_tool_outcome(answer):
-            await _call_tool_text(session, "musubi_complete_subagent", {
-                "handle_id": handle_id,
-                "summary": answer,
-                "turns": turns,
-                "status": "failed",
-            })
+            await _complete_pipeline_stage(
+                session, handle_id=handle_id, summary=answer,
+                turns=turns, status="failed",
+            )
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "incomplete_tool_outcome",
+                {}, compression_db_path,
+            )
             await _finalize_pipeline(session, psid, "aborted", False)
             if strict:
                 raise RuntimeError(
@@ -657,24 +844,64 @@ async def run_pipeline(
         if answer is None:
             pipeline_escalated = True
             answer = f"[stage {stage}] exceeded {spec.max_cycles} cycles"
+        if not isinstance(answer, str):
+            # Keep the MCP completion boundary type-safe even if a custom
+            # adapter returns a decoded structured final value.
+            answer = json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
 
-        complete_payload: dict[str, Any] = {
-            "handle_id": handle_id, "summary": answer, "turns": turns, "status": status,
-        }
+        stage_artifacts: list[str] | None = None
         if status == "done" and turns >= spec.max_cycles:
             # The stage finished ON its last allowed turn. Without a manifest
             # the substrate's turn-cap rule (sub_sessions.complete) would
             # coerce this success to `escalated` in the audit DB. Attach the
             # surviving mutated files; the substrate verifies them itself and
-            # keeps the coercion when they don't verify (or when the stage
-            # mutated nothing — a text-only claim stays unverifiable, so a
-            # read-only stage at its cap still audits as escalated by design).
-            stage_artifacts = surviving_nonempty_files(touched)
-            if stage_artifacts:
-                complete_payload["artifacts"] = stage_artifacts
-        await _call_tool_text(
-            session, "musubi_complete_subagent", complete_payload,
+            # keeps the coercion when they don't verify. A verifier may also
+            # accept a bounded read-only result at the turn cap; that decision
+            # is recorded separately by the completion harness.
+            stage_artifacts = surviving_nonempty_files(touched) or None
+        completion, completion_raw = await _complete_pipeline_stage(
+            session,
+            handle_id=handle_id,
+            summary=answer,
+            turns=turns,
+            status=status,
+            artifacts=stage_artifacts,
         )
+        completion_status = str(completion.get("status") or "")
+        recorded_final = completion.get("final_status")
+        # ``status=ok`` is the narrow compatibility shape used by old harness
+        # versions. A current harness returns ``recorded`` plus a terminal
+        # status; anything else fails closed rather than letting a runner infer
+        # success from its local answer text.
+        if recorded_final is None and completion_status == "ok":
+            recorded_final = status
+        if completion_status not in {"recorded", "ok"} or recorded_final != "done":
+            final_status = str(recorded_final or "unknown")
+            detail = str(completion.get("error") or completion_raw[:500])
+            _escalate_attempt_checkpoint(
+                psid, stage, attempt, "worker_running", "terminal_status_rejected",
+                {
+                    "completion_status": completion_status or "missing",
+                    "final_status": final_status,
+                    "detail": detail,
+                },
+                compression_db_path,
+            )
+            pipeline_final_status = (
+                "escalated" if final_status == "escalated" else "aborted"
+            )
+            pipeline_final_escalated = pipeline_final_status == "escalated"
+            await _finalize_pipeline(
+                session, psid, pipeline_final_status, pipeline_final_escalated,
+            )
+            msg = (
+                f"[pipeline {pname}] stage {stage!r} harness recorded terminal "
+                f"status {final_status} (completion={completion_status or 'missing'}; "
+                f"detail={detail})"
+            )
+            if strict:
+                raise RuntimeError(msg)
+            return msg
         _record_worker_complete_checkpoint(
             psid, stage, attempt, handle_id, answer, touched,
             compression_db_path,
@@ -818,6 +1045,38 @@ async def run_pipeline(
     return summaries[-1] if summaries else f"[pipeline {pname}] produced no output"
 
 
+async def _complete_pipeline_stage(
+    session: Any,
+    *,
+    handle_id: str,
+    summary: str,
+    turns: int,
+    status: str,
+    artifacts: list[str] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Complete one spawned stage through the authoritative harness boundary.
+
+    Every branch after a successful stage spawn uses this one path. It also
+    shields FastMCP's JSON-like scalar rehydration quirk without changing the
+    exact structured answer that evaluator code consumes locally.
+    """
+    from agent.run import _call_tool_text
+
+    completion_summary = summary
+    if completion_summary.lstrip().startswith(("{", "[")):
+        completion_summary = "[stage structured result]\n" + completion_summary
+    payload: dict[str, Any] = {
+        "handle_id": handle_id,
+        "summary": completion_summary,
+        "turns": turns,
+        "status": status,
+    }
+    if artifacts:
+        payload["artifacts"] = artifacts
+    raw = await _call_tool_text(session, "musubi_complete_subagent", payload)
+    return loads_dict(raw), raw
+
+
 async def _finalize_pipeline(
     session: Any,
     session_id: str,
@@ -858,19 +1117,29 @@ def _read_stage_agent_md(
     )
 
 
-def _stage_brief(request: str, summaries: list[str], idx: int, total: int) -> str:
-    """Brief for stage `idx`. Stage 0 gets the request; the last stage (the
-    evaluator) sees ONLY the prior stage's output (HI #3); middle stages see the
-    request plus all prior summaries."""
+def _stage_brief(
+    request: str,
+    predecessor_output: str | None,
+    idx: int,
+    total: int,
+) -> str:
+    """Build the bounded handoff for one stage.
+
+    Stage zero receives the request. Every later stage receives exactly one
+    predecessor output. The evaluator retains the stricter HI #3 firewall and
+    receives no original request. Historical results stay append-only in the
+    stage store and are not projected into a protected worker prompt.
+    """
     if idx == 0:
         return request
+    if predecessor_output is None:
+        raise RuntimeError(f"stage {idx} has no predecessor output")
     if idx == total - 1:
         return (
             "Evaluate the output of the prior stage. You see only this stage — "
-            "not the original request or earlier stages.\n\n" + summaries[-1]
+            "not the original request or earlier stages.\n\n" + predecessor_output
         )
-    joined = "\n\n".join(summaries)
-    return f"{request}\n\n## Prior stage outputs\n\n{joined}"
+    return f"{request}\n\n## Prior stage output\n\n{predecessor_output}"
 
 
 def _is_incomplete_tool_outcome(answer: str | None) -> bool:

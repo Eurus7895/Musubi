@@ -575,9 +575,9 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
         server.musubi_spawn_subagent(
             parent_session_id=parent,
             parent_agent_name="agent",
-            role="explorer",
-            brief="x",
-            pushed_skill_id="explorer",
+            role="coder",
+            brief="write dashboard",
+            pushed_skill_id="web-ui",
             max_turns=3,
         )
     )
@@ -590,6 +590,36 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
     payload = json.loads(raw)
     assert payload["final_status"] == "escalated"
     assert payload["escalated"] is True
+
+
+def test_mcp_complete_readonly_max_turns_with_verified_summary_stays_done(
+    mcp_db: Path,
+) -> None:
+    parent = state.create_session("p")
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=parent,
+        parent_agent_name="agent",
+        role="explorer",
+        brief="scan src/",
+        pushed_skill_id="explorer",
+        max_turns=3,
+    ))
+
+    raw = server.musubi_complete_subagent(
+        handle_id=spawn["handle_id"],
+        summary="Found the only dispatch call in src/agent/run.py.",
+        turns=3,
+        status="done",
+    )
+    payload = json.loads(raw)
+
+    assert payload["final_status"] == "done"
+    assert payload["escalated"] is False
+    assert payload["turn_cap_accepted"] is True
+    assert payload["turn_cap_acceptance"] == "verified_readonly_response"
+    row = _db.get_sub_session(spawn["handle_id"], mcp_db)
+    assert row is not None
+    assert row["turn_cap_accepted"] is True
 
 
 def _spawn_coder_at_cap(max_turns: int = 3) -> str:

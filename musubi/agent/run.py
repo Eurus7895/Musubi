@@ -105,7 +105,12 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
-from agent.manifest import parse_change_manifest_object
+from agent.manifest import (
+    ROOT_PLAN_CHANGE_SIZES,
+    ROOT_PLAN_WORKER_ROLES,
+    manifest_schema,
+    parse_change_manifest_object,
+)
 from agent.evidence import collect as collect_evidence
 from agent.planning_artifacts import (
     goal_artifact_key,
@@ -2051,12 +2056,14 @@ def _resolve_vendor(profile: str | None) -> tuple[LMRouter, str]:
     from agent.config import (
         find_config_path,
         load_profile,
+        resolve_model_context_window,
         resolve_model_output_override,
     )
 
     def from_profile(prof: dict[str, Any]) -> LMRouter:
         resolved = build_from_profile(prof)
         resolved.max_output_tokens = resolve_model_output_override(prof)
+        resolved.context_window_tokens = resolve_model_context_window(prof)
         return resolved
 
     if profile:
@@ -2763,6 +2770,13 @@ def _no_progress_budget_trip(
     outcomes = orchestration.worker_outcomes
     if any(o.status == "done" and o.touched_files for o in outcomes):
         return None
+    state = orchestration.goal_state
+    if state is not None and state.planning_contract_failures >= 3:
+        return (
+            "[incomplete] run stopped: three consecutive planning-contract "
+            "failures occurred before any worker was spawned. Correct the "
+            "closed plan declaration and retry the request."
+        )
     if not any(o.status in {"failed", "escalated"} for o in outcomes):
         return None
     return (
@@ -3493,6 +3507,14 @@ async def _dispatch_one(
         and orchestration.goal_state is not None
     ):
         result = _handle_root_control_tool(name, args, orchestration)
+        # Root control calls are request-scoped (no worker runtime scope is
+        # active here). Keep the Console ledger useful without copying the
+        # model's raw plan or schema-shaped correction payload into it.
+        emit_runtime_log(
+            log,
+            sanitize_control_result(result, name),
+            category="tools",
+        )
         _safe_record_tool_audit(
             session_id=session_id,
             role=call_role,
@@ -3650,6 +3672,73 @@ async def _dispatch_one(
         return result
 
 
+class _PlanningContractError(ValueError):
+    """A model-correctable Root plan declaration error."""
+
+    def __init__(self, error_kind: str, message: str) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+
+
+def _root_control_error(
+    error_kind: str,
+    message: str,
+    state: GoalState,
+) -> str:
+    """Return one closed correction envelope for a bad plan declaration."""
+    failures = state.record_planning_contract_failure(error_kind)
+    terminal = failures >= 3
+    if terminal:
+        state.pending_clarification = (
+            "[incomplete] run stopped: three consecutive planning-contract "
+            "failures occurred before any worker was spawned. Correct the "
+            "closed plan declaration and retry the request."
+        )
+        state.next_role = None
+        state.role_chain = ()
+    return json.dumps({
+        "status": "incomplete" if terminal else "error",
+        "error_kind": error_kind,
+        "message": message,
+        "expected_schema": manifest_schema(),
+        "allowed_roles": list(ROOT_PLAN_WORKER_ROLES),
+        "consecutive_failures": failures,
+    })
+
+
+def sanitize_control_result(result: str, tool_name: str) -> str:
+    """Project a Root control outcome into a safe, bounded runtime event.
+
+    The full tool response is retained in the tool audit for debugging. The
+    Request Log must not repeat raw ``plan_markdown``, manifest fields, or the
+    correction schema, which can be much larger and may contain user context.
+    """
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    status = str(payload.get("status") or "error").strip().lower()
+    if status not in {"ok", "error", "incomplete"}:
+        status = "error"
+    parts = [f"[agent] control {tool_name} status={status}"]
+
+    error_kind = payload.get("error_kind")
+    if isinstance(error_kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", error_kind):
+        parts.append(f"error_kind={error_kind}")
+    # Correction responses use `message`; deliberately do not fall back to a
+    # generic `error` field, which may contain provider or filesystem detail.
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        parts.append(f"reason={bounded(message, 240)}")
+    failures = payload.get("consecutive_failures")
+    if type(failures) is int and failures >= 0:
+        parts.append(f"consecutive_failures={failures}")
+    return " ".join(parts)
+
+
 def _handle_root_control_tool(
     name: str,
     args: dict[str, Any],
@@ -3698,30 +3787,63 @@ def _handle_root_control_tool(
                 "next_role": state.next_role,
             })
 
-        plan_markdown = str(args.get("plan_markdown") or "")
+        raw_plan = args.get("plan_markdown")
+        if not isinstance(raw_plan, str) or not raw_plan.strip():
+            raise _PlanningContractError(
+                "invalid_plan_markdown",
+                "plan_markdown must be a non-empty string",
+            )
+        plan_markdown = raw_plan
         manifest_object = args.get("change_manifest")
+        model_dump = getattr(manifest_object, "model_dump", None)
+        if callable(model_dump):
+            manifest_object = model_dump(mode="python")
         manifest = parse_change_manifest_object(manifest_object)
         if manifest is None:
-            raise ValueError("change_manifest is invalid")
-        change_size = str(args.get("change_size") or "").strip()
+            raise _PlanningContractError(
+                "invalid_change_manifest",
+                "change_manifest must match the closed manifest schema",
+            )
+        raw_size = args.get("change_size")
+        if not isinstance(raw_size, str):
+            raise _PlanningContractError(
+                "invalid_change_size",
+                "change_size must be small, medium, or large",
+            )
+        change_size = raw_size.strip()
         raw_chain = args.get("worker_chain")
         if not isinstance(raw_chain, list):
-            raise ValueError("worker_chain must be an array")
-        chain = tuple(str(role).strip() for role in raw_chain)
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must be an array of allowed roles",
+            )
+        if any(not isinstance(role, str) for role in raw_chain):
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must contain only allowed role strings",
+            )
+        chain = tuple(role.strip() for role in raw_chain)
         # Validate model declaration before any artifact reaches disk.
-        if change_size not in {"small", "medium", "large"}:
-            raise ValueError("change_size must be small, medium, or large")
-        if not chain or any(role not in ORDERED_ROLES for role in chain):
-            raise ValueError(
-                f"worker_chain roles must be in {sorted(ORDERED_ROLES)}"
+        if change_size not in ROOT_PLAN_CHANGE_SIZES:
+            raise _PlanningContractError(
+                "invalid_change_size",
+                "change_size must be small, medium, or large",
+            )
+        if not chain or any(role not in ROOT_PLAN_WORKER_ROLES for role in chain):
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain roles must be one of the allowed non-planner roles",
             )
         if not any(role in MUTATION_ROLES for role in chain):
-            raise ValueError("worker_chain must contain a mutation role")
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must contain a mutation role",
+            )
         needed = orchestration.spawned_workers + len(chain) + 1
         if needed > MAX_ROOT_WORKERS_HARD:
-            raise ValueError(
-                f"declared chain needs {needed} worker slots including "
-                f"recovery; hard ceiling is {MAX_ROOT_WORKERS_HARD}"
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain exceeds the hard worker ceiling including recovery",
             )
         if orchestration.planning_artifact_dir is None:
             raise ValueError("planning artifact directory is unavailable")
@@ -3731,7 +3853,10 @@ def _handle_root_control_tool(
             orchestration.planning_artifact_dir,
         )
         if persisted is None:
-            raise ValueError("plan_markdown or change_manifest is invalid")
+            raise _PlanningContractError(
+                "invalid_plan_markdown",
+                "plan_markdown or change_manifest is invalid",
+            )
         paths, artifacts = persisted
         state.commit_root_plan(
             manifest=artifacts.manifest,
@@ -3751,6 +3876,8 @@ def _handle_root_control_tool(
             "max_root_workers": orchestration.max_root_workers,
             "planning_artifacts": list(state.planning_artifacts),
         })
+    except _PlanningContractError as exc:
+        return _root_control_error(exc.error_kind, str(exc), state)
     except (OSError, ValueError) as exc:
         return json.dumps({"status": "error", "error": str(exc)})
 

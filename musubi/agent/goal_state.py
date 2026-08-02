@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from agent.manifest import (
+    ROOT_PLAN_CHANGE_SIZES,
+    ROOT_PLAN_WORKER_ROLES,
     Band,
     ChangeAssessment,
     ChangeManifest,
@@ -42,7 +44,7 @@ LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
 #: Roles whose order the goal state enforces. Anything else the root summons
 #: (an explorer for workspace facts, an investigator for a failure) is free.
 ORDERED_ROLES: frozenset[str] = frozenset(
-    {"designer", "coder", "reviewer", "investigator", "explorer", "reviewer-aux"}
+    ROOT_PLAN_WORKER_ROLES
 )
 #: Roles that WRITE. The sufficiency gate applies to these and nothing else:
 #: refusing a read-only worker for lack of evidence would refuse the very thing
@@ -189,6 +191,12 @@ class GoalState:
     plan_required: bool = False
     #: Model-declared size. Manifest arithmetic does not populate this field.
     change_size: str | None = None
+    #: Consecutive malformed Root planning-contract attempts. This is
+    #: run-scoped and deliberately ephemeral: it constrains an active model
+    #: loop, not future requests or a user's next turn.
+    planning_contract_failures: int = 0
+    #: Bounded machine-readable reason for the latest failed declaration.
+    last_planning_contract_error: str | None = None
 
     @classmethod
     def create(
@@ -255,6 +263,23 @@ class GoalState:
         self.route = RouteKind.ROOT_DECIDES
         self.next_role = None
         self.role_chain = ()
+        self.reset_planning_contract_failures()
+
+    def record_planning_contract_failure(self, error_kind: str) -> int:
+        """Record one failed plan declaration and return its consecutive count."""
+        if self.mode != "planning":
+            raise ValueError("planning contract failures require Planning mode")
+        kind = str(error_kind).strip()
+        if not kind:
+            raise ValueError("planning contract error kind must be non-empty")
+        self.planning_contract_failures += 1
+        self.last_planning_contract_error = kind
+        return self.planning_contract_failures
+
+    def reset_planning_contract_failures(self) -> None:
+        """Clear only this run's correction-loop state after a valid commit."""
+        self.planning_contract_failures = 0
+        self.last_planning_contract_error = None
 
     def commit_root_plan(
         self,
@@ -267,7 +292,7 @@ class GoalState:
         """Accept Root's model-declared size and ordered worker chain."""
         if self.mode != "planning":
             raise ValueError("a plan can be committed only in Planning mode")
-        if change_size not in {"small", "medium", "large"}:
+        if change_size not in ROOT_PLAN_CHANGE_SIZES:
             raise ValueError("change_size must be small, medium, or large")
         chain = tuple(str(role).strip() for role in worker_chain)
         if not chain:
@@ -286,6 +311,7 @@ class GoalState:
         self.role_chain = chain[1:]
         self.planning_artifacts = tuple(planning_artifacts)
         self.declared_files_expected = manifest.files_expected
+        self.reset_planning_contract_failures()
         if manifest.blocking_decisions:
             listed = ", ".join(manifest.blocking_decisions)
             self.pending_clarification = (
@@ -539,8 +565,14 @@ class GoalState:
                 "re-plan the remainder explicitly.\n"
             )
         planning = ""
-        if self.planning_artifacts:
+        if self.planning_contract_failures:
             planning = (
+                f"planning_contract_failures={self.planning_contract_failures};"
+                f"last_error={self.last_planning_contract_error or 'unknown'}\n"
+                "Correct the declared plan contract before implementation.\n"
+            )
+        if self.planning_artifacts:
+            planning += (
                 "planning_artifacts="
                 + ",".join(self.planning_artifacts)
                 + "\nPass both files to the next worker. plan.md is the "
@@ -604,6 +636,11 @@ def root_decision_tools(
             if tool.get("name") in {_BEGIN_DIRECT_TOOL, _BEGIN_PLAN_TOOL}
         ]
     if state.mode == "planning":
+        if state.planning_contract_failures >= 2:
+            return [
+                tool for tool in tools
+                if tool.get("name") == _COMMIT_PLAN_TOOL
+            ]
         allowed_planning = set(_ROOT_PLAN_READ_TOOLS) | {_COMMIT_PLAN_TOOL}
         return [
             tool for tool in tools if tool.get("name") in allowed_planning

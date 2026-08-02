@@ -93,6 +93,107 @@ def test_root_orchestration_reduces_worker_outcome_into_goal_state() -> None:
     assert orchestration.child("reviewer").goal_state is None
 
 
+def test_third_plan_contract_failure_returns_terminal_incomplete() -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+    bad_args = {
+        "plan_markdown": "# Add export",
+        "change_manifest": {"subsystems": ["agent"]},
+        "change_size": "small",
+        "worker_chain": ["coder"],
+    }
+
+    first = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+    second = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+    third = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+
+    assert [first["status"], second["status"], third["status"]] == [
+        "error", "error", "incomplete",
+    ]
+    assert third["error_kind"] == "invalid_change_manifest"
+    assert third["consecutive_failures"] == 3
+    assert state.pending_clarification is not None
+    assert "three consecutive planning-contract failures" in state.pending_clarification
+
+
+def test_commit_plan_error_is_emitted_as_request_scoped_tool_event(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+    from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
+
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id="root",
+        parent_agent_name="agent",
+        goal_state=state,
+    )
+    raw = io.StringIO()
+    writer = RuntimeLogWriter(raw, "request-plan-correction")
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "commit-bad-plan",
+                "name": "musubi_commit_plan",
+                "input": {
+                    "plan_markdown": "# private raw plan body",
+                    "change_manifest": {"subsystems": ["agent"]},
+                    "change_size": "small",
+                    "worker_chain": ["coder"],
+                },
+            },
+            _FakeToolSession(),
+            writer,
+            vendor=None,
+            tools=[],
+            orchestration=orchestration,
+            gateway=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert json.loads(result)["error_kind"] == "invalid_change_manifest"
+    records = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in raw.getvalue().split("\n")
+        if line
+    ]
+    control = [
+        record for record in records
+        if "control musubi_commit_plan" in str(record["message"])
+    ]
+    assert control == [{
+        "request_id": "request-plan-correction",
+        "role": "root",
+        "agent_handle": None,
+        "category": "tools",
+        "message": (
+            "[agent] control musubi_commit_plan status=error "
+            "error_kind=invalid_change_manifest "
+            "reason=change_manifest must match the closed manifest schema "
+            "consecutive_failures=1"
+        ),
+    }]
+    assert "private raw plan body" not in raw.getvalue()
+    assert "expected_schema" not in raw.getvalue()
+
+
 def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
     from agent import run as run_mod
 
@@ -2854,7 +2955,10 @@ def test_resolve_vendor_labels_which_profile(
     cfg.write_text(json.dumps({
         "default": "ollama.local",
         "ollama": {
-            "local": {"model": "llama3.1", "max_output_tokens": 8192},
+            "local": {
+                "model": "llama3.1", "max_output_tokens": 8192,
+                "context_window_tokens": 32768,
+            },
         },
     }), encoding="utf-8")
     monkeypatch.setenv("MUSUBI_LLM_CONFIG", str(cfg))
@@ -2865,10 +2969,12 @@ def test_resolve_vendor_labels_which_profile(
     default_router, default_src = run_mod._resolve_vendor(None)
     assert default_src == "ollama.local (llm.json default)"
     assert default_router.max_output_tokens == 8192
+    assert default_router.context_window_tokens == 32768
 
     profile_router, profile_src = run_mod._resolve_vendor("ollama.local")
     assert profile_src == "ollama.local (--profile)"
     assert profile_router.max_output_tokens == 8192
+    assert profile_router.context_window_tokens == 32768
 
 
 def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:

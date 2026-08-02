@@ -198,7 +198,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-01-stage-goals-and-loop.md`](./superpowers/plans/2026-08-01-stage-goals-and-loop.md)
 
-6. **Approved design: runtime convergence repair.** A production-like run
+6. **Implemented: runtime convergence repair.** A production-like run
    exposed two independent convergence failures after stage preflight began
    working: cumulative plan/design handoff made the coder's protected input
    26,615 characters against a 16,000-character hard cap, and the direct root
@@ -212,9 +212,16 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    failures, covers pre-worker control loops in the no-progress breaker, and
    projects control results into Request Log. Full stage output remains in the
    append-only store; the model still selects every skill.
+   Verification covers 39 pipeline-stage regressions, 95 lifecycle/audit/config
+   regressions, and 220 Root planning/runtime-log regressions; no paid model
+   smoke run was needed.
 
    Design:
    [`2026-08-02-runtime-convergence-repair-design.md`](./superpowers/specs/2026-08-02-runtime-convergence-repair-design.md)
+
+   Plans:
+   [`2026-08-02-pipeline-runtime-integrity.md`](./superpowers/plans/2026-08-02-pipeline-runtime-integrity.md) and
+   [`2026-08-02-root-planning-convergence.md`](./superpowers/plans/2026-08-02-root-planning-convergence.md)
 
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;

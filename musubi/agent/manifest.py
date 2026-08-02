@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, TypeAlias
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.routes import RouteKind
 
@@ -79,6 +81,60 @@ _MANIFEST_DEFAULTS: dict[str, Any] = {
     "validation_commands": 0,
 }
 _MANIFEST_FIELDS = _MANIFEST_REQUIRED_FIELDS | set(_MANIFEST_DEFAULTS)
+
+# Root, not the harness, chooses the ordered worker chain. This is the closed
+# vocabulary it may choose from; ``planner`` is deliberately absent because
+# Root owns planning and a chain begins only after a committed plan.
+ROOT_PLAN_WORKER_ROLES: tuple[str, ...] = (
+    "designer",
+    "coder",
+    "reviewer",
+    "investigator",
+    "explorer",
+    "reviewer-aux",
+)
+ROOT_PLAN_WORKER_ROLE: TypeAlias = Literal[
+    "designer",
+    "coder",
+    "reviewer",
+    "investigator",
+    "explorer",
+    "reviewer-aux",
+]
+ROOT_PLAN_CHANGE_SIZES: tuple[str, ...] = ("small", "medium", "large")
+ROOT_PLAN_CHANGE_SIZE: TypeAlias = Literal["small", "medium", "large"]
+
+
+class ChangeManifestInput(BaseModel):
+    """Closed, model-visible version of Root's bounded declaration.
+
+    FastMCP derives the tool schema from this model, while
+    :func:`parse_change_manifest_object` remains the defensive runtime parser
+    for providers that bypass, loosen, or mis-serialize that schema.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    files_expected: int = Field(ge=0)
+    subsystems: list[str]
+    public_contract: bool = _MANIFEST_DEFAULTS["public_contract"]
+    data_migration: bool = _MANIFEST_DEFAULTS["data_migration"]
+    security_sensitive: bool = _MANIFEST_DEFAULTS["security_sensitive"]
+    external_side_effects: bool = _MANIFEST_DEFAULTS["external_side_effects"]
+    destructive: bool = _MANIFEST_DEFAULTS["destructive"]
+    blocking_decisions: list[str] = Field(
+        default_factory=lambda: list(_MANIFEST_DEFAULTS["blocking_decisions"]),
+    )
+    validation_commands: int = Field(
+        default=_MANIFEST_DEFAULTS["validation_commands"],
+        ge=0,
+    )
+
+
+def manifest_schema() -> dict[str, Any]:
+    """Return the exact model-visible contract used in correction responses."""
+
+    return ChangeManifestInput.model_json_schema(mode="validation")
 
 
 

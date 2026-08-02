@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     tools_used           TEXT,
     turns                INTEGER NOT NULL DEFAULT 0,
     escalated            INTEGER NOT NULL DEFAULT 0,
+    turn_cap_accepted    INTEGER NOT NULL DEFAULT 0,
+    turn_cap_acceptance  TEXT,
     created_at           TEXT NOT NULL,
     completed_at         TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions (session_id)
@@ -392,6 +394,8 @@ _AGENT_TURNS_COLUMNS: tuple[tuple[str, str], ...] = (
 # skill for a spawned worker, stored per-row so it is provable post-hoc.
 _SUB_SESSIONS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("pushed_skill_id", "TEXT"),
+    ("turn_cap_accepted", "INTEGER NOT NULL DEFAULT 0"),
+    ("turn_cap_acceptance", "TEXT"),
 )
 
 
@@ -1184,6 +1188,7 @@ def get_sub_session(
     if result.get("result_structured"):
         result["result_structured"] = json.loads(result["result_structured"])
     result["escalated"] = bool(result["escalated"])
+    result["turn_cap_accepted"] = bool(result.get("turn_cap_accepted"))
     return result
 
 
@@ -1272,6 +1277,8 @@ def update_sub_session_result(
     turns: int,
     escalated: bool,
     completed_at: str,
+    turn_cap_accepted: bool = False,
+    turn_cap_acceptance: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     """Persist the terminal result of a sub-session.
@@ -1284,11 +1291,14 @@ def update_sub_session_result(
         conn.execute(
             "UPDATE sub_sessions"
             " SET status = ?, result_summary = ?, result_structured = ?,"
-            "     tools_used = ?, turns = ?, escalated = ?, completed_at = ?"
+            "     tools_used = ?, turns = ?, escalated = ?,"
+            "     turn_cap_accepted = ?, turn_cap_acceptance = ?, completed_at = ?"
             " WHERE handle_id = ?",
             (
                 status, summary, structured_json, tools_json,
-                turns, 1 if escalated else 0, completed_at, handle_id,
+                turns, 1 if escalated else 0,
+                1 if turn_cap_accepted else 0, turn_cap_acceptance,
+                completed_at, handle_id,
             ),
         )
 
@@ -1312,6 +1322,7 @@ def get_sub_sessions_by_parent(
         if d.get("result_structured"):
             d["result_structured"] = json.loads(d["result_structured"])
         d["escalated"] = bool(d["escalated"])
+        d["turn_cap_accepted"] = bool(d.get("turn_cap_accepted"))
         results.append(d)
     return results
 

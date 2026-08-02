@@ -200,6 +200,19 @@ def resolve_model_output_override(profile: dict[str, Any]) -> int | None:
     return None
 
 
+def resolve_model_context_window(profile: dict[str, Any]) -> int | None:
+    """Return an optional positive model-context-window declaration.
+
+    Profiles are operator configuration, not vendor truth.  Treat an absent or
+    malformed declaration as unknown rather than guessing a model limit; the
+    caller then uses its conservative compatibility cap.
+    """
+    value = profile.get("context_window_tokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def resolve_proxy_user(profile: dict[str, Any]) -> str | None:
     """Resolve the `user:password` for an authenticated curl proxy.
 

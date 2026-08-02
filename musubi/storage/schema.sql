@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     tools_used           TEXT,                       -- JSON array
     turns                INTEGER NOT NULL DEFAULT 0,
     escalated            INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
+    turn_cap_accepted    INTEGER NOT NULL DEFAULT 0, -- 0/1: accepted exactly at max_turns
+    turn_cap_acceptance  TEXT,                       -- verified_artifacts | verified_readonly_response
     created_at           TEXT NOT NULL,
     completed_at         TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions (session_id)

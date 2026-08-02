@@ -116,6 +116,20 @@ def test_record_complete_persists_verification_errors(
     ]
 
 
+def test_record_complete_persists_turn_cap_acceptance(audit_db: Path) -> None:
+    subagent_audit.record_complete(
+        handle_id="h-cap", parent_session_id="p1", parent_agent_name="agent",
+        role="explorer", brief="scan", final_status="done", escalated=False,
+        turns=3, tools_used=["Read"], summary_truncated=False,
+        verification_errors=None, turn_cap_accepted=True,
+        turn_cap_acceptance="verified_readonly_response",
+    )
+
+    row = subagent_audit.query_events(handle_id="h-cap", db_path=audit_db)[0]
+    assert row["turn_cap_accepted"] is True
+    assert row["turn_cap_acceptance"] == "verified_readonly_response"
+
+
 # ── unit: query filters ─────────────────────────────────────────────────────
 
 def test_query_filters_by_parent_session_id(audit_db: Path) -> None:
@@ -251,6 +265,69 @@ def test_server_complete_writes_audit_row(
     assert completed["escalated"] is False
 
 
+def test_complete_audit_failure_leaves_relayable_obligation(
+    audit_db: Path, state_db: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = state.create_session("p")
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=parent,
+        parent_agent_name="agent",
+        role="explorer",
+        brief="scan src/",
+        pushed_skill_id="explorer",
+    ))
+    handle = spawn["handle_id"]
+
+    original_delivery = subagent_audit.deliver_complete_obligation
+
+    def fail_delivery(*args: object, **kwargs: object) -> None:
+        raise OSError("audit disk unavailable")
+
+    monkeypatch.setattr(
+        subagent_audit, "deliver_complete_obligation", fail_delivery,
+    )
+    result = json.loads(server.musubi_complete_subagent(
+        handle_id=handle, summary="completed", turns=1, status="done",
+    ))
+
+    assert result["status"] == "error"
+    assert result["error_kind"] == "audit_unavailable"
+    assert result["final_status"] == "done"
+    pending = _db.get_audit_obligations(status="pending", db_path=state_db)
+    assert [
+        (row["kind"], row["handle_id"]) for row in pending
+    ] == [("worker_complete", handle)]
+
+    monkeypatch.setattr(
+        subagent_audit, "deliver_complete_obligation", original_delivery,
+    )
+    relayed = json.loads(server.musubi_query_subagent_events(handle_id=handle))
+    assert [event["event"] for event in relayed["events"]] == ["spawned", "completed"]
+    assert _db.get_audit_obligations(status="pending", db_path=state_db) == []
+
+
+def test_completion_relay_is_idempotent(audit_db: Path) -> None:
+    payload = {
+        "handle_id": "h-complete-once",
+        "parent_session_id": "p1",
+        "parent_agent_name": "agent",
+        "role": "explorer",
+        "brief": "scan src/",
+        "final_status": "done",
+        "escalated": False,
+        "turns": 1,
+        "tools_used": ["Read"],
+        "summary_truncated": False,
+        "verification_errors": None,
+    }
+
+    subagent_audit.deliver_complete_obligation(payload, audit_db)
+    subagent_audit.deliver_complete_obligation(payload, audit_db)
+
+    rows = subagent_audit.query_events(handle_id=payload["handle_id"], db_path=audit_db)
+    assert [row["event"] for row in rows] == ["completed"]
+
+
 def test_server_records_escalation_in_audit(
     audit_db: Path, state_db: Path
 ) -> None:
@@ -258,10 +335,10 @@ def test_server_records_escalation_in_audit(
     spawn_raw = server.musubi_spawn_subagent(
         parent_session_id=parent,
         parent_agent_name="agent",
-        role="explorer",
-        brief="x",
+        role="coder",
+        brief="write dashboard",
         max_turns=3,  # the cap
-        pushed_skill_id="explorer",
+        pushed_skill_id="web-ui",
     )
     h = json.loads(spawn_raw)["handle_id"]
     # turns=3 >= max_turns → harness coerces to escalated.

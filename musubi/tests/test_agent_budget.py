@@ -184,3 +184,22 @@ def test_no_progress_trip_done_without_files_does_not_count() -> None:
         ("coder", "escalated", ("weather.html",)),
     ])
     assert _no_progress_budget_trip(budget, orch) is not None
+
+
+def test_no_progress_trip_fires_for_three_preworker_plan_failures() -> None:
+    from agent.goal_state import GoalState
+    from agent.routes import RouteKind
+    from agent.run import _no_progress_budget_trip
+
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(800)
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    for _ in range(3):
+        state.record_planning_contract_failure("invalid_change_manifest")
+    orch = _orch_with([])
+    orch.goal_state = state
+
+    trip = _no_progress_budget_trip(budget, orch)
+    assert trip is not None
+    assert "three consecutive planning-contract failures" in trip

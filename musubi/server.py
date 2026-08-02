@@ -38,15 +38,22 @@ import shlex
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 # Ensure the musubi directory is on sys.path when run directly.
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 from agent.boundary import evaluate_argument_policy
+from agent.manifest import (
+    ChangeManifestInput,
+    ROOT_PLAN_CHANGE_SIZE,
+    ROOT_PLAN_WORKER_ROLE,
+)
 
 import composer
 from execution import executor
@@ -1253,17 +1260,22 @@ def musubi_begin_plan(deliverable: str) -> str:
 @mcp.tool()
 def musubi_commit_plan(
     plan_markdown: str,
-    change_manifest: dict[str, Any],
-    change_size: str,
-    worker_chain: list[str],
+    change_manifest: ChangeManifestInput,
+    change_size: ROOT_PLAN_CHANGE_SIZE,
+    worker_chain: list[ROOT_PLAN_WORKER_ROLE],
 ) -> str:
     """Submit Root's plan contract; the driver persists and governs it."""
+    manifest_payload = (
+        change_manifest.model_dump(mode="python")
+        if isinstance(change_manifest, BaseModel)
+        else dict(change_manifest)
+    )
     return json.dumps({
         "status": "submitted",
         "change_size": change_size,
         "worker_chain": worker_chain,
         "plan_chars": len(plan_markdown),
-        "manifest_fields": sorted(change_manifest),
+        "manifest_fields": sorted(manifest_payload),
     })
 
 
@@ -1480,7 +1492,7 @@ def _durable_spawn_evidence(
     payload: dict[str, Any], *, abandon_worker: bool = True,
 ) -> dict[str, Any] | None:
     """Deliver HI #8 spawn evidence before exposing a runnable handle."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     obligation_id = _db.record_audit_obligation(
         kind="worker_spawn",
         handle_id=str(payload["handle_id"]),
@@ -1504,14 +1516,47 @@ def _durable_spawn_evidence(
         }
 
 
-def _relay_pending_spawn_evidence() -> None:
-    """Retry pending outbox items without making abandoned workers runnable."""
-    now = datetime.now(timezone.utc).isoformat()
+def _durable_completion_evidence(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Persist and deliver one terminal completion audit obligation.
+
+    The sub-session is already terminal when this is called. A delivery failure
+    must be visible to the caller and remain relayable; otherwise a successful
+    stage could be reported without its required HI #8 completion evidence.
+    """
+    now = datetime.now(UTC).isoformat()
+    obligation_id = _db.record_audit_obligation(
+        kind="worker_complete",
+        handle_id=str(payload["handle_id"]),
+        payload=payload,
+        created_at=now,
+    )
+    try:
+        subagent_audit.deliver_complete_obligation(payload)
+        _db.mark_audit_obligation_delivered(obligation_id, now)
+        return None
+    except Exception as exc:
+        _db.mark_audit_obligation_failed(obligation_id, str(exc))
+        return {
+            "status": "error",
+            "error_kind": "audit_unavailable",
+            "error": f"completion audit evidence unavailable: {exc}",
+            "handle_id": str(payload["handle_id"]),
+            "audit_obligation_id": obligation_id,
+        }
+
+
+def _relay_pending_audit_evidence() -> None:
+    """Retry pending audit outbox items without reopening any worker."""
+    now = datetime.now(UTC).isoformat()
     for obligation in _db.get_audit_obligations(status="pending"):
-        if obligation.get("kind") != "worker_spawn":
+        delivery = {
+            "worker_spawn": subagent_audit.deliver_spawn_obligation,
+            "worker_complete": subagent_audit.deliver_complete_obligation,
+        }.get(str(obligation.get("kind") or ""))
+        if delivery is None:
             continue
         try:
-            subagent_audit.deliver_spawn_obligation(obligation)
+            delivery(obligation)
             _db.mark_audit_obligation_delivered(int(obligation["id"]), now)
         except Exception as exc:
             _db.mark_audit_obligation_failed(int(obligation["id"]), str(exc))
@@ -1952,28 +1997,16 @@ def musubi_complete_subagent(
             turns=turns,
             status=final_status,
             artifacts=artifacts,
+            accept_verified_readonly_turn_cap=(
+                verify.valid
+                and isinstance(safe_summary, str)
+                and bool(safe_summary.strip())
+            ),
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "error": str(exc)})
 
     # Phase A.3 — durable completion audit row, mirror of the spawn row.
-    try:
-        subagent_audit.record_complete(
-            handle_id=handle_id,
-            parent_session_id=final["parent_session_id"],
-            parent_agent_name=final["parent_agent_name"],
-            role=final["role"],
-            brief=final["brief"],
-            final_status=final["status"],
-            escalated=bool(final["escalated"]),
-            turns=int(final.get("turns", 0) or 0),
-            tools_used=final.get("tools_used"),
-            summary_truncated=verify.truncated,
-            verification_errors=verify.errors if verify.errors else None,
-        )
-    except Exception:
-        pass
-
     response: dict[str, Any] = {
         "status": "recorded",
         "handle_id": handle_id,
@@ -1983,11 +2016,35 @@ def musubi_complete_subagent(
         "structured": final.get("result_structured"),
         "tools_used": final.get("tools_used"),
         "turns": final.get("turns", 0),
+        "turn_cap_accepted": bool(final.get("turn_cap_accepted")),
+        "turn_cap_acceptance": final.get("turn_cap_acceptance"),
     }
     if verify.truncated:
         response["summary_truncated"] = True
     if not verify.valid:
         response["verification_errors"] = verify.errors
+    audit_error = _durable_completion_evidence({
+        "handle_id": handle_id,
+        "parent_session_id": final["parent_session_id"],
+        "parent_agent_name": final["parent_agent_name"],
+        "role": final["role"],
+        "brief": final["brief"],
+        "final_status": final["status"],
+        "escalated": bool(final["escalated"]),
+        "turns": int(final.get("turns", 0) or 0),
+        "tools_used": final.get("tools_used"),
+        "summary_truncated": verify.truncated,
+        "verification_errors": verify.errors if verify.errors else None,
+        "turn_cap_accepted": bool(final.get("turn_cap_accepted")),
+        "turn_cap_acceptance": final.get("turn_cap_acceptance"),
+    })
+    if audit_error is not None:
+        # Keep the persisted terminal state in the error response, but make
+        # delivery failure explicit so a caller cannot advance silently.
+        audit_error.update({
+            key: value for key, value in response.items() if key != "status"
+        })
+        return json.dumps(audit_error)
     return json.dumps(response)
 
 
@@ -2153,7 +2210,7 @@ def musubi_query_subagent_events(
                        summary_truncated, verification_errors.
     """
     try:
-        _relay_pending_spawn_evidence()
+        _relay_pending_audit_evidence()
         events = subagent_audit.query_events(
             parent_session_id=parent_session_id,
             handle_id=handle_id,

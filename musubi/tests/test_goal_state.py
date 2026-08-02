@@ -91,6 +91,47 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
     assert "musubi_get_skill" in wide and "musubi_get_reference" in wide
 
 
+def test_second_plan_contract_failure_withholds_read_tools() -> None:
+    tools = [
+        {"name": name}
+        for name in (
+            "musubi_read_file",
+            "musubi_glob",
+            "musubi_grep",
+            "musubi_commit_plan",
+        )
+    ]
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    state.record_planning_contract_failure("invalid_change_manifest")
+    state.record_planning_contract_failure("invalid_change_manifest")
+
+    assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
+        "musubi_commit_plan",
+    ]
+
+
+def test_valid_root_plan_resets_planning_contract_failures() -> None:
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    state.record_planning_contract_failure("invalid_change_manifest")
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
+    )
+
+    assert state.planning_contract_failures == 0
+    assert state.last_planning_contract_error is None
+
+
 def test_outcome_packet_projects_worker_contract() -> None:
     packet = OutcomePacket.from_worker(
         role="coder",

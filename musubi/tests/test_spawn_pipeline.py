@@ -118,16 +118,16 @@ class PipelineRouter(LMRouter):
             return _text(json.dumps({
                 "status": "pass", "summary": "review: PASS", "verdict": "pass",
             }))
-        # Generator stages are told apart by how many prior summaries they see.
-        n_prior = brief.count("### ")
-        if n_prior == 0:
-            self.order.append("planner")
-            return _text("plan: step1, step2")
-        if n_prior == 1:
-            self.order.append("designer")
-            return _text("design: moduleX")
-        self.order.append("coder")
-        return _text("code: wrote moduleX")
+        # Each non-evaluator stage receives only its immediate predecessor.
+        # The canned router therefore tracks the declared stage order rather
+        # than inferring a role from a cumulative handoff.
+        generator_role = ("planner", "designer", "coder")[len(self.order)]
+        self.order.append(generator_role)
+        return _text({
+            "planner": "plan: step1, step2",
+            "designer": "design: moduleX",
+            "coder": "code: wrote moduleX",
+        }[generator_role])
 
 
 def test_agent_summons_pipeline_runs_stages_in_order_with_evaluator_firewall() -> None:
@@ -168,6 +168,179 @@ def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
     assert "ship it" not in router.reviewer_brief
     assert "plan: step1" not in router.reviewer_brief
     assert "design: moduleX" not in router.reviewer_brief
+
+
+def test_middle_stage_brief_uses_only_immediate_predecessor() -> None:
+    from agent.pipeline_runner import _stage_brief
+
+    brief = _stage_brief("request", "### design\nlatest", 2, 4)
+
+    assert "latest" in brief
+    assert "### plan" not in brief
+
+
+def test_pipeline_rejects_oversized_designer_handoff_before_coder_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+    from agent.pipeline_runner import MAX_STAGE_HANDOFF_CHARS
+
+    completions: list[dict[str, Any]] = []
+    invoked_roles: list[str] = []
+    outputs = iter(["plan: compact", "x" * (MAX_STAGE_HANDOFF_CHARS + 1)])
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-handoff",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "design", "role": "designer"},
+                    {"stage": "code", "role": "coder"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": args["stage"], "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        invoked_roles.append(kwargs["role"])
+        return next(outputs), 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "handoff exceeds" in result
+    assert invoked_roles == ["planner", "designer"]
+    assert completions[-1]["handle_id"] == "h-design"
+    assert completions[-1]["status"] == "failed"
+
+
+def test_pipeline_rejects_unfit_protected_input_before_worker_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    run_unit_calls: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-unfit",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b",
+                "role_skill": "x" * 40_000, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        run_unit_calls.append(kwargs)
+        return "unexpected", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "protected input exceeds" in result
+    assert run_unit_calls == []
+    assert completions[-1]["status"] == "failed"
+
+
+def test_context_failure_terminalizes_worker_running_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Any post-spawn failure closes the stage attempt before aborting."""
+    from agent import pipeline_runner
+    from storage import db
+
+    state_path = tmp_path / "state.db"
+    db.init_db(state_path)
+    db.insert_session(
+        "pipe-context-fail", "build dashboard", "2026-08-02T00:00:00+00:00",
+        state_path,
+    )
+    db.insert_stage("pipe-context-fail", "code", 1, state_path)
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-context-fail",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({"status": "error", "error": "context unavailable"})
+        if name == "musubi_complete_subagent":
+            return json.dumps({"status": "recorded", "final_status": "failed"})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+        compression_db_path=state_path,
+    ))
+
+    assert "context fetch failed" in result
+    row = db.get_stage_row("pipe-context-fail", "code", 1, state_path)
+    assert row is not None and row["phase"] == "escalated"
+    events = db.get_stage_attempt_events(
+        db.StageAttemptIdentity("pipe-context-fail", "code", 1),
+        db_path=state_path,
+    )
+    assert events[-1]["event"] == "context_fetch_failed"
 
 
 def test_run_pipeline_strict_raises_on_spawn_rejection(
@@ -263,6 +436,67 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
         "session_id": "pipe-1",
         "final_status": "success",
         "escalated": False,
+    }]
+
+
+def test_pipeline_stops_when_harness_records_stage_escalated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner may not advance just because run_unit returned text.
+
+    The substrate owns terminal lifecycle status and can coerce a completion
+    at its turn cap. A stage with that final status must never reach a later
+    gate or finalise the pipeline as success.
+    """
+    from agent import pipeline_runner
+
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-final-status",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "plan", "role": "planner"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-plan", "role": "planner",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            return json.dumps({
+                "status": "recorded", "handle_id": "h-plan",
+                "final_status": "escalated", "escalated": True,
+            })
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "plan: stage claims success", 4
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "ship it"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "harness recorded terminal status escalated" in result
+    assert finalizations == [{
+        "session_id": "pipe-final-status",
+        "final_status": "escalated",
+        "escalated": True,
     }]
 
 
@@ -806,9 +1040,19 @@ def test_resolve_pipeline_worker_spec_reads_maxturns_and_budget(tmp_path: Path) 
     spec = resolve_pipeline_worker_spec("planner", "feature-dev", agents_dir)
     assert spec.role == "planner"
     assert spec.max_cycles == 4
-    assert spec.context_budget_chars == PIPELINE_CONTEXT_BUDGET == 16_000
+    assert spec.context_budget_chars == PIPELINE_CONTEXT_BUDGET == 32_000
     assert "compact implementation plan" in spec.prompt
     assert spec.worker_max_output is None
+
+
+def test_pipeline_context_budget_reserves_output_and_transport() -> None:
+    from agent.pipeline_runner import resolve_pipeline_context_budget_chars
+
+    router = PipelineRouter()
+    router.context_window_tokens = 12_000
+    router.max_output_tokens = 4_000
+
+    assert resolve_pipeline_context_budget_chars(router, None, False) == 22_320
 
 
 def test_resolve_pipeline_worker_spec_defaults_absent_maxturns(tmp_path: Path) -> None:
