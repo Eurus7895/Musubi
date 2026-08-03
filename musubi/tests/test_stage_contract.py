@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from composer import StageRecipe
-from skills.skill_loader import CompletionContract, SkillMeta
+from skills.skill_loader import SkillMeta
 from validation.stage_contract import validate_and_freeze_contract
 from workspace.grants import RootRegistry
 
@@ -21,13 +21,10 @@ def _recipe() -> StageRecipe:
 def _skill() -> SkillMeta:
     return SkillMeta(
         "web-ui", "Web UI", "x", version="1.0.0", content_hash="sha256:abc",
-        completion_contract=CompletionContract(
-            ("summary",), ("file_created_or_modified",),
-        ),
     )
 
 
-def test_contract_hash_is_canonical_and_merges_skill_requirements(tmp_path: Path) -> None:
+def test_contract_hash_is_canonical_regardless_of_key_order(tmp_path: Path) -> None:
     roots = RootRegistry.build(tmp_path)
     raw = {
         "skill_id": "web-ui", "goal": "Build five rows",
@@ -39,7 +36,6 @@ def test_contract_hash_is_canonical_and_merges_skill_requirements(tmp_path: Path
     first = validate_and_freeze_contract(raw, _recipe(), _skill(), roots)
     second = validate_and_freeze_contract(dict(reversed(list(raw.items()))), _recipe(), _skill(), roots)
     assert first.contract_hash == second.contract_hash
-    assert first.required_output_fields == ("summary",)
 
 
 def test_contract_rejects_disallowed_check_and_path_escape(tmp_path: Path) -> None:

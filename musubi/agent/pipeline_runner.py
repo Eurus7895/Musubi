@@ -942,10 +942,6 @@ async def run_pipeline(
                 structured_output = parsed_answer
         except (json.JSONDecodeError, TypeError):
             structured_output = None
-        missing_outputs = [
-            field for field in preflight.contract.required_output_fields
-            if structured_output is None or field not in structured_output
-        ]
         if role in {"reviewer", "synthesizer"}:
             verdict = (
                 str(structured_output.get("status") or "").strip().lower()
@@ -1008,7 +1004,7 @@ async def run_pipeline(
                     audit_db_path=audit_db_path, log=log,
                 )
 
-        from validation.stage_gate import CheckResult, GateResult, evaluate_stage_gate
+        from validation.stage_gate import evaluate_stage_gate
         gate = evaluate_stage_gate(
             preflight.contract, stage_snapshot,
             [{"root": "musubi", "path": path} for path in sorted(touched)],
@@ -1017,12 +1013,6 @@ async def run_pipeline(
             }),
             roots=roots,
         )
-        if missing_outputs:
-            gate = GateResult("fail", gate.checks + (CheckResult(
-                "required_output_fields", "fail",
-                f"worker output omitted required fields: {missing_outputs}",
-                {"missing": missing_outputs},
-            ),))
         _record_gate_checkpoint(
             psid, stage, attempt, gate, compression_db_path,
         )

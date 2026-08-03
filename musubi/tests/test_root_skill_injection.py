@@ -40,9 +40,9 @@ def test_list_for_coder_role_surfaces_coder_skills() -> None:
     web_ui = next(row for row in payload["skills"] if row["skill_id"] == "web-ui")
     assert web_ui["version"] == "1.0.0"
     assert web_ui["content_hash"].startswith("sha256:")
-    assert web_ui["completion_contract"]["required_check_types"] == [
-        "file_created_or_modified",
-    ]
+    # id, title, description, version, hash — and nothing that would let the
+    # catalog state an obligation the stage gate no longer enforces.
+    assert "completion_contract" not in web_ui
 
 
 def test_list_unknown_role_returns_nothing() -> None:

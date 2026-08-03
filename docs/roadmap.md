@@ -346,6 +346,22 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     control call and produces a plan the coder can work from, which is the
     thing its own role prompt (rule 3) has always asked for.
 
+12. **Removed: `completion-contract`.** A skill's frontmatter could declare
+    `required-output-fields` and `required-check-types`, and the same field was
+    read at two boundaries with two different meanings — a LABEL in the catalog
+    listing Root selects from (`server.py`), and TEETH in the stage gate
+    (`stage_contract.py`, `pipeline_runner.py`). That conflation is what made
+    it unusable: 4 of 22 skills declared one, so the catalog implied that only
+    those four produced anything, and correcting the imbalance was impossible
+    without also changing what every stage using those skills must emit.
+
+    Nothing replaces it. A stage's exit predicates still come from the model's
+    preflight proposal, still bounded by the recipe's `allowed_checks`, still
+    frozen and hashed, still evaluated by the gate. What goes is the ability of
+    a skill to add requirements on top of that — and with it the
+    `required_output_fields` leg of `FrozenStageContract`, which the skill was
+    the only source for.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

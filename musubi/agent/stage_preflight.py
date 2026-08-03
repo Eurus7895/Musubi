@@ -101,14 +101,6 @@ def run_stage_preflight(
             "description": skill.description,
             "version": skill.version,
             "content_hash": skill.content_hash,
-            "completion_contract": {
-                "required_output_fields": list(
-                    skill.completion_contract.required_output_fields
-                ),
-                "required_check_types": list(
-                    skill.completion_contract.required_check_types
-                ),
-            },
         }
         for skill in catalog
     ]
@@ -211,10 +203,6 @@ def run_stage_preflight(
             if frozen_contract is not None:
                 if raw.get("contract_hash") != frozen_contract.contract_hash:
                     raise ValueError("retry must echo the frozen contract hash")
-                required_checks = set(skill.completion_contract.required_check_types)
-                frozen_checks = {str(item.get("type")) for item in frozen_contract.exit_when}
-                if not required_checks <= frozen_checks:
-                    raise ValueError("replacement skill requirements exceed frozen contract")
                 return StagePreflight(skill, frozen_contract, call_index + 1)
             contract = validate_and_freeze_contract(raw, recipe, skill, roots)
             return StagePreflight(skill, contract, call_index + 1)

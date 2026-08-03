@@ -13,9 +13,12 @@ from session import state
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
 
 
-def test_skill_catalog_exposes_exact_version_hash_and_completion_contract(
+def test_skill_catalog_exposes_exact_version_and_content_hash(
     tmp_path: Path,
 ) -> None:
+    """An unknown frontmatter key is ignored rather than fatal: the catalog
+    must keep listing a skill whose file carries a field this version does not
+    know about — including `completion-contract`, which used to live here."""
     skill_dir = tmp_path / "web-ui"
     skill_dir.mkdir()
     body = """---
@@ -24,7 +27,6 @@ version: 2.1.0
 description: Build web interfaces.
 completion-contract:
   required-output-fields: [summary, files_modified]
-  required-check-types: [file_created_or_modified]
 ---
 # Web UI
 """
@@ -34,12 +36,7 @@ completion-contract:
 
     assert meta.version == "2.1.0"
     assert meta.content_hash == "sha256:" + hashlib.sha256(body.encode()).hexdigest()
-    assert meta.completion_contract.required_output_fields == (
-        "summary", "files_modified",
-    )
-    assert meta.completion_contract.required_check_types == (
-        "file_created_or_modified",
-    )
+    assert meta.description == "Build web interfaces."
 
 
 # ── check_skill_permission ────────────────────────────────────────────────────

@@ -2,9 +2,6 @@
 name: testing
 version: 1.0.0
 description: pytest-based testing procedures for harness components — unit, integration, and correction loop tests. Use when the user is writing tests, fixtures, mocks, or asking about pytest or coverage.
-completion-contract:
-  required-output-fields: [summary, artifacts]
-  required-check-types: [named_command]
 applies-to:
   languages: [python]
   test_frameworks: [pytest]

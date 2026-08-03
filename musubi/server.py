@@ -1193,7 +1193,7 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
          no profile is available.
 
     Returns JSON { "skills": [{"skill_id", "title", "description",
-    "version", "content_hash", "completion_contract"}, ...],
+    "version", "content_hash"}, ...],
     "agent_name": ..., "for_role": ..., "filtered_by_profile": bool }.
     """
     key = normalize_role(agent_name)
@@ -1213,14 +1213,6 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
             "description": m.description,
             "version": m.version,
             "content_hash": m.content_hash,
-            "completion_contract": {
-                "required_output_fields": list(
-                    m.completion_contract.required_output_fields
-                ),
-                "required_check_types": list(
-                    m.completion_contract.required_check_types
-                ),
-            },
         }
         for m in applicable
     ]

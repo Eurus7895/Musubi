@@ -36,12 +36,6 @@ def _resolve_skills_dir() -> Path:
 _SKILLS_DIR = _resolve_skills_dir()
 
 
-@dataclass(frozen=True)
-class CompletionContract:
-    required_output_fields: tuple[str, ...] = ()
-    required_check_types: tuple[str, ...] = ()
-
-
 @dataclass
 class SkillMeta:
     """Catalog entry for one skill.
@@ -74,9 +68,6 @@ class SkillMeta:
     tools: list[str] = field(default_factory=list)
     version: str = ""
     content_hash: str = ""
-    completion_contract: CompletionContract = field(
-        default_factory=CompletionContract,
-    )
 
 
 _FRONTMATTER_DELIM = "---"
@@ -144,26 +135,6 @@ def _coerce_str_list(raw: Any) -> list[str]:
     return []
 
 
-def _completion_contract(frontmatter: dict[str, Any]) -> CompletionContract:
-    raw = frontmatter.get("completion-contract")
-    if raw is None:
-        return CompletionContract()
-    if not isinstance(raw, dict):
-        raise ValueError("completion-contract must be a mapping")
-    unknown = set(raw) - {"required-output-fields", "required-check-types"}
-    if unknown:
-        raise ValueError(
-            f"completion-contract has unknown fields: {sorted(unknown)}"
-        )
-    output_fields = _coerce_str_list(raw.get("required-output-fields"))
-    check_types = _coerce_str_list(raw.get("required-check-types"))
-    if len(output_fields) != len(set(output_fields)):
-        raise ValueError("required-output-fields contains duplicates")
-    if len(check_types) != len(set(check_types)):
-        raise ValueError("required-check-types contains duplicates")
-    return CompletionContract(tuple(output_fields), tuple(check_types))
-
-
 def get_skill(skill_id: str, skills_dir: Path | None = None) -> str | None:
     """Return SKILL.md content for skill_id, or None if not found."""
     base = skills_dir or _SKILLS_DIR
@@ -206,7 +177,6 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
         tools = _coerce_str_list(frontmatter.get("tools"))
         version = str(frontmatter.get("version") or "").strip()
         content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-        completion_contract = _completion_contract(frontmatter)
         skills.append(SkillMeta(
             skill_id=skill_id,
             title=title,
@@ -217,7 +187,6 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
             tools=tools,
             version=version,
             content_hash=content_hash,
-            completion_contract=completion_contract,
         ))
     return skills
 

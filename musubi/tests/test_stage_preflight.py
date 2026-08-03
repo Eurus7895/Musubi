@@ -8,7 +8,7 @@ import pytest
 from agent.stage_preflight import run_stage_preflight
 from agent.vendors.base import LMResponse, LMRouter
 from composer import StageRecipe
-from skills.skill_loader import CompletionContract, SkillMeta
+from skills.skill_loader import SkillMeta
 from workspace.grants import RootRegistry
 
 
@@ -65,14 +65,12 @@ def _recipe() -> StageRecipe:
 def _meta() -> SkillMeta:
     return SkillMeta(
         "web-ui", "Web UI", "x", version="1", content_hash="sha256:a",
-        completion_contract=CompletionContract((), ("file_created_or_modified",)),
     )
 
 
 def _text_meta() -> SkillMeta:
     return SkillMeta(
         "planning", "Planning", "x", version="1", content_hash="sha256:b",
-        completion_contract=CompletionContract(("summary",), ()),
     )
 
 

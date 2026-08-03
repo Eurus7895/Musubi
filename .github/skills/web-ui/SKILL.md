@@ -2,9 +2,6 @@
 name: web-ui
 version: 1.0.0
 description: Build the presentation layer of a browser artifact — semantic HTML, modern CSS layout, vanilla-JS interactivity, and embedded charts. Use when the user asks for an HTML page, dashboard, report, landing page, or chart. Covers how it looks and behaves, NOT where its data comes from; pair it with a data-source decision when the deliverable needs live or remote data.
-completion-contract:
-  required-output-fields: [summary, artifacts]
-  required-check-types: [file_created_or_modified]
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 triggers:

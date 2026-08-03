@@ -33,7 +33,6 @@ class FrozenStageContract:
     skill_id: str
     goal: str
     exit_when: tuple[Mapping[str, Any], ...]
-    required_output_fields: tuple[str, ...]
     canonical_json: str
     contract_hash: str
 
@@ -105,20 +104,12 @@ def validate_and_freeze_contract(
                 raise ValueError(f"command {command_id!r} is not allowed by the recipe")
         normalized.append(check)
 
-    missing = set(skill_meta.completion_contract.required_check_types) - seen_types
-    if missing:
-        raise ValueError(
-            f"contract omits required skill check types: {sorted(missing)}"
-        )
     frozen_value = {
         "skill_id": skill_id,
         "skill_version": skill_meta.version,
         "skill_hash": skill_meta.content_hash,
         "goal": goal,
         "exit_when": normalized,
-        "required_output_fields": list(
-            skill_meta.completion_contract.required_output_fields
-        ),
     }
     canonical = _canonical(frozen_value)
     digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -126,7 +117,6 @@ def validate_and_freeze_contract(
         skill_id=skill_id,
         goal=goal,
         exit_when=tuple(normalized),
-        required_output_fields=skill_meta.completion_contract.required_output_fields,
         canonical_json=canonical,
         contract_hash=digest,
     )
