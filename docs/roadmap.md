@@ -269,6 +269,28 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-03-worker-skill-mismatch-report.md`](./superpowers/plans/2026-08-03-worker-skill-mismatch-report.md)
 
+9. **Implemented: `web-ui` stops deciding architecture in its selection line.**
+   Its description claimed "self-contained … or any browser-rendered artifact",
+   so it was both selected for, and then wrongly applied to, "an application to
+   check weather" — a task whose whole point is fetching live data, which the
+   skill's procedure forbade. The description now scopes the skill to the
+   presentation layer and says explicitly that it does not decide where data
+   comes from. Step 1 asks the deciding question first — does the deliverable
+   need data the file does not already have — and carries a third branch for
+   an application needing live data, where self-contained does not apply:
+   fetch at runtime, never inline a credential in client code, and handle the
+   source being unreachable. The `file://` and inline-library rules are now
+   stated as conditions of the self-contained branch rather than as universals.
+   A brief matching no branch routes to `musubi_report_skill_mismatch`.
+
+   Catalog audit findings not addressed here: the `applies-to` filter has never
+   run (no `.github/memory/project-profile.md`, so `_load_project_profile`
+   returns None and the router passes everything through — four skills declare
+   gates, none fire); 18 of 22 skills declare an empty `completion-contract`,
+   which is why the two that declare one read as the only skills that produce a
+   deliverable; `docs-writing` is gated on doc TOOLING while the skill is about
+   prose; `documentation` and `docs-writing` overlap inside designer's catalog.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
