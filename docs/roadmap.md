@@ -291,6 +291,35 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    deliverable; `docs-writing` is gated on doc TOOLING while the skill is about
    prose; `documentation` and `docs-writing` overlap inside designer's catalog.
 
+10. **Implemented: a Direct declaration may not manufacture its own target
+    evidence.** Tracing the weather-app run to its first domino landed on
+    cycle 0, not on skill selection. With `target_unknown=True` and zero files
+    read, Root called `musubi_begin_direct(target_intent="create",
+    target_path=<a path it invented>)`. A `create` needs nothing on disk, so
+    every existing check passed — and the declaration then set `target_named`,
+    which is precisely what `GoalState.evidence_gap` reads. The sufficiency
+    gate asked "does anyone know what this turn targets" and was answered by
+    Root's own assertion that it did. What that locked in is irreversible:
+    `route=SINGLE_CODER`, `role_chain=()`, one file, and `begin_plan` refuses
+    once a mode is set. Everything downstream followed from there — no plan for
+    the coder to work from, so it globbed 819 files itself; no designer or
+    reviewer; a skill chosen to match a shape already decided.
+
+    `request_named_target` now records the turn-start evidence separately from
+    the field a declaration writes, and a create-Direct requires the target to
+    come from somewhere other than the call making it: the request named a path
+    inside the workspace, or an Explorer/Finder reported findings. Modify is
+    unaffected — an existing file is established by the filesystem, which no
+    guess can do. The refusal names both self-serve ways out, so Root fixes it
+    without returning to the user.
+
+    This subsumes the second gate considered alongside it. `coder.agent.md`
+    rule 3 tells the coder to refuse owning planning and implementation
+    together for broad work; breadth has no mechanical measure at spawn time
+    (the manifest that carries it exists only in Planning mode), so the
+    enforceable version is this gate routing unnamed work into Planning, where
+    a plan and acceptance criteria are produced by construction.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

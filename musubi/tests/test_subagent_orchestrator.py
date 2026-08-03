@@ -1233,8 +1233,11 @@ def test_a_rejected_skill_mismatch_report_never_reaches_the_root(
         _text("root sees the mismatch"),
     ])
 
+    # The request names weather.html: without a named target the Direct
+    # declaration is now refused outright, and this test is about what happens
+    # AFTER a worker runs, not about the routing gate.
     asyncio.run(run_agent(
-        "build an app that checks the weather",
+        "build weather.html to check the weather",
         router, _musubi_dir(), log=io.StringIO(),
     ))
 

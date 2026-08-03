@@ -181,6 +181,14 @@ class GoalState:
     #: stored rather than recomputed. The other two inputs to the sufficiency
     #: gate below are live, and read from this object each time it is asked.
     target_named: bool = False
+    #: The same fact, kept SEPARATELY because `begin_direct` sets `target_named`
+    #: as part of declaring a target. That overwrite is what let a Direct
+    #: declaration satisfy the sufficiency gate with its own invented path: the
+    #: gate asked "does anyone know what this turn targets", and the answer it
+    #: read was the root's assertion that it did. This copy is written once at
+    #: turn start and never by a control tool, so it can still answer the
+    #: question honestly after a declaration has been made.
+    request_named_target: bool = False
     #: Root owns this transition. Code never infers it from the user's text.
     mode: str = "undecided"
     #: Structured target declaration supplied by the model in Direct mode.
@@ -240,6 +248,31 @@ class GoalState:
             raise ValueError("target_intent must be create or modify")
         if target_intent == "modify" and not target_exists:
             raise ValueError("modify target does not exist")
+        # A `create` declaration needs no file on disk, so ANY invented path
+        # satisfied the checks above — and then set `target_named`, which is
+        # what `evidence_gap` reads. Declaring Direct therefore manufactured
+        # its own evidence, and the route it locks in (SINGLE_CODER, empty
+        # role_chain, one file) is irreversible: `begin_plan` refuses once the
+        # mode is set. That is how a request naming nothing became "one coder
+        # writes one file" before anything had been read.
+        #
+        # So a create-Direct now needs the target to come from somewhere other
+        # than this call: the request named a path, or a worker located one.
+        # Cheap to satisfy and self-serve — spawn an Explorer, or enter
+        # Planning — which is the point: the root fixes this itself.
+        if target_intent == "create" and not self.request_named_target:
+            if not any(
+                outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
+                for outcome in self.outcomes
+            ):
+                raise ValueError(
+                    "Direct mode needs a target someone established: the "
+                    "request names no path inside the workspace and no "
+                    "Explorer has reported findings, so a created path would "
+                    "be this call's own guess. Spawn Explorer for a bounded "
+                    "location question, or use musubi_begin_plan and commit a "
+                    "worker chain"
+                )
         if worker_role not in ORDERED_ROLES:
             raise ValueError(
                 f"Direct worker_role must be one of {sorted(ORDERED_ROLES)}"

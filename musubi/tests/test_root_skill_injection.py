@@ -272,6 +272,7 @@ def _tools(names: list[str]) -> list[dict]:
 def test_simple_scope_root_sees_spawn_and_listing() -> None:
     """The headline fix: a simple_artifact root can still select a skill."""
     state = GoalState.create("build dashboard", "simple_artifact", "single_coder")
+    state.request_named_target = True  # "build dashboard.html" named its target
     state.begin_direct(
         target_intent="create",
         target_path="dashboard.html",

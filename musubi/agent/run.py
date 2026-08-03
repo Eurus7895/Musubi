@@ -772,6 +772,10 @@ async def run_agent(
     # that are not — worker outcomes and an accepted manifest — to decide
     # whether a mutation worker may be summoned at all.
     goal_state.target_named = evidence.names_workspace_path
+    # The un-overwritable copy: `begin_direct` sets `target_named` when it
+    # declares a target, so the gate needs a record of what was true BEFORE any
+    # declaration to tell an established target from an invented one.
+    goal_state.request_named_target = evidence.names_workspace_path
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
