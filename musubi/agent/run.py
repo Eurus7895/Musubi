@@ -147,14 +147,14 @@ DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 #: this caps that waste while never firing on a run that is actually producing.
 DEFAULT_NO_PROGRESS_BUDGET_RATIO = 0.7
 
-# Injected into the root prompt only when the caller passes --plan. Explicit
-# opt-in replaces the retired regex force (a keyword guess used to refuse the
-# coder and demand a planner at cycle 0); now the user declares plan-first.
+# Injected into the root prompt only when the caller passes --plan. Planning
+# is now the only route to a worker, so this restates the contract rather than
+# forbidding an alternative — the flag is kept so an existing invocation still
+# works and still reads as an explicit instruction.
 _PLAN_FIRST_DIRECTIVE = (
-    "The user explicitly requested Planning mode (--plan). Your first tool "
-    "call must be `musubi_begin_plan`; `musubi_begin_direct` is invalid. Read "
-    "the bounded workspace facts yourself, then commit plan.md, manifest.json, "
-    "change size, and the ordered worker chain with `musubi_commit_plan`."
+    "The user explicitly requested Planning mode (--plan). Read the bounded "
+    "workspace facts yourself, then commit plan.md, manifest.json, change "
+    "size, and the ordered worker chain with `musubi_commit_plan`."
 )
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
@@ -772,10 +772,6 @@ async def run_agent(
     # that are not — worker outcomes and an accepted manifest — to decide
     # whether a mutation worker may be summoned at all.
     goal_state.target_named = evidence.names_workspace_path
-    # The un-overwritable copy: `begin_direct` sets `target_named` when it
-    # declares a target, so the gate needs a record of what was true BEFORE any
-    # declaration to tell an established target from an invented one.
-    goal_state.request_named_target = evidence.names_workspace_path
     params = StdioServerParameters(
         command=sys.executable,
         args=[str(server_path)],
@@ -3647,7 +3643,6 @@ async def _dispatch_one(
 
     if (
         name in {
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_commit_plan",
         }
@@ -3909,34 +3904,6 @@ def _handle_root_control_tool(
                 "deliverable": deliverable,
             })
 
-        if name == "musubi_begin_direct":
-            target_intent = str(args.get("target_intent") or "").strip()
-            target_path = str(args.get("target_path") or "").strip()
-            worker_role = str(args.get("worker_role") or "coder").strip()
-            if not target_path:
-                raise ValueError("target_path must be a non-empty string")
-            root_alias, relative = _split_declared_target(target_path)
-            registry = _runtime_root_registry()
-            resolved = registry.resolve(root_alias, relative)
-            exists = resolved.exists()
-            state.begin_direct(
-                target_intent=target_intent,
-                target_path=(
-                    relative if root_alias == "musubi"
-                    else f"{root_alias}::{relative}"
-                ),
-                target_exists=exists,
-                worker_role=worker_role,
-            )
-            return json.dumps({
-                "status": "ok",
-                "mode": state.mode,
-                "target_intent": state.target_intent,
-                "target_path": state.target_path,
-                "target_exists": exists,
-                "next_role": state.next_role,
-            })
-
         raw_plan = args.get("plan_markdown")
         if not isinstance(raw_plan, str) or not raw_plan.strip():
             raise _PlanningContractError(
@@ -4030,15 +3997,6 @@ def _handle_root_control_tool(
         return _root_control_error(exc.error_kind, str(exc), state)
     except (OSError, ValueError) as exc:
         return json.dumps({"status": "error", "error": str(exc)})
-
-
-def _split_declared_target(target: str) -> tuple[str, str]:
-    if "::" not in target:
-        return "musubi", target
-    root, relative = target.split("::", 1)
-    if not root.strip() or not relative.strip():
-        raise ValueError("target_path must use ROOT::relative/path")
-    return root.strip(), relative.strip()
 
 
 def _runtime_root_registry() -> RootRegistry:

@@ -130,7 +130,6 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_get_pipeline_stages",
     "musubi_query_schema_migrations",
     "musubi_list_skills",
-    "musubi_begin_direct",
     "musubi_begin_plan",
     "musubi_commit_plan",
     "musubi_get_memory_context",

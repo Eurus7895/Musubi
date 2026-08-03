@@ -72,7 +72,6 @@ _SPAWN_TOOL = "musubi_spawn_subagent"
 # The listing is a fact; a ranking would be a judgement about what the request
 # is about, which no substrate code is entitled to make. The model selects.
 _SKILL_SELECT_TOOL = "musubi_list_skills"
-_BEGIN_DIRECT_TOOL = "musubi_begin_direct"
 _BEGIN_PLAN_TOOL = "musubi_begin_plan"
 _COMMIT_PLAN_TOOL = "musubi_commit_plan"
 _ROOT_PLAN_READ_TOOLS = frozenset({
@@ -150,10 +149,10 @@ class GoalState:
     root_tokens_in: int = 0
     root_tokens_out: int = 0
     outcomes: list[OutcomePacket] = field(default_factory=list)
-    #: Legacy pipeline reassessment. New direct agent turns use `change_size`
-    #: and the worker chain committed by Root.
+    #: Legacy pipeline reassessment. New agent turns use `change_size` and the
+    #: worker chain committed by Root.
     assessment: ChangeAssessment | None = None
-    #: The next role Root owes after a Direct declaration or committed plan.
+    #: The next role Root owes after a committed plan.
     next_role: str | None = None
     #: One deterministic question the driver must return to the user before
     #: any further model call (set when the manifest routes to ask_scope).
@@ -181,21 +180,13 @@ class GoalState:
     #: stored rather than recomputed. The other two inputs to the sufficiency
     #: gate below are live, and read from this object each time it is asked.
     target_named: bool = False
-    #: The same fact, kept SEPARATELY because `begin_direct` sets `target_named`
-    #: as part of declaring a target. That overwrite is what let a Direct
-    #: declaration satisfy the sufficiency gate with its own invented path: the
-    #: gate asked "does anyone know what this turn targets", and the answer it
-    #: read was the root's assertion that it did. This copy is written once at
-    #: turn start and never by a control tool, so it can still answer the
-    #: question honestly after a declaration has been made.
-    request_named_target: bool = False
     #: Root owns this transition. Code never infers it from the user's text.
+    #: `undecided` -> `planning` -> `planned`. There is no self-declared route:
+    #: a run reaches a worker chain by committing a manifest, never by
+    #: asserting that the work is small.
     mode: str = "undecided"
-    #: Structured target declaration supplied by the model in Direct mode.
-    target_intent: str | None = None
-    target_path: str | None = None
-    target_exists: bool | None = None
-    #: `--plan` makes Direct an invalid transition; otherwise the model decides.
+    #: Retained so an operator `--plan` flag still reads as a no-op rather than
+    #: an error; planning is now the only path in either case.
     plan_required: bool = False
     #: Model-declared size. Manifest arithmetic does not populate this field.
     change_size: str | None = None
@@ -230,62 +221,6 @@ class GoalState:
             assessment=assessment,
             next_role=None,
         )
-
-    def begin_direct(
-        self,
-        *,
-        target_intent: str,
-        target_path: str,
-        target_exists: bool,
-        worker_role: str,
-    ) -> None:
-        """Accept one model-owned Direct declaration after path validation."""
-        if self.mode != "undecided":
-            raise ValueError(f"goal mode is already {self.mode}")
-        if self.plan_required:
-            raise ValueError("Planning mode is required by the operator")
-        if target_intent not in {"create", "modify"}:
-            raise ValueError("target_intent must be create or modify")
-        if target_intent == "modify" and not target_exists:
-            raise ValueError("modify target does not exist")
-        # A `create` declaration needs no file on disk, so ANY invented path
-        # satisfied the checks above — and then set `target_named`, which is
-        # what `evidence_gap` reads. Declaring Direct therefore manufactured
-        # its own evidence, and the route it locks in (SINGLE_CODER, empty
-        # role_chain, one file) is irreversible: `begin_plan` refuses once the
-        # mode is set. That is how a request naming nothing became "one coder
-        # writes one file" before anything had been read.
-        #
-        # So a create-Direct now needs the target to come from somewhere other
-        # than this call: the request named a path, or a worker located one.
-        # Cheap to satisfy and self-serve — spawn an Explorer, or enter
-        # Planning — which is the point: the root fixes this itself.
-        if target_intent == "create" and not self.request_named_target:
-            if not any(
-                outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
-                for outcome in self.outcomes
-            ):
-                raise ValueError(
-                    "Direct mode needs a target someone established: the "
-                    "request names no path inside the workspace and no "
-                    "Explorer has reported findings, so a created path would "
-                    "be this call's own guess. Spawn Explorer for a bounded "
-                    "location question, or use musubi_begin_plan and commit a "
-                    "worker chain"
-                )
-        if worker_role not in ORDERED_ROLES:
-            raise ValueError(
-                f"Direct worker_role must be one of {sorted(ORDERED_ROLES)}"
-            )
-        self.mode = "direct"
-        self.scope = "simple_artifact"
-        self.route = RouteKind.SINGLE_CODER
-        self.target_intent = target_intent
-        self.target_path = target_path
-        self.target_exists = target_exists
-        self.target_named = True
-        self.next_role = worker_role
-        self.role_chain = ()
 
     def begin_plan(self) -> None:
         """Open Root's bounded read-only planning mode."""
@@ -458,9 +393,7 @@ class GoalState:
         true DURING a turn — the whole point is that the root can fix this
         itself rather than returning to the user.
         """
-        if self.mode == "planned" or self.target_named or (
-            self.target_intent == "create" and self.target_path
-        ):
+        if self.mode == "planned" or self.target_named:
             return None
         if any(
             outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
@@ -470,9 +403,9 @@ class GoalState:
         return (
             "nothing establishes what this turn targets: the request names no "
             "path inside the workspace, Root declared no safe creation target, "
-            "and no Explorer has come back with findings. Declare Direct with "
-            "a target path, enter Planning mode, or spawn Explorer for a "
-            "bounded workspace-location question"
+            "and no Explorer has come back with findings. Spawn Explorer "
+            "for a bounded workspace-location question, or commit a plan whose "
+            "manifest names what this change touches"
         )
 
     def reject_planning_artifacts(self, reason: str) -> ChangeAssessment:
@@ -665,8 +598,7 @@ def root_decision_tools(
         return []
     if state.mode == "undecided":
         return [
-            tool for tool in tools
-            if tool.get("name") in {_BEGIN_DIRECT_TOOL, _BEGIN_PLAN_TOOL}
+            tool for tool in tools if tool.get("name") == _BEGIN_PLAN_TOOL
         ]
     if state.mode == "planning":
         if state.planning_contract_failures >= 2:
@@ -678,7 +610,7 @@ def root_decision_tools(
         return [
             tool for tool in tools if tool.get("name") in allowed_planning
         ]
-    # Spawn plus skill selection after Direct or a committed plan.
+    # Spawn plus skill selection, once a plan is committed.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
     if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)

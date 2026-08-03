@@ -53,7 +53,6 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
     tools = [
         {"name": name}
         for name in (
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_read_file",
             "musubi_commit_plan",
@@ -66,7 +65,6 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
 
     state = GoalState.create("anything", "unknown", RouteKind.ROOT_DECIDES)
     assert {t["name"] for t in root_decision_tools(tools, state)} == {
-        "musubi_begin_direct",
         "musubi_begin_plan",
     }
 
@@ -196,12 +194,17 @@ def test_simple_root_surface_is_spawn_only() -> None:
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
     )
-    state.request_named_target = True  # "create dashboard.html" named its target
-    state.begin_direct(
-        target_intent="create",
-        target_path="dashboard.html",
-        target_exists=False,
-        worker_role="coder",
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
     )
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
@@ -253,58 +256,20 @@ def test_skill_listing_stays_offered_alongside_the_spawn() -> None:
         {"name": "musubi_list_skills"},
     ]
     state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    state.request_named_target = True  # "create page.html" named its target
-    state.begin_direct(
-        target_intent="create",
-        target_path="page.html",
-        target_exists=False,
-        worker_role="coder",
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
     )
 
     assert root_decision_tools(tools, state) == tools
-
-
-def test_plan_flag_rejects_direct_mode() -> None:
-    state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    state.plan_required = True
-
-    try:
-        state.begin_direct(
-            target_intent="create",
-            target_path="page.html",
-            target_exists=False,
-            worker_role="coder",
-        )
-    except ValueError as exc:
-        assert "required" in str(exc)
-    else:
-        raise AssertionError("operator-required planning must reject Direct")
-
-
-def test_direct_create_allows_a_new_target_but_modify_requires_existence() -> None:
-    create = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    create.request_named_target = True
-    create.begin_direct(
-        target_intent="create",
-        target_path="page.html",
-        target_exists=False,
-        worker_role="coder",
-    )
-    assert create.mode == "direct"
-    assert create.evidence_gap() is None
-
-    modify = GoalState.create("modify page", "unknown", RouteKind.ROOT_DECIDES)
-    try:
-        modify.begin_direct(
-            target_intent="modify",
-            target_path="missing.html",
-            target_exists=False,
-            worker_role="coder",
-        )
-    except ValueError as exc:
-        assert "does not exist" in str(exc)
-    else:
-        raise AssertionError("modify must fail closed for a missing target")
 
 
 def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
@@ -597,8 +562,10 @@ def test_a_turn_that_establishes_nothing_refuses_a_mutation_worker() -> None:
     gap = _blind_goal().evidence_gap()
 
     assert gap is not None
+    # The refusal names both self-serve ways out, so Root fixes it itself
+    # rather than returning to the user.
     assert "Explorer" in gap
-    assert "Planning mode" in gap
+    assert "manifest" in gap
 
 
 def test_a_named_target_is_enough() -> None:
@@ -737,74 +704,3 @@ def test_the_stop_is_not_terminal() -> None:
     # Re-declaring clears it, which is what the message tells the root to do.
     state.declared_files_expected = 5
     assert state.overrun_stop() is None
-
-
-# ── Direct mode may not manufacture its own target evidence ────────────────
-
-
-def test_direct_create_refuses_a_target_only_this_call_invented() -> None:
-    """The traced failure. `create` needs nothing on disk, so any invented
-    filename passed the existing checks — and `begin_direct` then set
-    `target_named`, which is exactly what `evidence_gap` reads. Declaring
-    Direct therefore satisfied the sufficiency gate with its own guess, and
-    locked in an irreversible route (SINGLE_CODER, empty role_chain) before
-    anything had been read: `begin_plan` refuses once the mode is set."""
-    state = GoalState.create("build an app to check the weather", "unknown",
-                             RouteKind.ROOT_DECIDES)
-    assert state.request_named_target is False
-
-    try:
-        state.begin_direct(
-            target_intent="create",
-            target_path="weather-vn/index.html",
-            target_exists=False,
-            worker_role="coder",
-        )
-    except ValueError as exc:
-        assert "needs a target someone established" in str(exc)
-        # The refusal names both self-serve ways out, so the root fixes this
-        # itself rather than returning to the user.
-        assert "Explorer" in str(exc)
-        assert "musubi_begin_plan" in str(exc)
-    else:
-        raise AssertionError("an invented create target must fail closed")
-
-    assert state.mode == "undecided"  # still free to enter Planning
-
-
-def test_direct_create_accepted_when_the_request_named_the_path() -> None:
-    state = GoalState.create("create dashboard.html", "unknown",
-                             RouteKind.ROOT_DECIDES)
-    state.request_named_target = True
-    state.begin_direct(
-        target_intent="create", target_path="dashboard.html",
-        target_exists=False, worker_role="coder",
-    )
-    assert state.mode == "direct"
-
-
-def test_direct_create_accepted_after_an_explorer_locates_the_target() -> None:
-    """The second way out, and the cheap one: a bounded location question."""
-    state = GoalState.create("build a weather view", "unknown",
-                             RouteKind.ROOT_DECIDES)
-    state.record_outcome(
-        role="explorer", status="done",
-        summary="views live under src/views/", touched_files=(),
-    )
-    state.begin_direct(
-        target_intent="create", target_path="src/views/weather.html",
-        target_exists=False, worker_role="coder",
-    )
-    assert state.mode == "direct"
-
-
-def test_direct_modify_needs_no_named_request_because_the_file_exists() -> None:
-    """A modify target is established by the filesystem, not by the request —
-    the path resolved to something real, which no guess can do."""
-    state = GoalState.create("fix the bug", "unknown", RouteKind.ROOT_DECIDES)
-    assert state.request_named_target is False
-    state.begin_direct(
-        target_intent="modify", target_path="musubi/server.py",
-        target_exists=True, worker_role="coder",
-    )
-    assert state.mode == "direct"

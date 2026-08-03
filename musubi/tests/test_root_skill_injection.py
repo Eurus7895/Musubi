@@ -19,6 +19,7 @@ import pytest
 
 import server
 from agent.goal_state import GoalState, root_decision_tools
+from agent.manifest import parse_change_manifest_object
 from skills import skill_loader
 from validation import subagent_context
 from validation.context_builder import AGENT_SKILL_ALLOWLIST
@@ -272,12 +273,16 @@ def _tools(names: list[str]) -> list[dict]:
 def test_simple_scope_root_sees_spawn_and_listing() -> None:
     """The headline fix: a simple_artifact root can still select a skill."""
     state = GoalState.create("build dashboard", "simple_artifact", "single_coder")
-    state.request_named_target = True  # "build dashboard.html" named its target
-    state.begin_direct(
-        target_intent="create",
-        target_path="dashboard.html",
-        target_exists=False,
-        worker_role="coder",
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 1, "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
     )
     tools = _tools([
         "musubi_spawn_subagent",

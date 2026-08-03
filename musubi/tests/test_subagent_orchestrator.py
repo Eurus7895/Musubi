@@ -325,17 +325,35 @@ def _spawn(role: str, brief: str, **extra: Any) -> LMResponse:
     }])
 
 
-def _direct(role: str, path: str, intent: str = "modify") -> LMResponse:
-    return LMResponse(stop_reason="tool_use", content=[{
-        "type": "tool_use",
-        "id": "mode-direct",
-        "name": "musubi_begin_direct",
-        "input": {
-            "target_intent": intent,
-            "target_path": path,
-            "worker_role": role,
-        },
-    }])
+def _direct(role: str, path: str, intent: str = "modify") -> list[LMResponse]:
+    """Open a turn the only way a turn can now be opened: commit a plan.
+
+    Direct mode is gone. It let Root assert "this is simple, one worker, one
+    file" from the request sentence alone, before reading anything, and that
+    assertion was irreversible. The same single-worker outcome is still
+    reachable — but it has to be EARNED by a manifest naming what the change
+    touches, which `assess_manifest` then classifies. Returns the two responses
+    that replace the one declaration, so call sites splice with `*_direct(...)`.
+    """
+    return [
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "mode-plan",
+            "name": "musubi_begin_plan",
+            "input": {"deliverable": path},
+        }]),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "commit-plan",
+            "name": "musubi_commit_plan",
+            "input": {
+                "plan_markdown": f"# Plan\n\n{intent} {path} with one {role}.",
+                "change_manifest": {"files_expected": 1, "subsystems": ["agent"]},
+                "change_size": "small",
+                "worker_chain": [role],
+            },
+        }]),
+    ]
 
 
 # ── happy path: spawn → run child → complete → summary fed back ─────────────
@@ -343,7 +361,7 @@ def _direct(role: str, path: str, intent: str = "modify") -> LMResponse:
 
 def test_spawn_runs_child_and_feeds_summary_back() -> None:
     router = FakeRouter([
-        _direct("explorer", "."),
+        *_direct("explorer", "."),
         _spawn("explorer", "list the python modules"),
         _text("explored: found server.py and run.py"),    # child cycle 0 (final)
         _text("done"),                                     # parent cycle 1 (final)
@@ -353,7 +371,7 @@ def test_spawn_runs_child_and_feeds_summary_back() -> None:
 
     assert answer == "done"
     # Parent's second LM call sees a bounded goal-state delta, not transcript.
-    parent_followup = router.calls[3]["messages"]
+    parent_followup = router.calls[4]["messages"]
     feedback = str(parent_followup)
     assert "[root-goal-state]" in feedback
     assert "explored: found server.py" in feedback
@@ -368,13 +386,13 @@ def test_child_tool_surface_is_restricted() -> None:
     read + glob/grep discovery), never write/run — captured from the
     FakeRouter's second call."""
     router = FakeRouter([
-        _direct("explorer", "."),
+        *_direct("explorer", "."),
         _spawn("explorer", "scan"),
         _text("ok"),
         _text("done"),
     ])
     asyncio.run(run_agent("scan", router, _musubi_dir(), log=io.StringIO()))
-    child_tools = {t["name"] for t in router.calls[2]["tools"]}
+    child_tools = {t["name"] for t in router.calls[3]["tools"]}
     # Read-only explorer: file read + discovery (glob/grep), never write/run.
     # The mismatch report rides along on every role — it is a statement about
     # the worker's own contract, grants nothing, and a capability-gated version
@@ -397,7 +415,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     role by forwarding that accidental narrowing.
     """
     router = FakeRouter([
-        _direct("coder", "hello.html", "create"),
+        *_direct("coder", "hello.html", "create"),
         _spawn(
             "coder",
             "create a file",
@@ -414,7 +432,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=log))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
-    child_tools = {t["name"] for t in router.calls[2]["tools"]}
+    child_tools = {t["name"] for t in router.calls[3]["tools"]}
 
     assert "musubi_write_file" not in root_tools
     assert "musubi_edit_file" not in root_tools
@@ -428,14 +446,14 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
 
 def test_disallowed_role_policy_denial_is_terminal_without_running_child() -> None:
     router = FakeRouter([
-        _direct("coder", "bad-role.txt", "create"),
+        *_direct("coder", "bad-role.txt", "create"),
         _spawn("saboteur", "do something"),
         _text("this response must not be consumed"),
     ])
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
     assert answer.startswith("[incomplete]")
     assert "saboteur" in answer
-    assert len(router.calls) == 2
+    assert len(router.calls) == 3
 
 
 def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> None:
@@ -469,7 +487,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
     monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
     monkeypatch.setenv("MUSUBI_ROOT", str(_musubi_dir().parent))
     router = FakeRouter([
-        _direct("coder", "policy-test.html", "create"),
+        *_direct("coder", "policy-test.html", "create"),
         _spawn("coder", "attempt a forbidden session operation"),
         LMResponse(stop_reason="tool_use", content=[{
             "type": "tool_use",
@@ -489,7 +507,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
 
     assert answer.startswith("[incomplete]")
     assert "non-recoverable policy failure" in answer
-    assert len(router.calls) == 3
+    assert len(router.calls) == 4
     coder_outcomes = [outcome for outcome in recorded if outcome.role == "coder"]
     assert len(coder_outcomes) == 1
     assert coder_outcomes[0].status == "escalated"
@@ -504,7 +522,7 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     # the child runs its full role budget, exhausts it on tool calls, and the
     # escalation still blocks root success until recovered.
     router = FakeRouter([
-        _direct("explorer", "."),
+        *_direct("explorer", "."),
         _spawn("explorer", "loop", max_turns=1),
     ] + [
         # child cycles 0-5: keeps asking for a tool → exhausts the role cap
@@ -521,8 +539,8 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
-    assert router.calls[8]["tools"] == []
-    fed_back = str(router.calls[9]["messages"])
+    assert router.calls[9]["tools"] == []
+    fed_back = str(router.calls[10]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
     assert "max_turns=6 reached" in fed_back
@@ -554,7 +572,7 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
         "summary: primary coder left recovery.html ready for continuation\n"
     )
     router = FakeRouter([
-        _direct("coder", "recovery.html", "create"),
+        *_direct("coder", "recovery.html", "create"),
         _spawn("coder", "create recovery.html"),
         LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use", "id": "write-recovery",
@@ -589,8 +607,8 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert (tmp_path / "recovery.html").read_text(encoding="utf-8") == (
         "<!doctype html><title>Recovery</title>"
     )
-    assert len(router.calls) == 13
-    forced_final_call = router.calls[10]
+    assert len(router.calls) == 14
+    forced_final_call = router.calls[11]
     assert forced_final_call["tools"] == []
     forced_final_tool_uses = [
         block
@@ -671,16 +689,20 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert "Prior status: escalated" in sub_sessions[1]["brief"]
     assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
 
-    assert len(cycle_rows) == len(router.calls) == 13
-    assert [row["worker_id"] for row in cycle_rows].count("root") == 3
+    # 14, not 13: opening the turn now costs begin_plan + commit_plan where the
+    # retired Direct declaration cost one call. Root's own cycle count rises by
+    # the same one — every LM call still writes exactly one audit row, which is
+    # the property this assertion exists to pin.
+    assert len(cycle_rows) == len(router.calls) == 14
+    assert [row["worker_id"] for row in cycle_rows].count("root") == 4
     assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
     assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
     assert [row["worker_id"] for row in cycle_rows] == [
-        "root", *[primary_handle] * 9, "root", replacement_handle, "root",
+        "root", "root", *[primary_handle] * 9, "root", replacement_handle, "root",
     ]
     assert [
         row["cycle_idx"] for row in cycle_rows if row["worker_id"] == "root"
-    ] == [0, 1, 2]
+    ] == [0, 1, 2, 3]
     assert [
         row["cycle_idx"]
         for row in cycle_rows
@@ -700,7 +722,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
         '"retry_same_strategy":false}'
     )
     router = FakeRouter([
-        _direct("coder", "dashboard.html", "create"),
+        *_direct("coder", "dashboard.html", "create"),
         _spawn("coder", "create html dashboard"),
         _text(blocked),
         _text("done"),
@@ -716,7 +738,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "coder (escalated)" in answer
     assert "output_too_large_for_single_tool_call" in answer
-    fed_back = str(router.calls[3]["messages"])
+    fed_back = str(router.calls[4]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "output_too_large_for_single_tool_call" in fed_back
     assert "blocked" in fed_back
@@ -1218,7 +1240,7 @@ def test_a_rejected_skill_mismatch_report_never_reaches_the_root(
     monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
     monkeypatch.setenv("MUSUBI_ROOT", str(_musubi_dir().parent))
     router = FakeRouter([
-        _direct("coder", "weather.html", "create"),
+        *_direct("coder", "weather.html", "create"),
         _spawn("coder", "build an app that checks the weather"),
         LMResponse(stop_reason="tool_use", content=[{
             "type": "tool_use",

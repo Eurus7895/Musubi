@@ -248,7 +248,6 @@ def test_root_first_cycle_sees_only_mode_declarations() -> None:
         }
         for name in (
             "musubi_read_file",
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_spawn_subagent",
             "musubi_get_skill",
@@ -273,7 +272,6 @@ def test_root_first_cycle_sees_only_mode_declarations() -> None:
     ))
 
     assert [tool["name"] for tool in router.calls[0]["tools"]] == [
-        "musubi_begin_direct",
         "musubi_begin_plan",
     ]
 
@@ -388,7 +386,6 @@ def test_simple_root_two_call_projection_stays_below_3k_tokens() -> None:
 
     # The first call exposes only the model-owned Direct/Planning decision.
     assert {tool["name"] for tool in first_call["tools"]} == {
-        "musubi_begin_direct",
         "musubi_begin_plan",
     }
     # Adding skill selection to a simple root costs ~1k tokens across the
@@ -1879,7 +1876,7 @@ def test_system_prompt_has_root_sizing_ladder_and_write_strategy() -> None:
     prompt = build_system_prompt().lower()
     # Root owns both the mode and the size decision; the harness does not infer
     # either from the user's response text.
-    assert "musubi_begin_direct" in prompt
+    assert "musubi_begin_plan" in prompt
     assert "musubi_begin_plan" in prompt
     assert "small/medium/large" in prompt
     assert "do not spawn a planner" in prompt
@@ -2754,7 +2751,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
 
     assert answer == "ok"
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
     assert "musubi_write_file" not in names
     assert "musubi_edit_file" not in names
     assert "musubi_run_command" not in names
@@ -2778,7 +2775,7 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
 
 
 def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
@@ -2793,7 +2790,7 @@ def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
     ))
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
     assert "musubi_get_skill" not in names
 
 
@@ -3015,7 +3012,7 @@ def test_plan_first_directive_injected_into_system_prompt() -> None:
     from agent import run as run_mod
     from agent.context import build_system_prompt
 
-    assert "musubi_begin_plan" in run_mod._PLAN_FIRST_DIRECTIVE
+    assert "musubi_commit_plan" in run_mod._PLAN_FIRST_DIRECTIVE
     assert "musubi_commit_plan" in run_mod._PLAN_FIRST_DIRECTIVE
     combined = f"{build_system_prompt('scope')}\n\n{run_mod._PLAN_FIRST_DIRECTIVE}"
     assert "--plan" in combined
@@ -3299,7 +3296,7 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     assert orchestration.spawned_workers == 0
     replay = str(router.calls[1]["messages"])
     assert "refused" in replay
-    assert "Planning mode" in replay
+    assert "manifest" in replay
 
 
 def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
@@ -4004,7 +4001,7 @@ def test_a_blind_coder_spawn_is_refused_and_names_the_way_out(
 
     assert "s1" in refusals
     assert "Explorer" in refusals["s1"]
-    assert "Planning mode" in refusals["s1"]
+    assert "manifest" in refusals["s1"]
     # A read-only worker is never blocked — it is how the gap gets closed.
     explorer = [{
         "id": "s2", "name": "musubi_spawn_subagent",

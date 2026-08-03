@@ -320,6 +320,32 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     enforceable version is this gate routing unnamed work into Planning, where
     a plan and acceptance criteria are produced by construction.
 
+11. **Implemented: Direct mode is gone; a worker chain is earned, never
+    declared.** Item 10 stopped a Direct declaration answering the target
+    question with its own invented path, but the declaration was making a
+    second claim that gate never touched: `scope="simple_artifact"`,
+    `route=SINGLE_CODER`. Knowing WHERE a file is says nothing about HOW BIG
+    the work is — "refactor src/auth.py" names an existing path and is not
+    simple — so a check on target evidence could never validate a claim about
+    complexity. Nor can complexity be measured before the work starts: the
+    thing that measures it is the change manifest, and the manifest only
+    exists in Planning.
+
+    So the declaration is removed rather than gated. `musubi_begin_direct`,
+    `GoalState.begin_direct`, the declared-target fields, and item 10's
+    `request_named_target` all go with it — the last of these existed only to
+    stop a declaration self-answering, and there is no declaration left.
+    `musubi_begin_plan` is now the single entry to any worker flow.
+
+    `RouteKind.SINGLE_CODER` stays. It is still reachable, but only as an
+    OUTCOME: `assess_manifest` classifies a committed manifest of one file and
+    one subsystem as exactly that. The single-worker path is unchanged in
+    substance and changed entirely in provenance — proved by a manifest that
+    names what the change touches, instead of asserted from the request
+    sentence before anything was read. A one-file change costs one extra
+    control call and produces a plan the coder can work from, which is the
+    thing its own role prompt (rule 3) has always asked for.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

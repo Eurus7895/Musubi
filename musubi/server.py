@@ -1233,22 +1233,6 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
 
 
 @mcp.tool()
-def musubi_begin_direct(
-    target_intent: str,
-    target_path: str,
-    worker_role: str = "coder",
-) -> str:
-    """Declare Direct mode; the driver validates path facts and records state."""
-    return json.dumps({
-        "status": "declared",
-        "mode": "direct",
-        "target_intent": target_intent,
-        "target_path": target_path,
-        "worker_role": worker_role,
-    })
-
-
-@mcp.tool()
 def musubi_begin_plan(deliverable: str) -> str:
     """Declare Planning mode; the driver opens bounded Root read tools."""
     return json.dumps({
