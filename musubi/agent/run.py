@@ -174,6 +174,16 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
     contextvars.ContextVar("musubi_worker_touched_files", default=None)
 )
 
+# Same sink pattern for the one thing a worker can say ABOUT its own contract
+# rather than about the workspace: that the skill pushed into it does not fit
+# the brief it was given. HI #2 still holds — the push happened, the worker
+# still runs under it, and it cannot swap its own skill. What changes is that
+# the mismatch becomes control flow the parent can read, instead of a fact only
+# the worker knew and had no way to state.
+_worker_skill_reports: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar("musubi_worker_skill_reports", default=None)
+)
+
 # O3 — a short label identifying whose cycle a log line belongs to. `run_subagent`
 # sets `<role>#<handle>` for the worker it runs; the root leaves the default. Read
 # by the cycle loggers so several "cycle 0" lines from different workers are
@@ -3795,6 +3805,7 @@ async def _dispatch_one(
                 result_text=text, log=log,
             )
         _record_touched_file(name, args, text)
+        _record_skill_mismatch(name, args, text, log)
         return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
         result = f"[tool error] {type(exc).__name__}: {exc}"
@@ -4068,6 +4079,50 @@ def _tool_audit_args(args: dict[str, Any], text: str) -> dict[str, Any]:
         if isinstance(value, str) and value:
             enriched[key] = value
     return enriched
+
+
+#: The tool a worker calls to say the pushed skill does not fit its brief.
+#: Not a capability — a summarizer with zero tools must still be able to say
+#: it, so `select_child_tools` grants it unconditionally.
+SKILL_MISMATCH_TOOL = "musubi_report_skill_mismatch"
+
+
+def _record_skill_mismatch(
+    name: str, args: dict[str, Any], text: str, log: Any,
+) -> None:
+    """Record an accepted skill-mismatch report into the active worker's sink.
+
+    No-op unless a `run_subagent` upstream is collecting. Only a report the
+    SERVER accepted counts: the worker states the mismatch, the harness decides
+    whether the statement is well-formed, and the parent reads the harness's
+    verdict — never the worker's raw claim.
+    """
+    if name != SKILL_MISMATCH_TOOL:
+        return
+    sink = _worker_skill_reports.get()
+    if sink is None:
+        return
+    from agent.jsonio import loads_dict
+
+    payload = loads_dict(text)
+    if payload.get("status") != "recorded":
+        return
+    report = {
+        "pushed_skill_id": str(payload.get("pushed_skill_id") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "suggested_skill_id": str(payload.get("suggested_skill_id") or "") or None,
+    }
+    sink.append(report)
+    emit_runtime_log(
+        log,
+        "[agent]   skill mismatch reported "
+        f"pushed={report['pushed_skill_id'] or '?'}"
+        + (
+            f" suggested={report['suggested_skill_id']}"
+            if report["suggested_skill_id"] else ""
+        ),
+        category="skills",
+    )
 
 
 def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:

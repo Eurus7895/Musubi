@@ -597,7 +597,9 @@ async def run_pipeline(
         allowed = ctx.get("allowed_tools") or st.get("allowed_tools") or []
         role_skill = ctx.get("role_skill")
 
-        system_prompt = build_subagent_system_prompt(spec.prompt, role_skill, brief)
+        system_prompt = build_subagent_system_prompt(
+            spec.prompt, role_skill, brief, handle_id=handle_id,
+        )
         child_tools = select_child_tools(tools, allowed)
 
         # Stage nesting (mirrors agent/subagent.py's worker nesting): the

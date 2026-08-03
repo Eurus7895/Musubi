@@ -84,6 +84,7 @@ async def run_subagent(
         _call_tool_text,
         _policy_incomplete,
         _worker_log_label,
+        _worker_skill_reports,
         _worker_touched_files,
         run_unit,
     )
@@ -162,7 +163,9 @@ async def run_subagent(
     allowed = ctx.get("allowed_tools") or []
 
     worker_max_output = _frontmatter_max_output_tokens(agent_md)
-    system_prompt = build_subagent_system_prompt(agent_md, role_skill, brief)
+    system_prompt = build_subagent_system_prompt(
+        agent_md, role_skill, brief, handle_id=handle_id,
+    )
     system_prompt = f"{system_prompt}\n\n{_mechanical_registry().prompt_block()}"
     child_tools = select_child_tools(tools, allowed)
 
@@ -199,6 +202,10 @@ async def run_subagent(
     # own sink; drives the mechanical gate after the run.
     touched: set[str] = set()
     token = _worker_touched_files.set(touched)
+    # Same per-worker sink for the mismatch report, so a nested worker's
+    # verdict about its own skill never surfaces on its parent's outcome.
+    skill_reports: list[dict[str, Any]] = []
+    reports_token = _worker_skill_reports.set(skill_reports)
     label_token = _worker_log_label.set(f"{role}#{handle_id[:8]}")
     try:
         with runtime_worker_scope(role, handle_id):
@@ -277,6 +284,7 @@ async def run_subagent(
         raise
     finally:
         _worker_touched_files.reset(token)
+        _worker_skill_reports.reset(reports_token)
         _worker_log_label.reset(label_token)
     # Typed failure evidence, derived from CONTROL FLOW (which branch
     # terminated the worker), never from parsing summary prose (HI #1-adjacent:
@@ -328,6 +336,14 @@ async def run_subagent(
         line = _mechanical_line(gate)
         summary = f"{line}\n{summary}"
         print(f"[agent]   {line}", file=log)
+
+    # A skill mismatch travels with the worker's result whatever that result
+    # is. A worker that delivered under a wrong-fitting skill has the SAME
+    # thing to tell the root as one that failed under it — the next spawn on
+    # this brief should push something else — and a report that only survived
+    # failure would teach the root nothing from the runs that scraped through.
+    if skill_reports:
+        summary = f"{_skill_mismatch_line(role, skill_reports)}\n{summary}"
 
     complete_args: dict[str, Any] = {
         "handle_id": handle_id, "summary": summary, "turns": turns, "status": status,
@@ -580,6 +596,27 @@ def _mechanical_line(gate: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _skill_mismatch_line(role: str, reports: list[dict[str, Any]]) -> str:
+    """Compact one-liner so the root sees a rejected skill fit, not prose.
+
+    Only the FIRST report is projected. A worker that says the same thing four
+    times has not said four things, and the root's next decision needs one
+    fact: this skill did not fit this brief, and here is what to push instead.
+    """
+    first = reports[0]
+    parts = [
+        f"[skill-mismatch] role={role}",
+        f"pushed={first.get('pushed_skill_id') or '?'}",
+    ]
+    if first.get("suggested_skill_id"):
+        parts.append(f"suggested={first['suggested_skill_id']}")
+    if first.get("reason"):
+        parts.append(f"reason={first['reason']!r}")
+    if len(reports) > 1:
+        parts.append(f"reports={len(reports)}")
+    return " ".join(parts)
+
+
 # ── prompt + tool surface (ported from subagentRunnerCore.ts) ───────────────
 
 
@@ -589,12 +626,32 @@ def build_subagent_system_prompt(
     brief: str,
     *,
     platform_name: str | None = None,
+    handle_id: str | None = None,
 ) -> str:
-    """Stripped agent.md + role skill + brief — the brief IS the task."""
+    """Stripped agent.md + role skill + brief — the brief IS the task.
+
+    `handle_id` names THIS worker to itself. It is the one identifier a worker
+    needs to report on its own run, and without it the mismatch escape hatch is
+    unreachable — a tool a worker cannot address is a tool it does not have.
+    """
     parts: list[str] = [_strip_frontmatter(agent_md).strip()]
     skill = (role_skill or "").strip()
     if skill:
         parts.append("\n\n## Skill (pushed by harness)\n\n" + _strip_frontmatter(skill).strip())
+        if handle_id:
+            parts.append(
+                "\n\nThis skill was selected for you and you cannot change it. "
+                "If its procedure CONTRADICTS the brief — its decision points "
+                "have no branch for this task, or following it would produce "
+                "the wrong kind of deliverable — call "
+                "`musubi_report_skill_mismatch` ONCE with "
+                f'handle_id="{handle_id}", a one-sentence reason, and a better '
+                "skill id if you know one. Then keep working and deliver the "
+                "best result you can: the report is for whoever spawns the "
+                "next worker on this brief, not permission to stop. A skill "
+                "that is merely incomplete is not a mismatch — finish, and say "
+                "what was missing in your summary."
+            )
     host = os.name if platform_name is None else platform_name
     if host == "nt":
         parts.append(
@@ -624,9 +681,17 @@ def select_child_tools(
     is never silently granted shell. An unmapped capability contributes
     nothing; an empty result is valid (a text-only role, summarizer-shaped).
     """
+    from agent.run import SKILL_MISMATCH_TOOL
+
     wanted: set[str] = set()
     for sym in allowed_symbolic:
         wanted.update(SYMBOLIC_TO_MCP.get(sym, []))
+    # The mismatch report is not a capability, so it is not in the symbolic
+    # map: it is granted to every worker regardless of role. A role whose
+    # capabilities map to nothing (summarizer) still needs to be able to say
+    # its pushed skill does not fit, and that is exactly the role a
+    # capability-gated report would silence.
+    wanted.add(SKILL_MISMATCH_TOOL)
     return [t for t in tools if t.get("name") in wanted]
 
 

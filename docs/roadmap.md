@@ -247,6 +247,28 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-03-truncated-and-empty-model-turns.md`](./superpowers/plans/2026-08-03-truncated-and-empty-model-turns.md)
 
+8. **Implemented: a worker can report a skill mismatch.** The same run showed
+   a `coder` handed `web-ui` for "an application to check weather" — a skill
+   whose procedure forbids the network call the task requires — with no way to
+   say so. HI #2 is unchanged: the push still happens, is still not
+   opt-out-able, and a worker still cannot select its own skill. What is added
+   is a statement rather than a choice. `musubi_report_skill_mismatch` is
+   validated by the harness (running worker, non-empty reason, and any
+   suggested skill passing the same role allowlist a spawn passes), granted to
+   every role including toolless ones because a capability gate would silence
+   exactly the roles that need it, and projected as one line onto the worker's
+   summary whatever its status — a worker that delivered under a wrong-fitting
+   skill tells the root the same thing as one that failed under it. The prompt
+   that advertises the tool carries the worker's own handle, since a tool a
+   worker cannot address is a tool it does not have.
+
+   Not addressed, and the deeper constraint: `pushed_skill_id` is singular, so
+   a task needing both presentation and data acquisition cannot be expressed at
+   spawn time. Changing that arity is a HI #2 design discussion.
+
+   Plan:
+   [`2026-08-03-worker-skill-mismatch-report.md`](./superpowers/plans/2026-08-03-worker-skill-mismatch-report.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

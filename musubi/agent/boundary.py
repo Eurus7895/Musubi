@@ -138,6 +138,17 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_list_subagent_spawns",
 })
 
+#: Reports a worker makes about its own contract. Allowed for every role on
+#: purpose: a worker's tool surface is chosen by its ROLE, so gating the
+#: mismatch report behind a capability would silence exactly the roles most
+#: likely to need it — a summarizer holds no tools at all. The call has no
+#: blast radius (it writes a bounded string and grants nothing), and the
+#: harness re-validates any suggested skill against the role's allowlist, so
+#: this can never become a self-service skill swap.
+_WORKER_REPORT_TOOLS: frozenset[str] = frozenset({
+    "musubi_report_skill_mismatch",
+})
+
 _AGENT_SESSION_TOOLS: frozenset[str] = frozenset({
     # Kept for backward compatibility with existing standalone tests and
     # clients. The driver opens the parent session itself, but this call is
@@ -224,6 +235,12 @@ def evaluate_tool_call(role: str, tool_name: str) -> PolicyDecision:
         return PolicyDecision(
             "ALLOW", clean_role, tool_name,
             "read-only governance/compression tool",
+        )
+
+    if tool_name in _WORKER_REPORT_TOOLS:
+        return PolicyDecision(
+            "ALLOW", clean_role, tool_name,
+            "worker report about its own contract; grants nothing",
         )
 
     if tool_name in _AGENT_SESSION_TOOLS:

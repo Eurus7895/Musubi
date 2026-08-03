@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 from agent.boundary import evaluate_argument_policy
+from agent.textfmt import bounded
 from agent.manifest import (
     ChangeManifestInput,
     ROOT_PLAN_CHANGE_SIZE,
@@ -1487,6 +1488,11 @@ def musubi_distill_session(session_id: str) -> str:
 # MUSUBI_SUBAGENT_POLL_S env var to keep the suite fast.
 _AWAIT_POLL_S: float = float(os.environ.get("MUSUBI_SUBAGENT_POLL_S", "0.25"))
 
+#: Cap on a recorded skill-mismatch reason. It is advice for the parent's
+#: next decision, not a report — long enough to name the contradiction,
+#: short enough that it cannot crowd the parent's context.
+_SKILL_MISMATCH_REASON_CHARS: int = 400
+
 
 def _durable_spawn_evidence(
     payload: dict[str, Any], *, abandon_worker: bool = True,
@@ -1919,6 +1925,92 @@ def musubi_spawn_pipeline_stage(
         "spawn_roles": _policy.list_subagent_roles(role, pipeline_name),
         "brief": brief,
         "pushed_skill_id": skill_choice,
+    })
+
+
+@mcp.tool()
+def musubi_report_skill_mismatch(
+    handle_id: str,
+    reason: str,
+    suggested_skill_id: str | None = None,
+) -> str:
+    """Report that the skill pushed into this worker does not fit its brief.
+
+    HI #2 is unchanged by this tool. The push already happened, the worker
+    keeps running under the skill it was given, and nothing here swaps it: a
+    worker cannot select its own skill, before or after calling this. What the
+    tool adds is a way for the worker to SAY so, so a mismatch reaches the
+    parent as an audited fact instead of dying inside the one agent that knew.
+
+    Call it when the pushed skill's procedure contradicts the brief — its
+    decision tree has no branch for this task, or following it would produce
+    the wrong kind of deliverable. Do not call it because the skill is merely
+    incomplete; keep working and report what was missing in your summary.
+
+    Validation (fail-closed):
+      1. handle_id must name a sub-session that is still running. A terminal
+         worker has already been judged; re-opening that verdict is not this
+         tool's job.
+      2. reason must be a non-empty string, recorded bounded.
+      3. suggested_skill_id, when given, must be in THIS role's skill
+         allowlist and in the catalog — the same firewall a spawn passes. The
+         suggestion is advice to the parent, never a self-grant.
+
+    Returns { status: "recorded", handle_id, role, pushed_skill_id, reason,
+    suggested_skill_id } — or a structured error.
+    """
+    row = sub_sessions.get(handle_id)
+    if row is None:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "unknown_handle",
+            "error": f"sub-session {handle_id!r} not found",
+        })
+    if row.get("status") != "running":
+        return json.dumps({
+            "status": "error",
+            "error_kind": "not_running",
+            "error": (
+                f"sub-session {handle_id!r} is {row.get('status')!r}; a "
+                "terminal worker cannot report a skill mismatch"
+            ),
+        })
+    clean_reason = (reason or "").strip()
+    if not clean_reason:
+        return json.dumps({
+            "status": "error",
+            "error_kind": "invalid_reason",
+            "error": "reason must be a non-empty string",
+        })
+
+    role = str(row.get("role") or "")
+    suggestion = (suggested_skill_id or "").strip() or None
+    if suggestion is not None:
+        role_skills = AGENT_SKILL_ALLOWLIST.get(normalize_role(role), set())
+        if suggestion not in role_skills:
+            return json.dumps({
+                "status": "error",
+                "error_kind": "policy_denied",
+                "error": (
+                    f"Skill {suggestion!r} is not permitted for worker role "
+                    f"{role!r}."
+                ),
+                "allowed_skills": sorted(role_skills),
+            })
+        if skill_loader.get_skill(suggestion) is None:
+            return json.dumps({
+                "status": "error",
+                "error_kind": "unknown_skill",
+                "error": f"skill {suggestion!r} is not in the catalog",
+            })
+
+    return json.dumps({
+        "status": "recorded",
+        "handle_id": handle_id,
+        "role": role,
+        "pushed_skill_id": row.get("pushed_skill_id"),
+        "reason": bounded(clean_reason, _SKILL_MISMATCH_REASON_CHARS),
+        "suggested_skill_id": suggestion,
     })
 
 

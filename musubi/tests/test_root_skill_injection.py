@@ -317,3 +317,115 @@ def test_broad_scope_root_also_sees_skill_read_tools() -> None:
     ])
     visible = {t["name"] for t in root_decision_tools(tools, state)}
     assert {"musubi_list_skills", "musubi_get_skill", "musubi_get_reference"} <= visible
+
+
+# ── the worker can say the pushed skill does not fit (HI #2 stays intact) ──
+
+
+def test_report_skill_mismatch_records_the_pushed_skill_and_suggestion(
+    parent_session,
+) -> None:
+    """A worker states the mismatch; the harness decides the statement is
+    well-formed and echoes back WHAT was pushed. The worker never names the
+    pushed skill itself — that fact comes from the spawn row."""
+    sid, _ = parent_session
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid, parent_agent_name="root", role="coder",
+        brief="build a weather app", pushed_skill_id="web-ui",
+    ))
+    out = json.loads(server.musubi_report_skill_mismatch(
+        handle_id=spawn["handle_id"],
+        reason="the skill forbids external requests; the app must fetch live data",
+        suggested_skill_id="typescript",
+    ))
+    assert out["status"] == "recorded"
+    assert out["role"] == "coder"
+    assert out["pushed_skill_id"] == "web-ui"
+    assert out["suggested_skill_id"] == "typescript"
+    assert "external requests" in out["reason"]
+
+
+def test_report_skill_mismatch_is_not_a_self_service_skill_swap(
+    parent_session,
+) -> None:
+    """The suggestion passes the SAME firewall a spawn does. A worker that
+    could name any skill here would have found a way to widen its own
+    contract from inside the sandbox."""
+    sid, _ = parent_session
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid, parent_agent_name="root", role="coder",
+        brief="build a weather app", pushed_skill_id="web-ui",
+    ))
+    out = json.loads(server.musubi_report_skill_mismatch(
+        handle_id=spawn["handle_id"], reason="wrong fit",
+        suggested_skill_id="pr-scope-detection",  # reviewer-side, not coder's
+    ))
+    assert out["status"] == "error"
+    assert out["error_kind"] == "policy_denied"
+    assert "pr-scope-detection" not in out["allowed_skills"]
+
+    unknown = json.loads(server.musubi_report_skill_mismatch(
+        handle_id=spawn["handle_id"], reason="wrong fit",
+        suggested_skill_id="weather-api",
+    ))
+    assert unknown["status"] == "error"
+
+
+def test_report_skill_mismatch_requires_a_running_worker_and_a_reason(
+    parent_session,
+) -> None:
+    """Fail closed on both ends: an unknown handle, and an empty reason that
+    would put an unexplained mismatch in front of the root."""
+    sid, _ = parent_session
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=sid, parent_agent_name="root", role="coder",
+        brief="build a weather app", pushed_skill_id="web-ui",
+    ))
+    assert json.loads(
+        server.musubi_report_skill_mismatch("no-such-handle", "x")
+    )["error_kind"] == "unknown_handle"
+    assert json.loads(
+        server.musubi_report_skill_mismatch(spawn["handle_id"], "   ")
+    )["error_kind"] == "invalid_reason"
+
+    from session import sub_sessions
+    sub_sessions.complete(spawn["handle_id"], summary="done", turns=1)
+    assert json.loads(
+        server.musubi_report_skill_mismatch(spawn["handle_id"], "too late")
+    )["error_kind"] == "not_running"
+
+
+def test_every_worker_role_can_reach_the_mismatch_report() -> None:
+    """Including a role whose capabilities map to no tools at all. A tool a
+    worker cannot address is a tool it does not have."""
+    from agent.boundary import evaluate_tool_call
+    from agent.subagent import select_child_tools
+
+    catalog = [
+        {"name": "musubi_read_file"}, {"name": "musubi_write_file"},
+        {"name": "musubi_report_skill_mismatch"},
+    ]
+    summarizer_surface = {t["name"] for t in select_child_tools(catalog, [])}
+    assert summarizer_surface == {"musubi_report_skill_mismatch"}
+
+    for role in ("coder", "planner", "summarizer", "explorer"):
+        assert evaluate_tool_call(role, "musubi_report_skill_mismatch").allowed
+
+
+def test_worker_prompt_names_the_handle_the_report_needs() -> None:
+    """The escape hatch is unreachable without the worker's own handle_id, so
+    the prompt that advertises it must also supply it."""
+    from agent.subagent import build_subagent_system_prompt
+
+    prompt = build_subagent_system_prompt(
+        "---\nname: Coder\n---\nrole body", "skill body", "the brief",
+        handle_id="abc123",
+    )
+    assert "musubi_report_skill_mismatch" in prompt
+    assert "abc123" in prompt
+
+    # No skill pushed → nothing to mismatch, so no instruction is added.
+    assert "musubi_report_skill_mismatch" not in build_subagent_system_prompt(
+        "---\nname: Coder\n---\nrole body", None, "the brief",
+        handle_id="abc123",
+    )

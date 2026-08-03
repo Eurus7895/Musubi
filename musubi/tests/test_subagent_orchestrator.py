@@ -376,7 +376,13 @@ def test_child_tool_surface_is_restricted() -> None:
     asyncio.run(run_agent("scan", router, _musubi_dir(), log=io.StringIO()))
     child_tools = {t["name"] for t in router.calls[2]["tools"]}
     # Read-only explorer: file read + discovery (glob/grep), never write/run.
-    assert child_tools == {"musubi_read_file", "musubi_glob", "musubi_grep"}
+    # The mismatch report rides along on every role — it is a statement about
+    # the worker's own contract, grants nothing, and a capability-gated version
+    # would silence exactly the roles that hold no capabilities.
+    assert child_tools == {
+        "musubi_read_file", "musubi_glob", "musubi_grep",
+        "musubi_report_skill_mismatch",
+    }
     assert "musubi_write_file" not in child_tools
     assert "musubi_run_command" not in child_tools
     assert "musubi_spawn_subagent" not in child_tools  # leaves can't re-spawn
@@ -1186,3 +1192,206 @@ def test_bounded_scaffold_cannot_be_starved_or_abandon_recovery(
     assert decide_recovery(
         outcome, same_role_failures=1, worker_slots=1,
     ) is RecoveryAction.AUTO_REPLACE
+
+
+# ── a worker's verdict on its own pushed skill reaches the root ─────────────
+
+
+def test_a_rejected_skill_mismatch_report_never_reaches_the_root(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The reported failure in prose: a coder handed `web-ui` for a weather
+    app knew the skill forbade the network call the task required, and had no
+    way to say so. The root spawned, the worker delivered the wrong shape, and
+    the mismatch died inside the one agent that knew it."""
+    from agent import run as run_mod
+
+    recorded: list[run_mod.WorkerOutcome] = []
+    original_record = Orchestration.record_worker_outcome
+
+    def record_outcome(self, **kwargs):  # noqa: ANN001
+        outcome = original_record(self, **kwargs)
+        recorded.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(Orchestration, "record_worker_outcome", record_outcome)
+    monkeypatch.setenv("MUSUBI_ROOT", str(_musubi_dir().parent))
+    router = FakeRouter([
+        _direct("coder", "weather.html", "create"),
+        _spawn("coder", "build an app that checks the weather"),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "mismatch-1",
+            "name": "musubi_report_skill_mismatch",
+            "input": {
+                "handle_id": "__RUNTIME__",
+                "reason": "skill forbids external requests; the app needs live data",
+            },
+        }]),
+        _text("delivered a static page; it cannot fetch live weather"),
+        _text("root sees the mismatch"),
+    ])
+
+    asyncio.run(run_agent(
+        "build an app that checks the weather",
+        router, _musubi_dir(), log=io.StringIO(),
+    ))
+
+    coder = [outcome for outcome in recorded if outcome.role == "coder"]
+    assert len(coder) == 1
+    # The handle placeholder never resolves, so the report is REJECTED by the
+    # harness — and a rejected report must not reach the root as a fact.
+    assert "[skill-mismatch]" not in coder[0].summary
+
+
+def test_skill_mismatch_line_projects_one_fact_not_prose() -> None:
+    from agent.subagent import _skill_mismatch_line
+
+    line = _skill_mismatch_line("coder", [
+        {
+            "pushed_skill_id": "web-ui",
+            "reason": "forbids external requests",
+            "suggested_skill_id": "typescript",
+        },
+        {"pushed_skill_id": "web-ui", "reason": "again", "suggested_skill_id": None},
+    ])
+    assert line.startswith("[skill-mismatch] role=coder pushed=web-ui")
+    assert "suggested=typescript" in line
+    assert "reports=2" in line
+    # Only the first report is projected; a worker repeating itself has not
+    # given the root a second fact to weigh.
+    assert "again" not in line
+
+
+def test_accepted_skill_mismatch_travels_with_a_SUCCESSFUL_worker(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """The report is not failure evidence. A worker that delivered under a
+    wrong-fitting skill has the same thing to tell the root as one that failed
+    under it — the next spawn on this brief should push something else — so the
+    line rides on a `done` outcome too."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    completions: list[dict[str, Any]] = []
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_complete_subagent":
+                completions.append(arguments)
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"h-mismatch",'
+                    '"role":"coder","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"build a weather app",'
+                    '"role_skill":"# Web UI","role_skill_id":"web-ui",'
+                    '"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"recorded","final_status":"done"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        # What `_record_skill_mismatch` writes after the SERVER accepts one.
+        run_mod._worker_skill_reports.get().append({
+            "pushed_skill_id": "web-ui",
+            "reason": "skill forbids external requests; the app needs live data",
+            "suggested_skill_id": "typescript",
+        })
+        return "delivered a static page", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+    orchestration = Orchestration(parent_session_id="parent")
+
+    result = asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "build a weather app",
+         "parent_session_id": "parent", "pushed_skill_id": "web-ui"},
+        FakeRouter([]), [], io.StringIO(),
+        agents_dir=tmp_path, orchestration=orchestration,
+    ))
+
+    assert completions[0]["status"] == "done"
+    assert completions[0]["summary"].startswith("[skill-mismatch] role=coder")
+    assert "pushed=web-ui" in completions[0]["summary"]
+    assert "suggested=typescript" in completions[0]["summary"]
+    assert "delivered a static page" in completions[0]["summary"]
+    assert "[skill-mismatch]" in result
+
+
+def test_skill_reports_do_not_leak_from_a_nested_worker_to_its_parent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """Each `run_subagent` owns its sink, so a child's verdict about its own
+    skill is never attributed to the worker that summoned it."""
+    from agent import run as run_mod
+    from agent import subagent as subagent_mod
+
+    completions: list[dict[str, Any]] = []
+
+    class Session:
+        async def call_tool(self, name, arguments):  # noqa: ANN001
+            if name == "musubi_complete_subagent":
+                completions.append(arguments)
+            payloads = {
+                "musubi_spawn_subagent": (
+                    '{"status":"spawned","handle_id":"h-outer",'
+                    '"role":"coder","max_turns":8}'
+                ),
+                "musubi_get_subagent_context": (
+                    '{"status":"ok","brief":"outer",'
+                    '"role_skill":"# Web UI","role_skill_id":"web-ui",'
+                    '"allowed_tools":[]}'
+                ),
+                "musubi_complete_subagent": (
+                    '{"status":"recorded","final_status":"done"}'
+                ),
+            }
+
+            class Chunk:
+                text = payloads[name]
+
+            class Result:
+                content = [Chunk()]
+
+            return Result()
+
+    outer_sink: list[Any] = []
+
+    async def fake_run_unit(*args, **kwargs):  # noqa: ANN001
+        # Stand in for a nested worker: it sets, fills, and resets its own sink.
+        token = run_mod._worker_skill_reports.set([])
+        run_mod._worker_skill_reports.get().append({
+            "pushed_skill_id": "explorer", "reason": "child mismatch",
+            "suggested_skill_id": None,
+        })
+        run_mod._worker_skill_reports.reset(token)
+        outer_sink.append(list(run_mod._worker_skill_reports.get()))
+        return "outer worker finished", 1
+
+    monkeypatch.setattr(run_mod, "run_unit", fake_run_unit)
+    monkeypatch.setattr(subagent_mod, "_read_agent_md", lambda *args: "# Coder")
+
+    asyncio.run(run_subagent(
+        Session(),
+        {"role": "coder", "brief": "outer", "parent_session_id": "parent"},
+        FakeRouter([]), [], io.StringIO(), agents_dir=tmp_path,
+    ))
+
+    assert outer_sink == [[]]
+    assert "[skill-mismatch]" not in completions[0]["summary"]
