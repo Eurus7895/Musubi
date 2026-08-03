@@ -26,12 +26,18 @@ def test_research_skill_loads() -> None:
     assert "## Procedure" in content
 
 
-def test_docs_writing_declares_doc_tool_applies_to() -> None:
+def test_docs_writing_is_universal_because_prose_needs_no_doc_generator() -> None:
+    """`docs-writing` used to declare `doc_tools: [sphinx, mkdocs, mdbook]`.
+
+    The gate asked about TOOLING for a skill whose deliverable is PROSE. A repo
+    whose docs are plain Markdown — which includes this one — reports
+    `doc_tool: null`, and an empty workspace value makes any skill declaring
+    that dimension fail to match (`skills/router.py:44-47`). So "write a design
+    doc" lost its skill in exactly the repos that write docs by hand. Whether a
+    README needs writing does not depend on whether Sphinx is installed.
+    """
     metas = {m.skill_id: m for m in skill_loader.list_skills()}
-    docs = metas["docs-writing"]
-    assert docs.applies_to is not None
-    assert "doc_tools" in docs.applies_to
-    assert set(docs.applies_to["doc_tools"]) >= {"sphinx", "mkdocs"}
+    assert metas["docs-writing"].applies_to is None
 
 
 def test_research_is_universal() -> None:
@@ -93,11 +99,16 @@ def test_agent_catalog_no_profile_keeps_both_skills(monkeypatch) -> None:
     assert "docs-writing" in ids
 
 
-def test_agent_catalog_rust_profile_drops_docs_writing(monkeypatch) -> None:
-    """Headline router behaviour for non-coding skills:
-    docs-writing is doc_tools-scoped (sphinx/mkdocs/mdbook), so a Rust
-    workspace with no doc tool drops it. research stays — it has no
-    applies-to and is universally applicable."""
+def test_rust_profile_drops_language_scoped_skills_but_keeps_universal_ones(
+    monkeypatch,
+) -> None:
+    """Headline router behaviour, demonstrated on a dimension that governs.
+
+    This case used to be carried by `docs-writing`, gated on doc tooling —
+    which dropped a prose skill for the wrong reason. The negative path is the
+    same either way, so pin it where the constraint is real: a Rust workspace
+    has no business being offered Python or TypeScript procedure, while a skill
+    with no `applies-to` survives any workspace."""
     monkeypatch.setattr(server, "_load_project_profile", lambda: {
         "language": "rust",
         "secondary_languages": [],
@@ -106,11 +117,28 @@ def test_agent_catalog_rust_profile_drops_docs_writing(monkeypatch) -> None:
         "package_managers": ["cargo"],
         "file_types_present": [".rs"],
     })
-    payload = json.loads(server.musubi_list_skills("agent"))
+    payload = json.loads(server.musubi_list_skills("agent", for_role="coder"))
     ids = {s["skill_id"] for s in payload["skills"]}
     assert payload["filtered_by_profile"] is True
-    assert "docs-writing" not in ids
-    assert "research" in ids
+    assert {"python", "typescript", "testing"}.isdisjoint(ids)
+    assert {"debugging", "refactoring", "git-workflow"} <= ids
+
+
+def test_rust_profile_keeps_docs_writing_and_research_for_the_agent(
+    monkeypatch,
+) -> None:
+    """The agent's own non-coding catalog is language-independent: neither
+    writing prose nor answering "how does X work?" is a Python-only act."""
+    monkeypatch.setattr(server, "_load_project_profile", lambda: {
+        "language": "rust",
+        "secondary_languages": [],
+        "test_framework": None,
+        "doc_tool": None,
+        "package_managers": ["cargo"],
+        "file_types_present": [".rs"],
+    })
+    ids = {s["skill_id"] for s in json.loads(server.musubi_list_skills("agent"))["skills"]}
+    assert {"docs-writing", "research"} <= ids
 
 
 def test_agent_catalog_sphinx_profile_keeps_docs_writing(monkeypatch) -> None:

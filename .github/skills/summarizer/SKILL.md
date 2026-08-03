@@ -1,8 +1,10 @@
 ---
 name: summarizer
 description: >
-  Procedure available to the Summarizer sub-agent. The model selects it from
-  the permitted catalog; the harness validates and injects that exact choice.
+  Compress an older conversation window into a bounded summary that preserves
+  decisions, open questions, and file paths, and drops transcript detail. Use
+  when a run needs its earlier context shortened without losing what later
+  turns depend on.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---

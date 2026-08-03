@@ -1,8 +1,6 @@
 ---
 name: docs-writing
-description: Write or update technical documentation — READMEs, design docs, ADRs, API references, user guides. Use when the user asks for documentation, prose explanation, or to update existing docs. NOT for code-level docstrings (the code agent handles those).
-applies-to:
-  doc_tools: [sphinx, mkdocs, mdbook]
+description: Write or update technical documentation as PROSE — READMEs, design docs, ADRs, API references, user guides, in Markdown or the repo's existing doc format. Use when the deliverable is written explanation. NOT for diagrams or binary document formats (that is `documentation`), and NOT for code-level docstrings (the code agent handles those).
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 triggers:
