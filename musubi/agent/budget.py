@@ -140,6 +140,16 @@ class ChildTokenBudget:
         return _stricter(local_status, parent_status)
 
 
+def _fair_share(
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
+    units_remaining: int,
+) -> int:
+    if units_remaining <= 0:
+        raise ValueError("units_remaining must be positive")
+    remaining = parent.remaining
+    return max(1, min(remaining, remaining // units_remaining))
+
+
 def pipeline_stage_allowance(
     parent: TokenBudgetEnforcer | ChildTokenBudget,
     stages_remaining: int,
@@ -152,11 +162,27 @@ def pipeline_stage_allowance(
     underspends hands its slack to later stages, and one that overspends cannot
     (its allowance already capped it). Always at least 1 while budget remains.
     """
-    if stages_remaining <= 0:
-        raise ValueError("stages_remaining must be positive")
-    remaining = parent.remaining
-    fair_share = remaining // stages_remaining
-    return max(1, min(remaining, fair_share))
+    return _fair_share(parent, stages_remaining)
+
+
+def root_worker_allowance(
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
+    workers_remaining: int,
+) -> int:
+    """The same fair share, for a worker the root spawns directly.
+
+    A pipeline stage has been getting this since the stage runner shipped; a
+    direct worker was handed the parent enforcer itself, unwrapped. One worker
+    could therefore spend the entire run: in the traced failure a coder charged
+    200,580 of a 200,000-token budget across eight cycles while the root had
+    spent 9,685, and by the time the worker failed there was nothing left to
+    recover with — `decide_recovery` halts a BUDGET failure fail-closed, but
+    even a permitted continuation had no tokens to run on.
+
+    `workers_remaining` counts THIS worker plus the root's unspent slots, so
+    the first of three gets a third and the reserve is what recovery runs on.
+    """
+    return _fair_share(parent, workers_remaining)
 
 
 class TokenBudgetExhaustedError(RuntimeError):

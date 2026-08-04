@@ -356,7 +356,10 @@ def test_agent_prompt_has_artifact_task_fast_path() -> None:
     assert "Artifact creation requests are concrete targets" in text
     assert "create html dashboard" in text
     assert "Pull one relevant skill" in text
-    assert "spawn coder once" in text
+    # Was "spawn coder once". With Direct mode removed, a named artifact is a
+    # one-worker PLAN — the fast path is still fast, but the single coder is
+    # now carried by a committed manifest instead of asserted before reading.
+    assert "commit a single-coder plan with its manifest before" in text
     assert "compact single-file HTML" in text
 
 

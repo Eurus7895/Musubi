@@ -187,10 +187,16 @@ async def run_subagent(
             child_orch = orchestration.child(role)
             spawn_catalog = tools
 
+    # A direct worker gets its own slice of the run budget, the way a pipeline
+    # stage already does. Handed the parent enforcer itself, one worker could
+    # spend the whole run and leave the root nothing to recover with.
+    worker_budget = _worker_budget(budget, orchestration)
+
     print(
         f"[agent]   ⮑ worker {role} (handle={handle_id}, "
         f"tools={len(child_tools)}, max_turns={max_turns}, "
-        f"nests={child_orch is not None})",
+        f"nests={child_orch is not None}, "
+        f"allowance={getattr(worker_budget, 'max_tokens', None)})",
         file=log,
     )
 
@@ -232,7 +238,7 @@ async def run_subagent(
                 compression_db_path=compression_db_path,
                 role=role,
                 stats=stats,
-                budget=budget,
+                budget=worker_budget,
                 audit_db_path=audit_db_path,
                 worker_max_output=worker_max_output,
                 audit_session_id=spawn_args.get("parent_session_id"),
@@ -668,6 +674,27 @@ def build_subagent_system_prompt(
         "answer as plain text; the harness captures and verifies it on completion."
     )
     return "".join(parts).strip()
+
+
+def _worker_budget(budget: Any, orchestration: Any) -> Any:
+    """Wrap the run budget in this worker's fair share, or pass it through.
+
+    `spawned_workers` is incremented before dispatch, so it already counts the
+    worker about to run: the share is over that worker plus the root's unspent
+    slots. Without an orchestration there is no worker ceiling to divide by and
+    no root continuation to reserve for, so the budget passes through unchanged
+    — the same degradation the pipeline runner makes when it has no budget.
+    """
+    if budget is None:
+        return None
+    from agent.budget import ChildTokenBudget, root_worker_allowance
+
+    ceiling = getattr(orchestration, "max_root_workers", None)
+    spawned = getattr(orchestration, "spawned_workers", None)
+    if not isinstance(ceiling, int) or not isinstance(spawned, int):
+        return budget
+    remaining_slots = max(1, ceiling - spawned + 1)
+    return ChildTokenBudget(budget, root_worker_allowance(budget, remaining_slots))
 
 
 def select_child_tools(

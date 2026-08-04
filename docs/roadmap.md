@@ -362,6 +362,30 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     `required_output_fields` leg of `FrozenStageContract`, which the skill was
     the only source for.
 
+13. **Implemented: a direct worker gets a token slice, not the run.** A
+    pipeline stage has had a `ChildTokenBudget` since the stage runner shipped;
+    a direct worker was handed the parent `TokenBudgetEnforcer` itself,
+    unwrapped. In the traced failure one coder charged 200,580 of a
+    200,000-token run across eight cycles while the root had spent 9,685 — and
+    when the worker failed there was nothing to recover with. `decide_recovery`
+    halts a BUDGET failure fail-closed, but even a permitted continuation had
+    no tokens to run on, so the halt was academic.
+
+    `root_worker_allowance` splits the live remaining across this worker plus
+    the root's unspent slots — `spawned_workers` is incremented before dispatch,
+    so it already counts the worker about to run. On the traced numbers the
+    first of three workers gets 63,438 and 126,877 stays reserved. A worker
+    that overruns now stops itself while the run stays alive, which is the
+    property the failure lacked. With no orchestration there is no ceiling to
+    divide by and no continuation to reserve for, so the budget passes through
+    unchanged rather than being invented.
+
+    Still open, and deliberately not bundled: `charge()` bills gross input
+    every cycle, so `cache_read` is a reporting field with no budget effect.
+    Deciding whether the budget means tokens processed or marginal cost changes
+    what every historical number in `agent_cycles` meant, and belongs in its
+    own change.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
