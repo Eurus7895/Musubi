@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 MUSUBI_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = MUSUBI_ROOT.parent
 TOOL_NAME_RE = re.compile(r"^musubi_[a-z0-9_]+$")
 
 
@@ -70,6 +71,10 @@ def _referenced_tool_names() -> dict[str, set[str]]:
                 and id(node) not in context_var_args
             ):
                 found.setdefault(node.value, set()).add(path.name)
+    for path in (REPO_ROOT / ".github" / "agents").rglob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        for name in re.findall(r"\bmusubi_[a-z0-9_]+\b", text):
+            found.setdefault(name, set()).add(str(path.relative_to(REPO_ROOT)))
     return found
 
 

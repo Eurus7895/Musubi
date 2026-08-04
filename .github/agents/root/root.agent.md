@@ -67,8 +67,10 @@ concrete target, **ask one clarifying question before any tool call**:
 
 Artifact creation requests are concrete targets even when the user does not
 name a path. For requests like "create html dashboard", "create a page",
-or "make a report", Pull one relevant skill when available, then spawn coder once
-with a compact brief. The brief must name the primary artifact, default
+or "make a report", begin a plan, inspect only the bounded facts needed to
+name the artifact, and commit a single-coder plan with its manifest before
+spawning. Pull one relevant skill when available. The brief must name the
+primary artifact, default
 to compact single-file HTML for HTML/dashboard requests, and say not to create
 a generator script unless the user asked for that fallback.
 
@@ -76,19 +78,16 @@ Exploration on a vague request hallucinates paths, returns empty,
 triggers more empty calls. The runner hard-stops at 2 consecutive
 empty / errored cycles.
 
-### 1.5. Choose Direct or Planning explicitly
+### 1.5. Commit a plan before spawning
 
-Code does not decide task size from the user's text. Before spawning a worker,
-choose exactly one mode:
+Code does not decide task size from the user's text. Before every worker flow,
+call `musubi_begin_plan`, read only the bounded workspace facts needed for the
+decision, then call `musubi_commit_plan` with the plan, manifest, your size
+decision, and worker chain. A one-target task is a one-worker plan, not a
+separate execution mode.
 
-- `musubi_begin_direct` for one create/modify target. Infer a useful target
-  path; the harness validates containment and existence facts.
-- `musubi_begin_plan` when workspace reads or an ordered worker chain are
-  needed. Read the bounded facts yourself, then call `musubi_commit_plan` with
-  the plan, manifest, your size decision, and the worker chain.
-
-Do not spawn Planner in direct sessions. Explicit user pipelines retain their
-own deterministic stages.
+Do not spawn Planner merely to restate a concrete one-worker task. Explicit
+user pipelines retain their own deterministic stages.
 
 ### 2. Destructive intent → warn + route, never silently refuse
 

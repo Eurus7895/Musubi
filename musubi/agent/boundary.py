@@ -199,7 +199,9 @@ CREATE TABLE IF NOT EXISTS policy_audit (
     tool    TEXT NOT NULL,
     role    TEXT NOT NULL,
     handle  TEXT,
-    reason  TEXT
+    reason  TEXT,
+    request_id TEXT,
+    parent_session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_policy_audit_ts
     ON policy_audit(ts);
@@ -396,14 +398,23 @@ def record_policy_decision(
     *,
     db_path: Path,
     handle: str | None = None,
+    request_id: str | None = None,
+    parent_session_id: str | None = None,
 ) -> None:
     """Append the PreToolUse verdict to policy_audit."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_POLICY_SCHEMA)
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(policy_audit)")
+        }
+        for column in ("request_id", "parent_session_id"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE policy_audit ADD COLUMN {column} TEXT")
         conn.execute(
-            "INSERT INTO policy_audit (ts, verdict, tool, role, handle, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO policy_audit "
+            "(ts, verdict, tool, role, handle, reason, request_id, parent_session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 decision.verdict,
@@ -411,6 +422,8 @@ def record_policy_decision(
                 decision.role,
                 handle,
                 decision.reason,
+                request_id,
+                parent_session_id,
             ),
         )
 

@@ -2069,6 +2069,8 @@ pub struct Decision {
     pub role: String,
     pub handle: String,
     pub reason: String,
+    pub request_id: String,
+    pub parent_session_id: String,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -2640,10 +2642,22 @@ fn load_state_at_with_pipeline_runs(
     let has_policy = table_exists(conn, "policy_audit")?
         && count(conn, "SELECT COUNT(*) FROM policy_audit")? > 0;
     if has_policy {
-        let mut pstmt = conn.prepare(
-            "SELECT id, ts, verdict, tool, role, handle, reason \
-             FROM policy_audit ORDER BY id DESC LIMIT 50",
-        )?;
+        let request_id_expr = if column_exists(conn, "policy_audit", "request_id")? {
+            "COALESCE(request_id, '')"
+        } else {
+            "''"
+        };
+        let parent_session_expr =
+            if column_exists(conn, "policy_audit", "parent_session_id")? {
+                "COALESCE(parent_session_id, '')"
+            } else {
+                "''"
+            };
+        let mut pstmt = conn.prepare(&format!(
+            "SELECT id, ts, verdict, tool, role, handle, reason, \
+             {request_id_expr}, {parent_session_expr} \
+             FROM policy_audit ORDER BY id DESC LIMIT 50"
+        ))?;
         st.policy = pstmt
             .query_map([], |r| {
                 Ok(Decision {
@@ -2654,6 +2668,8 @@ fn load_state_at_with_pipeline_runs(
                     role: r.get(4)?,
                     handle: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
                     reason: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                    request_id: r.get(7)?,
+                    parent_session_id: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2680,6 +2696,8 @@ fn load_state_at_with_pipeline_runs(
                     role: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     handle: String::new(),
                     reason: status.unwrap_or_else(|| "executed".into()),
+                    request_id: String::new(),
+                    parent_session_id: String::new(),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3561,7 +3579,9 @@ CREATE TABLE IF NOT EXISTS policy_audit (
   tool    TEXT NOT NULL,
   role    TEXT NOT NULL,
   handle  TEXT,
-  reason  TEXT
+  reason  TEXT,
+  request_id TEXT,
+  parent_session_id TEXT
 );
 -- Console-side tables (the GUI writes these).
 CREATE TABLE IF NOT EXISTS chat_log (
@@ -4161,6 +4181,42 @@ mod tests {
         assert_eq!(st.policy[0].tool, "musubi_read_file");
         assert_eq!(st.allow_count, 1);
         assert_eq!(st.deny_count, 0);
+    }
+
+    #[test]
+    fn policy_loader_projects_request_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO policy_audit(id,ts,verdict,tool,role,request_id,parent_session_id) \
+             VALUES(1,'2026-08-04T00:00:00Z','ALLOW','musubi_glob','root','request-1','session-1')",
+            [],
+        )
+        .unwrap();
+
+        let state = load_state(&conn).unwrap();
+        assert_eq!(state.policy[0].request_id, "request-1");
+        assert_eq!(state.policy[0].parent_session_id, "session-1");
+    }
+
+    #[test]
+    fn policy_loader_keeps_legacy_identity_unattributed() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE policy_audit;
+             CREATE TABLE policy_audit (
+               id INTEGER PRIMARY KEY, ts TEXT NOT NULL, verdict TEXT NOT NULL,
+               tool TEXT NOT NULL, role TEXT NOT NULL, handle TEXT, reason TEXT
+             );
+             INSERT INTO policy_audit VALUES
+               (1,'2026-08-04T00:00:00Z','ALLOW','musubi_glob','root',NULL,NULL);",
+        )
+        .unwrap();
+
+        let state = load_state(&conn).unwrap();
+        assert_eq!(state.policy[0].request_id, "");
+        assert_eq!(state.policy[0].parent_session_id, "");
     }
 
     #[test]

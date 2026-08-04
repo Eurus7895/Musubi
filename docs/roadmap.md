@@ -442,6 +442,14 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 
 ## Completed Tracks
 
+- Harness evidence integrity repair — root prompts are cross-checked against
+  the live MCP surface, policy verdicts persist request/session provenance and
+  never fall back to the newest request, legacy verdicts stay unattributed,
+  and stage checkpoints abort when their append-only attempt row is missing.
+  Design and plan:
+  [`2026-08-04-harness-evidence-integrity-design.md`](./superpowers/specs/2026-08-04-harness-evidence-integrity-design.md) and
+  [`2026-08-04-harness-evidence-integrity.md`](./superpowers/plans/2026-08-04-harness-evidence-integrity.md)
+
 - Run evidence is conversation-scoped, attributable, and says which quantity it
   is showing. Three operator reports from one session, three separate defects,
   none of them the model. **Attached folders were unreachable in the prompt:**

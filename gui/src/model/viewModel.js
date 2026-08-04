@@ -752,10 +752,8 @@ export function buildViewModel(s, act) {
       id: `policy-${row.id}`,
       auditId: row.id,
       ts: row.ts || '',
-      // `policy_audit` carries no session or request column, so a verdict can
-      // only be attributed by handle. Root verdicts (no handle) stay
-      // unattributed and land on the newest turn in the projection below.
-      sessionId: '',
+      sessionId: row.parentSessionId || '',
+      requestId: row.requestId || '',
       workerId: row.handle || 'root',
       role: clipEvidence(row.role || 'worker', 60),
       category: 'policy',
@@ -992,11 +990,8 @@ export function buildViewModel(s, act) {
     // scope" on every session, however many skills were pushed and however
     // many verdicts were recorded. Merge instead of replace.
     //
-    // A derived row has no request_id of its own, so it is attributed the only
-    // two ways the data allows: by worker handle, or by the parent session the
-    // turn opened. Anything attributable to neither (a root policy verdict —
-    // `policy_audit` has no session column at all) rides on the newest turn,
-    // which is where an operator looking for "what just happened" opens first.
+    // Join derived evidence only through durable provenance. Policy rows carry
+    // request/session identity at append time; legacy rows remain unattributed.
     const requestIdForHandle = new Map()
     const requestIdForParentSession = new Map()
     requestEntries.forEach((request) => {
@@ -1007,12 +1002,13 @@ export function buildViewModel(s, act) {
         requestIdForParentSession.set(request.turn.parentSession, request.requestId)
       }
     })
-    const newestRequestId = requestEntries[requestEntries.length - 1]?.requestId || ''
+    const visibleRequestIds = new Set(requestEntries.map((row) => row.requestId))
     const derivedLogs = runtimeLogs.map((row) => {
       const handle = row.workerId && row.workerId !== 'root' ? row.workerId : ''
-      const requestId = requestIdForHandle.get(handle)
+      const requestId = row.requestId
+        || requestIdForHandle.get(handle)
         || requestIdForParentSession.get(row.sessionId)
-        || newestRequestId
+        || ''
       return {
         ...row,
         requestId,
@@ -1023,7 +1019,7 @@ export function buildViewModel(s, act) {
         workerId: handle || `turn:${requestId}`,
         message: row.detail || row.name || '',
       }
-    }).filter((row) => row.requestId)
+    }).filter((row) => row.requestId && visibleRequestIds.has(row.requestId))
     const requestIdForObligation = new Map(requestIdForHandle)
     const obligationLogs = (s.auditObligations || [])
       .filter((row) => requestIdForObligation.has(row.handleId))

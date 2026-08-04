@@ -1608,10 +1608,10 @@ test('a policy verdict joins to the root node under every recorded spelling', ()
   // empty for history it can see perfectly well.
   const { state } = historySession({
     policy: [
-      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'r' },
-      { id: 2, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'agent', handle: '', reason: 'r' },
-      { id: 3, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'driver', handle: '', reason: 'r' },
-      { id: 4, ts: 't', verdict: 'ALLOW', tool: 'musubi_grep', role: 'saboteur', handle: '', reason: 'r' },
+      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'r', requestId: 'request-1', parentSessionId: 'root-1' },
+      { id: 2, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'agent', handle: '', reason: 'r', requestId: 'request-1', parentSessionId: 'root-1' },
+      { id: 3, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'driver', handle: '', reason: 'r', requestId: 'request-2', parentSessionId: 'root-2' },
+      { id: 4, ts: 't', verdict: 'ALLOW', tool: 'musubi_grep', role: 'saboteur', handle: '', reason: 'r', requestId: 'request-2', parentSessionId: 'root-2' },
     ],
   })
   const vm = buildViewModel(state, actions())
@@ -1620,4 +1620,19 @@ test('a policy verdict joins to the root node under every recorded spelling', ()
   assert.deepEqual(tools.sort(), ['musubi_glob', 'musubi_read_file', 'musubi_write_file'])
   // A role that is not the driver under any spelling is still not the driver.
   assert.equal(tools.includes('musubi_grep'), false)
+})
+
+test('legacy and foreign root policy rows never attach to the newest request', () => {
+  const { state } = historySession({
+    policy: [
+      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'legacy' },
+      { id: 2, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'root', handle: '', reason: 'other chat', requestId: 'request-foreign', parentSessionId: 'root-foreign' },
+      { id: 3, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'root', handle: '', reason: 'this turn', requestId: 'request-1', parentSessionId: 'root-1' },
+    ],
+  })
+
+  const policy = buildViewModel(state, actions()).runtimeLogs
+    .filter((row) => row.category === 'policy')
+  assert.deepEqual(policy.map((row) => row.name), ['musubi_read_file'])
+  assert.equal(policy[0].requestId, 'request-1')
 })

@@ -1187,11 +1187,25 @@ def _attempt_row_exists(
     return db.get_stage_row(session_id, stage, attempt, db_path) is not None
 
 
+def _require_attempt_row(
+    session_id: str, stage: str, attempt: int, db_path: Path | None,
+) -> bool:
+    """Fail closed when an append-only checkpoint has no durable target."""
+    if db_path is None:
+        return False
+    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+        raise RuntimeError(
+            "missing stage attempt for checkpoint: "
+            f"session={session_id!r}, stage={stage!r}, attempt={attempt}"
+        )
+    return True
+
+
 def _record_preflight_checkpoint(
     session_id: str, stage: str, attempt: int, preflight: Any,
     db_path: Path | None,
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
@@ -1219,7 +1233,7 @@ def _record_worker_started_checkpoint(
     session_id: str, stage: str, attempt: int, handle_id: str,
     db_path: Path | None,
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
@@ -1234,7 +1248,7 @@ def _record_worker_complete_checkpoint(
     session_id: str, stage: str, attempt: int, handle_id: str, answer: str,
     touched: set[str], db_path: Path | None,
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
@@ -1254,7 +1268,7 @@ def _record_gate_checkpoint(
     session_id: str, stage: str, attempt: int, gate: Any,
     db_path: Path | None,
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from datetime import datetime, timezone
     from storage import db
@@ -1292,7 +1306,7 @@ def _create_retry_checkpoint(
     session_id: str, stage: str, attempt: int, evidence: str,
     db_path: Path | None,
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
@@ -1312,7 +1326,7 @@ def _escalate_attempt_checkpoint(
     *,
     next_phase: str = "escalated",
 ) -> None:
-    if not _attempt_row_exists(session_id, stage, attempt, db_path):
+    if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from storage import db
 

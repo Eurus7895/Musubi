@@ -79,6 +79,7 @@ async def run_named_command(
     try:
         record_policy_decision(
             decision, db_path=audit_db_path, handle=execution_id,
+            parent_session_id=session_id,
         )
         if decision.verdict != "ALLOW":
             raise PermissionError(decision.reason)
@@ -167,6 +168,7 @@ async def run_lint_check(
     try:
         record_policy_decision(
             decision, db_path=audit_db_path, handle=execution_id,
+            parent_session_id=session_id,
         )
         if decision.verdict != "ALLOW":
             raise PermissionError(decision.reason)

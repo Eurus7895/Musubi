@@ -3098,7 +3098,10 @@ def _preflight_policy_batch(
             f"[agent]   policy denied {name}: {reason}",
             category="policy",
         )
-        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_policy(
+            decision, db_path=audit_path, log=log,
+            parent_session_id=session_id,
+        )
         if decision.recoverable:
             # Refuse THIS call, not the batch: a sibling spawn with sound
             # arguments has done nothing wrong, and the model needs the
@@ -3575,15 +3578,18 @@ async def _dispatch_one(
     should_audit = is_musubi_tool(name)
     if should_audit:
         decision = evaluate_tool_call(call_role, name)
-        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_policy(
+            decision, db_path=audit_path, log=log,
+            parent_session_id=session_id,
+        )
         if decision.allowed:
             # Allows were recorded to `policy_audit` but never emitted, so the
             # only policy line that ever reached the runtime ledger was a
             # denial. A console filtered to Policy therefore read empty on
             # every clean run — the gate proving itself exactly when it has
-            # nothing to refuse is what the operator needs to see, and
-            # `policy_audit` cannot supply it per-turn (it carries no session
-            # or request column, and the console reads only its last 50 rows).
+            # nothing to refuse is what the operator needs to see immediately.
+            # The durable policy ledger now carries request identity too; this
+            # live line preserves the ordered stderr protocol for the turn.
             #
             # Suppressed for an already-refused call: role/tool authorization
             # did pass, but the preflight has just logged why the ARGUMENTS
@@ -4205,9 +4211,21 @@ def _truncate(text: str, limit: int) -> str:
     return bounded(text, limit, collapse=False)
 
 
-def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:
+def _safe_record_policy(
+    decision: Any,
+    *,
+    db_path: Path,
+    log: Any,
+    parent_session_id: str | None,
+) -> None:
     try:
-        record_policy_decision(decision, db_path=db_path)
+        request_id = getattr(log, "request_id", None)
+        record_policy_decision(
+            decision,
+            db_path=db_path,
+            request_id=request_id if isinstance(request_id, str) else None,
+            parent_session_id=parent_session_id,
+        )
     except Exception as exc:  # noqa: BLE001 - audit must not crash tool result
         print(
             f"[agent] policy audit write failed: {type(exc).__name__}: {exc}",

@@ -1281,8 +1281,8 @@ def test_dispatch_emits_the_allow_verdict_to_the_runtime_ledger(
     Only denials were emitted, so a console filtered to Policy read "no
     matching log lines" on every session that broke no rule — the gate
     proving itself is precisely what an operator opens that filter for.
-    `policy_audit` cannot answer per-turn: it carries no session or request
-    column and the console reads only its most recent rows.
+    The durable policy ledger also carries request identity; this assertion
+    covers the ordered runtime protocol used while the turn is still live.
     """
     from agent import run as run_mod
     from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
@@ -1322,6 +1322,11 @@ def test_dispatch_emits_the_allow_verdict_to_the_runtime_ledger(
     assert len(policy) == 1
     assert "policy allow musubi_write_file" in policy[0]["message"]
     assert "role=coder" in policy[0]["message"]
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        identity = conn.execute(
+            "SELECT request_id, parent_session_id FROM policy_audit"
+        ).fetchone()
+    assert identity == ("request-1", "parent")
 
 
 def test_dispatch_injects_prior_failure_into_replacement_worker_brief(
