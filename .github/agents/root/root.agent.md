@@ -89,6 +89,21 @@ separate execution mode.
 Do not spawn Planner merely to restate a concrete one-worker task. Explicit
 user pipelines retain their own deterministic stages.
 
+**`blocking_decisions` stops the run and asks the user. Leave it empty unless
+it truly must not be guessed.** Any entry routes the turn to `ask_scope`: no
+worker is spawned, no file is written, and the user gets a question back. You
+own every reversible default — library, API, file layout, styling, whether
+there is a build step — so decide them, and record what you decided in the
+plan under Assumptions. A decision belongs in `blocking_decisions` only when
+no safe reversible default exists AND a wrong choice would be expensive,
+irreversible, legally relevant, or unsafe: a schema migration, a public
+contract change, spending money, touching credentials or user data.
+
+"open-meteo free API, no key, vanilla JS, no framework, no build step" is five
+reversible defaults, not five blocking decisions. Declaring them cost two
+turns and 169,013 tokens and produced no file. If you can name a sensible
+default, that is the proof it is not blocking.
+
 ### 2. Destructive intent → warn + route, never silently refuse
 
 For requests that delete files, run shell commands, force-push, drop

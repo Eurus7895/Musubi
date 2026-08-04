@@ -223,7 +223,23 @@ class GoalState:
         )
 
     def begin_plan(self) -> None:
-        """Open Root's bounded read-only planning mode."""
+        """Open Root's bounded read-only planning mode.
+
+        A second call names the way forward rather than only the refusal. The
+        bare message — "goal mode is already planning" — told Root what it
+        could not do and nothing about what it could, and in a traced run Root
+        read that as being stuck: it spent 80,286 tokens on the failed cycle,
+        then wrote its finished plan out to the user as prose, saying "the
+        commit/spawn tools aren't available to me from here". They were.
+        `musubi_commit_plan` is in the planning surface throughout.
+        """
+        if self.mode == "planning":
+            raise ValueError(
+                "already in planning mode — do not open it twice. Reading is "
+                "still allowed; when the plan is ready call "
+                "`musubi_commit_plan` with the plan, manifest, size, and "
+                "worker chain. That is the only call that leaves this mode"
+            )
         if self.mode != "undecided":
             raise ValueError(f"goal mode is already {self.mode}")
         self.mode = "planning"

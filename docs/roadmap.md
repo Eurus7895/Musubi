@@ -400,6 +400,53 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     questions need two meters, not one meter re-denominated under historical
     rows written in the old unit.
 
+15. **Implemented: a budget halt lands the writes it already paid for.**
+    Measured on a four-turn run after the repairs above: 483,621 tokens across
+    35 cycles and not one file written. A coder emitted 11,289 output tokens
+    carrying three files, was charged 19,801 for them, and the postflight halt
+    fired between generation and dispatch — the audit row recorded
+    `tool_names=[]` and nothing reached disk. Discarding a paid-for write saves
+    nothing, because dispatching it costs tool execution rather than model
+    tokens. File mutations now land before the loop stops; reads and spawns are
+    skipped, since their results only feed a model call that will never happen.
+    The postflight halt also salvages a typed `[incomplete]` answer instead of
+    raising, matching what the preflight halt has always done — the two paths
+    differed only by which side of the model call the cap was crossed on, and
+    that decided whether the parent got something it could act on.
+
+    Sizing the preflight estimate off the effort router's real output ceiling
+    was tried and reverted: it refuses the write cycle before the model writes
+    anything, which is the outcome the salvage exists to prevent. An overrun
+    that delivers the artifact beats a refusal that delivers nothing.
+
+    Two more defects from the same run: Root declared five reversible defaults
+    ("open-meteo free API, no key, vanilla JS, no framework, no build step") as
+    `blocking_decisions`, which routes to `ask_scope` and ends the turn with a
+    question — 169,013 tokens for two questions and no file. The rule that
+    reserves that field for decisions which must not be guessed lived in
+    `planner.agent.md`, and Root has owned planning since `0c68607`; it is now
+    in `root.agent.md`. And a second `musubi_begin_plan` refused with "goal
+    mode is already planning", which Root read as being stuck: it spent 80,286
+    tokens on that cycle, then wrote its finished plan out to the user as prose
+    claiming commit and spawn were unavailable. They were in the surface
+    throughout; the refusal now names `musubi_commit_plan`.
+
+16. **Open: plan continuity across turns, and what it costs the worker.**
+    Two defects from the same run are deliberately not repaired here because
+    both touch the session lifecycle. Every turn re-plans from nothing —
+    `glob **/*` and a re-read of Musubi's own `.musubi/goals/<id>/plan.md`,
+    which the harness had just persisted and the next turn had no way to
+    receive — at 18,000–33,000 tokens a turn, roughly 20% of the run. And
+    Root's planning spend leaves too little for the worker: 43% of the budget
+    gone before the first spawn, 70% before the second, against write cycles
+    costing ~19,800. The fair-share split is correct; the numerator is not,
+    and most of it is rediscovery that continuity would remove. Deciding the
+    split before fixing continuity would tune against a number expected to
+    move.
+
+    Design note:
+    [`2026-08-05-plan-continuity-design.md`](./superpowers/specs/2026-08-05-plan-continuity-design.md)
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns

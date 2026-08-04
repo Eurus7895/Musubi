@@ -2687,6 +2687,64 @@ def test_postflight_budget_halt_still_audits_measured_cycle(tmp_path: Path) -> N
     assert rows[0]["tokens_out"] == 30
 
 
+def test_postflight_budget_halt_lands_the_writes_it_already_paid_for(
+    tmp_path: Path,
+) -> None:
+    """The traced waste. A coder emitted 11,289 output tokens carrying three
+    files, was charged 19,801 for them, and the halt fired between generation
+    and dispatch — the audit row recorded `tool_names=[]` and nothing reached
+    disk. Discarding a paid-for write saves nothing: dispatching it costs tool
+    execution, not model tokens."""
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("postflight write salvage", p)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use", "id": "w1",
+                    "name": "musubi_write_file",
+                    "input": {"path": "a.html", "content": "<!doctype html>"},
+                },
+                {
+                    "type": "tool_use", "id": "r1",
+                    "name": "musubi_read_file", "input": {"path": "a.html"},
+                },
+            ],
+            usage={"input_tokens": 90, "output_tokens": 30},
+        ),
+    ])
+    session = _FakeToolSession('{"status":"ok"}')
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        session, router,
+        [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "write"}], max_cycles=1,
+        log=io.StringIO(), compression_db_path=p,
+        audit_session_id=sid, audit_worker_id="root", audit_stage="agent",
+        budget=TokenBudgetEnforcer(100),
+        salvage_on_exhaust=True,
+        role="coder",  # root may not write; the policy gate still applies here
+    ))
+
+    dispatched = [name for name, _ in session.calls]
+    assert dispatched == ["musubi_write_file"]  # the read is not worth running
+    row = db.query_agent_cycles(sid, db_path=p)[0]
+    assert row["cycle_status"] == "budget_halt"
+    assert json.loads(row["tool_calls_json"]) == ["musubi_write_file"]
+
+    # A typed answer the parent can act on, not an exception — the same shape
+    # the PREflight halt has always returned.
+    assert answer is not None
+    assert answer.startswith("[incomplete] token budget exhausted")
+    assert "musubi_write_file" in answer
+
+
 def test_postflight_budget_halt_does_not_count_undispatched_tool(
     tmp_path: Path,
 ) -> None:

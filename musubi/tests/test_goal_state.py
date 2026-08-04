@@ -704,3 +704,24 @@ def test_the_stop_is_not_terminal() -> None:
     # Re-declaring clears it, which is what the message tells the root to do.
     state.declared_files_expected = 5
     assert state.overrun_stop() is None
+
+
+def test_second_begin_plan_names_the_call_that_leaves_planning_mode() -> None:
+    """A traced run spent 80,286 tokens on a cycle that ended
+    `control musubi_begin_plan status=error`, then wrote its finished plan out
+    to the user as prose because it believed commit and spawn were unavailable.
+    `musubi_commit_plan` was in the surface the whole time; only the refusal
+    failed to say so."""
+    state = GoalState.create("build it", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+
+    try:
+        state.begin_plan()
+    except ValueError as exc:
+        assert "already in planning mode" in str(exc)
+        assert "musubi_commit_plan" in str(exc)
+        assert "Reading is still allowed" in str(exc)
+    else:
+        raise AssertionError("a second begin_plan must fail closed")
+
+    assert state.mode == "planning"  # the failed call changes nothing

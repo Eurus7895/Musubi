@@ -1366,7 +1366,24 @@ async def _run_loop(
             _charge_budget_postflight(
                 budget, usage.tokens_in + usage.tokens_out, log,
             )
-        except TokenBudgetExhaustedError:
+        except TokenBudgetExhaustedError as exc:
+            # The response is already generated and already charged. Throwing
+            # its mutations away saves nothing — dispatching a write costs tool
+            # execution, not model tokens — and it discards exactly the thing
+            # the run was paying for. In the traced failure a coder emitted
+            # 11,289 output tokens carrying three files, was charged 19,801 for
+            # them, and the halt fired between generation and dispatch: the
+            # audit row recorded `tool_names=[]` and nothing reached disk.
+            #
+            # So land the mutations, then stop. Read and discovery calls are
+            # deliberately skipped: their results only feed a model call that
+            # will never happen.
+            landed = await _dispatch_paid_mutations(
+                session, tool_uses, log,
+                gateway=gateway, orchestration=orchestration, role=role,
+                compression_db_path=compression_db_path,
+                audit_db_path=audit_db_path,
+            )
             _safe_record_agent_cycle(
                 db_path=compression_db_path,
                 session_id=audit_session_id,
@@ -1377,12 +1394,25 @@ async def _run_loop(
                 ended_at=cycle_ended_at,
                 lm_ms=lm_ms,
                 usage=usage,
-                tool_names=[],
+                tool_names=landed,
                 text_chars=len(text),
                 cycle_status="budget_halt",
                 log=log,
             )
-            raise
+            if not salvage_on_exhaust:
+                raise
+            # Mirror the preflight halt, which already salvages rather than
+            # raising. The two paths differed only by which side of the model
+            # call the cap was crossed on, and that asymmetry decided whether
+            # the parent saw a typed answer it could act on or an exception.
+            final_answer = (
+                "[incomplete] token budget exhausted after the model call: "
+                f"{exc}"
+                + (f"\nLanded before stopping: {', '.join(landed)}" if landed else "")
+                + (f"\n\nLast assistant text before the halt:\n{last_text}"
+                   if last_text else "")
+            )
+            break
 
         if not tool_uses and recovery_outcome is not None:
             _safe_record_agent_cycle(
@@ -2873,11 +2903,89 @@ def _no_progress_budget_trip(
     )
 
 
+async def _dispatch_paid_mutations(
+    session: Any,
+    tool_uses: list[dict[str, Any]],
+    log: Any,
+    *,
+    gateway: McpGateway | None,
+    orchestration: Orchestration | None,
+    role: str,
+    compression_db_path: Path | None,
+    audit_db_path: Path | None,
+) -> list[str]:
+    """Land the file mutations of a response the budget has already paid for.
+
+    Returns the tool names actually dispatched, for the audit row. Only
+    `ORDER_SENSITIVE_FILE_TOOLS` run: a read or a spawn at halt time produces a
+    result that nothing will consume, while a write is the deliverable itself.
+
+    Every call still goes through `_dispatch_one`, so the policy gate, the tool
+    audit, and the touched-file sink all apply exactly as they would have one
+    moment earlier. A failure here is swallowed: the run is ending either way,
+    and a broken write must not replace the budget error that explains why.
+    """
+    mutations = [
+        tu for tu in tool_uses
+        if tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS
+    ]
+    if not mutations:
+        return []
+    landed: list[str] = []
+    for tool_use in mutations:
+        name = str(tool_use.get("name") or "")
+        try:
+            # `orchestration` is forwarded so the tool audit keeps its session
+            # id; no spawn can ride along, because the filter above admits only
+            # file mutations. `budget=None` on purpose — this response was
+            # charged in full one line ago.
+            await _dispatch_one(
+                tool_use, session, log,
+                vendor=None, tools=[], orchestration=orchestration,
+                gateway=gateway,
+                compression_db_path=compression_db_path,
+                role=role, budget=None, stats=None,
+                audit_db_path=audit_db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — the run is ending regardless
+            print(
+                f"[agent] budget halt: could not land {_short_tool_name(name)}: "
+                f"{type(exc).__name__}: {exc}",
+                file=log,
+            )
+            continue
+        landed.append(name)
+    if landed:
+        print(
+            "[agent] budget halt: landed "
+            f"{', '.join(_short_tool_name(n) for n in landed)} "
+            "(already charged; discarding them would have saved nothing)",
+            file=log,
+        )
+    return landed
+
+
 def _check_budget_preflight(
     budget: TokenBudgetEnforcer | None,
     input_tokens: int,
     log: Any,
 ) -> None:
+    """Refuse a model call the budget cannot afford, before paying for it.
+
+    The output side is a guess — `input × 0.25` — and it guesses low on the
+    cycle that matters most: in the traced failure it estimated 8,935 against
+    an actual 19,801, so a write-heavy call was allowed and then overran its
+    cap by 9,528.
+
+    Sizing this off the effort router's real output ceiling instead was tried
+    and reverted. It refuses the call BEFORE the model writes anything, which
+    is precisely the outcome the postflight salvage above exists to prevent: on
+    the traced numbers the coder had 10,273 tokens left against a 16,384-token
+    ceiling, so a conservative check would have refused the cycle that produced
+    the three files rather than letting them land. An overrun that delivers the
+    artifact beats a refusal that delivers nothing, and the overrun is bounded
+    by that same ceiling.
+    """
     if budget is None:
         return
     estimated_output = max(1, int(input_tokens * 0.25))
