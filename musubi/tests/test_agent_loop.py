@@ -1931,6 +1931,36 @@ def test_log_cycle_includes_human_readable_model_action() -> None:
     assert "names=[get_skill]" in line
 
 
+def test_cycle_logs_do_not_read_a_cached_prefix_as_a_saving() -> None:
+    """The budget charges tokens PROCESSED, so a cached prefix costs it full
+    price. The log used to say `cache_read=27392` next to `in_tokens=27515`
+    and then charge 31,201 — three numbers that only reconcile if you already
+    know the deduction never happens. Name the reported field for what it is,
+    and state the charge beside the running total."""
+    from agent import run as run_mod
+    from agent.budget import TokenBudgetEnforcer
+
+    log = io.StringIO()
+    run_mod._log_cycle(
+        log, 6, "tool_use",
+        [{"type": "tool_use", "name": "musubi_append_file"}],
+        {"cache_read_input_tokens": 27_392},
+        tokens_out=3_686,
+    )
+    line = log.getvalue()
+    assert "cached_in=27392" in line
+    assert "cache_read=" not in line  # the name that implied a deduction
+
+    cost_log = io.StringIO()
+    budget = TokenBudgetEnforcer(200_000)
+    budget.charge(31_201)
+    run_mod._log_cycle_cost(cost_log, 6, 26_490, 27_515, 3_686, budget)
+    cost_line = cost_log.getvalue()
+    # in + out, with nothing taken off for the 27,392 served from cache.
+    assert "charged=31201" in cost_line
+    assert "token_budget=31201/200000" in cost_line
+
+
 def test_log_cycle_names_aggregate_repeated_tools() -> None:
     from agent import run as run_mod
 

@@ -254,3 +254,16 @@ def test_worker_budget_wraps_only_when_there_is_a_ceiling_to_divide_by() -> None
     # reserve for; the budget passes through rather than being invented.
     assert _worker_budget(run, None) is run
     assert _worker_budget(None, _Orch()) is None
+
+
+def test_budget_unit_is_documented_as_processed_not_cost() -> None:
+    """The one thing to know before changing this class. On the traced run the
+    two readings differed by 60% — 210,265 charged against 84,057 of marginal
+    cost — and only the larger one crossed the cap that ended three cycles
+    which had written nothing. A future reader must find that reasoning here
+    rather than rediscover it from a log."""
+    doc = TokenBudgetEnforcer.__doc__ or ""
+
+    assert "tokens PROCESSED, not money spent" in doc
+    assert "210,265" in doc and "84,057" in doc
+    assert "SECOND number" in doc  # how to add cost without re-denominating

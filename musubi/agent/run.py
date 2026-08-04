@@ -4342,11 +4342,17 @@ def _log_cycle(
         parts.append(f"out_tokens={tokens_out}")
     if usage:
         # CacheAligner measurement: how much of the prefix was served from the
-        # prompt cache vs. (re)written this cycle.
+        # prompt cache vs. (re)written this cycle. Reported, NOT deducted —
+        # `cached_in` is priced cheaply by the provider but charged in full by
+        # the budget, which counts tokens processed rather than money spent.
+        # See `TokenBudgetEnforcer` for why. The field is named `cached_in`
+        # rather than `cache_read` because the old name read like a saving:
+        # one traced cycle logged `cache_read=27392` against `in_tokens=27515`
+        # and was still charged 31,201.
         cache_read = usage.get("cache_read_input_tokens")
         cache_write = usage.get("cache_creation_input_tokens")
         if cache_read:
-            parts.append(f"cache_read={cache_read}")
+            parts.append(f"cached_in={cache_read}")
         if cache_write:
             parts.append(f"cache_write={cache_write}")
     emit_runtime_log(log, " ".join(parts), category="model")
@@ -4366,6 +4372,10 @@ def _log_cycle_cost(
         f"out_tokens={tokens_out}",
     ]
     if budget is not None:
+        # State what this cycle actually cost the budget beside the running
+        # total. Without it a reader had to add in+out themselves to discover
+        # that the cached prefix on the line above was charged in full.
+        parts.append(f"charged={tokens_in + tokens_out}")
         parts.append(
             f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )

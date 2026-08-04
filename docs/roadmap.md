@@ -380,11 +380,25 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     divide by and no continuation to reserve for, so the budget passes through
     unchanged rather than being invented.
 
-    Still open, and deliberately not bundled: `charge()` bills gross input
-    every cycle, so `cache_read` is a reporting field with no budget effect.
-    Deciding whether the budget means tokens processed or marginal cost changes
-    what every historical number in `agent_cycles` meant, and belongs in its
-    own change.
+14. **Settled: the token budget counts tokens processed, and now says so.**
+    `charge()` bills the full `tokens_in + tokens_out` every cycle and never
+    deducts the provider's cached prefix, which looked like an oversight worth
+    fixing. Measuring it decided the opposite. On the traced run the two
+    readings differ by 60% — 210,265 charged against 84,057 of marginal cost —
+    and only the larger crossed the 200,000 cap. Marginal accounting would have
+    left 115,943 and let the run continue; its last three cycles wrote zero
+    bytes. Charging a cached prefix in full is what ended a loop that had
+    stopped making progress, so the enforcer is not a cost meter and must not
+    become one.
+
+    Nothing about the arithmetic changes. What changes is that it stops
+    misreporting: `TokenBudgetEnforcer` documents the unit and the measurement
+    behind it, the per-cycle log states `charged=` beside the running total,
+    and the reported cache figure is `cached_in=` rather than `cache_read=` —
+    a name that read as a saving next to a number it never reduced. A cost
+    figure, if wanted later, belongs beside this one as a second meter; two
+    questions need two meters, not one meter re-denominated under historical
+    rows written in the old unit.
 
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
