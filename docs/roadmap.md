@@ -447,6 +447,31 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     Design note:
     [`2026-08-05-plan-continuity-design.md`](./superpowers/specs/2026-08-05-plan-continuity-design.md)
 
+17. **Added: `scripts/audit_report.py` — one run, rendered for someone who was
+    not present.** A read-only query over the two databases the harness
+    already writes, answering an outside reviewer's questions in their order:
+    what was asked, what the run was allowed to touch, who it delegated to,
+    what it did and what it was refused, what that cost, what reached disk,
+    and whether the record has holes. The last section is the one that makes
+    it an audit trail rather than a log: `audit_obligations` that never
+    delivered, spawns with no terminal row, and cycles that cannot be
+    attributed are reported as findings rather than passed over in silence.
+
+    Run against a reconstruction of the 2026-08-05 four-turn trace it
+    reproduces the run's charged total exactly (179,581), attributes every
+    cycle to a worker, and shows three `musubi_write_file` calls recorded with
+    a non-`ok` status against files that were never created — the discarded
+    writes that item 15 repairs, visible from the record alone.
+
+    Known gaps, ordered by what a regulated buyer would ask first: no human
+    identity is recorded anywhere; there is no approval event, so the
+    destructive gate's decision leaves no row; tool arguments are hashed but
+    not retained, so "what was written" needs the git history; the committed
+    plan lives on disk rather than in the record, so the REASONING behind a
+    delegation is absent; and rows are append-only by convention with nothing
+    chained or signed, so the record cannot answer whether it was edited after
+    the fact.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
 pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
