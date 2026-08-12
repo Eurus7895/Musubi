@@ -398,10 +398,18 @@ struct RawPipelineCommand {
     cwd: String,
 }
 
-fn default_max_iterations() -> u8 { 1 }
-fn default_command_timeout() -> u32 { 60 }
-fn default_command_root() -> String { "musubi".into() }
-fn default_command_cwd() -> String { ".".into() }
+fn default_max_iterations() -> u8 {
+    1
+}
+fn default_command_timeout() -> u32 {
+    60
+}
+fn default_command_root() -> String {
+    "musubi".into()
+}
+fn default_command_cwd() -> String {
+    ".".into()
+}
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -468,8 +476,12 @@ struct PipelineStageOutput<'a> {
     allowed_commands: &'a Vec<String>,
 }
 
-fn is_default_command_root(value: &&str) -> bool { *value == "musubi" }
-fn is_default_command_cwd(value: &&str) -> bool { *value == "." }
+fn is_default_command_root(value: &&str) -> bool {
+    *value == "musubi"
+}
+fn is_default_command_cwd(value: &&str) -> bool {
+    *value == "."
+}
 
 #[derive(Clone)]
 struct EffectiveStage {
@@ -548,13 +560,16 @@ pub fn read_pipeline_recipe(project_root: &Path, name: &str) -> Result<PipelineR
         .checks
         .into_iter()
         .map(|(command_id, raw)| {
-            (command_id, PipelineCommandRecipe {
-                command_type: raw.command_type,
-                argv: raw.argv,
-                timeout_seconds: raw.timeout_seconds,
-                root: raw.root,
-                cwd: raw.cwd,
-            })
+            (
+                command_id,
+                PipelineCommandRecipe {
+                    command_type: raw.command_type,
+                    argv: raw.argv,
+                    timeout_seconds: raw.timeout_seconds,
+                    root: raw.root,
+                    cwd: raw.cwd,
+                },
+            )
         })
         .collect();
     let stages = if !document.stages.is_empty() {
@@ -647,24 +662,35 @@ fn render_pipeline_recipe(
     comments: &str,
     extras: &serde_yaml::Mapping,
 ) -> Result<String, String> {
-    let checks = recipe.checks.iter().map(|(command_id, command)| {
-        (command_id, PipelineCommandOutput {
-            command_type: &command.command_type,
-            argv: &command.argv,
-            timeout_seconds: command.timeout_seconds,
-            root: &command.root,
-            cwd: &command.cwd,
+    let checks = recipe
+        .checks
+        .iter()
+        .map(|(command_id, command)| {
+            (
+                command_id,
+                PipelineCommandOutput {
+                    command_type: &command.command_type,
+                    argv: &command.argv,
+                    timeout_seconds: command.timeout_seconds,
+                    root: &command.root,
+                    cwd: &command.cwd,
+                },
+            )
         })
-    }).collect();
-    let stages = recipe.stages.iter().map(|stage| PipelineStageOutput {
-        preset: &stage.preset,
-        agent: &stage.agent,
-        stage: &stage.stage,
-        spawns: &stage.spawns,
-        max_iterations: stage.max_iterations,
-        allowed_checks: &stage.allowed_checks,
-        allowed_commands: &stage.allowed_commands,
-    }).collect();
+        .collect();
+    let stages = recipe
+        .stages
+        .iter()
+        .map(|stage| PipelineStageOutput {
+            preset: &stage.preset,
+            agent: &stage.agent,
+            stage: &stage.stage,
+            spawns: &stage.spawns,
+            max_iterations: stage.max_iterations,
+            allowed_checks: &stage.allowed_checks,
+            allowed_commands: &stage.allowed_commands,
+        })
+        .collect();
     let mut document = serde_yaml::to_value(PipelineOutputDocument {
         name: &recipe.name,
         description: &recipe.description,
@@ -944,10 +970,9 @@ fn read_spawn_firewall(project_root: &Path) -> HashMap<String, Vec<String>> {
             // The key is the first quoted string on the line, or — when the
             // dict is keyed by a constant — that constant's resolved value.
             let (key, values): (Option<String>, &[String]) = match trimmed.split_once(':') {
-                Some((head, _)) if extract_quoted_strings(head).is_empty() => (
-                    constants.get(head.trim()).cloned(),
-                    quoted.as_slice(),
-                ),
+                Some((head, _)) if extract_quoted_strings(head).is_empty() => {
+                    (constants.get(head.trim()).cloned(), quoted.as_slice())
+                }
                 _ => (quoted.first().cloned(), quoted.get(1..).unwrap_or(&[])),
             };
             if let Some(key) = key {
@@ -1172,19 +1197,31 @@ pub fn validate_pipeline_recipe(
     for (command_id, command) in &recipe.checks {
         let step = format!("checks.{command_id}");
         if !valid_pipeline_name(command_id) {
-            findings.push(finding(&step, "commandId", "command id must be lowercase kebab-case"));
+            findings.push(finding(
+                &step,
+                "commandId",
+                "command id must be lowercase kebab-case",
+            ));
         }
         if command.command_type != "command" {
             findings.push(finding(&step, "type", "named check type must be command"));
         }
         if command.argv.is_empty() || command.argv.iter().any(|arg| arg.is_empty()) {
-            findings.push(finding(&step, "argv", "argv must contain non-empty strings"));
+            findings.push(finding(
+                &step,
+                "argv",
+                "argv must contain non-empty strings",
+            ));
         }
         if command.timeout_seconds == 0 {
             findings.push(finding(&step, "timeoutSeconds", "timeout must be positive"));
         }
         if !safe_relative_reference(&command.cwd) || !valid_pipeline_name(&command.root) {
-            findings.push(finding(&step, "root", "root and cwd must stay within a named root"));
+            findings.push(finding(
+                &step,
+                "root",
+                "root and cwd must stay within a named root",
+            ));
         }
     }
     let firewall = read_spawn_firewall(project_root);
@@ -1557,7 +1594,6 @@ fn unrepresentable_recipe_reason(target: &Path) -> Option<String> {
         target.display()
     ))
 }
-
 
 fn preserved_pipeline_prelude(target: &Path) -> (String, serde_yaml::Mapping) {
     let mut extras = serde_yaml::Mapping::new();
@@ -2647,12 +2683,11 @@ fn load_state_at_with_pipeline_runs(
         } else {
             "''"
         };
-        let parent_session_expr =
-            if column_exists(conn, "policy_audit", "parent_session_id")? {
-                "COALESCE(parent_session_id, '')"
-            } else {
-                "''"
-            };
+        let parent_session_expr = if column_exists(conn, "policy_audit", "parent_session_id")? {
+            "COALESCE(parent_session_id, '')"
+        } else {
+            "''"
+        };
         let mut pstmt = conn.prepare(&format!(
             "SELECT id, ts, verdict, tool, role, handle, reason, \
              {request_id_expr}, {parent_session_expr} \
@@ -3032,13 +3067,21 @@ fn load_state_at_with_pipeline_runs(
                  FROM stage_outputs ORDER BY id ASC",
             )?;
             st.stage_attempts = stmt
-                .query_map([], |r| Ok(StageAttemptEvidence {
-                    session_id: r.get(0)?, stage: r.get(1)?, attempt: r.get(2)?,
-                    phase: r.get(3)?, contract_json: r.get(4)?,
-                    contract_hash: r.get(5)?, selected_skill_id: r.get(6)?,
-                    selected_skill_version: r.get(7)?, selected_skill_hash: r.get(8)?,
-                    worker_handle_id: r.get(9)?, gate_result_json: r.get(10)?,
-                }))?
+                .query_map([], |r| {
+                    Ok(StageAttemptEvidence {
+                        session_id: r.get(0)?,
+                        stage: r.get(1)?,
+                        attempt: r.get(2)?,
+                        phase: r.get(3)?,
+                        contract_json: r.get(4)?,
+                        contract_hash: r.get(5)?,
+                        selected_skill_id: r.get(6)?,
+                        selected_skill_version: r.get(7)?,
+                        selected_skill_hash: r.get(8)?,
+                        worker_handle_id: r.get(9)?,
+                        gate_result_json: r.get(10)?,
+                    })
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
         }
         if table_exists(state_conn, "stage_attempt_events")? {
@@ -3052,9 +3095,14 @@ fn load_state_at_with_pipeline_runs(
                 .query_map([], |r| {
                     let ts = r.get::<_, Value>(1)?;
                     Ok(StageAttemptEvent {
-                        id: r.get(0)?, ts: fmt_ts(&ts), session_id: r.get(2)?,
-                        stage: r.get(3)?, attempt: r.get(4)?, event: r.get(5)?,
-                        worker_handle_id: r.get(6)?, contract_hash: r.get(7)?,
+                        id: r.get(0)?,
+                        ts: fmt_ts(&ts),
+                        session_id: r.get(2)?,
+                        stage: r.get(3)?,
+                        attempt: r.get(4)?,
+                        event: r.get(5)?,
+                        worker_handle_id: r.get(6)?,
+                        contract_hash: r.get(7)?,
                         detail_json: r.get(8)?,
                     })
                 })?
@@ -3067,11 +3115,17 @@ fn load_state_at_with_pipeline_runs(
                  FROM audit_obligations ORDER BY id ASC",
             )?;
             st.audit_obligations = stmt
-                .query_map([], |r| Ok(AuditObligation {
-                    id: r.get(0)?, created_at: r.get(1)?, kind: r.get(2)?,
-                    handle_id: r.get(3)?, status: r.get(4)?,
-                    delivered_at: r.get(5)?, error: r.get(6)?,
-                }))?
+                .query_map([], |r| {
+                    Ok(AuditObligation {
+                        id: r.get(0)?,
+                        created_at: r.get(1)?,
+                        kind: r.get(2)?,
+                        handle_id: r.get(3)?,
+                        status: r.get(4)?,
+                        delivered_at: r.get(5)?,
+                        error: r.get(6)?,
+                    })
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
         }
     }
@@ -4744,8 +4798,9 @@ mod tests {
         let audit = Connection::open_in_memory().unwrap();
         let state = Connection::open_in_memory().unwrap();
         init_schema(&audit).unwrap();
-        state.execute_batch(
-            "CREATE TABLE stage_outputs(
+        state
+            .execute_batch(
+                "CREATE TABLE stage_outputs(
                 id INTEGER PRIMARY KEY, session_id TEXT, stage TEXT, attempt INTEGER,
                 phase TEXT, contract_json TEXT, contract_hash TEXT,
                 selected_skill_id TEXT, selected_skill_version TEXT,
@@ -4758,23 +4813,32 @@ mod tests {
              CREATE TABLE audit_obligations(
                 id INTEGER PRIMARY KEY, created_at TEXT, kind TEXT,
                 handle_id TEXT, status TEXT, delivered_at TEXT, error TEXT);",
-        ).unwrap();
-        state.execute(
-            "INSERT INTO stage_outputs VALUES(
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO stage_outputs VALUES(
                 1,'pipe-1','code',2,'passed','{\"goal\":\"five cities\"}',
                 'sha256:contract','web-ui','1.0.0','sha256:skill','worker-2',
-                '{\"status\":\"pass\"}')", [],
-        ).unwrap();
-        state.execute(
-            "INSERT INTO stage_attempt_events VALUES(
+                '{\"status\":\"pass\"}')",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO stage_attempt_events VALUES(
                 7,1000.0,'pipe-1','code',2,'gate_verdict','worker-2',
-                'sha256:contract','{\"status\":\"pass\"}')", [],
-        ).unwrap();
-        state.execute(
-            "INSERT INTO audit_obligations VALUES(
+                'sha256:contract','{\"status\":\"pass\"}')",
+                [],
+            )
+            .unwrap();
+        state
+            .execute(
+                "INSERT INTO audit_obligations VALUES(
                 9,'2026-08-01T00:00:00Z','worker_spawn','worker-2','pending',NULL,'offline')",
-            [],
-        ).unwrap();
+                [],
+            )
+            .unwrap();
 
         let snapshot = load_state_with_pipeline_runs(&audit, Some(&state)).unwrap();
         assert_eq!(snapshot.stage_attempts.len(), 1);
@@ -5699,7 +5763,10 @@ mod tests {
         assert_eq!(recipe.checks["project-tests"].argv, vec!["npm", "test"]);
         assert_eq!(recipe.checks["project-tests"].timeout_seconds, 120);
         assert_eq!(recipe.stages[1].max_iterations, 3);
-        assert_eq!(recipe.stages[1].allowed_checks, vec!["dom_count", "named_command"]);
+        assert_eq!(
+            recipe.stages[1].allowed_checks,
+            vec!["dom_count", "named_command"]
+        );
         assert_eq!(recipe.stages[1].allowed_commands, vec!["project-tests"]);
 
         let rendered = render_pipeline_recipe(&recipe, "", &serde_yaml::Mapping::new()).unwrap();
@@ -5723,7 +5790,9 @@ mod tests {
 
         for field in ["maxIterations", "allowedChecks", "allowedCommands"] {
             assert!(
-                findings.iter().any(|finding| finding.step == "stages[0]" && finding.field == field),
+                findings
+                    .iter()
+                    .any(|finding| finding.step == "stages[0]" && finding.field == field),
                 "missing {field}: {findings:?}",
             );
         }
@@ -6901,7 +6970,10 @@ mod recipe_fidelity_tests {
             .get("root")
             .unwrap_or_else(|| panic!("root missing from scraped firewall: {firewall:?}"));
         assert!(root_entry.contains(&"coder".to_string()), "{root_entry:?}");
-        assert!(root_entry.contains(&"explorer".to_string()), "{root_entry:?}");
+        assert!(
+            root_entry.contains(&"explorer".to_string()),
+            "{root_entry:?}"
+        );
         // The literal-keyed entries still parse exactly as before.
         assert_eq!(
             firewall.get("coder"),
