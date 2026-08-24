@@ -40,6 +40,40 @@ Full plan + the PR-review sentence: [`docs/roadmap.md`](./docs/roadmap.md).
 Every surface drives the **same** substrate (audit, firewall, policy,
 compression).
 
+## Evidence-gated feedback loop
+
+Musubi does not treat a worker's "done" message as proof that a pipeline
+stage succeeded. Each governed stage runs through an **evidence-gated
+feedback loop**:
+
+```text
+Freeze acceptance contract
+          ↓
+Worker executes the stage
+          ↓
+Harness verifies deterministic evidence
+          ↓
+    Pass / Retry / Escalate
+```
+
+The model proposes the stage goal and measurable acceptance predicates; the
+harness validates and freezes that contract before work starts. After the
+worker finishes, zero-LLM checks inspect evidence such as changed files, DOM
+structure, lint results, tests, or allow-listed commands. A stage advances
+only when those checks pass. Failed evidence becomes focused feedback for a
+bounded retry, while the original contract and stage-start baseline remain
+unchanged. Exhausted or non-retryable failures escalate instead of being
+silently accepted.
+
+For example, a stage that builds a five-city weather table may require a
+modified HTML file, exactly five DOM rows, five distinct city names, and a
+clean lint result. Producing an HTML file and saying "done" is insufficient:
+four rows cause a retry with the failed check as evidence; all checks passing
+allow the pipeline to continue.
+
+This is stricter than a generic feedback loop: **feedback tells the worker
+what to improve; the evidence gate decides whether execution may continue.**
+
 ## Input compression (substrate, reversible)
 
 Musubi shrinks the tokens the model reads at the substrate boundary —
