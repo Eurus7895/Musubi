@@ -390,6 +390,15 @@ def load_pipeline_contract(pipeline_name: str) -> PipelineRecipeContract:
             raise PipelineRecipeError(
                 f"stage {stage!r} with max_iterations > 1 requires allowed_checks"
             )
+        if (
+            max_iterations > 1
+            and set(allowed_checks) == {"named_command"}
+            and not allowed_commands
+        ):
+            raise PipelineRecipeError(
+                f"stage {stage!r} uses only named_command checks but declares "
+                "no allowed_commands"
+            )
         spawns = _strict_string_list(
             raw_stage.get("spawns"), field="spawns", stage=stage,
         )

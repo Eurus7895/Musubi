@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { validateDraft } from '../model/pipelineBuilder.js'
 import { readStageDrop, readSpawnRole, STAGE_MIME, INDEX_MIME, SPAWN_MIME } from './stageDrag.js'
 
 const STEPS = ['basics', 'stages', 'handoffs', 'validate']
@@ -23,9 +24,7 @@ export default function Pipeline({ vals }) {
       spawnRoles: builder.library?.spawnRoles || [],
     }
   }, [builder.library, query])
-  const clientErrors = []
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(draft.name || '')) clientErrors.push('Use a lowercase safe pipeline name.')
-  if ((draft.stages || []).length < 2) clientErrors.push('Add at least two primary stages.')
+  const clientErrors = validateDraft(draft).map((finding) => finding.message)
   const hasErrors = clientErrors.length > 0 || (builder.findings || []).some((finding) => finding.severity === 'error')
 
   return (

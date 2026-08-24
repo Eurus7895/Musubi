@@ -40,6 +40,7 @@ an exhausted depth budget all degrade to a strict leaf, fail-closed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -162,6 +163,101 @@ class PipelineResumePlan:
     user_hint: str | None
     extra_budget: int
     force_no_spawns: bool
+
+
+def _split_touched_ref(reference: str) -> tuple[str, str]:
+    """Decode the mutation sink's stable ``root::path`` representation."""
+    if "::" in reference:
+        root, path = reference.split("::", 1)
+        return root, path
+    return "musubi", reference
+
+
+def _artifact_manifest(touched: set[str]) -> list[dict[str, str]]:
+    return [
+        {"root": root, "path": path}
+        for root, path in map(_split_touched_ref, sorted(touched))
+    ]
+
+
+def _restore_frozen_contracts(
+    stage_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rehydrate each stage's first frozen contract from the durable ledger."""
+    from validation.stage_contract import FrozenStageContract
+
+    restored: dict[str, Any] = {}
+    for row in sorted(stage_rows, key=lambda item: int(item.get("attempt") or 0)):
+        stage = str(row.get("stage") or "")
+        raw = row.get("contract_json")
+        contract_hash = str(row.get("contract_hash") or "")
+        if not stage or not raw or not contract_hash:
+            continue
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(value, dict):
+                raise TypeError("contract_json is not an object")
+            canonical = json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            )
+            expected_hash = "sha256:" + hashlib.sha256(
+                canonical.encode("utf-8")
+            ).hexdigest()
+            if contract_hash != expected_hash:
+                raise ValueError("contract hash does not match contract_json")
+            contract = FrozenStageContract(
+                skill_id=str(value["skill_id"]),
+                goal=str(value["goal"]),
+                exit_when=tuple(value.get("exit_when") or ()),
+                canonical_json=canonical,
+                contract_hash=contract_hash,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"stage {stage!r} has an invalid persisted frozen contract"
+            ) from exc
+        prior = restored.get(stage)
+        if prior is not None and prior.contract_hash != contract.contract_hash:
+            raise RuntimeError(
+                f"stage {stage!r} persisted multiple frozen contract hashes"
+            )
+        restored.setdefault(stage, contract)
+    return restored
+
+
+def _restore_stage_snapshots(
+    stage_rows: list[dict[str, Any]], frozen_contracts: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Recover original file baselines recorded by the first gate attempt."""
+    snapshots: dict[str, dict[str, Any]] = {}
+    for row in sorted(stage_rows, key=lambda item: int(item.get("attempt") or 0)):
+        stage = str(row.get("stage") or "")
+        contract = frozen_contracts.get(stage)
+        raw_gate = row.get("gate_result_json")
+        if not stage or contract is None or not raw_gate or stage in snapshots:
+            continue
+        try:
+            gate = json.loads(raw_gate) if isinstance(raw_gate, str) else raw_gate
+            checks = gate.get("checks") if isinstance(gate, dict) else None
+            if not isinstance(checks, list):
+                continue
+        except json.JSONDecodeError:
+            continue
+        snapshot: dict[str, Any] = {}
+        for predicate, check in zip(contract.exit_when, checks, strict=False):
+            if not isinstance(check, dict):
+                continue
+            evidence = check.get("evidence")
+            if (
+                predicate.get("type") == "file_created_or_modified"
+                and isinstance(evidence, dict)
+                and "before" in evidence
+            ):
+                key = f"{predicate['root']}:{predicate['path']}"
+                snapshot[key] = evidence["before"]
+        if snapshot:
+            snapshots[stage] = snapshot
+    return snapshots
 
 
 def _plan_pipeline_resume(
@@ -348,6 +444,7 @@ async def run_pipeline(
 
     request = str(spawn_args.get("brief", ""))
     resume_plan: PipelineResumePlan | None = None
+    resume_rows: list[dict[str, Any]] = []
     if resume_session_id:
         from composer import active_stages, agent_for_stage
         from storage import db as state_db
@@ -372,8 +469,8 @@ async def run_pipeline(
             raise RuntimeError(
                 f"pipeline resume action could not be consumed: {consumed}"
             )
-        rows = state_db.get_all_stage_rows(psid, compression_db_path)
-        resume_plan = _plan_pipeline_resume(plan, rows, consumed)
+        resume_rows = state_db.get_all_stage_rows(psid, compression_db_path)
+        resume_plan = _plan_pipeline_resume(plan, resume_rows, consumed)
         if resume_plan.retry_stage:
             incremented = loads_dict(await _call_tool_text(
                 session,
@@ -411,10 +508,19 @@ async def run_pipeline(
 
     print(f"[agent]   ⇶ pipeline {pname} ({len(plan)} stages)", file=log)
 
+    recipe_contract: Any = None
+
     summaries = list(resume_plan.summaries) if resume_plan else []
     pipeline_escalated = False
     attempts: dict[str, int] = {}
-    frozen_contracts: dict[str, Any] = {}
+    try:
+        frozen_contracts = _restore_frozen_contracts(resume_rows)
+    except RuntimeError:
+        await _finalize_pipeline(session, psid, "aborted", False)
+        raise
+    stage_snapshots = _restore_stage_snapshots(resume_rows, frozen_contracts)
+    if resume_plan and resume_plan.retry_stage and resume_plan.retry_attempt:
+        attempts[resume_plan.retry_stage] = resume_plan.retry_attempt
     failure_evidence: dict[str, str] = {}
     i = 0
     while i < len(plan):
@@ -445,6 +551,16 @@ async def run_pipeline(
                 raise RuntimeError(msg) from exc
             return msg
 
+        if recipe_contract is None:
+            try:
+                recipe_contract = composer.load_pipeline_contract(pname)
+            except (composer.PipelineRecipeError, ValueError, TypeError) as exc:
+                await _finalize_pipeline(session, psid, "aborted", False)
+                msg = f"[pipeline {pname}] strict recipe loading failed: {exc}"
+                if strict:
+                    raise RuntimeError(msg) from exc
+                return msg
+
         # The model owns skill and goal selection. The harness supplies only
         # the role-filtered catalog and recipe ceilings, then freezes the first
         # valid contract. Retry calls may change skill only when its observable
@@ -454,7 +570,6 @@ async def run_pipeline(
         from validation.context_builder import AGENT_SKILL_ALLOWLIST
         from workspace.grants import MANIFEST_ENV, RootRegistry
 
-        recipe_contract = composer.load_pipeline_contract(pname)
         recipe = next(
             (candidate for candidate in recipe_contract.stages if candidate.stage == stage),
             None,
@@ -515,13 +630,18 @@ async def run_pipeline(
                 f"Acceptance predicates: {json.dumps(list(preflight.contract.exit_when), ensure_ascii=False)}"
             )
         from validation.stage_gate import fingerprint_file
-        stage_snapshot: dict[str, Any] = {}
-        for predicate in preflight.contract.exit_when:
-            if "root" in predicate and "path" in predicate:
-                key = f"{predicate['root']}:{predicate['path']}"
-                stage_snapshot[key] = fingerprint_file(
-                    roots.resolve(str(predicate["root"]), str(predicate["path"]))
-                )
+        if stage not in stage_snapshots:
+            snapshot: dict[str, Any] = {}
+            for predicate in preflight.contract.exit_when:
+                if "root" in predicate and "path" in predicate:
+                    key = f"{predicate['root']}:{predicate['path']}"
+                    snapshot[key] = fingerprint_file(
+                        roots.resolve(
+                            str(predicate["root"]), str(predicate["path"]),
+                        )
+                    )
+            stage_snapshots[stage] = snapshot
+        stage_snapshot = stage_snapshots[stage]
         stage_raw = await _call_tool_text(session, "musubi_spawn_pipeline_stage", {
             "pipeline_session_id": psid, "pipeline_name": pname,
             "stage": stage, "brief": brief, "max_turns": spec.max_cycles,
@@ -1007,7 +1127,7 @@ async def run_pipeline(
         from validation.stage_gate import evaluate_stage_gate
         gate = evaluate_stage_gate(
             preflight.contract, stage_snapshot,
-            [{"root": "musubi", "path": path} for path in sorted(touched)],
+            _artifact_manifest(touched),
             command_runner=lambda command_id: command_results.get(command_id, {
                 "status": "error", "message": f"command {command_id!r} was not run",
             }),
@@ -1255,7 +1375,7 @@ def _record_worker_complete_checkpoint(
     db.write_stage_attempt_once(identity, "output", answer, db_path=db_path)
     db.write_stage_attempt_once(
         identity, "artifact_manifest_json",
-        [{"root": "musubi", "path": path} for path in sorted(touched)],
+        _artifact_manifest(touched),
         db_path=db_path,
     )
     db.transition_stage_attempt(

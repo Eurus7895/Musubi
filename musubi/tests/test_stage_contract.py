@@ -59,3 +59,17 @@ def test_retry_must_echo_frozen_hash(tmp_path: Path) -> None:
             {"skill_id": "web-ui", "contract_hash": "sha256:wrong"},
             _recipe(), _skill(), roots, frozen_contract_hash="sha256:right",
         )
+
+
+@pytest.mark.parametrize("selector", ["div.row", ".row.active", "div[a][b]"])
+def test_contract_rejects_selectors_the_gate_cannot_execute(
+    selector: str, tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="unsupported static DOM selector"):
+        validate_and_freeze_contract({
+            "skill_id": "web-ui", "goal": "x",
+            "exit_when": [{
+                "type": "dom_count", "root": "musubi", "path": "index.html",
+                "selector": selector, "equals": 1,
+            }],
+        }, _recipe(), _skill(), RootRegistry.build(tmp_path))

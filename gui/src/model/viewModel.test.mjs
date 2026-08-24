@@ -1592,6 +1592,26 @@ test('a turn reports the tokens it spent including its workers, and its own shar
   )
 })
 
+test('pipeline stage cycles are included in their request token total', () => {
+  const { state } = historySession()
+  state.pipelineRuns = [{
+    sessionId: 'pipeline-1', requestId: 'request-1',
+    chatId: 'gui-orchestrator-wide', pipelineName: 'feature-dev',
+    startedAt: 101, status: 'success', stages: [],
+  }]
+  state.agentCycles.push({
+    sessionId: 'pipeline-1', stage: 'code', workerId: 'stage-worker',
+    cycleIdx: 0, lmMs: 4, tokensIn: 240, cachedInputTokens: 0,
+    tokensOut: 60, tokenSource: 'provider', toolNames: [], cycleStatus: 'final',
+  })
+
+  const vm = buildViewModel(state, actions())
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+
+  assert.equal(turns[0].tokens, 1300)
+  assert.equal(turns[0].ownTokens, 250)
+})
+
 test('a turn carries the skills its own agents received', () => {
   const { state } = historySession()
   const vm = buildViewModel(state, actions())

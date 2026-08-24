@@ -101,6 +101,17 @@ export function validateDraft(draft) {
   if (!Array.isArray(draft?.stages) || draft.stages.length < 2) {
     findings.push({ severity: 'error', step: 'recipe', field: 'stages', message: 'Add at least two stages.' })
   }
+  ;(draft?.stages || []).forEach((stage, index) => {
+    if (stage.maxIterations > 1
+      && stage.allowedChecks?.length === 1
+      && stage.allowedChecks[0] === 'named_command'
+      && !stage.allowedCommands?.length) {
+      findings.push({
+        severity: 'error', step: `stage ${index + 1}`, field: 'allowedCommands',
+        message: 'Select at least one allowed command for a retryable named-command stage.',
+      })
+    }
+  })
   return findings
 }
 

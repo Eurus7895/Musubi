@@ -1081,7 +1081,14 @@ export function buildViewModel(s, act) {
       const failedAgent = request.agents.find((agent) => ['failed', 'escalated', 'abandoned'].includes(agent.status))
       const status = running ? 'running' : (failedAgent?.status || 'done')
       const meta = sm[status] || sm.abandoned
-      const turnCycles = cyclesByParentSession.get(request.turn?.parentSession)
+      const rootCycles = cyclesByParentSession.get(request.turn?.parentSession)
+      const cycleBuckets = [rootCycles, ...Array.from(requestPipelineSessions)
+        .map((sessionId) => cyclesByParentSession.get(sessionId))]
+        .filter(Boolean)
+      const turnCycles = cycleBuckets.length ? {
+        total: cycleBuckets.reduce((sum, bucket) => sum + bucket.total, 0),
+        own: rootCycles?.own || 0,
+      } : null
       const estimatedTurnTokens = Number(request.turn?.tokensInEstimate || 0)
         + Number(request.turn?.tokensOutEstimate || 0)
       const turnTokens = turnCycles ? turnCycles.total : estimatedTurnTokens

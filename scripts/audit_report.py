@@ -98,6 +98,19 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
         return 1
     sid = turn["parent_session_id"]
     chat = turn["chat_id"]
+    request_id = turn.get("request_id")
+    pipeline_sessions = (
+        _rows(
+            _STATE_DB,
+            "SELECT session_id FROM pipeline_runs WHERE request_id = ?",
+            (request_id,),
+        )
+        if request_id else []
+    )
+    session_ids = tuple(dict.fromkeys([
+        sid, *(str(row["session_id"]) for row in pipeline_sessions),
+    ]))
+    session_marks = ",".join("?" for _ in session_ids)
 
     # ── 1. What was asked ──────────────────────────────────────────────────
     _head("1. REQUEST")
@@ -147,8 +160,9 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     _head("3. DELEGATION")
     workers = _rows(
         _STATE_DB,
-        "SELECT * FROM sub_sessions WHERE parent_session_id = ? ORDER BY created_at",
-        (sid,),
+        f"SELECT * FROM sub_sessions WHERE parent_session_id IN ({session_marks})"
+        " ORDER BY created_at",
+        session_ids,
     )
     if not workers:
         print("  no worker was spawned")
@@ -167,8 +181,9 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     calls = _rows(
         _AUDIT_DB,
         "SELECT agent, tool, args_json, status, COUNT(*) AS n FROM tool_audit"
-        " WHERE session_id = ? GROUP BY agent, tool, status ORDER BY agent, tool",
-        (sid,),
+        f" WHERE session_id IN ({session_marks})"
+        " GROUP BY agent, tool, status ORDER BY agent, tool",
+        session_ids,
     )
     if not calls:
         print("  no tool call recorded")
@@ -179,9 +194,9 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     denials = _rows(
         _AUDIT_DB,
         "SELECT role, tool, reason, COUNT(*) AS n FROM policy_audit"
-        " WHERE verdict = 'DENY' AND parent_session_id = ?"
+        f" WHERE verdict = 'DENY' AND parent_session_id IN ({session_marks})"
         " GROUP BY role, tool, reason",
-        (sid,),
+        session_ids,
     )
     print()
     if denials:
@@ -199,9 +214,9 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
         "SELECT worker_id, cycle_status, COUNT(*) AS n,"
         " SUM(tokens_in) AS tin, SUM(cached_input_tokens) AS cached,"
         " SUM(tokens_out) AS tout, SUM(lm_ms) AS ms"
-        " FROM agent_cycles WHERE session_id = ?"
+        f" FROM agent_cycles WHERE session_id IN ({session_marks})"
         " GROUP BY worker_id, cycle_status ORDER BY worker_id",
-        (sid,),
+        session_ids,
     )
     total_in = total_out = total_cached = 0
     for c in cyc:
@@ -219,8 +234,8 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     writes = _rows(
         _AUDIT_DB,
         "SELECT agent, tool, args_json, status FROM tool_audit"
-        " WHERE session_id = ? ORDER BY id",
-        (sid,),
+        f" WHERE session_id IN ({session_marks}) ORDER BY id",
+        session_ids,
     )
     touched: dict[str, list[str]] = {}
     for w in writes:
@@ -244,11 +259,18 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     _head("7. RECORD INTEGRITY")
     findings: list[str] = []
 
-    owed = _rows(
-        _STATE_DB,
-        "SELECT kind, status, COUNT(*) AS n, MAX(error) AS err"
-        " FROM audit_obligations WHERE status != 'delivered' GROUP BY kind, status",
-    )
+    worker_handles = tuple(str(worker["handle_id"]) for worker in workers)
+    if worker_handles:
+        handle_marks = ",".join("?" for _ in worker_handles)
+        owed = _rows(
+            _STATE_DB,
+            "SELECT kind, status, COUNT(*) AS n, MAX(error) AS err"
+            f" FROM audit_obligations WHERE status != 'delivered'"
+            f" AND handle_id IN ({handle_marks}) GROUP BY kind, status",
+            worker_handles,
+        )
+    else:
+        owed = []
     for o in owed:
         findings.append(
             f"{o['n']} {o['kind']} audit obligation(s) {o['status']}"
@@ -268,8 +290,9 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
     cycle_workers = {
         r["worker_id"] for r in _rows(
             _STATE_DB,
-            "SELECT DISTINCT worker_id FROM agent_cycles WHERE session_id = ?",
-            (sid,),
+            f"SELECT DISTINCT worker_id FROM agent_cycles"
+            f" WHERE session_id IN ({session_marks})",
+            session_ids,
         )
     }
     for w in workers:

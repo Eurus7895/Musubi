@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import signal
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +23,33 @@ from storage import db
 from workspace.grants import RootRegistry
 
 _OUTPUT_LIMIT = 64 * 1024
+
+
+def _split_touched_ref(reference: str) -> tuple[str, str]:
+    if "::" in reference:
+        return tuple(reference.split("::", 1))  # type: ignore[return-value]
+    return "musubi", reference
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Terminate the governed command and every descendant it started."""
+    if process.returncode is not None:
+        return
+    if os.name == "nt":
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill", "/PID", str(process.pid), "/T", "/F",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await killer.communicate()
+        if process.returncode is None:
+            process.kill()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    await process.communicate()
 
 
 @dataclass(frozen=True)
@@ -88,19 +118,24 @@ async def run_named_command(
             raise NotADirectoryError(f"named command cwd is not a directory: {cwd}")
         if not spec.argv or spec.timeout_seconds <= 0:
             raise ValueError("named command requires argv and a positive timeout")
+        process_options: dict[str, Any] = (
+            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            if os.name == "nt"
+            else {"start_new_session": True}
+        )
         process = await asyncio.create_subprocess_exec(
             *spec.argv,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **process_options,
         )
         try:
             out_bytes, err_bytes = await asyncio.wait_for(
                 process.communicate(), timeout=spec.timeout_seconds,
             )
         except TimeoutError:
-            process.kill()
-            await process.communicate()
+            await _terminate_process_tree(process)
             raise TimeoutError(
                 f"named command {spec.command_id!r} exceeded "
                 f"{spec.timeout_seconds}s"
@@ -172,7 +207,10 @@ async def run_lint_check(
         )
         if decision.verdict != "ALLOW":
             raise PermissionError(decision.reason)
-        resolved = [str(roots.resolve("musubi", path)) for path in normalized]
+        resolved = [
+            str(roots.resolve(*_split_touched_ref(reference)))
+            for reference in normalized
+        ]
         if not resolved:
             status = "skipped"
             stdout = "no surviving artifacts to lint"

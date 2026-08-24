@@ -174,3 +174,15 @@ test('pristine transition applies immediately and client validation is advisory'
   assert.equal(validateDraft(createPipelineDraft()).some((finding) => finding.field === 'name'), true)
   assert.equal(validateDraft(createPipelineDraft()).some((finding) => finding.field === 'stages'), true)
 })
+
+test('retryable named-command-only stages require an allowed command', () => {
+  const draft = createPipelineDraft(recipe())
+  draft.stages[1] = {
+    ...draft.stages[1], maxIterations: 2,
+    allowedChecks: ['named_command'], allowedCommands: [],
+  }
+
+  const findings = validateDraft(draft)
+
+  assert.equal(findings.some((finding) => finding.field === 'allowedCommands'), true)
+})

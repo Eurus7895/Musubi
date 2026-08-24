@@ -137,6 +137,10 @@ def test_load_pipeline_contract_projects_governed_stage_ceilings(
             max_iterations=2, allowed_checks=[]
         ), "allowed_checks"),
         (lambda body: body["stages"][1].update(
+            max_iterations=2, allowed_checks=["named_command"],
+            allowed_commands=[],
+        ), "no allowed_commands"),
+        (lambda body: body["stages"][1].update(
             allowed_checks=["model_judgement"]
         ), "unknown check"),
         (lambda body: body["stages"][1].update(

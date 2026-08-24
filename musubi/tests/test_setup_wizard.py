@@ -339,7 +339,7 @@ def test_install_console_gui_reports_missing_msvc_linker_on_windows(
         calls.append((cmd, cwd))
         return 0
 
-    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(sw, "_is_windows", lambda: True)
     monkeypatch.setattr(
         sw.shutil,
         "which",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -29,7 +30,7 @@ class RetryRouter(LMRouter):
             value = {
                 "skill_id": "web-ui", "goal": "render five distinct cities",
                 "exit_when": [
-                    {"type": "file_created_or_modified", "root": "musubi", "path": "index.html"},
+                    {"type": "file_created_or_modified", "root": "musubi", "path": "marker.txt"},
                     {"type": "dom_count", "root": "musubi", "path": "index.html", "selector": "[data-testid='weather-row']", "equals": 5},
                     {"type": "dom_distinct_text", "root": "musubi", "path": "index.html", "selector": "[data-testid='city-name']", "equals": 5},
                 ],
@@ -83,7 +84,9 @@ def test_pipeline_retries_same_frozen_contract_then_passes(
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 1:
+            (tmp_path / "marker.txt").write_text("created", encoding="utf-8")
+        else:
             rows = "".join(
                 f"<tr data-testid='weather-row'><td data-testid='city-name'>{city}</td></tr>"
                 for city in ("Hanoi", "Hue", "Danang", "Saigon", "Can Tho")
@@ -115,3 +118,58 @@ def test_pipeline_retries_same_frozen_contract_then_passes(
     gate = json.loads(db.get_stage_row("pipe-retry", "code", 2, state_path)["gate_result_json"])
     assert gate["status"] == "pass"
     assert [check["evidence"].get("actual") for check in gate["checks"][1:]] == [5, 5]
+
+
+def test_restore_frozen_contract_uses_first_persisted_hash() -> None:
+    from agent.pipeline_runner import _restore_frozen_contracts
+
+    canonical = json.dumps({
+        "skill_id": "web-ui", "skill_version": "1", "skill_hash": "sha256:s",
+        "goal": "keep the goal", "exit_when": [],
+    }, sort_keys=True, separators=(",", ":"))
+    contract_hash = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    restored = _restore_frozen_contracts([
+        {"stage": "code", "attempt": 1, "contract_json": canonical,
+         "contract_hash": contract_hash},
+        {"stage": "code", "attempt": 2, "contract_json": canonical,
+         "contract_hash": contract_hash},
+    ])
+
+    assert restored["code"].goal == "keep the goal"
+    assert restored["code"].contract_hash == contract_hash
+
+
+def test_strict_recipe_failure_finalizes_spawned_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "bad-recipe",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr(
+        "composer.load_pipeline_contract",
+        lambda name: (_ for _ in ()).throw(
+            __import__("composer").PipelineRecipeError("invalid ceiling")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="strict recipe loading failed"):
+        asyncio.run(run_pipeline(
+            None,
+            {"parent_session_id": "root", "parent_agent_name": "agent",
+             "pipeline_name": "feature-dev", "brief": "build"},
+            RetryRouter(), [], io.StringIO(), strict=True,
+        ))
+
+    assert finalizations[-1]["final_status"] == "aborted"
