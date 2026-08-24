@@ -31,10 +31,17 @@ importable by tests with no database at all.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.fs import _workspace_root
+
+#: The alias of the fixed harness root. A path under it is named bare
+#: (`agent/run.py`); a path under any other granted root is named with its
+#: alias (`bamf-updater/temp.log`) because that alias is the `root=` argument
+#: every filesystem tool needs to reach it.
+PRIMARY_ALIAS = "musubi"
 
 #: Tokens that can plausibly BE a path. A bare word ("website", "faster") is
 #: not one: without a separator or a suffix there is nothing to resolve, and
@@ -68,19 +75,29 @@ NO_PROGRESS_TURNS = 3
 class EvidenceVector:
     """Five facts about a turn. No field is an opinion about the request."""
 
-    #: A token in the request resolves to a path INSIDE the workspace root.
-    #: False both when nothing looks like a path and when what does look like
-    #: one escapes the root — those are different situations for the model, so
+    #: A token in the request resolves to a path INSIDE one of the request's
+    #: granted roots — the fixed harness root, or any folder the operator
+    #: attached to this session (`workspace/grants.py`). False both when
+    #: nothing looks like a path and when what does look like one escapes
+    #: every root — those are different situations for the model, so
     #: `escaped_paths` keeps them apart.
     names_workspace_path: bool = False
     #: …and that path is on disk right now.
     path_exists: bool = False
-    #: Paths named in the request that resolve OUTSIDE the workspace root. A
-    #: turn asking about one of these cannot be served by any worker, and the
-    #: refusal is worth predicting before a spawn rather than after.
+    #: Paths named in the request that resolve outside EVERY granted root. A
+    #: turn asking about one of these cannot be served by any worker until the
+    #: operator attaches that folder, and the refusal is worth predicting
+    #: before a spawn rather than after.
     escaped_paths: tuple[str, ...] = field(default_factory=tuple)
-    #: Resolved workspace paths, workspace-relative, for the prompt block.
+    #: Resolved granted paths, root-relative, for the prompt block. Paths under
+    #: the fixed harness root are bare; paths under an attached folder carry
+    #: that folder's alias, which is the `root=` argument the tools need.
     named_paths: tuple[str, ...] = field(default_factory=tuple)
+    #: The attached-folder aliases (never `musubi`) that contain a named path.
+    #: Kept apart from `named_paths` because a prefix cannot be recovered from
+    #: the joined string: `agent/run.py` and `bamf-updater/run.py` have the
+    #: same shape and only this field says which first segment is an alias.
+    named_root_aliases: tuple[str, ...] = field(default_factory=tuple)
     #: This chat has prior messages, so "it" and "that" may have referents.
     has_conversation: bool = False
     #: An explorer (or investigator) has already reported into this turn.
@@ -136,10 +153,29 @@ class EvidenceVector:
         ]
         if self.named_paths:
             lines.append("paths=" + ",".join(self.named_paths))
+            # A path under an attached folder is written `<alias>/<rest>`, and
+            # `<alias>` is not part of the filename — it is the `root=`
+            # argument the tool needs. Say so here rather than leaving the
+            # root agent to infer it from the roots listing further down.
+            aliased = self.named_root_aliases
+            if aliased:
+                lines.append(
+                    "note=paths above are prefixed with the attached root that "
+                    "contains them (" + ", ".join(aliased) + "). Pass that name "
+                    "as the tool's `root` argument and the REST of the path as "
+                    "`path`; do not pass the prefix as part of `path`."
+                )
         if self.escaped_paths:
+            # Names the remedy, not just the refusal. Every path listed here
+            # is one the operator can hand over with the console's Add folder
+            # control; telling the user to go run the command by hand — the
+            # old wording's only implied next step — hides the affordance the
+            # product already has.
             lines.append(
-                "outside_workspace=" + ",".join(self.escaped_paths)
-                + " (no worker can reach these; say so and stop)"
+                "outside_granted_roots=" + ",".join(self.escaped_paths)
+                + " (no attached root contains these, so no worker can reach "
+                "them; say so and tell the user they can attach that folder "
+                "to this session, then stop)"
             )
         if self.target_is_unknown:
             # Phrased as a starting condition, not a standing fact, because
@@ -166,37 +202,89 @@ def collect(
     explorer_findings: bool = False,
     barren_turns: int = 0,
     root: Path | None = None,
+    roots: Sequence[tuple[str, Path]] | None = None,
 ) -> EvidenceVector:
-    """Build the vector. Never raises — an unreadable fact is simply absent."""
-    inside, outside, exists = _classify_paths(request, root)
+    """Build the vector. Never raises — an unreadable fact is simply absent.
+
+    `roots` is the request's full grant list — `(alias, path)` for the fixed
+    harness root and every folder the operator attached, in registry order
+    (`workspace/grants.py::RootRegistry.grants`). Pass it, or this module
+    measures containment against the harness root alone and reports every
+    attached folder as unreachable — which is the opposite of what the
+    operator just granted. `root` remains the single-root shorthand.
+    """
+    inside, outside, exists, aliases = _classify_paths(request, root, roots)
     return EvidenceVector(
         names_workspace_path=bool(inside),
         path_exists=exists,
         escaped_paths=outside,
         named_paths=inside,
+        named_root_aliases=aliases,
         has_conversation=bool(has_conversation),
         explorer_findings=bool(explorer_findings),
         barren_turns=max(0, int(barren_turns or 0)),
     )
 
 
+def _resolved_bases(
+    root: Path | None,
+    roots: Sequence[tuple[str, Path]] | None,
+) -> tuple[tuple[str, Path], ...]:
+    """The roots this turn may reach, primary first. Empty when unreadable."""
+    pairs: list[tuple[str, Path]] = []
+    try:
+        if roots:
+            for alias, path in roots:
+                pairs.append((str(alias), Path(path).resolve()))
+        else:
+            pairs.append((PRIMARY_ALIAS, (root or _workspace_root()).resolve()))
+    except (OSError, ValueError):
+        return ()
+    return tuple(pairs)
+
+
+def _label_for(alias: str, relative: Path) -> str:
+    """Name a contained path the way the model must address it.
+
+    Under the fixed harness root that is the bare relative path, unchanged.
+    Under an attached folder it is `<alias>/<relative>` — and `<alias>` alone
+    when the request named the folder itself — because the alias is exactly
+    the `root=` argument `musubi_read_file` and friends require, and a bare
+    relative path there would resolve against the wrong root.
+    """
+    rel = relative.as_posix()
+    if alias == PRIMARY_ALIAS:
+        return "" if rel in {"", "."} else rel
+    return alias if rel in {"", "."} else f"{alias}/{rel}"
+
+
 def _classify_paths(
-    request: str, root: Path | None,
-) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
-    """Split path-shaped tokens into inside-root, outside-root, and existence.
+    request: str,
+    root: Path | None,
+    roots: Sequence[tuple[str, Path]] | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], bool, tuple[str, ...]]:
+    """Split path-shaped tokens into inside-a-root, outside-every-root, existence.
 
     This is the same containment test the firewall makes
     (`tools/fs.resolve_path`), reused rather than reimplemented so the vector
     cannot disagree with what the tools will actually permit. It is inlined
     instead of called because `resolve_path` raises on escape and this needs
     the escape as DATA.
+
+    Containment is tested against every root the request was granted, not just
+    the harness root. Testing only the harness root made an attached folder
+    indistinguishable from a path nobody granted, and the prompt then told the
+    root agent to refuse the very folder the operator had just handed it.
+    Relative tokens still resolve against the primary root: a bare
+    `docs/plan.md` means the harness workspace, as it always has.
     """
-    try:
-        base = (root or _workspace_root()).resolve()
-    except OSError:
-        return ((), (), False)
+    bases = _resolved_bases(root, roots)
+    if not bases:
+        return ((), (), False, ())
+    primary = bases[0][1]
     inside: list[str] = []
     outside: list[str] = []
+    aliases: list[str] = []
     exists = False
     # Blank out URIs before looking for paths, so their host and path segments
     # never reach the containment test. Replacing with spaces keeps every other
@@ -209,22 +297,35 @@ def _classify_paths(
         try:
             candidate = Path(token)
             resolved = (
-                candidate if candidate.is_absolute() else base / candidate
+                candidate if candidate.is_absolute() else primary / candidate
             ).resolve()
         except (OSError, ValueError):
             continue
-        try:
-            relative = resolved.relative_to(base)
-        except ValueError:
+        label: str | None = None
+        matched_alias = ""
+        for alias, base in bases:
+            try:
+                relative = resolved.relative_to(base)
+            except ValueError:
+                continue
+            label = _label_for(alias, relative)
+            matched_alias = alias
+            break
+        if label is None:
             if token not in outside:
                 outside.append(token)
             continue
-        rel = relative.as_posix()
-        if rel and rel not in inside:
-            inside.append(rel)
+        if label and label not in inside:
+            inside.append(label)
+        if (
+            label
+            and matched_alias != PRIMARY_ALIAS
+            and matched_alias not in aliases
+        ):
+            aliases.append(matched_alias)
         try:
             if resolved.exists():
                 exists = True
         except OSError:
             pass
-    return (tuple(inside), tuple(outside), exists)
+    return (tuple(inside), tuple(outside), exists, tuple(aliases))

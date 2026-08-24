@@ -1,8 +1,10 @@
 ---
 name: summarizer
 description: >
-  Procedure for the Summarizer sub-agent. Pushed by the harness through
-  validation/subagent_context.SUBAGENT_ROLE_SKILLS["summarizer"].
+  Compress an older conversation window into a bounded summary that preserves
+  decisions, open questions, and file paths, and drops transcript detail. Use
+  when a run needs its earlier context shortened without losing what later
+  turns depend on.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 ---

@@ -241,6 +241,11 @@ def _expand(target: str, base: Path, root: Path) -> list[str] | None:
     """
     if any(ch in target for ch in "*?["):
         pattern = Path(target)
+        # On Windows, `/var/*.log` is drive-relative rather than absolute.
+        # It still targets the drive root, not the workspace, so reject it
+        # before passing an absolute-looking pattern to `root.glob()`.
+        if target.startswith(("/", "\\")) and not pattern.is_absolute():
+            return None
         if pattern.is_absolute():
             try:
                 relative = pattern.relative_to(root)
@@ -343,7 +348,28 @@ def _delete_targets(command: str) -> list[str] | None:
     if not _is_delete(start):
         return []  # the delete is downstream of a pipe — targets unattributable
     if _BACKSLASH in command:
-        return []  # Windows path text; posix tokenization already ate it
+        # POSIX shlex consumes backslashes. Recover only the narrow case we can
+        # still prove: `rm` plus absolute Windows glob targets. `_expand` then
+        # verifies that each target remains inside the workspace. Everything
+        # else (including `del C:\path\file`) stays fail-closed.
+        try:
+            raw_tokens = shlex.split(command, posix=False)
+        except ValueError:
+            return []
+        raw_start = _unwrap(0)
+        if raw_start >= len(raw_tokens) or _normalize(raw_tokens[raw_start]) != "rm":
+            return []
+        raw_rest = [
+            token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in "'\"" else token
+            for token in raw_tokens[raw_start + 1:]
+            if not token.startswith("-")
+        ]
+        if not raw_rest or not all(
+            Path(token).is_absolute() and any(ch in token for ch in "*?[")
+            for token in raw_rest
+        ):
+            return []
+        return raw_rest
 
     rest = tokens[start + 1:]
     if rest and (_normalize(tokens[start]), _normalize(rest[0])) in _DELETE_SUBCOMMANDS:

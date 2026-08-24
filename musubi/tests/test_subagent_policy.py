@@ -12,6 +12,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
+import policy_engine
 from policy_engine import (
     MAIN_SUBAGENT_ALLOWLIST,
     SUBAGENT_POLICIES,
@@ -41,15 +42,15 @@ def test_phase_b1_pipeline_roles_present_as_subagents() -> None:
 
 def test_agent_can_spawn_phase_a_roles() -> None:
     assert {"explorer", "investigator", "reviewer-aux"}.issubset(
-        set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+        set(MAIN_SUBAGENT_ALLOWLIST["root"])
     )
 
 
 def test_agent_can_spawn_direct_delivery_roles() -> None:
     assert {"designer", "coder", "reviewer"}.issubset(
-        set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+        set(MAIN_SUBAGENT_ALLOWLIST["root"])
     )
-    assert "planner" not in MAIN_SUBAGENT_ALLOWLIST["agent"]
+    assert "planner" not in MAIN_SUBAGENT_ALLOWLIST["root"]
 
 
 def test_pipeline_stages_have_phase_g16_allowlist() -> None:
@@ -144,7 +145,7 @@ def test_list_subagent_roles_returns_a_copy() -> None:
     """Mutating the returned list must not affect the global table."""
     roles = list_subagent_roles("agent")
     roles.append("hacker")
-    assert "hacker" not in MAIN_SUBAGENT_ALLOWLIST["agent"]
+    assert "hacker" not in MAIN_SUBAGENT_ALLOWLIST["root"]
 
 
 # ── get_subagent_tools ──────────────────────────────────────────────────────
@@ -259,3 +260,61 @@ def test_investigator_tools_match_design_md_spec() -> None:
 def test_reviewer_aux_tools_match_design_md_spec() -> None:
     tools = set(SUBAGENT_POLICIES["reviewer-aux"])
     assert tools == {"Read", "View"}
+
+
+# ── the depth-0 driver's name: canonical `root`, legacy `agent` ─────────────
+
+
+def test_the_root_role_has_one_canonical_name_and_one_legacy_alias() -> None:
+    assert policy_engine.ROOT_ROLE == "root"
+    assert policy_engine.ROOT_ROLE_ALIASES == frozenset({"root", "agent"})
+
+
+def test_both_spellings_resolve_to_the_same_membership() -> None:
+    """`policy_audit.role` and `subagent_audit.parent_agent_name` are
+    append-only ledgers full of rows that say `agent`, and a stored role is
+    fed straight back into these checks. The alias is what keeps a replayed
+    row from silently losing its firewall."""
+    canonical = policy_engine.list_subagent_roles("root")
+    assert canonical == policy_engine.list_subagent_roles("agent")
+    assert canonical == policy_engine.list_subagent_roles("  AGENT  ")
+    assert policy_engine.check_subagent_allowed("agent", "coder")
+    assert policy_engine.check_subagent_allowed("root", "coder")
+
+
+def test_driver_is_not_an_alias_and_stays_denied() -> None:
+    """`driver` is the console's word for the same actor, and it must never
+    reach the policy engine as one. It has never carried the root's
+    membership, so aliasing it would GRANT the whole spawn firewall to a name
+    that never had it — a fail-open change (HI #5)."""
+    assert policy_engine.normalize_role("driver") == "driver"
+    assert policy_engine.list_subagent_roles("driver") == []
+    assert not policy_engine.check_subagent_allowed("driver", "coder")
+
+
+def test_an_unknown_role_still_misses_every_catalog() -> None:
+    assert policy_engine.normalize_role("saboteur") == "saboteur"
+    assert policy_engine.get_subagent_tools("saboteur") == []
+    assert not policy_engine.check_subagent_allowed("saboteur", "coder")
+    assert not policy_engine.check_subagent_allowed("agent", "saboteur")
+
+
+def test_the_legacy_catalog_filename_still_declares_the_firewall(
+    tmp_path, monkeypatch,
+) -> None:
+    """`spawn_allowlist:` frontmatter is AUTHORITATIVE when present, so a
+    checkout still carrying `root/agent.agent.md` must keep declaring it.
+    Missing the legacy filename would drop a user's own firewall back to the
+    constant — an effective policy change caused by nothing but a rename."""
+    agents = tmp_path / ".github" / "agents" / "root"
+    agents.mkdir(parents=True)
+    (agents / "agent.agent.md").write_text(
+        "---\nspawn_allowlist:\n  - explorer\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    policy_engine._reset_agent_spawns_cache()
+    try:
+        assert policy_engine.main_subagent_allowlist("root") == ["explorer"]
+        assert policy_engine.main_subagent_allowlist("agent") == ["explorer"]
+    finally:
+        policy_engine._reset_agent_spawns_cache()

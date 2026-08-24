@@ -339,12 +339,13 @@ def test_install_console_gui_reports_missing_msvc_linker_on_windows(
         calls.append((cmd, cwd))
         return 0
 
-    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(sw, "_is_windows", lambda: True)
     monkeypatch.setattr(
         sw.shutil,
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
+    monkeypatch.setattr(sw, "_has_msvc_linker", lambda: False)
 
     ok, message = sw.install_console_gui(tmp_path, run=fake_run)
 
@@ -592,7 +593,7 @@ def test_interactive_skips_local_console_gui_deps_by_default(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
-    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(sw, "_is_windows", lambda: True)
     script = Script([
         "ollama",   # family
         "",         # model
@@ -637,7 +638,7 @@ def test_interactive_installs_local_console_gui_deps_when_requested(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo", "link.exe") else None,
     )
-    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(sw, "_is_windows", lambda: True)
     script = Script([
         "ollama",   # family
         "",         # model
@@ -674,7 +675,7 @@ def test_interactive_skips_console_gui_install_on_non_windows(
         calls.append((cmd, cwd))
         return 0
 
-    monkeypatch.setattr(sw.os, "name", "posix")
+    monkeypatch.setattr(sw, "_is_windows", lambda: False)
     script = Script([
         "ollama",   # family
         "",         # model
@@ -713,7 +714,7 @@ def test_interactive_guides_console_users_to_desktop_app(
         "which",
         lambda name: f"/bin/{name}" if name in ("npm", "cargo") else None,
     )
-    monkeypatch.setattr(sw.os, "name", "nt")
+    monkeypatch.setattr(sw, "_is_windows", lambda: True)
     script = Script([
         "ollama",   # family
         "",         # model

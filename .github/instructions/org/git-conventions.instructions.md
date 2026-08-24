@@ -27,7 +27,7 @@ Format: `type(scope): imperative description`
 feat(state): add session resume on crash
 fix(verifier): reject outputs with embedded newlines in secret scan
 refactor(executor): extract timeout into named constant
-test(correction_loop): cover max-attempt escalation path
+test(stage-loop): cover max-attempt exhaustion path
 docs(agents): clarify coder output contract
 ```
 

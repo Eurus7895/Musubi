@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from agent.manifest import (
+    ROOT_PLAN_WORKER_ROLES,
     Band,
+    ChangeManifestInput,
     assess_manifest,
+    manifest_schema,
     parse_change_manifest,
     parse_change_manifest_object,
 )
@@ -29,6 +35,24 @@ def test_compact_object_defaults_nonessential_fields() -> None:
     assert manifest.security_sensitive is False
     assert manifest.blocking_decisions == ()
     assert manifest.validation_commands == 0
+
+
+def test_model_visible_manifest_schema_is_closed_and_shares_defaults() -> None:
+    """The model sees the same bounded declaration Root validates later."""
+    schema = manifest_schema()
+
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"files_expected", "subsystems"}
+    assert schema["properties"]["public_contract"]["default"] is False
+    assert schema["properties"]["validation_commands"]["default"] == 0
+    assert "planner" not in ROOT_PLAN_WORKER_ROLES
+
+    with pytest.raises(ValidationError):
+        ChangeManifestInput(
+            files_expected=1,
+            subsystems=["agent"],
+            unexpected="must fail closed",
+        )
 
 
 def test_compact_object_rejects_unknown_fields() -> None:

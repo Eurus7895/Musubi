@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
 from agent.run import run_agent
 from agent.vendors.base import LMResponse, LMRouter
-from validation.subagent_context import SUBAGENT_ROLE_SKILLS, build_subagent_context
+from validation.subagent_context import build_subagent_context
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
@@ -51,7 +52,7 @@ def test_code_review_roles_not_adhoc_spawnable_by_agent() -> None:
     """Pipeline-internal roles: reachable through `--pipeline code-review`
     only, never as a direct root spawn (locked decision #4)."""
     for role in _ROLES:
-        assert role not in MAIN_SUBAGENT_ALLOWLIST["agent"], role
+        assert role not in MAIN_SUBAGENT_ALLOWLIST["root"], role
         assert check_subagent_allowed("agent", role) is False, role
 
 
@@ -65,9 +66,11 @@ def test_code_review_stage_roles_get_pushed_skills() -> None:
         "synthesizer": "code-review",
     }
     for role, skill_id in expected.items():
-        assert SUBAGENT_ROLE_SKILLS.get(role) == skill_id, role
-        ctx = build_subagent_context(brief="b", role=role)
+        ctx = build_subagent_context(
+            brief="b", role=role, pushed_skill_id=skill_id,
+        )
         assert ctx.role_skill, f"{role} skill did not load"
+        assert ctx.role_skill_id == skill_id
         assert skill_id in ctx.role_skill or "name:" in ctx.role_skill
 
 
@@ -110,12 +113,28 @@ class ReviewRouter(LMRouter):
             _text("scope: fileA.py high, fileB.py low"),
             _text("findings: F1 contract break in fileA.py\n"
                   "files for per-file review:\n- fileA.py | contract"),
-            _text("status: pass\nstats: 1 findings"),
+            _text(json.dumps({
+                "status": "pass", "summary": "review complete",
+                "verdict": "one finding",
+            })),
         ]
         self.briefs: list[str] = []
         self.tool_surfaces: list[set[str]] = []
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        system = str(messages[0].get("content") or "") if messages else ""
+        if "STAGE PREFLIGHT" in system:
+            payload = json.loads(str(messages[1]["content"]))
+            selected = {
+                "scoper": "pr-scope-detection",
+                "finder": "per-file-review",
+                "synthesizer": "code-review",
+            }[payload["role"]]
+            return _text(json.dumps({
+                "skill_id": selected,
+                "goal": f"Complete the {payload['role']} stage",
+                "exit_when": [],
+            }))
         self.tool_surfaces.append({t["name"] for t in tools})
         for m in messages:
             c = m.get("content")
@@ -136,7 +155,7 @@ def test_code_review_pipeline_runs_standalone_with_evaluator_firewall() -> None:
     ))
 
     # The final stage's summary is the answer.
-    assert "status: pass" in answer
+    assert '"status": "pass"' in answer
     assert len(router.briefs) == 3
 
     scoper_brief, finder_brief, synth_brief = router.briefs

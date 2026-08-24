@@ -1,6 +1,6 @@
 ---
 name: documentation
-description: Produces architecture diagrams, technical documents, and reports in Draw.io, PlantUML, PDF, and Word formats. Use when the user asks for a diagram, documentation, architecture/sequence diagram, flowchart, or a PDF/Word/docx document.
+description: Produce DIAGRAMS and binary document formats — Draw.io, PlantUML, PDF, Word. Use when the deliverable is a diagram (architecture, sequence, flowchart) or a .pdf/.docx file. For prose documentation in Markdown — README, design doc, ADR, guide — use `docs-writing` instead.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)
 triggers:

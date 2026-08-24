@@ -9,12 +9,31 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+def _ensure_scripts_path() -> None:
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+
+
+_ensure_scripts_path()
+
+# The fail-closed policy engine owns the canonical role vocabulary (HI #5):
+# one definition of what the depth-0 driver is called, and one normalizer that
+# every membership and capability lookup folds through. Imported at module
+# scope rather than re-derived here so this file cannot drift from the table
+# it enforces.
+from policy_engine import (  # noqa: E402
+    ROOT_ROLE,
+    normalize_role,
+)
 
 Verdict = Literal["ALLOW", "DENY"]
 
@@ -25,6 +44,19 @@ class PolicyDecision:
     role: str
     tool: str
     reason: str
+    #: True when the denial is about the VALUES in this call rather than the
+    #: caller's authority to make it. Both still deny and both are audited
+    #: identically; they differ only in what the caller can do next.
+    #:
+    #: "role `agent` may not call `musubi_write_file`" cannot be fixed by
+    #: retrying — the model has no way to become a different role, so the run
+    #: ends. "skill 'x' is not permitted for role 'coder'" is one wrong string
+    #: in an OPTIONAL argument of an otherwise authorised call; the model can
+    #: correct it on the next cycle for the price of one round-trip. Routing
+    #: the second through the terminal channel ended a turn 4 cycles and
+    #: 12,383 tokens in, having delivered nothing, over a field the caller was
+    #: free to omit entirely.
+    recoverable: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -98,13 +130,22 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_get_pipeline_stages",
     "musubi_query_schema_migrations",
     "musubi_list_skills",
-    "musubi_recommend_skills",
-    "musubi_begin_direct",
     "musubi_begin_plan",
     "musubi_commit_plan",
     "musubi_get_memory_context",
     "musubi_query_subagent_events",
     "musubi_list_subagent_spawns",
+})
+
+#: Reports a worker makes about its own contract. Allowed for every role on
+#: purpose: a worker's tool surface is chosen by its ROLE, so gating the
+#: mismatch report behind a capability would silence exactly the roles most
+#: likely to need it — a summarizer holds no tools at all. The call has no
+#: blast radius (it writes a bounded string and grants nothing), and the
+#: harness re-validates any suggested skill against the role's allowlist, so
+#: this can never become a self-service skill swap.
+_WORKER_REPORT_TOOLS: frozenset[str] = frozenset({
+    "musubi_report_skill_mismatch",
 })
 
 _AGENT_SESSION_TOOLS: frozenset[str] = frozenset({
@@ -158,7 +199,9 @@ CREATE TABLE IF NOT EXISTS policy_audit (
     tool    TEXT NOT NULL,
     role    TEXT NOT NULL,
     handle  TEXT,
-    reason  TEXT
+    reason  TEXT,
+    request_id TEXT,
+    parent_session_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_policy_audit_ts
     ON policy_audit(ts);
@@ -176,7 +219,7 @@ def is_musubi_tool(tool_name: str) -> bool:
 
 def evaluate_tool_call(role: str, tool_name: str) -> PolicyDecision:
     """Return the fail-closed policy decision for a model-requested tool."""
-    clean_role = (role or "agent").lower()
+    clean_role = normalize_role(role)
     if not is_musubi_tool(tool_name):
         return PolicyDecision(
             "ALLOW", clean_role, tool_name,
@@ -195,8 +238,14 @@ def evaluate_tool_call(role: str, tool_name: str) -> PolicyDecision:
             "read-only governance/compression tool",
         )
 
+    if tool_name in _WORKER_REPORT_TOOLS:
+        return PolicyDecision(
+            "ALLOW", clean_role, tool_name,
+            "worker report about its own contract; grants nothing",
+        )
+
     if tool_name in _AGENT_SESSION_TOOLS:
-        if clean_role == "agent":
+        if clean_role == ROOT_ROLE:
             return PolicyDecision(
                 "ALLOW", clean_role, tool_name,
                 "agent session-management compatibility tool",
@@ -241,7 +290,7 @@ def evaluate_argument_policy(
     Base role/tool policy remains in evaluate_tool_call. This second, pure
     boundary mirrors spawn authorization before substrate state mutation.
     """
-    clean_role = (role or "agent").lower()
+    clean_role = normalize_role(role)
     if tool_name != "musubi_spawn_subagent":
         return None
 
@@ -281,30 +330,62 @@ def evaluate_argument_policy(
                 tool_name,
                 (
                     f"No tools available for sub-agent role {target_role!r} "
-                    "after intersecting with caller's allow-list."
+                    "after intersecting with caller's allow-list. Omit "
+                    "`allowed_tools` — the worker role owns its tool surface."
                 ),
+                recoverable=True,
             )
 
     pushed_skill = args.get("pushed_skill_id")
-    if isinstance(pushed_skill, str) and pushed_skill.strip():
-        skill_id = pushed_skill.strip()
-        if not check_skill_permission(target_role, skill_id):
-            return PolicyDecision(
-                "DENY",
-                clean_role,
-                tool_name,
-                (
-                    f"Skill {skill_id!r} is not permitted for worker role "
-                    f"{target_role!r}."
-                ),
-            )
+    if not isinstance(pushed_skill, str) or not pushed_skill.strip():
+        return PolicyDecision(
+            "DENY",
+            clean_role,
+            tool_name,
+            "pushed_skill_id must name the model-selected skill; list the "
+            "worker role's catalog, choose one, and retry the spawn.",
+            recoverable=True,
+        )
+    skill_id = pushed_skill.strip()
+    if not check_skill_permission(target_role, skill_id):
+        return PolicyDecision(
+            "DENY",
+            clean_role,
+            tool_name,
+            _pushed_skill_denial(skill_id, target_role),
+            recoverable=True,
+        )
     return None
+
+
+def _pushed_skill_denial(skill_id: str, target_role: str) -> str:
+    """Say what to pass instead, not only that this value was wrong.
+
+    The bare form of this message — "Skill 'x' is not permitted for worker role
+    'coder'" — is true and useless: it names no legal value. `musubi_list_skills
+    (for_role=…)` returns exactly this set, so the refusal names it too rather
+    than sending the model back for a round-trip it can be spared.
+    """
+    from validation.context_builder import AGENT_SKILL_ALLOWLIST
+
+    lines = [
+        f"Skill {skill_id!r} is not permitted for worker role "
+        f"{target_role!r}."
+    ]
+    permitted = sorted(AGENT_SKILL_ALLOWLIST.get(normalize_role(target_role), set()))
+    if permitted:
+        lines.append(f"Permitted for {target_role!r}: {permitted}.")
+    lines.append(
+        "Choose one permitted skill explicitly; the harness never defaults, "
+        "substitutes, or drops the model's choice."
+    )
+    return " ".join(lines)
 
 
 def denied_tool_guidance(role: str, tool_name: str) -> str:
     """Return a short model-facing recovery hint for denied root tool calls."""
-    clean_role = (role or "agent").lower()
-    if clean_role != "agent":
+    clean_role = normalize_role(role)
+    if clean_role != ROOT_ROLE:
         return ""
     hint = _DENIED_TOOL_ROUTING_HINTS.get(tool_name)
     if not hint:
@@ -317,14 +398,23 @@ def record_policy_decision(
     *,
     db_path: Path,
     handle: str | None = None,
+    request_id: str | None = None,
+    parent_session_id: str | None = None,
 ) -> None:
     """Append the PreToolUse verdict to policy_audit."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.executescript(_POLICY_SCHEMA)
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(policy_audit)")
+        }
+        for column in ("request_id", "parent_session_id"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE policy_audit ADD COLUMN {column} TEXT")
         conn.execute(
-            "INSERT INTO policy_audit (ts, verdict, tool, role, handle, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO policy_audit "
+            "(ts, verdict, tool, role, handle, reason, request_id, parent_session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 decision.verdict,
@@ -332,6 +422,8 @@ def record_policy_decision(
                 decision.role,
                 handle,
                 decision.reason,
+                request_id,
+                parent_session_id,
             ),
         )
 
@@ -374,7 +466,7 @@ def _evaluate_spawn_tool(role: str, tool_name: str) -> PolicyDecision:
     import policy_engine  # type: ignore[import-not-found]
 
     if tool_name == "musubi_spawn_pipeline":
-        if role == "agent":
+        if normalize_role(role) == ROOT_ROLE:
             return PolicyDecision(
                 "ALLOW", role, tool_name,
                 "root agent may summon user-defined worker pipelines",
@@ -397,18 +489,13 @@ def _evaluate_spawn_tool(role: str, tool_name: str) -> PolicyDecision:
 
 
 def _allowed_capabilities(role: str) -> set[str]:
-    if role == "agent":
+    if normalize_role(role) == ROOT_ROLE:
         return set(_ROOT_AGENT_TOOLS)
     _ensure_scripts_path()
     import policy_engine  # type: ignore[import-not-found]
 
     return set(policy_engine.get_subagent_tools(role))
 
-
-def _ensure_scripts_path() -> None:
-    scripts = Path(__file__).resolve().parents[2] / "scripts"
-    if str(scripts) not in sys.path:
-        sys.path.insert(0, str(scripts))
 
 
 def json_args(args: Any) -> dict[str, Any]:

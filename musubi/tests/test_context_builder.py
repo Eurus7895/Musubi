@@ -93,27 +93,6 @@ def test_scan_injection_clean_forget() -> None:
 
 # ── validate_skill_builder_write ──────────────────────────────────────────────
 
-@pytest.mark.parametrize("path", [
-    ".github/agents/proposed/coder.patch.md",
-    ".github/agents/proposed/planner.patch.md",
-    ".github\\agents\\proposed\\reviewer.patch.md",
-    "repo/.github/agents/proposed/skill-builder.patch.md",
-])
-def test_skill_builder_write_valid_paths(path: str) -> None:
-    assert context_builder.validate_skill_builder_write(path) is True
-
-
-@pytest.mark.parametrize("path", [
-    ".github/agents/coder.agent.md",
-    ".github/agents/planner.agent.md",
-    ".github/instructions/python.instructions.md",
-    "musubi/state.py",
-    ".github/agents/proposed/../coder.agent.md",
-])
-def test_skill_builder_write_blocked_paths(path: str) -> None:
-    assert context_builder.validate_skill_builder_write(path) is False
-
-
 # ── build_context: planner ────────────────────────────────────────────────────
 
 def test_planner_context_contains_request(session: str, db: Path) -> None:
@@ -241,30 +220,6 @@ def test_reviewer_can_read_code_via_stage(full_session: str, db: Path) -> None:
     result = context_builder.read_stage_for_agent(full_session, "code", "reviewer", db_path=db)
     assert result is not None
     assert result["summary"] == "impl"
-
-
-# ── build_context: skill-builder ──────────────────────────────────────────────
-
-def test_skill_builder_has_no_session_state(full_session: str, db: Path) -> None:
-    ctx = context_builder.build_context(full_session, "skill-builder", db_path=db)
-    assert "request" not in ctx
-    assert "plan" not in ctx
-    assert "design" not in ctx
-    assert "code" not in ctx
-    assert "review" not in ctx
-
-
-def test_skill_builder_contains_fail_patterns(db: Path) -> None:
-    sid = state.create_session("req", db_path=db)
-    _db.insert_fail_pattern(sid, "coder", "missing error handling", "2026-01-01T00:00:00", db)
-    ctx = context_builder.build_context(sid, "skill-builder", db_path=db)
-    assert "fail_patterns" in ctx
-    assert len(ctx["fail_patterns"]) >= 1
-
-
-def test_skill_builder_context_keys(session: str, db: Path) -> None:
-    ctx = context_builder.build_context(session, "skill-builder", db_path=db)
-    assert set(ctx.keys()) == {"fail_patterns"}
 
 
 # ── unknown agent ─────────────────────────────────────────────────────────────

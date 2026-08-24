@@ -88,14 +88,14 @@ def test_lock_agent_versions_multi_dir(tmp_path: Path, db: Path) -> None:
     legacy_dir.mkdir()
     (pipeline_dir / "planner.agent.md").write_text("---\nversion: 1.0.0\n---\n")
     (pipeline_dir / "coder.agent.md").write_text("---\nversion: 1.1.0\n---\n")
-    (legacy_dir / "skill-builder.agent.md").write_text("---\nversion: 0.3.0\n---\n")
+    (legacy_dir / "analyst.agent.md").write_text("---\nversion: 0.3.0\n---\n")
 
     sid = state.create_session("req", db_path=db)
     versions = state.lock_agent_versions(
         sid, agents_dir=[pipeline_dir, legacy_dir], db_path=db,
     )
 
-    assert versions == {"planner": "1.0.0", "coder": "1.1.0", "skill-builder": "0.3.0"}
+    assert versions == {"planner": "1.0.0", "coder": "1.1.0", "analyst": "0.3.0"}
 
 
 def test_lock_agent_versions_first_dir_wins(tmp_path: Path, db: Path) -> None:
@@ -133,8 +133,8 @@ def test_lock_agent_versions_default_dirs_find_pipeline_agents(db: Path) -> None
     sid = state.create_session("req", db_path=db)
     versions = state.lock_agent_versions(sid, db_path=db)
     # Week 3b migrated these into .github/pipelines/feature-dev/agents/;
-    # skill-builder stays at .github/agents/. All five should appear.
-    for agent in ("planner", "designer", "coder", "reviewer", "skill-builder"):
+    # Canonical worker prompts should all appear.
+    for agent in ("planner", "designer", "coder", "reviewer"):
         assert agent in versions, f"Missing agent {agent} in {sorted(versions)}"
 
 
@@ -156,9 +156,21 @@ def test_read_stage_returns_none_before_write(session_id: str, db: Path) -> None
     assert state.read_stage(session_id, "plan", db_path=db) is None
 
 
-def test_write_stage_unknown_stage(session_id: str, db: Path) -> None:
-    with pytest.raises(ValueError, match="Unknown stage"):
+def test_write_stage_requires_a_seeded_stage(session_id: str, db: Path) -> None:
+    with pytest.raises(ValueError, match="row missing"):
         state.write_stage(session_id, "nonexistent", {}, db_path=db)
+
+
+def test_create_session_seeds_explicit_recipe_stages(db: Path) -> None:
+    sid = state.create_session(
+        "custom", db_path=db, pipeline_name="custom",
+        stages=["discover", "build-ui", "accept"],
+    )
+    assert _db.get_stage_names(sid, db) == [
+        "discover", "build-ui", "accept",
+    ]
+    state.write_stage(sid, "build-ui", {"ok": True}, db_path=db)
+    assert state.read_stage(sid, "build-ui", db_path=db) == {"ok": True}
 
 
 def test_completed_stage_cannot_be_overwritten(session_id: str, db: Path) -> None:

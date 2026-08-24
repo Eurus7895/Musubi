@@ -116,6 +116,7 @@ def test_coder_explorer_spawn_writes_audit_row(
         parent_agent_name="coder",
         role="explorer",
         brief="find callers of FooClass in src/",
+        pushed_skill_id="explorer",
     )
     spawn = json.loads(spawn_raw)
     assert spawn["status"] == "spawned", spawn
@@ -143,6 +144,7 @@ def test_coder_explorer_round_trip_writes_spawn_and_complete(
         parent_agent_name="coder",
         role="explorer",
         brief="find callers of FooClass in src/",
+        pushed_skill_id="explorer",
     )
     handle_id = json.loads(spawn_raw)["handle_id"]
     complete_raw = server.musubi_complete_subagent(
@@ -181,6 +183,7 @@ def test_reviewer_aux_per_file_round_trip(
         parent_agent_name="reviewer",
         role="reviewer-aux",
         brief="apply the code-review checklist to src/foo.py",
+        pushed_skill_id="reviewer-aux",
     )
     handle_id = json.loads(spawn_raw)["handle_id"]
     server.musubi_complete_subagent(
@@ -209,6 +212,7 @@ def test_planner_explorer_spawn_denied(
         parent_agent_name="planner",
         role="explorer",
         brief="find callers",
+        pushed_skill_id="explorer",
     )
     parsed = json.loads(raw)
     assert parsed["status"] == "error", parsed

@@ -1,8 +1,13 @@
 import { useMemo, useState } from 'react'
+import { validateDraft } from '../model/pipelineBuilder.js'
 import { readStageDrop, readSpawnRole, STAGE_MIME, INDEX_MIME, SPAWN_MIME } from './stageDrag.js'
 
 const STEPS = ['basics', 'stages', 'handoffs', 'validate']
 const STEP_LABELS = { basics: 'Basics', stages: 'Stages', handoffs: 'Handoffs', validate: 'Validate' }
+const CHECK_OPTIONS = [
+  'file_exists', 'file_created_or_modified', 'dom_count',
+  'dom_distinct_text', 'dom_text_set', 'lint_clean', 'named_command',
+]
 
 export default function Pipeline({ vals }) {
   const builder = vals.pipelineBuilder
@@ -19,9 +24,7 @@ export default function Pipeline({ vals }) {
       spawnRoles: builder.library?.spawnRoles || [],
     }
   }, [builder.library, query])
-  const clientErrors = []
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(draft.name || '')) clientErrors.push('Use a lowercase safe pipeline name.')
-  if ((draft.stages || []).length < 2) clientErrors.push('Add at least two primary stages.')
+  const clientErrors = validateDraft(draft).map((finding) => finding.message)
   const hasErrors = clientErrors.length > 0 || (builder.findings || []).some((finding) => finding.severity === 'error')
 
   return (
@@ -130,9 +133,35 @@ function Basics({ draft, onUpdateRecipe, saved, loading, onLoad }) {
             <input type="number" min="0" value={correction.max_retries || 0} onChange={(event) => onUpdateRecipe({ correction: { ...correction, max_retries: Number(event.target.value) } })} />
           </Field>
         </div>
+        <NamedCommands checks={draft.checks || {}} onChange={(checks) => onUpdateRecipe({ checks })} />
       </div>
     </div>
   )
+}
+
+function NamedCommands({ checks, onChange }) {
+  const entries = Object.entries(checks)
+  const update = (id, patch) => onChange({ ...checks, [id]: { ...checks[id], ...patch } })
+  const remove = (id) => onChange(Object.fromEntries(entries.filter(([key]) => key !== id)))
+  const add = () => {
+    let index = entries.length + 1
+    while (checks[`command-${index}`]) index += 1
+    onChange({ ...checks, [`command-${index}`]: {
+      type: 'command', argv: [], timeoutSeconds: 60, root: 'musubi', cwd: '.',
+    } })
+  }
+  return <section className="named-commands">
+    <div className="named-commands__header"><div><h3>Named commands</h3><p>Operator-authored argv only; stages may reference IDs but cannot change arguments.</p></div><button className="ui-button" type="button" onClick={add}>Add command</button></div>
+    {entries.map(([id, command]) => <article className="named-command" key={id}>
+      <Field label="Command ID"><input value={id} readOnly /></Field>
+      <Field label="Timeout seconds"><input type="number" min="1" value={command.timeoutSeconds || 60} onChange={(event) => update(id, { timeoutSeconds: Number(event.target.value) })} /></Field>
+      <Field label="Exact argv" hint="one argument per line" wide><textarea rows={3} value={(command.argv || []).join('\n')} onChange={(event) => update(id, { argv: event.target.value.split('\n') })} /></Field>
+      <Field label="Root"><input value={command.root || 'musubi'} onChange={(event) => update(id, { root: event.target.value })} /></Field>
+      <Field label="Working directory"><input value={command.cwd || '.'} onChange={(event) => update(id, { cwd: event.target.value })} /></Field>
+      <button className="ui-button ui-button--danger" type="button" onClick={() => remove(id)}>Remove command</button>
+    </article>)}
+    {!entries.length && <div className="named-commands__empty">No named commands declared.</div>}
+  </section>
 }
 
 function confirmRemoval(name) {
@@ -224,6 +253,17 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
         <PanelHeading title="Stage inspector" copy={selected ? `Stage ${selectedIndex + 1}` : 'Select a stage to inspect'} />
         {!selected ? <div className="empty-inspector">No stage selected.</div> : <>
           <Field label="Stage override"><input value={selected.stage || ''} onChange={(event) => onUpdateStage(selectedIndex, { stage: event.target.value })} placeholder="catalog default" /></Field>
+          <Field label="Max iterations" hint="1 to 3; retries require checks">
+            <input type="number" min="1" max="3" value={selected.maxIterations || 1} onChange={(event) => onUpdateStage(selectedIndex, { maxIterations: Number(event.target.value) })} />
+          </Field>
+          <ChoiceList
+            label="Allowed checks" values={CHECK_OPTIONS} selected={selected.allowedChecks || []}
+            onChange={(allowedChecks) => onUpdateStage(selectedIndex, { allowedChecks })}
+          />
+          <ChoiceList
+            label="Allowed commands" values={Object.keys(draft.checks || {})} selected={selected.allowedCommands || []}
+            onChange={(allowedCommands) => onUpdateStage(selectedIndex, { allowedCommands })}
+          />
           <div className="contract-card">
             <h3>Resolved contract <span>read-only</span></h3>
             <ContractRow label="Agent" value={contract?.displayLabel || resolvedAgentName || 'unresolved'} />
@@ -237,6 +277,16 @@ function Stages({ builder, draft, library, query, setQuery, onAddStage, onMoveSt
       </aside>
     </div>
   )
+}
+
+function ChoiceList({ label, values, selected, onChange }) {
+  const toggle = (value) => onChange(selected.includes(value)
+    ? selected.filter((entry) => entry !== value)
+    : [...selected, value])
+  return <fieldset className="choice-list"><legend>{label}</legend>
+    {values.map((value) => <label key={value}><input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} /><span>{value}</span></label>)}
+    {!values.length && <small>None declared.</small>}
+  </fieldset>
 }
 
 function LibraryGroup({ title, items, kind, onAddStage }) {

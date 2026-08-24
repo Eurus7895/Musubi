@@ -373,7 +373,7 @@ def install_console_gui(
             "(Windows: `winget install --id Rustlang.Rustup -e`, then "
             "open a new terminal)"
         )
-    if os.name == "nt" and not _has_msvc_linker():
+    if _is_windows() and not _has_msvc_linker():
         return False, (
             "npm dependencies installed, but the MSVC C++ linker was not "
             "found; install Visual Studio Build Tools with the C++ workload "

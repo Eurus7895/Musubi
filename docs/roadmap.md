@@ -46,18 +46,26 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    (`debugging`, `git-workflow`) so the generator boundary holds. `web-ui` is
    deliberately universal so an HTML/CSS artifact emitted from a non-JS repo
    still matches it — closing the dashboard case where no catalog skill applied.
-   Every prior catalog entry was backfilled with `triggers:` so the recommender
-   can rank the whole catalog, not just the newest skills.
+   Every prior catalog entry carries a `description:` — the line the model
+   chooses on now that nothing ranks the catalog.
    Reachability closed: a direct worker carries no skill tool, so grown catalog
    entries were previously unreachable by workers. The root now selects a skill
    per spawned worker and pushes it (option 3, see Completed track below), so
    catalog growth reaches workers without adding a skill tool to their lean
-   surface. Extended to pipeline stages: the deterministic runner recommends a
-   skill per stage (`musubi_recommend_skills(for_role=…)`, zero-LLM) and pushes
-   it through `musubi_spawn_pipeline_stage` so feature-dev stages
-   (designer/coder/reviewer) carry role-appropriate procedure instead of showing
-   "no skill evidence"; `planner` has an empty skill allowlist and remains
-   skill-less by design.
+   surface. The root reads `musubi_list_skills(for_role=…)` — id, title, and
+   the one-line description each SKILL.md already declares — and chooses; the
+   harness lists, it does not rank. Every catalog entry therefore needs a
+   description that distinguishes it, which is now the load-bearing metadata
+   (`triggers:` was for the deleted ranker). The current pipeline path still
+   chooses from recipe declarations and role defaults because no model runs
+   before a stage prompt is built. That is transitional and does not satisfy
+   the final ownership rule. The stage-goal track adds a bounded driver-side
+   preflight: the model selects the stage skill, while the harness only lists,
+   validates, injects, and audits it. Missing or invalid selection fails closed;
+   the harness never supplies, substitutes, drops, or defaults a skill. The
+   extra preflight call is an explicit adapter with its own expiry trigger; the
+   model-owned selection and enforcement boundary remain after that adapter is
+   removed.
 
 2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
    what a request MEANS and starts proving what the record CONTAINS. Governing
@@ -67,7 +75,9 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Shipped: the destructive gate (see Completed Tracks) and `agent/evidence.py`
    — six facts per turn (`names_workspace_path`, `path_exists`,
    `has_conversation`, `explorer_findings`, `clarification_answered`,
-   `barren_turns`, plus `escaped_paths` for targets outside the workspace root),
+   `barren_turns`, plus `escaped_paths` for targets outside every root the
+   request was granted — the harness root and any folder attached to the
+   session),
    rendered into the root prompt and logged. **It routes nothing yet**, by
    design: the distribution is measured before behavior depends on it.
    Remaining, in order — each depends on the one before, and the deletion lands
@@ -155,16 +165,315 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    harness validates paths, manifest shape, role membership, order, radius, and
    a hard worker ceiling. Manifest arithmetic no longer decides whether work is
    large. Explorer remains workspace discovery; Investigator becomes
-   diagnostics only and cannot establish a mutation target. Skill ranking
-   returns a recommendation ticket; the model chooses the skill, and the ticket
-   prevents repeated recommender calls in one dispatch flow. The Planner role
+   diagnostics only and cannot establish a mutation target. Skill selection is a
+   catalog LISTING the model chooses from — nothing ranks it and no ticket
+   gates it. The Planner role
    remains only for explicit legacy pipelines until pipeline dissolution.
 
    Plan:
    [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
 
+5. **Implemented: model-authored stage goals, substrate-enforced acceptance.**
+   Before a stage attempt, a bounded driver model preflight selects the role's skill
+   and, for an opt-in non-evaluator stage, translates the current task into a
+   structured acceptance contract. The harness validates and freezes that
+   declaration, injects the selected skill, runs only deterministic predicates,
+   and persists every attempt and gate transition. Task-specific goals never
+   live statically in `pipeline.yaml`;
+   recipes declare the allowed checker and command ceilings, iteration cap,
+   helper roles, and budgets. A failed gate creates a new append-only attempt;
+   exhaustion or infrastructure failure escalates and stops the pipeline.
+   V1 contains no LLM reviewer predicate over the goal: the final evaluator
+   remains firewalled to the artifact under HI #3, and its structured fail or
+   escalate verdict stops rather than silently succeeding. Deterministic
+   acceptance remains substrate; the automatic retry loop is separately tagged
+   ephemeral with a measurable first-pass-success expiry trigger. The work also
+   generalizes the legacy four-stage attempt store, adds crash-safe gate
+   checkpoints and events, extends Pipeline Studio losslessly, and depends on
+   the durable HI #8 audit obligation before a worker may start.
+
+   Design:
+   [`2026-08-01-stage-goals-and-loop-design.md`](./superpowers/specs/2026-08-01-stage-goals-and-loop-design.md)
+
+   Plan:
+   [`2026-08-01-stage-goals-and-loop.md`](./superpowers/plans/2026-08-01-stage-goals-and-loop.md)
+
+6. **Implemented: runtime convergence repair.** A production-like run
+   exposed two independent convergence failures after stage preflight began
+   working: cumulative plan/design handoff made the coder's protected input
+   26,615 characters against a 16,000-character hard cap, and the direct root
+   spent 188,778/200,000 tokens retrying an underspecified plan tool contract
+   before any worker spawned. The repair is deliberately split. P0 makes stage
+   input token-oriented with an 8,000-token operational ceiling (32,000-character
+   compatibility fallback), forwards only the immediate passed predecessor,
+   makes substrate completion status authoritative, and extends the durable
+   audit outbox to worker completions. P1 publishes one closed manifest/role
+   schema, returns typed corrections, stops after three consecutive contract
+   failures, covers pre-worker control loops in the no-progress breaker, and
+   projects control results into Request Log. Full stage output remains in the
+   append-only store; the model still selects every skill.
+   Verification covers 39 pipeline-stage regressions, 95 lifecycle/audit/config
+   regressions, and 220 Root planning/runtime-log regressions; no paid model
+   smoke run was needed.
+
+   Design:
+   [`2026-08-02-runtime-convergence-repair-design.md`](./superpowers/specs/2026-08-02-runtime-convergence-repair-design.md)
+
+   Plans:
+   [`2026-08-02-pipeline-runtime-integrity.md`](./superpowers/plans/2026-08-02-pipeline-runtime-integrity.md) and
+   [`2026-08-02-root-planning-convergence.md`](./superpowers/plans/2026-08-02-root-planning-convergence.md)
+
+7. **Implemented: truncated and empty model turns fail where they happen.**
+   The next run on the repaired pipeline died at stage 1 of 4 with an
+   unattributable `escalated`. One truncated DeepSeek response had crossed
+   four layers as an empty success: the OpenAI wire converter discarded the
+   `reasoning_content` a cut-off reasoning model returns instead of `content`,
+   the agent loop's "no tool calls → final answer" branch ran ahead of its
+   truncation check and recorded the resulting empty turn as a clean `final`
+   cycle, and the runner's `answer is not None` test reported the blank result
+   as `done` — which then failed the harness's non-empty-summary requirement
+   for the read-only turn-cap waiver. Each layer now reports accurately: the
+   wire recovers the thinking channel as a last resort, the loop retries or
+   returns a typed `[blocked]` marker for a truncated or empty turn, and a
+   blank stage answer is `escalated` with a summary that names the cause. The
+   substrate's turn-cap coercion and terminal-status gate are unchanged and
+   stay fail-closed. A planning role's `maxOutputTokens` no longer restates
+   `MAX_STAGE_HANDOFF_CHARS`: at the effort floor it silently disabled the
+   retry-at-ceiling rescue for every read-only role, so planner and designer
+   move to 8,192 and the deterministic byte gate keeps owning handoff size.
+   Verification: 1,759 regressions pass; Ruff and mypy findings unchanged on
+   every touched file; no paid model smoke run.
+
+   Plan:
+   [`2026-08-03-truncated-and-empty-model-turns.md`](./superpowers/plans/2026-08-03-truncated-and-empty-model-turns.md)
+
+8. **Implemented: a worker can report a skill mismatch.** The same run showed
+   a `coder` handed `web-ui` for "an application to check weather" — a skill
+   whose procedure forbids the network call the task requires — with no way to
+   say so. HI #2 is unchanged: the push still happens, is still not
+   opt-out-able, and a worker still cannot select its own skill. What is added
+   is a statement rather than a choice. `musubi_report_skill_mismatch` is
+   validated by the harness (running worker, non-empty reason, and any
+   suggested skill passing the same role allowlist a spawn passes), granted to
+   every role including toolless ones because a capability gate would silence
+   exactly the roles that need it, and projected as one line onto the worker's
+   summary whatever its status — a worker that delivered under a wrong-fitting
+   skill tells the root the same thing as one that failed under it. The prompt
+   that advertises the tool carries the worker's own handle, since a tool a
+   worker cannot address is a tool it does not have.
+
+   Not addressed, and the deeper constraint: `pushed_skill_id` is singular, so
+   a task needing both presentation and data acquisition cannot be expressed at
+   spawn time. Changing that arity is a HI #2 design discussion.
+
+   Plan:
+   [`2026-08-03-worker-skill-mismatch-report.md`](./superpowers/plans/2026-08-03-worker-skill-mismatch-report.md)
+
+9. **Implemented: `web-ui` stops deciding architecture in its selection line.**
+   Its description claimed "self-contained … or any browser-rendered artifact",
+   so it was both selected for, and then wrongly applied to, "an application to
+   check weather" — a task whose whole point is fetching live data, which the
+   skill's procedure forbade. The description now scopes the skill to the
+   presentation layer and says explicitly that it does not decide where data
+   comes from. Step 1 asks the deciding question first — does the deliverable
+   need data the file does not already have — and carries a third branch for
+   an application needing live data, where self-contained does not apply:
+   fetch at runtime, never inline a credential in client code, and handle the
+   source being unreachable. The `file://` and inline-library rules are now
+   stated as conditions of the self-contained branch rather than as universals.
+   A brief matching no branch routes to `musubi_report_skill_mismatch`.
+
+   Catalog audit findings not addressed here: the `applies-to` filter has never
+   run (no `.github/memory/project-profile.md`, so `_load_project_profile`
+   returns None and the router passes everything through — four skills declare
+   gates, none fire); 18 of 22 skills declare an empty `completion-contract`,
+   which is why the two that declare one read as the only skills that produce a
+   deliverable; `docs-writing` is gated on doc TOOLING while the skill is about
+   prose; `documentation` and `docs-writing` overlap inside designer's catalog.
+
+10. **Implemented: a Direct declaration may not manufacture its own target
+    evidence.** Tracing the weather-app run to its first domino landed on
+    cycle 0, not on skill selection. With `target_unknown=True` and zero files
+    read, Root called `musubi_begin_direct(target_intent="create",
+    target_path=<a path it invented>)`. A `create` needs nothing on disk, so
+    every existing check passed — and the declaration then set `target_named`,
+    which is precisely what `GoalState.evidence_gap` reads. The sufficiency
+    gate asked "does anyone know what this turn targets" and was answered by
+    Root's own assertion that it did. What that locked in is irreversible:
+    `route=SINGLE_CODER`, `role_chain=()`, one file, and `begin_plan` refuses
+    once a mode is set. Everything downstream followed from there — no plan for
+    the coder to work from, so it globbed 819 files itself; no designer or
+    reviewer; a skill chosen to match a shape already decided.
+
+    `request_named_target` now records the turn-start evidence separately from
+    the field a declaration writes, and a create-Direct requires the target to
+    come from somewhere other than the call making it: the request named a path
+    inside the workspace, or an Explorer/Finder reported findings. Modify is
+    unaffected — an existing file is established by the filesystem, which no
+    guess can do. The refusal names both self-serve ways out, so Root fixes it
+    without returning to the user.
+
+    This subsumes the second gate considered alongside it. `coder.agent.md`
+    rule 3 tells the coder to refuse owning planning and implementation
+    together for broad work; breadth has no mechanical measure at spawn time
+    (the manifest that carries it exists only in Planning mode), so the
+    enforceable version is this gate routing unnamed work into Planning, where
+    a plan and acceptance criteria are produced by construction.
+
+11. **Implemented: Direct mode is gone; a worker chain is earned, never
+    declared.** Item 10 stopped a Direct declaration answering the target
+    question with its own invented path, but the declaration was making a
+    second claim that gate never touched: `scope="simple_artifact"`,
+    `route=SINGLE_CODER`. Knowing WHERE a file is says nothing about HOW BIG
+    the work is — "refactor src/auth.py" names an existing path and is not
+    simple — so a check on target evidence could never validate a claim about
+    complexity. Nor can complexity be measured before the work starts: the
+    thing that measures it is the change manifest, and the manifest only
+    exists in Planning.
+
+    So the declaration is removed rather than gated. `musubi_begin_direct`,
+    `GoalState.begin_direct`, the declared-target fields, and item 10's
+    `request_named_target` all go with it — the last of these existed only to
+    stop a declaration self-answering, and there is no declaration left.
+    `musubi_begin_plan` is now the single entry to any worker flow.
+
+    `RouteKind.SINGLE_CODER` stays. It is still reachable, but only as an
+    OUTCOME: `assess_manifest` classifies a committed manifest of one file and
+    one subsystem as exactly that. The single-worker path is unchanged in
+    substance and changed entirely in provenance — proved by a manifest that
+    names what the change touches, instead of asserted from the request
+    sentence before anything was read. A one-file change costs one extra
+    control call and produces a plan the coder can work from, which is the
+    thing its own role prompt (rule 3) has always asked for.
+
+12. **Removed: `completion-contract`.** A skill's frontmatter could declare
+    `required-output-fields` and `required-check-types`, and the same field was
+    read at two boundaries with two different meanings — a LABEL in the catalog
+    listing Root selects from (`server.py`), and TEETH in the stage gate
+    (`stage_contract.py`, `pipeline_runner.py`). That conflation is what made
+    it unusable: 4 of 22 skills declared one, so the catalog implied that only
+    those four produced anything, and correcting the imbalance was impossible
+    without also changing what every stage using those skills must emit.
+
+    Nothing replaces it. A stage's exit predicates still come from the model's
+    preflight proposal, still bounded by the recipe's `allowed_checks`, still
+    frozen and hashed, still evaluated by the gate. What goes is the ability of
+    a skill to add requirements on top of that — and with it the
+    `required_output_fields` leg of `FrozenStageContract`, which the skill was
+    the only source for.
+
+13. **Implemented: a direct worker gets a token slice, not the run.** A
+    pipeline stage has had a `ChildTokenBudget` since the stage runner shipped;
+    a direct worker was handed the parent `TokenBudgetEnforcer` itself,
+    unwrapped. In the traced failure one coder charged 200,580 of a
+    200,000-token run across eight cycles while the root had spent 9,685 — and
+    when the worker failed there was nothing to recover with. `decide_recovery`
+    halts a BUDGET failure fail-closed, but even a permitted continuation had
+    no tokens to run on, so the halt was academic.
+
+    `root_worker_allowance` splits the live remaining across this worker plus
+    the root's unspent slots — `spawned_workers` is incremented before dispatch,
+    so it already counts the worker about to run. On the traced numbers the
+    first of three workers gets 63,438 and 126,877 stays reserved. A worker
+    that overruns now stops itself while the run stays alive, which is the
+    property the failure lacked. With no orchestration there is no ceiling to
+    divide by and no continuation to reserve for, so the budget passes through
+    unchanged rather than being invented.
+
+14. **Settled: the token budget counts tokens processed, and now says so.**
+    `charge()` bills the full `tokens_in + tokens_out` every cycle and never
+    deducts the provider's cached prefix, which looked like an oversight worth
+    fixing. Measuring it decided the opposite. On the traced run the two
+    readings differ by 60% — 210,265 charged against 84,057 of marginal cost —
+    and only the larger crossed the 200,000 cap. Marginal accounting would have
+    left 115,943 and let the run continue; its last three cycles wrote zero
+    bytes. Charging a cached prefix in full is what ended a loop that had
+    stopped making progress, so the enforcer is not a cost meter and must not
+    become one.
+
+    Nothing about the arithmetic changes. What changes is that it stops
+    misreporting: `TokenBudgetEnforcer` documents the unit and the measurement
+    behind it, the per-cycle log states `charged=` beside the running total,
+    and the reported cache figure is `cached_in=` rather than `cache_read=` —
+    a name that read as a saving next to a number it never reduced. A cost
+    figure, if wanted later, belongs beside this one as a second meter; two
+    questions need two meters, not one meter re-denominated under historical
+    rows written in the old unit.
+
+15. **Implemented: a budget halt lands the writes it already paid for.**
+    Measured on a four-turn run after the repairs above: 483,621 tokens across
+    35 cycles and not one file written. A coder emitted 11,289 output tokens
+    carrying three files, was charged 19,801 for them, and the postflight halt
+    fired between generation and dispatch — the audit row recorded
+    `tool_names=[]` and nothing reached disk. Discarding a paid-for write saves
+    nothing, because dispatching it costs tool execution rather than model
+    tokens. File mutations now land before the loop stops; reads and spawns are
+    skipped, since their results only feed a model call that will never happen.
+    The postflight halt also salvages a typed `[incomplete]` answer instead of
+    raising, matching what the preflight halt has always done — the two paths
+    differed only by which side of the model call the cap was crossed on, and
+    that decided whether the parent got something it could act on.
+
+    Sizing the preflight estimate off the effort router's real output ceiling
+    was tried and reverted: it refuses the write cycle before the model writes
+    anything, which is the outcome the salvage exists to prevent. An overrun
+    that delivers the artifact beats a refusal that delivers nothing.
+
+    Two more defects from the same run: Root declared five reversible defaults
+    ("open-meteo free API, no key, vanilla JS, no framework, no build step") as
+    `blocking_decisions`, which routes to `ask_scope` and ends the turn with a
+    question — 169,013 tokens for two questions and no file. The rule that
+    reserves that field for decisions which must not be guessed lived in
+    `planner.agent.md`, and Root has owned planning since `0c68607`; it is now
+    in `root.agent.md`. And a second `musubi_begin_plan` refused with "goal
+    mode is already planning", which Root read as being stuck: it spent 80,286
+    tokens on that cycle, then wrote its finished plan out to the user as prose
+    claiming commit and spawn were unavailable. They were in the surface
+    throughout; the refusal now names `musubi_commit_plan`.
+
+16. **Open: plan continuity across turns, and what it costs the worker.**
+    Two defects from the same run are deliberately not repaired here because
+    both touch the session lifecycle. Every turn re-plans from nothing —
+    `glob **/*` and a re-read of Musubi's own `.musubi/goals/<id>/plan.md`,
+    which the harness had just persisted and the next turn had no way to
+    receive — at 18,000–33,000 tokens a turn, roughly 20% of the run. And
+    Root's planning spend leaves too little for the worker: 43% of the budget
+    gone before the first spawn, 70% before the second, against write cycles
+    costing ~19,800. The fair-share split is correct; the numerator is not,
+    and most of it is rediscovery that continuity would remove. Deciding the
+    split before fixing continuity would tune against a number expected to
+    move.
+
+    Design note:
+    [`2026-08-05-plan-continuity-design.md`](./superpowers/specs/2026-08-05-plan-continuity-design.md)
+
+17. **Added: `scripts/audit_report.py` — one run, rendered for someone who was
+    not present.** A read-only query over the two databases the harness
+    already writes, answering an outside reviewer's questions in their order:
+    what was asked, what the run was allowed to touch, who it delegated to,
+    what it did and what it was refused, what that cost, what reached disk,
+    and whether the record has holes. The last section is the one that makes
+    it an audit trail rather than a log: `audit_obligations` that never
+    delivered, spawns with no terminal row, and cycles that cannot be
+    attributed are reported as findings rather than passed over in silence.
+
+    Run against a reconstruction of the 2026-08-05 four-turn trace it
+    reproduces the run's charged total exactly (179,581), attributes every
+    cycle to a worker, and shows three `musubi_write_file` calls recorded with
+    a non-`ok` status against files that were never created — the discarded
+    writes that item 15 repairs, visible from the record alone.
+
+    Known gaps, ordered by what a regulated buyer would ask first: no human
+    identity is recorded anywhere; there is no approval event, so the
+    destructive gate's decision leaves no row; tool arguments are hashed but
+    not retained, so "what was written" needs the git history; the committed
+    plan lives on disk rather than in the record, so the REASONING behind a
+    delegation is absent; and rows are append-only by convention with nothing
+    chained or signed, so the record cannot answer whether it was edited after
+    the fact.
+
 Runtime limits have one owner per dimension: the bounded runtime track owns
-pipeline-stage turn caps, model-input characters, and total stage allowances;
+pipeline-stage turn caps, model-input size, and total stage allowances;
 per-worker effort owns output tokens for one LM call; root routing owns
 worker-count and continuation-spawn policy. Do not introduce a second parser or
 enforcement path for the same dimension.
@@ -221,8 +530,9 @@ exists so the removal cost is visible in one place rather than by `grep`.
 | `session/sub_sessions.py` | models gain reliable native multi-agent tool-use | ~400 lines of lifecycle + cascade-abandon machinery |
 | `agent/pipeline_runner.py` | models orchestrate multi-step pipelines natively | the driver-side stage sequencer (~90 lines) |
 | `memory/session_distiller.py` | the 4-stage pipeline is dissolved | ~250 lines tied to the planner-designer-coder-reviewer shape |
-| `session/correction_loop.py` | models pass verifier checks on first try at 95th-percentile rate | the retry agent + `validation_feedback` pipeline |
-| `.github/agents/**` (14 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
+| `automatic-stage-retry` in `agent/pipeline_runner.py` | latest 500 eligible attempts: at least 95% pass on attempt 1, Wilson 95% lower bound at least 93%, and no P0/P1 incident in the window was prevented only by retry | repeat workers, retry preflights, cross-attempt feedback, and resume branches |
+| `agent/stage_preflight.py` | worker runtime can require model selection and load one permitted skill before work tools without a separate model call or harness default | one model call per stage attempt |
+| `.github/agents/**` (12 agent files) | per-file; role variants dissolve into the canonical agent | prompt scaffolding per role |
 
 Two triggers dominate: *native multi-agent tool-use* retires the spawn and
 sub-session machinery together (~520 lines), and *the root triages its own turn*
@@ -241,6 +551,107 @@ file in scope carries no tag, so this list cannot silently fall behind the code.
 ---
 
 ## Completed Tracks
+
+- Harness evidence integrity repair — root prompts are cross-checked against
+  the live MCP surface, policy verdicts persist request/session provenance and
+  never fall back to the newest request, legacy verdicts stay unattributed,
+  and stage checkpoints abort when their append-only attempt row is missing.
+  Design and plan:
+  [`2026-08-04-harness-evidence-integrity-design.md`](./superpowers/specs/2026-08-04-harness-evidence-integrity-design.md) and
+  [`2026-08-04-harness-evidence-integrity.md`](./superpowers/plans/2026-08-04-harness-evidence-integrity.md)
+
+- Run evidence is conversation-scoped, attributable, and says which quantity it
+  is showing. Three operator reports from one session, three separate defects,
+  none of them the model. **Attached folders were unreachable in the prompt:**
+  `agent/evidence.py` measured path containment against the `musubi` root
+  alone, so a folder the operator had just granted rendered as
+  `outside_workspace=… (no worker can reach these; say so and stop)` directly
+  above the roots listing that offered it — and `goal_state.target_named`,
+  fed from the same field, additionally blocked a mutation worker at that
+  folder. Containment is measured against every granted root now; a contained
+  path is named `<alias>/<rest>` and the block states that the alias is the
+  tool's `root=` argument. **Token figures were not comparable:** the driver
+  hands one `AgentRunStats` to the root and every worker under it, so a turn's
+  recorded tokens already contain its workers'; printing that above each
+  worker's own made two figures look additive when one contains the other.
+  Both now come from `agent_cycles`, the turn node carries `ownTokens`, and the
+  overview labels them *turn total* / *root only*. Underneath it, the reader
+  took the **oldest** 120 `agent_turns` rows (`ORDER BY id ASC LIMIT 120`), so
+  past 120 turns the Console stopped seeing new ones at all — recent sessions
+  read "no agent activity yet" and their token ledger under-reported.
+  **Skills and policy read empty on sessions that used both:** HI #2's push is
+  not opt-out-able, but only the root's rare per-spawn *override* was audited,
+  the push emits no tool call and so wrote nothing to the runtime ledger,
+  ALLOW verdicts were recorded but never emitted, and the view model replaced
+  the whole derived log stream with the ledger projection while scoping skills
+  to the latest root turn instead of the conversation. Each of those four is
+  closed; `SubagentContext` gained `role_skill_id` so a pushed skill is
+  nameable at all. **A wrong argument stopped being a terminal policy
+  failure:** `evaluate_argument_policy` routed optional-argument denials
+  through `PolicyDeniedError`, the channel built for "this role may not call
+  this tool", so a root that put a `recommendation_id` into `pushed_skill_id`
+  ended its turn 4 cycles and 12,383 tokens in over a field it could have
+  omitted. `PolicyDecision` carries `recoverable` now: argument-shaped
+  denials return through the per-call refusal channel with the legal values
+  named — including this turn's own ranker candidates, which
+  `open_recommendation_skills` had held unread since recommendations shipped —
+  while authorization denials stay terminal and every verdict is still
+  audited as a deny. Fixed alongside: `refused_reason` was honoured only
+  inside the spawn-with-orchestration branch, so a refused call could still
+  reach the MCP server on any other path. **The depth-0 driver has one
+  name now:** it answered to `agent` (authorization), `root` (runtime ledger)
+  and `driver` (console prose), with `agent/run.py` passing two of them for
+  itself in adjacent lines and both readers carrying hard-coded spelling lists
+  to join a verdict to a node. `root` is canonical, defined once as
+  `policy_engine.ROOT_ROLE` with a `normalize_role()` that every membership,
+  capability and skill lookup folds through, so append-only rows written as
+  `agent` still resolve and nothing rewrites history. `driver` is pointedly
+  NOT an alias — it never carried the root's membership, so aliasing it would
+  hand it the whole spawn firewall. **Skill ranking stopped scoring the
+  conversation instead of the request:** `recommend_skills` concatenated the
+  task and `context_summary` into one bag of text, so on turn 3 of a chat that
+  had built an HTML dashboard, "change the language of the application"
+  matched no skill on its own while the context hit five `web-ui` triggers for
+  a score of 200 — capped to `confidence: 0.99` and pushed into a coder that
+  was there to change strings. The request elects now and context is a
+  quarter-weight tiebreaker that can never elect alone; confidence derives
+  from the request score, so it discriminates instead of saturating. No test
+  had ever exercised `context_summary`. **Then the ranker was deleted
+  outright.** Weighting the request over the context made it less wrong, not
+  entitled: scoring text to decide what a request is ABOUT is the same
+  judgement this track already deleted `assess_request` for, and its
+  `expires-when: never` tag was falsified by the first trace that hit it.
+  `musubi_recommend_skills`, the recommendation ticket, and the per-stage
+  pipeline ranker are gone — **831 lines removed against 226** — replaced by
+  `musubi_list_skills(for_role=…)` returning each permitted skill's one-line
+  description for the model to choose from. The ticket constrained where the
+  root got a name, never which names are legal, and the allowlist and catalog
+  checks that do answer that are untouched. Pipeline stage recipes expose the
+  role's permitted skill catalog to the model. The model selects one exact
+  skill id during preflight; the harness validates its allowlist membership,
+  version and content hash, then injects that selected skill without choosing,
+  defaulting, substituting or dropping it. `dev-lite` was removed with the
+  ranker: a sample recipe sitting in
+  `.github/pipelines/` is indistinguishable from a supported one — it appeared
+  in the console catalog, in `--pipeline` help and in the README beside
+  `feature-dev`. The
+  preset MECHANISM stays; the test that covered it now authors its own recipe
+  over the real catalog instead of leaning on a shipped sample.
+  **The recipe survives a save now.** Pipeline Studio models four stage fields
+  and rewrote the declared `generator:`/`evaluator:` shape into the flat one,
+  dropping every per-stage `skill:` and turning plan/code/review into
+  planner/coder/reviewer — measured on feature-dev. Those declarations are the
+  compliance statement the substrate reads, so a save that cannot carry them is
+  refused rather than truncated; a new name and the flat shape are unaffected.
+  Alongside it, `read_spawn_firewall` scrapes `policy_engine.py` for the spawn
+  allowlist and its key detector only understood string literals, so the
+  depth-0 rename silently dropped the root's entry from the map; it resolves
+  constant keys now, with a test. Nothing carries a confidence: the listing is ids, titles and
+  descriptions, because a score is the harness stating an opinion about a
+  request it is not entitled to have one about.
+  `skill_router.applicable_skills` stays, because it judges the project rather
+  than the request. Plan:
+  [`2026-07-31-console-run-evidence-scope.md`](./superpowers/plans/2026-07-31-console-run-evidence-scope.md)
 
 - Pipeline Studio can reopen a recipe, and updating one no longer destroys it —
   `load_pipeline_recipe` had existed since the Studio shipped and reached

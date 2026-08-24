@@ -2,18 +2,19 @@
 
 musubi-tier: substrate test — pins that the new catalog entries
 (debugging, refactoring, git-workflow, typescript, web-ui) load, parse,
-declare sensible metadata (applies-to / triggers / tools), reach the
-correct agents through the allowlist firewall (HI #3), and surface via
-the recommender without widening access.
+declare sensible metadata (applies-to / description / tools), reach the
+correct agents through the allowlist firewall (HI #3), and surface in the
+catalog listing the model chooses from — without widening access.
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
+
 import server
 from skills import skill_loader
-from skills.recommender import recommend_skills
 from validation.context_builder import (
     AGENT_SKILL_ALLOWLIST,
     check_skill_permission,
@@ -39,13 +40,17 @@ def test_new_skills_declare_substrate_tier() -> None:
         assert "musubi-tier: substrate" in content, f"{sid} untagged"
 
 
-def test_new_skills_carry_triggers() -> None:
-    """Catalog growth entries ship recommender metadata so the skill
-    router can rank them (roadmap: 'each new skill should carry useful
-    metadata such as applies-to, triggers, and relevant tools')."""
+def test_new_skills_carry_a_description() -> None:
+    """The description IS the selection surface now.
+
+    Nothing ranks the catalog any more — the model reads
+    `musubi_list_skills(for_role=…)` and chooses. A skill with no
+    description is therefore a skill the model cannot tell apart from any
+    other, so this is load-bearing metadata rather than nice-to-have."""
     metas = {m.skill_id: m for m in skill_loader.list_skills()}
     for sid in NEW_SKILLS:
-        assert metas[sid].triggers, f"{sid} declares no triggers"
+        assert metas[sid].description, f"{sid} declares no description"
+        assert len(metas[sid].description) > 30, f"{sid} description too thin"
 
 
 # ── applies-to declarations ────────────────────────────────────────────────
@@ -85,7 +90,7 @@ def test_agent_gains_dispatcher_safe_skills_only() -> None:
     debugging + git-workflow are answerable with read tools; the
     authoring skills (refactoring/typescript) stay coder-only so the
     dispatcher boundary from test_agent_context stays intact."""
-    agent = AGENT_SKILL_ALLOWLIST["agent"]
+    agent = AGENT_SKILL_ALLOWLIST["root"]
     assert {"debugging", "git-workflow"} <= agent
     assert "refactoring" not in agent
     assert "typescript" not in agent
@@ -107,7 +112,7 @@ def test_existing_allowlist_entries_preserved() -> None:
     assert AGENT_SKILL_ALLOWLIST["coder"] >= {
         "python", "testing", "database-patterns", "api-design",
     }
-    assert AGENT_SKILL_ALLOWLIST["agent"] >= {
+    assert AGENT_SKILL_ALLOWLIST["root"] >= {
         "agent-routing", "docs-writing", "research",
     }
 
@@ -159,39 +164,34 @@ def test_typescript_kept_in_ts_workspace(monkeypatch) -> None:
     assert "typescript" in ids
 
 
-# ── Recommender ranks the new skills without widening access ───────────────
+# ── The catalog listing carries what the model chooses on ─────────────────
 
 
-def test_recommender_surfaces_debugging_by_trigger() -> None:
-    metas = [m for m in skill_loader.list_skills() if m.skill_id in NEW_SKILLS]
-    out = recommend_skills(
-        "There is a traceback and the test is flaky; find the root cause.",
-        metas,
-    )
-    assert out, "expected at least one recommendation"
-    assert out[0].skill_id == "debugging"
+def test_listing_respects_the_role_allowlist() -> None:
+    """`musubi_list_skills` lists only skills the role may actually receive —
+    the same firewall the ranker sat behind (HI #3)."""
+    payload = json.loads(server.musubi_list_skills("root", for_role="coder"))
+    ids = {item["skill_id"] for item in payload["skills"]}
+    assert ids <= AGENT_SKILL_ALLOWLIST["coder"]
+    assert {"refactoring", "debugging", "web-ui"} <= ids
+    assert payload["for_role"] == "coder"
 
 
-def test_recommend_skills_tool_respects_coder_allowlist() -> None:
-    """musubi_recommend_skills ranks only skills the caller may load."""
-    payload = json.loads(server.musubi_recommend_skills(
-        "rename this function and extract the duplicated block",
-        "coder",
-    ))
-    ids = {r["skill_id"] for r in payload["recommended"]}
-    coder = AGENT_SKILL_ALLOWLIST["coder"]
-    assert ids <= coder
-    assert "refactoring" in ids
+def test_listing_gives_the_model_a_description_to_choose_on() -> None:
+    """Every listed entry carries the one line the choice is made from, and
+    never a skill body — a catalog listing is not a skill dump."""
+    payload = json.loads(server.musubi_list_skills("root", for_role="coder"))
+    for item in payload["skills"]:
+        assert item["description"], f"{item['skill_id']} listed with no description"
+        assert "## Procedure" not in item["description"]
 
 
-def test_web_ui_matches_the_dashboard_case() -> None:
-    """The motivating case: 'create an HTML dashboard with a chart' now
-    matches a catalog skill, so the root has something to push to the coder.
-    web-ui is universal, so this holds even without a JS/TS profile."""
-    metas = [m for m in skill_loader.list_skills() if m.skill_id in NEW_SKILLS]
-    out = recommend_skills(
-        "create a self-contained HTML dashboard with a population chart",
-        metas,
-    )
-    assert out, "expected a recommendation for an HTML dashboard task"
-    assert out[0].skill_id == "web-ui"
+def test_the_ranker_is_gone() -> None:
+    """It scored the request text to decide what a task was ABOUT, which is a
+    judgement the substrate is not entitled to make — and it made it badly:
+    request and conversation summary were scored as one bag of text, so a
+    request to change the display language drew `web-ui` at 0.99 confidence
+    off the back of an earlier dashboard. The model chooses now."""
+    assert not hasattr(server, "musubi_recommend_skills")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("skills.recommender")

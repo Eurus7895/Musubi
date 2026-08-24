@@ -64,11 +64,10 @@ def test_run_lint_timeout(session) -> None:
 ```python
 from unittest.mock import patch
 
-def test_correction_loop_escalates_at_max_attempts(session) -> None:
-    with patch.object(session, "get_attempt_count", return_value=3):
-        from correction_loop import run
-        result = run(session_id="abc123", session=session)
-    assert result.escalated
+def test_stage_loop_escalates_at_max_attempts(runner) -> None:
+    with patch.object(runner, "evaluate_gate", return_value={"status": "fail"}):
+        result = runner.run_stage(session_id="abc123", max_iterations=3)
+    assert result.phase == "exhausted"
 ```
 
 ---

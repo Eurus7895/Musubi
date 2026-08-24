@@ -168,6 +168,14 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .stage-card button:disabled { opacity: .25; }
 .stage-card .danger-icon { color: #e86a5f; border-color: rgba(232,106,95,.25); background: transparent; }
 .stage-inspector .builder-field { margin-top: 16px; }
+.named-commands { grid-column: 1 / -1; margin-top: 22px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,.075); }
+.named-commands__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.named-commands__header h3, .named-commands__header p { margin: 0; }
+.named-commands__header p, .named-commands__empty { color: #8190a5; font-size: 12px; }
+.named-command { display: grid; grid-template-columns: minmax(160px, .8fr) 150px minmax(260px, 1.5fr); gap: 12px; align-items: end; margin-top: 14px; padding: 14px; border: 1px solid rgba(255,255,255,.075); border-radius: 10px; background: rgba(4,10,16,.35); }
+.choice-list { margin-top: 16px; padding: 12px; border: 1px solid rgba(255,255,255,.075); border-radius: 9px; }
+.choice-list legend { padding: 0 5px; color: #9ba8ba; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.choice-list label { display: flex; gap: 8px; align-items: center; margin-top: 7px; color: #c8d1df; font-family: var(--mono); font-size: 12px; }
 .contract-card { margin-top: 18px; overflow: hidden; border: 1px solid rgba(138,180,216,.17); border-radius: 9px; background: #0d141e; }
 .contract-card h3 { margin: 0; padding: 11px; display: flex; justify-content: space-between; color: #b8c5d5; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,.06); }
 .contract-card h3 span { color: #5e6b7c; font: 9px 'IBM Plex Mono', monospace; }
@@ -454,6 +462,9 @@ html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); }
 .runtime-overview__metrics span { display: block; margin-bottom: var(--s-1); color: var(--text-3); font: var(--fs-1) var(--mono); text-transform: uppercase; }
 .runtime-overview__metrics strong { color: #dce4ee; font: var(--fs-4) var(--mono); }
 .runtime-overview__metrics strong.is-absent { opacity: .4; }
+.runtime-overview__attempts { margin-top: var(--s-3); display: grid; gap: var(--s-2); }
+.runtime-overview__attempts span { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); color: var(--text-2); font: var(--fs-3)/1.5 var(--mono); }
+.runtime-overview__attempts b { color: var(--amber); font-weight: 600; }
 .runtime-overview__log { margin-top: var(--s-4); }
 
 .runtime-logs { display: flex; flex-direction: column; }

@@ -9,7 +9,7 @@ Covers:
   - scripts/policy_engine.py: agent's spawn_allowlist includes
     the Phase A roles + the pipeline roles, ad-hoc pipeline-role spawns
     intersect tools correctly, denied combinations remain denied.
-  - .github/agents/agent.agent.md frontmatter declares the
+  - .github/agents/root/root.agent.md frontmatter declares the
     expected sees/spawn/budget contract.
   - .github/skills/agent-routing/SKILL.md exists and has the
     required frontmatter.
@@ -143,7 +143,7 @@ def test_agent_skill_allowlist_includes_routing() -> None:
     """The runner pushes agent-routing via inject_skills frontmatter
     and may also call musubi_get_skill('agent-routing') on demand;
     the policy gate must accept that call."""
-    assert "agent-routing" in AGENT_SKILL_ALLOWLIST["agent"]
+    assert "agent-routing" in AGENT_SKILL_ALLOWLIST["root"]
 
 
 def test_agent_skill_allowlist_excludes_generator_skills() -> None:
@@ -153,7 +153,7 @@ def test_agent_skill_allowlist_excludes_generator_skills() -> None:
         "python", "api-design", "testing", "database-patterns",
         "documentation", "code-review",
     }
-    assert AGENT_SKILL_ALLOWLIST["agent"].isdisjoint(forbidden)
+    assert AGENT_SKILL_ALLOWLIST["root"].isdisjoint(forbidden)
 
 
 def test_agent_skill_permission_check() -> None:
@@ -171,12 +171,12 @@ def test_agent_skill_permission_check() -> None:
 # ── Spawn allowlist (locked decision #4) ────────────────────────────────────
 
 def test_agent_spawn_allowlist_includes_phase_a_roles() -> None:
-    roles = set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+    roles = set(MAIN_SUBAGENT_ALLOWLIST["root"])
     assert {"explorer", "investigator", "reviewer-aux"}.issubset(roles)
 
 
 def test_agent_spawn_allowlist_includes_direct_delivery_roles() -> None:
-    roles = set(MAIN_SUBAGENT_ALLOWLIST["agent"])
+    roles = set(MAIN_SUBAGENT_ALLOWLIST["root"])
     assert {"designer", "coder", "reviewer"}.issubset(roles)
     assert "planner" not in roles
 
@@ -194,7 +194,7 @@ def test_agent_cannot_spawn_unknown_role() -> None:
 
 
 def test_agent_can_spawn_each_listed_role() -> None:
-    for role in MAIN_SUBAGENT_ALLOWLIST["agent"]:
+    for role in MAIN_SUBAGENT_ALLOWLIST["root"]:
         assert check_subagent_allowed("agent", role) is True, role
 
 
@@ -257,7 +257,7 @@ def test_reviewer_subagent_is_read_only() -> None:
 
 # ── Agent + skill files on disk ─────────────────────────────────────────────
 
-_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "agent.agent.md"
+_AGENT_FILE = _REPO_ROOT / ".github" / "agents" / "root" / "root.agent.md"
 _CODER_WORKER_FILE = (
     _REPO_ROOT / ".github" / "agents" / "workers" / "coder.agent.md"
 )
@@ -305,7 +305,7 @@ def test_decision_workers_report_remaining_gap(worker_file: Path) -> None:
 
 
 def test_catalog_has_no_flat_agent_files() -> None:
-    """The catalog is fully purpose-organised (root/, workers/, meta/):
+    """The catalog is fully purpose-organised (root/, workers/):
     a flat .agent.md would be dead weight no resolver prefers — the last
     host that read flat paths was the removed extension."""
     agents = _REPO_ROOT / ".github" / "agents"
@@ -356,7 +356,10 @@ def test_agent_prompt_has_artifact_task_fast_path() -> None:
     assert "Artifact creation requests are concrete targets" in text
     assert "create html dashboard" in text
     assert "Pull one relevant skill" in text
-    assert "spawn coder once" in text
+    # Was "spawn coder once". With Direct mode removed, a named artifact is a
+    # one-worker PLAN — the fast path is still fast, but the single coder is
+    # now carried by a committed manifest instead of asserted before reading.
+    assert "commit a single-coder plan with its manifest before" in text
     assert "compact single-file HTML" in text
 
 
@@ -403,7 +406,7 @@ def test_agent_routing_skill_has_name_frontmatter() -> None:
     assert "name: agent-routing" in text
 
 
-# ── SUBAGENT_ROLE_SKILLS lockstep with new pipeline roles ──────────────────
+# ── Model-selected skills remain allowlisted and fail closed ───────────────
 
 def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
     text = _SKILL_FILE.read_text(encoding="utf-8")
@@ -415,17 +418,16 @@ def test_agent_routing_skill_routes_mutating_work_to_workers() -> None:
     assert "investigator" in text
 
 
-def test_pipeline_roles_register_the_right_role_skill() -> None:
-    """Generator roles carry their procedure in the agent.md body, so they
-    register `None`. The planner is the exception: it is the only component
-    that reads code before anything mutates, and the harness routes
-    deterministically on the manifest it emits, so its triage procedure is
-    PUSHED (HI #2) rather than left to the role prompt."""
-    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    for role in ("coder", "reviewer", "designer"):
-        assert role in SUBAGENT_ROLE_SKILLS, role
-        assert SUBAGENT_ROLE_SKILLS[role] is None, role
-    assert SUBAGENT_ROLE_SKILLS["planner"] == "request-triage"
+def test_pipeline_roles_have_catalog_allowlists_not_harness_defaults() -> None:
+    """Roles expose a bounded catalog; no harness role-to-skill default exists."""
+    from validation.context_builder import AGENT_SKILL_ALLOWLIST
+    from validation import subagent_context
+
+    assert not hasattr(subagent_context, "SUBAGENT_ROLE_SKILLS")
+    assert "request-triage" in AGENT_SKILL_ALLOWLIST["planner"]
+    assert "code-review" in AGENT_SKILL_ALLOWLIST["reviewer"]
+    assert AGENT_SKILL_ALLOWLIST["coder"]
+    assert AGENT_SKILL_ALLOWLIST["designer"]
 
 
 # ── No regressions: non-agent paths unchanged ────────────────────────
@@ -448,8 +450,11 @@ def test_summarizer_role_has_no_tools() -> None:
 
 def test_summarizer_role_has_skill() -> None:
     """C.2 — summarizer's procedure is pushed via a SKILL.md."""
-    from validation.subagent_context import SUBAGENT_ROLE_SKILLS
-    assert SUBAGENT_ROLE_SKILLS.get("summarizer") == "summarizer"
+    from validation.subagent_context import build_subagent_context
+    ctx = build_subagent_context(
+        "compress this context", "summarizer", pushed_skill_id="summarizer",
+    )
+    assert ctx.role_skill_id == "summarizer"
 
 
 def test_summarizer_agent_file_exists() -> None:

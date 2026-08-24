@@ -46,6 +46,7 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"done", "failed", "escalated", "abandoned"}
 )
 _ALL_STATUSES: frozenset[str] = frozenset({"running"}) | _TERMINAL_STATUSES
+_MUTATING_CAPABILITIES: frozenset[str] = frozenset({"Write", "Edit", "Bash"})
 
 # Default timeout layers — kept here so server.py and tests share constants.
 DEFAULT_MAX_TURNS: int = 8
@@ -93,6 +94,21 @@ def _artifacts_verified(artifacts: list[Any] | None) -> bool:
         except OSError:
             return False
     return True
+
+
+def _is_read_only_surface(row: dict[str, Any]) -> bool:
+    """Return whether the persisted worker surface has no mutation capability.
+
+    The completion caller cannot claim a read-only exception from ``tools_used``;
+    it is derived from the immutable surface granted at spawn. Unknown or
+    malformed surfaces fail closed.
+    """
+    allowed = row.get("allowed_tools")
+    if not isinstance(allowed, list) or any(
+        not isinstance(capability, str) for capability in allowed
+    ):
+        return False
+    return not bool(_MUTATING_CAPABILITIES.intersection(allowed))
 
 
 def _now_dt() -> datetime:
@@ -188,6 +204,7 @@ def complete(
     turns: int = 0,
     status: str = "done",
     artifacts: list[Any] | None = None,
+    accept_verified_readonly_turn_cap: bool = False,
     db_path: Path | None = None,
 ) -> dict:
     """Persist a terminal result and return the final row.
@@ -210,6 +227,11 @@ def complete(
     trusted; a missing/empty/escaping path, an empty list, or a non-'done'
     status keeps today's fail-closed coercion. The wall-clock rule is
     never waived.
+
+    ``accept_verified_readonly_turn_cap`` is an internal server assertion:
+    the verifier accepted a non-empty summary. It only relaxes the turn cap
+    for a persisted read-only surface; a worker cannot self-assert it through
+    ``tools_used`` or a status string.
 
     Raises:
       ValueError if the handle does not exist, or if the row is already
@@ -235,6 +257,8 @@ def complete(
     escalated = status == "escalated"
     timeout_reasons: list[str] = []
     accepted_note: str | None = None
+    turn_cap_accepted = False
+    turn_cap_acceptance: str | None = None
 
     # Wall-clock cap: compare row.created_at with now. Never waived.
     created_at = _parse_iso(row["created_at"])
@@ -251,10 +275,26 @@ def complete(
     # verify, keeps the coercion.
     if turns >= row["max_turns"]:
         if status == "done" and _artifacts_verified(artifacts):
+            turn_cap_accepted = True
+            turn_cap_acceptance = "verified_artifacts"
             accepted_note = (
                 f"[harness] max_turns={row['max_turns']} reached "
                 f"(turns={turns}); accepted: {len(artifacts or [])} "
                 "artifact(s) verified non-empty on disk"
+            )
+        elif (
+            status == "done"
+            and accept_verified_readonly_turn_cap
+            and isinstance(summary, str)
+            and bool(summary.strip())
+            and _is_read_only_surface(row)
+        ):
+            turn_cap_accepted = True
+            turn_cap_acceptance = "verified_readonly_response"
+            accepted_note = (
+                f"[harness] max_turns={row['max_turns']} reached "
+                f"(turns={turns}); accepted: verified non-empty response "
+                "from read-only worker surface"
             )
         else:
             timeout_reasons.append(
@@ -282,6 +322,8 @@ def complete(
         turns=turns,
         escalated=escalated,
         completed_at=_now_iso(),
+        turn_cap_accepted=turn_cap_accepted,
+        turn_cap_acceptance=turn_cap_acceptance,
         db_path=db_path,
     )
     final = db.get_sub_session(handle_id, db_path)

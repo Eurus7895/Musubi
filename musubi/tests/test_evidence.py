@@ -61,7 +61,78 @@ def test_a_path_outside_the_root_is_reported_as_unreachable(
 
     assert vector.names_workspace_path is False
     assert vector.escaped_paths == ("/etc/hosts",)
-    assert "no worker can reach these" in vector.prompt_block()
+    block = vector.prompt_block()
+    assert "no worker can reach them" in block
+    # The refusal names the remedy the console actually offers, so the root
+    # stops answering "run this by hand in PowerShell".
+    assert "attach that folder" in block
+
+
+def test_an_attached_folder_is_reachable_and_named_by_its_alias(
+    workspace: Path, tmp_path: Path,
+) -> None:
+    # The whole point of a folder grant: the operator hands over a directory
+    # outside the harness root, and the turn must treat it as reachable. Before
+    # this, the vector measured containment against the harness root alone, so
+    # every attached folder landed in `escaped_paths` and `prompt_block` told
+    # the root agent to refuse it — one block above the roots listing that said
+    # the opposite.
+    external = tmp_path.parent / "bamf-updater"
+    external.mkdir(exist_ok=True)
+    (external / "temp.log").write_text("y", encoding="utf-8")
+    roots = (("musubi", workspace), ("bamf-updater", external))
+
+    vector = collect(f"delete everything in {external}", roots=roots)
+
+    assert vector.escaped_paths == ()
+    assert vector.names_workspace_path is True
+    assert vector.path_exists is True
+    assert vector.named_paths == ("bamf-updater",)
+    assert vector.named_root_aliases == ("bamf-updater",)
+    assert "outside_granted_roots" not in vector.prompt_block()
+
+
+def test_a_path_under_an_attached_folder_carries_its_root_argument(
+    workspace: Path, tmp_path: Path,
+) -> None:
+    external = tmp_path.parent / "bamf-updater"
+    external.mkdir(exist_ok=True)
+    roots = (("musubi", workspace), ("bamf-updater", external))
+
+    vector = collect(f"read {external / 'temp.log'}", roots=roots)
+
+    assert vector.named_paths == ("bamf-updater/temp.log",)
+    # The alias is the tool's `root` argument, not part of the filename. A
+    # first segment cannot be recognised as an alias by shape alone — this is
+    # what `named_root_aliases` exists to say.
+    assert vector.named_root_aliases == ("bamf-updater",)
+    assert "`root` argument" in vector.prompt_block()
+
+
+def test_a_relative_token_still_resolves_against_the_harness_root(
+    workspace: Path, tmp_path: Path,
+) -> None:
+    external = tmp_path.parent / "bamf-updater"
+    external.mkdir(exist_ok=True)
+    roots = (("musubi", workspace), ("bamf-updater", external))
+
+    vector = collect("update agent/run.py", roots=roots)
+
+    assert vector.named_paths == ("agent/run.py",)
+    assert vector.named_root_aliases == ()
+
+
+def test_a_path_in_no_granted_root_is_still_unreachable(
+    workspace: Path, tmp_path: Path,
+) -> None:
+    external = tmp_path.parent / "bamf-updater"
+    external.mkdir(exist_ok=True)
+    roots = (("musubi", workspace), ("bamf-updater", external))
+
+    vector = collect("summarize /etc/hosts", roots=roots)
+
+    assert vector.escaped_paths == ("/etc/hosts",)
+    assert vector.names_workspace_path is False
 
 
 def test_containment_matches_the_firewall(workspace: Path) -> None:

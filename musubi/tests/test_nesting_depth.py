@@ -25,9 +25,12 @@ def _text(s: str) -> LMResponse:
 
 
 def _spawn(role: str, brief: str) -> LMResponse:
+    selected_skill = {"coder": "python"}.get(role, role)
     return LMResponse(stop_reason="tool_use", content=[{
         "type": "tool_use", "id": f"spawn-{role}", "name": "musubi_spawn_subagent",
-        "input": {"role": role, "brief": brief},
+        "input": {
+            "role": role, "brief": brief, "pushed_skill_id": selected_skill,
+        },
     }])
 
 
@@ -63,15 +66,25 @@ class LeafCoderRouter(LMRouter):
         if "implement X" in brief:
             self.coder_had_spawn = "musubi_spawn_subagent" in names
             return _text("coded directly")
-        if "musubi_begin_direct" in names:
+        if "musubi_begin_plan" in names:
             return LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use",
-                "id": "mode-direct",
-                "name": "musubi_begin_direct",
+                "id": "mode-plan",
+                "name": "musubi_begin_plan",
+                "input": {"deliverable": "report.md"},
+            }])
+        if "musubi_commit_plan" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use",
+                "id": "commit-plan",
+                "name": "musubi_commit_plan",
                 "input": {
-                    "target_intent": "create",
-                    "target_path": "report.md",
-                    "worker_role": "coder",
+                    "plan_markdown": "# Plan\n\nCreate report.md.",
+                    "change_manifest": {
+                        "files_expected": 1, "subsystems": ["agent"],
+                    },
+                    "change_size": "small",
+                    "worker_chain": ["coder"],
                 },
             }])
         if has_tr and not self.spawned:

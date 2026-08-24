@@ -19,7 +19,6 @@ Per-agent firewall rules:
     designer      → plan only
     coder         → plan + design; reading "review" → fix_instructions only
     reviewer      → code only  (evaluator firewall — no request, plan, design)
-    skill-builder → fail patterns only  (no session state, no user code)
     agent  → memory_tier1 only  (no pipeline state of any kind;
                     user_message + conversation_history are runner-supplied
                     in Phase B.2 + Phase C, not built here)
@@ -27,12 +26,22 @@ Per-agent firewall rules:
 
 import os
 import re
+import sys
 from pathlib import Path
+
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+# The policy engine owns the canonical role vocabulary (HI #5). This module
+# keys its own firewall tables by the same name and folds every lookup through
+# the same normalizer, so a role read back out of the audit ledger under its
+# legacy spelling still resolves to one entry.
+from policy_engine import ROOT_ROLE, normalize_role  # noqa: E402
 from typing import Any
 
 from memory import memory_loader
 from session import state
-from storage import db
 
 # ── Injection detection ───────────────────────────────────────────────────────
 
@@ -78,7 +87,10 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
         "typescript", "debugging", "refactoring", "git-workflow", "web-ui",
     },
     "reviewer":      {"code-review", "testing"},
-    "skill-builder": set(),
+    "explorer":      {"explorer"},
+    "investigator":  {"investigator", "debugging", "testing"},
+    "reviewer-aux":  {"reviewer-aux", "code-review"},
+    "summarizer":    {"summarizer"},
     # Phase B.1 — agent. Routing skill is pushed via inject_skills
     # frontmatter; the allowlist entry exists so musubi_get_skill /
     # musubi_list_skills resolve without policy denial when the runner
@@ -96,7 +108,7 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
     # committed?" are answerable with read tools and don't blur the
     # generator boundary (test_agent_skill_allowlist_excludes_generator_skills
     # pins that boundary; refactoring/typescript stay coder-only).
-    "agent": {
+    ROOT_ROLE: {
         "agent-routing",
         "compression-aware-context",
         "docs-writing",
@@ -118,24 +130,8 @@ AGENT_SKILL_ALLOWLIST: dict[str, set[str]] = {
 
 def check_skill_permission(agent_name: str, skill_id: str) -> bool:
     """Return True only if the agent is permitted to access the given skill."""
-    allowed = AGENT_SKILL_ALLOWLIST.get(agent_name.lower().strip(), set())
+    allowed = AGENT_SKILL_ALLOWLIST.get(normalize_role(agent_name), set())
     return skill_id in allowed
-
-
-# ── Skill-Builder path guard ──────────────────────────────────────────────────
-
-_PROPOSED_PATTERN = re.compile(
-    r"(^|[/\\])\.github[/\\]agents[/\\]proposed[/\\]", re.IGNORECASE
-)
-
-
-def validate_skill_builder_write(path: str | Path) -> bool:
-    """Return True only if path is inside .github/agents/proposed/.
-
-    Normalises the path first so traversal tricks like proposed/../ are blocked.
-    """
-    normalized = os.path.normpath(str(path))
-    return bool(_PROPOSED_PATTERN.search(normalized))
 
 
 # ── Context builder ───────────────────────────────────────────────────────────
@@ -149,7 +145,7 @@ def build_context(
 
     Raises ValueError for unknown agent names.
     """
-    agent = agent_name.lower().strip()
+    agent = normalize_role(agent_name)
 
     if agent == "planner":
         return _context_planner(session_id, db_path)
@@ -159,15 +155,13 @@ def build_context(
         return _context_coder(session_id, db_path)
     if agent == "reviewer":
         return _context_reviewer(session_id, db_path)
-    if agent == "skill-builder":
-        return _context_skill_builder(db_path)
-    if agent == "agent":
+    if agent == ROOT_ROLE:
         return _context_agent()
 
     raise ValueError(
         f"Unknown agent {agent_name!r}. "
-        "Valid agents: planner, designer, coder, reviewer, skill-builder, "
-        "agent"
+        "Valid agents: planner, designer, coder, reviewer, "
+        f"{ROOT_ROLE}"
     )
 
 
@@ -210,12 +204,6 @@ def _context_reviewer(session_id: str, db_path: Path | None) -> dict[str, Any]:
     return {"code": state.read_stage(session_id, "code", db_path)}
 
 
-def _context_skill_builder(db_path: Path | None) -> dict[str, Any]:
-    # No session state, no user code — only aggregated fail patterns.
-    patterns = db.get_fail_patterns(db_path=db_path)
-    return {"fail_patterns": patterns}
-
-
 def _context_agent() -> dict[str, Any]:
     # The agent holds the user-facing chat across turns. The harness
     # owns Tier-1 memory; user_message + conversation_history are passed by
@@ -234,11 +222,10 @@ _STAGE_PERMISSIONS: dict[str, set[str]] = {
     "designer":      {"plan"},
     "coder":         {"plan", "design", "review"},
     "reviewer":      {"code"},
-    "skill-builder": set(),
     # Agent never reads pipeline stages. Pipelines are user-invoked
     # and run in their own session; the agent must not peek at
     # in-flight or completed pipeline state via musubi_read_stage.
-    "agent":  set(),
+    ROOT_ROLE:  set(),
     # Phase H.1 — /code-review pipeline roles.
     # scoper        reads the raw request (diff). No prior stage exists.
     # finder        reads scope (and request) for cross-cutting analysis.

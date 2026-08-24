@@ -93,6 +93,107 @@ def test_root_orchestration_reduces_worker_outcome_into_goal_state() -> None:
     assert orchestration.child("reviewer").goal_state is None
 
 
+def test_third_plan_contract_failure_returns_terminal_incomplete() -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id="root",
+        goal_state=state,
+    )
+    bad_args = {
+        "plan_markdown": "# Add export",
+        "change_manifest": {"subsystems": ["agent"]},
+        "change_size": "small",
+        "worker_chain": ["coder"],
+    }
+
+    first = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+    second = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+    third = json.loads(run_mod._handle_root_control_tool(
+        "musubi_commit_plan", bad_args, orchestration,
+    ))
+
+    assert [first["status"], second["status"], third["status"]] == [
+        "error", "error", "incomplete",
+    ]
+    assert third["error_kind"] == "invalid_change_manifest"
+    assert third["consecutive_failures"] == 3
+    assert state.pending_clarification is not None
+    assert "three consecutive planning-contract failures" in state.pending_clarification
+
+
+def test_commit_plan_error_is_emitted_as_request_scoped_tool_event(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+    from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
+
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id="root",
+        parent_agent_name="agent",
+        goal_state=state,
+    )
+    raw = io.StringIO()
+    writer = RuntimeLogWriter(raw, "request-plan-correction")
+
+    result = asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "commit-bad-plan",
+                "name": "musubi_commit_plan",
+                "input": {
+                    "plan_markdown": "# private raw plan body",
+                    "change_manifest": {"subsystems": ["agent"]},
+                    "change_size": "small",
+                    "worker_chain": ["coder"],
+                },
+            },
+            _FakeToolSession(),
+            writer,
+            vendor=None,
+            tools=[],
+            orchestration=orchestration,
+            gateway=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert json.loads(result)["error_kind"] == "invalid_change_manifest"
+    records = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in raw.getvalue().split("\n")
+        if line
+    ]
+    control = [
+        record for record in records
+        if "control musubi_commit_plan" in str(record["message"])
+    ]
+    assert control == [{
+        "request_id": "request-plan-correction",
+        "role": "root",
+        "agent_handle": None,
+        "category": "tools",
+        "message": (
+            "[agent] control musubi_commit_plan status=error "
+            "error_kind=invalid_change_manifest "
+            "reason=change_manifest must match the closed manifest schema "
+            "consecutive_failures=1"
+        ),
+    }]
+    assert "private raw plan body" not in raw.getvalue()
+    assert "expected_schema" not in raw.getvalue()
+
+
 def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
     from agent import run as run_mod
 
@@ -147,7 +248,6 @@ def test_root_first_cycle_sees_only_mode_declarations() -> None:
         }
         for name in (
             "musubi_read_file",
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_spawn_subagent",
             "musubi_get_skill",
@@ -172,7 +272,6 @@ def test_root_first_cycle_sees_only_mode_declarations() -> None:
     ))
 
     assert [tool["name"] for tool in router.calls[0]["tools"]] == [
-        "musubi_begin_direct",
         "musubi_begin_plan",
     ]
 
@@ -287,7 +386,6 @@ def test_simple_root_two_call_projection_stays_below_3k_tokens() -> None:
 
     # The first call exposes only the model-owned Direct/Planning decision.
     assert {tool["name"] for tool in first_call["tools"]} == {
-        "musubi_begin_direct",
         "musubi_begin_plan",
     }
     # Adding skill selection to a simple root costs ~1k tokens across the
@@ -398,7 +496,10 @@ def test_root_stops_immediately_when_last_replacement_exhausts_ceiling(
             content=[{
                 "type": "tool_use", "id": "last-worker",
                 "name": "musubi_spawn_subagent",
-                "input": {"role": "coder", "brief": "finish it"},
+                "input": {
+                    "role": "coder", "brief": "finish it",
+                    "pushed_skill_id": "python",
+                },
             }],
         ),
         LMResponse(
@@ -555,11 +656,11 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
     """The spawned server must see MUSUBI_* config while unrelated secrets stay out."""
     from agent.run import _server_env
 
-    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
+    monkeypatch.setenv("MUSUBI_CONTEXT_BUDGET", "12000")
     monkeypatch.setenv("MUSUBI_ROOT", "/some/dir")
     monkeypatch.setenv("UNRELATED_SECRET", "do-not-leak")
     env = _server_env()
-    assert env["MUSUBI_COMPRESS"] == "1"
+    assert env["MUSUBI_CONTEXT_BUDGET"] == "12000"
     assert env["MUSUBI_ROOT"] == "/some/dir"
     assert "UNRELATED_SECRET" not in env
     assert "PATH" in env
@@ -855,15 +956,15 @@ def test_dispatch_denies_root_write_before_call_and_records_policy_audit(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_write_file"
     assert "capability Write is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_write_file")
+        ("DENY", "root", "musubi_write_file")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_write_file", "denied")
+        ("root", "musubi_write_file", "denied")
     ]
 
 
@@ -907,11 +1008,150 @@ def test_dispatch_policy_preflight_denies_mixed_batch_before_any_sibling_launch(
     assert type(caught.value).__name__ == "PolicyDeniedError"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_spawn_subagent")
+        ("DENY", "root", "musubi_spawn_subagent")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_spawn_subagent", "denied")
+        ("root", "musubi_spawn_subagent", "denied")
     ]
+
+
+def test_a_bad_pushed_skill_refuses_one_call_without_ending_the_turn(
+    tmp_path: Path,
+) -> None:
+    """An optional argument's wrong value is not an authorization failure.
+
+    Observed: the root put a skill id the coder may not receive into
+    `pushed_skill_id`, the argument policy denied it through the same terminal
+    channel that answers "this role may not call this tool", and the turn
+    ended 4 cycles and 12,383 tokens in having produced nothing. The caller
+    WAS authorised to spawn a coder; one string in a field it could have
+    omitted entirely was wrong.
+    """
+    from agent import run as run_mod
+
+    session = _FakeToolSession("read result")
+    audit_db = tmp_path / "audit.db"
+    tool_uses = [
+        {
+            "id": "allowed-read",
+            "name": "musubi_read_file",
+            "input": {"path": "README.md"},
+        },
+        {
+            "id": "bad-skill-spawn",
+            "name": "musubi_spawn_subagent",
+            "input": {
+                "role": "coder",
+                "brief": "build it",
+                "pushed_skill_id": "agent-routing",
+            },
+        },
+    ]
+
+    results = asyncio.run(
+        run_mod._dispatch(
+            session,
+            tool_uses,
+            io.StringIO(),
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(
+                parent_session_id="parent",
+                parent_agent_name="agent",
+            ),
+            gateway=None,
+            audit_db_path=audit_db,
+        )
+    )
+
+    # The sound sibling still ran; only the malformed call was refused.
+    assert session.calls == [("musubi_read_file", {"path": "README.md"})]
+    refusal = next(
+        block for block in results if block["tool_use_id"] == "bad-skill-spawn"
+    )
+    payload = json.loads(refusal["content"])
+    assert payload["status"] == "refused"
+    # The message must be enough to fix the call without guessing.
+    assert "Permitted for 'coder'" in payload["reason"]
+    assert "never defaults, substitutes, or drops" in payload["reason"]
+    # Recoverable is not unaudited: the verdict is still a DENY on record.
+    assert ("DENY", "root", "musubi_spawn_subagent") in _read_policy_rows(audit_db)
+    assert ("root", "musubi_spawn_subagent", "refused") in _read_tool_rows(audit_db)
+
+
+def test_a_recoverable_refusal_lets_the_root_retry_in_the_next_cycle(
+    tmp_path: Path,
+) -> None:
+    """The whole point of the split: cycle 2 exists."""
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "bad-skill-spawn",
+            "name": "musubi_spawn_subagent",
+            "input": {
+                "role": "coder",
+                "brief": "build it",
+                "pushed_skill_id": "agent-routing",
+            },
+        }]),
+        LMResponse(stop_reason="end_turn", content=[{
+            "type": "text",
+            "text": "corrected and finished",
+        }]),
+    ])
+    session = _FakeToolSession()
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            session,
+            router,
+            [],
+            [{"role": "user", "content": "build it"}],
+            max_cycles=4,
+            log=io.StringIO(),
+            orchestration=Orchestration(
+                parent_session_id="parent",
+                parent_agent_name="agent",
+            ),
+            role="agent",
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    assert answer == "corrected and finished"
+    assert cycles == 2
+    assert len(router.calls) == 2
+
+
+def test_an_unauthorised_spawn_role_is_still_terminal(tmp_path: Path) -> None:
+    """The split must not soften authorization. No retry makes the caller a
+    different role, so that denial still ends the turn."""
+    from agent import run as run_mod
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(
+            run_mod._dispatch(
+                _FakeToolSession(),
+                [{
+                    "id": "denied-spawn-role",
+                    "name": "musubi_spawn_subagent",
+                    "input": {"role": "saboteur", "brief": "forged"},
+                }],
+                io.StringIO(),
+                vendor=None,
+                tools=[],
+                orchestration=Orchestration(
+                    parent_session_id="parent",
+                    parent_agent_name="agent",
+                ),
+                gateway=None,
+                audit_db_path=tmp_path / "audit.db",
+            )
+        )
+
+    assert type(caught.value).__name__ == "PolicyDeniedError"
 
 
 def test_root_policy_denial_is_terminal_after_one_lm_response(
@@ -984,15 +1224,15 @@ def test_dispatch_denies_root_command_with_investigator_hint(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_run_command"
     assert "capability Bash is not allowed" in denied.value.reason
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_run_command")
+        ("DENY", "root", "musubi_run_command")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_run_command", "denied")
+        ("root", "musubi_run_command", "denied")
     ]
 
 
@@ -1031,6 +1271,62 @@ def test_dispatch_allows_coder_write_and_records_post_tool_audit(
     assert _read_tool_rows(audit_db) == [
         ("coder", "musubi_write_file", "ok")
     ]
+
+
+def test_dispatch_emits_the_allow_verdict_to_the_runtime_ledger(
+    tmp_path: Path,
+) -> None:
+    """A clean run must still be able to show the gate deciding.
+
+    Only denials were emitted, so a console filtered to Policy read "no
+    matching log lines" on every session that broke no rule — the gate
+    proving itself is precisely what an operator opens that filter for.
+    The durable policy ledger also carries request identity; this assertion
+    covers the ordered runtime protocol used while the turn is still live.
+    """
+    from agent import run as run_mod
+    from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
+
+    session = _FakeToolSession("stored")
+    stream = io.StringIO()
+    writer = RuntimeLogWriter(stream, "request-1")
+
+    asyncio.run(
+        run_mod._dispatch_one(
+            {
+                "id": "call-allowed",
+                "name": "musubi_write_file",
+                "input": {"path": "x.py", "content": "print('x')"},
+            },
+            session,
+            writer,
+            vendor=None,
+            tools=[],
+            orchestration=Orchestration(parent_session_id="parent", parent_agent_name="coder"),
+            gateway=None,
+            refused=False,
+            compression_db_path=None,
+            audit_db_path=tmp_path / "audit.db",
+        )
+    )
+
+    # Split on "\n", never splitlines(): the protocol prefix starts with the
+    # RECORD SEPARATOR \x1e, which str.splitlines() treats as a line break of
+    # its own and would tear every envelope in half.
+    records = [
+        json.loads(line.removeprefix(PROTOCOL_PREFIX))
+        for line in stream.getvalue().split("\n")
+        if line
+    ]
+    policy = [row for row in records if row["category"] == "policy"]
+    assert len(policy) == 1
+    assert "policy allow musubi_write_file" in policy[0]["message"]
+    assert "role=coder" in policy[0]["message"]
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        identity = conn.execute(
+            "SELECT request_id, parent_session_id FROM policy_audit"
+        ).fetchone()
+    assert identity == ("request-1", "parent")
 
 
 def test_dispatch_injects_prior_failure_into_replacement_worker_brief(
@@ -1107,14 +1403,14 @@ def test_dispatch_denies_root_append_before_call_and_records_policy_audit(
         )
         )
 
-    assert denied.value.role == "agent"
+    assert denied.value.role == "root"
     assert denied.value.tool == "musubi_append_file"
     assert session.calls == []
     assert _read_policy_rows(audit_db) == [
-        ("DENY", "agent", "musubi_append_file")
+        ("DENY", "root", "musubi_append_file")
     ]
     assert _read_tool_rows(audit_db) == [
-        ("agent", "musubi_append_file", "denied")
+        ("root", "musubi_append_file", "denied")
     ]
 
 
@@ -1585,7 +1881,7 @@ def test_system_prompt_has_root_sizing_ladder_and_write_strategy() -> None:
     prompt = build_system_prompt().lower()
     # Root owns both the mode and the size decision; the harness does not infer
     # either from the user's response text.
-    assert "musubi_begin_direct" in prompt
+    assert "musubi_begin_plan" in prompt
     assert "musubi_begin_plan" in prompt
     assert "small/medium/large" in prompt
     assert "do not spawn a planner" in prompt
@@ -1633,6 +1929,36 @@ def test_log_cycle_includes_human_readable_model_action() -> None:
     assert "stop=tool_use" in line
     assert "tools=1" in line
     assert "names=[get_skill]" in line
+
+
+def test_cycle_logs_do_not_read_a_cached_prefix_as_a_saving() -> None:
+    """The budget charges tokens PROCESSED, so a cached prefix costs it full
+    price. The log used to say `cache_read=27392` next to `in_tokens=27515`
+    and then charge 31,201 — three numbers that only reconcile if you already
+    know the deduction never happens. Name the reported field for what it is,
+    and state the charge beside the running total."""
+    from agent import run as run_mod
+    from agent.budget import TokenBudgetEnforcer
+
+    log = io.StringIO()
+    run_mod._log_cycle(
+        log, 6, "tool_use",
+        [{"type": "tool_use", "name": "musubi_append_file"}],
+        {"cache_read_input_tokens": 27_392},
+        tokens_out=3_686,
+    )
+    line = log.getvalue()
+    assert "cached_in=27392" in line
+    assert "cache_read=" not in line  # the name that implied a deduction
+
+    cost_log = io.StringIO()
+    budget = TokenBudgetEnforcer(200_000)
+    budget.charge(31_201)
+    run_mod._log_cycle_cost(cost_log, 6, 26_490, 27_515, 3_686, budget)
+    cost_line = cost_log.getvalue()
+    # in + out, with nothing taken off for the 27,392 served from cache.
+    assert "charged=31201" in cost_line
+    assert "token_budget=31201/200000" in cost_line
 
 
 def test_log_cycle_names_aggregate_repeated_tools() -> None:
@@ -1919,6 +2245,146 @@ def test_run_loop_does_not_dispatch_tool_call_from_max_tokens_response() -> None
     assert "max_tokens" in payload["message"]
     assert cycles == 1
     assert session.calls == []
+
+
+def test_run_loop_does_not_accept_a_truncated_text_answer_as_final() -> None:
+    """The pipeline `plan` stage failure: the model was writing its answer in
+    the TEXT channel and was cut at the output cap. The truncation check used
+    to sit BELOW the "no tool calls → final answer" branch, so the amputated
+    half-answer was recorded as a clean completion and handed downstream."""
+    from agent import run as run_mod
+
+    truncated = LMResponse(
+        stop_reason="max_tokens",
+        content=[{"type": "text", "text": "## Plan\n1. Read the reposi"}],
+    )
+    # Two canned responses for one cycle: a read-only role starts at the effort
+    # floor, so the first truncation triggers the retry at the ceiling.
+    router = FakeRouter([truncated, truncated])
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router,
+            [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=1, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert [call["max_tokens"] for call in router.calls] == [2048, 16384]
+
+    assert answer is not None
+    assert answer.startswith("[blocked] ")
+    payload = json.loads(answer.removeprefix("[blocked] "))
+    assert payload["reason"] == "output_too_large_for_single_response"
+    assert payload["retry_same_strategy"] is False
+    assert cycles == 1
+
+
+def test_run_loop_retries_a_truncated_text_answer_while_cycles_remain() -> None:
+    """With turns left the loop must ask for a shorter answer rather than
+    accept the fragment — and the retry has to reach the model."""
+    from agent import run as run_mod
+
+    truncated = LMResponse(
+        stop_reason="max_tokens",
+        content=[{"type": "text", "text": "## Plan\n1. Read the reposi"}],
+    )
+    router = FakeRouter([
+        truncated,  # at the effort floor
+        truncated,  # the automatic retry at the ceiling
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "short plan"}]),
+    ])
+
+    answer, cycles = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=2, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer == "short plan"
+    assert cycles == 2
+    # FakeRouter records the live message list by reference, so assert on the
+    # conversation it ended up sending rather than on a per-call snapshot.
+    sent = router.calls[-1]["messages"]
+    assert any(
+        message["role"] == "user"
+        and "output-token cap" in str(message["content"])
+        for message in sent
+    )
+
+
+def test_run_loop_rejects_an_empty_model_turn() -> None:
+    """A vendor turn with neither text nor a tool call is not an answer. It
+    used to become `final_answer = ""`, which a stage then reported as `done`
+    with an empty summary — unrecoverable two layers later."""
+    from agent import run as run_mod
+
+    router = FakeRouter([LMResponse(stop_reason="end_turn", content=[])])
+
+    answer, _ = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=1, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer is not None
+    assert answer.startswith("[blocked] ")
+    assert json.loads(answer.removeprefix("[blocked] "))["reason"] == (
+        "empty_model_response"
+    )
+
+
+def test_run_loop_never_replays_an_empty_assistant_turn() -> None:
+    """An assistant entry with no content blocks is rejected by several
+    OpenAI-compatible endpoints, so an empty vendor turn must not be written
+    into the conversation the NEXT call replays."""
+    from agent import run as run_mod
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[]),
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
+    ])
+
+    answer, _ = asyncio.run(
+        run_mod._run_loop(
+            _FakeToolSession(), router, [],
+            [{"role": "user", "content": "plan a weather app"}],
+            max_cycles=2, log=io.StringIO(), role="planner",
+        )
+    )
+
+    assert answer == "ok"
+    replayed = router.calls[1]["messages"]
+    assert all(
+        message["role"] != "assistant" or message["content"]
+        for message in replayed
+    )
+
+
+def test_empty_turn_audits_as_empty_not_final(tmp_path: Path) -> None:
+    """The audit row has to disagree with a `final` verdict, or `agent_cycles`
+    reports the run that produced nothing as a success."""
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("audit empty turn", p)
+
+    asyncio.run(run_mod._run_loop(
+        _FakeToolSession(), FakeRouter([LMResponse(stop_reason="end_turn", content=[])]),
+        [], [{"role": "user", "content": "plan"}],
+        max_cycles=1, log=io.StringIO(), compression_db_path=p,
+        audit_session_id=sid, audit_worker_id="root", audit_stage="plan",
+    ))
+
+    assert db.query_agent_cycles(sid, db_path=p)[0]["cycle_status"] == "empty"
 
 
 def test_truncated_tool_call_audit_does_not_count_dropped_tool(
@@ -2221,6 +2687,64 @@ def test_postflight_budget_halt_still_audits_measured_cycle(tmp_path: Path) -> N
     assert rows[0]["tokens_out"] == 30
 
 
+def test_postflight_budget_halt_lands_the_writes_it_already_paid_for(
+    tmp_path: Path,
+) -> None:
+    """The traced waste. A coder emitted 11,289 output tokens carrying three
+    files, was charged 19,801 for them, and the halt fired between generation
+    and dispatch — the audit row recorded `tool_names=[]` and nothing reached
+    disk. Discarding a paid-for write saves nothing: dispatching it costs tool
+    execution, not model tokens."""
+    from agent import run as run_mod
+    from session import state
+    from storage import db
+
+    p = tmp_path / "cycles.db"
+    db.init_db(p)
+    sid = state.create_session("postflight write salvage", p)
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="tool_use",
+            content=[
+                {
+                    "type": "tool_use", "id": "w1",
+                    "name": "musubi_write_file",
+                    "input": {"path": "a.html", "content": "<!doctype html>"},
+                },
+                {
+                    "type": "tool_use", "id": "r1",
+                    "name": "musubi_read_file", "input": {"path": "a.html"},
+                },
+            ],
+            usage={"input_tokens": 90, "output_tokens": 30},
+        ),
+    ])
+    session = _FakeToolSession('{"status":"ok"}')
+
+    answer, _ = asyncio.run(run_mod._run_loop(
+        session, router,
+        [{"name": "musubi_write_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "write"}], max_cycles=1,
+        log=io.StringIO(), compression_db_path=p,
+        audit_session_id=sid, audit_worker_id="root", audit_stage="agent",
+        budget=TokenBudgetEnforcer(100),
+        salvage_on_exhaust=True,
+        role="coder",  # root may not write; the policy gate still applies here
+    ))
+
+    dispatched = [name for name, _ in session.calls]
+    assert dispatched == ["musubi_write_file"]  # the read is not worth running
+    row = db.query_agent_cycles(sid, db_path=p)[0]
+    assert row["cycle_status"] == "budget_halt"
+    assert json.loads(row["tool_calls_json"]) == ["musubi_write_file"]
+
+    # A typed answer the parent can act on, not an exception — the same shape
+    # the PREflight halt has always returned.
+    assert answer is not None
+    assert answer.startswith("[incomplete] token budget exhausted")
+    assert "musubi_write_file" in answer
+
+
 def test_postflight_budget_halt_does_not_count_undispatched_tool(
     tmp_path: Path,
 ) -> None:
@@ -2320,7 +2844,7 @@ def test_run_agent_default_tool_surface_hides_driver_only_tools() -> None:
 
     assert answer == "ok"
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
     assert "musubi_write_file" not in names
     assert "musubi_edit_file" not in names
     assert "musubi_run_command" not in names
@@ -2344,7 +2868,7 @@ def test_run_agent_full_catalog_still_keeps_root_decision_surface_small(
     )
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
 
 
 def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
@@ -2359,7 +2883,7 @@ def test_read_only_inspect_task_uses_lean_simple_root_surface() -> None:
     ))
 
     names = {tool["name"] for tool in router.calls[0]["tools"]}
-    assert names == {"musubi_begin_direct", "musubi_begin_plan"}
+    assert names == {"musubi_begin_plan"}
     assert "musubi_get_skill" not in names
 
 
@@ -2581,7 +3105,7 @@ def test_plan_first_directive_injected_into_system_prompt() -> None:
     from agent import run as run_mod
     from agent.context import build_system_prompt
 
-    assert "musubi_begin_plan" in run_mod._PLAN_FIRST_DIRECTIVE
+    assert "musubi_commit_plan" in run_mod._PLAN_FIRST_DIRECTIVE
     assert "musubi_commit_plan" in run_mod._PLAN_FIRST_DIRECTIVE
     combined = f"{build_system_prompt('scope')}\n\n{run_mod._PLAN_FIRST_DIRECTIVE}"
     assert "--plan" in combined
@@ -2661,7 +3185,10 @@ def test_resolve_vendor_labels_which_profile(
     cfg.write_text(json.dumps({
         "default": "ollama.local",
         "ollama": {
-            "local": {"model": "llama3.1", "max_output_tokens": 8192},
+            "local": {
+                "model": "llama3.1", "max_output_tokens": 8192,
+                "context_window_tokens": 32768,
+            },
         },
     }), encoding="utf-8")
     monkeypatch.setenv("MUSUBI_LLM_CONFIG", str(cfg))
@@ -2672,10 +3199,12 @@ def test_resolve_vendor_labels_which_profile(
     default_router, default_src = run_mod._resolve_vendor(None)
     assert default_src == "ollama.local (llm.json default)"
     assert default_router.max_output_tokens == 8192
+    assert default_router.context_window_tokens == 32768
 
     profile_router, profile_src = run_mod._resolve_vendor("ollama.local")
     assert profile_src == "ollama.local (--profile)"
     assert profile_router.max_output_tokens == 8192
+    assert profile_router.context_window_tokens == 32768
 
 
 def test_vendor_error_surfaces_clean_not_as_exception_group() -> None:
@@ -2828,7 +3357,10 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
             content=[{
                 "type": "tool_use", "id": "c1",
                 "name": "musubi_spawn_subagent",
-                "input": {"role": "coder", "brief": "implement the route"},
+                "input": {
+                    "role": "coder", "brief": "implement the route",
+                    "pushed_skill_id": "python",
+                },
             }],
         ),
         LMResponse(
@@ -2857,7 +3389,7 @@ def test_root_coder_spawn_is_refused_until_planner_manifest_lands(
     assert orchestration.spawned_workers == 0
     replay = str(router.calls[1]["messages"])
     assert "refused" in replay
-    assert "Planning mode" in replay
+    assert "manifest" in replay
 
 
 def test_large_goal_runs_the_review_chain_instead_of_halting() -> None:
@@ -3199,6 +3731,47 @@ def test_root_system_prompt_carries_the_evidence_vector() -> None:
     assert "[agent] evidence:" in log.getvalue()
 
 
+def test_an_attached_folder_is_not_reported_as_out_of_reach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two prompt blocks used to contradict each other, loudest first.
+
+    `registry.prompt_block()` listed the attached folder as an available root;
+    `evidence.prompt_block()`, printed ABOVE it, measured containment against
+    the harness root alone, so the same folder appeared under
+    `outside_workspace=… (no worker can reach these; say so and stop)`. The
+    root agent obeyed the imperative and refused the folder the operator had
+    just handed it, telling the user to run the command by hand instead.
+    """
+    from workspace.grants import MANIFEST_ENV
+
+    harness_root = _musubi_dir().parent.resolve()
+    attached = (tmp_path / "bamf-updater").resolve()
+    attached.mkdir()
+    monkeypatch.setenv(MANIFEST_ENV, json.dumps([
+        {"grantId": "musubi", "alias": "musubi", "canonicalPath": str(harness_root)},
+        {"grantId": "g1", "alias": "bamf-updater", "canonicalPath": str(attached)},
+    ]))
+
+    router = FakeRouter([
+        LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}])
+    ])
+    asyncio.run(run_agent(
+        f"Remove {attached}",
+        router,
+        _musubi_dir(),
+        log=io.StringIO(),
+        max_tokens=0,
+    ))
+
+    system_text = router.calls[0]["messages"][0]["content"]
+    assert "outside_granted_roots" not in system_text
+    assert "names_workspace_path=True" in system_text
+    assert "paths=bamf-updater" in system_text
+    # And the roots listing still says how to address it.
+    assert "bamf-updater: " in system_text
+
+
 def test_the_evidence_vector_is_the_only_thing_left_to_route_on() -> None:
     from agent.evidence import collect
     from agent.routes import RouteKind
@@ -3521,7 +4094,7 @@ def test_a_blind_coder_spawn_is_refused_and_names_the_way_out(
 
     assert "s1" in refusals
     assert "Explorer" in refusals["s1"]
-    assert "Planning mode" in refusals["s1"]
+    assert "manifest" in refusals["s1"]
     # A read-only worker is never blocked — it is how the gap gets closed.
     explorer = [{
         "id": "s2", "name": "musubi_spawn_subagent",

@@ -58,6 +58,10 @@ class LMRouter(ABC):
     #: Optional operator-set per-call output cap resolved from llm.json.
     max_output_tokens: int | None = None
 
+    #: Optional operator-declared total context window resolved from llm.json.
+    #: Unknown remains ``None`` so callers can keep a conservative fixed cap.
+    context_window_tokens: int | None = None
+
     @abstractmethod
     def call(
         self,

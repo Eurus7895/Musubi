@@ -22,13 +22,16 @@ test('Orchestrator owns editable session folder grants', () => {
 })
 
 test('center workspace opens turn or agent detail and returns to the graph', () => {
-  for (const label of ['Back to graph', 'Turn log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
+  for (const label of ['Back to graph', 'Request log', 'Agent log', 'Overview', 'All', 'Tools', 'Policy', 'Model']) {
     assert.equal(source.includes(label), true, label)
   }
   assert.match(source, /runtimeGraph/)
   assert.match(source, /runtimeLogs/)
   assert.match(source, /onSelectNode/)
   assert.equal(source.includes('workspaceTab'), false)
+  assert.match(source, /Whole request/)
+  assert.match(source, /Stage attempts/)
+  assert.match(source, /Pending audit relay/)
 })
 
 test('Conversation keeps narrative, skill provenance, and token economics without verbose mode', () => {

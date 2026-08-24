@@ -88,7 +88,7 @@ package "Musubi (MCP Server)" {
     [verifier.py] as ver
     [state.py] as state
     [executor.py] as exec
-    [correction_loop.py] as loop
+    [stage_gate.py] as gate
 }
 
 database "SQLite" as db
@@ -143,11 +143,11 @@ Session --> SessionStatus
 
 ---
 
-## Activity Diagram (Correction Loop)
+## Activity Diagram (Stage Attempt Loop)
 
 ```plantuml
 @startuml
-title Correction Loop
+title Stage Attempt Loop
 
 start
 :Coder writes stage output;

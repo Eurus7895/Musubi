@@ -33,10 +33,14 @@ def _text(s: str) -> LMResponse:
 
 
 def _spawns(n: int, role: str = "explorer") -> LMResponse:
+    selected_skill = {"coder": "web-ui"}.get(role, role)
     return LMResponse(stop_reason="tool_use", content=[
         {
             "type": "tool_use", "id": f"spawn-{i}", "name": "musubi_spawn_subagent",
-            "input": {"role": role, "brief": f"worker {i}"},
+            "input": {
+                "role": role, "brief": f"worker {i}",
+                "pushed_skill_id": selected_skill,
+            },
         }
         for i in range(n)
     ])

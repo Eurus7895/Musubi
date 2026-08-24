@@ -429,6 +429,7 @@ def test_mcp_spawn_coder_explorer_allowed(mcp_db: Path) -> None:
         parent_agent_name="coder",
         role="explorer",
         brief="find callers of FooClass",
+        pushed_skill_id="explorer",
     )
     payload = json.loads(raw)
     assert payload["status"] == "spawned", payload
@@ -440,6 +441,7 @@ def test_mcp_spawn_unknown_parent_rejected(mcp_db: Path) -> None:
         parent_agent_name="agent",
         role="explorer",
         brief="x",
+        pushed_skill_id="explorer",
     )
     payload = json.loads(raw)
     assert payload["status"] == "error"
@@ -453,6 +455,7 @@ def test_mcp_spawn_intersection_with_caller_tools(mcp_db: Path) -> None:
         parent_agent_name="agent",
         role="investigator",
         brief="run pytest",
+        pushed_skill_id="investigator",
         allowed_tools=["Read", "Bash"],  # narrower than role default
     )
     payload = json.loads(raw)
@@ -483,6 +486,7 @@ def test_mcp_spawn_then_complete_then_await_returns_summary(
         parent_agent_name="agent",
         role="explorer",
         brief="scan src/",
+        pushed_skill_id="explorer",
     )
     spawn = json.loads(spawn_raw)
     h = spawn["handle_id"]
@@ -523,6 +527,7 @@ def test_mcp_await_pending_returns_snapshot_after_max_wait(
             parent_agent_name="agent",
             role="explorer",
             brief="x",
+            pushed_skill_id="explorer",
             wall_clock_timeout_s=300,
         )
     )
@@ -544,6 +549,7 @@ def test_mcp_await_wall_clock_kill_escalates(
             parent_agent_name="agent",
             role="explorer",
             brief="x",
+            pushed_skill_id="explorer",
             wall_clock_timeout_s=1,
         )
     )
@@ -569,8 +575,9 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
         server.musubi_spawn_subagent(
             parent_session_id=parent,
             parent_agent_name="agent",
-            role="explorer",
-            brief="x",
+            role="coder",
+            brief="write dashboard",
+            pushed_skill_id="web-ui",
             max_turns=3,
         )
     )
@@ -585,6 +592,36 @@ def test_mcp_complete_max_turns_kill(mcp_db: Path) -> None:
     assert payload["escalated"] is True
 
 
+def test_mcp_complete_readonly_max_turns_with_verified_summary_stays_done(
+    mcp_db: Path,
+) -> None:
+    parent = state.create_session("p")
+    spawn = json.loads(server.musubi_spawn_subagent(
+        parent_session_id=parent,
+        parent_agent_name="agent",
+        role="explorer",
+        brief="scan src/",
+        pushed_skill_id="explorer",
+        max_turns=3,
+    ))
+
+    raw = server.musubi_complete_subagent(
+        handle_id=spawn["handle_id"],
+        summary="Found the only dispatch call in src/agent/run.py.",
+        turns=3,
+        status="done",
+    )
+    payload = json.loads(raw)
+
+    assert payload["final_status"] == "done"
+    assert payload["escalated"] is False
+    assert payload["turn_cap_accepted"] is True
+    assert payload["turn_cap_acceptance"] == "verified_readonly_response"
+    row = _db.get_sub_session(spawn["handle_id"], mcp_db)
+    assert row is not None
+    assert row["turn_cap_accepted"] is True
+
+
 def _spawn_coder_at_cap(max_turns: int = 3) -> str:
     parent = state.create_session("p")
     spawn = json.loads(
@@ -593,6 +630,7 @@ def _spawn_coder_at_cap(max_turns: int = 3) -> str:
             parent_agent_name="agent",
             role="coder",
             brief="write dashboard",
+            pushed_skill_id="web-ui",
             max_turns=max_turns,
         )
     )
@@ -680,6 +718,7 @@ def test_mcp_complete_wall_clock_never_waived_by_artifacts(
             parent_agent_name="agent",
             role="coder",
             brief="x",
+            pushed_skill_id="web-ui",
             max_turns=3,
             wall_clock_timeout_s=1,
         )

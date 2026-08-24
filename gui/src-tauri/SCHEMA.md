@@ -126,6 +126,24 @@ an Orchestrator chat ID.
 |---|---|
 | `active_profile` | explicit console override for the active LMRouter profile |
 
+### Sibling `musubi.db` stage evidence
+
+The desktop opens the state database beside `audit.db` read-only. Three tables
+extend request-wide evidence without changing agent attribution:
+
+- `stage_outputs` supplies one append-only attempt summary: phase, frozen
+  contract/hash, selected skill id/version/hash, worker handle, artifacts, and
+  the terminal gate result.
+- `stage_attempt_events` supplies chronological preflight, worker, gate,
+  retry, exhaustion, and escalation events.
+- `audit_obligations` exposes the durable HI #8 spawn outbox. A pending row is
+  visible on the request overview/log; it never makes an abandoned worker
+  runnable.
+
+Request Log merges those harness-owned rows with host/root/worker evidence.
+Agent Log remains an exact worker-handle filter, so a gate or pending outbox
+row is never presented as if the selected worker emitted it.
+
 ## Active profile resolution
 
 The **Models** view / trust strip show the active profile resolved as: an
@@ -139,7 +157,8 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 | UI surface | source |
 |---|---|
 | Orchestrator runtime graph | selected root turn, `subagent_audit`, and Orchestrator-scoped pipeline envelopes/stages |
-| Orchestrator runtime logs | `agent_cycles`, safe `toolEvidence`, policy rows, and lifecycle evidence filtered by selected node |
+| Orchestrator Request Log | host/root/worker runtime rows plus `stage_attempt_events` and pending `audit_obligations` for exactly one request |
+| Orchestrator Agent Log | the same evidence ledger filtered to one exact worker handle; harness gate/outbox rows are excluded |
 | Orchestrator skill provenance | successful `musubi_get_skill` rows only, with sanitized identifiers and exact worker correlation only when `(session, role)` is unambiguous |
 | Policy stream + allow/deny tallies | `policy_audit` if it has rows, else `tool_audit` |
 | Audit ledger | `subagent_audit` (newest first, capped 120) |
@@ -153,7 +172,8 @@ via `MUSUBI_LLM_CONFIG` or by walking up from `$MUSUBI_DB`) → else
 
 `load_state()` serialises to camelCase JSON matching the frontend domain state:
 `subagents[]`, `policy[]`, `audit[]`, `chat[]`, `agentCycles[]`,
-`toolEvidence[]`, `pipelineRuns[]`, `pipelineBuilderCatalog`, `totalSpawned`,
+`toolEvidence[]`, `stageAttempts[]`, `stageAttemptEvents[]`,
+`auditObligations[]`, `pipelineRuns[]`, `pipelineBuilderCatalog`, `totalSpawned`,
 `totalDone`, `allowCount`, `denyCount`, and `activeProfile`. The frontend
 derives runtime graph and log presentation from these domain fields. Raw tool
 arguments and results never cross this boundary; ambiguous tool evidence is

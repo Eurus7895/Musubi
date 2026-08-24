@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,48 @@ def _musubi_dir() -> Path:
 
 def _text(s: str) -> LMResponse:
     return LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": s}])
+
+
+def _preflight_response(messages: list[dict[str, Any]]) -> LMResponse | None:
+    if not (
+        messages
+        and isinstance(messages[0].get("content"), str)
+        and "STAGE PREFLIGHT" in messages[0]["content"]
+    ):
+        return None
+    payload = next(
+        json.loads(message["content"])
+        for message in messages
+        if message.get("role") == "user"
+        and isinstance(message.get("content"), str)
+        and "\"role\"" in message["content"]
+    )
+    role = payload["role"]
+    skill = {
+        "planner": "request-triage", "designer": "api-design",
+        "coder": "python", "reviewer": "code-review",
+        "scoper": "pr-scope-detection", "finder": "per-file-review",
+        "synthesizer": "code-review",
+    }[role]
+    exit_when = []
+    if role == "coder":
+        root = Path(os.environ.get("MUSUBI_ROOT") or _musubi_dir().parent)
+        candidate = next((path for path in root.rglob("*") if path.is_file()), None)
+        relative = (
+            candidate.relative_to(root).as_posix() if candidate else "README.md"
+        )
+        exit_when = [{
+            "type": "file_exists", "root": "musubi", "path": relative,
+        }]
+    if payload.get("frozen_contract_hash"):
+        return _text(json.dumps({
+            "skill_id": skill,
+            "contract_hash": payload["frozen_contract_hash"],
+        }))
+    return _text(json.dumps({
+        "skill_id": skill, "goal": "complete the bounded stage",
+        "exit_when": exit_when,
+    }))
 
 
 def _spawn_pipeline(name: str, brief: str) -> LMResponse:
@@ -61,6 +104,9 @@ class PipelineRouter(LMRouter):
         self.reviewer_brief: str = ""
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        preflight = _preflight_response(messages)
+        if preflight is not None:
+            return preflight
         brief = _brief_text(messages)
         if brief is None:
             if _has_tool_result(messages):
@@ -69,17 +115,19 @@ class PipelineRouter(LMRouter):
         if "Evaluate the output of the prior stage" in brief:
             self.reviewer_brief = brief
             self.order.append("reviewer")
-            return _text("review: PASS")
-        # Generator stages are told apart by how many prior summaries they see.
-        n_prior = brief.count("### ")
-        if n_prior == 0:
-            self.order.append("planner")
-            return _text("plan: step1, step2")
-        if n_prior == 1:
-            self.order.append("designer")
-            return _text("design: moduleX")
-        self.order.append("coder")
-        return _text("code: wrote moduleX")
+            return _text(json.dumps({
+                "status": "pass", "summary": "review: PASS", "verdict": "pass",
+            }))
+        # Each non-evaluator stage receives only its immediate predecessor.
+        # The canned router therefore tracks the declared stage order rather
+        # than inferring a role from a cumulative handoff.
+        generator_role = ("planner", "designer", "coder")[len(self.order)]
+        self.order.append(generator_role)
+        return _text({
+            "planner": "plan: step1, step2",
+            "designer": "design: moduleX",
+            "coder": "code: wrote moduleX",
+        }[generator_role])
 
 
 def test_agent_summons_pipeline_runs_stages_in_order_with_evaluator_firewall() -> None:
@@ -120,6 +168,292 @@ def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
     assert "ship it" not in router.reviewer_brief
     assert "plan: step1" not in router.reviewer_brief
     assert "design: moduleX" not in router.reviewer_brief
+
+
+def test_middle_stage_brief_uses_only_immediate_predecessor() -> None:
+    from agent.pipeline_runner import _stage_brief
+
+    brief = _stage_brief("request", "### design\nlatest", 2, 4)
+
+    assert "latest" in brief
+    assert "### plan" not in brief
+
+
+def test_pipeline_stage_with_a_blank_answer_is_not_recorded_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reported failure: a planner cut off mid-thought returned `""`. The
+    runner's `answer is not None` test called that `done`, the harness then
+    refused its read-only turn-cap waiver because the summary was empty, and
+    the run died two layers away with no trace of the real cause."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-blank",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "design", "role": "designer"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": args["stage"], "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "   ", 4
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert completions[0]["status"] == "escalated"
+    # The summary the harness stores must name the cause, not be blank.
+    assert "empty result" in completions[0]["summary"]
+    assert "terminal status" in result
+
+
+def test_pipeline_stage_blocked_by_text_truncation_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`output_too_large_for_single_response` is the text-channel twin of the
+    tool-call truncation marker; the stage must treat both as no result."""
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    blocked = "[blocked] " + json.dumps({
+        "status": "blocked",
+        "reason": "output_too_large_for_single_response",
+    })
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-trunc",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-plan",
+                "role": "plan", "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return blocked, 2
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert completions[0]["status"] == "failed"
+    assert result.startswith("[blocked] ")
+
+
+def test_pipeline_rejects_oversized_designer_handoff_before_coder_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+    from agent.pipeline_runner import MAX_STAGE_HANDOFF_CHARS
+
+    completions: list[dict[str, Any]] = []
+    invoked_roles: list[str] = []
+    outputs = iter(["plan: compact", "x" * (MAX_STAGE_HANDOFF_CHARS + 1)])
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-handoff",
+                "pipeline_name": "feature-dev", "plan": [
+                    {"stage": "plan", "role": "planner"},
+                    {"stage": "design", "role": "designer"},
+                    {"stage": "code", "role": "coder"},
+                ],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": f"h-{args['stage']}",
+                "role": args["stage"], "allowed_tools": [],
+                "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        invoked_roles.append(kwargs["role"])
+        return next(outputs), 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "handoff exceeds" in result
+    assert invoked_roles == ["planner", "designer"]
+    assert completions[-1]["handle_id"] == "h-design"
+    assert completions[-1]["status"] == "failed"
+
+
+def test_pipeline_rejects_unfit_protected_input_before_worker_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent import pipeline_runner
+
+    completions: list[dict[str, Any]] = []
+    run_unit_calls: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-unfit",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b",
+                "role_skill": "x" * 40_000, "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            completions.append(args)
+            return json.dumps({"status": "ok", "final_status": args["status"]})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        run_unit_calls.append(kwargs)
+        return "unexpected", 1
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "protected input exceeds" in result
+    assert run_unit_calls == []
+    assert completions[-1]["status"] == "failed"
+
+
+def test_context_failure_terminalizes_worker_running_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Any post-spawn failure closes the stage attempt before aborting."""
+    from agent import pipeline_runner
+    from storage import db
+
+    state_path = tmp_path / "state.db"
+    db.init_db(state_path)
+    db.insert_session(
+        "pipe-context-fail", "build dashboard", "2026-08-02T00:00:00+00:00",
+        state_path,
+    )
+    db.insert_stage("pipe-context-fail", "code", 1, state_path)
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-context-fail",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "code", "role": "coder"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-code", "role": "coder",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({"status": "error", "error": "context unavailable"})
+        if name == "musubi_complete_subagent":
+            return json.dumps({"status": "recorded", "final_status": "failed"})
+        if name == "musubi_finalize_pipeline_run":
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "build dashboard"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+        compression_db_path=state_path,
+    ))
+
+    assert "context fetch failed" in result
+    row = db.get_stage_row("pipe-context-fail", "code", 1, state_path)
+    assert row is not None and row["phase"] == "escalated"
+    events = db.get_stage_attempt_events(
+        db.StageAttemptIdentity("pipe-context-fail", "code", 1),
+        db_path=state_path,
+    )
+    assert events[-1]["event"] == "context_fetch_failed"
 
 
 def test_run_pipeline_strict_raises_on_spawn_rejection(
@@ -170,7 +504,7 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -218,6 +552,67 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
     }]
 
 
+def test_pipeline_stops_when_harness_records_stage_escalated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner may not advance just because run_unit returned text.
+
+    The substrate owns terminal lifecycle status and can coerce a completion
+    at its turn cap. A stage with that final status must never reach a later
+    gate or finalise the pipeline as success.
+    """
+    from agent import pipeline_runner
+
+    finalizations: list[dict[str, Any]] = []
+
+    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
+        if name == "musubi_spawn_pipeline":
+            return json.dumps({
+                "status": "spawned", "pipeline_session_id": "pipe-final-status",
+                "pipeline_name": "feature-dev",
+                "plan": [{"stage": "plan", "role": "planner"}],
+            })
+        if name == "musubi_spawn_pipeline_stage":
+            return json.dumps({
+                "status": "spawned", "handle_id": "h-plan", "role": "planner",
+                "allowed_tools": [], "max_turns": args["max_turns"],
+            })
+        if name == "musubi_get_subagent_context":
+            return json.dumps({
+                "status": "ok", "brief": "b", "role_skill": None,
+                "allowed_tools": [],
+            })
+        if name == "musubi_complete_subagent":
+            return json.dumps({
+                "status": "recorded", "handle_id": "h-plan",
+                "final_status": "escalated", "escalated": True,
+            })
+        if name == "musubi_finalize_pipeline_run":
+            finalizations.append(args)
+            return json.dumps({"status": "ok"})
+        raise AssertionError(name)
+
+    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        return "plan: stage claims success", 4
+
+    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
+
+    result = asyncio.run(pipeline_runner.run_pipeline(
+        None,
+        {"parent_session_id": "outer", "parent_agent_name": "agent",
+         "pipeline_name": "feature-dev", "brief": "ship it"},
+        PipelineRouter(), [], io.StringIO(), strict=False,
+    ))
+
+    assert "harness recorded terminal status escalated" in result
+    assert finalizations == [{
+        "session_id": "pipe-final-status",
+        "final_status": "escalated",
+        "escalated": True,
+    }]
+
+
 def test_run_pipeline_finalizes_aborted_stage_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,7 +629,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -337,10 +732,10 @@ def test_run_pipeline_runtime_policy_denial_aborts_before_later_stage(
                 "status": "spawned", "pipeline_session_id": "pipe-runtime-policy",
                 "pipeline_name": "feature-dev", "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
-        if name == "musubi_recommend_skills":
+        if name == "musubi_list_skills":
             return json.dumps({"recommended": []})
         if name == "musubi_spawn_pipeline_stage":
             stage_attempts.append(args["stage"])
@@ -450,7 +845,7 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "plan", "role": "planner"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -471,6 +866,10 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
 
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         captured_prompts.append(kwargs["system_prompt"])
+        if kwargs["role"] == "reviewer":
+            return json.dumps({
+                "status": "pass", "summary": "stage done", "verdict": "pass",
+            }), 1
         return "stage done", 1
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
@@ -487,58 +886,6 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
     for prompt in captured_prompts:
         assert "SKILL-CONTENT-XYZ" in prompt, "role_skill not pushed into stage prompt"
         assert "## Skill (pushed by harness)" in prompt
-
-
-def test_runner_recommends_and_pushes_a_skill_per_stage(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Option 3 for pipelines: the runner asks the deterministic recommender
-    for a per-stage skill (for_role = stage role) and threads the top pick as
-    pushed_skill_id on the stage spawn."""
-    from agent import pipeline_runner
-
-    pushed: dict[str, str | None] = {}
-
-    async def fake_call(session: Any, name: str, args: dict[str, Any]) -> str:
-        if name == "musubi_spawn_pipeline":
-            return json.dumps({
-                "status": "spawned", "pipeline_session_id": "pipe-rec",
-                "pipeline_name": "feature-dev",
-                "plan": [{"stage": "code", "role": "coder"}],
-            })
-        if name == "musubi_recommend_skills":
-            # The runner asks for the stage role's skills.
-            assert args["for_role"] == "coder"
-            return json.dumps({"recommended": [{"skill_id": "web-ui"}]})
-        if name == "musubi_spawn_pipeline_stage":
-            pushed[args["stage"]] = args.get("pushed_skill_id")
-            return json.dumps({
-                "status": "spawned", "handle_id": "h-code", "role": "coder",
-                "allowed_tools": [],
-            })
-        if name == "musubi_get_subagent_context":
-            return json.dumps({
-                "status": "ok", "brief": "b", "role": "coder",
-                "role_skill": None, "allowed_tools": [],
-            })
-        if name in ("musubi_complete_subagent", "musubi_finalize_pipeline_run"):
-            return json.dumps({"status": "ok"})
-        raise AssertionError(name)
-
-    async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
-        return "stage done", 1
-
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
-    monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
-
-    asyncio.run(pipeline_runner.run_pipeline(
-        None,
-        {"parent_session_id": "outer", "parent_agent_name": "agent",
-         "pipeline_name": "feature-dev", "brief": "create a dashboard"},
-        PipelineRouter(), [], io.StringIO(), strict=True,
-    ))
-
-    assert pushed == {"code": "web-ui"}
 
 
 def test_pipeline_stage_threads_frontmatter_output_budget(
@@ -737,6 +1084,9 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
         model = "truncated-1"
 
         def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001, ARG002
+            preflight = _preflight_response(messages)
+            if preflight is not None:
+                return preflight
             return LMResponse(stop_reason="max_tokens", content=[{
                 "type": "tool_use", "id": "partial-write",
                 "name": "musubi_write_file",
@@ -803,9 +1153,19 @@ def test_resolve_pipeline_worker_spec_reads_maxturns_and_budget(tmp_path: Path) 
     spec = resolve_pipeline_worker_spec("planner", "feature-dev", agents_dir)
     assert spec.role == "planner"
     assert spec.max_cycles == 4
-    assert spec.context_budget_chars == PIPELINE_CONTEXT_BUDGET == 16_000
+    assert spec.context_budget_chars == PIPELINE_CONTEXT_BUDGET == 32_000
     assert "compact implementation plan" in spec.prompt
     assert spec.worker_max_output is None
+
+
+def test_pipeline_context_budget_reserves_output_and_transport() -> None:
+    from agent.pipeline_runner import resolve_pipeline_context_budget_chars
+
+    router = PipelineRouter()
+    router.context_window_tokens = 12_000
+    router.max_output_tokens = 4_000
+
+    assert resolve_pipeline_context_budget_chars(router, None, False) == 22_320
 
 
 def test_resolve_pipeline_worker_spec_defaults_absent_maxturns(tmp_path: Path) -> None:
@@ -997,6 +1357,7 @@ def test_pipeline_readonly_stage_at_cap_sends_no_manifest(
     """A stage that mutated nothing has no verifiable claim — fail-closed,
     the substrate's turn-cap coercion stands for it."""
     monkeypatch.setenv("MUSUBI_ROOT", str(tmp_path))
+    (tmp_path / "existing.txt").write_text("fixture", encoding="utf-8")
     completions: list[dict[str, Any]] = []
     _single_coder_stage_fakes(
         monkeypatch, completions,
@@ -1026,7 +1387,7 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "code", "role": "coder"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -1057,8 +1418,8 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
         lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
     )
 
-    # A 1-token run budget: the first stage's preflight halts before any model
-    # call, so run_unit raises TokenBudgetExhaustedError.
+    # A 1-token run budget: the first stage's accounted preflight exhausts the
+    # shared budget before a worker handle is opened.
     parent = TokenBudgetEnforcer(1)
 
     with pytest.raises(TokenBudgetExhaustedError):
@@ -1069,11 +1430,9 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
             PipelineRouter(), [], io.StringIO(), strict=True, budget=parent,
         ))
 
-    # Only the first stage was reached. Its evidence stays escalated, while the
-    # pipeline remains paused rather than losing its resumable checkpoint.
-    assert len(completions) == 1
-    assert completions[0]["handle_id"] == "h-code"
-    assert completions[0]["status"] == "escalated"
+    # No worker exists to complete. The pipeline remains paused rather than
+    # losing its resumable checkpoint.
+    assert completions == []
     assert pauses == [{
         "session_id": "pipe-broke",
         "stage": "code",
@@ -1101,7 +1460,7 @@ def _nesting_fakes(
                 "pipeline_name": "feature-dev",
                 "plan": [
                     {"stage": "code", "role": "coder"},
-                    {"stage": "check", "role": "reviewer"},
+                    {"stage": "review", "role": "reviewer"},
                 ],
             })
         if name == "musubi_spawn_pipeline_stage":
@@ -1126,6 +1485,10 @@ def _nesting_fakes(
 
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         captured.append({"tools": args[2], **kwargs})
+        if kwargs["role"] == "reviewer":
+            return json.dumps({
+                "status": "pass", "summary": "stage done", "verdict": "pass",
+            }), 1
         return "stage done", 1
 
     monkeypatch.setattr("agent.run._call_tool_text", fake_call)
@@ -1161,7 +1524,7 @@ def test_stage_with_spawn_roles_gets_spawn_tool_and_stage_orchestration(
     caller."""
     from agent.run import Orchestration
 
-    captured = _nesting_fakes(monkeypatch, {"code": ["explorer"], "check": []})
+    captured = _nesting_fakes(monkeypatch, {"code": ["explorer"], "review": []})
     _run(Orchestration(parent_session_id="root-sid"), captured)
 
     coder, reviewer = captured
@@ -1187,7 +1550,7 @@ def test_stage_without_spawn_roles_field_stays_leaf(
     strict leaves — fail-closed compatibility."""
     from agent.run import Orchestration
 
-    captured = _nesting_fakes(monkeypatch, {"code": None, "check": None})
+    captured = _nesting_fakes(monkeypatch, {"code": None, "review": None})
     _run(Orchestration(parent_session_id="root-sid"), captured)
 
     for stage in captured:
@@ -1206,7 +1569,7 @@ def test_stage_leaf_when_caller_out_of_depth(
     from agent.run import Orchestration
 
     captured = _nesting_fakes(
-        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+        monkeypatch, {"code": ["explorer"], "review": ["reviewer-aux"]},
     )
     _run(
         Orchestration(parent_session_id="root-sid", depth=2, max_depth=2),
@@ -1223,7 +1586,7 @@ def test_run_pipeline_without_orchestration_keeps_leaves(
     """Default orchestration=None keeps every stage a strict leaf even when
     the server advertises spawn_roles — existing callers are unaffected."""
     captured = _nesting_fakes(
-        monkeypatch, {"code": ["explorer"], "check": ["reviewer-aux"]},
+        monkeypatch, {"code": ["explorer"], "review": ["reviewer-aux"]},
     )
     _run(None, captured)
 
@@ -1248,6 +1611,9 @@ class NestingRouter(LMRouter):
         self.tool_surfaces: list[set[str]] = []
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
+        preflight = _preflight_response(messages)
+        if preflight is not None:
+            return preflight
         self.tool_surfaces.append({t["name"] for t in tools})
         if not self._responses:
             raise AssertionError("NestingRouter ran out of canned responses")
@@ -1257,7 +1623,7 @@ class NestingRouter(LMRouter):
 def _spawn_worker(role: str, brief: str) -> LMResponse:
     return LMResponse(stop_reason="tool_use", content=[{
         "type": "tool_use", "id": "sp-1", "name": "musubi_spawn_subagent",
-        "input": {"role": role, "brief": brief},
+        "input": {"role": role, "brief": brief, "pushed_skill_id": role},
     }])
 
 
@@ -1272,7 +1638,7 @@ def test_pipeline_stage_spawns_declared_worker_end_to_end() -> None:
         _text("code: wrote moduleX"),               # coder stage
         _spawn_worker("reviewer-aux", "check moduleX"),  # reviewer stage c0
         _text("aux: file verdict OK"),              # reviewer-aux child
-        _text("review: PASS"),                      # reviewer stage c1
+        _text(json.dumps({"status": "pass", "summary": "review: PASS", "verdict": "pass"})),
     ])
     answer = asyncio.run(run_agent(
         "ship it", router, _musubi_dir(), log=io.StringIO(),
@@ -1315,12 +1681,12 @@ def test_spawn_pipeline_stage_returns_effective_spawn_roles(
 
     code = json.loads(server.musubi_spawn_pipeline_stage(
         pipeline_session_id=psid, pipeline_name="feature-dev",
-        stage="code", brief="b",
+        stage="code", brief="b", pushed_skill_id="web-ui",
     ))
     assert code["spawn_roles"] == ["explorer", "investigator"]
 
     plan = json.loads(server.musubi_spawn_pipeline_stage(
         pipeline_session_id=psid, pipeline_name="feature-dev",
-        stage="plan", brief="b",
+        stage="plan", brief="b", pushed_skill_id="request-triage",
     ))
     assert plan["spawn_roles"] == []

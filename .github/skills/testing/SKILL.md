@@ -1,5 +1,6 @@
 ---
 name: testing
+version: 1.0.0
 description: pytest-based testing procedures for harness components — unit, integration, and correction loop tests. Use when the user is writing tests, fixtures, mocks, or asking about pytest or coverage.
 applies-to:
   languages: [python]
@@ -42,7 +43,7 @@ tests/
     test_state.py          ← mirrors musubi/state.py
     test_context_builder.py
     test_verifier.py
-    test_correction_loop.py
+    test_stage_loop.py
     test_executor.py
 ```
 

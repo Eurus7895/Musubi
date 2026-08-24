@@ -1,6 +1,8 @@
 """Tests for skill access control — allowlist + dynamic injection from plan.required_skills."""
 
 import json
+import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,32 @@ import server
 from skills import skill_loader
 from session import state
 from validation.context_builder import AGENT_SKILL_ALLOWLIST, check_skill_permission
+
+
+def test_skill_catalog_exposes_exact_version_and_content_hash(
+    tmp_path: Path,
+) -> None:
+    """An unknown frontmatter key is ignored rather than fatal: the catalog
+    must keep listing a skill whose file carries a field this version does not
+    know about — including `completion-contract`, which used to live here."""
+    skill_dir = tmp_path / "web-ui"
+    skill_dir.mkdir()
+    body = """---
+name: web-ui
+version: 2.1.0
+description: Build web interfaces.
+completion-contract:
+  required-output-fields: [summary, files_modified]
+---
+# Web UI
+"""
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+    meta = skill_loader.list_skills(tmp_path)[0]
+
+    assert meta.version == "2.1.0"
+    assert meta.content_hash == "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+    assert meta.description == "Build web interfaces."
 
 
 # ── check_skill_permission ────────────────────────────────────────────────────
@@ -48,11 +76,6 @@ def test_designer_cannot_load_testing() -> None:
 def test_planner_has_empty_allowlist() -> None:
     for skill in ["python", "api-design", "code-review", "testing"]:
         assert check_skill_permission("planner", skill) is False
-
-
-def test_skill_builder_has_empty_allowlist() -> None:
-    for skill in ["python", "api-design"]:
-        assert check_skill_permission("skill-builder", skill) is False
 
 
 def test_unknown_agent_denied() -> None:
@@ -168,20 +191,20 @@ def test_required_skill_not_in_allowlist_is_blocked(monkeypatch: pytest.MonkeyPa
     assert "devops" not in result.get("injected_skills", {})
 
 
-def test_static_map_skill_injected_alongside_required(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Static map floor is kept; required_skills adds on top."""
+def test_required_skill_is_not_augmented_by_harness_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The harness injects the declared skill without choosing another."""
     _patch_server(monkeypatch, {"required_skills": ["testing"]})
     result = json.loads(server.musubi_read_stage("sess3", "design", "coder"))
     injected = result.get("injected_skills", {})
-    assert "python" in injected    # static map for (design, coder)
-    assert "testing" in injected   # added via required_skills
+    assert "python" not in injected
+    assert "testing" in injected
 
 
-def test_no_required_skills_falls_back_to_static_map(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without required_skills only static map skills are injected."""
+def test_no_required_skills_does_not_invent_a_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without an explicit selection the harness injects no skill."""
     _patch_server(monkeypatch)  # no required_skills
     result = json.loads(server.musubi_read_stage("sess4", "design", "coder"))
-    assert "python" in result.get("injected_skills", {})
+    assert result.get("injected_skills", {}) == {}
 
 
 # ── reviewer evaluator firewall: no memory, no dynamic skill injection ───────
@@ -211,11 +234,11 @@ def test_reviewer_no_memory_injection(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "memory" not in result
 
 
-def test_reviewer_still_gets_code_review_skill(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Static-map injection remains: reviewer reading code still gets code-review skill."""
+def test_reviewer_read_does_not_choose_code_review_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading a stage is not a model skill-selection boundary."""
     _patch_server_with_memory(monkeypatch)
     result = json.loads(server.musubi_read_stage("sess-rv2", "code", "reviewer"))
-    assert "code-review" in result.get("injected_skills", {})
+    assert result.get("injected_skills", {}) == {}
 
 
 def test_reviewer_no_required_skills_dynamic_injection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,8 +246,8 @@ def test_reviewer_no_required_skills_dynamic_injection(monkeypatch: pytest.Monke
     _patch_server_with_memory(monkeypatch, {"required_skills": ["testing"]})
     result = json.loads(server.musubi_read_stage("sess-rv3", "code", "reviewer"))
     injected = result.get("injected_skills", {})
-    assert "code-review" in injected       # static map still fires
-    assert "testing" not in injected       # dynamic injection blocked for reviewer
+    assert "code-review" not in injected
+    assert "testing" not in injected
 
 
 def test_coder_still_gets_memory_injection(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,6 +331,6 @@ def test_pipeline_read_stage_unchanged_for_coder(monkeypatch: pytest.MonkeyPatch
     _patch_server(monkeypatch, {"required_skills": ["testing"]})
     result = json.loads(server.musubi_read_stage("sess-reg", "design", "coder"))
     assert "skills_catalog" not in result
-    # Static-map + required_skills injection still works as before.
-    assert "python" in result.get("injected_skills", {})
+    # Only the explicitly declared required skill is pushed.
+    assert "python" not in result.get("injected_skills", {})
     assert "testing" in result.get("injected_skills", {})

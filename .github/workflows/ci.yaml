@@ -72,7 +72,8 @@ jobs:
       - name: Lint — musubi-tier tags (MVP item 7 / HI #9)
         # Every in-scope file (substrate code, agent.md, SKILL.md,
         # pipeline.yaml) must declare `musubi-tier:`. Ephemeral files
-        # must also declare `expires-when:` + `cost-lever:`.
+        # must also declare `expires-when:` + `cost-lever:`. Substrate files
+        # must explicitly declare `expires-when: never`.
         # Hard-fail: this is the self-enforcement mechanism for HI #9.
         # Run from repo root, not the harness working-directory.
         working-directory: ${{ github.workspace }}
@@ -97,7 +98,10 @@ jobs:
         # `--tb=short` keeps tracebacks scannable in the GH Actions log
         # viewer; `-x` stops on first failure so the relevant traceback
         # isn't buried under hundreds of dots.
-        run: pytest tests/ -v --tb=short -x --deselect tests/test_executor.py::test_run_tests_passing_suite
+        # test_musubi_tier imports the repository-root scripts package, so run
+        # the suite from the repository root just like local full-suite validation.
+        working-directory: ${{ github.workspace }}
+        run: python -m pytest musubi/tests/ -v --tb=short -x --deselect musubi/tests/test_executor.py::test_run_tests_passing_suite
 
   # ────────────────────────────────────────────────────────────────────
   # Rust console core — gui/src-tauri/musubi-data/

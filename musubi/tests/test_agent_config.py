@@ -15,6 +15,7 @@ from agent.config import (
     find_config_path,
     load_profile,
     resolve_api_key,
+    resolve_model_context_window,
     resolve_model_output_override,
     resolve_proxy_user,
 )
@@ -128,6 +129,12 @@ def test_resolve_model_output_override_returns_none_when_absent_or_invalid() -> 
     assert resolve_model_output_override({"model": "x"}) is None
     assert resolve_model_output_override({"max_output_tokens": 0}) is None
     assert resolve_model_output_override({"max_output_tokens": "8192"}) is None
+
+
+def test_resolve_model_context_window_accepts_only_positive_ints() -> None:
+    assert resolve_model_context_window({"context_window_tokens": 32768}) == 32768
+    assert resolve_model_context_window({"context_window_tokens": 0}) is None
+    assert resolve_model_context_window({"context_window_tokens": "32768"}) is None
 
 
 def test_resolve_proxy_user_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

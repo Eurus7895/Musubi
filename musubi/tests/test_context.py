@@ -32,7 +32,7 @@ def test_system_prompt_carries_terse_instruction() -> None:
 def test_system_prompt_mentions_skill_recommendations() -> None:
     prompt = build_system_prompt()
 
-    assert "musubi_recommend_skills" in prompt
+    assert "musubi_list_skills" in prompt
     # Option 3: the root recommends a skill for a worker and pushes it via the
     # spawn, rather than reading skill bodies into its own context.
     assert "pushed_skill_id" in prompt
@@ -95,6 +95,40 @@ def test_read_only_effort_keeps_floor_and_shared_ceiling(monkeypatch) -> None:  
         worker_max_output=None,
         model_output_override=None,
     ) == (DEFAULT_EFFORT_FLOOR, DEFAULT_EFFORT_CEILING)
+
+
+def test_read_only_worker_output_budget_at_the_floor_disables_escalation() -> None:
+    """Pins the trap that broke the `plan` stage: declaring a read-only role's
+    `maxOutputTokens` at (or below) the effort floor collapses floor onto
+    ceiling, and `_call_with_effort` only retries while `floor < ceiling`. The
+    role then gets ONE shot at its output cap with no rescue."""
+    floor, ceiling = resolve_effort_bounds(
+        can_mutate=False,
+        worker_max_output=DEFAULT_EFFORT_FLOOR,
+        model_output_override=None,
+    )
+    assert floor == ceiling  # documents the collapse, not an endorsement
+
+
+def test_shipped_planning_roles_keep_room_above_the_effort_floor() -> None:
+    """`planner` and `designer` must stay escalatable. Their handoff size is
+    bounded deterministically by `MAX_STAGE_HANDOFF_CHARS` in the pipeline
+    runner; using `maxOutputTokens` as a second, cruder proxy for the same
+    limit leaves a reasoning model no tokens for the visible answer."""
+    from pathlib import Path
+
+    from agent.subagent import _frontmatter_max_output_tokens
+
+    root = Path(__file__).resolve().parents[2] / ".github" / "agents" / "workers"
+    for role in ("planner", "designer"):
+        declared = _frontmatter_max_output_tokens(
+            (root / f"{role}.agent.md").read_text(encoding="utf-8")
+        )
+        assert declared is not None, f"{role} must declare maxOutputTokens"
+        assert declared > DEFAULT_EFFORT_FLOOR, (
+            f"{role} maxOutputTokens={declared} is at or below the effort "
+            f"floor ({DEFAULT_EFFORT_FLOOR}); escalation is disabled"
+        )
 
 
 def test_worker_output_budget_overrides_shared_ceiling() -> None:

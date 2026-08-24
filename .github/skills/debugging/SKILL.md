@@ -1,5 +1,6 @@
 ---
 name: debugging
+version: 1.0.0
 description: Systematic root-cause diagnosis for failing code — reproduce, isolate, instrument, then fix once with evidence. Use when the user reports a bug, crash, traceback, regression, or flaky test, or asks why something fails.
 musubi-tier: substrate
 expires-when: never (skills are the catalog the model pulls from)

@@ -87,12 +87,15 @@ from agent.budget import (
 )
 from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
 from agent.boundary import (
+    ROOT_ROLE,
+    PolicyDecision,
     denied_tool_guidance,
     evaluate_tool_call,
     evaluate_argument_policy,
     is_musubi_tool,
     json_args,
     record_policy_decision,
+    normalize_role,
     record_tool_audit,
 )
 from agent.mcp_gateway import (
@@ -102,7 +105,12 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
-from agent.manifest import parse_change_manifest_object
+from agent.manifest import (
+    ROOT_PLAN_CHANGE_SIZES,
+    ROOT_PLAN_WORKER_ROLES,
+    manifest_schema,
+    parse_change_manifest_object,
+)
 from agent.evidence import collect as collect_evidence
 from agent.planning_artifacts import (
     goal_artifact_key,
@@ -139,14 +147,14 @@ DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 #: this caps that waste while never firing on a run that is actually producing.
 DEFAULT_NO_PROGRESS_BUDGET_RATIO = 0.7
 
-# Injected into the root prompt only when the caller passes --plan. Explicit
-# opt-in replaces the retired regex force (a keyword guess used to refuse the
-# coder and demand a planner at cycle 0); now the user declares plan-first.
+# Injected into the root prompt only when the caller passes --plan. Planning
+# is now the only route to a worker, so this restates the contract rather than
+# forbidding an alternative — the flag is kept so an existing invocation still
+# works and still reads as an explicit instruction.
 _PLAN_FIRST_DIRECTIVE = (
-    "The user explicitly requested Planning mode (--plan). Your first tool "
-    "call must be `musubi_begin_plan`; `musubi_begin_direct` is invalid. Read "
-    "the bounded workspace facts yourself, then commit plan.md, manifest.json, "
-    "change size, and the ordered worker chain with `musubi_commit_plan`."
+    "The user explicitly requested Planning mode (--plan). Read the bounded "
+    "workspace facts yourself, then commit plan.md, manifest.json, change "
+    "size, and the ordered worker chain with `musubi_commit_plan`."
 )
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
@@ -164,6 +172,16 @@ ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
 # worker and any non-spawned call.
 _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
     contextvars.ContextVar("musubi_worker_touched_files", default=None)
+)
+
+# Same sink pattern for the one thing a worker can say ABOUT its own contract
+# rather than about the workspace: that the skill pushed into it does not fit
+# the brief it was given. HI #2 still holds — the push happened, the worker
+# still runs under it, and it cannot swap its own skill. What changes is that
+# the mismatch becomes control flow the parent can read, instead of a fact only
+# the worker knew and had no way to state.
+_worker_skill_reports: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar("musubi_worker_skill_reports", default=None)
 )
 
 # O3 — a short label identifying whose cycle a log line belongs to. `run_subagent`
@@ -245,7 +263,6 @@ class WorkerOutcome:
     #: contract — a direct worker carries no native skill tool, so dropping it
     #: would resume the artifact without the pushed procedure.
     pushed_skill_id: str | None = None
-    recommendation_id: str | None = None
 
 
 def decide_recovery(
@@ -284,7 +301,7 @@ class Orchestration:
     """
 
     parent_session_id: str | None
-    parent_agent_name: str = "agent"
+    parent_agent_name: str = ROOT_ROLE
     depth: int = 0
     max_depth: int = DEFAULT_MAX_DEPTH
     spawned_workers: int = 0
@@ -294,9 +311,6 @@ class Orchestration:
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
     planning_artifact_dir: Path | None = None
-    open_recommendation_id: str | None = None
-    open_recommendation_role: str | None = None
-    open_recommendation_skills: tuple[str, ...] = ()
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -365,7 +379,6 @@ class Orchestration:
         brief: str = "",
         failure_kind: FailureKind | None = None,
         pushed_skill_id: str | None = None,
-        recommendation_id: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -376,7 +389,6 @@ class Orchestration:
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=pushed_skill_id,
-            recommendation_id=recommendation_id,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -565,8 +577,6 @@ async def _auto_recovery_transition(
         }
         if outcome.pushed_skill_id:
             recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
-        if outcome.recommendation_id:
-            recovery_input["recommendation_id"] = outcome.recommendation_id
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
@@ -584,7 +594,7 @@ async def _auto_recovery_transition(
             vendor=vendor, tools=(spawn_catalog or tools),
             orchestration=orchestration, gateway=gateway,
             compression_db_path=compression_db_path,
-            role="agent",
+            role=ROOT_ROLE,
             scope_hint=scope_hint,
             budget=budget,
             stats=stats,
@@ -742,11 +752,18 @@ async def run_agent(
             file=log,
         )
     # What the RECORD establishes, as distinct from what the sentence suggests.
+    # Measured against EVERY root this request was granted, not just the
+    # harness root. `registry` already holds the folders the operator attached
+    # to this session; without it the vector reported each of them as
+    # unreachable and `prompt_block` told the root agent to refuse the folder
+    # the operator had just handed it, one block above the registry listing
+    # that said the opposite.
     evidence = collect_evidence(
         effective_task,
         has_conversation=has_conversation,
         explorer_findings=_has_explorer_findings(goal_state),
         barren_turns=chat_usage["barren_turns"],
+        roots=tuple((grant.alias, grant.path) for grant in registry.grants),
     )
     print(evidence.log_line(), file=log)
     # One fact crosses from observation into enforcement: did the request name
@@ -936,7 +953,7 @@ async def run_agent(
 
                 spawn_args = {
                     "parent_session_id": parent_session_id or planning_key,
-                    "parent_agent_name": "agent",
+                    "parent_agent_name": ROOT_ROLE,
                     "pipeline_name": pipeline,
                     "brief": effective_task,
                 }
@@ -970,14 +987,14 @@ async def run_agent(
                     salvage_on_exhaust=True,
                     compression_db_path=context_compression_db_path,
                     initial_messages=initial_messages,
-                    role="agent",
+                    role=ROOT_ROLE,
                     scope_hint=scope_hint,
                     stats=stats,
                     budget=budget,
                     audit_db_path=audit_db_path,
                     audit_session_id=parent_session_id,
-                    audit_worker_id="root",
-                    audit_stage="agent",
+                    audit_worker_id=ROOT_ROLE,
+                    audit_stage=ROOT_ROLE,
                 )
         except PolicyDeniedError as exc:
             final_answer = _policy_incomplete(exc)
@@ -1076,7 +1093,7 @@ async def _run_loop(
     salvage_on_exhaust: bool = False,
     compression_db_path: Path | None = None,
     context_budget_chars: int | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
@@ -1084,7 +1101,7 @@ async def _run_loop(
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
     audit_session_id: str | None = None,
-    audit_worker_id: str = "root",
+    audit_worker_id: str = ROOT_ROLE,
     audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Drive the reason→act→observe loop. Returns (final_text_or_None, cycles).
@@ -1125,7 +1142,7 @@ async def _run_loop(
         # non-recoverable one halts. No LM call happens in the transition, so
         # it neither increments `cycles_used` nor writes an `agent_cycles` row.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
         ):
@@ -1155,14 +1172,14 @@ async def _run_loop(
         cycles_used = cycle + 1
         root_state = (
             orchestration.goal_state
-            if role == "agent"
+            if normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             else None
         )
         recovery_outcome = (
             orchestration.latest_unrecovered_failure()
-            if role == "agent"
+            if normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             else None
@@ -1221,10 +1238,6 @@ async def _run_loop(
                 recovery_outcome=recovery_outcome is not None,
                 decision_only=recovery_decision_only,
                 spawn_exhausted=spawn_exhausted,
-                recommendation_pending=bool(
-                    orchestration
-                    and orchestration.open_recommendation_id
-                ),
             )
             if spawn_exhausted and orchestration is not None:
                 # No tools are offered this cycle; make the intent explicit so
@@ -1307,7 +1320,7 @@ async def _run_loop(
             effort.attempts, input_tokens_est,
         )
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -1322,7 +1335,12 @@ async def _run_loop(
                 tokens_in=usage.tokens_in,
                 tokens_out=usage.tokens_out,
             )
-        messages.append({"role": "assistant", "content": resp.content})
+        # An empty assistant turn is not a message. Several OpenAI-compatible
+        # endpoints reject a content-less assistant entry on the NEXT request,
+        # so a vendor that returns nothing would poison the whole conversation
+        # rather than just wasting its own cycle.
+        if resp.content:
+            messages.append({"role": "assistant", "content": resp.content})
 
         tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
         _log_cycle(
@@ -1348,7 +1366,24 @@ async def _run_loop(
             _charge_budget_postflight(
                 budget, usage.tokens_in + usage.tokens_out, log,
             )
-        except TokenBudgetExhaustedError:
+        except TokenBudgetExhaustedError as exc:
+            # The response is already generated and already charged. Throwing
+            # its mutations away saves nothing — dispatching a write costs tool
+            # execution, not model tokens — and it discards exactly the thing
+            # the run was paying for. In the traced failure a coder emitted
+            # 11,289 output tokens carrying three files, was charged 19,801 for
+            # them, and the halt fired between generation and dispatch: the
+            # audit row recorded `tool_names=[]` and nothing reached disk.
+            #
+            # So land the mutations, then stop. Read and discovery calls are
+            # deliberately skipped: their results only feed a model call that
+            # will never happen.
+            landed = await _dispatch_paid_mutations(
+                session, tool_uses, log,
+                gateway=gateway, orchestration=orchestration, role=role,
+                compression_db_path=compression_db_path,
+                audit_db_path=audit_db_path,
+            )
             _safe_record_agent_cycle(
                 db_path=compression_db_path,
                 session_id=audit_session_id,
@@ -1359,12 +1394,25 @@ async def _run_loop(
                 ended_at=cycle_ended_at,
                 lm_ms=lm_ms,
                 usage=usage,
-                tool_names=[],
+                tool_names=landed,
                 text_chars=len(text),
                 cycle_status="budget_halt",
                 log=log,
             )
-            raise
+            if not salvage_on_exhaust:
+                raise
+            # Mirror the preflight halt, which already salvages rather than
+            # raising. The two paths differed only by which side of the model
+            # call the cap was crossed on, and that asymmetry decided whether
+            # the parent saw a typed answer it could act on or an exception.
+            final_answer = (
+                "[incomplete] token budget exhausted after the model call: "
+                f"{exc}"
+                + (f"\nLanded before stopping: {', '.join(landed)}" if landed else "")
+                + (f"\n\nLast assistant text before the halt:\n{last_text}"
+                   if last_text else "")
+            )
+            break
 
         if not tool_uses and recovery_outcome is not None:
             _safe_record_agent_cycle(
@@ -1387,6 +1435,77 @@ async def _run_loop(
                 "root ended recovery without a successful replacement worker",
             )
             break
+
+        # Truncation is checked BEFORE the "no tool calls → this is the final
+        # answer" branch. A response cut off at the output cap is never final,
+        # whether it was cut mid-tool-call or mid-sentence; ordering these the
+        # other way meant a truncated TEXT answer was recorded as a clean
+        # `final` cycle and handed downstream as a complete result.
+        if resp.stop_reason == "max_tokens" and not tool_uses:
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=len(text),
+                cycle_status="truncated",
+                log=log,
+            )
+            print(
+                "[agent] max_tokens truncated the text answer "
+                f"({len(text)} chars kept, none dispatched). Answer shorter: "
+                "lead with the required output and drop narrative.",
+                file=log,
+            )
+            if cycle + 1 >= max_cycles:
+                final_answer = _truncated_text_answer(text)
+                break
+            messages.append({
+                "role": "user",
+                "content": _TRUNCATED_TEXT_RETRY,
+            })
+            continue
+
+        if not tool_uses and not text.strip():
+            # No tool call, no words, and not a truncation — the vendor
+            # returned an empty turn. Accepting it as the final answer is how
+            # an empty string reaches a completion boundary and is recorded as
+            # a success; fail it here where the cause is still visible.
+            _safe_record_agent_cycle(
+                db_path=compression_db_path,
+                session_id=audit_session_id,
+                worker_id=audit_worker_id,
+                stage=audit_stage,
+                cycle_idx=cycle,
+                started_at=cycle_started_at,
+                ended_at=cycle_ended_at,
+                lm_ms=lm_ms,
+                usage=usage,
+                tool_names=[],
+                text_chars=0,
+                cycle_status="empty",
+                log=log,
+            )
+            print(
+                f"[agent] {role}: empty model turn "
+                f"(stop={resp.stop_reason}, out_tokens={usage.tokens_out}); "
+                "not an answer",
+                file=log,
+            )
+            if cycle + 1 >= max_cycles:
+                final_answer = _empty_response_answer(resp.stop_reason)
+                break
+            messages.append({
+                "role": "user",
+                "content": _EMPTY_RESPONSE_RETRY,
+            })
+            continue
 
         if not tool_uses:
             _safe_record_agent_cycle(
@@ -1490,7 +1609,7 @@ async def _run_loop(
             )
         except PolicyDeniedError as exc:
             is_root = (
-                role == "agent"
+                normalize_role(role) == ROOT_ROLE
                 and (orchestration is None or orchestration.depth == 0)
             )
             if not is_root:
@@ -1513,7 +1632,7 @@ async def _run_loop(
             final_answer = _policy_incomplete(exc)
             break
         recovery_halt: str | None = None
-        if role == "agent" and orchestration is not None and orchestration.depth == 0:
+        if normalize_role(role) == ROOT_ROLE and orchestration is not None and orchestration.depth == 0:
             requested_replacement = any(
                 tu.get("name") == "musubi_spawn_subagent" for tu in tool_uses
             )
@@ -1731,7 +1850,7 @@ async def run_unit(
     compression_db_path: Path | None = None,
     context_budget_chars: int | None = None,
     initial_messages: list[dict[str, Any]] | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     stats: AgentRunStats | None = None,
     budget: TokenBudgetEnforcer | None = None,
@@ -1739,7 +1858,7 @@ async def run_unit(
     worker_max_output: int | None = None,
     model_output_override: int | None = None,
     audit_session_id: str | None = None,
-    audit_worker_id: str = "root",
+    audit_worker_id: str = ROOT_ROLE,
     audit_stage: str | None = None,
 ) -> tuple[str | None, int]:
     """Run one *worker* on a prepared prompt. Returns (answer_or_None, cycles).
@@ -1908,7 +2027,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="NAME",
         help=(
             "Run the named pipeline directly (a linear recipe under "
-            ".github/pipelines/<name>, e.g. feature-dev or dev-lite) with the "
+            ".github/pipelines/<name>, e.g. feature-dev or code-review) with the "
             "task as its brief, instead of the model-routed single-agent loop. "
             "Pipelines needing per-file fan-out (e.g. code-review) are not "
             "supported by this deterministic runner."
@@ -2053,12 +2172,14 @@ def _resolve_vendor(profile: str | None) -> tuple[LMRouter, str]:
     from agent.config import (
         find_config_path,
         load_profile,
+        resolve_model_context_window,
         resolve_model_output_override,
     )
 
     def from_profile(prof: dict[str, Any]) -> LMRouter:
         resolved = build_from_profile(prof)
         resolved.max_output_tokens = resolve_model_output_override(prof)
+        resolved.context_window_tokens = resolve_model_context_window(prof)
         return resolved
 
     if profile:
@@ -2087,10 +2208,7 @@ def _server_env() -> dict[str, str]:
 
     The MCP stdio client passes only a safe allowlist to the child when
     `env=None` (PATH/HOME/… — no arbitrary vars), which silently dropped
-    every `MUSUBI_*` flag the user set in their shell. The most visible
-    casualty was `MUSUBI_COMPRESS`: it is read *inside* the server subprocess
-    (`server.py::_compression_enabled`), so with it filtered out the flag had
-    no effect on the standalone path no matter how it was set.
+    every `MUSUBI_*` setting the user configured for the server subprocess.
 
     Forward `MUSUBI_*` vars explicitly, on top of the safe defaults, so the
     server sees Musubi's own config without inheriting unrelated parent-env
@@ -2765,6 +2883,13 @@ def _no_progress_budget_trip(
     outcomes = orchestration.worker_outcomes
     if any(o.status == "done" and o.touched_files for o in outcomes):
         return None
+    state = orchestration.goal_state
+    if state is not None and state.planning_contract_failures >= 3:
+        return (
+            "[incomplete] run stopped: three consecutive planning-contract "
+            "failures occurred before any worker was spawned. Correct the "
+            "closed plan declaration and retry the request."
+        )
     if not any(o.status in {"failed", "escalated"} for o in outcomes):
         return None
     return (
@@ -2775,11 +2900,89 @@ def _no_progress_budget_trip(
     )
 
 
+async def _dispatch_paid_mutations(
+    session: Any,
+    tool_uses: list[dict[str, Any]],
+    log: Any,
+    *,
+    gateway: McpGateway | None,
+    orchestration: Orchestration | None,
+    role: str,
+    compression_db_path: Path | None,
+    audit_db_path: Path | None,
+) -> list[str]:
+    """Land the file mutations of a response the budget has already paid for.
+
+    Returns the tool names actually dispatched, for the audit row. Only
+    `ORDER_SENSITIVE_FILE_TOOLS` run: a read or a spawn at halt time produces a
+    result that nothing will consume, while a write is the deliverable itself.
+
+    Every call still goes through `_dispatch_one`, so the policy gate, the tool
+    audit, and the touched-file sink all apply exactly as they would have one
+    moment earlier. A failure here is swallowed: the run is ending either way,
+    and a broken write must not replace the budget error that explains why.
+    """
+    mutations = [
+        tu for tu in tool_uses
+        if tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS
+    ]
+    if not mutations:
+        return []
+    landed: list[str] = []
+    for tool_use in mutations:
+        name = str(tool_use.get("name") or "")
+        try:
+            # `orchestration` is forwarded so the tool audit keeps its session
+            # id; no spawn can ride along, because the filter above admits only
+            # file mutations. `budget=None` on purpose — this response was
+            # charged in full one line ago.
+            await _dispatch_one(
+                tool_use, session, log,
+                vendor=None, tools=[], orchestration=orchestration,
+                gateway=gateway,
+                compression_db_path=compression_db_path,
+                role=role, budget=None, stats=None,
+                audit_db_path=audit_db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — the run is ending regardless
+            print(
+                f"[agent] budget halt: could not land {_short_tool_name(name)}: "
+                f"{type(exc).__name__}: {exc}",
+                file=log,
+            )
+            continue
+        landed.append(name)
+    if landed:
+        print(
+            "[agent] budget halt: landed "
+            f"{', '.join(_short_tool_name(n) for n in landed)} "
+            "(already charged; discarding them would have saved nothing)",
+            file=log,
+        )
+    return landed
+
+
 def _check_budget_preflight(
     budget: TokenBudgetEnforcer | None,
     input_tokens: int,
     log: Any,
 ) -> None:
+    """Refuse a model call the budget cannot afford, before paying for it.
+
+    The output side is a guess — `input × 0.25` — and it guesses low on the
+    cycle that matters most: in the traced failure it estimated 8,935 against
+    an actual 19,801, so a write-heavy call was allowed and then overran its
+    cap by 9,528.
+
+    Sizing this off the effort router's real output ceiling instead was tried
+    and reverted. It refuses the call BEFORE the model writes anything, which
+    is precisely the outcome the postflight salvage above exists to prevent: on
+    the traced numbers the coder had 10,273 tokens left against a 16,384-token
+    ceiling, so a conservative check would have refused the cycle that produced
+    the three files rather than letting them land. An overrun that delivers the
+    artifact beats a refusal that delivers nothing, and the overrun is bounded
+    by that same ceiling.
+    """
     if budget is None:
         return
     estimated_output = max(1, int(input_tokens * 0.25))
@@ -2946,14 +3149,30 @@ def _preflight_policy_batch(
     orchestration: Orchestration | None,
     audit_db_path: Path | None,
     log: Any,
-) -> None:
-    call_role = (
+) -> dict[str, str]:
+    """Refuse the batch before any sibling launches — but only where warranted.
+
+    Returns `{tool_use_id: reason}` for calls whose ARGUMENTS were refused;
+    those flow into the same per-call refusal channel the spawn caps use, so
+    the model reads the reason as a tool result and can correct it on the next
+    cycle. An authorization denial still raises `PolicyDeniedError` and ends
+    the turn, because no retry can make the caller a different role.
+
+    Both are recorded to `policy_audit` as denials. The split is about what the
+    caller can do next, never about what the ledger says happened.
+    """
+    # Canonicalised before it is written anywhere. `policy_audit.role` folds
+    # through `evaluate_tool_call` and `tool_audit.agent` does not, so an
+    # un-normalised value here made the two ledgers disagree about the same
+    # call — one saying `root`, the other `agent`.
+    call_role = normalize_role(
         orchestration.parent_agent_name
         if orchestration is not None and orchestration.parent_agent_name
         else role
     )
     session_id = orchestration.parent_session_id if orchestration else None
     audit_path = audit_db_path or _default_audit_db_path()
+    refused: dict[str, str] = {}
     for tu in tool_uses:
         name = str(tu.get("name", ""))
         if not is_musubi_tool(name):
@@ -2974,16 +3193,31 @@ def _preflight_policy_batch(
                 decision = argument_decision
         if decision.allowed:
             continue
+        reason = decision.reason
         denied = (
-            f"[policy denied] {decision.reason}"
+            f"[policy denied] {reason}"
             f"{denied_tool_guidance(call_role, name)}"
         )
         emit_runtime_log(
             log,
-            f"[agent]   policy denied {name}: {decision.reason}",
+            f"[agent]   policy denied {name}: {reason}",
             category="policy",
         )
-        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_policy(
+            decision, db_path=audit_path, log=log,
+            parent_session_id=session_id,
+        )
+        if decision.recoverable:
+            # Refuse THIS call, not the batch: a sibling spawn with sound
+            # arguments has done nothing wrong, and the model needs the
+            # reason back as a tool result to correct the one that has.
+            # `_dispatch_one` writes the tool_audit row for the refusal.
+            print(
+                f"[agent]   ⨯ refused worker: {reason}",
+                file=log,
+            )
+            refused[str(tu.get("id", ""))] = reason
+            continue
         _safe_record_tool_audit(
             session_id=session_id,
             role=call_role,
@@ -2997,8 +3231,9 @@ def _preflight_policy_batch(
         raise PolicyDeniedError(
             role=call_role,
             tool=name,
-            reason=decision.reason,
+            reason=reason,
         )
+    return refused
 
 
 async def _dispatch(
@@ -3011,7 +3246,7 @@ async def _dispatch(
     orchestration: Orchestration | None = None,
     gateway: McpGateway | None = None,
     compression_db_path: Path | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     scope_hint: ScopeHint | None = None,
     cycle_index: int = 0,
     budget: TokenBudgetEnforcer | None = None,
@@ -3037,7 +3272,7 @@ async def _dispatch(
         orchestration=orchestration,
         log=log,
     )
-    _preflight_policy_batch(
+    argument_refusals = _preflight_policy_batch(
         tool_uses,
         role=role,
         orchestration=orchestration,
@@ -3053,6 +3288,9 @@ async def _dispatch(
         cycle_index=cycle_index,
         orchestration=orchestration,
     )
+    # An argument refusal outranks a width or role-order one: it is the reason
+    # THIS call cannot run as written, and the model needs it back verbatim.
+    refused.update(argument_refusals)
     if _has_order_sensitive_file_tool(tool_uses):
         settled = []
         for tu in tool_uses:
@@ -3126,7 +3364,7 @@ def _normalize_root_spawn_tool_uses(
     Nested workers and direct substrate callers retain explicit narrowing.
     """
     if (
-        role != "agent"
+        normalize_role(role) != ROOT_ROLE
         or orchestration is None
         or orchestration.depth != 0
     ):
@@ -3190,6 +3428,65 @@ def _truncated_tool_call_answer(tool_uses: list[dict[str, Any]]) -> str:
     return "[blocked] " + json.dumps(payload, separators=(",", ":"))
 
 
+#: Fed back to a model whose TEXT answer was cut at the output cap. Short on
+#: purpose: it is prepended to a conversation that is already at the cap.
+_TRUNCATED_TEXT_RETRY = (
+    "[harness] Your previous answer hit the output-token cap before it "
+    "finished, so none of it was kept. Answer again and fit the cap: lead "
+    "with the required output fields, keep reasoning out of the response, "
+    "and cut supporting prose rather than required sections."
+)
+
+#: Fed back to a model that returned no content at all.
+_EMPTY_RESPONSE_RETRY = (
+    "[harness] Your previous turn contained no tool call and no text. "
+    "Respond with either one tool call or your final answer."
+)
+
+
+def _truncated_text_answer(partial: str) -> str:
+    """Typed marker for a text answer cut off at the output cap.
+
+    Shares the `[blocked]` prefix with `_truncated_tool_call_answer` so every
+    caller that already treats that prefix as non-final (`agent/subagent.py`'s
+    failure typing, the pipeline runner's incomplete check) keeps working
+    without knowing which channel was truncated.
+    """
+    payload = {
+        "status": "blocked",
+        "reason": "output_too_large_for_single_response",
+        "retry_same_strategy": False,
+        "recommended_strategies": [
+            "compact_answer",
+            "drop_supporting_prose",
+            RouteKind.ASK_SCOPE,
+        ],
+        "partial_chars": len(partial),
+        "message": (
+            "The model hit max_tokens while writing its answer, so the "
+            "partial text was not accepted as a result. A reasoning model "
+            "spends this same cap on its thinking channel, so raise the "
+            "role's maxOutputTokens or reduce what the answer must contain."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
+def _empty_response_answer(stop_reason: str) -> str:
+    """Typed marker for a vendor turn that carried neither text nor a call."""
+    payload = {
+        "status": "blocked",
+        "reason": "empty_model_response",
+        "retry_same_strategy": False,
+        "stop_reason": str(stop_reason or "unknown"),
+        "message": (
+            "The vendor returned no content blocks. Nothing was recorded as "
+            "an answer."
+        ),
+    }
+    return "[blocked] " + json.dumps(payload, separators=(",", ":"))
+
+
 def _spawn_overflow_reasons(
     tool_uses: list[dict[str, Any]],
     log: Any,
@@ -3234,7 +3531,7 @@ def _spawn_overflow_reasons(
         # the retired keyword guess, and the refusal names the legal role so
         # the model can comply.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -3262,7 +3559,7 @@ def _spawn_overflow_reasons(
         # "make it faster" passed the order gate and wrote files at a guess.
         # Read fresh — an explorer summoned earlier THIS turn clears it.
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.goal_state is not None
@@ -3288,7 +3585,7 @@ def _spawn_overflow_reasons(
             if tu.get("id", "") in overflow:
                 continue
         if (
-            role == "agent"
+            normalize_role(role) == ROOT_ROLE
             and orchestration is not None
             and orchestration.depth == 0
             and orchestration.spawned_workers >= orchestration.max_root_workers
@@ -3302,7 +3599,7 @@ def _spawn_overflow_reasons(
                 file=log,
             )
             continue
-        if orchestration is not None and role == "agent" and orchestration.depth == 0:
+        if orchestration is not None and normalize_role(role) == ROOT_ROLE and orchestration.depth == 0:
             orchestration.spawned_workers += 1
     return overflow
 
@@ -3320,7 +3617,7 @@ async def _dispatch_one(
     refused: bool = False,
     destructive_reason: str | None = None,
     compression_db_path: Path | None = None,
-    role: str = "agent",
+    role: str = ROOT_ROLE,
     budget: TokenBudgetEnforcer | None = None,
     stats: AgentRunStats | None = None,
     audit_db_path: Path | None = None,
@@ -3344,7 +3641,11 @@ async def _dispatch_one(
         )
     session_id = orchestration.parent_session_id if orchestration else None
     audit_path = audit_db_path or _default_audit_db_path()
-    call_role = (
+    # Canonicalised before it is written anywhere. `policy_audit.role` folds
+    # through `evaluate_tool_call` and `tool_audit.agent` does not, so an
+    # un-normalised value here made the two ledgers disagree about the same
+    # call — one saying `root`, the other `agent`.
+    call_role = normalize_role(
         orchestration.parent_agent_name
         if orchestration is not None and orchestration.parent_agent_name
         else role
@@ -3362,10 +3663,48 @@ async def _dispatch_one(
             result_text=blocked, log=log,
         )
         return blocked
+    if refused_reason:
+        # A refusal is a decision not to make this call, so it lands ahead of
+        # the tool and ahead of every branch below.
+        #
+        # It used to live INSIDE the spawn-with-orchestration branch, which
+        # held only because the sole source of refusals — the per-role width
+        # and role-order caps — cannot fire with orchestration off. Argument
+        # refusals can fire in any configuration, and on that path a refused
+        # spawn fell straight through to the MCP server: the call the harness
+        # had just declined to make was made anyway.
+        result = json.dumps({"status": "refused", "reason": refused_reason})
+        _safe_record_tool_audit(
+            session_id=session_id, role=call_role, tool=str(name),
+            args=json_args(args), status="refused", db_path=audit_path,
+            result_text=result, log=log,
+        )
+        return result
     should_audit = is_musubi_tool(name)
     if should_audit:
         decision = evaluate_tool_call(call_role, name)
-        _safe_record_policy(decision, db_path=audit_path, log=log)
+        _safe_record_policy(
+            decision, db_path=audit_path, log=log,
+            parent_session_id=session_id,
+        )
+        if decision.allowed:
+            # Allows were recorded to `policy_audit` but never emitted, so the
+            # only policy line that ever reached the runtime ledger was a
+            # denial. A console filtered to Policy therefore read empty on
+            # every clean run — the gate proving itself exactly when it has
+            # nothing to refuse is what the operator needs to see immediately.
+            # The durable policy ledger now carries request identity too; this
+            # live line preserves the ordered stderr protocol for the turn.
+            #
+            # Suppressed for an already-refused call: role/tool authorization
+            # did pass, but the preflight has just logged why the ARGUMENTS
+            # did not, and an "allow" line under that denial reads as a
+            # contradiction rather than as the two checks it actually is.
+            emit_runtime_log(
+                log,
+                f"[agent]   policy allow {name} (role={call_role})",
+                category="policy",
+            )
         if not decision.allowed:
             denied = (
                 f"[policy denied] {decision.reason}"
@@ -3415,7 +3754,6 @@ async def _dispatch_one(
 
     if (
         name in {
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_commit_plan",
         }
@@ -3424,6 +3762,14 @@ async def _dispatch_one(
         and orchestration.goal_state is not None
     ):
         result = _handle_root_control_tool(name, args, orchestration)
+        # Root control calls are request-scoped (no worker runtime scope is
+        # active here). Keep the Console ledger useful without copying the
+        # model's raw plan or schema-shaped correction payload into it.
+        emit_runtime_log(
+            log,
+            sanitize_control_result(result, name),
+            category="tools",
+        )
         _safe_record_tool_audit(
             session_id=session_id,
             role=call_role,
@@ -3486,52 +3832,8 @@ async def _dispatch_one(
         and vendor is not None
         and tools is not None
     ):
-        if refused_reason:
-            result = (
-                '{"status": "refused", "reason": '
-                f"{json.dumps(refused_reason)}" + "}"
-            )
-            _safe_record_tool_audit(
-                session_id=session_id, role=call_role, tool=name,
-                args=json_args(args), status="refused", db_path=audit_path,
-                result_text=result, log=log,
-            )
-            return result
-        ticket_id = str(args.get("recommendation_id") or "").strip()
-        if orchestration.open_recommendation_id:
-            if ticket_id != orchestration.open_recommendation_id:
-                result = json.dumps({
-                    "status": "refused",
-                    "reason": (
-                        "spawn must consume the open recommendation_id "
-                        f"{orchestration.open_recommendation_id!r}"
-                    ),
-                })
-                _safe_record_tool_audit(
-                    session_id=session_id, role=call_role, tool=name,
-                    args=json_args(args), status="refused", db_path=audit_path,
-                    result_text=result, log=log,
-                )
-                return result
-            spawn_role = str(args.get("role") or "").strip()
-            if spawn_role != orchestration.open_recommendation_role:
-                result = json.dumps({
-                    "status": "refused",
-                    "reason": (
-                        f"recommendation belongs to role "
-                        f"{orchestration.open_recommendation_role!r}, "
-                        f"not {spawn_role!r}"
-                    ),
-                })
-                _safe_record_tool_audit(
-                    session_id=session_id, role=call_role, tool=name,
-                    args=json_args(args), status="refused", db_path=audit_path,
-                    result_text=result, log=log,
-                )
-                return result
-            orchestration.open_recommendation_id = None
-            orchestration.open_recommendation_role = None
-            orchestration.open_recommendation_skills = ()
+        # `refused_reason` is handled above, before any branch — a refused call
+        # must not reach the server on any path, orchestrated or not.
         worker_args = args
         spawn_role = str(args.get("role", ""))
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
@@ -3596,27 +3898,6 @@ async def _dispatch_one(
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
-        if (
-            name == "musubi_recommend_skills"
-            and orchestration is not None
-            and orchestration.depth == 0
-        ):
-            try:
-                payload = json.loads(text)
-                ticket = str(payload.get("recommendation_id") or "").strip()
-                recommended = payload.get("recommended") or []
-                if ticket:
-                    orchestration.open_recommendation_id = ticket
-                    orchestration.open_recommendation_role = str(
-                        payload.get("for_role") or ""
-                    )
-                    orchestration.open_recommendation_skills = tuple(
-                        str(item.get("skill_id"))
-                        for item in recommended
-                        if isinstance(item, dict) and item.get("skill_id")
-                    )
-            except (TypeError, ValueError):
-                pass
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)
@@ -3634,6 +3915,7 @@ async def _dispatch_one(
                 result_text=text, log=log,
             )
         _record_touched_file(name, args, text)
+        _record_skill_mismatch(name, args, text, log)
         return text
     except Exception as exc:  # noqa: BLE001 — surface errors to the model
         result = f"[tool error] {type(exc).__name__}: {exc}"
@@ -3644,6 +3926,73 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+
+
+class _PlanningContractError(ValueError):
+    """A model-correctable Root plan declaration error."""
+
+    def __init__(self, error_kind: str, message: str) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+
+
+def _root_control_error(
+    error_kind: str,
+    message: str,
+    state: GoalState,
+) -> str:
+    """Return one closed correction envelope for a bad plan declaration."""
+    failures = state.record_planning_contract_failure(error_kind)
+    terminal = failures >= 3
+    if terminal:
+        state.pending_clarification = (
+            "[incomplete] run stopped: three consecutive planning-contract "
+            "failures occurred before any worker was spawned. Correct the "
+            "closed plan declaration and retry the request."
+        )
+        state.next_role = None
+        state.role_chain = ()
+    return json.dumps({
+        "status": "incomplete" if terminal else "error",
+        "error_kind": error_kind,
+        "message": message,
+        "expected_schema": manifest_schema(),
+        "allowed_roles": list(ROOT_PLAN_WORKER_ROLES),
+        "consecutive_failures": failures,
+    })
+
+
+def sanitize_control_result(result: str, tool_name: str) -> str:
+    """Project a Root control outcome into a safe, bounded runtime event.
+
+    The full tool response is retained in the tool audit for debugging. The
+    Request Log must not repeat raw ``plan_markdown``, manifest fields, or the
+    correction schema, which can be much larger and may contain user context.
+    """
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    status = str(payload.get("status") or "error").strip().lower()
+    if status not in {"ok", "error", "incomplete"}:
+        status = "error"
+    parts = [f"[agent] control {tool_name} status={status}"]
+
+    error_kind = payload.get("error_kind")
+    if isinstance(error_kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", error_kind):
+        parts.append(f"error_kind={error_kind}")
+    # Correction responses use `message`; deliberately do not fall back to a
+    # generic `error` field, which may contain provider or filesystem detail.
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        parts.append(f"reason={bounded(message, 240)}")
+    failures = payload.get("consecutive_failures")
+    if type(failures) is int and failures >= 0:
+        parts.append(f"consecutive_failures={failures}")
+    return " ".join(parts)
 
 
 def _handle_root_control_tool(
@@ -3666,58 +4015,63 @@ def _handle_root_control_tool(
                 "deliverable": deliverable,
             })
 
-        if name == "musubi_begin_direct":
-            target_intent = str(args.get("target_intent") or "").strip()
-            target_path = str(args.get("target_path") or "").strip()
-            worker_role = str(args.get("worker_role") or "coder").strip()
-            if not target_path:
-                raise ValueError("target_path must be a non-empty string")
-            root_alias, relative = _split_declared_target(target_path)
-            registry = _runtime_root_registry()
-            resolved = registry.resolve(root_alias, relative)
-            exists = resolved.exists()
-            state.begin_direct(
-                target_intent=target_intent,
-                target_path=(
-                    relative if root_alias == "musubi"
-                    else f"{root_alias}::{relative}"
-                ),
-                target_exists=exists,
-                worker_role=worker_role,
+        raw_plan = args.get("plan_markdown")
+        if not isinstance(raw_plan, str) or not raw_plan.strip():
+            raise _PlanningContractError(
+                "invalid_plan_markdown",
+                "plan_markdown must be a non-empty string",
             )
-            return json.dumps({
-                "status": "ok",
-                "mode": state.mode,
-                "target_intent": state.target_intent,
-                "target_path": state.target_path,
-                "target_exists": exists,
-                "next_role": state.next_role,
-            })
-
-        plan_markdown = str(args.get("plan_markdown") or "")
+        plan_markdown = raw_plan
         manifest_object = args.get("change_manifest")
+        model_dump = getattr(manifest_object, "model_dump", None)
+        if callable(model_dump):
+            manifest_object = model_dump(mode="python")
         manifest = parse_change_manifest_object(manifest_object)
         if manifest is None:
-            raise ValueError("change_manifest is invalid")
-        change_size = str(args.get("change_size") or "").strip()
+            raise _PlanningContractError(
+                "invalid_change_manifest",
+                "change_manifest must match the closed manifest schema",
+            )
+        raw_size = args.get("change_size")
+        if not isinstance(raw_size, str):
+            raise _PlanningContractError(
+                "invalid_change_size",
+                "change_size must be small, medium, or large",
+            )
+        change_size = raw_size.strip()
         raw_chain = args.get("worker_chain")
         if not isinstance(raw_chain, list):
-            raise ValueError("worker_chain must be an array")
-        chain = tuple(str(role).strip() for role in raw_chain)
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must be an array of allowed roles",
+            )
+        if any(not isinstance(role, str) for role in raw_chain):
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must contain only allowed role strings",
+            )
+        chain = tuple(role.strip() for role in raw_chain)
         # Validate model declaration before any artifact reaches disk.
-        if change_size not in {"small", "medium", "large"}:
-            raise ValueError("change_size must be small, medium, or large")
-        if not chain or any(role not in ORDERED_ROLES for role in chain):
-            raise ValueError(
-                f"worker_chain roles must be in {sorted(ORDERED_ROLES)}"
+        if change_size not in ROOT_PLAN_CHANGE_SIZES:
+            raise _PlanningContractError(
+                "invalid_change_size",
+                "change_size must be small, medium, or large",
+            )
+        if not chain or any(role not in ROOT_PLAN_WORKER_ROLES for role in chain):
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain roles must be one of the allowed non-planner roles",
             )
         if not any(role in MUTATION_ROLES for role in chain):
-            raise ValueError("worker_chain must contain a mutation role")
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain must contain a mutation role",
+            )
         needed = orchestration.spawned_workers + len(chain) + 1
         if needed > MAX_ROOT_WORKERS_HARD:
-            raise ValueError(
-                f"declared chain needs {needed} worker slots including "
-                f"recovery; hard ceiling is {MAX_ROOT_WORKERS_HARD}"
+            raise _PlanningContractError(
+                "invalid_worker_chain",
+                "worker_chain exceeds the hard worker ceiling including recovery",
             )
         if orchestration.planning_artifact_dir is None:
             raise ValueError("planning artifact directory is unavailable")
@@ -3727,7 +4081,10 @@ def _handle_root_control_tool(
             orchestration.planning_artifact_dir,
         )
         if persisted is None:
-            raise ValueError("plan_markdown or change_manifest is invalid")
+            raise _PlanningContractError(
+                "invalid_plan_markdown",
+                "plan_markdown or change_manifest is invalid",
+            )
         paths, artifacts = persisted
         state.commit_root_plan(
             manifest=artifacts.manifest,
@@ -3747,17 +4104,10 @@ def _handle_root_control_tool(
             "max_root_workers": orchestration.max_root_workers,
             "planning_artifacts": list(state.planning_artifacts),
         })
+    except _PlanningContractError as exc:
+        return _root_control_error(exc.error_kind, str(exc), state)
     except (OSError, ValueError) as exc:
         return json.dumps({"status": "error", "error": str(exc)})
-
-
-def _split_declared_target(target: str) -> tuple[str, str]:
-    if "::" not in target:
-        return "musubi", target
-    root, relative = target.split("::", 1)
-    if not root.strip() or not relative.strip():
-        raise ValueError("target_path must use ROOT::relative/path")
-    return root.strip(), relative.strip()
 
 
 def _runtime_root_registry() -> RootRegistry:
@@ -3802,6 +4152,50 @@ def _tool_audit_args(args: dict[str, Any], text: str) -> dict[str, Any]:
         if isinstance(value, str) and value:
             enriched[key] = value
     return enriched
+
+
+#: The tool a worker calls to say the pushed skill does not fit its brief.
+#: Not a capability — a summarizer with zero tools must still be able to say
+#: it, so `select_child_tools` grants it unconditionally.
+SKILL_MISMATCH_TOOL = "musubi_report_skill_mismatch"
+
+
+def _record_skill_mismatch(
+    name: str, args: dict[str, Any], text: str, log: Any,
+) -> None:
+    """Record an accepted skill-mismatch report into the active worker's sink.
+
+    No-op unless a `run_subagent` upstream is collecting. Only a report the
+    SERVER accepted counts: the worker states the mismatch, the harness decides
+    whether the statement is well-formed, and the parent reads the harness's
+    verdict — never the worker's raw claim.
+    """
+    if name != SKILL_MISMATCH_TOOL:
+        return
+    sink = _worker_skill_reports.get()
+    if sink is None:
+        return
+    from agent.jsonio import loads_dict
+
+    payload = loads_dict(text)
+    if payload.get("status") != "recorded":
+        return
+    report = {
+        "pushed_skill_id": str(payload.get("pushed_skill_id") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "suggested_skill_id": str(payload.get("suggested_skill_id") or "") or None,
+    }
+    sink.append(report)
+    emit_runtime_log(
+        log,
+        "[agent]   skill mismatch reported "
+        f"pushed={report['pushed_skill_id'] or '?'}"
+        + (
+            f" suggested={report['suggested_skill_id']}"
+            if report["suggested_skill_id"] else ""
+        ),
+        category="skills",
+    )
 
 
 def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
@@ -3922,9 +4316,21 @@ def _truncate(text: str, limit: int) -> str:
     return bounded(text, limit, collapse=False)
 
 
-def _safe_record_policy(decision: Any, *, db_path: Path, log: Any) -> None:
+def _safe_record_policy(
+    decision: Any,
+    *,
+    db_path: Path,
+    log: Any,
+    parent_session_id: str | None,
+) -> None:
     try:
-        record_policy_decision(decision, db_path=db_path)
+        request_id = getattr(log, "request_id", None)
+        record_policy_decision(
+            decision,
+            db_path=db_path,
+            request_id=request_id if isinstance(request_id, str) else None,
+            parent_session_id=parent_session_id,
+        )
     except Exception as exc:  # noqa: BLE001 - audit must not crash tool result
         print(
             f"[agent] policy audit write failed: {type(exc).__name__}: {exc}",
@@ -4041,11 +4447,17 @@ def _log_cycle(
         parts.append(f"out_tokens={tokens_out}")
     if usage:
         # CacheAligner measurement: how much of the prefix was served from the
-        # prompt cache vs. (re)written this cycle.
+        # prompt cache vs. (re)written this cycle. Reported, NOT deducted —
+        # `cached_in` is priced cheaply by the provider but charged in full by
+        # the budget, which counts tokens processed rather than money spent.
+        # See `TokenBudgetEnforcer` for why. The field is named `cached_in`
+        # rather than `cache_read` because the old name read like a saving:
+        # one traced cycle logged `cache_read=27392` against `in_tokens=27515`
+        # and was still charged 31,201.
         cache_read = usage.get("cache_read_input_tokens")
         cache_write = usage.get("cache_creation_input_tokens")
         if cache_read:
-            parts.append(f"cache_read={cache_read}")
+            parts.append(f"cached_in={cache_read}")
         if cache_write:
             parts.append(f"cache_write={cache_write}")
     emit_runtime_log(log, " ".join(parts), category="model")
@@ -4065,6 +4477,10 @@ def _log_cycle_cost(
         f"out_tokens={tokens_out}",
     ]
     if budget is not None:
+        # State what this cycle actually cost the budget beside the running
+        # total. Without it a reader had to add in+out themselves to discover
+        # that the cached prefix on the line above was charged in full.
+        parts.append(f"charged={tokens_in + tokens_out}")
         parts.append(
             f"token_budget={budget.tokens_used}/{budget.max_tokens}"
         )

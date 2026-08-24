@@ -8,7 +8,7 @@ canonical; there are no flat files.
 ```
 .github/agents/
 ├── root/
-│   └── agent.agent.md
+│   └── root.agent.md
 ├── workers/
 │   ├── planner.agent.md
 │   ├── designer.agent.md
@@ -21,10 +21,7 @@ canonical; there are no flat files.
 │   ├── scoper.agent.md
 │   ├── finder.agent.md
 │   └── synthesizer.agent.md
-├── meta/
-│   ├── pipeline-builder.agent.md
-│   └── skill-builder.agent.md
-└── proposed/            (skill-builder writes proposals here)
+└── proposed/            (human-reviewed prompt proposals)
 ```
 
 ## Prompt Purposes
@@ -36,8 +33,6 @@ canonical; there are no flat files.
 - **`workers/`** is for workers spawned on a firewalled brief — directly by the
   root agent, or as a pipeline stage. One prompt per role, shared by both
   paths. Workers do not read pipeline stages; the brief is the task.
-- **`meta/`** is for agents that operate on Musubi's catalog or pipeline
-  definitions rather than product code.
 - **`pipeline-stages/<pipeline>/`** (optional, ships empty) may hold a
   pipeline-specific variant of a role. The standalone runner prefers
   `workers/<role>.agent.md` and falls back to
@@ -53,7 +48,6 @@ canonical; there are no flat files.
 - Pipeline stage:
   `pipeline-stages/<pipeline>/<role>.agent.md` ->
   `<pipeline>-<role>.agent.md` -> `<role>.agent.md`
-- Meta: `meta/<role>.agent.md` -> `<role>.agent.md`
 
 Pipeline stages in the standalone runner resolve Worker-first, then Pipeline
 stage (`agent/pipeline_runner.py::_read_stage_agent_md`); a role with no

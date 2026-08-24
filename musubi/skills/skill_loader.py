@@ -14,6 +14,7 @@ Public API:
 """
 
 import os
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,8 @@ class SkillMeta:
     description: str = ""
     triggers: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
+    version: str = ""
+    content_hash: str = ""
 
 
 _FRONTMATTER_DELIM = "---"
@@ -172,6 +175,8 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
         description = str(frontmatter.get("description") or "").strip()
         triggers = _coerce_str_list(frontmatter.get("triggers"))
         tools = _coerce_str_list(frontmatter.get("tools"))
+        version = str(frontmatter.get("version") or "").strip()
+        content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
         skills.append(SkillMeta(
             skill_id=skill_id,
             title=title,
@@ -180,6 +185,8 @@ def list_skills(skills_dir: Path | None = None) -> list[SkillMeta]:
             description=description,
             triggers=triggers,
             tools=tools,
+            version=version,
+            content_hash=content_hash,
         ))
     return skills
 

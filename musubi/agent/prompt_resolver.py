@@ -15,7 +15,6 @@ class AgentPromptPurpose(StrEnum):
     ROOT = "root"
     WORKER = "worker"
     PIPELINE_STAGE = "pipeline-stage"
-    META = "meta"
 
 
 def resolve_agent_prompt_path(
@@ -83,8 +82,6 @@ def _candidates(
         return [base / "root" / filename, base / filename]
     if purpose is AgentPromptPurpose.WORKER:
         return [base / "workers" / filename, base / filename]
-    if purpose is AgentPromptPurpose.META:
-        return [base / "meta" / filename, base / filename]
     if pipeline_name:
         return [
             base / "pipeline-stages" / pipeline_name / filename,

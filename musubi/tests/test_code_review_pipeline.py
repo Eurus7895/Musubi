@@ -48,50 +48,40 @@ def test_level_is_two() -> None:
     assert _load()["level"] == 2
 
 
-def test_generator_declares_two_agents() -> None:
-    agents = _load()["generator"]["agents"]
-    names = [a["name"] for a in agents]
-    assert names == ["scoper", "finder"]
+def test_flat_recipe_declares_three_stages() -> None:
+    assert [entry["agent"] for entry in _load()["stages"]] == [
+        "scoper", "finder", "synthesizer",
+    ]
 
 
-def test_evaluator_is_synthesizer() -> None:
-    ev = _load()["evaluator"]
-    assert ev["name"] == "synthesizer"
-    assert ev["stage"] == "synthesis"
+def test_last_stage_is_synthesizer() -> None:
+    assert _load()["stages"][-1] == {
+        "agent": "synthesizer",
+        "stage": "synthesis",
+        "spawns": ["reviewer-aux"],
+        "max_iterations": 1,
+    }
 
 
 def test_each_agent_declares_stage_field() -> None:
     """Phase H.1 — every agent in code-review must declare an explicit
     `stage:` field (no relying on the canonical feature-dev fallback)."""
-    cfg = _load()
-    for a in cfg["generator"]["agents"]:
-        assert isinstance(a.get("stage"), str) and a["stage"], (
-            f"agent {a['name']!r} missing explicit stage"
-        )
-    assert isinstance(cfg["evaluator"].get("stage"), str)
+    for entry in _load()["stages"]:
+        assert isinstance(entry.get("stage"), str) and entry["stage"]
 
 
 def test_agent_paths_resolve() -> None:
-    for entry in _load()["generator"]["agents"]:
-        path = _GITHUB_DIR / entry["agent"]
+    for entry in _load()["stages"]:
+        path = _GITHUB_DIR / "agents" / "workers" / f"{entry['agent']}.agent.md"
         assert path.is_file(), f"agent file missing: {path}"
-    ev_path = _GITHUB_DIR / _load()["evaluator"]["agent"]
-    assert ev_path.is_file(), f"evaluator agent file missing: {ev_path}"
 
 
-def test_skill_paths_resolve() -> None:
-    """Every declared skill must point to an actual SKILL.md."""
-    for entry in _load()["generator"]["agents"]:
-        skill = entry.get("skill")
-        if skill:
-            assert (_GITHUB_DIR / skill).is_file(), f"missing skill: {skill}"
-    ev_skill = _load()["evaluator"].get("skill")
-    if ev_skill:
-        assert (_GITHUB_DIR / ev_skill).is_file(), f"missing skill: {ev_skill}"
+def test_recipe_does_not_choose_runtime_skills() -> None:
+    assert all("skill" not in entry for entry in _load()["stages"])
 
 
 def test_synthesizer_declares_reviewer_aux_spawn() -> None:
-    assert _load()["evaluator"].get("spawns") == ["reviewer-aux"]
+    assert _load()["stages"][-1].get("spawns") == ["reviewer-aux"]
 
 
 # ── composer derivation from pipeline.yaml ──────────────────────────────────
@@ -116,9 +106,9 @@ def test_skill_injection_chain() -> None:
     # scoper has no prior stage — no skill injection on read.
     assert composer.injected_skill_ids("code-review", "scope", "scoper") == []
     # finder reads scope and is injected the per-file-review checklist.
-    assert composer.injected_skill_ids("code-review", "scope", "finder") == ["per-file-review"]
+    assert composer.injected_skill_ids("code-review", "scope", "finder") == []
     # synthesizer reads findings and is injected the code-review skill.
-    assert composer.injected_skill_ids("code-review", "findings", "synthesizer") == ["code-review"]
+    assert composer.injected_skill_ids("code-review", "findings", "synthesizer") == []
 
 
 # ── firewall entries ────────────────────────────────────────────────────────

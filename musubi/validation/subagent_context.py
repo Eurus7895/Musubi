@@ -46,41 +46,6 @@ _ensure_scripts_on_path()
 from policy_engine import SUBAGENT_POLICIES  # noqa: E402
 
 
-# Each sub-agent role can declare a single SKILL.md that captures the
-# procedure for its role. Phase A.2 ships the table; Phase A.3 lands the
-# actual SKILL.md files. Roles without a registered skill receive
-# `role_skill: None` — never an arbitrary fallback skill.
-SUBAGENT_ROLE_SKILLS: dict[str, str | None] = {
-    "explorer":     "explorer",       # .github/skills/explorer/SKILL.md (Phase A.3)
-    "investigator": "investigator",   # .github/skills/investigator/SKILL.md (Phase A.3)
-    "reviewer-aux": "reviewer-aux",   # .github/skills/reviewer-aux/SKILL.md (Phase A.3)
-    # Phase B.1 — pipeline roles spawnable ad-hoc by the agent. They
-    # carry their procedure in `.github/agents/<role>.agent.md`, not a
-    # role-procedure SKILL.md. The Phase B.2 runner injects the agent body
-    # at request-build time; the harness pushes None here so no stray
-    # role skill is loaded.
-    # The planner is the ONLY component that reads code before anything
-    # mutates, and the harness routes deterministically on the manifest it
-    # produces. That makes triage a procedure, not a matter of taste: it is
-    # pushed (HI #2) so the planner cannot run without it. The lexical risk
-    # gate this replaces matched words, not changes — it refused a typo fix in
-    # a README while letting "wire up Okta" through untouched.
-    "planner":      "request-triage",
-    "designer":     None,
-    "coder":        None,
-    "reviewer":     None,
-    # Phase C.2 — summarizer drives the 90% reactive-compaction branch.
-    # The procedure lives in `.github/skills/summarizer/SKILL.md`.
-    "summarizer":   "summarizer",
-    # code-review stage roles (standalone pipeline workers). Each pushes
-    # the skill its stage applies: scope triage, cross-cutting per-file
-    # review, and the severity rubric the evaluator ranks by (HI #2).
-    "scoper":       "pr-scope-detection",
-    "finder":       "per-file-review",
-    "synthesizer":  "code-review",
-}
-
-
 @dataclass(frozen=True)
 class SubagentContext:
     """The complete pre-prompt payload for a sub-agent run.
@@ -93,6 +58,13 @@ class SubagentContext:
     role: str
     role_skill: str | None
     allowed_tools: tuple[str, ...]
+    #: The catalog id of the skill in `role_skill` — the model's explicit
+    #: per-spawn selection. Carried
+    #: separately because `role_skill` is SKILL.md prose: nothing downstream
+    #: could name what was pushed, so a role-default push left no trace in the
+    #: audit ledger or the console, and every session read "no skill used"
+    #: however many were pushed (HI #2 pushes; HI #8 says no spawn is silent).
+    role_skill_id: str | None = None
 
 
 def build_subagent_context(
@@ -110,13 +82,10 @@ def build_subagent_context(
       - `brief`: the user-/parent-supplied task string passed at spawn.
       - `role_skill`: the SKILL.md text pushed into the worker prompt,
         loaded from `.github/skills/<skill_id>/SKILL.md` via `skill_loader`.
-        Resolution order (option 3): the root's per-spawn choice
-        (`pushed_skill_id`) wins when present; otherwise the role's native
-        push (`SUBAGENT_ROLE_SKILLS[role]`). None when neither is set —
-        the runner treats that as "no procedure pushed; rely on the role
-        description in the spawn brief".
+        The model must select `pushed_skill_id` explicitly. The harness loads
+        exactly that skill and never supplies a role default or fallback.
 
-    `pushed_skill_id`, when set, was already validated against the worker
+    `pushed_skill_id` was already validated against the worker
     role's allowlist by `musubi_spawn_subagent` (fail-closed at spawn), so
     it is trusted here — the firewall stays at the spawn boundary and this
     builder only loads public catalog content (no parent state, HI #3).
@@ -142,19 +111,19 @@ def build_subagent_context(
             f"Valid roles: {sorted(SUBAGENT_POLICIES.keys())}"
         )
 
-    chosen = (pushed_skill_id or "").strip() or SUBAGENT_ROLE_SKILLS.get(role_key)
-    role_skill: str | None = None
-    if chosen is not None:
-        # Loaded only when the SKILL.md actually exists on disk; a stale
-        # skill_id resolves to None rather than raising, so a spawn is never
-        # blocked by a catalog gap after validation.
-        role_skill = skill_loader.get_skill(chosen, skills_dir=skills_dir)
+    chosen = (pushed_skill_id or "").strip()
+    if not chosen:
+        raise ValueError("pushed_skill_id must name the model-selected skill")
+    role_skill = skill_loader.get_skill(chosen, skills_dir=skills_dir)
+    if role_skill is None:
+        raise ValueError(f"selected skill {chosen!r} not found in the catalog")
 
     return SubagentContext(
         brief=brief.strip(),
         role=role_key,
         role_skill=role_skill,
         allowed_tools=tuple(SUBAGENT_POLICIES[role_key]),
+        role_skill_id=chosen,
     )
 
 
@@ -164,7 +133,7 @@ def context_keys() -> set[str]:
     Used by tests to assert the firewall hasn't accidentally widened —
     add a field here only after a deliberate design discussion.
     """
-    return {"brief", "role", "role_skill", "allowed_tools"}
+    return {"brief", "role", "role_skill", "role_skill_id", "allowed_tools"}
 
 
 def assert_no_session_leakage(payload: Any) -> None:

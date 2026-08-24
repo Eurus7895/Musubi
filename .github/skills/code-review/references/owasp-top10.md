@@ -69,7 +69,7 @@ into subsequent agents or execution contexts.
 
 **Check for:**
 - Reviewer output used to build Coder context without filtering to `fix_instructions` only
-- Skill-Builder output applied directly without human review gate
+- Failure-pattern evidence used to auto-modify agent behavior
 
 **In harness code:** `context_builder.build_context` for Coder on retry must
 return `fix_instructions` only — not the full review output.

@@ -45,7 +45,8 @@ def repo_root(tmp_path: Path) -> Path:
     mem_dir.mkdir(parents=True)
     fp = mem_dir / "failure-patterns.md"
     fp.write_text(
-        "# Failure Patterns — Distilled from Sessions\n\n---\n\n## Known Patterns\n\n"
+        "# Failure Patterns — Distilled from Sessions\n\n---\n\n## Known Patterns\n\n",
+        encoding="utf-8",
     )
     return tmp_path
 

@@ -21,7 +21,7 @@ description: Project-specific naming rules — Python identifiers, session/state
 
 - Session IDs: 8-character hex strings (e.g., `a3f9c1d2`)
 - Stage names: lowercase literals — `plan`, `design`, `code`, `review`
-- Agent names: lowercase literals — `planner`, `designer`, `coder`, `reviewer`, `skill-builder`
+- Agent names: lowercase literals — `planner`, `designer`, `coder`, `reviewer`
 - Status values: lowercase — `pending`, `in_progress`, `complete`, `escalated`
 
 ## MCP Tool Names

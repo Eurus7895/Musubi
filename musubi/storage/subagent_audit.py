@@ -36,7 +36,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Mapping
 
 # Mirror scripts/post_tool_use.py's path resolution so both writers
 # converge on the same audit.db file.
@@ -65,7 +65,9 @@ CREATE TABLE IF NOT EXISTS subagent_audit (
     tools_used           TEXT,                     -- JSON array
     summary_truncated    INTEGER,                  -- 0/1
     verification_errors  TEXT,                     -- JSON array
-    pushed_skill_id      TEXT                      -- root-selected skill pushed at spawn (option 3)
+    turn_cap_accepted    INTEGER,                  -- 0/1
+    turn_cap_acceptance  TEXT,                     -- machine-readable acceptance reason
+    pushed_skill_id      TEXT                      -- effective skill pushed into the worker prompt: the root's override when it made one, else the role's native push
 );
 CREATE INDEX IF NOT EXISTS idx_subagent_audit_ts
     ON subagent_audit (ts);
@@ -73,6 +75,8 @@ CREATE INDEX IF NOT EXISTS idx_subagent_audit_parent
     ON subagent_audit (parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_subagent_audit_handle
     ON subagent_audit (handle_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_audit_event_once
+    ON subagent_audit (handle_id, event);
 """
 
 
@@ -116,6 +120,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     have = {row[1] for row in conn.execute("PRAGMA table_info(subagent_audit)")}
     if "pushed_skill_id" not in have:
         conn.execute("ALTER TABLE subagent_audit ADD COLUMN pushed_skill_id TEXT")
+    if "turn_cap_accepted" not in have:
+        conn.execute("ALTER TABLE subagent_audit ADD COLUMN turn_cap_accepted INTEGER")
+    if "turn_cap_acceptance" not in have:
+        conn.execute("ALTER TABLE subagent_audit ADD COLUMN turn_cap_acceptance TEXT")
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -141,14 +149,18 @@ def record_spawn(
 ) -> None:
     """Persist one row marking a sub-agent spawn.
 
-    `pushed_skill_id` records the root-selected skill injected into the
-    worker's prompt (option 3). It has no tool-call of its own, so the
-    spawn row is the only place a Console can prove the worker received it.
+    `pushed_skill_id` records the EFFECTIVE skill injected into the
+    worker's prompt — the root's per-spawn override when it made one,
+    otherwise the role's native push (HI #2, which is not opt-out-able).
+    It has no tool-call of its own, so the spawn row is the only place a
+    Console can prove the worker received it; recording only the override
+    left every default push unauditable and every such session reading
+    "no skill used".
     """
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO subagent_audit ("
+            "INSERT OR IGNORE INTO subagent_audit ("
             " ts, handle_id, parent_session_id, parent_agent_name,"
             " role, brief, event,"
             " allowed_tools, max_turns, wall_clock_timeout_s, pushed_skill_id"
@@ -161,6 +173,30 @@ def record_spawn(
                 (pushed_skill_id.strip() if pushed_skill_id else None),
             ),
         )
+
+
+def deliver_spawn_obligation(
+    obligation: Mapping[str, Any], db_path: Path | None = None,
+) -> None:
+    """Deliver a durable spawn outbox payload to the append-only audit DB."""
+    payload = obligation.get("payload", obligation)
+    if not isinstance(payload, Mapping):
+        raise ValueError("spawn audit obligation payload must be a mapping")
+    record_spawn(
+        handle_id=str(payload["handle_id"]),
+        parent_session_id=str(payload["parent_session_id"]),
+        parent_agent_name=str(payload["parent_agent_name"]),
+        role=str(payload["role"]),
+        brief=str(payload["brief"]),
+        allowed_tools=list(payload.get("allowed_tools") or []),
+        max_turns=int(payload["max_turns"]),
+        wall_clock_timeout_s=int(payload["wall_clock_timeout_s"]),
+        pushed_skill_id=(
+            str(payload["pushed_skill_id"])
+            if payload.get("pushed_skill_id") else None
+        ),
+        db_path=db_path,
+    )
 
 
 def record_complete(
@@ -176,6 +212,8 @@ def record_complete(
     tools_used: list[str] | None,
     summary_truncated: bool,
     verification_errors: list[str] | None,
+    turn_cap_accepted: bool = False,
+    turn_cap_acceptance: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     """Persist one row marking a sub-agent's terminal result."""
@@ -186,20 +224,63 @@ def record_complete(
     )
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO subagent_audit ("
+            "INSERT OR IGNORE INTO subagent_audit ("
             " ts, handle_id, parent_session_id, parent_agent_name,"
             " role, brief, event,"
             " final_status, escalated, turns, tools_used,"
-            " summary_truncated, verification_errors"
-            ") VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)",
+            " summary_truncated, verification_errors, turn_cap_accepted,"
+            " turn_cap_acceptance"
+            ") VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 handle_id, parent_session_id, parent_agent_name,
                 role, brief,
                 final_status, 1 if escalated else 0, turns, tools_json,
                 1 if summary_truncated else 0, errors_json,
+                1 if turn_cap_accepted else 0, turn_cap_acceptance,
             ),
         )
+
+
+def deliver_complete_obligation(
+    obligation: Mapping[str, Any], db_path: Path | None = None,
+) -> None:
+    """Deliver one terminal-completion outbox payload idempotently.
+
+    The state ledger owns the obligation before this audit ledger is touched.
+    The unique ``(handle_id, event)`` index makes relays safe after a process
+    crash between delivery and acknowledgement.
+    """
+    payload = obligation.get("payload", obligation)
+    if not isinstance(payload, Mapping):
+        raise ValueError("completion audit obligation payload must be a mapping")
+    raw_tools = payload.get("tools_used")
+    raw_errors = payload.get("verification_errors")
+    record_complete(
+        handle_id=str(payload["handle_id"]),
+        parent_session_id=str(payload["parent_session_id"]),
+        parent_agent_name=str(payload["parent_agent_name"]),
+        role=str(payload["role"]),
+        brief=str(payload["brief"]),
+        final_status=str(payload["final_status"]),
+        escalated=bool(payload.get("escalated")),
+        turns=int(payload.get("turns") or 0),
+        tools_used=(
+            [str(item) for item in raw_tools]
+            if isinstance(raw_tools, list) else None
+        ),
+        summary_truncated=bool(payload.get("summary_truncated")),
+        verification_errors=(
+            [str(item) for item in raw_errors]
+            if isinstance(raw_errors, list) else None
+        ),
+        turn_cap_accepted=bool(payload.get("turn_cap_accepted")),
+        turn_cap_acceptance=(
+            str(payload["turn_cap_acceptance"])
+            if payload.get("turn_cap_acceptance") else None
+        ),
+        db_path=db_path,
+    )
 
 
 # ── reader ────────────────────────────────────────────────────────────────────
@@ -254,5 +335,7 @@ def query_events(
             d["escalated"] = bool(d["escalated"])
         if d.get("summary_truncated") is not None:
             d["summary_truncated"] = bool(d["summary_truncated"])
+        if d.get("turn_cap_accepted") is not None:
+            d["turn_cap_accepted"] = bool(d["turn_cap_accepted"])
         out.append(d)
     return out

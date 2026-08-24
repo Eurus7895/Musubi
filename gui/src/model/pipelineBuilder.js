@@ -6,12 +6,24 @@ function normalizeSpawns(roles = []) {
     .filter(Boolean))]
 }
 
+function normalizeIds(values = [], { lowercase = false } = {}) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .map((value) => lowercase ? value.toLowerCase() : value))]
+}
+
 function normalizeStage(stage = {}) {
   return {
     preset: String(stage.preset || ''),
     agent: String(stage.agent || ''),
     stage: String(stage.stage || ''),
     spawns: normalizeSpawns(stage.spawns),
+    maxIterations: Number.isInteger(Number(stage.maxIterations))
+      && Number(stage.maxIterations) >= 1
+      ? Number(stage.maxIterations) : 1,
+    allowedChecks: normalizeIds(stage.allowedChecks, { lowercase: true }),
+    allowedCommands: normalizeIds(stage.allowedCommands),
   }
 }
 
@@ -22,6 +34,7 @@ export function createPipelineDraft(recipe = {}) {
     version: String(recipe.version || ''),
     baselineChecks: clone(Array.isArray(recipe.baselineChecks) ? recipe.baselineChecks : []),
     correction: clone(recipe.correction ?? null),
+    checks: clone(recipe.checks && typeof recipe.checks === 'object' ? recipe.checks : {}),
     stages: (Array.isArray(recipe.stages) ? recipe.stages : []).map(normalizeStage),
   }
 }
@@ -66,6 +79,9 @@ export function updateRecipe(draft, patch = {}) {
     next.baselineChecks = clone(Array.isArray(patch.baselineChecks) ? patch.baselineChecks : [])
   }
   if (Object.hasOwn(patch, 'correction')) next.correction = clone(patch.correction ?? null)
+  if (Object.hasOwn(patch, 'checks')) {
+    next.checks = clone(patch.checks && typeof patch.checks === 'object' ? patch.checks : {})
+  }
   return next
 }
 
@@ -85,6 +101,17 @@ export function validateDraft(draft) {
   if (!Array.isArray(draft?.stages) || draft.stages.length < 2) {
     findings.push({ severity: 'error', step: 'recipe', field: 'stages', message: 'Add at least two stages.' })
   }
+  ;(draft?.stages || []).forEach((stage, index) => {
+    if (stage.maxIterations > 1
+      && stage.allowedChecks?.length === 1
+      && stage.allowedChecks[0] === 'named_command'
+      && !stage.allowedCommands?.length) {
+      findings.push({
+        severity: 'error', step: `stage ${index + 1}`, field: 'allowedCommands',
+        message: 'Select at least one allowed command for a retryable named-command stage.',
+      })
+    }
+  })
   return findings
 }
 

@@ -190,23 +190,9 @@ shows a context-packing scenario reduced from 188,943 chars to 3,490 while
 preserving the recent turn. See
 [`docs/compression.md`](./compression.md) for the full artifact and numbers.
 
-```bash
-agent "summarise the config files"     # compression on by default
-MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
-```
-
-### The `MUSUBI_COMPRESS` switch
-
-| `MUSUBI_COMPRESS` | Effect |
-|---|---|
-| *unset* (default) | **on** |
-| `1` / `true` / `on` / `yes` | on |
-| `0` / `false` / `off` / `no` | off |
-
-It's per process; the standalone `agent` forwards every `MUSUBI_*` var to the
-server it spawns. Make it stick: `export MUSUBI_COMPRESS=0` (macOS/Linux) or
-`setx MUSUBI_COMPRESS 0` (Windows). Leaving it on is safe — the original is
-never lost.
+Compression is always enabled at the tool boundary. It has no runtime disable
+switch: only payloads that become smaller are replaced, the exact original is
+retained, and the retrieval marker stays with the compressed view.
 
 ### Compression tools (call via the agent)
 
@@ -289,7 +275,7 @@ returns only a compact summary, so the orchestrator's context stays small.
   runs a turn-capped child loop on a **firewalled brief** and **restricted tool
   surface**, verifies the summary on completion, then feeds just that summary
   back. Every spawn is policy-checked and audited (`musubi_query_subagent_events`).
-- **Catalog modes.** Root, direct worker, pipeline-stage, and meta-agent prompts
+- **Catalog modes.** Root, direct worker, and pipeline-stage prompts
   live under separate `.github/agents/` purpose directories. Direct standalone
   workers use `workers/<role>.agent.md`; pipeline stages resolve
   `workers/<role>.agent.md` first, then
@@ -332,8 +318,8 @@ building block — a role plus its default stage. A pipeline drops presets into 
 `stages:` list:
 
 ```yaml
-# .github/pipelines/dev-lite/pipeline.yaml
-name: dev-lite
+# .github/pipelines/my-flow/pipeline.yaml   (yours — nothing ships here)
+name: my-flow
 stages:
   - preset: plan      # planner
   - preset: build     # coder

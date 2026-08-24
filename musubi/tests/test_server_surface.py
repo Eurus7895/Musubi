@@ -50,6 +50,18 @@ def test_server_full_surface_keeps_all_tools(monkeypatch: pytest.MonkeyPatch) ->
     assert "musubi_read_stage" in seen[0]
 
 
+def test_commit_plan_tool_exposes_closed_manifest_and_chain_enum() -> None:
+    tool = server.mcp._tool_manager._tools["musubi_commit_plan"]
+    schema = tool.parameters
+    manifest = schema["$defs"]["ChangeManifestInput"]
+
+    assert manifest["additionalProperties"] is False
+    assert set(manifest["required"]) == {"files_expected", "subsystems"}
+    roles = schema["properties"]["worker_chain"]["items"]["enum"]
+    assert "planner" not in roles
+    assert {"designer", "coder", "reviewer"}.issubset(roles)
+
+
 def test_cli_serve_passes_surface(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
     musubi_dir = str(Path(__file__).resolve().parent.parent)

@@ -4,7 +4,7 @@ import NewSessionButton from '../components/NewSessionButton.jsx'
 import TokenEconomics from '../components/TokenEconomics.jsx'
 import { tokenShareOf } from './requestMetrics.js'
 
-const TURN_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'stdout', 'stderr']
+const TURN_LOG_FILTERS = ['All', 'Host', 'Root', 'Workers', 'Gates', 'stdout', 'stderr']
 const AGENT_LOG_FILTERS = ['All', 'Model', 'Tools', 'Skills', 'Policy', 'stdout', 'stderr']
 // How many log lines the running turn shows without a click. Three is what
 // fits above the fold beside the banner; more and the timeline stops being one.
@@ -107,7 +107,7 @@ export default function Orchestrator({ vals }) {
   const turnLabels = useMemo(() => new Map(
     (vals.runtimeGraph?.turns || []).map((turn, index) => [
       turn.requestId,
-      `T${String(index + 1).padStart(2, '0')}`,
+      `R${String(index + 1).padStart(2, '0')}`,
     ]),
   ), [vals.runtimeGraph])
 
@@ -503,7 +503,7 @@ function TurnTimeline({ graph = {}, logs = [], selectedId, onSelectNode }) {
           </div>
         ))}
         <p className="timeline-hint">
-          Finished turns collapse to one line. Open any row for its full log — the timeline stays.
+          Finished requests collapse to one line. Open any row for its full log — the timeline stays.
         </p>
       </div>
     </div>
@@ -520,7 +520,7 @@ function TurnRow({ node, order, selectedId, onSelect, tokenShare = 0 }) {
   const live = node.status === 'running'
   const isAgent = node.kind === 'agent'
   const label = order
-    ? `T${String(order).padStart(2, '0')} · ${node.title || node.label}`
+    ? `R${String(order).padStart(2, '0')} · ${node.title || node.label}`
     : (node.title || node.label)
   const roleClass = isAgent ? ` is-agent role-${node.role || 'worker'}` : ''
   return (
@@ -575,13 +575,13 @@ function LiveLog({ requestId, logs }) {
 
 function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuery, onBack }) {
   const isTurn = node.kind === 'turn'
-  const logLabel = isTurn ? 'Turn log' : 'Agent log'
+  const logLabel = isTurn ? 'Request log' : 'Agent log'
   return (
     <div className="runtime-detail">
       <div className="runtime-detail__header">
         <button className="runtime-detail__back" onClick={onBack}>← Back to graph</button>
         <div className="runtime-detail__title">
-          <div><span className="workspace-kicker">{isTurn ? 'Whole turn' : 'This agent only'}</span><h1>{node.title || node.label}</h1></div>
+          <div><span className="workspace-kicker">{isTurn ? 'Whole request' : 'This agent only'}</span><h1>{node.title || node.label}</h1></div>
           <code>{node.requestId || node.id}</code>
         </div>
         <div className="runtime-detail__tabs" role="tablist">
@@ -597,26 +597,49 @@ function RuntimeDetail({ node, rows, tab, onTab, filter, onFilter, query, onQuer
 }
 
 function RuntimeOverview({ node, isTurn, onOpenLog }) {
+  // A turn's token figure includes every worker it summoned — the driver hands
+  // one counter to the root and all its workers — so the row beneath it is a
+  // PART of the number above, never an addend. Naming both makes the
+  // containment readable instead of leaving two figures that look summable.
   const metrics = [
     { label: 'Role', value: node.role, absent: false },
     { label: 'Turns', value: node.turns + (node.maxTurns ? ` / ${node.maxTurns}` : ''), absent: false },
     { label: 'Tools', ...metricField(node.tools) },
-    { label: 'Tokens', ...metricField(node.tokens) },
+    { label: node.tokensAreInclusive ? 'Tokens · turn total' : 'Tokens', ...metricField(node.tokens) },
+    ...(node.tokensAreInclusive
+      ? [{ label: 'Tokens · root only', ...metricField(node.ownTokens) }]
+      : []),
     { label: 'Log rows', ...metricField(node.logCount) },
+    ...(node.attempt ? [{ label: 'Attempt', value: node.attempt, absent: false }] : []),
+    ...(node.selectedSkill ? [{ label: 'Selected skill', value: node.selectedSkill, absent: false }] : []),
+    ...(node.phase ? [{ label: 'Current phase', value: node.phase, absent: false }] : []),
+    ...(node.verdict ? [{ label: 'Latest verdict', value: node.verdict, absent: false }] : []),
+    ...(node.contractHash ? [{ label: 'Contract', value: node.contractHash.slice(0, 19), absent: false }] : []),
+    ...(isTurn ? [{ label: 'Pending audit relay', ...metricField(node.pendingAudit) }] : []),
   ]
   return (
     <div className="runtime-overview">
       <div className="runtime-overview__hero">
         <span className={`runtime-node__status status-${node.status}`}>● {node.statusLabel}</span>
-        <h2>{node.brief || node.title || node.label}</h2>
-        <p>{isTurn ? 'Overview covers the root and every agent summoned during this turn.' : 'Overview and metrics for this exact agent handle.'}</p>
+        <h2>{node.goal || node.brief || node.title || node.label}</h2>
+        <p>{isTurn ? 'Overview covers the root, every agent, stage contract, and gate verdict for this request.' : 'Overview and metrics for this exact agent handle.'}</p>
       </div>
       <div className="runtime-overview__metrics">
         {metrics.map(({ label, value, absent }) => (
           <div key={label}><span>{label}</span><strong className={absent ? 'is-absent' : ''}>{value}</strong></div>
         ))}
       </div>
-      <button className="ui-button runtime-overview__log" onClick={onOpenLog}>Open {isTurn ? 'Turn log' : 'Agent log'} →</button>
+      {isTurn && node.stageAttempts?.length ? (
+        <div className="runtime-overview__attempts" aria-label="Stage attempts">
+          {node.stageAttempts.map((attempt) => (
+            <span key={`${attempt.sessionId}-${attempt.stage}-${attempt.attempt}`}>
+              <b>{attempt.stage}</b> / attempt {attempt.attempt} / {attempt.phase}
+              {attempt.selectedSkillId ? ` / ${attempt.selectedSkillId}` : ''}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <button className="ui-button runtime-overview__log" onClick={onOpenLog}>Open {isTurn ? 'Request log' : 'Agent log'} →</button>
     </div>
   )
 }

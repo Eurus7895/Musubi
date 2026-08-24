@@ -21,7 +21,34 @@ def estimate_tokens_from_chars(chars: int) -> int:
 
 
 class TokenBudgetEnforcer:
-    """Running token accountant for one CLI turn."""
+    """Running token accountant for one CLI turn.
+
+    **The unit is tokens PROCESSED, not money spent.** Every cycle is charged
+    its full `tokens_in + tokens_out`, and the provider's cached-prefix count
+    is reported but never deducted. That is deliberate, and it is the one thing
+    to understand before changing anything here.
+
+    A provider serves a repeated prefix from its prompt cache at roughly a
+    tenth of the input price, so the two readings diverge hard. On the traced
+    failure they diverged by 60%::
+
+        charged in full  210,265   → over the 200,000 cap, halted at cycle 7
+        marginal cost     84,057   → 115,943 left, would not have halted
+
+    The cheaper number is the truer answer to "what did this cost". It is the
+    wrong input to this enforcer, because this enforcer is not a cost meter —
+    it is what stops a loop that has stopped making progress. A worker that
+    resends a 30,000-token conversation eight times HAS processed 240,000
+    tokens, whatever it was billed; in the traced run its last three cycles
+    wrote zero bytes, and charging the cached prefix in full is what ended
+    them. Switching to marginal accounting would have removed the only brake
+    that fired.
+
+    If a cost figure is wanted later, report it as a SECOND number beside this
+    one. Do not re-denominate this one: two different questions need two
+    meters, not one meter with its units quietly changed — and every historical
+    `agent_cycles` row was written in this unit.
+    """
 
     def __init__(self, max_tokens: int, warn_at_ratio: float = 0.8) -> None:
         if not isinstance(max_tokens, int) or max_tokens <= 0:
@@ -140,6 +167,16 @@ class ChildTokenBudget:
         return _stricter(local_status, parent_status)
 
 
+def _fair_share(
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
+    units_remaining: int,
+) -> int:
+    if units_remaining <= 0:
+        raise ValueError("units_remaining must be positive")
+    remaining = parent.remaining
+    return max(1, min(remaining, remaining // units_remaining))
+
+
 def pipeline_stage_allowance(
     parent: TokenBudgetEnforcer | ChildTokenBudget,
     stages_remaining: int,
@@ -152,11 +189,27 @@ def pipeline_stage_allowance(
     underspends hands its slack to later stages, and one that overspends cannot
     (its allowance already capped it). Always at least 1 while budget remains.
     """
-    if stages_remaining <= 0:
-        raise ValueError("stages_remaining must be positive")
-    remaining = parent.remaining
-    fair_share = remaining // stages_remaining
-    return max(1, min(remaining, fair_share))
+    return _fair_share(parent, stages_remaining)
+
+
+def root_worker_allowance(
+    parent: TokenBudgetEnforcer | ChildTokenBudget,
+    workers_remaining: int,
+) -> int:
+    """The same fair share, for a worker the root spawns directly.
+
+    A pipeline stage has been getting this since the stage runner shipped; a
+    direct worker was handed the parent enforcer itself, unwrapped. One worker
+    could therefore spend the entire run: in the traced failure a coder charged
+    200,580 of a 200,000-token budget across eight cycles while the root had
+    spent 9,685, and by the time the worker failed there was nothing left to
+    recover with — `decide_recovery` halts a BUDGET failure fail-closed, but
+    even a permitted continuation had no tokens to run on.
+
+    `workers_remaining` counts THIS worker plus the root's unspent slots, so
+    the first of three gets a third and the reserve is what recovery runs on.
+    """
+    return _fair_share(parent, workers_remaining)
 
 
 class TokenBudgetExhaustedError(RuntimeError):

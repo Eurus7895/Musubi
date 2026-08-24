@@ -11,6 +11,7 @@ from agent.budget import (
     TokenBudgetExhaustedError,
     estimate_tokens_from_chars,
     pipeline_stage_allowance,
+    root_worker_allowance,
 )
 
 
@@ -184,3 +185,85 @@ def test_no_progress_trip_done_without_files_does_not_count() -> None:
         ("coder", "escalated", ("weather.html",)),
     ])
     assert _no_progress_budget_trip(budget, orch) is not None
+
+
+def test_no_progress_trip_fires_for_three_preworker_plan_failures() -> None:
+    from agent.goal_state import GoalState
+    from agent.routes import RouteKind
+    from agent.run import _no_progress_budget_trip
+
+    budget = TokenBudgetEnforcer(max_tokens=1000)
+    budget.charge(800)
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    for _ in range(3):
+        state.record_planning_contract_failure("invalid_change_manifest")
+    orch = _orch_with([])
+    orch.goal_state = state
+
+    trip = _no_progress_budget_trip(budget, orch)
+    assert trip is not None
+    assert "three consecutive planning-contract failures" in trip
+
+
+# ── a direct worker gets a slice too, not the whole run ─────────────────────
+
+
+def test_root_worker_allowance_reserves_a_recovery_share() -> None:
+    """The traced budget failure. A direct worker was handed the parent
+    enforcer itself: one coder charged 200,580 of a 200,000-token run across
+    eight cycles while the root had spent 9,685, and when it failed there was
+    nothing left to continue with."""
+    run = TokenBudgetEnforcer(200_000)
+    run.charge(9_685)  # the root's first three cycles, from the trace
+
+    # Three worker slots, this one included: a third, not the remainder.
+    first = root_worker_allowance(run, 3)
+    assert first == 63_438
+    worker = ChildTokenBudget(run, first)
+    worker.charge(first)
+
+    # What the failed run did not have: a reserve the worker could not reach.
+    assert run.remaining == 126_877
+    assert root_worker_allowance(run, 2) == 63_438
+
+
+def test_root_worker_allowance_halts_the_worker_not_the_run() -> None:
+    """The share is a cap on the worker, and the parent still sees the spend —
+    so a worker that overruns stops itself while the root stays alive."""
+    run = TokenBudgetEnforcer(100_000)
+    worker = ChildTokenBudget(run, root_worker_allowance(run, 3))
+
+    assert worker.charge(33_333) == "halt" or worker.remaining == 0
+    assert run.remaining > 0  # the root can still spawn a replacement
+
+
+def test_worker_budget_wraps_only_when_there_is_a_ceiling_to_divide_by() -> None:
+    from agent.subagent import _worker_budget
+
+    class _Orch:
+        max_root_workers = 3
+        spawned_workers = 1  # incremented before dispatch: counts this worker
+
+    run = TokenBudgetEnforcer(200_000)
+    wrapped = _worker_budget(run, _Orch())
+    assert isinstance(wrapped, ChildTokenBudget)
+    assert wrapped.max_tokens == root_worker_allowance(run, 3)
+
+    # No orchestration means no worker ceiling and no root continuation to
+    # reserve for; the budget passes through rather than being invented.
+    assert _worker_budget(run, None) is run
+    assert _worker_budget(None, _Orch()) is None
+
+
+def test_budget_unit_is_documented_as_processed_not_cost() -> None:
+    """The one thing to know before changing this class. On the traced run the
+    two readings differed by 60% — 210,265 charged against 84,057 of marginal
+    cost — and only the larger one crossed the cap that ended three cycles
+    which had written nothing. A future reader must find that reasoning here
+    rather than rediscover it from a log."""
+    doc = TokenBudgetEnforcer.__doc__ or ""
+
+    assert "tokens PROCESSED, not money spent" in doc
+    assert "210,265" in doc and "84,057" in doc
+    assert "SECOND number" in doc  # how to add cost without re-denominating

@@ -4,6 +4,7 @@ version: 1.0.0
 description: >
   Direct standalone worker for architecture, API, schema, or data-flow choices.
 maxTurns: 4
+maxOutputTokens: 8192
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools: []

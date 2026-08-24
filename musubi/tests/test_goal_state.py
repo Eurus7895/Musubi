@@ -53,12 +53,11 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
     tools = [
         {"name": name}
         for name in (
-            "musubi_begin_direct",
             "musubi_begin_plan",
             "musubi_read_file",
             "musubi_commit_plan",
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
             "musubi_get_reference",
         )
@@ -66,7 +65,6 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
 
     state = GoalState.create("anything", "unknown", RouteKind.ROOT_DECIDES)
     assert {t["name"] for t in root_decision_tools(tools, state)} == {
-        "musubi_begin_direct",
         "musubi_begin_plan",
     }
 
@@ -89,6 +87,47 @@ def test_the_root_surface_tracks_the_model_owned_mode() -> None:
     )
     wide = {t["name"] for t in root_decision_tools(tools, state)}
     assert "musubi_get_skill" in wide and "musubi_get_reference" in wide
+
+
+def test_second_plan_contract_failure_withholds_read_tools() -> None:
+    tools = [
+        {"name": name}
+        for name in (
+            "musubi_read_file",
+            "musubi_glob",
+            "musubi_grep",
+            "musubi_commit_plan",
+        )
+    ]
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    state.record_planning_contract_failure("invalid_change_manifest")
+    state.record_planning_contract_failure("invalid_change_manifest")
+
+    assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
+        "musubi_commit_plan",
+    ]
+
+
+def test_valid_root_plan_resets_planning_contract_failures() -> None:
+    state = GoalState.create("add export", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+    state.record_planning_contract_failure("invalid_change_manifest")
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
+    )
+
+    assert state.planning_contract_failures == 0
+    assert state.last_planning_contract_error is None
 
 
 def test_outcome_packet_projects_worker_contract() -> None:
@@ -155,11 +194,17 @@ def test_simple_root_surface_is_spawn_only() -> None:
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
     )
-    state.begin_direct(
-        target_intent="create",
-        target_path="dashboard.html",
-        target_exists=False,
-        worker_role="coder",
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
     )
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
@@ -173,7 +218,7 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
         for name in (
             "musubi_read_file",
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
             "musubi_get_reference",
         )
@@ -196,70 +241,35 @@ def test_non_simple_root_surface_keeps_spawn_and_skill_tools() -> None:
 
     assert [tool["name"] for tool in root_decision_tools(tools, state)] == [
         "musubi_spawn_subagent",
-        "musubi_recommend_skills",
+        "musubi_list_skills",
         "musubi_get_skill",
         "musubi_get_reference",
     ]
 
 
-def test_pending_skill_ticket_hides_duplicate_recommendation() -> None:
+def test_skill_listing_stays_offered_alongside_the_spawn() -> None:
+    """There is no ticket to consume any more, so nothing withholds the
+    listing after one call. The root may list, decide, and spawn in the same
+    phase; listing twice costs a cheap tool call, not a policy state machine."""
     tools = [
         {"name": "musubi_spawn_subagent"},
-        {"name": "musubi_recommend_skills"},
+        {"name": "musubi_list_skills"},
     ]
     state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    state.begin_direct(
-        target_intent="create",
-        target_path="page.html",
-        target_exists=False,
-        worker_role="coder",
+    state.begin_plan()
+    manifest = parse_change_manifest_object({
+        "files_expected": 1,
+        "subsystems": ["agent"],
+    })
+    assert manifest is not None
+    state.commit_root_plan(
+        manifest=manifest,
+        change_size="small",
+        worker_chain=("coder",),
+        planning_artifacts=("plan.md", "manifest.json"),
     )
 
-    assert root_decision_tools(
-        tools, state, recommendation_pending=True,
-    ) == [{"name": "musubi_spawn_subagent"}]
-
-
-def test_plan_flag_rejects_direct_mode() -> None:
-    state = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    state.plan_required = True
-
-    try:
-        state.begin_direct(
-            target_intent="create",
-            target_path="page.html",
-            target_exists=False,
-            worker_role="coder",
-        )
-    except ValueError as exc:
-        assert "required" in str(exc)
-    else:
-        raise AssertionError("operator-required planning must reject Direct")
-
-
-def test_direct_create_allows_a_new_target_but_modify_requires_existence() -> None:
-    create = GoalState.create("create page", "unknown", RouteKind.ROOT_DECIDES)
-    create.begin_direct(
-        target_intent="create",
-        target_path="page.html",
-        target_exists=False,
-        worker_role="coder",
-    )
-    assert create.mode == "direct"
-    assert create.evidence_gap() is None
-
-    modify = GoalState.create("modify page", "unknown", RouteKind.ROOT_DECIDES)
-    try:
-        modify.begin_direct(
-            target_intent="modify",
-            target_path="missing.html",
-            target_exists=False,
-            worker_role="coder",
-        )
-    except ValueError as exc:
-        assert "does not exist" in str(exc)
-    else:
-        raise AssertionError("modify must fail closed for a missing target")
+    assert root_decision_tools(tools, state) == tools
 
 
 def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
@@ -271,7 +281,7 @@ def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
     tools = [
         {"name": "musubi_read_file"},
         {"name": "musubi_spawn_subagent"},
-        {"name": "musubi_recommend_skills"},
+        {"name": "musubi_list_skills"},
     ]
     state = GoalState.create(
         "create dashboard", "simple_artifact", "single_coder",
@@ -279,7 +289,7 @@ def test_recovery_offers_only_the_decision_it_exists_to_make() -> None:
 
     assert [t["name"] for t in root_decision_tools(
         tools, state, recovery_outcome=True,
-    )] == ["musubi_spawn_subagent", "musubi_recommend_skills"]
+    )] == ["musubi_spawn_subagent", "musubi_list_skills"]
     assert root_decision_tools(
         tools, state, recovery_outcome=True, decision_only=True,
     ) == [{"name": "musubi_spawn_subagent"}]
@@ -293,7 +303,7 @@ def test_spawn_exhausted_root_surface_offers_no_tools() -> None:
         {"name": name}
         for name in (
             "musubi_spawn_subagent",
-            "musubi_recommend_skills",
+            "musubi_list_skills",
             "musubi_get_skill",
         )
     ]
@@ -552,8 +562,10 @@ def test_a_turn_that_establishes_nothing_refuses_a_mutation_worker() -> None:
     gap = _blind_goal().evidence_gap()
 
     assert gap is not None
+    # The refusal names both self-serve ways out, so Root fixes it itself
+    # rather than returning to the user.
     assert "Explorer" in gap
-    assert "Planning mode" in gap
+    assert "manifest" in gap
 
 
 def test_a_named_target_is_enough() -> None:
@@ -692,3 +704,24 @@ def test_the_stop_is_not_terminal() -> None:
     # Re-declaring clears it, which is what the message tells the root to do.
     state.declared_files_expected = 5
     assert state.overrun_stop() is None
+
+
+def test_second_begin_plan_names_the_call_that_leaves_planning_mode() -> None:
+    """A traced run spent 80,286 tokens on a cycle that ended
+    `control musubi_begin_plan status=error`, then wrote its finished plan out
+    to the user as prose because it believed commit and spawn were unavailable.
+    `musubi_commit_plan` was in the surface the whole time; only the refusal
+    failed to say so."""
+    state = GoalState.create("build it", "unknown", RouteKind.ROOT_DECIDES)
+    state.begin_plan()
+
+    try:
+        state.begin_plan()
+    except ValueError as exc:
+        assert "already in planning mode" in str(exc)
+        assert "musubi_commit_plan" in str(exc)
+        assert "Reading is still allowed" in str(exc)
+    else:
+        raise AssertionError("a second begin_plan must fail closed")
+
+    assert state.mode == "planning"  # the failed call changes nothing

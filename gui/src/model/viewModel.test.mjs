@@ -39,6 +39,9 @@ function baseState(overrides = {}) {
     agentTurns: [],
     agentCycles: [],
     runtimeLogEvents: [],
+    stageAttempts: [],
+    stageAttemptEvents: [],
+    auditObligations: [],
     orchestratorSessions: [],
     pipelineRuns: [],
     pipelineCatalog: [],
@@ -238,7 +241,7 @@ test('the in-flight turn sorts newest despite having no completed turn row', () 
     ['req-old', 'req-mid', 'req-live'],
   )
   // Numbering is chronological, so the live turn takes the highest T-number.
-  assert.equal(vm.runtimeGraph.turns[2].label, 'Turn 03')
+  assert.equal(vm.runtimeGraph.turns[2].label, 'Request 03')
   // And it continues the chain rather than heading it.
   assert.equal(vm.runtimeGraph.turns[0].parentId, null)
   assert.equal(vm.runtimeGraph.turns[2].parentId, 'turn:req-mid')
@@ -260,6 +263,37 @@ test('includes pipeline stages launched by an Orchestrator chat in the runtime g
   assert.equal(vm.runtimeGraph.mode, 'pipeline')
   assert.equal(vm.runtimeGraph.pipelineName, 'code-review')
   assert.equal(vm.runtimeGraph.nodes.some((node) => node.id === stage.handle), true)
+})
+
+test('projects stage contracts and gates into request evidence but not agent logs', () => {
+  const stage = agent(44, 'pipeline-stage-ledger', 'done', 'coder', 'gui-orchestrator-stage-ledger')
+  const vm = buildViewModel(baseState({
+    orchestratorChatId: 'gui-orchestrator-stage-ledger',
+    selectedSession: 'gui-orchestrator-stage-ledger',
+    orchestratorSessions: [{ chatId: 'gui-orchestrator-stage-ledger', title: 'weather', lastRequest: 'weather', rootTurns: 1, workers: 1 }],
+    agentTurns: [{ id: 1, requestId: 'req-weather', chatId: 'gui-orchestrator-stage-ledger', parentSession: 'root-weather', request: 'five cities', startedAt: 100 }],
+    runtimeLogEvents: [{ id: 1, requestId: 'req-weather', chatId: 'gui-orchestrator-stage-ledger', seq: 1, ts: 'epoch:100', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: 'launch' }],
+    pipelineRuns: [{ sessionId: 'pipeline-stage-ledger', chatId: 'gui-orchestrator-stage-ledger', pipelineName: 'feature-dev', brief: 'five cities', startedAt: 101, status: 'success', stages: [stage] }],
+    stageAttempts: [{
+      sessionId: 'pipeline-stage-ledger', stage: 'code', attempt: 1,
+      phase: 'passed', contractJson: JSON.stringify({ goal: 'Render five cities' }),
+      contractHash: 'sha256:contract', selectedSkillId: 'web-ui',
+      selectedSkillVersion: '1.0.0', selectedSkillHash: 'sha256:skill',
+      workerHandleId: stage.handle, gateResultJson: JSON.stringify({ status: 'pass' }),
+    }],
+    stageAttemptEvents: [{ id: 1, ts: '10:00:01', sessionId: 'pipeline-stage-ledger', stage: 'code', attempt: 1, event: 'gate_verdict', workerHandleId: stage.handle, contractHash: 'sha256:contract', detailJson: '{"status":"pass"}' }],
+    auditObligations: [{ id: 2, createdAt: '10:00:00', kind: 'worker_spawn', handleId: stage.handle, status: 'pending', deliveredAt: '', error: 'audit offline' }],
+  }), actions())
+
+  const request = vm.runtimeGraph.turns[0]
+  const worker = vm.runtimeGraph.nodes.find((node) => node.id === stage.handle)
+  assert.equal(request.goal, 'Render five cities')
+  assert.equal(request.contractHash, 'sha256:contract')
+  assert.equal(request.verdict, 'pass')
+  assert.equal(request.pendingAudit, 1)
+  assert.equal(worker.selectedSkill, 'web-ui')
+  assert.equal(vm.runtimeLogs.some((row) => row.requestId === 'req-weather' && row.category === 'gates'), true)
+  assert.equal(vm.runtimeLogs.some((row) => row.agentHandle === stage.handle && row.category === 'gates'), false)
 })
 
 test('does not attach an older pipeline run to a newer direct root turn', () => {
@@ -1465,4 +1499,160 @@ test('the Studio lists saved recipes and refuses to delete repository-owned ones
   // Nothing open is nothing to delete.
   state.pipelineBuilder.savedRecipe = { name: '', stages: [] }
   assert.equal(buildViewModel(state, {}).pipelineBuilder.deletable, false)
+})
+
+// ── evidence is session-wide, and every source survives the projection ──────
+
+function historySession(overrides = {}) {
+  // Two turns. The FIRST summons a worker and pushes it a skill; the SECOND
+  // (the latest) does nothing but answer. That is the shape the console got
+  // wrong: scoping evidence to the latest root turn hid everything the
+  // session had actually done.
+  const coder = agent(1, 'root-1', 'done', 'coder', 'gui-orchestrator-wide')
+  coder.pushedSkill = 'typescript'
+  return {
+    coder,
+    state: baseState({
+      orchestratorChatId: 'gui-orchestrator-wide',
+      selectedSession: 'gui-orchestrator-wide',
+      orchestratorSessions: [{
+        chatId: 'gui-orchestrator-wide', title: 'wide', lastRequest: 'and now explain it',
+        rootTurns: 2, workers: 1,
+      }],
+      subagents: [coder],
+      agentTurns: [
+        { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-wide', parentSession: 'root-1', request: 'build it', startedAt: 100, cycles: 3, tokensInEstimate: 800, tokensOutEstimate: 200 },
+        { id: 2, requestId: 'request-2', chatId: 'gui-orchestrator-wide', parentSession: 'root-2', request: 'explain it', startedAt: 200, cycles: 1, tokensInEstimate: 40, tokensOutEstimate: 10 },
+      ],
+      agentCycles: [
+        { sessionId: 'root-1', stage: 'agent', workerId: 'root', cycleIdx: 0, lmMs: 5, tokensIn: 200, cachedInputTokens: 0, tokensOut: 50, tokenSource: 'provider', toolNames: ['musubi_spawn_subagent'], cycleStatus: 'ok' },
+        { sessionId: 'root-1', stage: 'coder', workerId: coder.handle, cycleIdx: 0, lmMs: 9, tokensIn: 600, cachedInputTokens: 0, tokensOut: 150, tokenSource: 'provider', toolNames: ['musubi_write_file'], cycleStatus: 'final' },
+        { sessionId: 'root-2', stage: 'agent', workerId: 'root', cycleIdx: 0, lmMs: 3, tokensIn: 40, cachedInputTokens: 0, tokensOut: 10, tokenSource: 'provider', toolNames: [], cycleStatus: 'final' },
+      ],
+      runtimeLogEvents: [
+        { id: 1, requestId: 'request-1', chatId: 'gui-orchestrator-wide', seq: 1, ts: 'epoch:100', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch 1' },
+        { id: 2, requestId: 'request-2', chatId: 'gui-orchestrator-wide', seq: 1, ts: 'epoch:200', source: 'host', stream: 'host', agentHandle: '', role: 'host', category: 'host', message: '[musubi] launch 2' },
+      ],
+      ...overrides,
+    }),
+  }
+}
+
+test('skills recorded on an earlier turn still count as used by the session', () => {
+  const { coder, state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  // Scoped to the latest root turn, this map was empty and the conversation
+  // panel read "No successful skill calls recorded" for a session that pushed
+  // a skill into the only worker it ran.
+  assert.deepEqual(vm.skillsByWorker[coder.handle], ['typescript'])
+})
+
+test('the request projection keeps audit-derived logs instead of replacing them', () => {
+  const { coder, state } = historySession({
+    policy: [{ id: 30, ts: '10:00:03', verdict: 'ALLOW', tool: 'musubi_write_file', role: 'coder', handle: 'h1', reason: 'capability Write allowed for role coder' }],
+    toolEvidence: [
+      { id: 20, ts: '10:00:01', sessionId: 'root-1', chatId: 'gui-orchestrator-wide', role: 'coder', workerId: 'h1', tool: 'musubi_write_file', category: 'tools', status: 'ok', skillId: '', detail: 'wrote index.html' },
+    ],
+  })
+  const vm = buildViewModel(state, actions())
+
+  const categories = new Set(vm.runtimeLogs.map((row) => row.category))
+  // The ledger only ever carries what the stderr framer wrote. Skills pushed
+  // at spawn, policy verdicts, and per-cycle model rows come from elsewhere
+  // and used to be dropped wholesale by the projection.
+  assert.equal(categories.has('skills'), true)
+  assert.equal(categories.has('policy'), true)
+  assert.equal(categories.has('model'), true)
+  // Still request-scoped, so the per-turn log stays a per-turn log.
+  const pushed = vm.runtimeLogs.find((row) => row.category === 'skills')
+  assert.equal(pushed.requestId, 'request-1')
+  assert.equal(pushed.agentHandle, coder.handle)
+  // And the ledger's own rows survive alongside them.
+  assert.equal(vm.runtimeLogs.some((row) => row.category === 'host'), true)
+})
+
+test('a turn reports the tokens it spent including its workers, and its own share', () => {
+  const { state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+  assert.deepEqual(turns.map((node) => node.tokens), [1000, 50])
+  // The first turn's 1000 CONTAINS the coder's 750 — the driver hands one
+  // counter to the root and every worker under it. Stating the root's own
+  // share is what stops the two figures reading as addends.
+  assert.deepEqual(turns.map((node) => node.ownTokens), [250, 50])
+  assert.equal(turns[0].tokensAreInclusive, true)
+  const worker = vm.runtimeGraph.nodes.find((node) => node.kind === 'agent')
+  assert.equal(worker.tokens, 750)
+  // Session total = the sum of the turn totals, with nothing counted twice.
+  assert.equal(
+    vm.driverSummary.economics.inputTokens + vm.driverSummary.economics.outputTokens,
+    turns.reduce((sum, node) => sum + node.tokens, 0),
+  )
+})
+
+test('pipeline stage cycles are included in their request token total', () => {
+  const { state } = historySession()
+  state.pipelineRuns = [{
+    sessionId: 'pipeline-1', requestId: 'request-1',
+    chatId: 'gui-orchestrator-wide', pipelineName: 'feature-dev',
+    startedAt: 101, status: 'success', stages: [],
+  }]
+  state.agentCycles.push({
+    sessionId: 'pipeline-1', stage: 'code', workerId: 'stage-worker',
+    cycleIdx: 0, lmMs: 4, tokensIn: 240, cachedInputTokens: 0,
+    tokensOut: 60, tokenSource: 'provider', toolNames: [], cycleStatus: 'final',
+  })
+
+  const vm = buildViewModel(state, actions())
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+
+  assert.equal(turns[0].tokens, 1300)
+  assert.equal(turns[0].ownTokens, 250)
+})
+
+test('a turn carries the skills its own agents received', () => {
+  const { state } = historySession()
+  const vm = buildViewModel(state, actions())
+
+  const turns = vm.runtimeGraph.nodes.filter((node) => node.kind === 'turn')
+  assert.deepEqual(turns[0].skills, ['typescript'])
+  assert.deepEqual(turns[1].skills, [])
+})
+
+test('a policy verdict joins to the root node under every recorded spelling', () => {
+  // The substrate writes `root` now, but `policy_audit` is append-only: rows
+  // from before the rename say `agent`, and the console's own prose says
+  // `driver`. All three must reach the root node or the Policy panel reads
+  // empty for history it can see perfectly well.
+  const { state } = historySession({
+    policy: [
+      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'r', requestId: 'request-1', parentSessionId: 'root-1' },
+      { id: 2, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'agent', handle: '', reason: 'r', requestId: 'request-1', parentSessionId: 'root-1' },
+      { id: 3, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'driver', handle: '', reason: 'r', requestId: 'request-2', parentSessionId: 'root-2' },
+      { id: 4, ts: 't', verdict: 'ALLOW', tool: 'musubi_grep', role: 'saboteur', handle: '', reason: 'r', requestId: 'request-2', parentSessionId: 'root-2' },
+    ],
+  })
+  const vm = buildViewModel(state, actions())
+
+  const tools = vm.runtimeLogs.filter((row) => row.category === 'policy').map((row) => row.name)
+  assert.deepEqual(tools.sort(), ['musubi_glob', 'musubi_read_file', 'musubi_write_file'])
+  // A role that is not the driver under any spelling is still not the driver.
+  assert.equal(tools.includes('musubi_grep'), false)
+})
+
+test('legacy and foreign root policy rows never attach to the newest request', () => {
+  const { state } = historySession({
+    policy: [
+      { id: 1, ts: 't', verdict: 'ALLOW', tool: 'musubi_glob', role: 'root', handle: '', reason: 'legacy' },
+      { id: 2, ts: 't', verdict: 'DENY', tool: 'musubi_write_file', role: 'root', handle: '', reason: 'other chat', requestId: 'request-foreign', parentSessionId: 'root-foreign' },
+      { id: 3, ts: 't', verdict: 'ALLOW', tool: 'musubi_read_file', role: 'root', handle: '', reason: 'this turn', requestId: 'request-1', parentSessionId: 'root-1' },
+    ],
+  })
+
+  const policy = buildViewModel(state, actions()).runtimeLogs
+    .filter((row) => row.category === 'policy')
+  assert.deepEqual(policy.map((row) => row.name), ['musubi_read_file'])
+  assert.equal(policy[0].requestId, 'request-1')
 })

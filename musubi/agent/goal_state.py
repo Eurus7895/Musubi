@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from agent.manifest import (
+    ROOT_PLAN_CHANGE_SIZES,
+    ROOT_PLAN_WORKER_ROLES,
     Band,
     ChangeAssessment,
     ChangeManifest,
@@ -42,7 +44,7 @@ LARGE_ROLE_CHAIN: tuple[str, ...] = ("designer", "coder", "reviewer")
 #: Roles whose order the goal state enforces. Anything else the root summons
 #: (an explorer for workspace facts, an investigator for a failure) is free.
 ORDERED_ROLES: frozenset[str] = frozenset(
-    {"designer", "coder", "reviewer", "investigator", "explorer", "reviewer-aux"}
+    ROOT_PLAN_WORKER_ROLES
 )
 #: Roles that WRITE. The sufficiency gate applies to these and nothing else:
 #: refusing a read-only worker for lack of evidence would refuse the very thing
@@ -61,12 +63,15 @@ EVIDENCE_ROLES: frozenset[str] = frozenset(
 _SUCCEEDED: str = "done"
 _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
-# artifacts: the root ranks the catalog with `musubi_recommend_skills` and
-# passes the chosen `pushed_skill_id` into the spawn (option 3). This is one
-# cheap tool definition — it returns ids + titles, not skill bodies — so it
+# artifacts: the root LISTS the worker role's catalog with
+# `musubi_list_skills(for_role=…)` and passes the id it chooses as
+# `pushed_skill_id` on the spawn (HI #2's push). One cheap tool definition —
+# it returns ids, titles and one-line descriptions, never skill bodies — so it
 # does not blow the simple-scope root-token target.
-_SKILL_SELECT_TOOL = "musubi_recommend_skills"
-_BEGIN_DIRECT_TOOL = "musubi_begin_direct"
+#
+# The listing is a fact; a ranking would be a judgement about what the request
+# is about, which no substrate code is entitled to make. The model selects.
+_SKILL_SELECT_TOOL = "musubi_list_skills"
 _BEGIN_PLAN_TOOL = "musubi_begin_plan"
 _COMMIT_PLAN_TOOL = "musubi_commit_plan"
 _ROOT_PLAN_READ_TOOLS = frozenset({
@@ -144,10 +149,10 @@ class GoalState:
     root_tokens_in: int = 0
     root_tokens_out: int = 0
     outcomes: list[OutcomePacket] = field(default_factory=list)
-    #: Legacy pipeline reassessment. New direct agent turns use `change_size`
-    #: and the worker chain committed by Root.
+    #: Legacy pipeline reassessment. New agent turns use `change_size` and the
+    #: worker chain committed by Root.
     assessment: ChangeAssessment | None = None
-    #: The next role Root owes after a Direct declaration or committed plan.
+    #: The next role Root owes after a committed plan.
     next_role: str | None = None
     #: One deterministic question the driver must return to the user before
     #: any further model call (set when the manifest routes to ask_scope).
@@ -176,15 +181,21 @@ class GoalState:
     #: gate below are live, and read from this object each time it is asked.
     target_named: bool = False
     #: Root owns this transition. Code never infers it from the user's text.
+    #: `undecided` -> `planning` -> `planned`. There is no self-declared route:
+    #: a run reaches a worker chain by committing a manifest, never by
+    #: asserting that the work is small.
     mode: str = "undecided"
-    #: Structured target declaration supplied by the model in Direct mode.
-    target_intent: str | None = None
-    target_path: str | None = None
-    target_exists: bool | None = None
-    #: `--plan` makes Direct an invalid transition; otherwise the model decides.
+    #: Retained so an operator `--plan` flag still reads as a no-op rather than
+    #: an error; planning is now the only path in either case.
     plan_required: bool = False
     #: Model-declared size. Manifest arithmetic does not populate this field.
     change_size: str | None = None
+    #: Consecutive malformed Root planning-contract attempts. This is
+    #: run-scoped and deliberately ephemeral: it constrains an active model
+    #: loop, not future requests or a user's next turn.
+    planning_contract_failures: int = 0
+    #: Bounded machine-readable reason for the latest failed declaration.
+    last_planning_contract_error: str | None = None
 
     @classmethod
     def create(
@@ -211,39 +222,24 @@ class GoalState:
             next_role=None,
         )
 
-    def begin_direct(
-        self,
-        *,
-        target_intent: str,
-        target_path: str,
-        target_exists: bool,
-        worker_role: str,
-    ) -> None:
-        """Accept one model-owned Direct declaration after path validation."""
-        if self.mode != "undecided":
-            raise ValueError(f"goal mode is already {self.mode}")
-        if self.plan_required:
-            raise ValueError("Planning mode is required by the operator")
-        if target_intent not in {"create", "modify"}:
-            raise ValueError("target_intent must be create or modify")
-        if target_intent == "modify" and not target_exists:
-            raise ValueError("modify target does not exist")
-        if worker_role not in ORDERED_ROLES:
-            raise ValueError(
-                f"Direct worker_role must be one of {sorted(ORDERED_ROLES)}"
-            )
-        self.mode = "direct"
-        self.scope = "simple_artifact"
-        self.route = RouteKind.SINGLE_CODER
-        self.target_intent = target_intent
-        self.target_path = target_path
-        self.target_exists = target_exists
-        self.target_named = True
-        self.next_role = worker_role
-        self.role_chain = ()
-
     def begin_plan(self) -> None:
-        """Open Root's bounded read-only planning mode."""
+        """Open Root's bounded read-only planning mode.
+
+        A second call names the way forward rather than only the refusal. The
+        bare message — "goal mode is already planning" — told Root what it
+        could not do and nothing about what it could, and in a traced run Root
+        read that as being stuck: it spent 80,286 tokens on the failed cycle,
+        then wrote its finished plan out to the user as prose, saying "the
+        commit/spawn tools aren't available to me from here". They were.
+        `musubi_commit_plan` is in the planning surface throughout.
+        """
+        if self.mode == "planning":
+            raise ValueError(
+                "already in planning mode — do not open it twice. Reading is "
+                "still allowed; when the plan is ready call "
+                "`musubi_commit_plan` with the plan, manifest, size, and "
+                "worker chain. That is the only call that leaves this mode"
+            )
         if self.mode != "undecided":
             raise ValueError(f"goal mode is already {self.mode}")
         self.mode = "planning"
@@ -251,6 +247,23 @@ class GoalState:
         self.route = RouteKind.ROOT_DECIDES
         self.next_role = None
         self.role_chain = ()
+        self.reset_planning_contract_failures()
+
+    def record_planning_contract_failure(self, error_kind: str) -> int:
+        """Record one failed plan declaration and return its consecutive count."""
+        if self.mode != "planning":
+            raise ValueError("planning contract failures require Planning mode")
+        kind = str(error_kind).strip()
+        if not kind:
+            raise ValueError("planning contract error kind must be non-empty")
+        self.planning_contract_failures += 1
+        self.last_planning_contract_error = kind
+        return self.planning_contract_failures
+
+    def reset_planning_contract_failures(self) -> None:
+        """Clear only this run's correction-loop state after a valid commit."""
+        self.planning_contract_failures = 0
+        self.last_planning_contract_error = None
 
     def commit_root_plan(
         self,
@@ -263,7 +276,7 @@ class GoalState:
         """Accept Root's model-declared size and ordered worker chain."""
         if self.mode != "planning":
             raise ValueError("a plan can be committed only in Planning mode")
-        if change_size not in {"small", "medium", "large"}:
+        if change_size not in ROOT_PLAN_CHANGE_SIZES:
             raise ValueError("change_size must be small, medium, or large")
         chain = tuple(str(role).strip() for role in worker_chain)
         if not chain:
@@ -282,6 +295,7 @@ class GoalState:
         self.role_chain = chain[1:]
         self.planning_artifacts = tuple(planning_artifacts)
         self.declared_files_expected = manifest.files_expected
+        self.reset_planning_contract_failures()
         if manifest.blocking_decisions:
             listed = ", ".join(manifest.blocking_decisions)
             self.pending_clarification = (
@@ -395,9 +409,7 @@ class GoalState:
         true DURING a turn — the whole point is that the root can fix this
         itself rather than returning to the user.
         """
-        if self.mode == "planned" or self.target_named or (
-            self.target_intent == "create" and self.target_path
-        ):
+        if self.mode == "planned" or self.target_named:
             return None
         if any(
             outcome.role in EVIDENCE_ROLES and outcome.status == _SUCCEEDED
@@ -407,9 +419,9 @@ class GoalState:
         return (
             "nothing establishes what this turn targets: the request names no "
             "path inside the workspace, Root declared no safe creation target, "
-            "and no Explorer has come back with findings. Declare Direct with "
-            "a target path, enter Planning mode, or spawn Explorer for a "
-            "bounded workspace-location question"
+            "and no Explorer has come back with findings. Spawn Explorer "
+            "for a bounded workspace-location question, or commit a plan whose "
+            "manifest names what this change touches"
         )
 
     def reject_planning_artifacts(self, reason: str) -> ChangeAssessment:
@@ -535,8 +547,14 @@ class GoalState:
                 "re-plan the remainder explicitly.\n"
             )
         planning = ""
-        if self.planning_artifacts:
+        if self.planning_contract_failures:
             planning = (
+                f"planning_contract_failures={self.planning_contract_failures};"
+                f"last_error={self.last_planning_contract_error or 'unknown'}\n"
+                "Correct the declared plan contract before implementation.\n"
+            )
+        if self.planning_artifacts:
+            planning += (
                 "planning_artifacts="
                 + ",".join(self.planning_artifacts)
                 + "\nPass both files to the next worker. plan.md is the "
@@ -567,7 +585,6 @@ def root_decision_tools(
     recovery_outcome: bool = False,
     decision_only: bool = False,
     spawn_exhausted: bool = False,
-    recommendation_pending: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the model-visible root tools for the current decision phase."""
     if recovery_outcome:
@@ -597,18 +614,20 @@ def root_decision_tools(
         return []
     if state.mode == "undecided":
         return [
-            tool for tool in tools
-            if tool.get("name") in {_BEGIN_DIRECT_TOOL, _BEGIN_PLAN_TOOL}
+            tool for tool in tools if tool.get("name") == _BEGIN_PLAN_TOOL
         ]
     if state.mode == "planning":
+        if state.planning_contract_failures >= 2:
+            return [
+                tool for tool in tools
+                if tool.get("name") == _COMMIT_PLAN_TOOL
+            ]
         allowed_planning = set(_ROOT_PLAN_READ_TOOLS) | {_COMMIT_PLAN_TOOL}
         return [
             tool for tool in tools if tool.get("name") in allowed_planning
         ]
-    # Spawn plus skill selection after Direct or a committed plan.
+    # Spawn plus skill selection, once a plan is committed.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
-    if recommendation_pending:
-        allowed.discard(_SKILL_SELECT_TOOL)
     if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

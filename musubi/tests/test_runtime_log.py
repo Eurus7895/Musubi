@@ -9,7 +9,7 @@ from agent.runtime_log import (
     emit_runtime_log,
     runtime_worker_scope,
 )
-from agent.run import _log_cycle
+from agent.run import _log_cycle, sanitize_control_result
 
 
 def _events(raw: io.StringIO) -> list[dict[str, object]]:
@@ -103,3 +103,19 @@ def test_model_cycle_records_are_categorized_for_console_filters() -> None:
     )
 
     assert _events(raw)[0]["category"] == "model"
+
+
+def test_control_result_log_is_sanitized_and_bounded() -> None:
+    result = json.dumps({
+        "status": "error",
+        "error_kind": "invalid_change_manifest",
+        "message": "files_expected is required",
+        "expected_schema": {"must_not": "reach the request log"},
+        "consecutive_failures": 2,
+    })
+
+    assert sanitize_control_result(result, "musubi_commit_plan") == (
+        "[agent] control musubi_commit_plan status=error "
+        "error_kind=invalid_change_manifest "
+        "reason=files_expected is required consecutive_failures=2"
+    )

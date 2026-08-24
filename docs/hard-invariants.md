@@ -44,15 +44,16 @@ hardcode a model id: the vendor is configuration, not a constant.
 **How it breaks:** an LLM SDK import creeping into `server.py`,
 `validation/*`, or `scripts/policy_engine.py`. Stop and ask.
 
-## #2 — Skills are pushed to workers and pipeline stages; pulled on demand by the Agent
+## #2 — The model selects one permitted skill; the harness forces its use
 
-Push has one mechanism and the worker cannot opt out: the role skill is
-injected into the spawn system prompt (`SUBAGENT_ROLE_SKILLS` →
-`musubi_get_subagent_context` returns `role_skill`;
-`agent/subagent.py::build_subagent_system_prompt` embeds it). Same path for
-direct workers and pipeline stages.
+The model chooses exactly one skill from the role-filtered catalog before a
+worker starts. The harness never chooses, defaults, substitutes, or silently
+drops that choice. It validates role membership and catalog identity, loads
+the exact content, records its version and hash, and injects it into the worker
+system prompt where the worker cannot suppress it. A missing or invalid choice
+fails closed. Direct workers and pipeline stages use the same boundary.
 
-Agent-side: the `musubi_get_skill` LM tool — the model decides when to load.
+Agent-side pull remains `musubi_get_skill`; the model decides when to load it.
 
 ## #3 — Evaluator firewall
 
@@ -89,8 +90,11 @@ Retries write a **new** `stage_outputs` attempt row — write-once per
 
 ## #8 — No silent sub-agents
 
-Every spawn and every completion writes a row to `subagent_audit`, visible via
-`musubi_query_subagent_events`.
+Before any worker handle becomes runnable, the substrate persists a durable
+spawn-audit obligation and delivers its spawn row to `subagent_audit`. If
+delivery fails, the worker is abandoned and the pending obligation remains
+queryable for relay; it is never allowed to run unaudited. Every completion
+also writes append-only evidence visible via `musubi_query_subagent_events`.
 
 ## #9 — Tag and expire
 
@@ -98,3 +102,8 @@ Every component carries a `musubi-tier` tag (`substrate` or `ephemeral`).
 Ephemeral components declare `expires-when:` **and** `cost-lever:`. PRs that
 add ephemeral structure without retiring an equivalent — or strengthening the
 substrate — get pushed back.
+
+Tags declare lifecycle intent; they do not prove expiration. Expiration needs
+machine-readable status plus an evidence query over the declared threshold.
+Until that central registry lands, source declarations and the roadmap must
+carry the same measurable trigger and may not be treated as auto-retirement.

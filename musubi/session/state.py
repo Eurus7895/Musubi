@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from storage import db
 from validation import schema_migrations, verifier
@@ -71,6 +71,7 @@ def create_session(
     request_id: str | None = None,
     profile: str | None = None,
     task: str | None = None,
+    stages: Sequence[str] | None = None,
 ) -> str:
     """Create a new session and seed all stage rows as pending. Returns session_id.
 
@@ -83,7 +84,14 @@ def create_session(
     now = _now()
     db.init_db(db_path)
     db.insert_session(session_id, request, now, db_path)
-    for stage in STAGES:
+    if stages is None:
+        import composer
+        resolved_stages = composer.active_stages(pipeline_name) or STAGES
+    else:
+        resolved_stages = [str(stage).strip() for stage in stages if str(stage).strip()]
+    if not resolved_stages or len(resolved_stages) != len(set(resolved_stages)):
+        raise ValueError("stages must be a non-empty sequence of unique names")
+    for stage in resolved_stages:
         # G.2: tag fresh rows with the current schema version so reads
         # don't trigger a spurious v1 → vN migration on data that was
         # written under vN to begin with.
@@ -130,7 +138,7 @@ def lock_agent_versions(
         if not base.exists():
             continue
         # rglob: the agent catalog is organised by purpose directory
-        # (root/, workers/, meta/); first occurrence of a name wins.
+        # (root/, workers/); first occurrence of a name wins.
         for agent_file in sorted(base.rglob("*.agent.md")):
             # stem is e.g. "planner.agent"; strip the ".agent" suffix
             name = agent_file.stem.replace(".agent", "")
@@ -216,8 +224,6 @@ def write_stage(
     so a chunked code stage can have one row per task and each row is
     still write-once within its (chunk, attempt) tuple.
     """
-    if stage not in STAGES:
-        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
     row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row is None:
         raise ValueError(
@@ -270,8 +276,6 @@ def read_stage(
     migration step writes one audit row. Failure raises (the migration
     itself decides if data is recoverable).
     """
-    if stage not in STAGES:
-        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
     row = db.get_latest_written_stage_row(
         session_id, stage, db_path=db_path, chunk_id=chunk_id,
     )
@@ -355,8 +359,12 @@ def read_stage_user_hint(
     "the previous attempt skipped error handling" sees that note in its
     next read.
     """
-    if stage not in STAGES:
-        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    if get_session(session_id, db_path) is None:
+        raise ValueError(f"Session {session_id!r} not found")
+    if stage not in db.get_stage_names(session_id, db_path):
+        raise ValueError(
+            f"Unknown stage {stage!r} for session {session_id!r}"
+        )
     row = db.get_stage_row(session_id, stage, db_path=db_path, chunk_id=chunk_id)
     if row is None:
         return None
@@ -377,8 +385,6 @@ def ensure_chunk_row(
     coder/review pair so an `attempt=1, chunk_id=<id>` row exists for
     `mark_in_progress` / `write_stage` to update.
     """
-    if stage not in STAGES:
-        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
     if not chunk_id or not chunk_id.strip():
         raise ValueError("ensure_chunk_row requires a non-empty chunk_id")
     chunk_id = chunk_id.strip()
@@ -433,14 +439,16 @@ def pause_session(
     `chunk_id` (Phase G.1.7) records which chunk a chunked-stage pause
     belongs to so the resume command targets the right chunk run.
     """
-    if stage not in STAGES:
-        raise ValueError(f"Unknown stage {stage!r}. Valid stages: {STAGES}")
+    if get_session(session_id, db_path) is None:
+        raise ValueError(f"Session {session_id!r} not found")
+    if stage not in db.get_stage_names(session_id, db_path):
+        raise ValueError(
+            f"Unknown stage {stage!r} for session {session_id!r}"
+        )
     if reason not in VALID_PAUSE_REASONS:
         raise ValueError(
             f"Unknown pause_reason {reason!r}. Valid: {sorted(VALID_PAUSE_REASONS)}"
         )
-    if get_session(session_id, db_path) is None:
-        raise ValueError(f"Session {session_id!r} not found")
     cleaned_chunk = (
         chunk_id.strip()
         if isinstance(chunk_id, str) and chunk_id.strip()
@@ -538,7 +546,7 @@ def resume(session_id: str, db_path: Path | None = None) -> str | None:
         s = row["stage"]
         if s not in latest or row["attempt"] > latest[s]["attempt"]:
             latest[s] = row
-    for stage in STAGES:
+    for stage in db.get_stage_names(session_id, db_path):
         row = latest.get(stage)
         if row and row["output"] is None:
             return stage

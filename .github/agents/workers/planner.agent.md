@@ -5,6 +5,7 @@ description: >
   Direct standalone worker for scoping vague or larger tasks into acceptance
   criteria and an implementation outline.
 maxTurns: 4
+maxOutputTokens: 8192
 tools: ["Read", "View", "Grep", "Glob"]
 disallowedTools: ["Write", "Edit", "Bash"]
 lm_tools: []

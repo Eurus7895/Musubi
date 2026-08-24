@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 # PyYAML is loaded lazily inside `_load_pipeline_yaml` (same pattern as
 # scripts/policy_engine.py). Older PyInstaller bundles of the harness were
@@ -45,6 +47,51 @@ _CANONICAL_AGENT_OUTPUT_STAGE: dict[str, str] = {
     "reviewer": "review",
 }
 _CANONICAL_STAGE_ORDER: list[str] = ["plan", "design", "code", "review"]
+
+_ALLOWED_CHECK_TYPES = frozenset({
+    "file_exists",
+    "file_created_or_modified",
+    "dom_count",
+    "dom_distinct_text",
+    "dom_text_set",
+    "lint_clean",
+    "named_command",
+})
+_STAGE_FIELDS = frozenset({
+    "preset", "agent", "name", "stage", "spawns",
+    "allowed_checks", "allowed_commands", "max_iterations",
+})
+
+
+class PipelineRecipeError(ValueError):
+    """A governed recipe declaration is malformed or unsafe to run."""
+
+
+@dataclass(frozen=True)
+class NamedCommandSpec:
+    command_id: str
+    argv: tuple[str, ...]
+    timeout_seconds: int
+    root: str = "musubi"
+    cwd: str = "."
+
+
+@dataclass(frozen=True)
+class StageRecipe:
+    stage: str
+    agent: str
+    preset: str | None
+    spawns: tuple[str, ...]
+    allowed_checks: tuple[str, ...]
+    allowed_commands: tuple[str, ...]
+    max_iterations: int
+
+
+@dataclass(frozen=True)
+class PipelineRecipeContract:
+    name: str
+    stages: tuple[StageRecipe, ...]
+    commands: Mapping[str, NamedCommandSpec]
 
 
 def _pipelines_root() -> Path:
@@ -205,6 +252,177 @@ def _flat_stage_entries(data: dict[str, Any]) -> list[dict[str, object]]:
 def pipeline_stage_entries(pipeline_name: str) -> list[dict[str, object]]:
     """Return the canonical normalized projection of flat pipeline stages."""
     return _flat_stage_entries(_load_pipeline_yaml(pipeline_name))
+
+
+def _strict_string_list(raw: Any, *, field: str, stage: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise PipelineRecipeError(
+            f"stage {stage!r} field {field!r} must be a list"
+        )
+    values: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise PipelineRecipeError(
+                f"stage {stage!r} field {field!r} contains a non-string value"
+            )
+        normalized = value.strip().lower()
+        if normalized in values:
+            raise PipelineRecipeError(
+                f"stage {stage!r} field {field!r} contains duplicate "
+                f"value {normalized!r}"
+            )
+        values.append(normalized)
+    return tuple(values)
+
+
+def _strict_commands(data: dict[str, Any]) -> Mapping[str, NamedCommandSpec]:
+    raw_checks = data.get("checks") or {}
+    if not isinstance(raw_checks, dict):
+        raise PipelineRecipeError("checks must be a mapping of command ids")
+    commands: dict[str, NamedCommandSpec] = {}
+    for raw_id, raw_spec in raw_checks.items():
+        command_id = str(raw_id).strip()
+        if not command_id or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", command_id):
+            raise PipelineRecipeError(f"invalid command id {raw_id!r}")
+        if not isinstance(raw_spec, dict):
+            raise PipelineRecipeError(f"command {command_id!r} must be a mapping")
+        unknown = set(raw_spec) - {
+            "type", "argv", "timeout_seconds", "root", "cwd",
+        }
+        if unknown:
+            raise PipelineRecipeError(
+                f"command {command_id!r} has unknown field(s) {sorted(unknown)}"
+            )
+        if raw_spec.get("type") != "command":
+            raise PipelineRecipeError(
+                f"command {command_id!r} must declare type 'command'"
+            )
+        raw_argv = raw_spec.get("argv")
+        if (
+            not isinstance(raw_argv, list)
+            or not raw_argv
+            or any(not isinstance(arg, str) or not arg for arg in raw_argv)
+        ):
+            raise PipelineRecipeError(
+                f"command {command_id!r} argv must be a non-empty string list"
+            )
+        timeout = raw_spec.get("timeout_seconds", 60)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+            raise PipelineRecipeError(
+                f"command {command_id!r} timeout_seconds must be positive"
+            )
+        commands[command_id] = NamedCommandSpec(
+            command_id=command_id,
+            argv=tuple(raw_argv),
+            timeout_seconds=timeout,
+            root=str(raw_spec.get("root") or "musubi"),
+            cwd=str(raw_spec.get("cwd") or "."),
+        )
+    return MappingProxyType(commands)
+
+
+def load_pipeline_contract(pipeline_name: str) -> PipelineRecipeContract:
+    """Load the strict runnable contract for a flat-stage pipeline.
+
+    Compatibility helpers remain fail-soft for historical reads. This entry
+    point is deliberately fail-closed because its result governs runtime
+    checks, retries, and command authority.
+    """
+    data = _load_pipeline_yaml(pipeline_name)
+    if not data:
+        raise PipelineRecipeError(f"pipeline {pipeline_name!r} is missing or invalid")
+    raw_stages = data.get("stages")
+    if not isinstance(raw_stages, list) or len(raw_stages) < 2:
+        raise PipelineRecipeError("runnable pipeline needs at least two flat stages")
+
+    commands = _strict_commands(data)
+    presets = _load_presets()
+    stages: list[StageRecipe] = []
+    seen_stages: set[str] = set()
+    for index, raw_stage in enumerate(raw_stages):
+        if not isinstance(raw_stage, dict):
+            raise PipelineRecipeError(f"stage {index} must be a mapping")
+        unknown = set(raw_stage) - _STAGE_FIELDS
+        if unknown:
+            raise PipelineRecipeError(
+                f"stage {index} has unknown field(s) {sorted(unknown)}"
+            )
+        resolved = _resolve_stage_entry(raw_stage, presets)
+        if resolved is None:
+            raise PipelineRecipeError(f"stage {index} has no valid agent")
+        agent, stage = resolved
+        if stage in seen_stages:
+            raise PipelineRecipeError(f"duplicate stage {stage!r}")
+        seen_stages.add(stage)
+
+        allowed_checks = _strict_string_list(
+            raw_stage.get("allowed_checks"), field="allowed_checks", stage=stage,
+        )
+        unknown_checks = set(allowed_checks) - _ALLOWED_CHECK_TYPES
+        if unknown_checks:
+            raise PipelineRecipeError(
+                f"stage {stage!r} declares unknown check(s) "
+                f"{sorted(unknown_checks)}"
+            )
+        allowed_commands = _strict_string_list(
+            raw_stage.get("allowed_commands"),
+            field="allowed_commands",
+            stage=stage,
+        )
+        unknown_commands = set(allowed_commands) - set(commands)
+        if unknown_commands:
+            raise PipelineRecipeError(
+                f"stage {stage!r} declares unknown command(s) "
+                f"{sorted(unknown_commands)}"
+            )
+        max_iterations = raw_stage.get("max_iterations", 1)
+        if (
+            isinstance(max_iterations, bool)
+            or not isinstance(max_iterations, int)
+            or not 1 <= max_iterations <= 3
+        ):
+            raise PipelineRecipeError(
+                f"stage {stage!r} max_iterations must be between 1 and 3"
+            )
+        if max_iterations > 1 and not allowed_checks:
+            raise PipelineRecipeError(
+                f"stage {stage!r} with max_iterations > 1 requires allowed_checks"
+            )
+        if (
+            max_iterations > 1
+            and set(allowed_checks) == {"named_command"}
+            and not allowed_commands
+        ):
+            raise PipelineRecipeError(
+                f"stage {stage!r} uses only named_command checks but declares "
+                "no allowed_commands"
+            )
+        spawns = _strict_string_list(
+            raw_stage.get("spawns"), field="spawns", stage=stage,
+        )
+        stages.append(StageRecipe(
+            stage=stage,
+            agent=agent,
+            preset=str(raw_stage.get("preset") or "") or None,
+            spawns=spawns,
+            allowed_checks=allowed_checks,
+            allowed_commands=allowed_commands,
+            max_iterations=max_iterations,
+        ))
+
+    return PipelineRecipeContract(
+        name=str(data.get("name") or pipeline_name),
+        stages=tuple(stages),
+        commands=commands,
+    )
+
+
+def stage_recipe(pipeline_name: str, stage: str) -> StageRecipe | None:
+    """Return one validated stage ceiling, or None when it is not declared."""
+    contract = load_pipeline_contract(pipeline_name)
+    return next((item for item in contract.stages if item.stage == stage), None)
 
 
 _SKILL_PATH_RE = re.compile(r"^skills/([^/]+)/SKILL\.md$")
@@ -412,6 +630,45 @@ def injected_skill_ids(
     return []
 
 
+def declared_stage_skill(pipeline_name: str, role: str) -> str | None:
+    """The skill id `pipeline.yaml` declares for `role`, or None.
+
+    A pipeline is the compliance path: its stages are a written recipe, and
+    every stage's procedure is meant to be declared in that recipe rather than
+    chosen at runtime. `generator.agents[].skill` and `evaluator.skill` have
+    carried those declarations since feature-dev shipped — the standalone
+    runner simply never read them, and asked a text ranker instead.
+
+    This differs from `injected_skill_ids` in the question it answers.
+    That one asks "which skill accompanies agent X when it READS stage Y",
+    gated on `_prior_stage`, and serves the stage-read injection path. This
+    one asks the flat question a spawn needs: *what does the recipe say this
+    role runs?*
+
+    Returns None for a missing/malformed recipe, an unlisted role, or an
+    explicit `skill: null`. The caller intersects with AGENT_SKILL_ALLOWLIST —
+    a recipe declares, it never widens (HI #3).
+    """
+    agent = (role or "").strip().lower()
+    if not agent:
+        return None
+    data = _load_pipeline_yaml(pipeline_name)
+    if not data:
+        return None
+    ev = data.get("evaluator") or {}
+    if isinstance(ev, dict) and (ev.get("name") or "reviewer").lower() == agent:
+        return _skill_path_to_id(ev.get("skill")) or None
+    gen = data.get("generator") or {}
+    agents = gen.get("agents") if isinstance(gen, dict) else None
+    if isinstance(agents, list):
+        for entry in agents:
+            if not isinstance(entry, dict):
+                continue
+            if (entry.get("name") or "").lower() == agent:
+                return _skill_path_to_id(entry.get("skill")) or None
+    return None
+
+
 def validate_catalog() -> list[str]:
     """Validate the preset catalog and every preset-composed pipeline against
     the agent catalog. Fail-closed: an unknown agent, an unresolvable preset
@@ -423,7 +680,7 @@ def validate_catalog() -> list[str]:
     agents_root = _pipelines_root().parent / "agents"
     known_agents: set[str] = set()
     if agents_root.is_dir():
-        # The purpose-dir catalog is canonical (root/, workers/, meta/,
+        # The purpose-dir catalog is canonical (root/, workers/,
         # pipeline-stages/*/); the remaining flat files are extension-only
         # legacy copies. Both count as "known".
         known_agents = {

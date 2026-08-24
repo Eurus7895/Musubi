@@ -272,8 +272,8 @@ def compact_failure_patterns(
     path = _patterns_path(root)
     if not path.exists():
         return {"compacted": False, "reason": "file does not exist"}
+    before_bytes = path.stat().st_size
     before_text = path.read_text(encoding="utf-8")
-    before_bytes = len(before_text.encode("utf-8"))
     if before_bytes <= max_bytes:
         return {"compacted": False, "before_bytes": before_bytes, "after_bytes": before_bytes}
 
@@ -318,7 +318,7 @@ def compact_failure_patterns(
     body = "\n".join(e["raw"].rstrip("\n") for e in kept) + "\n"
     new_text = header.rstrip() + "\n" + compaction_note + "\n" + body
     path.write_text(new_text, encoding="utf-8")
-    after_bytes = len(new_text.encode("utf-8"))
+    after_bytes = path.stat().st_size
     return {
         "compacted": True,
         "before_bytes": before_bytes,

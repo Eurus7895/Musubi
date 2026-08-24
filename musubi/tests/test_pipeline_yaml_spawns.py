@@ -177,9 +177,7 @@ def test_feature_dev_pipeline_yaml_declares_coder_spawns() -> None:
     yaml_path = _REPO_ROOT / ".github" / "pipelines" / "feature-dev" / "pipeline.yaml"
     with yaml_path.open(encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
-    coder_entry = next(
-        a for a in cfg["generator"]["agents"] if a["name"] == "coder"
-    )
+    coder_entry = next(a for a in cfg["stages"] if a["agent"] == "coder")
     assert coder_entry.get("spawns") == ["explorer", "investigator"]
 
 
@@ -187,4 +185,5 @@ def test_feature_dev_pipeline_yaml_declares_reviewer_spawns() -> None:
     yaml_path = _REPO_ROOT / ".github" / "pipelines" / "feature-dev" / "pipeline.yaml"
     with yaml_path.open(encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
-    assert cfg["evaluator"].get("spawns") == ["reviewer-aux"]
+    reviewer = next(a for a in cfg["stages"] if a["agent"] == "reviewer")
+    assert reviewer.get("spawns") == ["reviewer-aux"]
