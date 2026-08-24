@@ -251,20 +251,28 @@ def test_compress_python_uses_structural_summary_and_retrieves(tmp_path):
 
 # ── server-side gated wiring (Step 3) ────────────────────────────────────────
 
-def test_maybe_compress_field_opt_out_is_noop(monkeypatch):
-    """Compression is on by default; MUSUBI_COMPRESS=0 opts out."""
+def test_maybe_compress_field_ignores_legacy_disable_env(monkeypatch):
+    """Tool-boundary compression cannot be disabled by an environment flag."""
     import server
+    from compression.router import CompressResult
+
     monkeypatch.setenv("MUSUBI_COMPRESS", "0")
-    d = {"status": "ok", "content": "x" * 5000}
-    assert server._maybe_compress_field(d, "content", "f.txt") == d
+    monkeypatch.setattr(
+        "compression.compress",
+        lambda text, **kw: CompressResult("SHORT", "ref123", "text", len(text), 5),
+    )
+    out = server._maybe_compress_field(
+        {"status": "ok", "content": "x" * 5000}, "content", "f.txt",
+    )
+    assert out["content"] == "SHORT"
+    assert out["compressed_ref"] == "ref123"
 
 
-def test_maybe_compress_field_on_by_default(monkeypatch):
-    """With MUSUBI_COMPRESS unset, a large field IS compressed."""
+def test_maybe_compress_field_compresses_large_payload():
+    """A large compressible field is compressed automatically."""
     import json as _json
 
     import server
-    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
     # Indented JSON well over the 800-char floor → minify is a real win.
     payload = _json.dumps({"items": [{"id": i} for i in range(200)]}, indent=2)
     out = server._maybe_compress_field({"status": "ok", "content": payload}, "content", "f.json")
@@ -274,7 +282,6 @@ def test_maybe_compress_field_on_by_default(monkeypatch):
 def test_maybe_compress_field_on_compresses_without_mutating(monkeypatch):
     import server
     from compression.router import CompressResult
-    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
     monkeypatch.setattr(
         "compression.compress",
         lambda text, **kw: CompressResult("SHORT", "ref123", "json", len(text), 5),
@@ -289,7 +296,6 @@ def test_maybe_compress_field_on_compresses_without_mutating(monkeypatch):
 
 def test_maybe_compress_field_skips_error_results(monkeypatch):
     import server
-    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
     d = {"status": "error", "error": "nope"}
     assert server._maybe_compress_field(d, "content", None) == d
 
@@ -298,7 +304,6 @@ def test_musubi_read_stage_compresses_permitted_data(monkeypatch, tmp_path):
     import server
     from compression import retrieve
 
-    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
     monkeypatch.setattr("storage.db.DEFAULT_DB_PATH", tmp_path / "audit.db")
     monkeypatch.setattr(server._db, "get_pipeline_run", lambda sid: None)
     monkeypatch.setattr(
@@ -336,7 +341,6 @@ def test_musubi_get_conversation_compresses_large_message(monkeypatch, tmp_path)
 
     db = tmp_path / "audit.db"
     _db.init_db(db)
-    monkeypatch.delenv("MUSUBI_COMPRESS", raising=False)
     monkeypatch.setattr(_db, "DEFAULT_DB_PATH", db)
     payload = json.dumps({"items": [{"id": i} for i in range(300)]}, indent=2)
     conversations.append_message("chat-X", "tool", payload, db_path=db)
@@ -349,10 +353,11 @@ def test_musubi_get_conversation_compresses_large_message(monkeypatch, tmp_path)
     assert retrieve(msg["compressed_ref"], db_path=db) == payload
 
 
-def test_musubi_get_conversation_opt_out_leaves_message_content(
+def test_musubi_get_conversation_ignores_legacy_disable_env(
     monkeypatch, tmp_path,
 ):
     import server
+    from compression import retrieve
     from session import conversations
     from storage import db as _db
 
@@ -365,8 +370,9 @@ def test_musubi_get_conversation_opt_out_leaves_message_content(
 
     out = json.loads(server.musubi_get_conversation("chat-X"))
     msg = out["messages"][0]
-    assert msg["content"] == payload
-    assert "compressed_ref" not in msg
+    assert msg["content"] != payload
+    assert msg["compressed_ref"]
+    assert retrieve(msg["compressed_ref"], db_path=db) == payload
 
 
 # ── store size recording + stats (measurement) ───────────────────────────────

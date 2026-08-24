@@ -2572,18 +2572,6 @@ def musubi_run_hook(event: str, payload: str = "") -> str:
 # stderr. Implementations live in `tools/fs.py`.
 
 
-def _compression_enabled() -> bool:
-    """Input compression is ON by default; opt out with MUSUBI_COMPRESS=0.
-
-    Reversible (the verbatim original is stored and reachable via
-    `musubi_retrieve`), so default-on is safe. Set MUSUBI_COMPRESS to a
-    falsey value (0/false/off/no) to disable it for a session/workspace.
-    """
-    return os.environ.get("MUSUBI_COMPRESS", "").strip().lower() not in (
-        "0", "false", "off", "no",
-    )
-
-
 def _stringify_for_compression(value: Any) -> str | None:
     """Return the model-visible text to compress for structured values."""
     if isinstance(value, str):
@@ -2596,8 +2584,6 @@ def _stringify_for_compression(value: Any) -> str | None:
 
 def _maybe_compress_value(value: Any, hint: str | None) -> dict[str, Any] | None:
     """Compress an arbitrary value, returning replacement text + metadata."""
-    if not _compression_enabled():
-        return None
     text = _stringify_for_compression(value)
     if not isinstance(text, str):
         return None
@@ -2614,8 +2600,6 @@ def _maybe_compress_value(value: Any, hint: str | None) -> dict[str, Any] | None
 
 def _maybe_compress_history_messages(history: dict[str, Any]) -> dict[str, Any]:
     """Compress each conversation message content independently."""
-    if not _compression_enabled():
-        return history
     messages = history.get("messages")
     if not isinstance(messages, list):
         return history
@@ -2647,13 +2631,13 @@ def _maybe_compress_history_messages(history: dict[str, Any]) -> dict[str, Any]:
 def _maybe_compress_field(
     result: dict, field: str, hint: str | None,
 ) -> dict:
-    """Compress `result[field]` when the flag is on and it's worth it.
+    """Compress `result[field]` whenever doing so reduces model-visible text.
 
     Reversible: the verbatim original is stored and reachable via
-    `musubi_retrieve(compressed_ref)`. No-op when disabled, on errors, or
-    when compression wouldn't shrink the text. Never mutates the input.
+    `musubi_retrieve(compressed_ref)`. No-op on errors or when compression
+    wouldn't shrink the text. Never mutates the input.
     """
-    if not _compression_enabled() or result.get("status") != "ok":
+    if result.get("status") != "ok":
         return result
     text = result.get(field)
     if not isinstance(text, str):
@@ -2675,8 +2659,9 @@ def musubi_read_file(path: str, root: str = "musubi") -> str:
     `root` defaults to the fixed `musubi` harness root. `path` must be
     relative and remain inside that root. Reads up to 5 MB of UTF-8 text.
     Returns JSON {"status":"ok","content":...,"bytes":...} or
-    {"status":"error","error":...}. When compression is enabled the
-    `content` may be compressed with a `compressed_ref` for retrieval.
+    {"status":"error","error":...}. Large `content` is automatically
+    compressed when that reduces its size, with a `compressed_ref` for exact
+    retrieval.
     """
     from tools import fs
     return json.dumps(

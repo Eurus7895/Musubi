@@ -5,10 +5,10 @@ harness. It coordinates agent work while a deterministic runtime controls
 tool access, workspace boundaries, acceptance checks, retries, and audit
 evidence.
 
-Musubi exposes the runtime as an MCP server, provides a standalone `agent`
-CLI, and includes a desktop Console for operating and inspecting sessions.
-The runtime itself makes no LLM calls; model access goes through the
-vendor-agnostic `LMRouter`.
+Musubi exposes its governance layer as an MCP server, provides a standalone
+`agent` CLI, and includes a desktop Console for operating and inspecting
+sessions. The MCP governance layer makes no LLM calls; the agent CLI reaches
+models through the vendor-agnostic `LMRouter`.
 
 ## Why Musubi
 
@@ -17,9 +17,10 @@ An agent saying "done" does not prove that a task is complete. Musubi adds:
 - fail-closed policy checks around agent and tool boundaries;
 - deterministic verification before a pipeline stage may advance;
 - bounded retries that preserve the original acceptance criteria;
-- append-only records of tool calls, policy decisions, cost, and artifacts;
+- append-only records of tool calls, policy decisions, token usage, and
+  artifacts;
 - workspace-scoped file and command execution;
-- automatic, reversible input compression and context controls.
+- automatic, reversible tool-result compression and context controls.
 
 ## Evidence-gated feedback loop
 
@@ -98,7 +99,7 @@ the [usage guide](./docs/guide.md).
 
 ## Compression and context
 
-Musubi automatically compresses large tool inputs before they reach the model
+Musubi automatically compresses large tool results before they reach the model
 and stores the verbatim original by content hash. `musubi_retrieve` restores
 the exact source; `musubi_compress` and `musubi_compression_stats` expose
 on-demand compression and aggregate savings. Older context is packed

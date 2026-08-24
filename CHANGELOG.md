@@ -7,6 +7,12 @@ The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Tool-boundary compression is always enabled
+
+- Removed the `MUSUBI_COMPRESS` runtime switch. Compression now always runs at
+  the tool boundary, replaces a payload only when the model-visible result is
+  smaller, and retains the verbatim original for `musubi_retrieve`.
+
 ### No-progress budget breaker
 
 - A root run now stops early when it has spent ≥70% of its token budget with

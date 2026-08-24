@@ -190,23 +190,9 @@ shows a context-packing scenario reduced from 188,943 chars to 3,490 while
 preserving the recent turn. See
 [`docs/compression.md`](./compression.md) for the full artifact and numbers.
 
-```bash
-agent "summarise the config files"     # compression on by default
-MUSUBI_COMPRESS=0 agent "..."          # disable it for this run
-```
-
-### The `MUSUBI_COMPRESS` switch
-
-| `MUSUBI_COMPRESS` | Effect |
-|---|---|
-| *unset* (default) | **on** |
-| `1` / `true` / `on` / `yes` | on |
-| `0` / `false` / `off` / `no` | off |
-
-It's per process; the standalone `agent` forwards every `MUSUBI_*` var to the
-server it spawns. Make it stick: `export MUSUBI_COMPRESS=0` (macOS/Linux) or
-`setx MUSUBI_COMPRESS 0` (Windows). Leaving it on is safe — the original is
-never lost.
+Compression is always enabled at the tool boundary. It has no runtime disable
+switch: only payloads that become smaller are replaced, the exact original is
+retained, and the retrieval marker stays with the compressed view.
 
 ### Compression tools (call via the agent)
 

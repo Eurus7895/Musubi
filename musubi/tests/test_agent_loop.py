@@ -656,11 +656,11 @@ def test_server_env_forwards_musubi_vars(monkeypatch: pytest.MonkeyPatch) -> Non
     """The spawned server must see MUSUBI_* config while unrelated secrets stay out."""
     from agent.run import _server_env
 
-    monkeypatch.setenv("MUSUBI_COMPRESS", "1")
+    monkeypatch.setenv("MUSUBI_CONTEXT_BUDGET", "12000")
     monkeypatch.setenv("MUSUBI_ROOT", "/some/dir")
     monkeypatch.setenv("UNRELATED_SECRET", "do-not-leak")
     env = _server_env()
-    assert env["MUSUBI_COMPRESS"] == "1"
+    assert env["MUSUBI_CONTEXT_BUDGET"] == "12000"
     assert env["MUSUBI_ROOT"] == "/some/dir"
     assert "UNRELATED_SECRET" not in env
     assert "PATH" in env

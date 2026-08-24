@@ -2208,10 +2208,7 @@ def _server_env() -> dict[str, str]:
 
     The MCP stdio client passes only a safe allowlist to the child when
     `env=None` (PATH/HOME/… — no arbitrary vars), which silently dropped
-    every `MUSUBI_*` flag the user set in their shell. The most visible
-    casualty was `MUSUBI_COMPRESS`: it is read *inside* the server subprocess
-    (`server.py::_compression_enabled`), so with it filtered out the flag had
-    no effect on the standalone path no matter how it was set.
+    every `MUSUBI_*` setting the user configured for the server subprocess.
 
     Forward `MUSUBI_*` vars explicitly, on top of the safe defaults, so the
     server sees Musubi's own config without inheriting unrelated parent-env

@@ -3,7 +3,8 @@
 Musubi compression is deterministic, reversible, and substrate-side. It
 reduces model-visible tool/context payloads while storing the verbatim
 original in the compression blob store. When the model needs exact source
-text, it calls `musubi_retrieve(ref_id)`.
+text, it calls `musubi_retrieve(ref_id)`. Tool-boundary compression is always
+enabled and has no runtime opt-out.
 
 ## Current Native Compressors
 
