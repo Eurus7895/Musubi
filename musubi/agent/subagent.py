@@ -106,13 +106,22 @@ async def run_subagent(
     declared_turns = _frontmatter_max_turns(agent_md)
     if declared_turns is not None:
         requested_turns = spawn_args.get("max_turns")
-        if requested_turns is not None and requested_turns != declared_turns:
+        if spawn_args.get("work_package_id") and isinstance(requested_turns, int):
+            # A frozen Work Package is a stricter lease than the role default;
+            # the worker may consume less, never refill to its frontmatter cap.
+            spawn_args = {
+                **spawn_args,
+                "max_turns": min(requested_turns, declared_turns),
+            }
+        elif requested_turns is not None and requested_turns != declared_turns:
             print(
                 f"[agent] ignored model max_turns={requested_turns}; "
                 f"role {role_hint} owns max_turns={declared_turns}",
                 file=log,
             )
-        spawn_args = {**spawn_args, "max_turns": declared_turns}
+            spawn_args = {**spawn_args, "max_turns": declared_turns}
+        else:
+            spawn_args = {**spawn_args, "max_turns": declared_turns}
     else:
         # With no role-owned declaration, omit any model-supplied value so
         # the substrate's server default remains the sole owner of the cap.
@@ -176,6 +185,14 @@ async def run_subagent(
     # catalog as `spawn_catalog` so its own children can be sized.
     child_orch = None
     spawn_catalog = None
+    if (
+        orchestration is not None
+        and orchestration.work_package_controller is not None
+    ):
+        # Even a leaf needs the attempt context at its file-tool boundary for
+        # scope enforcement and rollback journaling. This does not grant a
+        # spawn tool; capability remains owned by the role surface below.
+        child_orch = orchestration.child(role)
     if (
         orchestration is not None
         and getattr(orchestration, "can_spawn_deeper", False)

@@ -37,6 +37,22 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
 
 ### Active
 
+1. **Opt-in Goal Contract and Work Package Root control.** Root now has an
+   evidence-backed adaptive mode alongside the unchanged deterministic
+   `PipelineRunner`. The mode freezes a versioned definition of done, executes
+   bounded Work Packages, folds append-only criterion evidence into a Gap
+   Report, blocks false completion and unbounded retry, leases goal/WP budgets,
+   and supports byte-exact rollback for journaled file mutations. Worker rows
+   carry goal/package/attempt/hash identity and the hierarchy is replayable.
+   `legacy` remains the default while quality/cost metrics are compared;
+   `work_package` is opt-in via CLI or environment configuration.
+
+   ADR:
+   [`0001-root-work-package-control.md`](./adr/0001-root-work-package-control.md)
+
+   Plan:
+   [`2026-09-03-goal-contract-work-packages.md`](./superpowers/plans/2026-09-03-goal-contract-work-packages.md)
+
 1. **Skill catalog growth.** Skills remain the cheapest optimization surface.
    Each new skill should carry useful metadata such as `applies-to`, `triggers`,
    and relevant tools.
@@ -67,7 +83,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    model-owned selection and enforcement boundary remain after that adapter is
    removed.
 
-2. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
+1. **LLM-owned scope, substrate-owned evidence.** The substrate stops judging
    what a request MEANS and starts proving what the record CONTAINS. Governing
    principle: deciding a turn's triage, scope, or change size is judging — code
    stops doing it; checking a claim or a measurement is enforcing — code keeps
@@ -141,7 +157,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-29-llm-owned-scope-with-evidence-gate.md`](./superpowers/plans/2026-07-29-llm-owned-scope-with-evidence-gate.md)
 
-3. **Conversation-scoped planning artifacts.** A read-only planner now emits a
+1. **Conversation-scoped planning artifacts.** A read-only planner now emits a
    human `<plan>` and machine `<change_manifest>` as one bounded response; the
    driver validates and persists them separately as `plan.md` and
    `manifest.json` under a stable conversation goal key. Runtime planning files
@@ -155,7 +171,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-30-goal-plan-artifacts.md`](./superpowers/plans/2026-07-30-goal-plan-artifacts.md)
 
-4. **Root-owned planning and model-owned dispatch.** Direct orchestration is
+1. **Root-owned planning and model-owned dispatch.** Direct orchestration is
    being collapsed from Root → Planner → manifest-classifier into one Root with
    two explicit model-selected modes. Direct mode declares `create` or `modify`
    plus a target path, letting a new artifact proceed without paying for an
@@ -173,7 +189,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-07-31-root-owned-planning.md`](./superpowers/plans/2026-07-31-root-owned-planning.md)
 
-5. **Implemented: model-authored stage goals, substrate-enforced acceptance.**
+1. **Implemented: model-authored stage goals, substrate-enforced acceptance.**
    Before a stage attempt, a bounded driver model preflight selects the role's skill
    and, for an opt-in non-evaluator stage, translates the current task into a
    structured acceptance contract. The harness validates and freezes that
@@ -198,7 +214,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-01-stage-goals-and-loop.md`](./superpowers/plans/2026-08-01-stage-goals-and-loop.md)
 
-6. **Implemented: runtime convergence repair.** A production-like run
+1. **Implemented: runtime convergence repair.** A production-like run
    exposed two independent convergence failures after stage preflight began
    working: cumulative plan/design handoff made the coder's protected input
    26,615 characters against a 16,000-character hard cap, and the direct root
@@ -223,7 +239,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    [`2026-08-02-pipeline-runtime-integrity.md`](./superpowers/plans/2026-08-02-pipeline-runtime-integrity.md) and
    [`2026-08-02-root-planning-convergence.md`](./superpowers/plans/2026-08-02-root-planning-convergence.md)
 
-7. **Implemented: truncated and empty model turns fail where they happen.**
+1. **Implemented: truncated and empty model turns fail where they happen.**
    The next run on the repaired pipeline died at stage 1 of 4 with an
    unattributable `escalated`. One truncated DeepSeek response had crossed
    four layers as an empty success: the OpenAI wire converter discarded the
@@ -247,7 +263,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-03-truncated-and-empty-model-turns.md`](./superpowers/plans/2026-08-03-truncated-and-empty-model-turns.md)
 
-8. **Implemented: a worker can report a skill mismatch.** The same run showed
+1. **Implemented: a worker can report a skill mismatch.** The same run showed
    a `coder` handed `web-ui` for "an application to check weather" — a skill
    whose procedure forbids the network call the task requires — with no way to
    say so. HI #2 is unchanged: the push still happens, is still not
@@ -269,7 +285,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    Plan:
    [`2026-08-03-worker-skill-mismatch-report.md`](./superpowers/plans/2026-08-03-worker-skill-mismatch-report.md)
 
-9. **Implemented: `web-ui` stops deciding architecture in its selection line.**
+1. **Implemented: `web-ui` stops deciding architecture in its selection line.**
    Its description claimed "self-contained … or any browser-rendered artifact",
    so it was both selected for, and then wrongly applied to, "an application to
    check weather" — a task whose whole point is fetching live data, which the
@@ -291,7 +307,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
    deliverable; `docs-writing` is gated on doc TOOLING while the skill is about
    prose; `documentation` and `docs-writing` overlap inside designer's catalog.
 
-10. **Implemented: a Direct declaration may not manufacture its own target
+1. **Implemented: a Direct declaration may not manufacture its own target
     evidence.** Tracing the weather-app run to its first domino landed on
     cycle 0, not on skill selection. With `target_unknown=True` and zero files
     read, Root called `musubi_begin_direct(target_intent="create",
@@ -320,7 +336,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     enforceable version is this gate routing unnamed work into Planning, where
     a plan and acceptance criteria are produced by construction.
 
-11. **Implemented: Direct mode is gone; a worker chain is earned, never
+1. **Implemented: Direct mode is gone; a worker chain is earned, never
     declared.** Item 10 stopped a Direct declaration answering the target
     question with its own invented path, but the declaration was making a
     second claim that gate never touched: `scope="simple_artifact"`,
@@ -346,7 +362,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     control call and produces a plan the coder can work from, which is the
     thing its own role prompt (rule 3) has always asked for.
 
-12. **Removed: `completion-contract`.** A skill's frontmatter could declare
+1. **Removed: `completion-contract`.** A skill's frontmatter could declare
     `required-output-fields` and `required-check-types`, and the same field was
     read at two boundaries with two different meanings — a LABEL in the catalog
     listing Root selects from (`server.py`), and TEETH in the stage gate
@@ -362,7 +378,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     `required_output_fields` leg of `FrozenStageContract`, which the skill was
     the only source for.
 
-13. **Implemented: a direct worker gets a token slice, not the run.** A
+1. **Implemented: a direct worker gets a token slice, not the run.** A
     pipeline stage has had a `ChildTokenBudget` since the stage runner shipped;
     a direct worker was handed the parent `TokenBudgetEnforcer` itself,
     unwrapped. In the traced failure one coder charged 200,580 of a
@@ -380,7 +396,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     divide by and no continuation to reserve for, so the budget passes through
     unchanged rather than being invented.
 
-14. **Settled: the token budget counts tokens processed, and now says so.**
+1. **Settled: the token budget counts tokens processed, and now says so.**
     `charge()` bills the full `tokens_in + tokens_out` every cycle and never
     deducts the provider's cached prefix, which looked like an oversight worth
     fixing. Measuring it decided the opposite. On the traced run the two
@@ -400,7 +416,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     questions need two meters, not one meter re-denominated under historical
     rows written in the old unit.
 
-15. **Implemented: a budget halt lands the writes it already paid for.**
+1. **Implemented: a budget halt lands the writes it already paid for.**
     Measured on a four-turn run after the repairs above: 483,621 tokens across
     35 cycles and not one file written. A coder emitted 11,289 output tokens
     carrying three files, was charged 19,801 for them, and the postflight halt
@@ -431,7 +447,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     claiming commit and spawn were unavailable. They were in the surface
     throughout; the refusal now names `musubi_commit_plan`.
 
-16. **Open: plan continuity across turns, and what it costs the worker.**
+1. **Open: plan continuity across turns, and what it costs the worker.**
     Two defects from the same run are deliberately not repaired here because
     both touch the session lifecycle. Every turn re-plans from nothing —
     `glob **/*` and a re-read of Musubi's own `.musubi/goals/<id>/plan.md`,
@@ -447,7 +463,7 @@ extension was removed — one inject point (`LMRouter`), one prompt catalog.
     Design note:
     [`2026-08-05-plan-continuity-design.md`](./superpowers/specs/2026-08-05-plan-continuity-design.md)
 
-17. **Added: `scripts/audit_report.py` — one run, rendered for someone who was
+1. **Added: `scripts/audit_report.py` — one run, rendered for someone who was
     not present.** A read-only query over the two databases the harness
     already writes, answering an outside reviewer's questions in their order:
     what was asked, what the run was allowed to touch, who it delegated to,

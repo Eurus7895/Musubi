@@ -132,9 +132,14 @@ _READLIKE_GOVERNANCE_TOOLS: frozenset[str] = frozenset({
     "musubi_list_skills",
     "musubi_begin_plan",
     "musubi_commit_plan",
+    "musubi_commit_work_package",
+    "musubi_record_criterion_verdict",
+    "musubi_get_gap_report",
+    "musubi_rollback_work_package",
     "musubi_get_memory_context",
     "musubi_query_subagent_events",
     "musubi_list_subagent_spawns",
+    "musubi_query_goal_execution",
 })
 
 #: Reports a worker makes about its own contract. Allowed for every role on

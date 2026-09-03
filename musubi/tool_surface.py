@@ -17,6 +17,10 @@ ROOT_AGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "musubi_list_skills",
     "musubi_begin_plan",
     "musubi_commit_plan",
+    "musubi_commit_work_package",
+    "musubi_record_criterion_verdict",
+    "musubi_get_gap_report",
+    "musubi_rollback_work_package",
     "musubi_get_skill",
     "musubi_get_reference",
     "musubi_compress",
@@ -48,6 +52,7 @@ OPERATOR_TOOL_NAMES: frozenset[str] = ROOT_AGENT_TOOL_NAMES | frozenset({
     "musubi_query_schema_migrations",
     "musubi_query_subagent_events",
     "musubi_list_subagent_spawns",
+    "musubi_query_goal_execution",
 })
 
 PIPELINE_TOOL_NAMES: frozenset[str] = OPERATOR_TOOL_NAMES | frozenset({
