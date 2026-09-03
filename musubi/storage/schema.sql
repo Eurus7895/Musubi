@@ -370,13 +370,14 @@ CREATE TABLE IF NOT EXISTS request_folder_grants (
 CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
     ON request_folder_grants (chat_id, request_id, ordinal);
 CREATE TABLE IF NOT EXISTS goal_contract_versions (
-    contract_hash TEXT PRIMARY KEY,
+    contract_hash TEXT NOT NULL,
     session_id TEXT NOT NULL,
     goal_id TEXT NOT NULL,
     version INTEGER NOT NULL,
     canonical_json TEXT NOT NULL,
     supersedes_hash TEXT,
     created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, contract_hash),
     UNIQUE (session_id, goal_id, version),
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
@@ -396,7 +397,7 @@ CREATE TABLE IF NOT EXISTS goal_criterion_events (
 CREATE INDEX IF NOT EXISTS idx_goal_criterion_events
     ON goal_criterion_events (session_id, goal_id, criterion_id, id);
 CREATE TABLE IF NOT EXISTS work_package_versions (
-    contract_hash TEXT PRIMARY KEY,
+    contract_hash TEXT NOT NULL,
     session_id TEXT NOT NULL,
     work_package_id TEXT NOT NULL,
     version INTEGER NOT NULL,
@@ -404,6 +405,7 @@ CREATE TABLE IF NOT EXISTS work_package_versions (
     canonical_json TEXT NOT NULL,
     supersedes_hash TEXT,
     created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, contract_hash),
     UNIQUE (session_id, work_package_id, version),
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );

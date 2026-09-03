@@ -16,8 +16,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.run import Orchestration, run_agent
+from agent.runtime_log import PROTOCOL_PREFIX, RuntimeLogWriter
 from agent.subagent import (
     _frontmatter_max_output_tokens,
     build_subagent_system_prompt,
@@ -25,6 +25,11 @@ from agent.subagent import (
     select_child_tools,
 )
 from agent.vendors.base import LMResponse, LMRouter
+from tests.work_package_fixtures import (
+    GOAL_CONTRACT,
+    WORK_PACKAGE,
+    spawn_contract_fields,
+)
 
 
 class FakeRouter(LMRouter):
@@ -320,6 +325,7 @@ def _spawn(role: str, brief: str, **extra: Any) -> LMResponse:
         "input": {
             "role": role, "brief": brief,
             "pushed_skill_id": selected_skill,
+            **spawn_contract_fields(),
             **extra,
         },
     }])
@@ -331,9 +337,8 @@ def _direct(role: str, path: str, intent: str = "modify") -> list[LMResponse]:
     Direct mode is gone. It let Root assert "this is simple, one worker, one
     file" from the request sentence alone, before reading anything, and that
     assertion was irreversible. The same single-worker outcome is still
-    reachable — but it has to be EARNED by a manifest naming what the change
-    touches, which `assess_manifest` then classifies. Returns the two responses
-    that replace the one declaration, so call sites splice with `*_direct(...)`.
+    reachable through a frozen Goal Contract and Work Package. Returns the
+    control responses so call sites can splice them with `*_direct(...)`.
     """
     return [
         LMResponse(stop_reason="tool_use", content=[{
@@ -350,8 +355,15 @@ def _direct(role: str, path: str, intent: str = "modify") -> list[LMResponse]:
                 "plan_markdown": f"# Plan\n\n{intent} {path} with one {role}.",
                 "change_manifest": {"files_expected": 1, "subsystems": ["agent"]},
                 "change_size": "small",
-                "worker_chain": [role],
+                "worker_chain": [role] if role != "explorer" else ["coder"],
+                "goal_contract": GOAL_CONTRACT,
             },
+        }]),
+        LMResponse(stop_reason="tool_use", content=[{
+            "type": "tool_use",
+            "id": "commit-work-package",
+            "name": "musubi_commit_work_package",
+            "input": {"work_package": WORK_PACKAGE},
         }]),
     ]
 
@@ -371,7 +383,7 @@ def test_spawn_runs_child_and_feeds_summary_back() -> None:
 
     assert answer == "done"
     # Parent's second LM call sees a bounded goal-state delta, not transcript.
-    parent_followup = router.calls[4]["messages"]
+    parent_followup = router.calls[5]["messages"]
     feedback = str(parent_followup)
     assert "[root-goal-state]" in feedback
     assert "explored: found server.py" in feedback
@@ -392,7 +404,7 @@ def test_child_tool_surface_is_restricted() -> None:
         _text("done"),
     ])
     asyncio.run(run_agent("scan", router, _musubi_dir(), log=io.StringIO()))
-    child_tools = {t["name"] for t in router.calls[3]["tools"]}
+    child_tools = {t["name"] for t in router.calls[4]["tools"]}
     # Read-only explorer: file read + discovery (glob/grep), never write/run.
     # The mismatch report rides along on every role — it is a statement about
     # the worker's own contract, grants nothing, and a capability-gated version
@@ -432,7 +444,7 @@ def test_coder_child_gets_write_tools_from_full_local_catalog() -> None:
     asyncio.run(run_agent("create hello.html", router, _musubi_dir(), log=log))
 
     root_tools = {t["name"] for t in router.calls[0]["tools"]}
-    child_tools = {t["name"] for t in router.calls[3]["tools"]}
+    child_tools = {t["name"] for t in router.calls[4]["tools"]}
 
     assert "musubi_write_file" not in root_tools
     assert "musubi_edit_file" not in root_tools
@@ -453,7 +465,7 @@ def test_disallowed_role_policy_denial_is_terminal_without_running_child() -> No
     answer = asyncio.run(run_agent("bad role", router, _musubi_dir(), log=io.StringIO()))
     assert answer.startswith("[incomplete]")
     assert "saboteur" in answer
-    assert len(router.calls) == 3
+    assert len(router.calls) == 4
 
 
 def test_spawn_subagent_policy_rejection_has_machine_readable_error_kind() -> None:
@@ -507,7 +519,7 @@ def test_worker_runtime_policy_denial_halts_root_without_replacement(
 
     assert answer.startswith("[incomplete]")
     assert "non-recoverable policy failure" in answer
-    assert len(router.calls) == 4
+    assert len(router.calls) == 5
     coder_outcomes = [outcome for outcome in recorded if outcome.role == "coder"]
     assert len(coder_outcomes) == 1
     assert coder_outcomes[0].status == "escalated"
@@ -539,8 +551,8 @@ def test_child_max_turns_requires_recovery_before_root_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "explorer (escalated)" in answer
     assert "reached the turn limit" in answer
-    assert router.calls[9]["tools"] == []
-    fed_back = str(router.calls[10]["messages"])
+    assert router.calls[10]["tools"] == []
+    fed_back = str(router.calls[11]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "reached the turn limit" in fed_back
     assert "max_turns=6 reached" in fed_back
@@ -607,8 +619,8 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert (tmp_path / "recovery.html").read_text(encoding="utf-8") == (
         "<!doctype html><title>Recovery</title>"
     )
-    assert len(router.calls) == 14
-    forced_final_call = router.calls[11]
+    assert len(router.calls) == 15
+    forced_final_call = router.calls[12]
     assert forced_final_call["tools"] == []
     forced_final_tool_uses = [
         block
@@ -689,20 +701,20 @@ def test_automatic_recovery_audit_records_two_real_workers_and_no_synthetic_root
     assert "Prior status: escalated" in sub_sessions[1]["brief"]
     assert f"Prior summary: {primary_summary}" in sub_sessions[1]["brief"]
 
-    # 14, not 13: opening the turn now costs begin_plan + commit_plan where the
-    # retired Direct declaration cost one call. Root's own cycle count rises by
-    # the same one — every LM call still writes exactly one audit row, which is
-    # the property this assertion exists to pin.
-    assert len(cycle_rows) == len(router.calls) == 14
-    assert [row["worker_id"] for row in cycle_rows].count("root") == 4
+    # Mandatory control costs begin_plan + commit_plan + commit_work_package.
+    # Every LM call still writes exactly one audit row, which is the property
+    # this assertion exists to pin.
+    assert len(cycle_rows) == len(router.calls) == 15
+    assert [row["worker_id"] for row in cycle_rows].count("root") == 5
     assert [row["worker_id"] for row in cycle_rows].count(primary_handle) == 9
     assert [row["worker_id"] for row in cycle_rows].count(replacement_handle) == 1
     assert [row["worker_id"] for row in cycle_rows] == [
-        "root", "root", *[primary_handle] * 9, "root", replacement_handle, "root",
+        "root", "root", "root", *[primary_handle] * 9,
+        "root", replacement_handle, "root",
     ]
     assert [
         row["cycle_idx"] for row in cycle_rows if row["worker_id"] == "root"
-    ] == [0, 1, 2, 3]
+    ] == [0, 1, 2, 3, 4]
     assert [
         row["cycle_idx"]
         for row in cycle_rows
@@ -738,7 +750,7 @@ def test_child_blocked_reason_prevents_unrecovered_parent_success() -> None:
     assert answer.startswith("[incomplete]")
     assert "coder (escalated)" in answer
     assert "output_too_large_for_single_tool_call" in answer
-    fed_back = str(router.calls[4]["messages"])
+    fed_back = str(router.calls[5]["messages"])
     assert "[root-goal-state]" in fed_back
     assert "output_too_large_for_single_tool_call" in fed_back
     assert "blocked" in fed_back
@@ -1178,8 +1190,8 @@ def test_a_bare_product_request_no_longer_halts_before_the_model() -> None:
     `GoalState.evidence_gap` refuses a WRITER while nothing establishes the
     target, and an explorer clears it inside the same turn.
     """
-    from agent.scope import classify_task
     from agent.routes import RouteKind
+    from agent.scope import classify_task
 
     hint = classify_task("create a new website")
 

@@ -22,6 +22,12 @@ from typing import Any
 from agent.run import Orchestration, _spawn_overflow_reasons, run_agent
 from agent.scope import ScopeHint, ScopeKind
 from agent.vendors.base import LMResponse, LMRouter
+from tests.work_package_fixtures import (
+    GOAL_CONTRACT,
+    WORK_PACKAGE,
+    make_work_package,
+    spawn_contract_fields,
+)
 
 
 def _musubi_dir() -> Path:
@@ -34,16 +40,24 @@ def _text(s: str) -> LMResponse:
 
 def _spawns(n: int, role: str = "explorer") -> LMResponse:
     selected_skill = {"coder": "web-ui"}.get(role, role)
-    return LMResponse(stop_reason="tool_use", content=[
-        {
+    content = []
+    for i in range(n):
+        contract_fields = spawn_contract_fields()
+        if n > 1:
+            _, digest = make_work_package(f"wp_parallel_{i}")
+            contract_fields = {
+                "work_package_id": f"wp_parallel_{i}",
+                "contract_hash": digest,
+            }
+        content.append({
             "type": "tool_use", "id": f"spawn-{i}", "name": "musubi_spawn_subagent",
             "input": {
                 "role": role, "brief": f"worker {i}",
                 "pushed_skill_id": selected_skill,
+                **contract_fields,
             },
-        }
-        for i in range(n)
-    ])
+        })
+    return LMResponse(stop_reason="tool_use", content=content)
 
 
 def _is_parent_followup(messages: list[dict[str, Any]]) -> bool:
@@ -58,7 +72,7 @@ def _child_index(messages: list[dict[str, Any]]) -> int | None:
     for m in messages:
         c = m.get("content")
         if isinstance(c, str) and "## Brief" in c:
-            hit = re.search(r"worker (\d+)", c)
+            hit = re.search(r"(?:worker |wp_parallel_)(\d+)", c)
             return int(hit.group(1)) if hit else -1
     return None
 
@@ -74,6 +88,7 @@ class BarrierRouter(LMRouter):
         self.n = n
         self.barrier = threading.Barrier(n, timeout=8)
         self.completed: set[int] = set()
+        self.work_packages_committed = 0
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         names = {tool["name"] for tool in tools}
@@ -84,16 +99,34 @@ class BarrierRouter(LMRouter):
             self.barrier.wait()  # blocks until all N children are here
             self.completed.add(idx)
             return _text(f"explored worker {idx}")
-        if "musubi_begin_direct" in names:
+        if "musubi_begin_plan" in names:
             return LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use",
-                "id": "mode-direct",
-                "name": "musubi_begin_direct",
-                "input": {
-                    "target_intent": "modify",
-                    "target_path": ".",
-                    "worker_role": "explorer",
+                "id": "mode-plan", "name": "musubi_begin_plan",
+                "input": {"deliverable": "."},
+            }])
+        if "musubi_commit_plan" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": "commit-plan",
+                "name": "musubi_commit_plan", "input": {
+                    "plan_markdown": "# Plan\n\nDelegate scans.",
+                    "change_manifest": {"files_expected": 1, "subsystems": ["agent"]},
+                    "change_size": "small", "worker_chain": ["coder"],
+                    "goal_contract": GOAL_CONTRACT,
                 },
+            }])
+        if (
+            "musubi_commit_work_package" in names
+            and self.work_packages_committed < self.n
+        ):
+            package, _ = make_work_package(
+                f"wp_parallel_{self.work_packages_committed}"
+            )
+            self.work_packages_committed += 1
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": "commit-work-package",
+                "name": "musubi_commit_work_package",
+                "input": {"work_package": package},
             }])
         return _spawns(self.n)
 
@@ -235,6 +268,7 @@ class SequentialRetryRouter(LMRouter):
     def __init__(self) -> None:
         self.children = 0
         self.replacement_context_seen = False
+        self.work_package_committed = False
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         names = {tool["name"] for tool in tools}
@@ -249,16 +283,28 @@ class SequentialRetryRouter(LMRouter):
             if self.children == 1:
                 return _text("[incomplete] first worker could not finish")
             return _text("worker finished")
-        if "musubi_begin_direct" in names:
+        if "musubi_begin_plan" in names:
             return LMResponse(stop_reason="tool_use", content=[{
                 "type": "tool_use",
-                "id": "mode-direct",
-                "name": "musubi_begin_direct",
-                "input": {
-                    "target_intent": "create",
-                    "target_path": "dashboard.html",
-                    "worker_role": "coder",
+                "id": "mode-plan", "name": "musubi_begin_plan",
+                "input": {"deliverable": "dashboard.html"},
+            }])
+        if "musubi_commit_plan" in names:
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": "commit-plan",
+                "name": "musubi_commit_plan", "input": {
+                    "plan_markdown": "# Plan\n\nCreate dashboard.html.",
+                    "change_manifest": {"files_expected": 1, "subsystems": ["agent"]},
+                    "change_size": "small", "worker_chain": ["coder"],
+                    "goal_contract": GOAL_CONTRACT,
                 },
+            }])
+        if "musubi_commit_work_package" in names and not self.work_package_committed:
+            self.work_package_committed = True
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use", "id": "commit-work-package",
+                "name": "musubi_commit_work_package",
+                "input": {"work_package": WORK_PACKAGE},
             }])
         if self.children < 2:
             return _spawns(1, role="coder")

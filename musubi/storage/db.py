@@ -290,13 +290,14 @@ CREATE TABLE IF NOT EXISTS request_folder_grants (
 CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
     ON request_folder_grants (chat_id, request_id, ordinal);
 CREATE TABLE IF NOT EXISTS goal_contract_versions (
-    contract_hash TEXT PRIMARY KEY,
+    contract_hash TEXT NOT NULL,
     session_id TEXT NOT NULL,
     goal_id TEXT NOT NULL,
     version INTEGER NOT NULL,
     canonical_json TEXT NOT NULL,
     supersedes_hash TEXT,
     created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, contract_hash),
     UNIQUE (session_id, goal_id, version),
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
@@ -316,7 +317,7 @@ CREATE TABLE IF NOT EXISTS goal_criterion_events (
 CREATE INDEX IF NOT EXISTS idx_goal_criterion_events
     ON goal_criterion_events (session_id, goal_id, criterion_id, id);
 CREATE TABLE IF NOT EXISTS work_package_versions (
-    contract_hash TEXT PRIMARY KEY,
+    contract_hash TEXT NOT NULL,
     session_id TEXT NOT NULL,
     work_package_id TEXT NOT NULL,
     version INTEGER NOT NULL,
@@ -324,6 +325,7 @@ CREATE TABLE IF NOT EXISTS work_package_versions (
     canonical_json TEXT NOT NULL,
     supersedes_hash TEXT,
     created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, contract_hash),
     UNIQUE (session_id, work_package_id, version),
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
@@ -520,11 +522,70 @@ def _migrate_columns(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _migrate_contract_ledger_keys(conn: sqlite3.Connection) -> None:
+    """Scope immutable contract identities to their owning Root session.
+
+    Contract hashes identify canonical content, so two independent sessions
+    may legitimately freeze the same contract. The first schema made the hash
+    a global primary key and caused the second session to fail in Planning.
+    """
+    table_specs = {
+        "goal_contract_versions": """
+            CREATE TABLE goal_contract_versions (
+                contract_hash TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                goal_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                canonical_json TEXT NOT NULL,
+                supersedes_hash TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, contract_hash),
+                UNIQUE (session_id, goal_id, version),
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+            )
+        """,
+        "work_package_versions": """
+            CREATE TABLE work_package_versions (
+                contract_hash TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                work_package_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                goal_contract_hash TEXT NOT NULL,
+                canonical_json TEXT NOT NULL,
+                supersedes_hash TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, contract_hash),
+                UNIQUE (session_id, work_package_id, version),
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+            )
+        """,
+    }
+    for table, create_sql in table_specs.items():
+        primary_key = [
+            row[1]
+            for row in sorted(
+                conn.execute(f"PRAGMA table_info({table})").fetchall(),
+                key=lambda item: item[5] or 999,
+            )
+            if row[5]
+        ]
+        if primary_key == ["session_id", "contract_hash"]:
+            continue
+        legacy = f"{table}_global_hash_legacy"
+        conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+        conn.execute(create_sql)
+        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({legacy})")]
+        names = ", ".join(columns)
+        conn.execute(f"INSERT INTO {table} ({names}) SELECT {names} FROM {legacy}")
+        conn.execute(f"DROP TABLE {legacy}")
+
+
 def init_db(db_path: Path | None = None) -> None:
     path = db_path or DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         conn.executescript(_SCHEMA_SQL)
+        _migrate_contract_ledger_keys(conn)
         # Migrate pre-G.1.5 DBs in place. Idempotent — second call is a
         # no-op because all columns are present.
         _migrate_columns(conn, "sessions", _PAUSE_RESUME_COLUMNS)

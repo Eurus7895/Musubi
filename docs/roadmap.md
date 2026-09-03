@@ -35,12 +35,11 @@ catalog remain.
 
 ### Active
 
-1. **Validate Work Package control before changing the default.** Goal
-   Contract and Work Package execution are implemented behind
-   `root_control_mode=work_package`; `legacy` remains the default. Run both
-   modes on representative tasks and compare completion quality, token/turn
-   cost, retry behavior, false-completion rate, and rollback outcomes. Define
-   explicit promotion or rejection criteria before changing the default.
+1. **Validate mandatory Work Package control in production-like runs.** Direct
+   Root execution now has one governed path after Planning begins. Measure
+   completion quality, token/turn cost, retry behavior, false-completion rate,
+   and rollback outcomes on representative tasks. Use the evidence to simplify
+   prompts and budgets without weakening the terminal contract.
 
    ADR:
    [`0001-root-work-package-control.md`](./adr/0001-root-work-package-control.md)
@@ -52,8 +51,8 @@ catalog remain.
    plan but still rediscover and re-read the same workspace and planning
    artifacts. Restore the active goal and its accepted plan deterministically,
    then re-measure root planning spend before changing worker budget splits.
-   Work Package ledger replay is available, but it does not yet make ordinary
-   legacy planning continuous across turns.
+   Work Package ledger replay is available, but active plan restoration across
+   conversation turns is not yet wired into Root startup.
 
    Design note:
    [`2026-08-05-plan-continuity-design.md`](./superpowers/specs/2026-08-05-plan-continuity-design.md)

@@ -11,7 +11,11 @@ import pytest
 from agent.budget import TokenBudgetEnforcer
 from agent.goal_state import GoalState
 from agent.rollback import capture_before, record_after, rollback_attempt
-from agent.run import Orchestration, _handle_root_control_tool
+from agent.run import (
+    Orchestration,
+    _handle_root_control_tool,
+    _root_completion_blocker,
+)
 from agent.work_package_controller import WorkPackageController
 from session import state, sub_sessions
 from storage import db
@@ -102,6 +106,29 @@ def test_canonicalization_is_stable_across_field_order() -> None:
     left = {"b": [2, 1], "a": {"y": 2, "x": 1}}
     right = {"a": {"x": 1, "y": 2}, "b": [2, 1]}
     assert canonical_json(left) == canonical_json(right)
+
+
+def test_identical_contract_hashes_are_valid_in_independent_sessions(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "state.db"
+    db.init_db(database)
+    controllers = []
+    for _ in range(2):
+        session_id = state.create_session("request", db_path=database)
+        controller = WorkPackageController(
+            session_id=session_id,
+            root_budget=TokenBudgetEnforcer(10_000),
+            roots=RootRegistry.build(tmp_path),
+            db_path=database,
+        )
+        controller.freeze_goal(_goal())
+        controller.freeze_work_package(_work_package())
+        controllers.append(controller)
+
+    assert controllers[0].goal is not None
+    assert controllers[1].goal is not None
+    assert controllers[0].goal.contract_hash == controllers[1].goal.contract_hash
 
 
 def test_goal_contract_is_closed_and_requires_verification_owner() -> None:
@@ -290,7 +317,6 @@ def test_root_control_commit_persists_goal_then_freezes_work_package(
         db_path=database,
     )
     goal_state = GoalState.create("request", "unknown", "root_decides")
-    goal_state.control_mode = "work_package"
     goal_state.begin_plan()
     orchestration = Orchestration(
         parent_session_id=session_id,
@@ -322,3 +348,28 @@ def test_root_control_commit_persists_goal_then_freezes_work_package(
     assert frozen["status"] == "ok"
     assert frozen["work_package_id"] == "wp_c1"
     assert frozen["contract_hash"].startswith("sha256:")
+
+
+def test_root_completion_requires_every_goal_criterion(tmp_path: Path) -> None:
+    controller = _controller(tmp_path)
+    goal_state = GoalState.create("request", "unknown", "root_decides")
+    goal_state.mode = "planned"
+    orchestration = Orchestration(
+        parent_session_id=controller.session_id,
+        goal_state=goal_state,
+        work_package_controller=controller,
+    )
+
+    blocker = _root_completion_blocker(goal_state, orchestration)
+    assert blocker is not None and "criteria have not all passed" in blocker
+
+    for criterion_id in ("C1", "C2"):
+        controller.set_criterion_state(
+            criterion_id,
+            "pass",
+            evidence_refs=[f"review:{criterion_id}"],
+            work_package_id=None,
+            reason="verified",
+        )
+
+    assert _root_completion_blocker(goal_state, orchestration) is None

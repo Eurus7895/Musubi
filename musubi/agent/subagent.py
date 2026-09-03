@@ -163,6 +163,8 @@ async def run_subagent(
                 status="failed",
                 summary=failure_summary,
                 touched_files=(),
+                work_package_id=spawn_args.get("work_package_id"),
+                contract_hash=spawn_args.get("contract_hash"),
             )
         return ctx_raw
 
@@ -193,6 +195,8 @@ async def run_subagent(
         # scope enforcement and rollback journaling. This does not grant a
         # spawn tool; capability remains owned by the role surface below.
         child_orch = orchestration.child(role)
+        child_orch.work_package_id = str(spawn_args.get("work_package_id") or "") or None
+        child_orch.work_package_attempt_id = str(spawn_args.get("attempt_id") or "") or None
     if (
         orchestration is not None
         and getattr(orchestration, "can_spawn_deeper", False)
@@ -202,6 +206,8 @@ async def run_subagent(
         if spawn_tool:
             child_tools = child_tools + spawn_tool
             child_orch = orchestration.child(role)
+            child_orch.work_package_id = str(spawn_args.get("work_package_id") or "") or None
+            child_orch.work_package_attempt_id = str(spawn_args.get("attempt_id") or "") or None
             spawn_catalog = tools
 
     # A direct worker gets its own slice of the run budget, the way a pipeline
@@ -279,7 +285,9 @@ async def run_subagent(
                 brief=brief,
                 failure_kind=FailureKind.POLICY,
                 pushed_skill_id=spawn_args.get("pushed_skill_id"),
-                )
+                work_package_id=spawn_args.get("work_package_id"),
+                contract_hash=spawn_args.get("contract_hash"),
+            )
         return policy_summary
     except Exception as exc:
         if type(exc).__name__ in {
@@ -303,6 +311,8 @@ async def run_subagent(
                     brief=brief,
                     failure_kind=FailureKind.BUDGET,
                     pushed_skill_id=spawn_args.get("pushed_skill_id"),
+                    work_package_id=spawn_args.get("work_package_id"),
+                    contract_hash=spawn_args.get("contract_hash"),
                 )
         raise
     finally:
@@ -406,6 +416,8 @@ async def run_subagent(
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=spawn_args.get("pushed_skill_id"),
+            work_package_id=spawn_args.get("work_package_id"),
+            contract_hash=spawn_args.get("contract_hash"),
         )
     return returned_summary
 
@@ -705,6 +717,13 @@ def _worker_budget(budget: Any, orchestration: Any) -> Any:
     if budget is None:
         return None
     from agent.budget import ChildTokenBudget, root_worker_allowance
+
+    # A governed Work Package already carries an explicit lease from Root's
+    # budget. Splitting that lease again would silently reduce the contract's
+    # max_tokens (typically to one third) and can exhaust a healthy worker
+    # before its declared allowance.
+    if isinstance(budget, ChildTokenBudget):
+        return budget
 
     ceiling = getattr(orchestration, "max_root_workers", None)
     spawned = getattr(orchestration, "spawned_workers", None)

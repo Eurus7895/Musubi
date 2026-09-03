@@ -19,7 +19,7 @@ done at goal level and an evidence-backed unit of adaptive execution.
 4. `WorkPackageController` for freeze, replay, bounded attempt leases,
    deterministic predicate-to-criterion mapping, Gap Reports, completion,
    plateau detection, and same-hash retry enforcement.
-5. Opt-in Root runtime integration. `musubi_commit_plan` accepts the Goal
+5. Root runtime integration. `musubi_commit_plan` accepts the Goal
    Contract; Root then freezes a Work Package and spawns only its resolved
    brief. Worker rows carry goal, package, attempt, and contract hash IDs.
 6. Required-criterion fail-closed finalization and explicit semantic verdicts.
@@ -28,17 +28,13 @@ done at goal level and an evidence-backed unit of adaptive execution.
    shell commands.
 8. Replayable Goal → Work Package → Attempt → Evidence query for observability.
 
-## Rollout
+## Runtime policy
 
-The default remains `legacy`. Run the new controller with:
-
-```text
-agent "<goal>" --root-control-mode work_package
-```
-
-or set `MUSUBI_ROOT_CONTROL_MODE=work_package`. Compare completion, evidence
-coverage, first-pass rate, no-progress cost, false-complete audit findings, and
-rollback success before changing the default. Pipeline metrics stay separate.
+Direct Root execution has no legacy controller or migration switch. A Root may
+answer conversational and read-only turns without opening Planning. Once it
+calls `musubi_begin_plan`, it must freeze the plan and Goal Contract, execute
+through bounded Work Packages, and satisfy the Gap Report before finalizing.
+Pipeline metrics and control remain separate.
 
 ## Verification
 

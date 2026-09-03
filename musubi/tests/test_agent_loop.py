@@ -17,11 +17,15 @@ from typing import Any
 
 import pytest
 
-from agent.run import Orchestration, run_agent
 from agent.budget import TokenBudgetEnforcer, TokenBudgetExhaustedError
-from agent.textfmt import TRUNCATION_MARK
 from agent.goal_state import GoalState
+from agent.run import Orchestration, run_agent
+from agent.textfmt import TRUNCATION_MARK
 from agent.vendors.base import LMResponse, LMRouter
+from agent.work_package_controller import WorkPackageController
+from session import state as session_state
+from storage import db
+from workspace.grants import RootRegistry
 
 
 class FakeRouter(LMRouter):
@@ -228,6 +232,54 @@ def test_root_cycle_usage_is_recorded_on_goal_state() -> None:
     assert state.root_calls == 1
     assert state.root_tokens_in == 1200
     assert state.root_tokens_out == 100
+
+
+def test_root_cannot_finish_as_text_while_plan_is_uncommitted(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+
+    database = tmp_path / "state.db"
+    db.init_db(database)
+    session_id = session_state.create_session("create weather app", database)
+    root_state = GoalState.create(
+        "create weather app", "unknown", RouteKind.ROOT_DECIDES,
+    )
+    root_state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id=session_id,
+        goal_state=root_state,
+        work_package_controller=WorkPackageController(
+            session_id=session_id,
+            root_budget=TokenBudgetEnforcer(10_000),
+            roots=RootRegistry.build(tmp_path),
+            db_path=database,
+        ),
+    )
+    router = FakeRouter([
+        LMResponse(
+            stop_reason="end_turn",
+            content=[{"type": "text", "text": "# weather_cli.py\nprint('sunny')"}],
+            usage={"input_tokens": 100, "output_tokens": 20},
+        ),
+    ])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        object(),
+        router,
+        [],
+        [{"role": "user", "content": "create weather app"}],
+        max_cycles=1,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        budget=TokenBudgetEnforcer(10_000),
+    ))
+
+    assert cycles == 1
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "musubi_commit_plan" in answer
+    assert root_state.mode == "planning"
 
 
 def test_root_first_cycle_sees_only_mode_declarations() -> None:

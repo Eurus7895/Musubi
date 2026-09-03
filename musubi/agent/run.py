@@ -159,7 +159,8 @@ _PLAN_FIRST_DIRECTIVE = (
 )
 
 _WORK_PACKAGE_DIRECTIVE = (
-    "Root control is work_package. `musubi_commit_plan` must include a strict "
+    "Root control always uses Goal Contracts and Work Packages. "
+    "`musubi_commit_plan` must include a strict "
     "Goal Contract defining deliverables, criteria, invariants, constraints, "
     "budgets, and stop conditions. Then freeze one bounded Work Package with "
     "`musubi_commit_work_package`; spawn it by work_package_id and the exact "
@@ -275,6 +276,8 @@ class WorkerOutcome:
     #: contract — a direct worker carries no native skill tool, so dropping it
     #: would resume the artifact without the pushed procedure.
     pushed_skill_id: str | None = None
+    work_package_id: str | None = None
+    contract_hash: str | None = None
 
 
 def decide_recovery(
@@ -324,6 +327,8 @@ class Orchestration:
     pipeline_name: str | None = None
     planning_artifact_dir: Path | None = None
     work_package_controller: Any = None
+    work_package_id: str | None = None
+    work_package_attempt_id: str | None = None
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -344,6 +349,8 @@ class Orchestration:
             depth=self.depth + 1,
             max_depth=self.max_depth,
             work_package_controller=self.work_package_controller,
+            work_package_id=self.work_package_id,
+            work_package_attempt_id=self.work_package_attempt_id,
         )
 
     def stage_child(
@@ -394,6 +401,8 @@ class Orchestration:
         brief: str = "",
         failure_kind: FailureKind | None = None,
         pushed_skill_id: str | None = None,
+        work_package_id: str | None = None,
+        contract_hash: str | None = None,
     ) -> WorkerOutcome:
         """Retain a compact terminal record for parent-side recovery."""
         outcome = WorkerOutcome(
@@ -404,6 +413,8 @@ class Orchestration:
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=pushed_skill_id,
+            work_package_id=work_package_id,
+            contract_hash=contract_hash,
         )
         self.worker_outcomes.append(outcome)
         if self.goal_state is not None:
@@ -592,6 +603,11 @@ async def _auto_recovery_transition(
         }
         if outcome.pushed_skill_id:
             recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
+        if outcome.work_package_id and outcome.contract_hash:
+            recovery_input.update({
+                "work_package_id": outcome.work_package_id,
+                "contract_hash": outcome.contract_hash,
+            })
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
@@ -697,7 +713,6 @@ async def run_agent(
     pipeline: str | None = None,
     resume_pipeline_session: str | None = None,
     plan_first: bool = False,
-    root_control_mode: str | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -741,16 +756,12 @@ async def run_agent(
     # the substrate can check (`agent/evidence.py`).
     scope_hint = classify_task(task)
     effective_task = task
-    from agent.config import resolve_root_control_mode
-
-    resolved_root_control_mode = resolve_root_control_mode(root_control_mode)
     goal_state = GoalState.create(
         intent=effective_task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
     )
-    goal_state.control_mode = resolved_root_control_mode
     goal_state.plan_required = plan_first
     chat_usage = _chat_turn_usage(
         chat_id, db_path=context_compression_db_path, log=log,
@@ -903,19 +914,25 @@ async def run_agent(
                 / goal_artifact_key(chat_id, planning_key)
             ),
         )
-        if resolved_root_control_mode == "work_package":
-            if budget is None:
-                raise RuntimeError(
-                    "work_package root control requires a non-zero token budget"
-                )
+        if not pipeline:
             from agent.work_package_controller import WorkPackageController
 
+            governance_budget = budget
+            if governance_budget is None:
+                governance_budget = TokenBudgetEnforcer(DEFAULT_AGENT_MAX_TOKENS)
+                print(
+                    "[agent] Work Package governance budget remains "
+                    f"{DEFAULT_AGENT_MAX_TOKENS} tokens while the global meter "
+                    "is disabled",
+                    file=log,
+                )
             orchestration.work_package_controller = WorkPackageController(
                 session_id=parent_session_id or "",
-                root_budget=budget,
+                root_budget=governance_budget,
                 roots=registry,
                 db_path=context_compression_db_path,
             )
+            print("[agent] root_control=work_package", file=log)
         # Consent is matched against the RAW user message. A model cannot
         # author a user turn, so a token found here is proof a human typed it —
         # and the match is string equality against a value the harness itself
@@ -944,7 +961,7 @@ async def run_agent(
             + "\n\n"
             + registry.prompt_block()
         )
-        if resolved_root_control_mode == "work_package":
+        if not pipeline:
             system_prompt = f"{system_prompt}\n\n{_WORK_PACKAGE_DIRECTIVE}"
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
@@ -1543,6 +1560,44 @@ async def _run_loop(
             continue
 
         if not tool_uses:
+            completion_blocker = _root_completion_blocker(
+                root_state, orchestration,
+            )
+            if completion_blocker is not None:
+                _safe_record_agent_cycle(
+                    db_path=compression_db_path,
+                    session_id=audit_session_id,
+                    worker_id=audit_worker_id,
+                    stage=audit_stage,
+                    cycle_idx=cycle,
+                    started_at=cycle_started_at,
+                    ended_at=cycle_ended_at,
+                    lm_ms=lm_ms,
+                    usage=usage,
+                    tool_names=[],
+                    text_chars=len(text),
+                    cycle_status="control_refused",
+                    log=log,
+                )
+                print(
+                    f"[agent] root completion refused: {completion_blocker}",
+                    file=log,
+                )
+                if cycle + 1 >= max_cycles:
+                    final_answer = (
+                        f"[incomplete] {completion_blocker}\n\n{text}"
+                    )
+                    break
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[root-control-error]\n"
+                        f"{completion_blocker}\n"
+                        "Do not return implementation as chat text. Continue "
+                        "through the required control tool."
+                    ),
+                })
+                continue
             _safe_record_agent_cycle(
                 db_path=compression_db_path,
                 session_id=audit_session_id,
@@ -1558,26 +1613,7 @@ async def _run_loop(
                 cycle_status="final",
                 log=log,
             )
-            if (
-                root_state is not None
-                and root_state.control_mode == "work_package"
-                and orchestration is not None
-                and orchestration.work_package_controller is not None
-            ):
-                report = orchestration.work_package_controller.gap_report()
-                root_state.gap_report = report.to_dict()
-                if not report.complete:
-                    final_answer = (
-                        "[incomplete] Required Goal Contract criteria have not "
-                        "all passed. gap_report="
-                        + json.dumps(report.to_dict(), sort_keys=True)
-                        + "\n\n"
-                        + text
-                    )
-                else:
-                    final_answer = text
-            else:
-                final_answer = text
+            final_answer = text
             break
 
         if resp.stop_reason == "max_tokens":
@@ -2112,15 +2148,6 @@ def main(argv: list[str] | None = None) -> int:
             "loop no longer forces a planner by guessing scope from keywords."
         ),
     )
-    ap.add_argument(
-        "--root-control-mode",
-        choices=["legacy", "work_package"],
-        default=None,
-        help=(
-            "Root controller migration switch. Defaults to "
-            "MUSUBI_ROOT_CONTROL_MODE, then legacy."
-        ),
-    )
     args = ap.parse_args(argv)
     if args.resume_pipeline_session and not args.pipeline:
         print(
@@ -2204,7 +2231,6 @@ def main(argv: list[str] | None = None) -> int:
                     pipeline=args.pipeline,
                     resume_pipeline_session=args.resume_pipeline_session,
                     plan_first=args.plan,
-                    root_control_mode=args.root_control_mode,
                 )
             )
         except KeyboardInterrupt:
@@ -3446,10 +3472,7 @@ def _normalize_root_spawn_tool_uses(
         clean_input = dict(raw_input)
         removed_allowed_tools = "allowed_tools" in clean_input
         clean_input.pop("allowed_tools", None)
-        if (
-            orchestration.goal_state is not None
-            and orchestration.goal_state.control_mode == "work_package"
-        ):
+        if orchestration.work_package_controller is not None:
             model_fields = {
                 "role", "pushed_skill_id", "work_package_id", "contract_hash",
             }
@@ -3466,6 +3489,39 @@ def _normalize_root_spawn_tool_uses(
                 category="policy",
             )
     return normalized
+
+
+def _root_completion_blocker(
+    state: GoalState | None,
+    orchestration: Orchestration | None,
+) -> str | None:
+    """Return why a governed Root text response cannot be terminal yet."""
+    if (
+        state is None
+        or orchestration is None
+        or orchestration.work_package_controller is None
+    ):
+        return None
+    if state.mode == "undecided":
+        # A conversational or read-only answer does not need an execution
+        # contract. Calling begin_plan is the Root's explicit declaration that
+        # this turn will produce governed work; from that transition onward it
+        # cannot escape the contract by returning prose or code as chat text.
+        return None
+    if state.mode == "planning":
+        return "The plan and Goal Contract are not frozen; call musubi_commit_plan."
+    controller = orchestration.work_package_controller
+    if controller.goal is None:
+        return "No frozen Goal Contract is active; call musubi_commit_plan."
+    report = controller.gap_report()
+    state.gap_report = report.to_dict()
+    if report.complete:
+        return None
+    return (
+        "Required Goal Contract criteria have not all passed; continue with "
+        "a frozen Work Package or record explicit verification evidence. "
+        "gap_report=" + json.dumps(report.to_dict(), sort_keys=True)
+    )
 
 
 def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
@@ -3918,14 +3974,7 @@ async def _dispatch_one(
         work_package_controller = orchestration.work_package_controller
         work_package_attempt = None
         worker_budget = budget
-        if orchestration.goal_state is not None and (
-            orchestration.goal_state.control_mode == "work_package"
-        ):
-            if work_package_controller is None:
-                return json.dumps({
-                    "status": "error",
-                    "error": "work package controller is unavailable",
-                })
+        if work_package_controller is not None:
             work_package_id = str(args.get("work_package_id") or "").strip()
             echoed_hash = str(args.get("contract_hash") or "").strip()
             try:
@@ -3950,9 +3999,9 @@ async def _dispatch_one(
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
         if prior_outcome is not None:
             worker_args = {
-                **args,
+                **worker_args,
                 "brief": _replacement_brief(
-                    str(args.get("brief", "")), prior_outcome,
+                    str(worker_args.get("brief", "")), prior_outcome,
                 ),
             }
         injected = {
@@ -3994,6 +4043,7 @@ async def _dispatch_one(
                 gate = work_package_controller.finish_attempt(
                     worker_status=worker_status,
                     touched_files=touched,
+                    attempt_id=work_package_attempt.attempt_id,
                     failure_class=failure_class,
                     turns_used=int((attempt_row or {}).get("turns") or 0),
                 )
@@ -4023,6 +4073,7 @@ async def _dispatch_one(
                     work_package_controller.finish_attempt(
                         worker_status="failed",
                         touched_files=(),
+                        attempt_id=work_package_attempt.attempt_id,
                         failure_class=type(exc).__name__,
                     )
                 except Exception:
@@ -4190,8 +4241,8 @@ def _handle_root_control_tool(
 
         controller = orchestration.work_package_controller
         if name != "musubi_commit_plan":
-            if state.control_mode != "work_package" or controller is None:
-                raise ValueError(f"{name} requires work_package root control mode")
+            if controller is None:
+                raise ValueError(f"{name} requires Root Work Package control")
             if name == "musubi_commit_work_package":
                 raw = args.get("work_package")
                 if not isinstance(raw, dict):
@@ -4317,19 +4368,18 @@ def _handle_root_control_tool(
             )
         paths, artifacts = persisted
         goal_path = None
-        if state.control_mode == "work_package":
-            if controller is None:
-                raise ValueError("work package controller is unavailable")
-            raw_goal = args.get("goal_contract")
-            if not isinstance(raw_goal, dict):
-                raise _PlanningContractError(
-                    "invalid_goal_contract",
-                    "goal_contract is required in work_package mode",
-                )
-            goal_contract = controller.freeze_goal(raw_goal)
-            goal_path = persist_goal_contract(
-                goal_contract.to_dict(), orchestration.planning_artifact_dir,
+        if controller is None:
+            raise ValueError("work package controller is unavailable")
+        raw_goal = args.get("goal_contract")
+        if not isinstance(raw_goal, dict):
+            raise _PlanningContractError(
+                "invalid_goal_contract",
+                "goal_contract is required",
             )
+        goal_contract = controller.freeze_goal(raw_goal)
+        goal_path = persist_goal_contract(
+            goal_contract.to_dict(), orchestration.planning_artifact_dir,
+        )
         state.commit_root_plan(
             manifest=artifacts.manifest,
             change_size=change_size,
@@ -4338,10 +4388,9 @@ def _handle_root_control_tool(
                 str(path) for path in ((*paths, goal_path) if goal_path else paths)
             ),
         )
-        if state.control_mode == "work_package":
-            state.next_role = None
-            state.role_chain = ()
-            state.gap_report = controller.gap_report().to_dict()
+        state.next_role = None
+        state.role_chain = ()
+        state.gap_report = controller.gap_report().to_dict()
         orchestration.max_root_workers = max(
             orchestration.max_root_workers, needed,
         )
@@ -4382,11 +4431,14 @@ def _prepare_work_package_file_mutation(
     } or orchestration is None:
         return None
     controller = orchestration.work_package_controller
-    if controller is None or controller.active_attempt is None:
+    if controller is None or not orchestration.work_package_attempt_id:
         return None
-    work_package_id = controller.active_work_package_id
+    work_package_id = orchestration.work_package_id
     if not work_package_id:
         raise ValueError("file mutation has no active Work Package")
+    _, attempt = controller.active_attempt_context(
+        orchestration.work_package_attempt_id,
+    )
     root_alias = str(args.get("root") or "musubi")
     path = str(args.get("path") or "").strip()
     reference = f"{root_alias}::{path}"
@@ -4396,7 +4448,7 @@ def _prepare_work_package_file_mutation(
         return None
     from agent.rollback import capture_before
 
-    attempt_id = controller.active_attempt.attempt_id
+    attempt_id = attempt.attempt_id
     capture_before(
         session_id=controller.session_id,
         work_package_id=work_package_id,
@@ -4417,8 +4469,8 @@ def _work_package_side_effect_error(
     if orchestration is None or orchestration.work_package_controller is None:
         return None
     controller = orchestration.work_package_controller
-    work_package_id = controller.active_work_package_id
-    if controller.active_attempt is None or not work_package_id:
+    work_package_id = orchestration.work_package_id
+    if not orchestration.work_package_attempt_id or not work_package_id:
         return None
     work_package = controller.work_packages[work_package_id]
     if name == "musubi_run_command" and work_package.reversibility == "automatic":
