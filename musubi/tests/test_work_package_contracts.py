@@ -350,6 +350,54 @@ def test_root_control_commit_persists_goal_then_freezes_work_package(
     assert frozen["contract_hash"].startswith("sha256:")
 
 
+def test_invalid_goal_contract_is_counted_and_writes_no_plan_artifacts(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "state.db"
+    db.init_db(database)
+    session_id = state.create_session("request", db_path=database)
+    goal_state = GoalState.create("request", "unknown", "root_decides")
+    goal_state.begin_plan()
+    artifact_dir = tmp_path / ".musubi" / "goals" / "invalid"
+    orchestration = Orchestration(
+        parent_session_id=session_id,
+        goal_state=goal_state,
+        planning_artifact_dir=artifact_dir,
+        work_package_controller=WorkPackageController(
+            session_id=session_id,
+            root_budget=TokenBudgetEnforcer(10_000),
+            roots=RootRegistry.build(tmp_path),
+            db_path=database,
+        ),
+    )
+    invalid_goal = _goal()
+    invalid_goal["criteria"][0]["unexpected"] = True
+    args = {
+        "plan_markdown": "# Plan\n\nImplement one verified module.",
+        "change_manifest": {"files_expected": 1, "subsystems": ["agent"]},
+        "change_size": "small",
+        "worker_chain": ["coder"],
+        "goal_contract": invalid_goal,
+    }
+
+    results = [
+        json.loads(_handle_root_control_tool(
+            "musubi_commit_plan", args, orchestration,
+        ))
+        for _ in range(3)
+    ]
+
+    assert [item["status"] for item in results] == [
+        "error", "error", "incomplete",
+    ]
+    assert all(item["error_kind"] == "invalid_goal_contract" for item in results)
+    assert results[-1]["consecutive_failures"] == 3
+    assert goal_state.pending_clarification is not None
+    assert not (artifact_dir / "plan.md").exists()
+    assert not (artifact_dir / "manifest.json").exists()
+    assert not (artifact_dir / "goal_contract.json").exists()
+
+
 def test_root_completion_requires_every_goal_criterion(tmp_path: Path) -> None:
     controller = _controller(tmp_path)
     goal_state = GoalState.create("request", "unknown", "root_decides")
