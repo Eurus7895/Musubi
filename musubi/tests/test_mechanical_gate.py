@@ -95,7 +95,7 @@ def test_gate_pass_on_clean_lint(monkeypatch) -> None:
         seen["files"] = args["files"]
         return '{"passed": true, "errors": []}'
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     gate = asyncio.run(
         subagent._run_mechanical_gate(object(), {"b.py", "a.py"}, io.StringIO())
     )
@@ -110,7 +110,7 @@ def test_gate_fail_carries_errors_error_does_not(monkeypatch) -> None:
     async def fake_fail(session, name, args):
         return '{"passed": false, "errors": [{"code": "F401", "message": "unused import os"}]}'
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_fail)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_fail)
     g = asyncio.run(subagent._run_mechanical_gate(object(), {"a.py"}, io.StringIO()))
     assert g["result"] == "fail"
     assert g["errors"] == ["F401 unused import os"]
@@ -119,7 +119,7 @@ def test_gate_fail_carries_errors_error_does_not(monkeypatch) -> None:
     async def fake_error(session, name, args):
         return '{"passed": false, "errors": []}'
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_error)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_error)
     g2 = asyncio.run(subagent._run_mechanical_gate(object(), {"a.py"}, io.StringIO()))
     assert g2["result"] == "error"
 
@@ -130,7 +130,7 @@ def test_gate_skips_when_no_lintable_files(monkeypatch) -> None:
     async def fake_call(session, name, args):  # pragma: no cover - must not run
         raise AssertionError("lint must not run for a non-python artifact")
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     gate = asyncio.run(
         subagent._run_mechanical_gate(object(), {"dashboard.html"}, io.StringIO())
     )
@@ -153,7 +153,7 @@ def test_gate_filters_deleted_scratch_file(tmp_path: Path, monkeypatch) -> None:
         assert args == {"files": ["app.py"], "root": "musubi"}
         return '{"passed": true, "errors": []}'
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     gate = asyncio.run(
         subagent._run_mechanical_gate(
             object(), {str(real), str(deleted)}, io.StringIO()
@@ -172,7 +172,7 @@ def test_gate_skipped_when_all_writes_deleted(tmp_path: Path, monkeypatch) -> No
     async def fake_call(session, name, args):  # pragma: no cover - must not run
         raise AssertionError("lint must not run when nothing survives")
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     gate = asyncio.run(
         subagent._run_mechanical_gate(object(), {str(gone)}, io.StringIO())
     )
@@ -206,7 +206,7 @@ def test_mechanical_root_follows_selected_workspace(monkeypatch, tmp_path) -> No
         assert args == {"files": ["app.py"], "root": "app"}
         return '{"passed": true, "errors": []}'
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     gate = asyncio.run(
         subagent._run_mechanical_gate(object(), {"app::app.py"}, io.StringIO())
     )

@@ -892,7 +892,7 @@ def test_run_loop_passes_context_compression_db_path(
         seen.append(compression_db_path)
         return messages
 
-    monkeypatch.setattr(run_mod, "fit_context", spy_fit_context)
+    monkeypatch.setattr("agent.collector.fit_context", spy_fit_context)
     router = FakeRouter([
         LMResponse(stop_reason="end_turn", content=[{"type": "text", "text": "ok"}]),
     ])

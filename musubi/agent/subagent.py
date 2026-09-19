@@ -78,10 +78,9 @@ async def run_subagent(
     Otherwise it is a leaf: no spawn tool, no orchestration.
     """
     # Lazy import avoids the run↔subagent module cycle.
+    from agent.decider import FailureKind
     from agent.run import (
-        FailureKind,
         PolicyDeniedError,
-        _call_tool_text,
         _policy_incomplete,
         _worker_log_label,
         _worker_skill_reports,
@@ -89,6 +88,7 @@ async def run_subagent(
         run_unit,
     )
     from agent.runtime_log import emit_runtime_log, runtime_worker_scope
+    from agent.runtime_tools import _call_tool_text
 
     # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
     # _spec): the role prompt is resolved BEFORE the spawn so its declared
@@ -561,7 +561,7 @@ async def _run_mechanical_gate(
     summary. Returns a JSON-serialisable signal the root reads without
     re-deriving it.
     """
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     files = sorted(f for f in touched if _file_still_exists(f))
     lintable = [f for f in files if f.endswith(_LINTABLE_EXT)]
@@ -866,7 +866,7 @@ def _default_agents_dir() -> Path:
 
 
 async def _safe_complete(session: Any, handle_id: str, *, status: str, summary: str) -> None:
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     try:
         await _call_tool_text(

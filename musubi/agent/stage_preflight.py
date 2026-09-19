@@ -163,10 +163,10 @@ def run_stage_preflight(
         from agent.run import (
             _charge_budget_postflight,
             _check_budget_preflight,
-            _cycle_token_usage,
             _estimate_input_tokens,
             _safe_record_agent_cycle,
         )
+        from agent.thinker import _cycle_token_usage
 
         input_estimate = _estimate_input_tokens(messages, [])
         _check_budget_preflight(budget, input_estimate, log)

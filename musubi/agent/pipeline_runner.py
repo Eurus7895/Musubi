@@ -431,11 +431,11 @@ async def run_pipeline(
     from agent.budget import ChildTokenBudget, pipeline_stage_allowance
     from agent.run import (
         PolicyDeniedError,
-        _call_tool_text,
         _policy_incomplete,
         _worker_touched_files,
         run_unit,
     )
+    from agent.runtime_tools import _call_tool_text
     from agent.subagent import (
         build_subagent_system_prompt,
         select_child_tools,
@@ -761,7 +761,7 @@ async def run_pipeline(
         # so no fitter may silently trim its role, pushed skill, brief, or tool
         # definitions to make it fit.
         from agent.context import ContextBudgetExceededError, fit_model_input
-        from agent.run import ORDER_SENSITIVE_FILE_TOOLS
+        from agent.runtime_tools import ORDER_SENSITIVE_FILE_TOOLS
         stage_context_budget_chars = min(
             spec.context_budget_chars,
             resolve_pipeline_context_budget_chars(
@@ -1198,7 +1198,7 @@ async def _complete_pipeline_stage(
     shields FastMCP's JSON-like scalar rehydration quirk without changing the
     exact structured answer that evaluator code consumes locally.
     """
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     completion_summary = summary
     if completion_summary.lstrip().startswith(("{", "[")):
@@ -1221,7 +1221,7 @@ async def _finalize_pipeline(
     final_status: str,
     escalated: bool,
 ) -> None:
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     await _call_tool_text(session, "musubi_finalize_pipeline_run", {
         "session_id": session_id,
@@ -1391,6 +1391,7 @@ def _record_gate_checkpoint(
     if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from datetime import datetime, timezone
+
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
     db.transition_stage_attempt(
