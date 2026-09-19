@@ -386,6 +386,24 @@ CREATE TABLE IF NOT EXISTS rollback_journal (
     UNIQUE (attempt_id, root_alias, path),
     FOREIGN KEY (session_id) REFERENCES sessions (session_id)
 );
+CREATE TABLE IF NOT EXISTS adaptive_decision_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    state_revision INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    candidate_id TEXT,
+    legal_actions_json TEXT NOT NULL,
+    confidence_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, sequence),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_adaptive_decision_request
+    ON adaptive_decision_events (session_id, request_id, id);
 """
 
 def _default_db_path() -> Path:
