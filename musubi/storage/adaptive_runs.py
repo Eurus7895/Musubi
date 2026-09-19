@@ -65,9 +65,65 @@ class AdaptiveRunStore:
     reused where their invariants already match the target architecture.
     """
 
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        db.init_db(db_path)
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.db_path = db_path or db.DEFAULT_DB_PATH
+        db.init_db(self.db_path)
+
+    # Contract/attempt methods below are the cutover surface for Adaptive.
+    # They intentionally mirror current behavior while table ownership moves
+    # out of the Controller. The repository can change schema without making
+    # workflow code depend on table-level functions again.
+
+    def latest_goal_contract(self, session_id: str, goal_id: str) -> dict | None:
+        return db.latest_goal_contract(session_id, goal_id, self.db_path)
+
+    def goal_contract(self, contract_hash: str) -> dict | None:
+        return db.get_goal_contract_version(contract_hash, self.db_path)
+
+    def save_goal_contract(self, **values: Any) -> None:
+        db.insert_goal_contract_version(**values, db_path=self.db_path)
+
+    def criterion_states(self, session_id: str, goal_id: str) -> dict[str, dict]:
+        return db.fold_criterion_states(session_id, goal_id, self.db_path)
+
+    def append_criterion(self, **values: Any) -> None:
+        db.append_criterion_event(**values, db_path=self.db_path)
+
+    def latest_work_packages(
+        self, session_id: str, goal_contract_hash: str,
+    ) -> list[dict]:
+        return db.latest_work_packages_for_goal(
+            session_id, goal_contract_hash, self.db_path,
+        )
+
+    def work_package(self, contract_hash: str) -> dict | None:
+        return db.get_work_package_version(contract_hash, self.db_path)
+
+    def latest_work_package(self, session_id: str, work_package_id: str) -> dict | None:
+        return db.latest_work_package_version(
+            session_id, work_package_id, self.db_path,
+        )
+
+    def save_work_package(self, **values: Any) -> None:
+        db.insert_work_package_version(**values, db_path=self.db_path)
+
+    def attempts(self, session_id: str, work_package_id: str) -> list[dict]:
+        return db.get_work_package_attempts(session_id, work_package_id, self.db_path)
+
+    def goal_usage(self, session_id: str, goal_id: str) -> dict[str, int]:
+        return db.goal_attempt_usage(session_id, goal_id, self.db_path)
+
+    def start_attempt(self, **values: Any) -> None:
+        db.insert_work_package_attempt(**values, db_path=self.db_path)
+
+    def finish_attempt(self, **values: Any) -> None:
+        db.finish_work_package_attempt(**values, db_path=self.db_path)
+
+    def append_verification(self, **values: Any) -> None:
+        db.append_verification_evidence(**values, db_path=self.db_path)
+
+    def append_budget(self, **values: Any) -> None:
+        db.append_budget_event(**values, db_path=self.db_path)
 
     def record_decision(
         self,

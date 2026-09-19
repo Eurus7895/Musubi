@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agent.budget import ChildTokenBudget, TokenBudgetEnforcer
-from storage import db
+from storage.adaptive_runs import AdaptiveRunStore
 from validation.goal_contract import FrozenGoalContract, validate_and_freeze_goal_contract
 from validation.stage_gate import GateResult, evaluate_execution_gate, fingerprint_file
 from validation.work_package_contract import (
@@ -98,11 +98,13 @@ class WorkPackageController:
         root_budget: TokenBudgetEnforcer,
         roots: RootRegistry,
         db_path: Path | None = None,
+        store: AdaptiveRunStore | None = None,
     ) -> None:
         self.session_id = session_id
         self.root_budget = root_budget
         self.roots = roots
         self.db_path = db_path
+        self.store = store or AdaptiveRunStore(db_path)
         self.goal: FrozenGoalContract | None = None
         self.criteria: dict[str, CriterionState] = {}
         self.work_packages: dict[str, FrozenWorkPackageContract] = {}
@@ -113,14 +115,14 @@ class WorkPackageController:
 
     def restore(self, goal_id: str) -> FrozenGoalContract:
         """Replay the latest Goal/WP versions and criterion projection."""
-        row = db.latest_goal_contract(self.session_id, goal_id, self.db_path)
+        row = self.store.latest_goal_contract(self.session_id, goal_id)
         if row is None:
             raise ValueError(f"no persisted Goal Contract for {goal_id}")
         raw_goal = json.loads(row["canonical_json"])
         raw_goal["contract_hash"] = row["contract_hash"]
         goal = validate_and_freeze_goal_contract(raw_goal)
         self.goal = goal
-        folded = db.fold_criterion_states(self.session_id, goal.id, self.db_path)
+        folded = self.store.criterion_states(self.session_id, goal.id)
         self.criteria = {}
         for criterion in goal.criteria:
             persisted = folded.get(criterion.id)
@@ -133,8 +135,8 @@ class WorkPackageController:
                 state.updated_at = persisted["created_at"]
             self.criteria[criterion.id] = state
         self.work_packages = {}
-        for wp_row in db.latest_work_packages_for_goal(
-            self.session_id, goal.contract_hash, self.db_path,
+        for wp_row in self.store.latest_work_packages(
+            self.session_id, goal.contract_hash,
         ):
             raw_wp = json.loads(wp_row["canonical_json"])
             raw_wp["contract_hash"] = wp_row["contract_hash"]
@@ -148,9 +150,9 @@ class WorkPackageController:
         """Validate and canonicalize a Goal Contract without mutating state."""
         contract = validate_and_freeze_goal_contract(
             raw,
-            lineage_lookup=lambda digest: db.get_goal_contract_version(digest, self.db_path),
+            lineage_lookup=self.store.goal_contract,
         )
-        previous = db.latest_goal_contract(self.session_id, contract.id, self.db_path)
+        previous = self.store.latest_goal_contract(self.session_id, contract.id)
         if previous is not None and int(previous["version"]) >= contract.version:
             raise ValueError("goal contract version already exists or moves backwards")
         if previous is not None and contract.supersedes != previous["contract_hash"]:
@@ -159,7 +161,7 @@ class WorkPackageController:
 
     def freeze_goal(self, raw: Mapping[str, Any]) -> FrozenGoalContract:
         contract = self.validate_goal(raw)
-        db.insert_goal_contract_version(
+        self.store.save_goal_contract(
             session_id=self.session_id,
             goal_id=contract.id,
             version=contract.version,
@@ -167,10 +169,9 @@ class WorkPackageController:
             contract_hash=contract.contract_hash,
             supersedes_hash=contract.supersedes,
             created_at=_now(),
-            db_path=self.db_path,
         )
         self.goal = contract
-        existing = db.fold_criterion_states(self.session_id, contract.id, self.db_path)
+        existing = self.store.criterion_states(self.session_id, contract.id)
         self.criteria = {}
         for criterion in contract.criteria:
             row = existing.get(criterion.id)
@@ -196,11 +197,11 @@ class WorkPackageController:
         contract = validate_and_freeze_work_package(
             raw,
             goal_criterion_ids=frozenset(self.criteria),
-            lineage_lookup=lambda digest: db.get_work_package_version(digest, self.db_path),
+            lineage_lookup=self.store.work_package,
         )
         if contract.goal_contract_id != goal.id:
             raise ValueError("work package references a different goal contract")
-        previous = db.latest_work_package_version(self.session_id, contract.id, self.db_path)
+        previous = self.store.latest_work_package(self.session_id, contract.id)
         if previous is not None and int(previous["version"]) >= contract.version:
             raise ValueError("work package version already exists or moves backwards")
         if previous is not None and contract.supersedes != previous["contract_hash"]:
@@ -217,7 +218,7 @@ class WorkPackageController:
                 raise ValueError(
                     f"criterion {delta.criterion_id} is {actual}, expected {delta.from_status}"
                 )
-        db.insert_work_package_version(
+        self.store.save_work_package(
             session_id=self.session_id,
             work_package_id=contract.id,
             version=contract.version,
@@ -226,7 +227,6 @@ class WorkPackageController:
             contract_hash=contract.contract_hash,
             supersedes_hash=contract.supersedes,
             created_at=_now(),
-            db_path=self.db_path,
         )
         self.work_packages[contract.id] = contract
         self.active_work_package_id = contract.id
@@ -236,13 +236,11 @@ class WorkPackageController:
         work_package = self._work_package(work_package_id)
         if echoed_hash != work_package.contract_hash:
             raise ValueError("retry contract hash does not match the frozen work package")
-        attempts = db.get_work_package_attempts(
-            self.session_id, work_package_id, self.db_path,
-        )
+        attempts = self.store.attempts(self.session_id, work_package_id)
         number = len(attempts) + 1
         if number > work_package.budget.max_attempts:
             raise ValueError("work package max_attempts budget is exhausted")
-        usage = db.goal_attempt_usage(self.session_id, self._require_goal().id, self.db_path)
+        usage = self.store.goal_usage(self.session_id, self._require_goal().id)
         remaining_turns = self._require_goal().total_budget.max_worker_turns - usage["turns"]
         if remaining_turns <= 0:
             raise ValueError("goal max_worker_turns budget is exhausted")
@@ -265,7 +263,7 @@ class WorkPackageController:
             token_budget=ChildTokenBudget(self.root_budget, allowance),
             max_turns=min(work_package.budget.max_turns, remaining_turns),
         )
-        db.insert_work_package_attempt(
+        self.store.start_attempt(
             attempt_id=attempt_id,
             session_id=self.session_id,
             goal_id=self._require_goal().id,
@@ -274,9 +272,8 @@ class WorkPackageController:
             attempt=number,
             status="running",
             created_at=_now(),
-            db_path=self.db_path,
         )
-        db.append_budget_event(
+        self.store.append_budget(
             session_id=self.session_id,
             goal_id=self._require_goal().id,
             work_package_id=work_package_id,
@@ -286,7 +283,6 @@ class WorkPackageController:
             turns=attempt.max_turns,
             detail={"contract_hash": work_package.contract_hash},
             created_at=_now(),
-            db_path=self.db_path,
         )
         self.active_work_package_id = work_package_id
         self.active_attempt = attempt
@@ -321,14 +317,13 @@ class WorkPackageController:
                 criterion_id = str(predicate["criterion_id"])
                 grouped[criterion_id].append(result)
                 evidence_ref = f"evidence:{attempt.attempt_id}:{len(grouped[criterion_id])}"
-                db.append_verification_evidence(
+                self.store.append_verification(
                     attempt_id=attempt.attempt_id,
                     criterion_id=criterion_id,
                     verifier_ref=evidence_ref,
                     status=result.status,
                     evidence={"message": result.message, **dict(result.evidence)},
                     created_at=_now(),
-                    db_path=self.db_path,
                 )
             for criterion_id, results in grouped.items():
                 if not results:
@@ -367,7 +362,7 @@ class WorkPackageController:
         else:
             terminal = "blocked"
             failure_class = failure_class or "semantic_evidence_required"
-        db.finish_work_package_attempt(
+        self.store.finish_attempt(
             attempt_id=attempt.attempt_id,
             status=terminal,
             failure_class=failure_class,
@@ -375,9 +370,8 @@ class WorkPackageController:
             turns_used=turns_used,
             criterion_delta=criterion_delta,
             completed_at=_now(),
-            db_path=self.db_path,
         )
-        db.append_budget_event(
+        self.store.append_budget(
             session_id=self.session_id,
             goal_id=self._require_goal().id,
             work_package_id=work_package.id,
@@ -387,7 +381,6 @@ class WorkPackageController:
             turns=turns_used,
             detail={"status": terminal, "failure_class": failure_class},
             created_at=_now(),
-            db_path=self.db_path,
         )
         self.active_attempts.pop(attempt.attempt_id, None)
         if self.active_attempts:
@@ -458,7 +451,7 @@ class WorkPackageController:
 
     def retry_allowed(self, work_package_id: str, failure_class: str) -> tuple[bool, str]:
         work_package = self._work_package(work_package_id)
-        attempts = db.get_work_package_attempts(self.session_id, work_package_id, self.db_path)
+        attempts = self.store.attempts(self.session_id, work_package_id)
         if failure_class not in RECOVERABLE_FAILURES:
             return False, "failure is not recoverable under the same contract"
         if len(attempts) >= work_package.budget.max_attempts:
@@ -511,7 +504,7 @@ class WorkPackageController:
 
     def _record_state(self, state: CriterionState, *, reason: str) -> None:
         goal = self._require_goal()
-        db.append_criterion_event(
+        self.store.append_criterion(
             session_id=self.session_id,
             goal_id=goal.id,
             goal_contract_hash=goal.contract_hash,
@@ -521,7 +514,6 @@ class WorkPackageController:
             work_package_id=state.last_work_package_id,
             reason=reason,
             created_at=state.updated_at,
-            db_path=self.db_path,
         )
 
     def _require_goal(self) -> FrozenGoalContract:
