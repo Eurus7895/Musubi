@@ -279,7 +279,68 @@ def test_root_cannot_finish_as_text_while_plan_is_uncommitted(
     assert cycles == 1
     assert answer is not None and answer.startswith("[incomplete]")
     assert "musubi_commit_plan" in answer
+    assert "weather_cli.py" not in answer
+    assert "print('sunny')" not in answer
+    assert "draft text was discarded" in answer
     assert root_state.mode == "planning"
+
+
+def test_cycle_exhaustion_never_salvages_root_text_during_planning(
+    tmp_path: Path,
+) -> None:
+    from agent import run as run_mod
+    from agent.routes import RouteKind
+
+    database = tmp_path / "state.db"
+    db.init_db(database)
+    session_id = session_state.create_session("create weather app", database)
+    root_state = GoalState.create(
+        "create weather app", "unknown", RouteKind.ROOT_DECIDES,
+    )
+    root_state.begin_plan()
+    orchestration = Orchestration(
+        parent_session_id=session_id,
+        goal_state=root_state,
+        work_package_controller=WorkPackageController(
+            session_id=session_id,
+            root_budget=TokenBudgetEnforcer(10_000),
+            roots=RootRegistry.build(tmp_path),
+            db_path=database,
+        ),
+    )
+    router = FakeRouter([LMResponse(
+        stop_reason="tool_use",
+        content=[
+            {"type": "text", "text": "Application ready!\n```js\nserver.listen()\n```"},
+            {
+                "type": "tool_use",
+                "id": "read-while-planning",
+                "name": "musubi_read_file",
+                "input": {"path": "README.md"},
+            },
+        ],
+        usage={"input_tokens": 100, "output_tokens": 20},
+    )])
+
+    answer, cycles = asyncio.run(run_mod._run_loop(
+        _FakeToolSession("read"),
+        router,
+        [{"name": "musubi_read_file", "description": "", "input_schema": {}}],
+        [{"role": "user", "content": "create weather app"}],
+        max_cycles=1,
+        log=io.StringIO(),
+        orchestration=orchestration,
+        budget=TokenBudgetEnforcer(10_000),
+        salvage_on_exhaust=True,
+    ))
+
+    assert cycles == 1
+    assert answer is not None and answer.startswith("[incomplete]")
+    assert "Application ready" not in answer
+    assert "server.listen" not in answer
+    assert "draft text was discarded" in answer
+    # A blocked Root must not spend another LM call manufacturing prose.
+    assert len(router.calls) == 1
 
 
 def test_root_first_cycle_sees_only_mode_declarations() -> None:

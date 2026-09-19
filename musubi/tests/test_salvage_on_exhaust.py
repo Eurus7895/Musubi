@@ -3,7 +3,9 @@
 A model that calls a tool on every cycle never hits the loop's text-break path,
 so before this guard the whole turn hard-failed with "exceeded N cycles" even
 when the model had produced perfectly good text alongside its tool calls. The
-root agent now salvages that last assistant text instead of erroring.
+root agent now salvages that last assistant text instead of erroring. Governed
+Root drafts are excluded: while a Planning/Goal Contract blocker is active,
+text is not an accepted answer and must be discarded rather than salvaged.
 """
 
 from __future__ import annotations

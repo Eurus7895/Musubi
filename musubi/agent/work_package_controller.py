@@ -144,7 +144,8 @@ class WorkPackageController:
             self.work_packages[contract.id] = contract
         return goal
 
-    def freeze_goal(self, raw: Mapping[str, Any]) -> FrozenGoalContract:
+    def validate_goal(self, raw: Mapping[str, Any]) -> FrozenGoalContract:
+        """Validate and canonicalize a Goal Contract without mutating state."""
         contract = validate_and_freeze_goal_contract(
             raw,
             lineage_lookup=lambda digest: db.get_goal_contract_version(digest, self.db_path),
@@ -154,6 +155,10 @@ class WorkPackageController:
             raise ValueError("goal contract version already exists or moves backwards")
         if previous is not None and contract.supersedes != previous["contract_hash"]:
             raise ValueError("goal contract must supersede the latest frozen version")
+        return contract
+
+    def freeze_goal(self, raw: Mapping[str, Any]) -> FrozenGoalContract:
+        contract = self.validate_goal(raw)
         db.insert_goal_contract_version(
             session_id=self.session_id,
             goal_id=contract.id,

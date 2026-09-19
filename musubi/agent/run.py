@@ -35,6 +35,7 @@ import contextvars
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from collections.abc import Mapping
@@ -167,7 +168,9 @@ _WORK_PACKAGE_DIRECTIVE = (
     "contract_hash returned by the freeze. Judge completion only from the Gap "
     "Report. For semantic checks, record explicit evidence with "
     "`musubi_record_criterion_verdict`. Never widen or retry by editing a "
-    "frozen contract; create a superseding version."
+    "frozen contract; create a superseding version. Implementation is complete "
+    "only when governed worker tool calls write the requested artifacts; never "
+    "substitute source code or a file skeleton in the final chat response."
 )
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
@@ -1173,7 +1176,10 @@ async def _run_loop(
     the spawn tool, while its children still need the whole catalog.
     """
     final_answer: str | None = None
-    last_text = ""  # most recent non-empty assistant text, for salvage
+    # Only text produced while terminal completion is permitted may be salvaged.
+    # In particular, a Root draft emitted during Planning is not an artifact and
+    # must never escape through a budget/cycle-exhaustion fallback.
+    last_text = ""
     cycles_used = 0
     base_floor, ceiling = resolve_effort_bounds(
         can_mutate=any(
@@ -1412,7 +1418,7 @@ async def _run_loop(
                 file=log,
             )
             text = ""
-        if text:
+        if text and _root_completion_blocker(root_state, orchestration) is None:
             last_text = text  # remember even when the model also called a tool
         try:
             _charge_budget_postflight(
@@ -1584,9 +1590,7 @@ async def _run_loop(
                     file=log,
                 )
                 if cycle + 1 >= max_cycles:
-                    final_answer = (
-                        f"[incomplete] {completion_blocker}\n\n{text}"
-                    )
+                    final_answer = _blocked_completion_answer(completion_blocker)
                     break
                 messages.append({
                     "role": "user",
@@ -1793,7 +1797,19 @@ async def _run_loop(
     # A model that calls a tool on EVERY cycle never hits the break path, so
     # `final_answer` stays None. Recover rather than hard-failing the turn:
     if final_answer is None and salvage_on_exhaust:
-        if last_text:
+        completion_blocker = _root_completion_blocker(root_state, orchestration)
+        if completion_blocker is not None:
+            # Fail closed before either salvage path. The last model response
+            # may contain a complete-looking application, but while Root control
+            # is unresolved it is only an unexecuted draft and no extra no-tools
+            # call can make it a governed filesystem artifact.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); root completion "
+                f"blocked: {completion_blocker}",
+                file=log,
+            )
+            final_answer = _blocked_completion_answer(completion_blocker)
+        elif last_text:
             # It produced text alongside its tool calls — return the last of it.
             print(
                 f"[agent] cycles exhausted ({max_cycles}); salvaging last "
@@ -3524,6 +3540,15 @@ def _root_completion_blocker(
     )
 
 
+def _blocked_completion_answer(reason: str) -> str:
+    """Return a deterministic failure without leaking an unexecuted draft."""
+    return (
+        "[incomplete] governed execution did not complete. "
+        f"{reason} Assistant draft text was discarded; no implementation was "
+        "accepted as complete."
+    )
+
+
 def _has_order_sensitive_file_tool(tool_uses: list[dict[str, Any]]) -> bool:
     return any(tu.get("name") in ORDER_SENSITIVE_FILE_TOOLS for tu in tool_uses)
 
@@ -4186,6 +4211,27 @@ def _root_control_error(
     })
 
 
+def _root_control_terminal_error(
+    error_kind: str,
+    message: str,
+    state: GoalState,
+) -> str:
+    """Stop immediately when control persistence failed outside model input."""
+    state.pending_clarification = (
+        "[incomplete] governed execution stopped because Root control could "
+        f"not be persisted ({error_kind}). No implementation was accepted as "
+        "complete."
+    )
+    state.next_role = None
+    state.role_chain = ()
+    return json.dumps({
+        "status": "incomplete",
+        "error_kind": error_kind,
+        "message": message,
+        "consecutive_failures": state.planning_contract_failures,
+    })
+
+
 def sanitize_control_result(result: str, tool_name: str) -> str:
     """Project a Root control outcome into a safe, bounded runtime event.
 
@@ -4354,8 +4400,31 @@ def _handle_root_control_tool(
                 "invalid_worker_chain",
                 "worker_chain exceeds the hard worker ceiling including recovery",
             )
+        if controller is None:
+            raise _PlanningContractError(
+                "control_unavailable",
+                "work package controller is unavailable",
+            )
+        raw_goal = args.get("goal_contract")
+        if not isinstance(raw_goal, dict):
+            raise _PlanningContractError(
+                "invalid_goal_contract",
+                "goal_contract is required",
+            )
+        # Validate the full declaration before persisting plan.md/manifest.json.
+        # A malformed Goal Contract must not leave a partial planning artifact
+        # set that looks committed to operators or a later run.
+        try:
+            controller.validate_goal(raw_goal)
+        except ValueError as exc:
+            raise _PlanningContractError(
+                "invalid_goal_contract", str(exc),
+            ) from exc
         if orchestration.planning_artifact_dir is None:
-            raise ValueError("planning artifact directory is unavailable")
+            raise _PlanningContractError(
+                "control_unavailable",
+                "planning artifact directory is unavailable",
+            )
         persisted = persist_planning_contract(
             plan_markdown,
             manifest_object,
@@ -4368,14 +4437,6 @@ def _handle_root_control_tool(
             )
         paths, artifacts = persisted
         goal_path = None
-        if controller is None:
-            raise ValueError("work package controller is unavailable")
-        raw_goal = args.get("goal_contract")
-        if not isinstance(raw_goal, dict):
-            raise _PlanningContractError(
-                "invalid_goal_contract",
-                "goal_contract is required",
-            )
         goal_contract = controller.freeze_goal(raw_goal)
         goal_path = persist_goal_contract(
             goal_contract.to_dict(), orchestration.planning_artifact_dir,
@@ -4410,8 +4471,18 @@ def _handle_root_control_tool(
         })
     except _PlanningContractError as exc:
         return _root_control_error(exc.error_kind, str(exc), state)
-    except (OSError, ValueError) as exc:
-        return json.dumps({"status": "error", "error": str(exc)})
+    except ValueError as exc:
+        if name == "musubi_commit_plan":
+            return _root_control_error("invalid_plan_contract", str(exc), state)
+        return json.dumps({
+            "status": "error",
+            "error_kind": "invalid_control_input",
+            "message": str(exc),
+        })
+    except (OSError, sqlite3.Error) as exc:
+        return _root_control_terminal_error(
+            "control_persistence_error", str(exc), state,
+        )
 
 
 def _runtime_root_registry() -> RootRegistry:
