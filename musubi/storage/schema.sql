@@ -148,6 +148,10 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     escalated            INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
     turn_cap_accepted    INTEGER NOT NULL DEFAULT 0, -- 0/1: accepted exactly at max_turns
     turn_cap_acceptance  TEXT,                       -- verified_artifacts | verified_readonly_response
+    goal_id              TEXT,
+    work_package_id      TEXT,
+    attempt_id           TEXT,
+    contract_hash        TEXT,
     created_at           TEXT NOT NULL,
     completed_at         TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions (session_id)
@@ -365,3 +369,98 @@ CREATE TABLE IF NOT EXISTS request_folder_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
     ON request_folder_grants (chat_id, request_id, ordinal);
+CREATE TABLE IF NOT EXISTS goal_contract_versions (
+    contract_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    canonical_json TEXT NOT NULL,
+    supersedes_hash TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, goal_id, version),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS goal_criterion_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    goal_contract_hash TEXT NOT NULL,
+    criterion_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    work_package_id TEXT,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_criterion_events
+    ON goal_criterion_events (session_id, goal_id, criterion_id, id);
+CREATE TABLE IF NOT EXISTS work_package_versions (
+    contract_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    goal_contract_hash TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    supersedes_hash TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, work_package_id, version),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS work_package_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    failure_class TEXT,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    turns_used INTEGER NOT NULL DEFAULT 0,
+    criterion_delta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (session_id, work_package_id, contract_hash, attempt),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS verification_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id TEXT NOT NULL,
+    criterion_id TEXT NOT NULL,
+    verifier_ref TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (attempt_id) REFERENCES work_package_attempts (attempt_id)
+);
+CREATE TABLE IF NOT EXISTS budget_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    work_package_id TEXT,
+    attempt_id TEXT,
+    event TEXT NOT NULL,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    turns INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS rollback_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    root_alias TEXT NOT NULL,
+    path TEXT NOT NULL,
+    original_exists INTEGER NOT NULL,
+    original_bytes BLOB,
+    before_sha256 TEXT,
+    after_sha256 TEXT,
+    status TEXT NOT NULL DEFAULT 'captured',
+    created_at TEXT NOT NULL,
+    rolled_back_at TEXT,
+    UNIQUE (attempt_id, root_alias, path),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);

@@ -9,10 +9,11 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 # Schema is embedded so it works in both dev and PyInstaller one-file builds.
 # Keep in sync with `storage/schema.sql`.
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     per_turn_timeout_s   INTEGER NOT NULL DEFAULT 60,
     wall_clock_timeout_s INTEGER NOT NULL DEFAULT 300,
     output_schema        TEXT,
+    pushed_skill_id      TEXT,
     status               TEXT NOT NULL DEFAULT 'running',
     result_summary       TEXT,
     result_structured    TEXT,
@@ -138,6 +140,10 @@ CREATE TABLE IF NOT EXISTS sub_sessions (
     escalated            INTEGER NOT NULL DEFAULT 0,
     turn_cap_accepted    INTEGER NOT NULL DEFAULT 0,
     turn_cap_acceptance  TEXT,
+    goal_id              TEXT,
+    work_package_id      TEXT,
+    attempt_id           TEXT,
+    contract_hash        TEXT,
     created_at           TEXT NOT NULL,
     completed_at         TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions (session_id)
@@ -283,6 +289,101 @@ CREATE TABLE IF NOT EXISTS request_folder_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
     ON request_folder_grants (chat_id, request_id, ordinal);
+CREATE TABLE IF NOT EXISTS goal_contract_versions (
+    contract_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    canonical_json TEXT NOT NULL,
+    supersedes_hash TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, goal_id, version),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS goal_criterion_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    goal_contract_hash TEXT NOT NULL,
+    criterion_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    work_package_id TEXT,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_criterion_events
+    ON goal_criterion_events (session_id, goal_id, criterion_id, id);
+CREATE TABLE IF NOT EXISTS work_package_versions (
+    contract_hash TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    goal_contract_hash TEXT NOT NULL,
+    canonical_json TEXT NOT NULL,
+    supersedes_hash TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (session_id, work_package_id, version),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS work_package_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    failure_class TEXT,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    turns_used INTEGER NOT NULL DEFAULT 0,
+    criterion_delta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE (session_id, work_package_id, contract_hash, attempt),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS verification_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id TEXT NOT NULL,
+    criterion_id TEXT NOT NULL,
+    verifier_ref TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (attempt_id) REFERENCES work_package_attempts (attempt_id)
+);
+CREATE TABLE IF NOT EXISTS budget_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    work_package_id TEXT,
+    attempt_id TEXT,
+    event TEXT NOT NULL,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    turns INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
+CREATE TABLE IF NOT EXISTS rollback_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    work_package_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    root_alias TEXT NOT NULL,
+    path TEXT NOT NULL,
+    original_exists INTEGER NOT NULL,
+    original_bytes BLOB,
+    before_sha256 TEXT,
+    after_sha256 TEXT,
+    status TEXT NOT NULL DEFAULT 'captured',
+    created_at TEXT NOT NULL,
+    rolled_back_at TEXT,
+    UNIQUE (attempt_id, root_alias, path),
+    FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+);
 """
 
 def _default_db_path() -> Path:
@@ -396,6 +497,10 @@ _SUB_SESSIONS_COLUMNS: tuple[tuple[str, str], ...] = (
     ("pushed_skill_id", "TEXT"),
     ("turn_cap_accepted", "INTEGER NOT NULL DEFAULT 0"),
     ("turn_cap_acceptance", "TEXT"),
+    ("goal_id", "TEXT"),
+    ("work_package_id", "TEXT"),
+    ("attempt_id", "TEXT"),
+    ("contract_hash", "TEXT"),
 )
 
 
@@ -1152,6 +1257,10 @@ def insert_sub_session(
     output_schema: str | None,
     now: str,
     pushed_skill_id: str | None = None,
+    goal_id: str | None = None,
+    work_package_id: str | None = None,
+    attempt_id: str | None = None,
+    contract_hash: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     tools_json = json.dumps(allowed_tools) if allowed_tools is not None else None
@@ -1160,12 +1269,14 @@ def insert_sub_session(
             "INSERT INTO sub_sessions ("
             " handle_id, parent_session_id, parent_agent_name, role, brief,"
             " allowed_tools, max_turns, per_turn_timeout_s, wall_clock_timeout_s,"
-            " output_schema, pushed_skill_id, status, created_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            " output_schema, pushed_skill_id, goal_id, work_package_id,"
+            " attempt_id, contract_hash, status, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
             (
                 handle_id, parent_session_id, parent_agent_name, role, brief,
                 tools_json, max_turns, per_turn_timeout_s, wall_clock_timeout_s,
-                output_schema, pushed_skill_id, now,
+                output_schema, pushed_skill_id, goal_id, work_package_id,
+                attempt_id, contract_hash, now,
             ),
         )
 
@@ -1325,6 +1436,18 @@ def get_sub_sessions_by_parent(
         d["turn_cap_accepted"] = bool(d.get("turn_cap_accepted"))
         results.append(d)
     return results
+
+
+def get_sub_session_by_attempt(
+    attempt_id: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM sub_sessions WHERE attempt_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def mark_sub_sessions_abandoned_for_parent(
@@ -1897,3 +2020,348 @@ def derive_correction_attempts(
     if not rows:
         return 0
     return sum(max(0, int(r[1]) - 1) for r in rows if r[1] is not None)
+
+
+# ── Root Goal Contract / Work Package ledger ─────────────────────────────
+
+def insert_goal_contract_version(
+    *, session_id: str, goal_id: str, version: int, canonical_json: str,
+    contract_hash: str, supersedes_hash: str | None, created_at: str,
+    db_path: Path | None = None,
+) -> None:
+    """Append one frozen Goal Contract version; never update in place."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO goal_contract_versions "
+            "(contract_hash, session_id, goal_id, version, canonical_json, "
+            " supersedes_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (contract_hash, session_id, goal_id, version, canonical_json,
+             supersedes_hash, created_at),
+        )
+
+
+def get_goal_contract_version(
+    contract_hash: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM goal_contract_versions WHERE contract_hash = ?",
+            (contract_hash,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def latest_goal_contract(
+    session_id: str, goal_id: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM goal_contract_versions WHERE session_id = ? AND goal_id = ? "
+            "ORDER BY version DESC LIMIT 1", (session_id, goal_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def append_criterion_event(
+    *, session_id: str, goal_id: str, goal_contract_hash: str,
+    criterion_id: str, status: str, evidence_refs: list[str],
+    work_package_id: str | None, reason: str, created_at: str,
+    db_path: Path | None = None,
+) -> int:
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO goal_criterion_events "
+            "(session_id, goal_id, goal_contract_hash, criterion_id, status, "
+            " evidence_refs_json, work_package_id, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, goal_id, goal_contract_hash, criterion_id, status,
+             json.dumps(evidence_refs, sort_keys=True), work_package_id, reason,
+            created_at),
+        )
+        assert cursor.lastrowid is not None
+        return int(cursor.lastrowid)
+
+
+def fold_criterion_states(
+    session_id: str, goal_id: str, db_path: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fold append-only events into the latest state per criterion."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM goal_criterion_events WHERE session_id = ? AND goal_id = ? "
+            "ORDER BY id", (session_id, goal_id),
+        ).fetchall()
+    states: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        value = dict(row)
+        value["evidence_refs"] = json.loads(value.pop("evidence_refs_json"))
+        states[str(value["criterion_id"])] = value
+    return states
+
+
+def insert_work_package_version(
+    *, session_id: str, work_package_id: str, version: int,
+    goal_contract_hash: str, canonical_json: str, contract_hash: str,
+    supersedes_hash: str | None, created_at: str, db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO work_package_versions "
+            "(contract_hash, session_id, work_package_id, version, "
+            " goal_contract_hash, canonical_json, supersedes_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (contract_hash, session_id, work_package_id, version,
+             goal_contract_hash, canonical_json, supersedes_hash, created_at),
+        )
+
+
+def get_work_package_version(
+    contract_hash: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM work_package_versions WHERE contract_hash = ?",
+            (contract_hash,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def latest_work_package_version(
+    session_id: str, work_package_id: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM work_package_versions WHERE session_id = ? "
+            "AND work_package_id = ? ORDER BY version DESC LIMIT 1",
+            (session_id, work_package_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def latest_work_packages_for_goal(
+    session_id: str, goal_contract_hash: str, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return the latest immutable version of each WP under one Goal Contract."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT wp.* FROM work_package_versions AS wp JOIN ("
+            " SELECT work_package_id, MAX(version) AS version"
+            " FROM work_package_versions WHERE session_id = ? AND goal_contract_hash = ?"
+            " GROUP BY work_package_id"
+            ") AS latest ON latest.work_package_id = wp.work_package_id"
+            " AND latest.version = wp.version WHERE wp.session_id = ?"
+            " AND wp.goal_contract_hash = ? ORDER BY wp.created_at, wp.work_package_id",
+            (session_id, goal_contract_hash, session_id, goal_contract_hash),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def insert_work_package_attempt(
+    *, attempt_id: str, session_id: str, goal_id: str, work_package_id: str,
+    contract_hash: str, attempt: int, status: str, created_at: str,
+    db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO work_package_attempts "
+            "(attempt_id, session_id, goal_id, work_package_id, contract_hash, "
+            " attempt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (attempt_id, session_id, goal_id, work_package_id, contract_hash,
+             attempt, status, created_at),
+        )
+
+
+def finish_work_package_attempt(
+    *, attempt_id: str, status: str, failure_class: str | None,
+    tokens_used: int, turns_used: int, criterion_delta: Mapping[str, str],
+    completed_at: str, db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE work_package_attempts SET status = ?, failure_class = ?, "
+            "tokens_used = ?, turns_used = ?, criterion_delta_json = ?, "
+            "completed_at = ? WHERE attempt_id = ? AND status = 'running'",
+            (status, failure_class, tokens_used, turns_used,
+             json.dumps(dict(criterion_delta), sort_keys=True), completed_at,
+             attempt_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("work package attempt is missing or already terminal")
+
+
+def get_work_package_attempts(
+    session_id: str, work_package_id: str, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM work_package_attempts WHERE session_id = ? "
+            "AND work_package_id = ? ORDER BY created_at, attempt",
+            (session_id, work_package_id),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        value = dict(row)
+        value["criterion_delta"] = json.loads(value.pop("criterion_delta_json"))
+        result.append(value)
+    return result
+
+
+def goal_attempt_usage(
+    session_id: str, goal_id: str, db_path: Path | None = None,
+) -> dict[str, int]:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS attempts, COALESCE(SUM(tokens_used), 0) AS tokens,"
+            " COALESCE(SUM(turns_used), 0) AS turns FROM work_package_attempts"
+            " WHERE session_id = ? AND goal_id = ?",
+            (session_id, goal_id),
+        ).fetchone()
+    return {
+        "attempts": int(row["attempts"]),
+        "tokens": int(row["tokens"]),
+        "turns": int(row["turns"]),
+    }
+
+
+def append_verification_evidence(
+    *, attempt_id: str, criterion_id: str, verifier_ref: str, status: str,
+    evidence: Mapping[str, Any], created_at: str, db_path: Path | None = None,
+) -> int:
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO verification_evidence "
+            "(attempt_id, criterion_id, verifier_ref, status, evidence_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (attempt_id, criterion_id, verifier_ref, status,
+             json.dumps(dict(evidence), sort_keys=True), created_at),
+        )
+        assert cursor.lastrowid is not None
+        return int(cursor.lastrowid)
+
+
+def append_budget_event(
+    *, session_id: str, goal_id: str, work_package_id: str | None,
+    attempt_id: str | None, event: str, tokens: int, turns: int,
+    detail: Mapping[str, Any], created_at: str, db_path: Path | None = None,
+) -> int:
+    with _connect(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO budget_events "
+            "(session_id, goal_id, work_package_id, attempt_id, event, tokens, "
+            " turns, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, goal_id, work_package_id, attempt_id, event, tokens,
+             turns, json.dumps(dict(detail), sort_keys=True), created_at),
+        )
+        assert cursor.lastrowid is not None
+        return int(cursor.lastrowid)
+
+
+def capture_rollback_file(
+    *, session_id: str, work_package_id: str, attempt_id: str,
+    root_alias: str, path: str, original_exists: bool,
+    original_bytes: bytes | None, before_sha256: str | None, created_at: str,
+    db_path: Path | None = None,
+) -> None:
+    """Capture original bytes once; repeated edits keep the first baseline."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO rollback_journal "
+            "(session_id, work_package_id, attempt_id, root_alias, path, "
+            " original_exists, original_bytes, before_sha256, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, work_package_id, attempt_id, root_alias, path,
+             1 if original_exists else 0, original_bytes, before_sha256, created_at),
+        )
+
+
+def mark_rollback_file_after(
+    *, attempt_id: str, root_alias: str, path: str, after_sha256: str | None,
+    db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE rollback_journal SET after_sha256 = ? "
+            "WHERE attempt_id = ? AND root_alias = ? AND path = ?",
+            (after_sha256, attempt_id, root_alias, path),
+        )
+
+
+def get_rollback_files(
+    attempt_id: str, db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM rollback_journal WHERE attempt_id = ? ORDER BY id DESC",
+            (attempt_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_rollback_file_status(
+    journal_id: int, status: str, rolled_back_at: str,
+    db_path: Path | None = None,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE rollback_journal SET status = ?, rolled_back_at = ? WHERE id = ?",
+            (status, rolled_back_at, journal_id),
+        )
+
+
+def goal_execution_snapshot(
+    session_id: str, goal_id: str, db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Materialize Goal → WP → Attempt → Evidence for replay/Console use."""
+    goal = latest_goal_contract(session_id, goal_id, db_path)
+    if goal is None:
+        return None
+    goal_value = dict(goal)
+    goal_value["contract"] = json.loads(goal_value.pop("canonical_json"))
+    criteria = list(fold_criterion_states(session_id, goal_id, db_path).values())
+    packages = latest_work_packages_for_goal(
+        session_id, str(goal["contract_hash"]), db_path,
+    )
+    with _connect(db_path) as conn:
+        for package in packages:
+            package["contract"] = json.loads(package.pop("canonical_json"))
+            attempts = conn.execute(
+                "SELECT * FROM work_package_attempts WHERE session_id = ? "
+                "AND work_package_id = ? ORDER BY attempt",
+                (session_id, package["work_package_id"]),
+            ).fetchall()
+            package["attempts"] = []
+            for raw_attempt in attempts:
+                attempt = dict(raw_attempt)
+                attempt["criterion_delta"] = json.loads(
+                    attempt.pop("criterion_delta_json")
+                )
+                evidence = conn.execute(
+                    "SELECT * FROM verification_evidence WHERE attempt_id = ? ORDER BY id",
+                    (attempt["attempt_id"],),
+                ).fetchall()
+                attempt["evidence"] = []
+                for raw_evidence in evidence:
+                    evidence_value = dict(raw_evidence)
+                    evidence_value["evidence"] = json.loads(
+                        evidence_value.pop("evidence_json")
+                    )
+                    attempt["evidence"].append(evidence_value)
+                attempt["budget_events"] = [
+                    {**dict(event), "detail": json.loads(event["detail_json"])}
+                    for event in conn.execute(
+                        "SELECT * FROM budget_events WHERE attempt_id = ? ORDER BY id",
+                        (attempt["attempt_id"],),
+                    ).fetchall()
+                ]
+                attempt["rollback"] = [
+                    {
+                        key: value for key, value in dict(journal).items()
+                        if key != "original_bytes"
+                    }
+                    for journal in conn.execute(
+                        "SELECT * FROM rollback_journal WHERE attempt_id = ? ORDER BY id",
+                        (attempt["attempt_id"],),
+                    ).fetchall()
+                ]
+                package["attempts"].append(attempt)
+    return {"goal": goal_value, "criteria": criteria, "work_packages": packages}

@@ -8,8 +8,9 @@ expires-when: never - root must retain user intent while worker scaffolding
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from agent.manifest import (
     ROOT_PLAN_CHANGE_SIZES,
@@ -74,6 +75,10 @@ _SPAWN_TOOL = "musubi_spawn_subagent"
 _SKILL_SELECT_TOOL = "musubi_list_skills"
 _BEGIN_PLAN_TOOL = "musubi_begin_plan"
 _COMMIT_PLAN_TOOL = "musubi_commit_plan"
+_COMMIT_WORK_PACKAGE_TOOL = "musubi_commit_work_package"
+_RECORD_CRITERION_TOOL = "musubi_record_criterion_verdict"
+_GAP_REPORT_TOOL = "musubi_get_gap_report"
+_ROLLBACK_WORK_PACKAGE_TOOL = "musubi_rollback_work_package"
 _ROOT_PLAN_READ_TOOLS = frozenset({
     "musubi_read_file",
     "musubi_glob",
@@ -117,7 +122,7 @@ class OutcomePacket:
         status: str,
         summary: str,
         touched_files: Iterable[str],
-    ) -> "OutcomePacket":
+    ) -> OutcomePacket:
         parsed = _fields(summary)
         verification = (
             _bounded(parsed.get("verification", ""), MAX_DETAIL_CHARS) or None
@@ -196,6 +201,10 @@ class GoalState:
     planning_contract_failures: int = 0
     #: Bounded machine-readable reason for the latest failed declaration.
     last_planning_contract_error: str | None = None
+    #: Migration switch; legacy keeps the role-chain controller unchanged.
+    control_mode: str = "legacy"
+    #: Mutable criterion projection produced from the append-only ledger.
+    gap_report: dict[str, Any] | None = None
 
     @classmethod
     def create(
@@ -204,7 +213,7 @@ class GoalState:
         scope: str,
         route: str,
         assessment: ChangeAssessment | None = None,
-    ) -> "GoalState":
+    ) -> GoalState:
         # Same inversion as the tool surface: lean until a manifest says
         # otherwise. A turn whose size nobody has established yet gets the
         # smaller target, which is the direction that fails cheap.
@@ -561,13 +570,21 @@ class GoalState:
                 "implementation contract; manifest.json is the bounded "
                 "governance declaration.\n"
             )
+        gap = ""
+        if self.control_mode == "work_package" and self.gap_report is not None:
+            gap = (
+                f"gap_report={self.gap_report}\n"
+                "Decide only from criterion state and evidence. A worker's "
+                "self-report cannot complete a required criterion.\n"
+            )
         return (
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"mode={self.mode}\n"
+            f"control_mode={self.control_mode}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
-            f"{order}{bands}{conversation}{stall}{overrun}{planning}"
+            f"{order}{bands}{conversation}{stall}{overrun}{planning}{gap}"
             f"root_usage=calls:{self.root_calls},input:{self.root_tokens_in},"
             f"output:{self.root_tokens_out},target:{self.root_token_target}\n"
             f"latest_worker={worker}\n"
@@ -626,6 +643,18 @@ def root_decision_tools(
         return [
             tool for tool in tools if tool.get("name") in allowed_planning
         ]
+    if state.control_mode == "work_package":
+        allowed = {
+            _COMMIT_WORK_PACKAGE_TOOL,
+            _SPAWN_TOOL,
+            _RECORD_CRITERION_TOOL,
+            _GAP_REPORT_TOOL,
+            _ROLLBACK_WORK_PACKAGE_TOOL,
+            _SKILL_SELECT_TOOL,
+        }
+        if state.scope in _WIDE_SCOPES:
+            allowed.update(_SKILL_READ_TOOLS)
+        return [tool for tool in tools if tool.get("name") in allowed]
     # Spawn plus skill selection, once a plan is committed.
     allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
     if state.scope in _WIDE_SCOPES:

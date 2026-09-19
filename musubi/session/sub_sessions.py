@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +112,7 @@ def _is_read_only_surface(row: dict[str, Any]) -> bool:
 
 
 def _now_dt() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _now_iso() -> str:
@@ -138,6 +138,10 @@ def spawn(
     wall_clock_timeout_s: int = DEFAULT_WALL_CLOCK_TIMEOUT_S,
     output_schema: str | None = None,
     pushed_skill_id: str | None = None,
+    goal_id: str | None = None,
+    work_package_id: str | None = None,
+    attempt_id: str | None = None,
+    contract_hash: str | None = None,
     db_path: Path | None = None,
 ) -> str:
     """Insert a sub-session row and return its handle_id.
@@ -174,6 +178,10 @@ def spawn(
         wall_clock_timeout_s=wall_clock_timeout_s,
         output_schema=output_schema,
         pushed_skill_id=(pushed_skill_id.strip() if pushed_skill_id else None),
+        goal_id=goal_id,
+        work_package_id=work_package_id,
+        attempt_id=attempt_id,
+        contract_hash=contract_hash,
         now=_now_iso(),
         db_path=db_path,
     )

@@ -128,6 +128,19 @@ def persist_planning_contract(
     )
 
 
+def persist_goal_contract(contract: object, target_dir: Path) -> Path:
+    """Atomically persist a validated JSON-shaped Goal Contract artifact."""
+    if not isinstance(contract, dict):
+        raise ValueError("goal contract must be a JSON object")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / "goal_contract.json"
+    _atomic_write(
+        path,
+        json.dumps(contract, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    return path
+
+
 def _atomic_write(path: Path, content: str) -> None:
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.",

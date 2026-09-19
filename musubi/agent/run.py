@@ -37,6 +37,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -49,27 +50,7 @@ if str(_MUSUBI_MODULE_ROOT) not in sys.path:
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from workspace.grants import (
-    MANIFEST_ENV,
-    FolderGrant,
-    RootRegistry,
-    derive_alias,
-)
 
-from agent.context import (
-    build_system_prompt,
-    fit_context,
-    fit_model_input,
-    is_elided_tool_arg_marker,
-    resolve_effort_bounds,
-)
-from agent.goal_state import (
-    MUTATION_ROLES,
-    NO_PROGRESS_TURN_THRESHOLD,
-    ORDERED_ROLES,
-    GoalState,
-    root_decision_tools,
-)
 from agent.blast_radius import (
     DestructiveGate,
     approved_keys_from,
@@ -80,23 +61,42 @@ from agent.blast_radius import (
     grant_token,
     measure,
 )
+from agent.boundary import (
+    ROOT_ROLE,
+    denied_tool_guidance,
+    evaluate_argument_policy,
+    evaluate_tool_call,
+    is_musubi_tool,
+    json_args,
+    normalize_role,
+    record_policy_decision,
+    record_tool_audit,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
     estimate_tokens_from_chars,
 )
-from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
-from agent.boundary import (
-    ROOT_ROLE,
-    PolicyDecision,
-    denied_tool_guidance,
-    evaluate_tool_call,
-    evaluate_argument_policy,
-    is_musubi_tool,
-    json_args,
-    record_policy_decision,
-    normalize_role,
-    record_tool_audit,
+from agent.context import (
+    build_system_prompt,
+    fit_context,
+    fit_model_input,
+    is_elided_tool_arg_marker,
+    resolve_effort_bounds,
+)
+from agent.evidence import collect as collect_evidence
+from agent.goal_state import (
+    MUTATION_ROLES,
+    NO_PROGRESS_TURN_THRESHOLD,
+    ORDERED_ROLES,
+    GoalState,
+    root_decision_tools,
+)
+from agent.manifest import (
+    ROOT_PLAN_CHANGE_SIZES,
+    ROOT_PLAN_WORKER_ROLES,
+    manifest_schema,
+    parse_change_manifest_object,
 )
 from agent.mcp_gateway import (
     McpGateway,
@@ -105,23 +105,24 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
-from agent.manifest import (
-    ROOT_PLAN_CHANGE_SIZES,
-    ROOT_PLAN_WORKER_ROLES,
-    manifest_schema,
-    parse_change_manifest_object,
-)
-from agent.evidence import collect as collect_evidence
 from agent.planning_artifacts import (
     goal_artifact_key,
+    persist_goal_contract,
     persist_planning_artifacts,
     persist_planning_contract,
 )
 from agent.routes import RouteKind
-from agent.textfmt import bounded
+from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
 from agent.scope import ScopeHint, classify_task
+from agent.textfmt import bounded
 from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
+from workspace.grants import (
+    MANIFEST_ENV,
+    FolderGrant,
+    RootRegistry,
+    derive_alias,
+)
 
 DEFAULT_MAX_CYCLES = 16
 
@@ -155,6 +156,17 @@ _PLAN_FIRST_DIRECTIVE = (
     "The user explicitly requested Planning mode (--plan). Read the bounded "
     "workspace facts yourself, then commit plan.md, manifest.json, change "
     "size, and the ordered worker chain with `musubi_commit_plan`."
+)
+
+_WORK_PACKAGE_DIRECTIVE = (
+    "Root control is work_package. `musubi_commit_plan` must include a strict "
+    "Goal Contract defining deliverables, criteria, invariants, constraints, "
+    "budgets, and stop conditions. Then freeze one bounded Work Package with "
+    "`musubi_commit_work_package`; spawn it by work_package_id and the exact "
+    "contract_hash returned by the freeze. Judge completion only from the Gap "
+    "Report. For semantic checks, record explicit evidence with "
+    "`musubi_record_criterion_verdict`. Never widen or retry by editing a "
+    "frozen contract; create a superseding version."
 )
 
 ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
@@ -311,6 +323,7 @@ class Orchestration:
     goal_state: GoalState | None = None
     pipeline_name: str | None = None
     planning_artifact_dir: Path | None = None
+    work_package_controller: Any = None
     # The destructive gate's state deliberately does NOT live here. See
     # `_destructive_gate` below: it is run-scoped, and an Orchestration
     # describes a position in the spawn tree — the one thing the gate must be
@@ -320,7 +333,7 @@ class Orchestration:
     def enabled(self) -> bool:
         return self.parent_session_id is not None
 
-    def child(self, role: str) -> "Orchestration":
+    def child(self, role: str) -> Orchestration:
         """Orchestration for a worker this one spawns: same root session, the
         child's role as the new firewall identity, one level deeper."""
         return Orchestration(
@@ -330,12 +343,13 @@ class Orchestration:
             planning_artifact_dir=self.planning_artifact_dir,
             depth=self.depth + 1,
             max_depth=self.max_depth,
+            work_package_controller=self.work_package_controller,
         )
 
     def stage_child(
         self, role: str, pipeline_session_id: str,
         pipeline_name: str | None = None,
-    ) -> "Orchestration":
+    ) -> Orchestration:
         """Orchestration for one pipeline stage worker. Unlike `child`, the
         parentage moves to the PIPELINE session: the server resolves the
         pipeline from `parent_session_id` and narrows the stage's spawnable
@@ -350,6 +364,7 @@ class Orchestration:
             planning_artifact_dir=self.planning_artifact_dir,
             depth=self.depth + 1,
             max_depth=self.max_depth,
+            work_package_controller=None,
         )
 
     @property
@@ -682,6 +697,7 @@ async def run_agent(
     pipeline: str | None = None,
     resume_pipeline_session: str | None = None,
     plan_first: bool = False,
+    root_control_mode: str | None = None,
 ) -> str:
     """Drive one agent turn end-to-end. Returns the final assistant text.
 
@@ -725,12 +741,16 @@ async def run_agent(
     # the substrate can check (`agent/evidence.py`).
     scope_hint = classify_task(task)
     effective_task = task
+    from agent.config import resolve_root_control_mode
+
+    resolved_root_control_mode = resolve_root_control_mode(root_control_mode)
     goal_state = GoalState.create(
         intent=effective_task,
         scope=scope_hint.kind.value,
         route=scope_hint.route,
         assessment=scope_hint.assessment,
     )
+    goal_state.control_mode = resolved_root_control_mode
     goal_state.plan_required = plan_first
     chat_usage = _chat_turn_usage(
         chat_id, db_path=context_compression_db_path, log=log,
@@ -883,6 +903,19 @@ async def run_agent(
                 / goal_artifact_key(chat_id, planning_key)
             ),
         )
+        if resolved_root_control_mode == "work_package":
+            if budget is None:
+                raise RuntimeError(
+                    "work_package root control requires a non-zero token budget"
+                )
+            from agent.work_package_controller import WorkPackageController
+
+            orchestration.work_package_controller = WorkPackageController(
+                session_id=parent_session_id or "",
+                root_budget=budget,
+                roots=registry,
+                db_path=context_compression_db_path,
+            )
         # Consent is matched against the RAW user message. A model cannot
         # author a user turn, so a token found here is proof a human typed it —
         # and the match is string equality against a value the harness itself
@@ -911,6 +944,8 @@ async def run_agent(
             + "\n\n"
             + registry.prompt_block()
         )
+        if resolved_root_control_mode == "work_package":
+            system_prompt = f"{system_prompt}\n\n{_WORK_PACKAGE_DIRECTIVE}"
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
             print("[agent] plan-first requested (--plan)", file=log)
@@ -1523,7 +1558,26 @@ async def _run_loop(
                 cycle_status="final",
                 log=log,
             )
-            final_answer = text
+            if (
+                root_state is not None
+                and root_state.control_mode == "work_package"
+                and orchestration is not None
+                and orchestration.work_package_controller is not None
+            ):
+                report = orchestration.work_package_controller.gap_report()
+                root_state.gap_report = report.to_dict()
+                if not report.complete:
+                    final_answer = (
+                        "[incomplete] Required Goal Contract criteria have not "
+                        "all passed. gap_report="
+                        + json.dumps(report.to_dict(), sort_keys=True)
+                        + "\n\n"
+                        + text
+                    )
+                else:
+                    final_answer = text
+            else:
+                final_answer = text
             break
 
         if resp.stop_reason == "max_tokens":
@@ -2058,6 +2112,15 @@ def main(argv: list[str] | None = None) -> int:
             "loop no longer forces a planner by guessing scope from keywords."
         ),
     )
+    ap.add_argument(
+        "--root-control-mode",
+        choices=["legacy", "work_package"],
+        default=None,
+        help=(
+            "Root controller migration switch. Defaults to "
+            "MUSUBI_ROOT_CONTROL_MODE, then legacy."
+        ),
+    )
     args = ap.parse_args(argv)
     if args.resume_pipeline_session and not args.pipeline:
         print(
@@ -2141,6 +2204,7 @@ def main(argv: list[str] | None = None) -> int:
                     pipeline=args.pipeline,
                     resume_pipeline_session=args.resume_pipeline_session,
                     plan_first=args.plan,
+                    root_control_mode=args.root_control_mode,
                 )
             )
         except KeyboardInterrupt:
@@ -2859,7 +2923,7 @@ def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | Non
 
 def _no_progress_budget_trip(
     budget: Any,
-    orchestration: "Orchestration",
+    orchestration: Orchestration,
     *,
     ratio: float = DEFAULT_NO_PROGRESS_BUDGET_RATIO,
 ) -> str | None:
@@ -3376,19 +3440,31 @@ def _normalize_root_spawn_tool_uses(
         if (
             tool_use.get("name") != "musubi_spawn_subagent"
             or not isinstance(raw_input, dict)
-            or "allowed_tools" not in raw_input
         ):
             normalized.append(tool_use)
             continue
         clean_input = dict(raw_input)
+        removed_allowed_tools = "allowed_tools" in clean_input
         clean_input.pop("allowed_tools", None)
+        if (
+            orchestration.goal_state is not None
+            and orchestration.goal_state.control_mode == "work_package"
+        ):
+            model_fields = {
+                "role", "pushed_skill_id", "work_package_id", "contract_hash",
+            }
+            clean_input = {
+                key: value for key, value in clean_input.items()
+                if key in model_fields
+            }
         normalized.append({**tool_use, "input": clean_input})
-        emit_runtime_log(
-            log,
-            "[agent] ignored model allowed_tools on root spawn; "
-            "the worker role policy owns its tool surface",
-            category="policy",
-        )
+        if removed_allowed_tools:
+            emit_runtime_log(
+                log,
+                "[agent] ignored model allowed_tools on root spawn; "
+                "the worker role policy owns its tool surface",
+                category="policy",
+            )
     return normalized
 
 
@@ -3756,6 +3832,10 @@ async def _dispatch_one(
         name in {
             "musubi_begin_plan",
             "musubi_commit_plan",
+            "musubi_commit_work_package",
+            "musubi_record_criterion_verdict",
+            "musubi_get_gap_report",
+            "musubi_rollback_work_package",
         }
         and orchestration is not None
         and orchestration.depth == 0
@@ -3835,6 +3915,37 @@ async def _dispatch_one(
         # `refused_reason` is handled above, before any branch — a refused call
         # must not reach the server on any path, orchestrated or not.
         worker_args = args
+        work_package_controller = orchestration.work_package_controller
+        work_package_attempt = None
+        worker_budget = budget
+        if orchestration.goal_state is not None and (
+            orchestration.goal_state.control_mode == "work_package"
+        ):
+            if work_package_controller is None:
+                return json.dumps({
+                    "status": "error",
+                    "error": "work package controller is unavailable",
+                })
+            work_package_id = str(args.get("work_package_id") or "").strip()
+            echoed_hash = str(args.get("contract_hash") or "").strip()
+            try:
+                work_package_attempt = work_package_controller.start_attempt(
+                    work_package_id, echoed_hash,
+                )
+            except ValueError as exc:
+                return json.dumps({"status": "refused", "reason": str(exc)})
+            goal_contract = work_package_controller.goal
+            assert goal_contract is not None
+            worker_args = {
+                **args,
+                "brief": work_package_controller.resolved_brief(work_package_id),
+                "goal_id": goal_contract.id,
+                "work_package_id": work_package_id,
+                "attempt_id": work_package_attempt.attempt_id,
+                "contract_hash": work_package_attempt.contract_hash,
+                "max_turns": work_package_attempt.max_turns,
+            }
+            worker_budget = work_package_attempt.token_budget
         spawn_role = str(args.get("role", ""))
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
         if prior_outcome is not None:
@@ -3860,8 +3971,41 @@ async def _dispatch_one(
             result = await subagent.run_subagent(
                 session, injected, vendor, tools, log, orchestration=orchestration,
                 compression_db_path=compression_db_path,
-                budget=budget, stats=stats, audit_db_path=audit_db_path,
+                budget=worker_budget, stats=stats, audit_db_path=audit_db_path,
             )
+            if work_package_attempt is not None:
+                outcome = (
+                    orchestration.worker_outcomes[-1]
+                    if orchestration.worker_outcomes else None
+                )
+                touched = outcome.touched_files if outcome is not None else ()
+                worker_status = outcome.status if outcome is not None else "failed"
+                failure_class = (
+                    outcome.failure_kind.value
+                    if outcome is not None and outcome.failure_kind is not None
+                    else None
+                )
+                from storage import db as state_db
+
+                attempt_row = state_db.get_sub_session_by_attempt(
+                    work_package_attempt.attempt_id,
+                    work_package_controller.db_path,
+                )
+                gate = work_package_controller.finish_attempt(
+                    worker_status=worker_status,
+                    touched_files=touched,
+                    failure_class=failure_class,
+                    turns_used=int((attempt_row or {}).get("turns") or 0),
+                )
+                report = work_package_controller.gap_report().to_dict()
+                assert orchestration.goal_state is not None
+                orchestration.goal_state.gap_report = report
+                result = result + "\n[work-package] " + json.dumps({
+                    "attempt_id": work_package_attempt.attempt_id,
+                    "contract_hash": work_package_attempt.contract_hash,
+                    "gate": gate.status if gate is not None else "semantic_evidence_required",
+                    "gap_report": report,
+                }, sort_keys=True)
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
                 args=json_args(args), status="ok", db_path=audit_path,
@@ -3871,6 +4015,18 @@ async def _dispatch_one(
         except PolicyDeniedError:
             raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
+            if (
+                work_package_attempt is not None
+                and work_package_controller.active_attempt is not None
+            ):
+                try:
+                    work_package_controller.finish_attempt(
+                        worker_status="failed",
+                        touched_files=(),
+                        failure_class=type(exc).__name__,
+                    )
+                except Exception:
+                    pass
             result = f"[subagent error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
@@ -3894,10 +4050,27 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+    side_effect_error = _work_package_side_effect_error(name, orchestration)
+    if side_effect_error is not None:
+        return json.dumps({"status": "refused", "reason": side_effect_error})
     target_session, original_name = target
+    rollback_capture = _prepare_work_package_file_mutation(
+        name, args, orchestration,
+    )
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
+        if rollback_capture is not None and _tool_wrote_ok(text):
+            controller, attempt_id, root_alias, path = rollback_capture
+            from agent.rollback import record_after
+
+            record_after(
+                attempt_id=attempt_id,
+                root_alias=root_alias,
+                path=path,
+                roots=controller.roots,
+                db_path=controller.db_path,
+            )
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)
@@ -4015,6 +4188,63 @@ def _handle_root_control_tool(
                 "deliverable": deliverable,
             })
 
+        controller = orchestration.work_package_controller
+        if name != "musubi_commit_plan":
+            if state.control_mode != "work_package" or controller is None:
+                raise ValueError(f"{name} requires work_package root control mode")
+            if name == "musubi_commit_work_package":
+                raw = args.get("work_package")
+                if not isinstance(raw, dict):
+                    raise ValueError("work_package must be an object")
+                contract = controller.freeze_work_package(raw)
+                state.gap_report = controller.gap_report().to_dict()
+                return json.dumps({
+                    "status": "ok",
+                    "work_package_id": contract.id,
+                    "version": contract.version,
+                    "contract_hash": contract.contract_hash,
+                    "resolved_brief": controller.resolved_brief(contract.id),
+                    "gap_report": state.gap_report,
+                })
+            if name == "musubi_record_criterion_verdict":
+                raw_status = str(args.get("status") or "").strip()
+                if raw_status not in {"pending", "pass", "fail", "blocked"}:
+                    raise ValueError("criterion status is invalid")
+                raw_evidence = args.get("evidence_refs")
+                if not isinstance(raw_evidence, list) or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in raw_evidence
+                ):
+                    raise ValueError("evidence_refs must be non-empty strings")
+                criterion = controller.set_criterion_state(
+                    str(args.get("criterion_id") or "").strip(),
+                    raw_status,
+                    evidence_refs=raw_evidence,
+                    work_package_id=(
+                        str(args["work_package_id"]).strip()
+                        if args.get("work_package_id") else None
+                    ),
+                    reason=str(args.get("reason") or "").strip(),
+                )
+                state.gap_report = controller.gap_report().to_dict()
+                return json.dumps({
+                    "status": "ok",
+                    "criterion_state": criterion.to_dict(),
+                    "gap_report": state.gap_report,
+                })
+            if name == "musubi_get_gap_report":
+                state.gap_report = controller.gap_report().to_dict()
+                return json.dumps({"status": "ok", "gap_report": state.gap_report})
+            if name == "musubi_rollback_work_package":
+                from agent.rollback import rollback_attempt
+
+                result = rollback_attempt(
+                    str(args.get("attempt_id") or "").strip(),
+                    roots=controller.roots,
+                    db_path=controller.db_path,
+                )
+                return json.dumps(result)
+
         raw_plan = args.get("plan_markdown")
         if not isinstance(raw_plan, str) or not raw_plan.strip():
             raise _PlanningContractError(
@@ -4086,12 +4316,32 @@ def _handle_root_control_tool(
                 "plan_markdown or change_manifest is invalid",
             )
         paths, artifacts = persisted
+        goal_path = None
+        if state.control_mode == "work_package":
+            if controller is None:
+                raise ValueError("work package controller is unavailable")
+            raw_goal = args.get("goal_contract")
+            if not isinstance(raw_goal, dict):
+                raise _PlanningContractError(
+                    "invalid_goal_contract",
+                    "goal_contract is required in work_package mode",
+                )
+            goal_contract = controller.freeze_goal(raw_goal)
+            goal_path = persist_goal_contract(
+                goal_contract.to_dict(), orchestration.planning_artifact_dir,
+            )
         state.commit_root_plan(
             manifest=artifacts.manifest,
             change_size=change_size,
             worker_chain=chain,
-            planning_artifacts=(str(path) for path in paths),
+            planning_artifacts=(
+                str(path) for path in ((*paths, goal_path) if goal_path else paths)
+            ),
         )
+        if state.control_mode == "work_package":
+            state.next_role = None
+            state.role_chain = ()
+            state.gap_report = controller.gap_report().to_dict()
         orchestration.max_root_workers = max(
             orchestration.max_root_workers, needed,
         )
@@ -4103,6 +4353,11 @@ def _handle_root_control_tool(
             "next_role": state.next_role,
             "max_root_workers": orchestration.max_root_workers,
             "planning_artifacts": list(state.planning_artifacts),
+            "goal_contract_hash": (
+                controller.goal.contract_hash
+                if controller is not None and controller.goal is not None else None
+            ),
+            "gap_report": state.gap_report,
         })
     except _PlanningContractError as exc:
         return _root_control_error(exc.error_kind, str(exc), state)
@@ -4114,6 +4369,64 @@ def _runtime_root_registry() -> RootRegistry:
     root = Path(os.environ.get("MUSUBI_ROOT") or Path.cwd()).resolve()
     raw = os.environ.get(MANIFEST_ENV, "").strip()
     return RootRegistry.from_json(raw, root) if raw else RootRegistry.build(root)
+
+
+def _prepare_work_package_file_mutation(
+    name: str,
+    args: Mapping[str, Any],
+    orchestration: Orchestration | None,
+) -> tuple[Any, str, str, str] | None:
+    """Enforce WP file scope and capture the first byte-exact rollback point."""
+    if name not in {
+        "musubi_write_file", "musubi_append_file", "musubi_edit_file",
+    } or orchestration is None:
+        return None
+    controller = orchestration.work_package_controller
+    if controller is None or controller.active_attempt is None:
+        return None
+    work_package_id = controller.active_work_package_id
+    if not work_package_id:
+        raise ValueError("file mutation has no active Work Package")
+    root_alias = str(args.get("root") or "musubi")
+    path = str(args.get("path") or "").strip()
+    reference = f"{root_alias}::{path}"
+    controller.assert_paths_in_scope(work_package_id, [reference])
+    work_package = controller.work_packages[work_package_id]
+    if work_package.reversibility != "automatic":
+        return None
+    from agent.rollback import capture_before
+
+    attempt_id = controller.active_attempt.attempt_id
+    capture_before(
+        session_id=controller.session_id,
+        work_package_id=work_package_id,
+        attempt_id=attempt_id,
+        root_alias=root_alias,
+        path=path,
+        roots=controller.roots,
+        db_path=controller.db_path,
+    )
+    return controller, attempt_id, root_alias, path
+
+
+def _work_package_side_effect_error(
+    name: str,
+    orchestration: Orchestration | None,
+) -> str | None:
+    """Reject automatic rollback claims for shell effects we cannot restore."""
+    if orchestration is None or orchestration.work_package_controller is None:
+        return None
+    controller = orchestration.work_package_controller
+    work_package_id = controller.active_work_package_id
+    if controller.active_attempt is None or not work_package_id:
+        return None
+    work_package = controller.work_packages[work_package_id]
+    if name == "musubi_run_command" and work_package.reversibility == "automatic":
+        return (
+            "shell commands are outside automatic file rollback; supersede the "
+            "Work Package with reversibility=manual or irreversible"
+        )
+    return None
 
 
 def _tool_wrote_ok(text: str) -> bool:

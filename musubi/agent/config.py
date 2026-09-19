@@ -46,6 +46,17 @@ KNOWN_FAMILIES = frozenset({
     "anthropic",
     "ollama",
 })
+ROOT_CONTROL_MODES = frozenset({"legacy", "work_package"})
+
+
+def resolve_root_control_mode(value: str | None = None) -> str:
+    """Resolve the Root controller migration switch, defaulting to legacy."""
+    selected = (value or os.environ.get("MUSUBI_ROOT_CONTROL_MODE") or "legacy").strip()
+    if selected not in ROOT_CONTROL_MODES:
+        raise ValueError(
+            "root_control_mode must be 'legacy' or 'work_package'"
+        )
+    return selected
 
 
 def config_candidates(
