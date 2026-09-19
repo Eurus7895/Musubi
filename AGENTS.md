@@ -2,7 +2,7 @@
 
 > Read this file first, every session. It is a map — not a manual.
 > Under 120 lines. Always.
-> Rules and conventions → `CLAUDE.md`. MCP tools + schema → `musubi/server.py` + `musubi/storage/schema.sql`. Direction, roadmap and status → `docs/roadmap.md`.
+> Rules and conventions → `CLAUDE.md`. MCP tools + schema → `musubi/server.py` + `musubi/storage/schema.sql`. Active architecture direction and status → `docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md`.
 
 ---
 

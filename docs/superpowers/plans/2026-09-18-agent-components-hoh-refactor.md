@@ -1,7 +1,7 @@
 # Adaptive core refactor
 
 Date: 2026-09-18  
-Status: implementation started; component extraction is active in the existing runtime.
+Status: pre-WP prototyping exists; active work packages are not yet accepted.
 Implementation branch: `refactor/adaptive-core-cutover`  
 Integration baseline: `dev@4d04637d31b4b7808b64839afe198ca016984e2a`.  
 Implementation baseline: `feat/work-package-goal-contract@5da9d3fad327370193847b3f08086c28b791ccbf` (four commits ahead, zero behind dev when inspected).
@@ -33,7 +33,7 @@ usable components**. Move each implementation, update its callers, delete the
 old definition, and preserve behavior before introducing a new provider. Do
 not create a parallel framework or a second orchestration object.
 
-Implemented in the first increment:
+Prototype evidence currently present on the implementation branch:
 
 - `agent/collector.py` prepares bounded model context and records its input
   identity, including tool schemas. Both normal and salvage preparation use it.
@@ -51,18 +51,27 @@ Implemented in the first increment:
 - Regression tests cover context identity/bounds, effort accounting, response
   interpretation and component import boundaries.
 
-This is preparatory progress across WP1/WP3/WP4/WP5, not acceptance of those
-complete work packages. Existing Storage and Memory are preserved. No live Jev
+This work predates completion of WP0 and is classified as **pre-WP
+prototyping**, not progress or acceptance for dependent WP1/WP3/WP4/WP5.
+Existing Storage and Memory are preserved. No live Jev
 provider, new evidence schema, terminal Memory consolidation, or HoH candidate
 engine has been implemented. `run.py` still owns the execution lifecycle and
 needs further reduction. Existing state types are moved, not a new universal
-controller. Architectural decision: ADR 0002.
+controller. Architectural decision: [ADR 0002](../../adr/0002-component-extraction.md).
 
-Validation of this increment: **1,809 passed, 1 skipped, 4 deselected**
-(`pytest musubi/tests/`, excluding three mypy-dependent executor tests and
-`test_run_tests_passing_suite`). The unrestricted run encountered missing mypy;
-installation failed after network timeouts. Import/name lint and lifecycle-tag
-checks passed. This is not a green full CI claim.
+Validation of this prototype: **1,809 passed, 1 skipped, 4 deselected** with:
+
+```bash
+python -m pytest musubi/tests/ -v --tb=short -x \
+  --deselect musubi/tests/test_executor.py::test_run_typecheck_clean_file \
+  --deselect musubi/tests/test_executor.py::test_run_typecheck_type_error \
+  --deselect musubi/tests/test_executor.py::test_run_all_clean_code \
+  --deselect musubi/tests/test_executor.py::test_run_tests_passing_suite
+```
+
+The unrestricted run encountered missing mypy; installation failed after
+network timeouts. Import/name lint and lifecycle-tag checks passed. This is
+prototype evidence, not the WP0 baseline or a green full CI claim.
 
 ### Typed decision contract checkpoint
 
@@ -135,7 +144,8 @@ Next implementation order:
    legal actions and applies deterministic state transitions.
 5. Connect Jev-first routing where more than one legitimate action remains.
    Call the LLM Thinker only when generation or deeper reasoning is required.
-6. Run a complete collect -> decide -> think/execute -> verify -> retry/finish
+6. Run a complete collect -> decide -> optional think -> decide -> execute ->
+   verify -> retry/finish
    golden path; remove the corresponding legacy Adaptive branches.
 7. Compare rule, LLM and Jev decisions on the same recorded Adaptive states.
    Memory, Pipeline and HoH remain backlog work.
@@ -404,10 +414,14 @@ run, never an invented unlimited default. All WPs start pending.
   preserve skill injection, worker firewalls, budget reservations, rollback
   limits and audited spawns. Route free-form code generation through Thinker
   in a bounded role context; only guarded execution can apply it.
-- Verifier: small goal -> collect -> think -> decide -> frozen Work Package ->
-  execute -> verifier failure -> bounded repair -> verified output. Also verify
-  policy denial, budget/cancellation, invalid planning, missing output and
-  false finish. Record duration/model/collection/tool costs per operation.
+- Verifier: small goal -> collect -> decide -> optional think -> decide -> frozen
+  Work Package -> execute -> verifier failure -> bounded repair -> verified
+  output. Also verify policy denial, budget/cancellation, invalid planning,
+  missing output and false finish. Record duration/model/collection/tool costs
+  per operation. Simulate interruption after an external mutation succeeds but
+  before its result is persisted; reconstruction must mark the attempt uncertain
+  and reconcile by idempotency key or external state before any retry. It must
+  never blindly repeat the mutation.
 - Rollback: retain old CLI adapter during a bounded migration period; do not
   create a permanent ungated legacy mode or salvage bypass.
 
@@ -491,9 +505,9 @@ Keep reviewable commits and update this checklist with evidence after each WP.
 Produce PlantUML source plus rendered SVG as implementation deliverables:
 
 - Component boundaries, including the driver/substrate boundary.
-- Adaptive collect/think/decide/execute/verify loop.
 - Adaptive component boundaries and controller lifecycle.
-- Adaptive collect/decide/think/execute/verify loop.
+- Adaptive collect -> decide -> optional think -> decide -> execute -> verify
+  loop. This Jev-first order is authoritative throughout the implementation.
 
 Pipeline, Storage/Memory lifecycle and HoH diagrams remain backlog artifacts;
 they are not implementation deliverables or acceptance gates for this milestone.
@@ -503,7 +517,9 @@ and manually review the diagrams; the current CI file does not itself prove
 PlantUML rendering is already configured. Do not introduce Mermaid/Draw.io as
 an alternative source of truth in repository documentation.
 
-## 8. Decisions and measurements required before enabling production use
+## 8. Decisions and measurements required before enabling production capabilities
+
+### Adaptive production gate
 
 - Jev access and actual provider limits are not verified by this plan. Use
   contract tests with fake responses first; never claim provider integration
@@ -511,18 +527,24 @@ an alternative source of truth in repository documentation.
 - Operator-owned retry/collection/timeout/cost limits must be explicit before
   each run. Calibrate confidence thresholds against labeled cases; confidence
   does not grant authority or prove completion.
-- Specify eval task set, repeat count and acceptable quality regression in the
-  Optimization Contract before examining candidate scores. No post-hoc lowering.
 - A fallback to LLM is explicit configuration. Measure its cost and frequency;
   it may eliminate any Jev cost advantage.
 - Runtime public behavior and external MCP compatibility should survive module
   moves. Any required schema break gets an explicit migration/version.
 
+### HoH enablement gate
+
+- Before HoH is enabled, specify its eval task set, repeat count and acceptable
+  quality regression in an Optimization Contract before examining candidate
+  scores. No post-hoc lowering. This deferred gate does not block Adaptive
+  production readiness.
+
 ## 9. Implementation status
 
 - [x] Prior HoH decisions and current component discussion reconciled.
 - [x] Remote branch and source baseline inspected; plan prepared.
-- [ ] WP0 baseline and ADR.
+- [ ] WP0 baseline and boundary agreement — ADR 0002 accepted; executable
+  baseline still pending.
 - [ ] WP1 contracts and ports — decision/controller boundary in progress.
 - [ ] WP2 Adaptive Storage, evidence and manifest — decision ledger in progress.
 - [ ] WP3 Collector active slice; Memory lifecycle — backlog.
