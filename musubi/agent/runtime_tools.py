@@ -111,4 +111,3 @@ def _skill_loaded_successfully(text: str) -> bool:
     except json.JSONDecodeError:
         return True
     return not (isinstance(payload, dict) and "error" in payload)
-

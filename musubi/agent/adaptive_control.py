@@ -372,4 +372,3 @@ def _handle_root_control_tool(
         return _root_control_terminal_error(
             "control_persistence_error", str(exc), state,
         )
-

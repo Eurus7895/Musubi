@@ -230,4 +230,3 @@ class AgentRunStats:
         self.lm_ms += lm_ms
         self.tokens_in_estimate += tokens_in
         self.tokens_out_estimate += tokens_out
-

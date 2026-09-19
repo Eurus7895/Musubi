@@ -124,4 +124,3 @@ def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | Non
     if isinstance(nested, float):
         return int(nested)
     return None
-
