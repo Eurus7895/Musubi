@@ -57,6 +57,7 @@ def test_commit_plan_tool_exposes_closed_manifest_and_chain_enum() -> None:
 
     assert manifest["additionalProperties"] is False
     assert set(manifest["required"]) == {"files_expected", "subsystems"}
+    assert "goal_contract" in schema["required"]
     roles = schema["properties"]["worker_chain"]["items"]["enum"]
     assert "planner" not in roles
     assert {"designer", "coder", "reviewer"}.issubset(roles)

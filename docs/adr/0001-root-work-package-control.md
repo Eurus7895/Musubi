@@ -27,14 +27,19 @@ checks, append-only evidence, token enforcement, and audit storage. The shared
 substrate makes zero model calls. Artifact reviewers remain firewalled from
 the request, plan, and memory.
 
-`root_control_mode` is `legacy` by default and `work_package` is opt-in through
-`--root-control-mode` or `MUSUBI_ROOT_CONTROL_MODE`.
+Direct Root execution has one control path: once Root declares Planning, it
+must freeze a Goal Contract and execute through Work Packages. Conversational
+or read-only answers may finish before Planning is declared. The deterministic
+PipelineRunner remains a separate user-invoked controller.
 
 ## Consequences
 
 - A worker outcome is evidence, never a completion verdict.
 - Required criteria cannot pass without evidence and Root cannot report a
   complete work-package goal while a required criterion or regression is open.
+- Root cannot escape an opened Planning state by returning implementation as
+  chat text; the driver rejects that terminal transition and points it back to
+  the required control tool.
 - Retry requires the same hash and is bounded by attempt, turn, token, plateau,
   and repeated-failure rules.
 - Automatic rollback is honest but narrow: only Musubi file mutations captured

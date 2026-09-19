@@ -14,6 +14,11 @@ from typing import Any
 
 from agent.run import run_agent
 from agent.vendors.base import LMResponse, LMRouter
+from tests.work_package_fixtures import (
+    GOAL_CONTRACT,
+    WORK_PACKAGE,
+    spawn_contract_fields,
+)
 
 
 def _musubi_dir() -> Path:
@@ -30,6 +35,7 @@ def _spawn(role: str, brief: str) -> LMResponse:
         "type": "tool_use", "id": f"spawn-{role}", "name": "musubi_spawn_subagent",
         "input": {
             "role": role, "brief": brief, "pushed_skill_id": selected_skill,
+            **spawn_contract_fields(),
         },
     }])
 
@@ -57,13 +63,14 @@ class LeafCoderRouter(LMRouter):
     def __init__(self) -> None:
         self.coder_had_spawn: bool | None = None
         self.spawned = False
+        self.work_package_committed = False
 
     def call(self, messages, tools, *, max_tokens=4096):  # noqa: ANN001
         names = {t["name"] for t in tools}
         brief = _brief(messages)
         has_tr = _has_tool_result(messages)
 
-        if "implement X" in brief:
+        if brief:
             self.coder_had_spawn = "musubi_spawn_subagent" in names
             return _text("coded directly")
         if "musubi_begin_plan" in names:
@@ -85,7 +92,16 @@ class LeafCoderRouter(LMRouter):
                     },
                     "change_size": "small",
                     "worker_chain": ["coder"],
+                    "goal_contract": GOAL_CONTRACT,
                 },
+            }])
+        if "musubi_commit_work_package" in names and not self.work_package_committed:
+            self.work_package_committed = True
+            return LMResponse(stop_reason="tool_use", content=[{
+                "type": "tool_use",
+                "id": "commit-work-package",
+                "name": "musubi_commit_work_package",
+                "input": {"work_package": WORK_PACKAGE},
             }])
         if has_tr and not self.spawned:
             self.spawned = True

@@ -18,19 +18,7 @@ from agent.config import (
     resolve_model_context_window,
     resolve_model_output_override,
     resolve_proxy_user,
-    resolve_root_control_mode,
 )
-
-
-def test_root_control_mode_defaults_legacy_and_validates_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("MUSUBI_ROOT_CONTROL_MODE", raising=False)
-    assert resolve_root_control_mode() == "legacy"
-    monkeypatch.setenv("MUSUBI_ROOT_CONTROL_MODE", "work_package")
-    assert resolve_root_control_mode() == "work_package"
-    with pytest.raises(ValueError, match="root_control_mode"):
-        resolve_root_control_mode("unknown")
 
 _SAMPLE: dict[str, Any] = {
     "default": "azure.work",

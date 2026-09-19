@@ -201,8 +201,6 @@ class GoalState:
     planning_contract_failures: int = 0
     #: Bounded machine-readable reason for the latest failed declaration.
     last_planning_contract_error: str | None = None
-    #: Migration switch; legacy keeps the role-chain controller unchanged.
-    control_mode: str = "legacy"
     #: Mutable criterion projection produced from the append-only ledger.
     gap_report: dict[str, Any] | None = None
 
@@ -571,7 +569,7 @@ class GoalState:
                 "governance declaration.\n"
             )
         gap = ""
-        if self.control_mode == "work_package" and self.gap_report is not None:
+        if self.gap_report is not None:
             gap = (
                 f"gap_report={self.gap_report}\n"
                 "Decide only from criterion state and evidence. A worker's "
@@ -581,7 +579,6 @@ class GoalState:
             "[root-goal-state]\n"
             f"intent={self.intent}\n"
             f"mode={self.mode}\n"
-            f"control_mode={self.control_mode}\n"
             f"scope={self.scope}\n"
             f"route={self.route}\n"
             f"{order}{bands}{conversation}{stall}{overrun}{planning}{gap}"
@@ -643,20 +640,14 @@ def root_decision_tools(
         return [
             tool for tool in tools if tool.get("name") in allowed_planning
         ]
-    if state.control_mode == "work_package":
-        allowed = {
-            _COMMIT_WORK_PACKAGE_TOOL,
-            _SPAWN_TOOL,
-            _RECORD_CRITERION_TOOL,
-            _GAP_REPORT_TOOL,
-            _ROLLBACK_WORK_PACKAGE_TOOL,
-            _SKILL_SELECT_TOOL,
-        }
-        if state.scope in _WIDE_SCOPES:
-            allowed.update(_SKILL_READ_TOOLS)
-        return [tool for tool in tools if tool.get("name") in allowed]
-    # Spawn plus skill selection, once a plan is committed.
-    allowed = {_SPAWN_TOOL, _SKILL_SELECT_TOOL}
+    allowed = {
+        _COMMIT_WORK_PACKAGE_TOOL,
+        _SPAWN_TOOL,
+        _RECORD_CRITERION_TOOL,
+        _GAP_REPORT_TOOL,
+        _ROLLBACK_WORK_PACKAGE_TOOL,
+        _SKILL_SELECT_TOOL,
+    }
     if state.scope in _WIDE_SCOPES:
         allowed.update(_SKILL_READ_TOOLS)
     return [tool for tool in tools if tool.get("name") in allowed]

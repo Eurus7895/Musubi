@@ -255,6 +255,9 @@ def test_worker_budget_wraps_only_when_there_is_a_ceiling_to_divide_by() -> None
     assert _worker_budget(run, None) is run
     assert _worker_budget(None, _Orch()) is None
 
+    leased = ChildTokenBudget(run, 10_000)
+    assert _worker_budget(leased, _Orch()) is leased
+
 
 def test_budget_unit_is_documented_as_processed_not_cost() -> None:
     """The one thing to know before changing this class. On the traced run the

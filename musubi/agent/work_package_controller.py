@@ -108,6 +108,7 @@ class WorkPackageController:
         self.work_packages: dict[str, FrozenWorkPackageContract] = {}
         self.active_work_package_id: str | None = None
         self.active_attempt: WorkPackageAttempt | None = None
+        self.active_attempts: dict[str, tuple[str, WorkPackageAttempt]] = {}
         self._regressions: set[str] = set()
 
     def restore(self, goal_id: str) -> FrozenGoalContract:
@@ -227,8 +228,6 @@ class WorkPackageController:
         return contract
 
     def start_attempt(self, work_package_id: str, echoed_hash: str) -> WorkPackageAttempt:
-        if self.active_attempt is not None:
-            raise ValueError("another work package attempt is already running")
         work_package = self._work_package(work_package_id)
         if echoed_hash != work_package.contract_hash:
             raise ValueError("retry contract hash does not match the frozen work package")
@@ -286,6 +285,7 @@ class WorkPackageController:
         )
         self.active_work_package_id = work_package_id
         self.active_attempt = attempt
+        self.active_attempts[attempt_id] = (work_package_id, attempt)
         return attempt
 
     def finish_attempt(
@@ -293,12 +293,13 @@ class WorkPackageController:
         *,
         worker_status: str,
         touched_files: Sequence[str],
+        attempt_id: str | None = None,
         failure_class: str | None = None,
         command_runner: Callable[[str], Any] | None = None,
         turns_used: int = 0,
     ) -> GateResult | None:
-        attempt = self._require_attempt()
-        work_package = self._work_package(self.active_work_package_id or "")
+        work_package_id, attempt = self._require_attempt(attempt_id)
+        work_package = self._work_package(work_package_id)
         self.assert_paths_in_scope(work_package.id, touched_files)
         gate: GateResult | None = None
         criterion_delta: dict[str, str] = {}
@@ -383,7 +384,13 @@ class WorkPackageController:
             created_at=_now(),
             db_path=self.db_path,
         )
-        self.active_attempt = None
+        self.active_attempts.pop(attempt.attempt_id, None)
+        if self.active_attempts:
+            self.active_work_package_id, self.active_attempt = next(
+                reversed(self.active_attempts.values())
+            )
+        else:
+            self.active_attempt = None
         return gate
 
     def set_criterion_state(
@@ -517,10 +524,23 @@ class WorkPackageController:
             raise ValueError("no frozen Goal Contract is active")
         return self.goal
 
-    def _require_attempt(self) -> WorkPackageAttempt:
-        if self.active_attempt is None:
+    def active_attempt_context(
+        self, attempt_id: str,
+    ) -> tuple[str, WorkPackageAttempt]:
+        """Resolve one active attempt without relying on global active order."""
+        return self._require_attempt(attempt_id)
+
+    def _require_attempt(
+        self, attempt_id: str | None = None,
+    ) -> tuple[str, WorkPackageAttempt]:
+        if attempt_id is not None:
+            try:
+                return self.active_attempts[attempt_id]
+            except KeyError as exc:
+                raise ValueError("Work Package attempt is not active") from exc
+        if self.active_attempt is None or self.active_work_package_id is None:
             raise ValueError("no Work Package attempt is active")
-        return self.active_attempt
+        return self.active_work_package_id, self.active_attempt
 
     def _work_package(self, work_package_id: str) -> FrozenWorkPackageContract:
         try:

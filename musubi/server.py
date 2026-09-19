@@ -1239,7 +1239,7 @@ def musubi_commit_plan(
     change_manifest: ChangeManifestInput,
     change_size: ROOT_PLAN_CHANGE_SIZE,
     worker_chain: list[ROOT_PLAN_WORKER_ROLE],
-    goal_contract: dict[str, Any] | None = None,
+    goal_contract: dict[str, Any],
 ) -> str:
     """Submit Root's plan contract; the driver persists and governs it."""
     manifest_payload = (
@@ -1253,7 +1253,7 @@ def musubi_commit_plan(
         "worker_chain": worker_chain,
         "plan_chars": len(plan_markdown),
         "manifest_fields": sorted(manifest_payload),
-        "goal_contract_submitted": goal_contract is not None,
+        "goal_contract_submitted": True,
     })
 
 
