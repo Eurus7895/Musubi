@@ -109,10 +109,10 @@ instead of writing a duplicate. `frequency` feeds the compaction ranking.
 ## Agent integration
 
 > This section originally described the embedded VS Code extension agent
-> (feature-frozen May 2026, then removed — see
-> [`docs/roadmap.md`](./roadmap.md) § Completed Tracks, "VS Code extension
-> removal"). It now describes the standalone `agent` host, which reuses the
-> same storage contract.
+> (feature-frozen May 2026, then removed — see the
+> [System Atlas design](./superpowers/specs/2026-07-16-musubi-system-atlas-design.md)
+> § Evolution and Dissolution Map). It now describes the standalone `agent`
+> host, which reuses the same storage contract.
 
 The agent runs as a continuous conversation. "Session" is redefined for
 this mode:

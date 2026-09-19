@@ -4,7 +4,7 @@ Musubi is a **governance layer** for agentic software-engineering work — firew
 budget, skill injection. It is the environment the model acts within, not a wrapper around the model's
 intelligence. **The driver reasons. Musubi controls the environment.** Zero LLM calls in the harness.
 
-> Rules live here; rationale lives in the linked docs. [`docs/roadmap.md`](./docs/roadmap.md) direction & plan ·
+> Rules live here; rationale lives in the linked docs. [Adaptive core plan](./docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md) direction & status ·
 > [`docs/hard-invariants.md`](./docs/hard-invariants.md) invariants in full · [`AGENTS.md`](./AGENTS.md) session-start map · `musubi setup` first-time setup ·
 > [`musubi/server.py`](./musubi/server.py) + [`musubi/storage/schema.sql`](./musubi/storage/schema.sql) MCP tools & schema (source of truth)
 
@@ -42,8 +42,8 @@ pipeline shape · the explorer/investigator/reviewer-aux split · correction loo
 per-stage tagged scaffolds · worker prompt scaffolding.
 
 **Substrate gets refactored. Ephemeral gets deleted when its expiration trigger fires.** Per-component
-analysis, removability cost, and cost-lever values → [`docs/roadmap.md`](./docs/roadmap.md)
-§ Dissolution candidates.
+analysis, removability cost, and cost-lever values → [System Atlas](./artifacts/musubi-system-atlas.html)
+§ Evolution and dissolution.
 
 ## Hard Invariants
 
@@ -103,10 +103,10 @@ text, enforcement points, and failure modes → [`docs/hard-invariants.md`](./do
 - Follow Conventional Commits 1.0.0: lowercase type + scope, imperative, ≤ 72 chars, no trailing
   period. Body wraps at 72 cols and explains the *why*. Breaking changes use `!` **and** a
   `BREAKING CHANGE:` footer.
-- Update [`docs/roadmap.md`](./docs/roadmap.md) before opening any PR. Roadmap entries stay
-  summary-only; implementation detail goes in `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`
-  (context, goal, tech stack, steps) and is linked from the roadmap. A PR that leaves the roadmap
-  stale gets pushed back.
+- Update the relevant file under `docs/superpowers/plans/` before opening any
+  direction-changing PR, or add a dated plan when no active plan covers it.
+  Keep context, goal, technical decisions, steps and current status together;
+  a PR that leaves its governing plan stale gets pushed back.
 
 ## Hooks
 
