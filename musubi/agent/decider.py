@@ -6,11 +6,19 @@ expires-when: never - explicit driver and execution boundaries
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from agent.decision_contracts import (
+    Decision,
+    DecisionRequest,
+    DecisionStatus,
+    InvalidDecision,
+    resolve_decision,
+)
 from agent.vendors.base import LMResponse
 
 
@@ -122,3 +130,38 @@ _VENDOR_TOOL_MARKUP_RE = re.compile(
     r"</?function_calls?\b|<invoke\s+name\s*=|\bantml:invoke\b|"
     r"<[|｜]python_tag[|｜]>)"
 )
+
+
+class ResponseSelectionProvider:
+    """Interpret an already-accounted LLM selection response through the port.
+
+    The caller supplies a response from LMRouter. This adapter makes no call,
+    never generates parameters, and never retries or switches providers. It is
+    for the typed selection path, separate from legacy tool-call interpretation.
+    """
+
+    def __init__(self, response: LMResponse, *, provider_id: str) -> None:
+        self.response = response
+        self.provider_id = provider_id
+
+    def select(self, request: DecisionRequest) -> Decision:
+        if self.response.stop_reason != "end_turn":
+            raise InvalidDecision("selection response is incomplete or requested tools")
+        if any(block.get("type") != "text" for block in self.response.content):
+            raise InvalidDecision("selection response must contain only selection text")
+        try:
+            payload = json.loads(_extract_text(self.response.content))
+        except (ValueError, TypeError) as exc:
+            raise InvalidDecision("selection response is not JSON") from exc
+        if not isinstance(payload, dict) or set(payload) != {"candidate_id"}:
+            raise InvalidDecision("selection must contain only candidate_id")
+        candidate_id = payload["candidate_id"]
+        if candidate_id is not None and not isinstance(candidate_id, str):
+            raise InvalidDecision("candidate_id must be a string or null")
+        decision = Decision(
+            request.request_id, request.request_hash, self.provider_id,
+            DecisionStatus.ABSTAINED if candidate_id is None else DecisionStatus.SELECTED,
+            candidate_id,
+        )
+        resolve_decision(request, decision, current_state=request.state)
+        return decision
