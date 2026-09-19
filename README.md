@@ -125,7 +125,7 @@ See the [Console guide](./docs/guide.md#6-console-gui--operator-view).
 |---|---|
 | [Usage guide](./docs/guide.md) | Installation, profiles, CLI, pipelines, and Console |
 | [Hard invariants](./docs/hard-invariants.md) | Runtime guarantees and trust boundaries |
-| [Roadmap](./docs/roadmap.md) | Product direction and implementation status |
+| [Adaptive core plan](./docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md) | Active architecture direction and implementation status |
 | [Compression](./docs/compression.md) | Strategies, retrieval, metrics, and benchmarks |
 | [Memory](./docs/memory.md) | Cross-session memory architecture |
 | [CLAUDE.md](./CLAUDE.md) | Repository rules, conventions, and validation commands |

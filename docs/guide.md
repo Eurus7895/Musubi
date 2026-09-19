@@ -4,8 +4,8 @@
 > install, run your first task, pick a model, control tokens, delegate to
 > parallel workers (and whole pipelines), and watch it all in the console.
 >
-> This is the *how-to-use* guide. For **why** (direction, the substrate/ephemeral
-> discipline) read [`docs/roadmap.md`](./roadmap.md); for the **rules &
+> This is the *how-to-use* guide. For **why** (active architecture direction)
+> read the [Adaptive core plan](./superpowers/plans/2026-09-18-agent-components-hoh-refactor.md); for the **rules &
 > invariants** read [`CLAUDE.md`](../CLAUDE.md); the **MCP tool reference + DB
 > schema** is the source of truth in [`musubi/server.py`](../musubi/server.py) ·
 > [`musubi/storage/schema.sql`](../musubi/storage/schema.sql).
@@ -432,7 +432,8 @@ with machine-readable data in
 
 | File | For |
 |---|---|
-| [`docs/roadmap.md`](./roadmap.md) | **Read first for direction** — discipline, numbered steps, dissolution candidates |
+| [Adaptive core plan](./superpowers/plans/2026-09-18-agent-components-hoh-refactor.md) | **Read first for active direction** — scope, work packages, status, and acceptance gates |
+| [System Atlas](../artifacts/musubi-system-atlas.html) | Component classification, historical evolution, and dissolution candidates |
 | [`docs/compression.md`](./compression.md) | Compression capability — native compressor strategies, artifact links, and latest benchmark numbers |
 | [`CLAUDE.md`](../CLAUDE.md) | Rules · Hard Invariants · git conventions |
 | [`AGENTS.md`](../AGENTS.md) | Session-start orientation map |
@@ -441,5 +442,5 @@ with machine-readable data in
 | [`docs/memory.md`](./memory.md) | Memory architecture detail |
 
 **Before opening a PR:** run `python scripts/check_musubi_tier.py` and
-`cd musubi && python -m pytest`, and update `docs/roadmap.md` for any direction
-change.
+`cd musubi && python -m pytest`, and update the governing dated plan for any
+direction change.

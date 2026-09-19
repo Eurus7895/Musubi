@@ -129,8 +129,9 @@ SUBAGENT_POLICIES: dict[str, list[str]] = {
 # pipeline.yaml cannot widen this dict.
 # - "agent" (Phase B.1) may spawn the read-only Phase A roles plus
 #   the pipeline roles ad-hoc. It must NOT spawn an entire pipeline —
-#   that is reserved for user-invoked slash commands. Locked decision #4
-#   in docs/roadmap.md. Agent has no pipeline.yaml, so this entry
+#   that is reserved for user-invoked slash commands. Locked decision #4 is
+#   mapped in AGENTS.md and enforced by musubi/tool_surface.py. Agent has no
+#   pipeline.yaml, so this entry
 #   IS the effective list.
 # - Phase G.1.6: feature-dev's `coder` and `reviewer` stages opt into
 #   read-only sub-agents:
