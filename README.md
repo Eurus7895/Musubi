@@ -124,11 +124,10 @@ See the [Console guide](./docs/guide.md#6-console-gui--operator-view).
 | Document | Purpose |
 |---|---|
 | [Usage guide](./docs/guide.md) | Installation, profiles, CLI, pipelines, and Console |
-| [Hard invariants](./docs/hard-invariants.md) | Runtime guarantees and trust boundaries |
 | [Adaptive core plan](./docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md) | Active architecture direction and implementation status |
 | [Compression](./docs/compression.md) | Strategies, retrieval, metrics, and benchmarks |
 | [Memory](./docs/memory.md) | Cross-session memory architecture |
-| [CLAUDE.md](./CLAUDE.md) | Repository rules, conventions, and validation commands |
+| [AGENTS.md](./AGENTS.md) | Repository instructions, working conventions, and documentation map |
 
 ## Development
 
@@ -138,5 +137,5 @@ python -m pytest musubi/tests
 npm test
 ```
 
-Read [CLAUDE.md](./CLAUDE.md) before contributing. Update the roadmap when a
-change affects product direction or a hard invariant.
+Read [AGENTS.md](./AGENTS.md) before contributing. Update the relevant approved
+plan when behavior, scope, or technical decisions change.

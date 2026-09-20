@@ -1,6 +1,13 @@
 # Adaptive core refactor
 
 Date: 2026-09-18  
+Instruction-policy update (2026-09-20): the repository Hard Invariants policy
+has been retired by user decision and repository instructions consolidated in
+`AGENTS.md`. HI references below describe the earlier design rationale, not
+standing instructions or a requirement to seek an invariant exception. This
+documentation change does not remove runtime behavior, tests, or CI checks;
+changes to those mechanisms require their own implementation scope.
+
 Status: pre-WP prototyping exists; active work packages are not yet accepted.
 Implementation branch: `refactor/adaptive-core-cutover`  
 Integration baseline: `dev@4d04637d31b4b7808b64839afe198ca016984e2a`.  
@@ -342,7 +349,7 @@ run, never an invented unlimited default. All WPs start pending.
 
 ### WP0 — Baseline and boundary agreement
 
-- Scope: existing tests, ADR 0001, this plan, `AGENTS.md`, `CLAUDE.md`, diagrams.
+- Scope: existing tests, ADR 0001, this plan, `AGENTS.md`, diagrams.
 - Expected delta: an executable baseline and an ADR recording Adaptive ownership,
   driver-only model calls and the backlog boundaries.
 - Work: run relevant contract/loop/budget/firewall tests; then existing CI suite.
