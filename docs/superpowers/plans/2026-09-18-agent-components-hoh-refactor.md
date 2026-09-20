@@ -20,6 +20,7 @@ dependency:
 - Pipeline migration to shared Runtime/Storage.
 - Memory retrieval, knowledge lifecycle and terminal consolidation.
 - HoH evidence analysis, candidate isolation and evaluation.
+- Jev API validation, comparative evaluation and provider integration.
 
 Existing Pipeline and Memory behavior must not regress. Backlog items receive
 separate plans only after the Adaptive golden path is accepted. The old Adaptive
@@ -39,8 +40,8 @@ Prototype evidence currently present on the implementation branch:
   identity, including tool schemas. Both normal and salvage preparation use it.
 - `agent/thinker.py` owns effort calls and aggregate token usage.
 - `agent/decider.py` owns response interpretation and existing recovery choices.
-  The compatibility adapter consumes the current LLM response; it is not Jev
-  and does not introduce another model call.
+  The active provider is LLM-based. The compatibility adapter consumes the
+  current LLM response and does not introduce another model call.
 - `agent/runtime_tools.py` owns MCP text transport and file-argument validation.
 - `agent/run_state.py` owns existing run statistics and orchestration state.
 - `agent/adaptive_control.py` owns deterministic Root contract controls and
@@ -53,8 +54,8 @@ Prototype evidence currently present on the implementation branch:
 
 This work predates completion of WP0 and is classified as **pre-WP
 prototyping**, not progress or acceptance for dependent WP1/WP3/WP4/WP5.
-Existing Storage and Memory are preserved. No live Jev
-provider, new evidence schema, terminal Memory consolidation, or HoH candidate
+Existing Storage and Memory are preserved. Jev is intentionally out of active
+scope. No new evidence schema, terminal Memory consolidation, or HoH candidate
 engine has been implemented. `run.py` still owns the execution lifecycle and
 needs further reduction. Existing state types are moved, not a new universal
 controller. Architectural decision: [ADR 0002](../../adr/0002-component-extraction.md).
@@ -142,13 +143,16 @@ Next implementation order:
    boundary.
 4. Move lifecycle ownership into an explicit Adaptive Controller. It builds
    legal actions and applies deterministic state transitions.
-5. Connect Jev-first routing where more than one legitimate action remains.
-   Call the LLM Thinker only when generation or deeper reasoning is required.
+5. Connect the LLM-backed Decider where more than one legitimate action remains.
+   Reuse an already-accounted valid selection when available; make and charge a
+   dedicated decision call only when a new choice is required. Call the Thinker
+   only for generation or deeper reasoning.
 6. Run a complete collect -> decide -> optional think -> decide -> execute ->
    verify -> retry/finish
    golden path; remove the corresponding legacy Adaptive branches.
-7. Compare rule, LLM and Jev decisions on the same recorded Adaptive states.
-   Memory, Pipeline and HoH remain backlog work.
+7. Evaluate LLM Decider accuracy, false-finish rate, latency and incremental
+   call cost on recorded Adaptive states. Jev comparison, Memory, Pipeline and
+   HoH remain backlog work.
 
 ## 1. Context and source of decisions
 
@@ -239,8 +243,9 @@ that imports every subsystem.
 
 ### Provider and governance boundary
 
-- Thinker and Decider model calls live only in the driver. Jev is also a model
-  call: its different output format is not an exemption from HI #1.
+- Thinker and Decider LLM calls live only in the driver. A logical Decider
+  boundary does not require a separate call: it may validate and consume an
+  already-accounted LLM selection. Any dedicated decision call is explicit.
 - Extend the driver gateway rooted at `agent/vendors/base.py` with an optional
   typed decision capability; preserve existing `call()` adapters. Inject the
   gateway into Thinker/Decider. No model SDK in `server.py`, tools, validators,
@@ -260,7 +265,8 @@ Use existing packages where possible; these new paths are targets, not facts:
 
 - `musubi/agent/collector/`: requests, context assembly, retrieval adapters.
 - `musubi/agent/thinker/`: solution generation through the model gateway.
-- `musubi/agent/decider/`: decision port, Jev adapter, LLM baseline, fake.
+- `musubi/agent/decider/`: decision port, active LLM provider and fake provider.
+  Specialized providers such as Jev require a later research decision.
 - `musubi/agent/engines/adaptive/`: pure transitions and run loop wiring.
 - `musubi/agent/runtime/`: bounded lifecycle and operation dispatch.
 - `musubi/agent/hoh/`: driver-side optimization lifecycle and analysis.
@@ -289,8 +295,9 @@ closed GoalContract schemas. Schema changes require explicit versions.
 | `RunRecord` | Run/parent/engine IDs, contract and manifest refs, state/status, budgets/usage, trajectory ref, outputs and terminal report refs |
 | `RunEvent` | ID, per-run sequence, producer/type/time, run/unit/attempt IDs, causal links, payload refs, completeness/redaction flags |
 
-Jev selects an existing option. Free-text queries, code and tool arguments come
-from a validated template, existing state, or a Thinker-produced candidate.
+The Decider selects an existing option. Even when backed by an LLM, it cannot
+invent parameters during selection. Free-text queries, code and tool arguments
+come from a validated template, existing state, or a Thinker-produced candidate.
 Never treat a choice label as a shell command or synthesize free-text parameters
 inside Runtime. Include abstain/need-more-information options. Confidence is
 not evidence, a permission grant, or proof that a multi-step plan will succeed.
@@ -393,15 +400,17 @@ run, never an invented unlimited default. All WPs start pending.
 - Depends on WP1 and the active Collector preparation slice. It does not depend
   on Memory lifecycle work. Scope: driver components, gateway and configuration.
 - Expected delta: Thinker proposes solutions/content; Decider selects typed
-  options. Jev is a configured target provider, not a hardcoded dependency.
-- Implement fake provider first, LLM decision baseline next, Jev adapter after
-  verifying actual API access, schema, option limits and usage reporting.
-  Unsupported features fail explicitly; no fake text/tool-call compatibility.
-- Verifier: arbitrary generated parameters never originate in Jev selection;
-  provider timeout/abstention is typed and bounded; any configured fallback is
-  explicit, separately charged and logged. No SDK imports in substrate.
-- Rollback: operator selects baseline adapter; missing Jev credentials does not
-  cause a silent provider switch. Live Jev validation is a separate gate.
+  options. The active provider is the existing LLM gateway; Jev is out of scope.
+- Implement the fake provider and LLM decision provider. Reuse an existing
+  accounted response when possible. A dedicated decision call must expose its
+  provider/config identity, duration and token usage. Unsupported response
+  shapes fail explicitly; no fake text/tool-call compatibility.
+- Verifier: selection cannot introduce generated parameters; provider
+  timeout/abstention is typed and bounded; every dedicated call is separately
+  charged and logged. No SDK imports in substrate. Swapping the LLM provider
+  for the fake does not change Controller or Runtime code.
+- Rollback: operator selects the existing response adapter or fake provider;
+  there is no hidden provider switch or unrecorded fallback.
 
 ### WP5 — Thin Runtime and Adaptive golden path
 
@@ -484,8 +493,9 @@ run, never an invented unlimited default. All WPs start pending.
   without making unrelated historical lint debt a hidden migration blocker.
 - Verifier: existing Python/Rust/Console CI, targeted boundary tests and held-out
   end-to-end tasks. Measure success/false completion, p50/p95 duration, total
-  cost per successful task, LLM/Jev call counts, context volume, failed actions
-  and escalation rate. Compare at declared quality tolerance, not raw call price.
+  cost per successful task, Thinker/Decider LLM call counts, reused-response
+  rate, context volume, failed actions and escalation rate. Compare at declared
+  quality tolerance, not raw call price.
 - Rollback: retain a reviewed pre-cutover revision; do not delete raw evidence.
 
 ## 7. Delivery order and diagrams
@@ -499,7 +509,7 @@ Keep reviewable commits and update this checklist with evidence after each WP.
 | --- | --- |
 | M1: Adaptive contracts and Storage | WP0-WP2 accepted; state, decisions and evidence are reconstructable |
 | M2: Adaptive slice | Active WP3 portion plus WP4-WP5 accepted; one golden path works |
-| M3: Adaptive cutover | WP9 accepted; legacy Adaptive path removed and Jev benchmark reported |
+| M3: Adaptive cutover | WP9 accepted; legacy Adaptive path removed and LLM Decider qualified |
 | Backlog | Memory work in WP3 and WP6-WP8 each receive a later plan |
 
 Produce PlantUML source plus rendered SVG as implementation deliverables:
@@ -507,7 +517,7 @@ Produce PlantUML source plus rendered SVG as implementation deliverables:
 - Component boundaries, including the driver/substrate boundary.
 - Adaptive component boundaries and controller lifecycle.
 - Adaptive collect -> decide -> optional think -> decide -> execute -> verify
-  loop. This Jev-first order is authoritative throughout the implementation.
+  loop. This Decider-first order is authoritative throughout the implementation.
 
 Pipeline, Storage/Memory lifecycle and HoH diagrams remain backlog artifacts;
 they are not implementation deliverables or acceptance gates for this milestone.
@@ -521,14 +531,14 @@ an alternative source of truth in repository documentation.
 
 ### Adaptive production gate
 
-- Jev access and actual provider limits are not verified by this plan. Use
-  contract tests with fake responses first; never claim provider integration
-  from those tests alone.
+- The active Decider provider is LLM-based. Contract tests with fake responses
+  do not prove live-provider behavior; qualify the configured LLM on held-out
+  decision states before production use.
 - Operator-owned retry/collection/timeout/cost limits must be explicit before
   each run. Calibrate confidence thresholds against labeled cases; confidence
   does not grant authority or prove completion.
-- A fallback to LLM is explicit configuration. Measure its cost and frequency;
-  it may eliminate any Jev cost advantage.
+- Distinguish reused LLM responses from dedicated Decider calls in usage data.
+  A dedicated call or fallback is explicit, separately charged and logged.
 - Runtime public behavior and external MCP compatibility should survive module
   moves. Any required schema break gets an explicit migration/version.
 
@@ -548,7 +558,7 @@ an alternative source of truth in repository documentation.
 - [ ] WP1 contracts and ports — decision/controller boundary in progress.
 - [ ] WP2 Adaptive Storage, evidence and manifest — decision ledger in progress.
 - [ ] WP3 Collector active slice; Memory lifecycle — backlog.
-- [ ] WP4 Thinker and Decider providers.
+- [ ] WP4 Thinker and LLM-backed Decider providers.
 - [ ] WP5 thin Runtime and Adaptive golden path.
 - [ ] WP6 Pipeline and resume compatibility — backlog.
 - [ ] WP7 manual HoH evidence analysis — backlog.

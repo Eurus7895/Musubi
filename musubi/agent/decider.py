@@ -27,8 +27,9 @@ class ResponseDecision:
     """Legacy LLM decision proposal, never an execution/completion verdict.
 
     This migration adapter separates interpreting the model's selected actions
-    from executing them. It makes no extra model call and is not a Jev adapter.
-    Existing truncation, permission and completion gates remain authoritative.
+    from executing them. It makes no extra model call and remains the active
+    LLM-backed compatibility path. Existing truncation, permission and
+    completion gates remain authoritative.
     """
 
     text: str

@@ -18,15 +18,19 @@ application and its existing execution path; no additional universal agent or
 orchestrator is introduced.
 
 Collector prepares bounded context. The Decider acts first on that context and
-selects a legal typed operation. It invokes the Thinker only when generation or
-deeper reasoning is required, then decides again over the resulting candidates.
+selects a legal typed operation. The active Decider provider is the existing
+LLM gateway. It invokes the Thinker only when generation or deeper reasoning is
+required, then decides again over the resulting candidates.
 Runtime tool helpers handle transport and validation. State is data owned by
 run state; deterministic controls enforce frozen contracts and completion
 blockers. Model proposals cannot bypass these gates.
 
-The first increment uses existing LLM responses. A future Jev provider must
-implement the driver decision capability and undergo comparative evaluation;
-component extraction alone makes no latency, cost or accuracy claim.
+The first increment reuses already-accounted LLM responses when they contain a
+valid bounded selection; separating Decider from Thinker does not by itself add
+a model call. A dedicated LLM decision call is allowed only when a new choice
+is required and must be charged and recorded separately. Jev integration is
+deferred to research backlog and is not an Adaptive acceptance dependency.
+Any future specialized provider requires a separate evidence-based decision.
 
 Storage remains the evidence authority. Memory is derived knowledge. HoH will
 have a separate manually invoked lifecycle and isolated candidate evaluation,
