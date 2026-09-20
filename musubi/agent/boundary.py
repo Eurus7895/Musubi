@@ -25,7 +25,7 @@ def _ensure_scripts_path() -> None:
 
 _ensure_scripts_path()
 
-# The fail-closed policy engine owns the canonical role vocabulary (HI #5):
+# The fail-closed policy engine owns the canonical role vocabulary (fail-closed policy):
 # one definition of what the depth-0 driver is called, and one normalizer that
 # every membership and capability lookup folds through. Imported at module
 # scope rather than re-derived here so this file cannot drift from the table

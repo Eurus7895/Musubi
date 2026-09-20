@@ -3,7 +3,7 @@ musubi_get_conversation MCP tools (Phase C.1).
 
 Storage seam for agent replay-on-each-turn — covers role validation,
 token-budgeted newest-first truncation, multi-chat isolation, deterministic
-ordering under timestamp collisions, the UTF-8 invariant from CLAUDE.md, and
+ordering under timestamp collisions, UTF-8 preservation, and
 schema migration on a fresh DB.
 """
 
@@ -200,7 +200,7 @@ def test_same_ts_orders_by_id(db: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert all(m["ts"] == fixed_ts for m in h["messages"])
 
 
-# ── unicode / UTF-8 invariant (CLAUDE.md hard rule) ──────────────────────────
+# ── unicode / UTF-8 preservation ─────────────────────────────────────────────
 
 
 def test_unicode_content_round_trip(db: Path) -> None:

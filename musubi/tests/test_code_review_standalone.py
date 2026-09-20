@@ -4,7 +4,7 @@ The code-review roles (scoper / finder / synthesizer) are first-class
 sub-agent roles with worker prompts, pushed skills, and pipeline-narrowed
 spawn rights — so `agent "<diff>" --pipeline code-review` runs end-to-end
 with the same governance as any other pipeline: fail-closed policy, skill
-push (HI #2), evaluator firewall (HI #3), audited spawns (HI #8).
+push (skill-injection contract), evaluator firewall (review-context isolation), audited spawns (spawn-audit contract).
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def test_code_review_roles_not_adhoc_spawnable_by_agent() -> None:
         assert check_subagent_allowed("agent", role) is False, role
 
 
-# ── HI #2: each stage role pushes its skill ─────────────────────────────────
+# ── skill-injection contract: each stage role pushes its skill ─────────────────────────────────
 
 
 def test_code_review_stage_roles_get_pushed_skills() -> None:
@@ -94,7 +94,7 @@ def test_worker_prompts_exist_with_contract() -> None:
         assert "spawn_allowlist" not in body, role
 
 
-# ── End-to-end: order + evaluator firewall (HI #3) ──────────────────────────
+# ── End-to-end: order + evaluator firewall (review-context isolation) ──────────────────────────
 
 
 def _text(s: str) -> LMResponse:
@@ -164,7 +164,7 @@ def test_code_review_pipeline_runs_standalone_with_evaluator_firewall() -> None:
     # The finder sees the request plus the scoper summary.
     assert "review this diff" in finder_brief
     assert "scope: fileA.py high" in finder_brief
-    # HI #3: the evaluator sees ONLY the finder's output — not the
+    # review-context isolation: the evaluator sees ONLY the finder's output — not the
     # original request, not the scoper stage.
     assert "F1 contract break" in synth_brief
     assert "review this diff" not in synth_brief

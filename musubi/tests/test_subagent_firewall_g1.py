@@ -92,7 +92,7 @@ def test_g1_role_only_sees_brief_role_role_skill_allowed_tools(role: str) -> Non
     # the SKILL.md itself, so its id reveals nothing the brief did not. It was
     # added because a pushed skill otherwise left no name anywhere: the audit
     # ledger and the console could not say WHICH skill a worker received
-    # (HI #2 pushes it; HI #8 says no spawn is silent).
+    # (skill-injection contract pushes it; spawn-audit contract says no spawn is silent).
     expected_attrs = {
         "brief", "role", "role_skill", "role_skill_id", "allowed_tools",
     }

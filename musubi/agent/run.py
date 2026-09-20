@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — the agent is the model's native mode (per
-  CLAUDE.md), and this is its vendor-agnostic Python entry point.
+  docs/system.md), and this is its vendor-agnostic Python entry point.
   Replaces the Copilot-Chat-only access path with one that works
   against any LLM whose Python SDK exposes a tool-use API.
 
@@ -263,7 +263,7 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
 
 # Same sink pattern for the one thing a worker can say ABOUT its own contract
 # rather than about the workspace: that the skill pushed into it does not fit
-# the brief it was given. HI #2 still holds — the push happened, the worker
+# the brief it was given. skill-injection contract still holds — the push happened, the worker
 # still runs under it, and it cannot swap its own skill. What changes is that
 # the mismatch becomes control flow the parent can read, instead of a fact only
 # the worker knew and had no way to state.
@@ -344,7 +344,7 @@ async def _auto_recovery_transition(
     AUTO_REPLACE synthesizes one `musubi_spawn_subagent` call and passes it
     through `_dispatch` — never straight to `run_subagent` — so the root
     worker ceiling, replacement brief injection, policy check, tool audit,
-    subagent audit, and touched-file tracking all apply (HI #8). HALT returns
+    subagent audit, and touched-file tracking all apply (spawn-audit contract). HALT returns
     the final `[incomplete]` text. ROOT_ANALYZE (and every untyped failure)
     returns None, leaving the legacy bounded analysis window untouched.
 
@@ -2234,7 +2234,7 @@ def _harness_root(musubi_dir: Path) -> Path:
     package = musubi_dir.resolve()
     parent = package.parent
     if package.name.lower() == "musubi" and (
-        (parent / "CLAUDE.md").is_file() or (parent / ".github").is_dir()
+        (parent / "AGENTS.md").is_file() or (parent / ".github").is_dir()
     ):
         return parent
     return package

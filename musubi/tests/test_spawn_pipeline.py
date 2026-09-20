@@ -4,7 +4,7 @@ A pipeline is an ordered recipe of workers. The agent calls
 `musubi_spawn_pipeline`; the driver runs each stage as a worker, threading the
 prior summary forward. Asserts the stages run in declared order and that the
 evaluator (last stage) sees ONLY the prior stage's output — never the original
-request or earlier stages (HI #3, generalised).
+request or earlier stages (review-context isolation, generalised).
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def test_agent_summons_pipeline_runs_stages_in_order_with_evaluator_firewall() -
     assert answer == "done"
     assert router.order == ["planner", "designer", "coder", "reviewer"]
 
-    # HI #3: the evaluator sees ONLY the immediately prior stage (coder), not the
+    # review-context isolation: the evaluator sees ONLY the immediately prior stage (coder), not the
     # original request or the earlier plan/design outputs.
     assert "code: wrote moduleX" in router.reviewer_brief
     assert "build a thing" not in router.reviewer_brief
@@ -162,7 +162,7 @@ def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
     assert router.order == ["planner", "designer", "coder", "reviewer"]
     # The final stage's summary is returned verbatim.
     assert "review: PASS" in answer
-    # HI #3 holds under direct invocation: the evaluator sees only the prior
+    # review-context isolation holds under direct invocation: the evaluator sees only the prior
     # stage (coder), not the original task or earlier stage outputs.
     assert "code: wrote moduleX" in router.reviewer_brief
     assert "ship it" not in router.reviewer_brief
@@ -832,7 +832,7 @@ def test_stage_without_role_prompt_fails_closed(
 def test_stage_gets_role_skill_pushed_into_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HI #2: the spawn context's role_skill is embedded into the stage
+    """skill-injection contract: the spawn context's role_skill is embedded into the stage
     worker's system prompt — the same push path a direct worker takes."""
     from agent import pipeline_runner
 
@@ -1520,7 +1520,7 @@ def test_stage_with_spawn_roles_gets_spawn_tool_and_stage_orchestration(
 ) -> None:
     """A stage whose server response declares spawn_roles is handed the spawn
     tool and an orchestration parented on the PIPELINE session (so the server
-    narrows its spawns per pipeline — HI #5), one level deeper than the
+    narrows its spawns per pipeline — fail-closed policy), one level deeper than the
     caller."""
     from agent.run import Orchestration
 

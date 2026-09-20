@@ -1,7 +1,7 @@
 """Context firewall — each agent receives only what its role requires.
 
 musubi-tier: substrate
-expires-when: never — Skill firewall + stage permissions (HI #3).
+expires-when: never — Skill firewall + stage permissions (review-context isolation).
 
 
 Two public APIs:
@@ -33,7 +33,7 @@ _SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-# The policy engine owns the canonical role vocabulary (HI #5). This module
+# The policy engine owns the canonical role vocabulary (fail-closed policy). This module
 # keys its own firewall tables by the same name and folds every lookup through
 # the same normalizer, so a role read back out of the audit ledger under its
 # legacy spelling still resolves to one entry.

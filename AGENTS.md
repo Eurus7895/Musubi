@@ -1,7 +1,7 @@
 # AGENTS.md — Instructions for AI Agents and Harnesses
 
 This file defines how to work in this repository. Keep it under 120 lines.
-Keep product requirements and architecture in task-specific documents, not here.
+Keep the system overview in `docs/system.md`, not here.
 Write repository documentation in English; converse in the user's language.
 
 ## Response Style
@@ -22,12 +22,9 @@ Write repository documentation in English; converse in the user's language.
 1. Read this file and any instructions scoped to the files you will touch.
 2. Identify the requested outcome and any decisions already approved in the
    conversation. Do not restart discovery for settled decisions.
-3. Discover the specification, design, and plan relevant to the current task.
-   Start with user-provided references and the repository's documentation
-   index, then search by feature, component, or affected code.
-   Check scope, approval status, and superseding decisions before applying a
-   document. Do not select it solely because it has the newest date.
-   If no applicable document exists, state that and plan at the task's scale.
+3. Read `docs/system.md`, then inspect the affected code and tests. Treat the
+   implementation, schema, configuration, and tests as authoritative for exact
+   behavior; the system summary is orientation, not proof of implementation.
 4. Inspect the actual files, interfaces, dependencies, tests, and working-tree
    changes relevant to the task before proposing edits.
 5. Distinguish implemented behavior, approved requirements, and proposals.
@@ -69,7 +66,7 @@ Use Problem → Design → Predict → Build → Validate → Learn.
 - Preserve unrelated local changes. Avoid destructive replacements without explicit authorization; prefer isolated, reviewable changes.
 - Reuse verified capabilities before adding new abstractions or dependencies.
 - Keep responsibilities and interfaces clear. If delegating authorized work, provide the goal, inputs, output contract, allowed scope, and acceptance checks; review returned artifacts rather than trusting completion summaries.
-- Keep requirements, assumptions, decisions, and observed results distinct in persistent notes. Do not rely on conversation memory as the only record.
+- Keep requirements, assumptions, decisions, and observed results distinct in the task or pull request. Do not create repository plan/spec files for routine work.
 
 ## Validate and Report
 
@@ -94,15 +91,15 @@ Use Problem → Design → Predict → Build → Validate → Learn.
 - Follow Conventional Commits 1.0.0: lowercase type/scope, imperative subject, at most 72 characters, no trailing period; wrap body at 72 columns and explain why.
 - Breaking changes require both `!` and a `BREAKING CHANGE:` footer.
 - Install `scripts/commit_guard.py --install` once per clone when the script exists.
-- Update the relevant approved plan under `docs/superpowers/plans/` when behavior, scope, or technical decisions change. Add a dated plan only when no applicable plan exists and the task warrants one.
+- Update `docs/system.md` only when the system architecture, supported behavior, or implementation status changes. Do not add another system plan or specification under `docs/`.
 - Verify `origin/dev` and the guard script exist before using them. If absent, report the setup gap; do not invent a branch or claim a guard ran.
 
 ## Repository Map
 
 Musubi provides governed agent execution through a standalone CLI and a Console.
 
-- Documentation index: `README.md`; usage: `docs/guide.md`.
-- Architecture direction and status: `docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md`. Check its acceptance status before treating a target design as implemented.
+- Usage and onboarding: `README.md`.
+- System architecture and implementation status: `docs/system.md`.
 - MCP tools and storage schema: `musubi/server.py` and `musubi/storage/schema.sql`.
 - Hook registration: `hooks.json`; deterministic checks belong in executable tooling.
-- The former Hard Invariants policy is retired. Historical HI references are context, not standing repository instructions. Existing behavior and checks remain subject to the current task and approved design.
+- Historical plans and specifications are not repository instructions.

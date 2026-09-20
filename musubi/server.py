@@ -413,7 +413,7 @@ def musubi_write_stage(
         # Reviewer severity-rubric enforcement: if the reviewer returned a
         # fail that isn't backed by a critical or high severity issue, the
         # harness rewrites it to pass. Prevents the checklist-opinion
-        # correction loop (see CLAUDE.md failure-patterns).
+        # Legacy correction-loop compatibility.
         coerced = False
         if agent_name.lower() == "reviewer" and isinstance(parsed, dict):
             parsed, coerced = verifier.normalize_reviewer_status(parsed)
@@ -1172,7 +1172,7 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
     """Return the catalog of skills an agent may load, with descriptions.
 
     Set `for_role` to list a WORKER role's skills before spawning it, so the
-    root can choose a `pushed_skill_id` (HI #2's push). Defaults to the
+    root can choose a `pushed_skill_id` (skill-injection contract's push). Defaults to the
     caller's own allowlist.
 
     The harness lists; the model chooses. Each entry carries an id, a title
@@ -1183,7 +1183,7 @@ def musubi_list_skills(agent_name: str, for_role: str | None = None) -> str:
 
     Two filters compose, in order, and both are firewalls, not opinions:
       1. The agent allowlist (AGENT_SKILL_ALLOWLIST) — the security
-         firewall (HI #3). Never relaxed.
+         firewall (review-context isolation). Never relaxed.
       2. Workspace applicability (MVP item 6 / Track D.3) — the skill
          router drops skills whose `applies-to` declaration doesn't match
          the project profile, so the model never sees a Python skill in a
@@ -1525,7 +1525,7 @@ _SKILL_MISMATCH_REASON_CHARS: int = 400
 def _durable_spawn_evidence(
     payload: dict[str, Any], *, abandon_worker: bool = True,
 ) -> dict[str, Any] | None:
-    """Deliver HI #8 spawn evidence before exposing a runnable handle."""
+    """Deliver spawn-audit contract spawn evidence before exposing a runnable handle."""
     now = datetime.now(UTC).isoformat()
     obligation_id = _db.record_audit_obligation(
         kind="worker_spawn",
@@ -1555,7 +1555,7 @@ def _durable_completion_evidence(payload: dict[str, Any]) -> dict[str, Any] | No
 
     The sub-session is already terminal when this is called. A delivery failure
     must be visible to the caller and remain relayable; otherwise a successful
-    stage could be reported without its required HI #8 completion evidence.
+    stage could be reported without its required spawn-audit contract completion evidence.
     """
     now = datetime.now(UTC).isoformat()
     obligation_id = _db.record_audit_obligation(
@@ -1691,7 +1691,7 @@ def musubi_spawn_subagent(
             ),
         })
 
-    # 4. Root-selected skill (HI #2's push). Two fail-closed checks, both of
+    # 4. Root-selected skill (skill-injection contract's push). Two fail-closed checks, both of
     #    which are the actual firewall: the id must be in the worker role's
     #    allowlist, and it must exist in the catalog.
     #
@@ -1795,8 +1795,8 @@ def musubi_spawn_subagent(
 # and returns the ordered plan, and `musubi_spawn_pipeline_stage` authorises one
 # stage worker by PIPELINE MEMBERSHIP (the stage is declared in the pipeline)
 # rather than the ad-hoc spawn allow-list, recording it in the worker audit
-# (HI #8). The driver runs each stage as a worker, threading the prior stage's
-# summary forward; the evaluator (last stage) sees only the prior stage (HI #3).
+# (spawn-audit contract). The driver runs each stage as a worker, threading the prior stage's
+# summary forward; the evaluator (last stage) sees only the prior stage (review-context isolation).
 
 
 @mcp.tool()
@@ -1980,7 +1980,7 @@ def musubi_report_skill_mismatch(
 ) -> str:
     """Report that the skill pushed into this worker does not fit its brief.
 
-    HI #2 is unchanged by this tool. The push already happened, the worker
+    skill-injection contract is unchanged by this tool. The push already happened, the worker
     keeps running under the skill it was given, and nothing here swaps it: a
     worker cannot select its own skill, before or after calling this. What the
     tool adds is a way for the worker to SAY so, so a mismatch reaches the

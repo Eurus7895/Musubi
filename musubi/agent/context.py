@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never - the token economics of the LM-call boundary are
-  permanent. Every transform here is deterministic and zero-LLM (HI #1).
+  permanent. Every transform here is deterministic and zero-LLM (driver-only model boundary).
 """
 
 from __future__ import annotations

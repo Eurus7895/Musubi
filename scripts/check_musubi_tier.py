@@ -2,7 +2,7 @@
 """Fail CI when new/modified substrate files lack a `musubi-tier:` tag.
 
 musubi-tier: substrate
-expires-when: never — this is the self-enforcement mechanism for HI #9.
+expires-when: never — this is the self-enforcement mechanism for lifecycle-tag policy.
 
 Usage:
     python scripts/check_musubi_tier.py            # check ALL files in scope

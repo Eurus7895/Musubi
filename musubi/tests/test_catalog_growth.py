@@ -3,7 +3,7 @@
 musubi-tier: substrate test — pins that the new catalog entries
 (debugging, refactoring, git-workflow, typescript, web-ui) load, parse,
 declare sensible metadata (applies-to / description / tools), reach the
-correct agents through the allowlist firewall (HI #3), and surface in the
+correct agents through the allowlist firewall (review-context isolation), and surface in the
 catalog listing the model chooses from — without widening access.
 """
 
@@ -34,7 +34,7 @@ def test_new_skills_load_with_procedure() -> None:
 
 
 def test_new_skills_declare_substrate_tier() -> None:
-    """Every catalog entry carries a musubi-tier tag (HI #9)."""
+    """Every catalog entry carries a musubi-tier tag (lifecycle-tag policy)."""
     for sid in NEW_SKILLS:
         content = skill_loader.get_skill(sid) or ""
         assert "musubi-tier: substrate" in content, f"{sid} untagged"
@@ -75,7 +75,7 @@ def test_procedure_skills_are_universal() -> None:
         )
 
 
-# ── Allowlist wiring (HI #3) ───────────────────────────────────────────────
+# ── Allowlist wiring (review-context isolation) ───────────────────────────────────────────────
 
 
 def test_coder_gains_generator_side_skills() -> None:
@@ -169,7 +169,7 @@ def test_typescript_kept_in_ts_workspace(monkeypatch) -> None:
 
 def test_listing_respects_the_role_allowlist() -> None:
     """`musubi_list_skills` lists only skills the role may actually receive —
-    the same firewall the ranker sat behind (HI #3)."""
+    the same firewall the ranker sat behind (review-context isolation)."""
     payload = json.loads(server.musubi_list_skills("root", for_role="coder"))
     ids = {item["skill_id"] for item in payload["skills"]}
     assert ids <= AGENT_SKILL_ALLOWLIST["coder"]

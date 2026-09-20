@@ -647,7 +647,7 @@ def declared_stage_skill(pipeline_name: str, role: str) -> str | None:
 
     Returns None for a missing/malformed recipe, an unlisted role, or an
     explicit `skill: null`. The caller intersects with AGENT_SKILL_ALLOWLIST —
-    a recipe declares, it never widens (HI #3).
+    a recipe declares, it never widens (review-context isolation).
     """
     agent = (role or "").strip().lower()
     if not agent:

@@ -94,8 +94,8 @@ agent "<task>" --profile azure.work
 agent "<task>" --profile ollama.local
 ```
 
-Corporate proxy, custom CA, mTLS, and on-prem configuration are documented in
-the [usage guide](./docs/guide.md).
+Corporate proxy, custom CA, mTLS, and on-prem settings are configured through
+the selected profile and environment.
 
 ## Compression and context
 
@@ -106,7 +106,8 @@ on-demand compression and aggregate savings. Older context is packed
 deterministically while system instructions, the task, recent turns, tool-call
 pairing, and retrieval markers remain protected.
 
-See [compression details and benchmarks](./docs/compression.md).
+The current component boundaries are summarized in the
+[system overview](./docs/system.md).
 
 ## Console
 
@@ -117,16 +118,13 @@ execution path.
 
 Use the prebuilt installer from the **Desktop build** GitHub Actions workflow,
 or run the local developer build with `npm install` and `npm run tauri:dev`.
-See the [Console guide](./docs/guide.md#6-console-gui--operator-view).
+See the [system overview](./docs/system.md).
 
 ## Documentation
 
 | Document | Purpose |
 |---|---|
-| [Usage guide](./docs/guide.md) | Installation, profiles, CLI, pipelines, and Console |
-| [Adaptive core plan](./docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md) | Active architecture direction and implementation status |
-| [Compression](./docs/compression.md) | Strategies, retrieval, metrics, and benchmarks |
-| [Memory](./docs/memory.md) | Cross-session memory architecture |
+| [System overview](./docs/system.md) | Current architecture, execution paths, ownership, and implementation status |
 | [AGENTS.md](./AGENTS.md) | Repository instructions, working conventions, and documentation map |
 
 ## Development
@@ -137,5 +135,5 @@ python -m pytest musubi/tests
 npm test
 ```
 
-Read [AGENTS.md](./AGENTS.md) before contributing. Update the relevant approved
-plan when behavior, scope, or technical decisions change.
+Read [AGENTS.md](./AGENTS.md) before contributing. Update the system overview
+when architecture, supported behavior, or implementation status changes.

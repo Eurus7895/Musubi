@@ -1,7 +1,7 @@
 """Sub-agent context firewall (Phase A.2).
 
 musubi-tier: substrate
-expires-when: never — Frozen sub-agent context (HI #3 firewall).
+expires-when: never — Frozen sub-agent context (review-context isolation firewall).
 
 
 Sub-agents exist to do focused lookup work and report a tight summary back
@@ -63,7 +63,7 @@ class SubagentContext:
     #: separately because `role_skill` is SKILL.md prose: nothing downstream
     #: could name what was pushed, so a role-default push left no trace in the
     #: audit ledger or the console, and every session read "no skill used"
-    #: however many were pushed (HI #2 pushes; HI #8 says no spawn is silent).
+    #: however many were pushed (skill-injection contract pushes; spawn-audit contract says no spawn is silent).
     role_skill_id: str | None = None
 
 
@@ -88,7 +88,7 @@ def build_subagent_context(
     `pushed_skill_id` was already validated against the worker
     role's allowlist by `musubi_spawn_subagent` (fail-closed at spawn), so
     it is trusted here — the firewall stays at the spawn boundary and this
-    builder only loads public catalog content (no parent state, HI #3).
+    builder only loads public catalog content (no parent state, review-context isolation).
 
     `allowed_tools` is the role's hard-cap tool list — the actual run-time
     tool set is `role ∩ main` (Phase A.1, computed in policy_engine).

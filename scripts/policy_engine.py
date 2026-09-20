@@ -47,7 +47,7 @@ from pathlib import Path
 # `driver` is deliberately NOT an alias here. It has never been a policy role,
 # so `MAIN_SUBAGENT_ALLOWLIST.get("driver")` returns [] and the spawn is denied
 # fail-closed. Aliasing it to `root` would grant it the root's whole spawn
-# firewall — a fail-open change, which HI #5 forbids. The console may print
+# firewall — a fail-open change, which fail-closed policy forbids. The console may print
 # "driver"; the policy engine must never resolve it.
 ROOT_ROLE = "root"
 

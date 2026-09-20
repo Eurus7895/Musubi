@@ -17,8 +17,8 @@ triggers:
 
 Produce a git history a reviewer can read commit-by-commit: each commit
 one logical change, named for its outcome, based on the current
-integration branch. The project's own contribution rules (CLAUDE.md /
-CONTRIBUTING) always override the defaults below — read them first.
+integration branch. The project's own contribution rules (`AGENTS.md` or
+`CONTRIBUTING`) always override the defaults below — read them first.
 
 ## Procedure
 

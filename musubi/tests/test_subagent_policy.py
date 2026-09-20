@@ -286,7 +286,7 @@ def test_driver_is_not_an_alias_and_stays_denied() -> None:
     """`driver` is the console's word for the same actor, and it must never
     reach the policy engine as one. It has never carried the root's
     membership, so aliasing it would GRANT the whole spawn firewall to a name
-    that never had it — a fail-open change (HI #5)."""
+    that never had it — a fail-open change (fail-closed policy)."""
     assert policy_engine.normalize_role("driver") == "driver"
     assert policy_engine.list_subagent_roles("driver") == []
     assert not policy_engine.check_subagent_allowed("driver", "coder")

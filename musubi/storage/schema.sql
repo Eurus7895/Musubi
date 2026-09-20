@@ -162,7 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_sessions_status
     ON sub_sessions (status);
 
 -- Durable outbox for audit evidence that must exist before a worker becomes
--- runnable (HI #8). A failed delivery remains pending and the reserved worker
+-- runnable (spawn-audit contract). A failed delivery remains pending and the reserved worker
 -- is abandoned; recovery may deliver evidence but never resurrect the run.
 CREATE TABLE IF NOT EXISTS audit_obligations (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,

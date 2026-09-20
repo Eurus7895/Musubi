@@ -182,7 +182,7 @@ def test_run_subagent_logs_the_skill_it_pushed_into_the_worker_prompt(
     `build_subagent_system_prompt` bakes it in, so nothing reached the runtime
     ledger and the console's per-agent Skills view was empty for every worker
     that did not additionally PULL one with `musubi_get_skill` — which is most
-    of them, since HI #2's push exists precisely so the worker need not ask.
+    of them, since skill-injection contract's push exists precisely so the worker need not ask.
     """
     from agent import run as run_mod
     from agent import subagent as subagent_mod

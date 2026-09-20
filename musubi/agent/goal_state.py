@@ -66,7 +66,7 @@ _SPAWN_TOOL = "musubi_spawn_subagent"
 # Skill selection is available to the root in EVERY scope, including simple
 # artifacts: the root LISTS the worker role's catalog with
 # `musubi_list_skills(for_role=…)` and passes the id it chooses as
-# `pushed_skill_id` on the spawn (HI #2's push). One cheap tool definition —
+# `pushed_skill_id` on the spawn (skill-injection contract's push). One cheap tool definition —
 # it returns ids, titles and one-line descriptions, never skill bodies — so it
 # does not blow the simple-scope root-token target.
 #

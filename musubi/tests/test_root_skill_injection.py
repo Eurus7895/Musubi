@@ -4,7 +4,7 @@ musubi-tier: substrate test — pins the option-3 contract:
   - the root can LIST a *worker role's* skills via `for_role`;
   - a validated `pushed_skill_id` threads spawn → DB row → subagent context
     and lands as the worker's `role_skill`;
-  - the spawn firewall (HI #3/#5) rejects a skill outside the worker role's
+  - the spawn firewall (review-context isolation/#5) rejects a skill outside the worker role's
     allowlist and an unknown skill, fail-closed;
   - skill *selection* is available to the root in every scope, including
     simple artifacts.
@@ -169,7 +169,7 @@ def test_get_subagent_context_tool_surfaces_pushed_skill(parent_session) -> None
     assert ctx["role_skill_id"] == "typescript"
 
 
-# ── the push is auditable, override or not (HI #2 push, HI #8 no silence) ──
+# ── the push is auditable, override or not (skill-injection contract push, spawn-audit contract no silence) ──
 
 
 def test_context_names_the_skill_it_pushed_not_only_its_text() -> None:
@@ -325,7 +325,7 @@ def test_broad_scope_root_also_sees_skill_read_tools() -> None:
     assert {"musubi_list_skills", "musubi_get_skill", "musubi_get_reference"} <= visible
 
 
-# ── the worker can say the pushed skill does not fit (HI #2 stays intact) ──
+# ── the worker can say the pushed skill does not fit (skill-injection contract stays intact) ──
 
 
 def test_report_skill_mismatch_records_the_pushed_skill_and_suggestion(

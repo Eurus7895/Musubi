@@ -277,7 +277,7 @@ def report(chat_id: str | None = None, session: str | None = None) -> int:
             + (f" — {o['err']}" if o["err"] else "")
         )
 
-    # Every spawn owes a terminal row (HI #8). A worker still 'running' after
+    # Every spawn owes a terminal row (spawn-audit contract). A worker still 'running' after
     # the turn ended is an unclosed record, not merely an unfinished job.
     open_workers = [w for w in workers if w["status"] == "running"]
     if open_workers:

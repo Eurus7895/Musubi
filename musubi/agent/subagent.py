@@ -243,7 +243,7 @@ async def run_subagent(
             # it never reached the runtime ledger, and the console's per-agent
             # Skills view was empty for every worker that did not additionally
             # PULL a skill with `musubi_get_skill`. Emitted inside the worker
-            # scope so the record carries this exact handle (HI #2 + HI #8).
+            # scope so the record carries this exact handle (skill-injection contract + spawn-audit contract).
             if role_skill_id:
                 emit_runtime_log(
                     log,
@@ -320,7 +320,7 @@ async def run_subagent(
         _worker_skill_reports.reset(reports_token)
         _worker_log_label.reset(label_token)
     # Typed failure evidence, derived from CONTROL FLOW (which branch
-    # terminated the worker), never from parsing summary prose (HI #1-adjacent:
+    # terminated the worker), never from parsing summary prose (driver-only model boundary-adjacent:
     # deterministic, no judgement call).
     failure_kind = None
     done_artifacts: list[Any] | None = None

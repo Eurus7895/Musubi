@@ -62,7 +62,7 @@ def _artifacts_verified(artifacts: list[Any] | None) -> bool:
     through the immutable request root registry, is a regular file, and is
     non-empty.
     Any escape, miss, empty file, or stat error fails the whole manifest —
-    the caller keeps its fail-closed coercion. Zero-LLM (HI #1).
+    the caller keeps its fail-closed coercion. Zero-LLM (driver-only model boundary).
     """
     if not artifacts or not isinstance(artifacts, list):
         return False

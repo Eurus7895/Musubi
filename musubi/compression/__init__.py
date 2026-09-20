@@ -8,7 +8,7 @@ it leaves a `musubi_*` tool, while keeping the verbatim original in an
 append-only store so the model can pull it back via `musubi_retrieve`
 (CCR-style reversibility) and the audit trail stays faithful.
 
-Zero LLM calls — every compressor is deterministic, pure Python (HI #1).
+Zero LLM calls — every compressor is deterministic, pure Python (driver-only model boundary).
 Idea credit: headroom (github.com/headroomlabs-ai/headroom); the learned
 text compressor is deliberately NOT adopted (it would be a model call).
 """

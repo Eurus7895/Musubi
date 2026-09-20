@@ -2,9 +2,9 @@
 """Refuse to push commits that carry the wrong identity or tool attribution.
 
 musubi-tier: substrate
-expires-when: never — the identity rules in CLAUDE.md outlive any model.
+expires-when: never — the identity rules in AGENTS.md outlive any model.
 
-The rules being enforced are the NEVER list in CLAUDE.md § Branches & Commits.
+The rules being enforced are the branch and identity rules in AGENTS.md.
 They are mechanical, so a hook enforces them — "never send an LLM to do a
 linter's job".
 
@@ -109,7 +109,7 @@ def check_branch(ref: str) -> list[str]:
     if _TOOL_IN_NAME_RE.search(name):
         return [
             f"branch {name!r} names a tool; branch names describe the product "
-            f"change (see CLAUDE.md § Branches & Commits)",
+            f"change (see AGENTS.md § Branches and Commits)",
         ]
     return []
 

@@ -3,7 +3,7 @@
 A **preset** is a reusable worker/stage building block — one role plus its
 default stage (and optional skill/params). A **pipeline** is an ordered list of
 presets dropped into its `stages:` field; the last stage is the evaluator and
-sees only the prior stage's output (HI #3).
+sees only the prior stage's output (review-context isolation).
 
 This declarative format is the contract a drag-and-drop UI would read and write:
 each preset is a draggable block, a pipeline is the dropped sequence.

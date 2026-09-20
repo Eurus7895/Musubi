@@ -3931,7 +3931,7 @@ def test_harness_root_is_distinct_from_python_package(
     package = root / "musubi"
     package.mkdir(parents=True)
     (package / "server.py").write_text("", encoding="utf-8")
-    (root / "CLAUDE.md").write_text("", encoding="utf-8")
+    (root / "AGENTS.md").write_text("", encoding="utf-8")
     monkeypatch.setenv("MUSUBI_ROOT", str(root))
 
     assert _default_musubi_dir().resolve() == package.resolve()

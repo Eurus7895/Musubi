@@ -1,4 +1,4 @@
-"""Deterministic, pure-Python compressors. Zero LLM calls (HI #1).
+"""Deterministic, pure-Python compressors. Zero LLM calls (driver-only model boundary).
 
 musubi-tier: substrate
 expires-when: never — token cost is permanent.

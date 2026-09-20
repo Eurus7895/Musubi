@@ -69,12 +69,12 @@ jobs:
         continue-on-error: true
         run: ruff check .
 
-      - name: Lint — musubi-tier tags (MVP item 7 / HI #9)
+      - name: Lint — musubi-tier tags (MVP item 7 / lifecycle-tag policy)
         # Every in-scope file (substrate code, agent.md, SKILL.md,
         # pipeline.yaml) must declare `musubi-tier:`. Ephemeral files
         # must also declare `expires-when:` + `cost-lever:`. Substrate files
         # must explicitly declare `expires-when: never`.
-        # Hard-fail: this is the self-enforcement mechanism for HI #9.
+        # Hard-fail: this is the self-enforcement mechanism for lifecycle-tag policy.
         # Run from repo root, not the harness working-directory.
         working-directory: ${{ github.workspace }}
         run: python scripts/check_musubi_tier.py

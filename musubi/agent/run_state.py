@@ -76,7 +76,7 @@ class Orchestration:
         """Orchestration for one pipeline stage worker. Unlike `child`, the
         parentage moves to the PIPELINE session: the server resolves the
         pipeline from `parent_session_id` and narrows the stage's spawnable
-        roles to pipeline.yaml `spawns:` ∩ firewall (HI #5). Handing a stage
+        roles to pipeline.yaml `spawns:` ∩ firewall (fail-closed policy). Handing a stage
         the root session instead would skip that narrowing. The pipeline
         envelope itself is a sequencer, not a worker — a stage sits one level
         below the worker that summoned the pipeline."""
