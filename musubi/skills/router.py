@@ -23,7 +23,7 @@ Matching semantics:
       is python AND whose test framework is pytest.
   - A dimension the harness doesn't recognise is IGNORED, not treated
     as a mismatch. Applicability is a UX optimisation, not a security
-    boundary (the agent allowlist is the firewall, HI #3). Fail-open on
+    boundary (the agent allowlist is the firewall, review-context isolation). Fail-open on
     catalog visibility: better to show a skill than to hide it because
     of a typo'd key.
   - When no profile is available, NO filtering happens — the full

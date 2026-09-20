@@ -5,7 +5,7 @@
 //! SQLite) into the `State` object the console UI renders. Pure data: no LLM, no
 //! GUI deps, so it builds and tests in a headless environment.
 //!
-//! Schema contract (see SCHEMA.md). The reader maps the **real** Musubi tables
+//! The reader maps the **real** Musubi tables
 //! written by the substrate:
 //!   - `subagent_audit` (`musubi/storage/subagent_audit.py`) — real columns
 //!     `handle_id`, `parent_session_id`, `parent_agent_name`, `final_status`,
@@ -16,7 +16,7 @@
 //!     allow/deny but does not persist it, so executed = allowed).
 //!   - `chat_log`, `meta` — console-side (the GUI writes these).
 //!   - `policy_audit` — optional console/forward-compat verdict ledger; when it
-//!     has rows it wins over `tool_audit` (keeps the demo's HI #3 deny example).
+//!     has rows it wins over `tool_audit` (keeps the demo's review-context isolation deny example).
 //!
 //! Active profile is the LMRouter source of truth: an explicit console choice
 //! (`meta.active_profile`) wins, else the `default` in `.musubi/llm.json`.
@@ -3590,7 +3590,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 pub const SCHEMA_SQL: &str = r#"
--- Real substrate table — musubi/storage/subagent_audit.py (HI #8).
+-- Real substrate table — musubi/storage/subagent_audit.py (spawn-audit contract).
 CREATE TABLE IF NOT EXISTS subagent_audit (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   ts                   REAL NOT NULL,
@@ -3759,7 +3759,7 @@ CREATE INDEX IF NOT EXISTS idx_request_folder_grants_chat
 /// Seed a representative governed session — used by `cargo test`, and by the
 /// app as a fallback demo DB when no real `audit.db` is configured. Rows use
 /// the real `subagent_audit` / `tool_audit` shapes, plus a `policy_audit` deny
-/// to illustrate the evaluator firewall (HI #3).
+/// to illustrate the evaluator firewall (review-context isolation).
 pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
     init_schema(conn)?;
     conn.execute(
@@ -3870,7 +3870,7 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
     call(conn, 2, 9, "investigator", "musubi_run_command", "ok")?;
     call(conn, 3, 19, "reviewer-aux", "musubi_read_file", "ok")?;
 
-    // policy_audit — a deny example for the evaluator firewall (HI #3).
+    // policy_audit — a deny example for the evaluator firewall (review-context isolation).
     let decide = |conn: &Connection,
                   id: i64,
                   ts: &str,
@@ -3914,7 +3914,7 @@ pub fn seed_demo(conn: &Connection) -> rusqlite::Result<()> {
         "musubi_write_file",
         "reviewer-aux",
         "c3d4e5f6",
-        "outside firewall surface — code-only (HI #3)",
+        "outside firewall surface — code-only (review-context isolation)",
     )?;
     decide(
         conn,
@@ -6773,7 +6773,7 @@ fn collect_child_script_dirs(dirs: &mut Vec<PathBuf>, base: PathBuf, prefix: &st
 
 /// Deterministic launch recipe for one governed `agent "<task>"` child process.
 /// Pure data so the spawn path is unit-testable without running an LLM-backed
-/// process (the driver stays the only layer that reaches a model — HI #1).
+/// process (the driver stays the only layer that reaches a model — driver-only model boundary).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLaunchSpec {
     pub program: PathBuf,

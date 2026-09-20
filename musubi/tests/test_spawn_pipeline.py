@@ -4,7 +4,7 @@ A pipeline is an ordered recipe of workers. The agent calls
 `musubi_spawn_pipeline`; the driver runs each stage as a worker, threading the
 prior summary forward. Asserts the stages run in declared order and that the
 evaluator (last stage) sees ONLY the prior stage's output — never the original
-request or earlier stages (HI #3, generalised).
+request or earlier stages (review-context isolation, generalised).
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def test_agent_summons_pipeline_runs_stages_in_order_with_evaluator_firewall() -
     assert answer == "done"
     assert router.order == ["planner", "designer", "coder", "reviewer"]
 
-    # HI #3: the evaluator sees ONLY the immediately prior stage (coder), not the
+    # review-context isolation: the evaluator sees ONLY the immediately prior stage (coder), not the
     # original request or the earlier plan/design outputs.
     assert "code: wrote moduleX" in router.reviewer_brief
     assert "build a thing" not in router.reviewer_brief
@@ -162,7 +162,7 @@ def test_run_agent_pipeline_flag_runs_stages_directly() -> None:
     assert router.order == ["planner", "designer", "coder", "reviewer"]
     # The final stage's summary is returned verbatim.
     assert "review: PASS" in answer
-    # HI #3 holds under direct invocation: the evaluator sees only the prior
+    # review-context isolation holds under direct invocation: the evaluator sees only the prior
     # stage (coder), not the original task or earlier stage outputs.
     assert "code: wrote moduleX" in router.reviewer_brief
     assert "ship it" not in router.reviewer_brief
@@ -220,7 +220,7 @@ def test_pipeline_stage_with_a_blank_answer_is_not_recorded_done(
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         return "   ", 4
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     result = asyncio.run(pipeline_runner.run_pipeline(
@@ -278,7 +278,7 @@ def test_pipeline_stage_blocked_by_text_truncation_fails_closed(
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         return blocked, 2
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     result = asyncio.run(pipeline_runner.run_pipeline(
@@ -334,7 +334,7 @@ def test_pipeline_rejects_oversized_designer_handoff_before_coder_call(
         invoked_roles.append(kwargs["role"])
         return next(outputs), 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     result = asyncio.run(pipeline_runner.run_pipeline(
@@ -386,7 +386,7 @@ def test_pipeline_rejects_unfit_protected_input_before_worker_call(
         run_unit_calls.append(kwargs)
         return "unexpected", 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     result = asyncio.run(pipeline_runner.run_pipeline(
@@ -437,7 +437,7 @@ def test_context_failure_terminalizes_worker_running_checkpoint(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     result = asyncio.run(pipeline_runner.run_pipeline(
         None,
         {"parent_session_id": "outer", "parent_agent_name": "agent",
@@ -469,7 +469,7 @@ def test_run_pipeline_strict_raises_on_spawn_rejection(
         return json.dumps({"status": "error", "error": "no such pipeline"})
 
     # run_pipeline imports _call_tool_text from agent.run at call time.
-    monkeypatch.setattr("agent.run._call_tool_text", fake_reject)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_reject)
 
     async def _strict() -> str:
         return await pipeline_runner.run_pipeline(
@@ -529,7 +529,7 @@ def test_run_pipeline_finalizes_success(monkeypatch: pytest.MonkeyPatch) -> None
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     result = asyncio.run(pipeline_runner.run_pipeline(
         None,
         {
@@ -595,7 +595,7 @@ def test_pipeline_stops_when_harness_records_stage_escalated(
     async def fake_run_unit(*args: Any, **kwargs: Any) -> tuple[str, int]:
         return "plan: stage claims success", 4
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     result = asyncio.run(pipeline_runner.run_pipeline(
@@ -644,7 +644,7 @@ def test_run_pipeline_finalizes_aborted_stage_rejection(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
 
     with pytest.raises(Exception) as caught:
         asyncio.run(pipeline_runner.run_pipeline(
@@ -763,7 +763,7 @@ def test_run_pipeline_runtime_policy_denial_aborts_before_later_stage(
             reason="capability Write is not allowed for role planner",
         )
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", denied_run_unit)
 
     with pytest.raises(run_mod.PolicyDeniedError):
@@ -814,7 +814,7 @@ def test_stage_without_role_prompt_fails_closed(
         # A stage is never spawned for an unresolvable role.
         raise AssertionError(f"unexpected call before resolution: {name}")
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
 
     with pytest.raises(RuntimeError, match="no role prompt"):
         asyncio.run(pipeline_runner.run_pipeline(
@@ -832,7 +832,7 @@ def test_stage_without_role_prompt_fails_closed(
 def test_stage_gets_role_skill_pushed_into_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HI #2: the spawn context's role_skill is embedded into the stage
+    """skill-injection contract: the spawn context's role_skill is embedded into the stage
     worker's system prompt — the same push path a direct worker takes."""
     from agent import pipeline_runner
 
@@ -872,7 +872,7 @@ def test_stage_gets_role_skill_pushed_into_system_prompt(
             }), 1
         return "stage done", 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
 
     asyncio.run(pipeline_runner.run_pipeline(
@@ -927,7 +927,7 @@ def test_pipeline_stage_threads_frontmatter_output_budget(
         seen.update(kwargs)
         return "stage done", 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
     monkeypatch.setattr(
         pipeline_runner,
@@ -999,7 +999,7 @@ def test_pipeline_stage_cap_is_consistent_across_spawn_run_and_complete(
         run_unit_kwargs.update(kwargs)
         return "stage done", 3
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
     monkeypatch.setattr(
         pipeline_runner, "_read_stage_agent_md",
@@ -1051,7 +1051,7 @@ def test_pipeline_stage_cap_mismatch_fails_closed(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr(
         pipeline_runner, "_read_stage_agent_md",
         lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
@@ -1118,7 +1118,7 @@ def test_run_pipeline_aborts_truncated_write_without_dispatching_it(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     result = asyncio.run(pipeline_runner.run_pipeline(
         None,
         {"parent_session_id": "outer", "parent_agent_name": "agent", "pipeline_name": "feature-dev", "brief": "make dashboard"},
@@ -1289,7 +1289,7 @@ def _single_coder_stage_fakes(
             run_mod._worker_touched_files.get().add(touch)
         return stage_answer, stage_turns
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
     monkeypatch.setattr(
         pipeline_runner, "_read_stage_agent_md",
@@ -1412,7 +1412,7 @@ def test_pipeline_stage_budget_exhaustion_pauses_for_operator_decision(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr(
         pipeline_runner, "_read_stage_agent_md",
         lambda role, pipeline_name, agents_dir: "---\nname: coder\nmaxTurns: 4\n---\n# Coder",
@@ -1491,7 +1491,7 @@ def _nesting_fakes(
             }), 1
         return "stage done", 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
     return captured
 
@@ -1520,7 +1520,7 @@ def test_stage_with_spawn_roles_gets_spawn_tool_and_stage_orchestration(
 ) -> None:
     """A stage whose server response declares spawn_roles is handed the spawn
     tool and an orchestration parented on the PIPELINE session (so the server
-    narrows its spawns per pipeline — HI #5), one level deeper than the
+    narrows its spawns per pipeline — fail-closed policy), one level deeper than the
     caller."""
     from agent.run import Orchestration
 

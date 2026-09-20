@@ -1,86 +1,105 @@
-# AGENTS.md — Musubi
+# AGENTS.md — Instructions for AI Agents and Harnesses
 
-> Read this file first, every session. It is a map — not a manual.
-> Under 120 lines. Always.
-> Rules and conventions → `CLAUDE.md`. MCP tools + schema → `musubi/server.py` + `musubi/storage/schema.sql`. Active architecture direction and status → `docs/superpowers/plans/2026-09-18-agent-components-hoh-refactor.md`.
+This file defines how to work in this repository. Keep it under 120 lines.
+Keep the system overview in `docs/system.md`, not here.
+Write repository documentation in English; converse in the user's language.
 
----
+## Response Style
 
-## What Musubi Is
+- Answer the current question directly; lead with the main conclusion.
+- Scale depth to the question, complexity, and risk. Do not turn a simple answer into a post-mortem.
+- Explain mechanisms and causal reasoning in plain language; define jargon when it helps.
+- State assumptions and distinguish verified facts, inferences, and proposals.
+- Support implementation claims with relevant code locations, logs, or test evidence. State what remains unverified.
+- Quantify when measurements exist; never invent numbers or imply precision without evidence.
+- Offer judgments and recommendations with reasons, rather than merely listing information.
+- Ask for a decision only when a material unresolved trade-off requires the user's judgment.
+- Respect reasoning ownership without forcing a lecture or a Socratic question sequence into every exchange.
+- Be detailed enough to assess the conclusion and concise enough to keep the important point visible.
 
-A **governed-orchestration substrate** for agentic SE work — evaluator
-firewall, fail-closed policy engine, append-only audit, skill catalog,
-3-tier memory, reversible input compression — exposed as an MCP server that
-makes **zero LLM calls** (HI #1). One driver host exposed through CLI and
-native operator surfaces:
+## Start Each Task
 
-- **Standalone `agent` CLI (the host):** `musubi/agent/` reaches the model
-  through the vendor-agnostic `LMRouter` — anthropic / openai / deepseek /
-  azure-on-prem (via curl) / genai_farm (on-prem; SDK by default, curl
-  fallback) / ollama, selected by `.musubi/llm.json` profiles. One **worker
-  model** (`agent/run.py::run_unit`): no main-vs-sub split — only workers at
-  a depth, run **in parallel**, nesting to depth 2; pipeline stages nest
-  when their pipeline.yaml declares `spawns:`. Workers offload bounded work
-  and return compact summaries so the orchestrator's context stays small.
-  First run: `musubi setup`.
-- **Console (GUI, operator):** the Tauri desktop app reads `audit.db` directly.
-  Only an explicit Orchestrator submission may launch the standalone `agent`
-  CLI; Pipeline Studio only creates and edits deterministic recipes. The GUI
-  shell and substrate make zero model calls; the launched driver reaches the
-  model through `LMRouter`. It exposes orchestrator sessions, policy, audit,
-  models, skills, and deterministic pipeline runs.
+1. Read this file and any instructions scoped to the files you will touch.
+2. Identify the requested outcome and any decisions already approved in the
+   conversation. Do not restart discovery for settled decisions.
+3. Read `docs/system.md`, then inspect the affected code and tests. Treat the
+   implementation, schema, configuration, and tests as authoritative for exact
+   behavior; the system summary is orientation, not proof of implementation.
+4. Inspect the actual files, interfaces, dependencies, tests, and working-tree
+   changes relevant to the task before proposing edits.
+5. Distinguish implemented behavior, approved requirements, and proposals.
+   A document describing a command or component does not prove it exists.
 
----
+## Interpret References Correctly
 
-## Current Pipelines
+- Documents may reference other repositories or proposed interfaces. Verify repository ownership and actual availability before using those references.
+- Do not assume an external runtime, command, or configuration exists here.
+- Before implementing an integration, verify its interface and resolve where the new code belongs. Do not silently copy or modify another repository.
+- When working in another repository, read its applicable instructions.
+- Surface material conflicts between code, documents, and current user decisions. Do not silently convert an assumption into a requirement.
 
-| Pipeline | Command | Status |
-|---|---|---|
-| feature-dev | `agent "<task>" --pipeline feature-dev` | ✅ planner → designer → coder → reviewer + evaluator firewall |
-| code-review | `agent "<diff>" --pipeline code-review` | ✅ scoper → finder → synthesizer (evaluator, reviewer-aux fan-out) |
+## Preserve the User's Reasoning Ownership
 
-Pipelines are recipes of workers composed from presets
-(`.github/pipelines/presets/`), run deterministically via `--pipeline` or
-launched from Console Orchestrator Pipeline mode — user-invoked only;
-`musubi_spawn_pipeline` stays off the agent tool surface (policy locked
-decision #4, `musubi/tool_surface.py`). Stages nest (spawn helper
-workers) only when their pipeline.yaml declares `spawns:` for the role.
+Use Problem → Design → Predict → Build → Validate → Learn.
 
----
+- Let the user own problem framing, initial design, trade-offs, and technical decisions. Critique their reasoning after they have expressed it.
+- Ask targeted questions only for unresolved decisions that affect the work. Reuse answers already given; do not turn each small step into a questionnaire.
+- Before a meaningful implementation, elicit failure predictions if they have not already been stated, then add overlooked risks.
+- Implement authorized work, including routine code, tests, and documentation.
+- Report validation evidence; leave final product acceptance to the user.
+- After a meaningful experiment, compare predictions with observed outcomes and record the lesson without forcing reflection after every small edit.
 
-## Hooks
+## Apply Feature-Centered Rings (FCR)
 
-| Hook | When | What it does |
-|---|---|---|
-| SessionStart | Before pipeline run | baseline_checks from pipeline.yaml |
-| PreToolUse | Before tool call | Policy gate (deterministic, fail-closed) |
-| PostToolUse | After tool call | SQLite audit log (storage/audit.db) |
+- Establish whether the task is Build or Study using the request and context. These are independent goals; do not require both to succeed simultaneously.
+- Identify the central feature and its minimum value before expanding scope.
+- Work on the nearest component blocking that feature. Set a sufficient stopping point before exploring its dependencies.
+- Open another ring only for an actual blocker. Explain which blocker a prerequisite or improvement removes.
+- When work is too difficult, split it, reduce scope, change the approach, or strengthen an earlier component as appropriate to the selected goal.
+- Build: verify the complete feature after integration.
+- Study: check explanation, independent reasoning, and transfer to a changed problem. Finishing an artifact alone does not establish understanding.
 
----
+## Plan and Implement
 
-## Key Interactions
+- Scale the plan to the task. Use the existing approved plan when applicable; a small edit needs a short stated approach, not a new architecture document.
+- Do not treat the product's runtime approval rules as instructions requiring user approval for every edit you make to this repository.
+- Preserve unrelated local changes. Avoid destructive replacements without explicit authorization; prefer isolated, reviewable changes.
+- Reuse verified capabilities before adding new abstractions or dependencies.
+- Keep responsibilities and interfaces clear. If delegating authorized work, provide the goal, inputs, output contract, allowed scope, and acceptance checks; review returned artifacts rather than trusting completion summaries.
+- Keep requirements, assumptions, decisions, and observed results distinct in the task or pull request. Do not create repository plan/spec files for routine work.
 
-```
-# First-time setup (env doctor, .musubi/llm.json, .vscode/mcp.json)
-musubi setup
+## Validate and Report
 
-# Standalone CLI (active — any vendor; spawns sub-agents on demand)
-agent "add a login endpoint and a test"
-agent "<task>" --profile azure.work          # on-prem endpoint
-agent "<task>" --profile deepseek.cloud      # DeepSeek API
-agent "<task>" --profile ollama.local        # local Ollama, no key
+- Use tests appropriate to the change. For features and bug fixes, include failure cases and relevant integration behavior, not only happy paths.
+- Run the affected user flow when feasible. Unit tests alone do not establish that the integrated application works.
+- Do not claim commands, tests, or live runs succeeded without observing them. State what was checked, what failed, and what remains unverified.
+- Keep credentials out of code, documents, logs, and test fixtures. Use test doubles for unit tests that would otherwise call external model providers.
+- Record reproducible commands and evidence where useful. Separate technical readiness from user acceptance and subjective quality judgments.
+- Update affected documentation when behavior or a decision changes.
+- Do not commit or publish merely because a plan lists a future Git step.
 
-# Deterministic staged run (governed pipeline + evaluator firewall)
-agent "add a login endpoint" --pipeline feature-dev
-agent "$(git diff origin/dev)" --pipeline code-review
-```
+## Branches and Commits — Read Before Every Git Command
 
-Setup wizard lives in `musubi/setup_wizard.py`, dispatched from `cli.py`
-alongside `serve`. Pipelines are declared in `.github/pipelines/<name>/`
-(presets + pipeline.yaml) — add one by dropping files, no code change.
+- Use `Eurus <t.hoang7895@gmail.com>` for both author and committer.
+- Never persist `user.name` or `user.email` with `git config`.
+- Use command-scoped identity flags for commits, rebases, cherry-picks, and amends: `git -c user.name='Eurus' -c user.email='t.hoang7895@gmail.com' commit ...`
+- Never add AI/tool attribution, co-author/session trailers, generated-by footers, or AI session links to commits, PRs, comments, or documents.
+- Never push to `claude/*`; never put `codex` or `claude` in branch names or PR titles.
+- Name branches `<type>/<area>-<outcome>` in lowercase kebab-case, using a Conventional Commits type; no session suffixes or tool prefixes.
+- Start work from the latest `origin/dev`: fetch, then create the branch from it. If `dev` advances, fetch and rebase before pushing; never push a stale base.
+- Never amend a published commit; create a new commit instead.
+- Follow Conventional Commits 1.0.0: lowercase type/scope, imperative subject, at most 72 characters, no trailing period; wrap body at 72 columns and explain why.
+- Breaking changes require both `!` and a `BREAKING CHANGE:` footer.
+- Install `scripts/commit_guard.py --install` once per clone when the script exists.
+- Update `docs/system.md` only when the system architecture, supported behavior, or implementation status changes. Do not add another system plan or specification under `docs/`.
+- Verify `origin/dev` and the guard script exist before using them. If absent, report the setup gap; do not invent a branch or claim a guard ran.
 
-Hard rules (evaluator firewall, sub-agent firewall, fail-closed policy,
-append-only stage store, no silent sub-agents) live in `CLAUDE.md`
-§ Hard Invariants. Do not duplicate them here.
+## Repository Map
 
----
+Musubi provides governed agent execution through a standalone CLI and a Console.
+
+- Usage and onboarding: `README.md`.
+- System architecture and implementation status: `docs/system.md`.
+- MCP tools and storage schema: `musubi/server.py` and `musubi/storage/schema.sql`.
+- Hook registration: `hooks.json`; deterministic checks belong in executable tooling.
+- Historical plans and specifications are not repository instructions.

@@ -40,7 +40,7 @@ export default function Policy({ vals }) {
             ))}
             <div style={{ background: 'rgba(255,155,61,0.06)', border: '1px solid rgba(255,155,61,0.25)', borderRadius: 10, padding: '12px 14px', display: 'flex', gap: 10 }}>
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" style={{ flexShrink: 0, color: '#ff9b3d' }}><path d="M12 3 L19 6 V11 C19 15.5 15.7 18.6 12 20.5 C8.3 18.6 5 15.5 5 11 V6 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>
-              <div><div style={{ fontSize: 11.5, color: '#ffba75', fontWeight: 600, marginBottom: 2 }}>Evaluator firewall · HI #3</div><div style={{ fontSize: 11, color: '#9b9ba2', lineHeight: 1.45 }}>The reviewer sees <span style={{ color: '#cfcfd4' }}>code only</span> — no request, plan, design, or memory. Enforced in the substrate, not the prompt.</div></div>
+              <div><div style={{ fontSize: 11.5, color: '#ffba75', fontWeight: 600, marginBottom: 2 }}>Evaluator firewall · review-context isolation</div><div style={{ fontSize: 11, color: '#9b9ba2', lineHeight: 1.45 }}>The reviewer sees <span style={{ color: '#cfcfd4' }}>code only</span> — no request, plan, design, or memory. Enforced in the substrate, not the prompt.</div></div>
             </div>
           </div>
         </div>

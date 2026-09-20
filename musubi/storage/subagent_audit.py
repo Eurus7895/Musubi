@@ -1,7 +1,7 @@
 """Sub-agent audit log (Phase A.3).
 
 musubi-tier: substrate
-expires-when: never — No-silent-sub-agents audit (HI #8).
+expires-when: never — No-silent-sub-agents audit (spawn-audit contract).
 
 
 Every spawn and every terminal completion writes one row to
@@ -151,7 +151,7 @@ def record_spawn(
 
     `pushed_skill_id` records the EFFECTIVE skill injected into the
     worker's prompt — the root's per-spawn override when it made one,
-    otherwise the role's native push (HI #2, which is not opt-out-able).
+    otherwise the role's native push (skill-injection contract, which is not opt-out-able).
     It has no tool-call of its own, so the spawn row is the only place a
     Console can prove the worker received it; recording only the override
     left every default push unauditable and every such session reading

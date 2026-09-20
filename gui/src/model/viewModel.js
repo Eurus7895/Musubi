@@ -672,7 +672,7 @@ export function buildViewModel(s, act) {
     if (!skillsByWorker[row.workerId]) skillsByWorker[row.workerId] = []
     if (!skillsByWorker[row.workerId].includes(row.skillId)) skillsByWorker[row.workerId].push(row.skillId)
   })
-  // Skills pushed into a worker at spawn (HI #2) have no musubi_get_skill
+  // Skills pushed into a worker at spawn (skill-injection contract) have no musubi_get_skill
   // tool-call, so they never reach `toolEvidence`. Fold the spawn-row
   // `pushedSkill` into the same per-worker skill map + log stream so the node
   // badge, "Skills used" panel, and audited-activity list show them exactly
@@ -1200,7 +1200,7 @@ export function buildViewModel(s, act) {
         ? 'font-size:11px;color:#9ed8b4;line-height:1.5;padding:11px 13px;background:rgba(158,216,180,0.07);border:1px solid rgba(158,216,180,0.25);border-radius:8px'
         : 'font-size:11px;color:#7a7a82;line-height:1.5;padding:11px 13px;background:#19212f;border:1px solid rgba(255,255,255,0.06);border-radius:8px',
       firewallNote: fw
-        ? 'Firewalled brief — this reviewer sees code only. Any tool outside its surface is denied fail-closed (HI #3).'
+        ? 'Firewalled brief — this reviewer sees code only. Any tool outside its surface is denied fail-closed (review-context isolation).'
         : 'Restricted tool surface. Out-of-surface calls hit the PreToolUse gate and are denied fail-closed.',
     }
   }
@@ -1409,10 +1409,10 @@ export function buildViewModel(s, act) {
   // length pins the number at 120 forever — a counter that stops moving is the
   // decoration this strip was meant to stop being. total_spawned/total_done
   // are incremented across the whole unbounded `subagent_audit` scan, and by
-  // HI #8 every spawn and completion writes exactly one row, so their sum is
+  // spawn-audit contract every spawn and completion writes exactly one row, so their sum is
   // the ledger's real size.
   const auditRows = Number(s.totalSpawned || 0) + Number(s.totalDone || 0)
-  // HI #3 firewalls the evaluator: `_STAGE_PERMISSIONS["reviewer"]` plus the
+  // review-context isolation firewalls the evaluator: `_STAGE_PERMISSIONS["reviewer"]` plus the
   // runner's last-stage brief. `reviewer-aux` is a haiku helper from the
   // exploration split, not an evaluator, so counting it overstated the claim
   // while pipeline evaluators — which live in pipelineRuns[].stages, never in

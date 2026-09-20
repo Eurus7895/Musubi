@@ -96,7 +96,7 @@ def test_pipeline_retries_same_frozen_contract_then_passes(
             "summary": f"attempt {calls}", "artifacts": ["index.html"],
         }), 1
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr("agent.run.run_unit", fake_run_unit)
     result = asyncio.run(run_pipeline(
         None,
@@ -156,7 +156,7 @@ def test_strict_recipe_failure_finalizes_spawned_pipeline(
             return json.dumps({"status": "ok"})
         raise AssertionError(name)
 
-    monkeypatch.setattr("agent.run._call_tool_text", fake_call)
+    monkeypatch.setattr("agent.runtime_tools._call_tool_text", fake_call)
     monkeypatch.setattr(
         "composer.load_pipeline_contract",
         lambda name: (_ for _ in ()).throw(

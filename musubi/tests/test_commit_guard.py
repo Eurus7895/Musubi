@@ -1,6 +1,6 @@
 """Tests for scripts/commit_guard.py — the pre-push identity/attribution gate.
 
-The rules come from CLAUDE.md § Branches & Commits. They exist because the
+The rules come from AGENTS.md § Branches and Commits. They exist because the
 harness presets GIT_AUTHOR_* but leaves GIT_COMMITTER_* empty, so any commit
 written without explicit `-c user.*` flags silently takes the committer from
 ~/.gitconfig — and a rebase does that to every commit in the branch at once.

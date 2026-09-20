@@ -24,8 +24,8 @@ def test_registry_keeps_musubi_fixed_and_resolves_external_relative_paths(
     assert registry.resolve("web", "src/App.tsx") == (
         web / "src" / "App.tsx"
     ).resolve()
-    assert registry.resolve("musubi", "CLAUDE.md") == (
-        musubi / "CLAUDE.md"
+    assert registry.resolve("musubi", "AGENTS.md") == (
+        musubi / "AGENTS.md"
     ).resolve()
 
 

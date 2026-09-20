@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — these are the file ops MCP clients need to
-  do real work; deterministic, vendor-neutral, HI #1-compliant.
+  do real work; deterministic, vendor-neutral, driver-only model boundary-compliant.
 
 Every operation resolves relative paths against an immutable request root
 and refuses anything that escapes it. There is intentionally no "is this command

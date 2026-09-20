@@ -78,10 +78,9 @@ async def run_subagent(
     Otherwise it is a leaf: no spawn tool, no orchestration.
     """
     # Lazy import avoids the run↔subagent module cycle.
+    from agent.decider import FailureKind
     from agent.run import (
-        FailureKind,
         PolicyDeniedError,
-        _call_tool_text,
         _policy_incomplete,
         _worker_log_label,
         _worker_skill_reports,
@@ -89,6 +88,7 @@ async def run_subagent(
         run_unit,
     )
     from agent.runtime_log import emit_runtime_log, runtime_worker_scope
+    from agent.runtime_tools import _call_tool_text
 
     # One-cap rule, mirrored from the pipeline path (resolve_pipeline_worker
     # _spec): the role prompt is resolved BEFORE the spawn so its declared
@@ -106,13 +106,22 @@ async def run_subagent(
     declared_turns = _frontmatter_max_turns(agent_md)
     if declared_turns is not None:
         requested_turns = spawn_args.get("max_turns")
-        if requested_turns is not None and requested_turns != declared_turns:
+        if spawn_args.get("work_package_id") and isinstance(requested_turns, int):
+            # A frozen Work Package is a stricter lease than the role default;
+            # the worker may consume less, never refill to its frontmatter cap.
+            spawn_args = {
+                **spawn_args,
+                "max_turns": min(requested_turns, declared_turns),
+            }
+        elif requested_turns is not None and requested_turns != declared_turns:
             print(
                 f"[agent] ignored model max_turns={requested_turns}; "
                 f"role {role_hint} owns max_turns={declared_turns}",
                 file=log,
             )
-        spawn_args = {**spawn_args, "max_turns": declared_turns}
+            spawn_args = {**spawn_args, "max_turns": declared_turns}
+        else:
+            spawn_args = {**spawn_args, "max_turns": declared_turns}
     else:
         # With no role-owned declaration, omit any model-supplied value so
         # the substrate's server default remains the sole owner of the cap.
@@ -154,6 +163,8 @@ async def run_subagent(
                 status="failed",
                 summary=failure_summary,
                 touched_files=(),
+                work_package_id=spawn_args.get("work_package_id"),
+                contract_hash=spawn_args.get("contract_hash"),
             )
         return ctx_raw
 
@@ -178,6 +189,16 @@ async def run_subagent(
     spawn_catalog = None
     if (
         orchestration is not None
+        and orchestration.work_package_controller is not None
+    ):
+        # Even a leaf needs the attempt context at its file-tool boundary for
+        # scope enforcement and rollback journaling. This does not grant a
+        # spawn tool; capability remains owned by the role surface below.
+        child_orch = orchestration.child(role)
+        child_orch.work_package_id = str(spawn_args.get("work_package_id") or "") or None
+        child_orch.work_package_attempt_id = str(spawn_args.get("attempt_id") or "") or None
+    if (
+        orchestration is not None
         and getattr(orchestration, "can_spawn_deeper", False)
         and _frontmatter_spawn_allowlist(agent_md)
     ):
@@ -185,6 +206,8 @@ async def run_subagent(
         if spawn_tool:
             child_tools = child_tools + spawn_tool
             child_orch = orchestration.child(role)
+            child_orch.work_package_id = str(spawn_args.get("work_package_id") or "") or None
+            child_orch.work_package_attempt_id = str(spawn_args.get("attempt_id") or "") or None
             spawn_catalog = tools
 
     # A direct worker gets its own slice of the run budget, the way a pipeline
@@ -220,7 +243,7 @@ async def run_subagent(
             # it never reached the runtime ledger, and the console's per-agent
             # Skills view was empty for every worker that did not additionally
             # PULL a skill with `musubi_get_skill`. Emitted inside the worker
-            # scope so the record carries this exact handle (HI #2 + HI #8).
+            # scope so the record carries this exact handle (skill-injection contract + spawn-audit contract).
             if role_skill_id:
                 emit_runtime_log(
                     log,
@@ -262,7 +285,9 @@ async def run_subagent(
                 brief=brief,
                 failure_kind=FailureKind.POLICY,
                 pushed_skill_id=spawn_args.get("pushed_skill_id"),
-                )
+                work_package_id=spawn_args.get("work_package_id"),
+                contract_hash=spawn_args.get("contract_hash"),
+            )
         return policy_summary
     except Exception as exc:
         if type(exc).__name__ in {
@@ -286,6 +311,8 @@ async def run_subagent(
                     brief=brief,
                     failure_kind=FailureKind.BUDGET,
                     pushed_skill_id=spawn_args.get("pushed_skill_id"),
+                    work_package_id=spawn_args.get("work_package_id"),
+                    contract_hash=spawn_args.get("contract_hash"),
                 )
         raise
     finally:
@@ -293,7 +320,7 @@ async def run_subagent(
         _worker_skill_reports.reset(reports_token)
         _worker_log_label.reset(label_token)
     # Typed failure evidence, derived from CONTROL FLOW (which branch
-    # terminated the worker), never from parsing summary prose (HI #1-adjacent:
+    # terminated the worker), never from parsing summary prose (driver-only model boundary-adjacent:
     # deterministic, no judgement call).
     failure_kind = None
     done_artifacts: list[Any] | None = None
@@ -389,6 +416,8 @@ async def run_subagent(
             brief=brief,
             failure_kind=failure_kind,
             pushed_skill_id=spawn_args.get("pushed_skill_id"),
+            work_package_id=spawn_args.get("work_package_id"),
+            contract_hash=spawn_args.get("contract_hash"),
         )
     return returned_summary
 
@@ -532,7 +561,7 @@ async def _run_mechanical_gate(
     summary. Returns a JSON-serialisable signal the root reads without
     re-deriving it.
     """
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     files = sorted(f for f in touched if _file_still_exists(f))
     lintable = [f for f in files if f.endswith(_LINTABLE_EXT)]
@@ -689,6 +718,13 @@ def _worker_budget(budget: Any, orchestration: Any) -> Any:
         return None
     from agent.budget import ChildTokenBudget, root_worker_allowance
 
+    # A governed Work Package already carries an explicit lease from Root's
+    # budget. Splitting that lease again would silently reduce the contract's
+    # max_tokens (typically to one third) and can exhaust a healthy worker
+    # before its declared allowance.
+    if isinstance(budget, ChildTokenBudget):
+        return budget
+
     ceiling = getattr(orchestration, "max_root_workers", None)
     spawned = getattr(orchestration, "spawned_workers", None)
     if not isinstance(ceiling, int) or not isinstance(spawned, int):
@@ -830,7 +866,7 @@ def _default_agents_dir() -> Path:
 
 
 async def _safe_complete(session: Any, handle_id: str, *, status: str, summary: str) -> None:
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     try:
         await _call_tool_text(

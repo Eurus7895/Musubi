@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — the agent is the model's native mode (per
-  CLAUDE.md), and this is its vendor-agnostic Python entry point.
+  docs/system.md), and this is its vendor-agnostic Python entry point.
   Replaces the Copilot-Chat-only access path with one that works
   against any LLM whose Python SDK exposes a tool-use API.
 
@@ -34,12 +34,11 @@ import asyncio
 import contextvars
 import json
 import os
-import re
+import sqlite3
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -49,26 +48,30 @@ if str(_MUSUBI_MODULE_ROOT) not in sys.path:
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from workspace.grants import (
-    MANIFEST_ENV,
-    FolderGrant,
-    RootRegistry,
-    derive_alias,
-)
 
-from agent.context import (
-    build_system_prompt,
-    fit_context,
-    fit_model_input,
-    is_elided_tool_arg_marker,
-    resolve_effort_bounds,
+from agent.adaptive_control import (
+    MAX_ROOT_WORKERS_HARD as MAX_ROOT_WORKERS_HARD,
 )
-from agent.goal_state import (
-    MUTATION_ROLES,
-    NO_PROGRESS_TURN_THRESHOLD,
-    ORDERED_ROLES,
-    GoalState,
-    root_decision_tools,
+from agent.adaptive_control import (
+    _blocked_completion_answer as _blocked_completion_answer,
+)
+from agent.adaptive_control import (
+    _handle_root_control_tool as _handle_root_control_tool,
+)
+from agent.adaptive_control import (
+    _PlanningContractError as _PlanningContractError,
+)
+from agent.adaptive_control import (
+    _root_completion_blocker as _root_completion_blocker,
+)
+from agent.adaptive_control import (
+    _root_control_error as _root_control_error,
+)
+from agent.adaptive_control import (
+    _root_control_terminal_error as _root_control_terminal_error,
+)
+from agent.adaptive_control import (
+    sanitize_control_result as sanitize_control_result,
 )
 from agent.blast_radius import (
     DestructiveGate,
@@ -80,23 +83,55 @@ from agent.blast_radius import (
     grant_token,
     measure,
 )
+from agent.boundary import (
+    ROOT_ROLE,
+    denied_tool_guidance,
+    evaluate_argument_policy,
+    evaluate_tool_call,
+    is_musubi_tool,
+    json_args,
+    normalize_role,
+    record_policy_decision,
+    record_tool_audit,
+)
 from agent.budget import (
     TokenBudgetEnforcer,
     TokenBudgetExhaustedError,
     estimate_tokens_from_chars,
 )
-from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
-from agent.boundary import (
-    ROOT_ROLE,
-    PolicyDecision,
-    denied_tool_guidance,
-    evaluate_tool_call,
-    evaluate_argument_policy,
-    is_musubi_tool,
-    json_args,
-    record_policy_decision,
-    normalize_role,
-    record_tool_audit,
+from agent.collector import collect_context
+from agent.context import (
+    build_system_prompt,
+    resolve_effort_bounds,
+)
+from agent.decider import (
+    FailureKind as FailureKind,
+)
+from agent.decider import (
+    RecoveryAction as RecoveryAction,
+)
+from agent.decider import (
+    WorkerOutcome as WorkerOutcome,
+)
+from agent.decider import (
+    _extract_text as _extract_text,
+)
+from agent.decider import (
+    _looks_like_vendor_tool_markup as _looks_like_vendor_tool_markup,
+)
+from agent.decider import (
+    decide_recovery as decide_recovery,
+)
+
+# Compatibility exports keep current CLI/worker integrations stable during extraction.
+from agent.decider import interpret_response
+from agent.evidence import collect as collect_evidence
+from agent.goal_state import (
+    MUTATION_ROLES,
+    NO_PROGRESS_TURN_THRESHOLD,
+    ORDERED_ROLES,
+    GoalState,
+    root_decision_tools,
 )
 from agent.mcp_gateway import (
     McpGateway,
@@ -105,23 +140,66 @@ from agent.mcp_gateway import (
     mcp_config_candidates,
     mcp_tool_to_schema,
 )
-from agent.manifest import (
-    ROOT_PLAN_CHANGE_SIZES,
-    ROOT_PLAN_WORKER_ROLES,
-    manifest_schema,
-    parse_change_manifest_object,
-)
-from agent.evidence import collect as collect_evidence
 from agent.planning_artifacts import (
     goal_artifact_key,
-    persist_planning_artifacts,
-    persist_planning_contract,
 )
 from agent.routes import RouteKind
-from agent.textfmt import bounded
+from agent.run_state import (
+    DEFAULT_MAX_DEPTH as DEFAULT_MAX_DEPTH,
+)
+from agent.run_state import (
+    DEFAULT_MAX_ROOT_WORKERS as DEFAULT_MAX_ROOT_WORKERS,
+)
+from agent.run_state import (
+    DEFAULT_MAX_ROOT_WORKERS_LARGE as DEFAULT_MAX_ROOT_WORKERS_LARGE,
+)
+from agent.run_state import (
+    AgentRunStats as AgentRunStats,
+)
+from agent.run_state import (
+    Orchestration as Orchestration,
+)
+from agent.runtime_log import RuntimeLogWriter, emit_runtime_log
+from agent.runtime_tools import (
+    ORDER_SENSITIVE_FILE_TOOLS as ORDER_SENSITIVE_FILE_TOOLS,
+)
+from agent.runtime_tools import (
+    _call_tool_text as _call_tool_text,
+)
+from agent.runtime_tools import (
+    _file_tool_argument_error as _file_tool_argument_error,
+)
+from agent.runtime_tools import (
+    _first_text as _first_text,
+)
+from agent.runtime_tools import (
+    _skill_loaded_successfully as _skill_loaded_successfully,
+)
+from agent.runtime_tools import (
+    normalize_tool_result_text as normalize_tool_result_text,
+)
 from agent.scope import ScopeHint, classify_task
-from agent.vendors import LMResponse, LMRouter, build_from_profile, build_vendor
+from agent.textfmt import bounded
+from agent.thinker import (
+    CycleTokenUsage as CycleTokenUsage,
+)
+from agent.thinker import (
+    EffortCallResult as EffortCallResult,
+)
+from agent.thinker import (
+    _call_with_effort as _call_with_effort,
+)
+from agent.thinker import (
+    _cycle_token_usage as _cycle_token_usage,
+)
+from agent.vendors import LMRouter, build_from_profile, build_vendor
 from tool_surface import filter_tool_catalog, tool_names_for_surface
+from workspace.grants import (
+    MANIFEST_ENV,
+    FolderGrant,
+    RootRegistry,
+    derive_alias,
+)
 
 DEFAULT_MAX_CYCLES = 16
 
@@ -131,12 +209,12 @@ DEFAULT_AGENT_MAX_TOKENS = 200_000
 #: be spawned in one model turn. Bounds runaway fan-out when workers run in
 #: parallel. Mirrors `max_spawns_per_role_per_turn` in agent.agent.md.
 DEFAULT_MAX_SPAWNS_PER_ROLE = 3
-DEFAULT_MAX_ROOT_WORKERS = 3
+
 #: Ceiling once a manifest reclassifies the goal as large. The chain is
 #: planner → designer → coder → reviewer (four workers, one more than the
 #: default), plus headroom for a single recovery replacement.
-DEFAULT_MAX_ROOT_WORKERS_LARGE = 6
-MAX_ROOT_WORKERS_HARD = 8
+
+
 DEFAULT_MAX_ROOT_RECOVERY_ANALYSIS_CYCLES = 2
 
 #: No-progress budget breaker: if the root run has spent at least this fraction
@@ -157,11 +235,20 @@ _PLAN_FIRST_DIRECTIVE = (
     "size, and the ordered worker chain with `musubi_commit_plan`."
 )
 
-ORDER_SENSITIVE_FILE_TOOLS: frozenset[str] = frozenset({
-    "musubi_write_file",
-    "musubi_append_file",
-    "musubi_edit_file",
-})
+_WORK_PACKAGE_DIRECTIVE = (
+    "Root control always uses Goal Contracts and Work Packages. "
+    "`musubi_commit_plan` must include a strict "
+    "Goal Contract defining deliverables, criteria, invariants, constraints, "
+    "budgets, and stop conditions. Then freeze one bounded Work Package with "
+    "`musubi_commit_work_package`; spawn it by work_package_id and the exact "
+    "contract_hash returned by the freeze. Judge completion only from the Gap "
+    "Report. For semantic checks, record explicit evidence with "
+    "`musubi_record_criterion_verdict`. Never widen or retry by editing a "
+    "frozen contract; create a superseding version. Implementation is complete "
+    "only when governed worker tool calls write the requested artifacts; never "
+    "substitute source code or a file skeleton in the final chat response."
+)
+
 
 # C1 — deterministic record of the files a worker mutated, populated by the
 # dispatch loop and read by `run_subagent` to drive the mechanical gate at the
@@ -176,7 +263,7 @@ _worker_touched_files: contextvars.ContextVar[set[str] | None] = (
 
 # Same sink pattern for the one thing a worker can say ABOUT its own contract
 # rather than about the workspace: that the skill pushed into it does not fit
-# the brief it was given. HI #2 still holds — the push happened, the worker
+# the brief it was given. skill-injection contract still holds — the push happened, the worker
 # still runs under it, and it cannot swap its own skill. What changes is that
 # the mismatch becomes control flow the parent can read, instead of a fact only
 # the worker knew and had no way to state.
@@ -203,12 +290,6 @@ _destructive_gate: contextvars.ContextVar[DestructiveGate | None] = (
     contextvars.ContextVar("musubi_destructive_gate", default=None)
 )
 
-#: How deep workers may nest. depth 0 = root task; a worker at depth < max_depth
-#: that is itself allowed to spawn may summon workers one level down. With the
-#: default, the root and its direct workers can spawn; their workers are leaves.
-DEFAULT_MAX_DEPTH = 2
-
-
 class PolicyDeniedError(RuntimeError):
     """Terminal policy control flow; never expose it as a tool-result string."""
 
@@ -224,248 +305,6 @@ def _policy_incomplete(error: PolicyDeniedError) -> str:
         f"[incomplete] policy denied for role {error.role!r} while calling "
         f"{error.tool!r}: {error.reason}"
     )
-
-
-class FailureKind(StrEnum):
-    """Typed cause of a worker's terminal failure, derived from control flow
-    (turn counters, marker branches, raised exceptions) — never from parsing
-    summary prose."""
-
-    TURN_CAP = "turn_cap"
-    BLOCKED = "blocked"
-    BUDGET = "budget"
-    POLICY = "policy"
-    UNKNOWN = "unknown"
-
-
-class RecoveryAction(StrEnum):
-    AUTO_REPLACE = "auto_replace"
-    ROOT_ANALYZE = "root_analyze"
-    HALT = "halt"
-
-
-@dataclass(frozen=True)
-class WorkerOutcome:
-    """Terminal state retained by the parent for a possible replacement."""
-
-    role: str
-    status: str
-    summary: str
-    touched_files: tuple[str, ...] = ()
-    #: The firewalled brief this worker ran on — an automatic replacement
-    #: re-runs the same contract, not a paraphrase of it.
-    brief: str = ""
-    #: None on success or on a legacy/untyped failure (which keeps the
-    #: root-analysis path); set from control flow for typed failures.
-    failure_kind: FailureKind | None = None
-    #: The skill id the root pushed into this worker's spawn, if any. Replayed
-    #: on an automatic replacement so the continuation runs the SAME worker
-    #: contract — a direct worker carries no native skill tool, so dropping it
-    #: would resume the artifact without the pushed procedure.
-    pushed_skill_id: str | None = None
-
-
-def decide_recovery(
-    outcome: WorkerOutcome,
-    *,
-    same_role_failures: int,
-    worker_slots: int,
-) -> RecoveryAction:
-    """Deterministic verdict for one terminal worker failure.
-
-    Exhausted worker slots or a second same-role failure always halt —
-    one audited continuation is the limit, never a replacement loop. A first
-    turn-cap failure that left real artifacts behind is genuinely unfinished
-    work: replace it automatically. Budget/policy failures stay fail-closed.
-    Everything else (blocked, unknown, no surviving evidence) goes to the
-    root's bounded analysis window.
-    """
-    if worker_slots <= 0 or same_role_failures >= 2:
-        return RecoveryAction.HALT
-    if outcome.failure_kind is FailureKind.TURN_CAP and outcome.touched_files:
-        return RecoveryAction.AUTO_REPLACE
-    if outcome.failure_kind in {FailureKind.BUDGET, FailureKind.POLICY}:
-        return RecoveryAction.HALT
-    return RecoveryAction.ROOT_ANALYZE
-
-
-@dataclass
-class Orchestration:
-    """Context that lets a worker loop spawn further workers.
-
-    `parent_session_id` owns the spawn parentage (always the ROOT session — the
-    whole worker tree shares one session row); `parent_agent_name` is the
-    firewall identity of THIS worker (the role whose `spawn_allowlist` gates what
-    it may summon). `depth` is this worker's depth (0 = root). Disabled (no
-    spawning) when `parent_session_id` is None.
-    """
-
-    parent_session_id: str | None
-    parent_agent_name: str = ROOT_ROLE
-    depth: int = 0
-    max_depth: int = DEFAULT_MAX_DEPTH
-    spawned_workers: int = 0
-    max_root_workers: int = DEFAULT_MAX_ROOT_WORKERS
-    root_recovery_analysis_cycles: int = 0
-    worker_outcomes: list[WorkerOutcome] = field(default_factory=list)
-    goal_state: GoalState | None = None
-    pipeline_name: str | None = None
-    planning_artifact_dir: Path | None = None
-    # The destructive gate's state deliberately does NOT live here. See
-    # `_destructive_gate` below: it is run-scoped, and an Orchestration
-    # describes a position in the spawn tree — the one thing the gate must be
-    # blind to, since leaf workers carry no Orchestration at all.
-
-    @property
-    def enabled(self) -> bool:
-        return self.parent_session_id is not None
-
-    def child(self, role: str) -> "Orchestration":
-        """Orchestration for a worker this one spawns: same root session, the
-        child's role as the new firewall identity, one level deeper."""
-        return Orchestration(
-            parent_session_id=self.parent_session_id,
-            parent_agent_name=role,
-            pipeline_name=self.pipeline_name,
-            planning_artifact_dir=self.planning_artifact_dir,
-            depth=self.depth + 1,
-            max_depth=self.max_depth,
-        )
-
-    def stage_child(
-        self, role: str, pipeline_session_id: str,
-        pipeline_name: str | None = None,
-    ) -> "Orchestration":
-        """Orchestration for one pipeline stage worker. Unlike `child`, the
-        parentage moves to the PIPELINE session: the server resolves the
-        pipeline from `parent_session_id` and narrows the stage's spawnable
-        roles to pipeline.yaml `spawns:` ∩ firewall (HI #5). Handing a stage
-        the root session instead would skip that narrowing. The pipeline
-        envelope itself is a sequencer, not a worker — a stage sits one level
-        below the worker that summoned the pipeline."""
-        return Orchestration(
-            parent_session_id=pipeline_session_id,
-            parent_agent_name=role,
-            pipeline_name=pipeline_name,
-            planning_artifact_dir=self.planning_artifact_dir,
-            depth=self.depth + 1,
-            max_depth=self.max_depth,
-        )
-
-    @property
-    def can_spawn_deeper(self) -> bool:
-        """True if a worker at this depth is still allowed to nest."""
-        return self.enabled and self.depth < self.max_depth
-
-    @property
-    def delivered_artifact(self) -> bool:
-        """True when some worker this turn finished with files on disk.
-
-        Persisted per turn so a LATER turn in the same conversation can see a
-        run of turns that spent tokens and produced nothing.
-        """
-        return any(
-            outcome.status == "done" and outcome.touched_files
-            for outcome in self.worker_outcomes
-        )
-
-    def record_worker_outcome(
-        self,
-        *,
-        role: str,
-        status: str,
-        summary: str,
-        touched_files: set[str] | tuple[str, ...] | list[str],
-        brief: str = "",
-        failure_kind: FailureKind | None = None,
-        pushed_skill_id: str | None = None,
-    ) -> WorkerOutcome:
-        """Retain a compact terminal record for parent-side recovery."""
-        outcome = WorkerOutcome(
-            role=role,
-            status=status,
-            summary=summary,
-            touched_files=tuple(sorted(set(touched_files))),
-            brief=brief,
-            failure_kind=failure_kind,
-            pushed_skill_id=pushed_skill_id,
-        )
-        self.worker_outcomes.append(outcome)
-        if self.goal_state is not None:
-            self.goal_state.record_outcome(
-                role=role,
-                status=status,
-                summary=summary,
-                touched_files=touched_files,
-            )
-            # Post-plan reclassification: a planner-led goal persists the
-            # plan/manifest pair the moment it lands. The manifest verdict
-            # (not the lexical guess) then owns route, scope, and the legal
-            # next mutation role; a missing/invalid pair fails closed before
-            # a coder can start.
-            if role == "planner" and status == "done" and (
-                self.goal_state.next_role == "planner"
-            ):
-                paths = None
-                if self.planning_artifact_dir is not None:
-                    try:
-                        paths = persist_planning_artifacts(
-                            summary,
-                            self.planning_artifact_dir,
-                        )
-                    except OSError as exc:
-                        self.goal_state.reject_planning_artifacts(
-                            "The planner produced a valid plan, but Musubi "
-                            f"could not persist it: {type(exc).__name__}. "
-                            "Resolve the workspace write error before retrying."
-                        )
-                if self.planning_artifact_dir is None:
-                    # Unit-level orchestration callers may omit persistence;
-                    # production run_agent always supplies the directory.
-                    self.goal_state.apply_planner_manifest(summary)
-                elif paths is None and self.goal_state.pending_clarification is None:
-                    self.goal_state.reject_planning_artifacts(
-                        "The planner must produce both a non-empty <plan> "
-                        "block and one valid <change_manifest> block before "
-                        "implementation can start."
-                    )
-                elif paths is not None:
-                    self.goal_state.planning_artifacts = tuple(
-                        str(path) for path in paths
-                    )
-                    self.goal_state.apply_planner_manifest(summary)
-                if self.goal_state.role_chain or (
-                    self.goal_state.route == RouteKind.PLAN_DESIGN_WORKFLOW
-                ):
-                    # A large change owes designer → coder → reviewer after the
-                    # planner. That is four workers, one more than the default
-                    # ceiling, so the chain would be refused on its last step.
-                    # Raise the ceiling to fit the chain plus headroom for one
-                    # recovery replacement.
-                    self.max_root_workers = max(
-                        self.max_root_workers, DEFAULT_MAX_ROOT_WORKERS_LARGE,
-                    )
-        return outcome
-
-    def latest_failed_outcome(self, role: str) -> WorkerOutcome | None:
-        """Return the latest same-role failure, unless a later run recovered."""
-        for outcome in reversed(self.worker_outcomes):
-            if outcome.role == role:
-                if outcome.status in {"failed", "escalated"}:
-                    return outcome
-                return None
-        return None
-
-    def latest_unrecovered_failure(self) -> WorkerOutcome | None:
-        """Return the newest failure not superseded by a same-role success."""
-        seen_roles: set[str] = set()
-        for outcome in reversed(self.worker_outcomes):
-            if outcome.role in seen_roles:
-                continue
-            seen_roles.add(outcome.role)
-            if outcome.status in {"failed", "escalated"}:
-                return outcome
-        return None
 
 
 def _replacement_brief(original_brief: str, outcome: WorkerOutcome) -> str:
@@ -505,7 +344,7 @@ async def _auto_recovery_transition(
     AUTO_REPLACE synthesizes one `musubi_spawn_subagent` call and passes it
     through `_dispatch` — never straight to `run_subagent` — so the root
     worker ceiling, replacement brief injection, policy check, tool audit,
-    subagent audit, and touched-file tracking all apply (HI #8). HALT returns
+    subagent audit, and touched-file tracking all apply (spawn-audit contract). HALT returns
     the final `[incomplete]` text. ROOT_ANALYZE (and every untyped failure)
     returns None, leaving the legacy bounded analysis window untouched.
 
@@ -577,6 +416,11 @@ async def _auto_recovery_transition(
         }
         if outcome.pushed_skill_id:
             recovery_input["pushed_skill_id"] = outcome.pushed_skill_id
+        if outcome.work_package_id and outcome.contract_hash:
+            recovery_input.update({
+                "work_package_id": outcome.work_package_id,
+                "contract_hash": outcome.contract_hash,
+            })
         auto_tool_use = {
             "type": "tool_use",
             "id": f"auto-recovery-{len(orchestration.worker_outcomes)}",
@@ -621,46 +465,6 @@ def _recovery_incomplete(outcome: WorkerOutcome, reason: str) -> str:
         f"Files touched: {files}.\n"
         f"Worker summary: {outcome.summary}"
     )
-
-
-@dataclass
-class AgentRunStats:
-    """Cumulative telemetry for one CLI turn across root and workers."""
-
-    cycles: int = 0
-    lm_ms: int = 0
-    tokens_in_estimate: int = 0
-    tokens_out_estimate: int = 0
-
-    def record_cycle(
-        self,
-        *,
-        lm_ms: int,
-        tokens_in: int,
-        tokens_out: int,
-    ) -> None:
-        self.cycles += 1
-        self.lm_ms += lm_ms
-        self.tokens_in_estimate += tokens_in
-        self.tokens_out_estimate += tokens_out
-
-
-@dataclass
-class EffortCallResult:
-    """Final response plus every vendor call made to obtain it."""
-
-    response: LMResponse
-    attempts: list[LMResponse]
-
-
-@dataclass(frozen=True)
-class CycleTokenUsage:
-    """Normalized provider usage for one logical loop cycle."""
-
-    tokens_in: int
-    cached_input_tokens: int
-    tokens_out: int
-    source: str
 
 
 # ── Public entry ────────────────────────────────────────────────────────────
@@ -883,6 +687,25 @@ async def run_agent(
                 / goal_artifact_key(chat_id, planning_key)
             ),
         )
+        if not pipeline:
+            from agent.work_package_controller import WorkPackageController
+
+            governance_budget = budget
+            if governance_budget is None:
+                governance_budget = TokenBudgetEnforcer(DEFAULT_AGENT_MAX_TOKENS)
+                print(
+                    "[agent] Work Package governance budget remains "
+                    f"{DEFAULT_AGENT_MAX_TOKENS} tokens while the global meter "
+                    "is disabled",
+                    file=log,
+                )
+            orchestration.work_package_controller = WorkPackageController(
+                session_id=parent_session_id or "",
+                root_budget=governance_budget,
+                roots=registry,
+                db_path=context_compression_db_path,
+            )
+            print("[agent] root_control=work_package", file=log)
         # Consent is matched against the RAW user message. A model cannot
         # author a user turn, so a token found here is proof a human typed it —
         # and the match is string equality against a value the harness itself
@@ -911,6 +734,8 @@ async def run_agent(
             + "\n\n"
             + registry.prompt_block()
         )
+        if not pipeline:
+            system_prompt = f"{system_prompt}\n\n{_WORK_PACKAGE_DIRECTIVE}"
         if plan_first:
             system_prompt = f"{system_prompt}\n\n{_PLAN_FIRST_DIRECTIVE}"
             print("[agent] plan-first requested (--plan)", file=log)
@@ -1121,7 +946,10 @@ async def _run_loop(
     the spawn tool, while its children still need the whole catalog.
     """
     final_answer: str | None = None
-    last_text = ""  # most recent non-empty assistant text, for salvage
+    # Only text produced while terminal completion is permitted may be salvaged.
+    # In particular, a Root draft emitted during Planning is not an artifact and
+    # must never escape through a budget/cycle-exhaustion fallback.
+    last_text = ""
     cycles_used = 0
     base_floor, ceiling = resolve_effort_bounds(
         can_mutate=any(
@@ -1258,21 +1086,11 @@ async def _run_loop(
                 tool for tool in tools
                 if tool.get("name") == "musubi_spawn_subagent"
             ]
-        # IntelligentContext: trim an over-budget conversation deterministically
-        # before the call (oldest/largest tool results elided, pairing intact).
-        if context_budget_chars is None:
-            messages = fit_context(messages, compression_db_path=compression_db_path)
-        else:
-            # A worker with an explicit budget (every pipeline stage) gets the
-            # HARD cap: the serialized messages PLUS tool definitions are fit
-            # under the budget or the cycle raises before the model call, so a
-            # runaway stage cannot quietly send a 200k-char input.
-            messages = fit_model_input(
-                messages,
-                cycle_tools,
-                budget_chars=context_budget_chars,
-                compression_db_path=compression_db_path,
-            )
+        context = collect_context(
+            messages, cycle_tools, budget_chars=context_budget_chars,
+            compression_db_path=compression_db_path,
+        )
+        messages = context.messages
         input_tokens_est = _estimate_input_tokens(messages, cycle_tools)
         try:
             _check_budget_preflight(budget, input_tokens_est, log)
@@ -1342,7 +1160,8 @@ async def _run_loop(
         if resp.content:
             messages.append({"role": "assistant", "content": resp.content})
 
-        tool_uses = [b for b in resp.content if b.get("type") == "tool_use"]
+        decision = interpret_response(resp)
+        tool_uses = decision.tool_uses
         _log_cycle(
             log, cycle, resp.stop_reason, tool_uses, resp.usage,
             tokens_out=usage.tokens_out,
@@ -1352,15 +1171,15 @@ async def _run_loop(
             log, cycle, lm_ms, usage.tokens_in, usage.tokens_out, budget,
         )
 
-        text = _extract_text(resp.content)
-        if text and _looks_like_vendor_tool_markup(text):
+        text = decision.text
+        if decision.discarded_markup:
             print(
                 f"[agent] {role}: vendor tool-call markup in the text channel; "
                 "discarded (not an answer)",
                 file=log,
             )
             text = ""
-        if text:
+        if text and _root_completion_blocker(root_state, orchestration) is None:
             last_text = text  # remember even when the model also called a tool
         try:
             _charge_budget_postflight(
@@ -1508,6 +1327,42 @@ async def _run_loop(
             continue
 
         if not tool_uses:
+            completion_blocker = _root_completion_blocker(
+                root_state, orchestration,
+            )
+            if completion_blocker is not None:
+                _safe_record_agent_cycle(
+                    db_path=compression_db_path,
+                    session_id=audit_session_id,
+                    worker_id=audit_worker_id,
+                    stage=audit_stage,
+                    cycle_idx=cycle,
+                    started_at=cycle_started_at,
+                    ended_at=cycle_ended_at,
+                    lm_ms=lm_ms,
+                    usage=usage,
+                    tool_names=[],
+                    text_chars=len(text),
+                    cycle_status="control_refused",
+                    log=log,
+                )
+                print(
+                    f"[agent] root completion refused: {completion_blocker}",
+                    file=log,
+                )
+                if cycle + 1 >= max_cycles:
+                    final_answer = _blocked_completion_answer(completion_blocker)
+                    break
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[root-control-error]\n"
+                        f"{completion_blocker}\n"
+                        "Do not return implementation as chat text. Continue "
+                        "through the required control tool."
+                    ),
+                })
+                continue
             _safe_record_agent_cycle(
                 db_path=compression_db_path,
                 session_id=audit_session_id,
@@ -1703,7 +1558,19 @@ async def _run_loop(
     # A model that calls a tool on EVERY cycle never hits the break path, so
     # `final_answer` stays None. Recover rather than hard-failing the turn:
     if final_answer is None and salvage_on_exhaust:
-        if last_text:
+        completion_blocker = _root_completion_blocker(root_state, orchestration)
+        if completion_blocker is not None:
+            # Fail closed before either salvage path. The last model response
+            # may contain a complete-looking application, but while Root control
+            # is unresolved it is only an unexecuted draft and no extra no-tools
+            # call can make it a governed filesystem artifact.
+            print(
+                f"[agent] cycles exhausted ({max_cycles}); root completion "
+                f"blocked: {completion_blocker}",
+                file=log,
+            )
+            final_answer = _blocked_completion_answer(completion_blocker)
+        elif last_text:
             # It produced text alongside its tool calls — return the last of it.
             print(
                 f"[agent] cycles exhausted ({max_cycles}); salvaging last "
@@ -1720,18 +1587,10 @@ async def _run_loop(
                 file=log,
             )
             try:
-                if context_budget_chars is None:
-                    final_messages = fit_context(
-                        messages, compression_db_path=compression_db_path,
-                    )
-                else:
-                    # No-tools final answer: the whole budget is for messages.
-                    final_messages = fit_model_input(
-                        messages,
-                        [],
-                        budget_chars=context_budget_chars,
-                        compression_db_path=compression_db_path,
-                    )
+                final_messages = collect_context(
+                    messages, [], budget_chars=context_budget_chars,
+                    compression_db_path=compression_db_path,
+                ).messages
                 input_tokens_est = _estimate_input_tokens(final_messages, [])
                 try:
                     _check_budget_preflight(budget, input_tokens_est, log)
@@ -2275,7 +2134,6 @@ def _load_pipeline_resume_checkpoint(
 
 
 def _validate_resume_folder_manifest(request_id: str, audit_db_path: Path) -> None:
-    import sqlite3
 
     raw = os.environ.get(MANIFEST_ENV, "").strip()
     if not raw:
@@ -2376,7 +2234,7 @@ def _harness_root(musubi_dir: Path) -> Path:
     package = musubi_dir.resolve()
     parent = package.parent
     if package.name.lower() == "musubi" and (
-        (parent / "CLAUDE.md").is_file() or (parent / ".github").is_dir()
+        (parent / "AGENTS.md").is_file() or (parent / ".github").is_dir()
     ):
         return parent
     return package
@@ -2666,11 +2524,6 @@ def _record_agent_turn(
         )
 
 
-def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
-    parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
-    return "".join(parts).strip()
-
-
 #: Vendor-native tool-call syntax that leaked into the TEXT channel. When the
 #: loop exhausts its cycles it makes one final call with NO tools offered, on
 #: the assumption that a model with nothing to call will answer in words. Not
@@ -2679,20 +2532,6 @@ def _extract_text(content_blocks: list[dict[str, Any]]) -> str:
 #: an answer — accepting it puts machine markup in front of the user, into the
 #: audit DB, and into `parse_change_manifest`, where a routing decision would
 #: then be made from garbage.
-_VENDOR_TOOL_MARKUP_RE = re.compile(
-    r"(?i)(\bDSML\b|<[|｜]+\s*tool[_▁]?calls?|<tool_call\b|"
-    r"</?function_calls?\b|<invoke\s+name\s*=|\bantml:invoke\b|"
-    r"<[|｜]python_tag[|｜]>)"
-)
-
-
-def _looks_like_vendor_tool_markup(text: str) -> bool:
-    """True when `text` is a vendor's tool-call syntax rather than prose.
-
-    Fail-closed by design: the caller discards the text and reports that the
-    worker did not answer, rather than trying to salvage a plan out of markup.
-    """
-    return _VENDOR_TOOL_MARKUP_RE.search(text or "") is not None
 
 
 def _clean_error(exc: BaseException) -> str:
@@ -2706,28 +2545,6 @@ def _clean_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _call_with_effort(
-    vendor: LMRouter,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    *,
-    floor: int,
-    ceiling: int,
-) -> EffortCallResult:
-    """Effort routing: start at a low output-token cap, escalate only on need.
-
-    Most cycles emit a small tool_use block, so the floor cap costs nothing
-    they needed. If a call truncates (`stop_reason == "max_tokens"`), re-issue
-    the same request once at the ceiling so a real answer is never cut off.
-    """
-    resp = vendor.call(messages, tools, max_tokens=floor)
-    attempts = [resp]
-    if resp.stop_reason == "max_tokens" and floor < ceiling:
-        resp = vendor.call(messages, tools, max_tokens=ceiling)
-        attempts.append(resp)
-    return EffortCallResult(response=resp, attempts=attempts)
-
-
 def _estimate_input_tokens(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
@@ -2735,56 +2552,6 @@ def _estimate_input_tokens(
     chars = len(json.dumps(messages, default=str, ensure_ascii=False))
     chars += len(json.dumps(tools, default=str, ensure_ascii=False))
     return estimate_tokens_from_chars(chars)
-
-
-def _cycle_token_usage(
-    responses: LMResponse | list[LMResponse],
-    input_estimate: int,
-) -> CycleTokenUsage:
-    attempts = responses if isinstance(responses, list) else [responses]
-    totals = [
-        _single_response_token_usage(resp, input_estimate)
-        for resp in attempts
-    ]
-    return CycleTokenUsage(
-        tokens_in=sum(item.tokens_in for item in totals),
-        cached_input_tokens=sum(item.cached_input_tokens for item in totals),
-        tokens_out=sum(item.tokens_out for item in totals),
-        source=(
-            "provider"
-            if all(item.source == "provider" for item in totals)
-            else "estimated"
-        ),
-    )
-
-
-def _single_response_token_usage(
-    resp: LMResponse,
-    input_estimate: int,
-) -> CycleTokenUsage:
-    usage = resp.usage or {}
-    provider_input = _usage_int(usage, "input_tokens", "prompt_tokens")
-    tokens_in = provider_input if provider_input is not None else input_estimate
-    output_estimate = estimate_tokens_from_chars(
-        len(json.dumps(resp.content, default=str, ensure_ascii=False))
-    )
-    provider_output = _usage_int(usage, "output_tokens", "completion_tokens")
-    tokens_out = provider_output if provider_output is not None else output_estimate
-    cached = (
-        _usage_int(usage, "cache_read_input_tokens", "cached_input_tokens")
-        or _nested_usage_int(usage, ("prompt_tokens_details", "cached_tokens"))
-        or 0
-    )
-    return CycleTokenUsage(
-        tokens_in=max(0, tokens_in),
-        cached_input_tokens=max(0, min(cached, tokens_in)),
-        tokens_out=max(0, tokens_out),
-        source=(
-            "provider"
-            if provider_input is not None and provider_output is not None
-            else "estimated"
-        ),
-    )
 
 
 def _safe_record_agent_cycle(
@@ -2835,31 +2602,9 @@ def _safe_record_agent_cycle(
         )
 
 
-def _usage_int(usage: dict[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        value = usage.get(key)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-    return None
-
-
-def _nested_usage_int(usage: dict[str, Any], path: tuple[str, str]) -> int | None:
-    value = usage.get(path[0])
-    if not isinstance(value, dict):
-        return None
-    nested = value.get(path[1])
-    if isinstance(nested, int):
-        return nested
-    if isinstance(nested, float):
-        return int(nested)
-    return None
-
-
 def _no_progress_budget_trip(
     budget: Any,
-    orchestration: "Orchestration",
+    orchestration: Orchestration,
     *,
     ratio: float = DEFAULT_NO_PROGRESS_BUDGET_RATIO,
 ) -> str | None:
@@ -3376,19 +3121,28 @@ def _normalize_root_spawn_tool_uses(
         if (
             tool_use.get("name") != "musubi_spawn_subagent"
             or not isinstance(raw_input, dict)
-            or "allowed_tools" not in raw_input
         ):
             normalized.append(tool_use)
             continue
         clean_input = dict(raw_input)
+        removed_allowed_tools = "allowed_tools" in clean_input
         clean_input.pop("allowed_tools", None)
+        if orchestration.work_package_controller is not None:
+            model_fields = {
+                "role", "pushed_skill_id", "work_package_id", "contract_hash",
+            }
+            clean_input = {
+                key: value for key, value in clean_input.items()
+                if key in model_fields
+            }
         normalized.append({**tool_use, "input": clean_input})
-        emit_runtime_log(
-            log,
-            "[agent] ignored model allowed_tools on root spawn; "
-            "the worker role policy owns its tool surface",
-            category="policy",
-        )
+        if removed_allowed_tools:
+            emit_runtime_log(
+                log,
+                "[agent] ignored model allowed_tools on root spawn; "
+                "the worker role policy owns its tool surface",
+                category="policy",
+            )
     return normalized
 
 
@@ -3756,6 +3510,10 @@ async def _dispatch_one(
         name in {
             "musubi_begin_plan",
             "musubi_commit_plan",
+            "musubi_commit_work_package",
+            "musubi_record_criterion_verdict",
+            "musubi_get_gap_report",
+            "musubi_rollback_work_package",
         }
         and orchestration is not None
         and orchestration.depth == 0
@@ -3835,13 +3593,37 @@ async def _dispatch_one(
         # `refused_reason` is handled above, before any branch — a refused call
         # must not reach the server on any path, orchestrated or not.
         worker_args = args
+        work_package_controller = orchestration.work_package_controller
+        work_package_attempt = None
+        worker_budget = budget
+        if work_package_controller is not None:
+            work_package_id = str(args.get("work_package_id") or "").strip()
+            echoed_hash = str(args.get("contract_hash") or "").strip()
+            try:
+                work_package_attempt = work_package_controller.start_attempt(
+                    work_package_id, echoed_hash,
+                )
+            except ValueError as exc:
+                return json.dumps({"status": "refused", "reason": str(exc)})
+            goal_contract = work_package_controller.goal
+            assert goal_contract is not None
+            worker_args = {
+                **args,
+                "brief": work_package_controller.resolved_brief(work_package_id),
+                "goal_id": goal_contract.id,
+                "work_package_id": work_package_id,
+                "attempt_id": work_package_attempt.attempt_id,
+                "contract_hash": work_package_attempt.contract_hash,
+                "max_turns": work_package_attempt.max_turns,
+            }
+            worker_budget = work_package_attempt.token_budget
         spawn_role = str(args.get("role", ""))
         prior_outcome = orchestration.latest_failed_outcome(spawn_role)
         if prior_outcome is not None:
             worker_args = {
-                **args,
+                **worker_args,
                 "brief": _replacement_brief(
-                    str(args.get("brief", "")), prior_outcome,
+                    str(worker_args.get("brief", "")), prior_outcome,
                 ),
             }
         injected = {
@@ -3860,8 +3642,42 @@ async def _dispatch_one(
             result = await subagent.run_subagent(
                 session, injected, vendor, tools, log, orchestration=orchestration,
                 compression_db_path=compression_db_path,
-                budget=budget, stats=stats, audit_db_path=audit_db_path,
+                budget=worker_budget, stats=stats, audit_db_path=audit_db_path,
             )
+            if work_package_attempt is not None:
+                outcome = (
+                    orchestration.worker_outcomes[-1]
+                    if orchestration.worker_outcomes else None
+                )
+                touched = outcome.touched_files if outcome is not None else ()
+                worker_status = outcome.status if outcome is not None else "failed"
+                failure_class = (
+                    outcome.failure_kind.value
+                    if outcome is not None and outcome.failure_kind is not None
+                    else None
+                )
+                from storage import db as state_db
+
+                attempt_row = state_db.get_sub_session_by_attempt(
+                    work_package_attempt.attempt_id,
+                    work_package_controller.db_path,
+                )
+                gate = work_package_controller.finish_attempt(
+                    worker_status=worker_status,
+                    touched_files=touched,
+                    attempt_id=work_package_attempt.attempt_id,
+                    failure_class=failure_class,
+                    turns_used=int((attempt_row or {}).get("turns") or 0),
+                )
+                report = work_package_controller.gap_report().to_dict()
+                assert orchestration.goal_state is not None
+                orchestration.goal_state.gap_report = report
+                result = result + "\n[work-package] " + json.dumps({
+                    "attempt_id": work_package_attempt.attempt_id,
+                    "contract_hash": work_package_attempt.contract_hash,
+                    "gate": gate.status if gate is not None else "semantic_evidence_required",
+                    "gap_report": report,
+                }, sort_keys=True)
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
                 args=json_args(args), status="ok", db_path=audit_path,
@@ -3871,6 +3687,19 @@ async def _dispatch_one(
         except PolicyDeniedError:
             raise
         except Exception as exc:  # noqa: BLE001 — surface to the model
+            if (
+                work_package_attempt is not None
+                and work_package_controller.active_attempt is not None
+            ):
+                try:
+                    work_package_controller.finish_attempt(
+                        worker_status="failed",
+                        touched_files=(),
+                        attempt_id=work_package_attempt.attempt_id,
+                        failure_class=type(exc).__name__,
+                    )
+                except Exception:
+                    pass
             result = f"[subagent error] {type(exc).__name__}: {exc}"
             _safe_record_tool_audit(
                 session_id=session_id, role=call_role, tool=name,
@@ -3894,10 +3723,27 @@ async def _dispatch_one(
                 result_text=result, log=log,
             )
         return result
+    side_effect_error = _work_package_side_effect_error(name, orchestration)
+    if side_effect_error is not None:
+        return json.dumps({"status": "refused", "reason": side_effect_error})
     target_session, original_name = target
+    rollback_capture = _prepare_work_package_file_mutation(
+        name, args, orchestration,
+    )
     try:
         result = await target_session.call_tool(original_name, arguments=args)
         text = normalize_tool_result_text(_first_text(result))
+        if rollback_capture is not None and _tool_wrote_ok(text):
+            controller, attempt_id, root_alias, path = rollback_capture
+            from agent.rollback import record_after
+
+            record_after(
+                attempt_id=attempt_id,
+                root_alias=root_alias,
+                path=path,
+                roots=controller.roots,
+                db_path=controller.db_path,
+            )
         if name == "musubi_get_skill" and _skill_loaded_successfully(text):
             skill_id = str(args.get("skill_id") or "<unknown>")
             agent_name = str(args.get("agent_name") or call_role)
@@ -3928,192 +3774,71 @@ async def _dispatch_one(
         return result
 
 
-class _PlanningContractError(ValueError):
-    """A model-correctable Root plan declaration error."""
-
-    def __init__(self, error_kind: str, message: str) -> None:
-        super().__init__(message)
-        self.error_kind = error_kind
-
-
-def _root_control_error(
-    error_kind: str,
-    message: str,
-    state: GoalState,
-) -> str:
-    """Return one closed correction envelope for a bad plan declaration."""
-    failures = state.record_planning_contract_failure(error_kind)
-    terminal = failures >= 3
-    if terminal:
-        state.pending_clarification = (
-            "[incomplete] run stopped: three consecutive planning-contract "
-            "failures occurred before any worker was spawned. Correct the "
-            "closed plan declaration and retry the request."
-        )
-        state.next_role = None
-        state.role_chain = ()
-    return json.dumps({
-        "status": "incomplete" if terminal else "error",
-        "error_kind": error_kind,
-        "message": message,
-        "expected_schema": manifest_schema(),
-        "allowed_roles": list(ROOT_PLAN_WORKER_ROLES),
-        "consecutive_failures": failures,
-    })
-
-
-def sanitize_control_result(result: str, tool_name: str) -> str:
-    """Project a Root control outcome into a safe, bounded runtime event.
-
-    The full tool response is retained in the tool audit for debugging. The
-    Request Log must not repeat raw ``plan_markdown``, manifest fields, or the
-    correction schema, which can be much larger and may contain user context.
-    """
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-
-    status = str(payload.get("status") or "error").strip().lower()
-    if status not in {"ok", "error", "incomplete"}:
-        status = "error"
-    parts = [f"[agent] control {tool_name} status={status}"]
-
-    error_kind = payload.get("error_kind")
-    if isinstance(error_kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", error_kind):
-        parts.append(f"error_kind={error_kind}")
-    # Correction responses use `message`; deliberately do not fall back to a
-    # generic `error` field, which may contain provider or filesystem detail.
-    message = payload.get("message")
-    if isinstance(message, str) and message.strip():
-        parts.append(f"reason={bounded(message, 240)}")
-    failures = payload.get("consecutive_failures")
-    if type(failures) is int and failures >= 0:
-        parts.append(f"consecutive_failures={failures}")
-    return " ".join(parts)
-
-
-def _handle_root_control_tool(
-    name: str,
-    args: dict[str, Any],
-    orchestration: Orchestration,
-) -> str:
-    """Apply model-owned mode/plan declarations to driver-owned goal state."""
-    state = orchestration.goal_state
-    assert state is not None
-    try:
-        if name == "musubi_begin_plan":
-            deliverable = str(args.get("deliverable") or "").strip()
-            if not deliverable:
-                raise ValueError("deliverable must be a non-empty string")
-            state.begin_plan()
-            return json.dumps({
-                "status": "ok",
-                "mode": state.mode,
-                "deliverable": deliverable,
-            })
-
-        raw_plan = args.get("plan_markdown")
-        if not isinstance(raw_plan, str) or not raw_plan.strip():
-            raise _PlanningContractError(
-                "invalid_plan_markdown",
-                "plan_markdown must be a non-empty string",
-            )
-        plan_markdown = raw_plan
-        manifest_object = args.get("change_manifest")
-        model_dump = getattr(manifest_object, "model_dump", None)
-        if callable(model_dump):
-            manifest_object = model_dump(mode="python")
-        manifest = parse_change_manifest_object(manifest_object)
-        if manifest is None:
-            raise _PlanningContractError(
-                "invalid_change_manifest",
-                "change_manifest must match the closed manifest schema",
-            )
-        raw_size = args.get("change_size")
-        if not isinstance(raw_size, str):
-            raise _PlanningContractError(
-                "invalid_change_size",
-                "change_size must be small, medium, or large",
-            )
-        change_size = raw_size.strip()
-        raw_chain = args.get("worker_chain")
-        if not isinstance(raw_chain, list):
-            raise _PlanningContractError(
-                "invalid_worker_chain",
-                "worker_chain must be an array of allowed roles",
-            )
-        if any(not isinstance(role, str) for role in raw_chain):
-            raise _PlanningContractError(
-                "invalid_worker_chain",
-                "worker_chain must contain only allowed role strings",
-            )
-        chain = tuple(role.strip() for role in raw_chain)
-        # Validate model declaration before any artifact reaches disk.
-        if change_size not in ROOT_PLAN_CHANGE_SIZES:
-            raise _PlanningContractError(
-                "invalid_change_size",
-                "change_size must be small, medium, or large",
-            )
-        if not chain or any(role not in ROOT_PLAN_WORKER_ROLES for role in chain):
-            raise _PlanningContractError(
-                "invalid_worker_chain",
-                "worker_chain roles must be one of the allowed non-planner roles",
-            )
-        if not any(role in MUTATION_ROLES for role in chain):
-            raise _PlanningContractError(
-                "invalid_worker_chain",
-                "worker_chain must contain a mutation role",
-            )
-        needed = orchestration.spawned_workers + len(chain) + 1
-        if needed > MAX_ROOT_WORKERS_HARD:
-            raise _PlanningContractError(
-                "invalid_worker_chain",
-                "worker_chain exceeds the hard worker ceiling including recovery",
-            )
-        if orchestration.planning_artifact_dir is None:
-            raise ValueError("planning artifact directory is unavailable")
-        persisted = persist_planning_contract(
-            plan_markdown,
-            manifest_object,
-            orchestration.planning_artifact_dir,
-        )
-        if persisted is None:
-            raise _PlanningContractError(
-                "invalid_plan_markdown",
-                "plan_markdown or change_manifest is invalid",
-            )
-        paths, artifacts = persisted
-        state.commit_root_plan(
-            manifest=artifacts.manifest,
-            change_size=change_size,
-            worker_chain=chain,
-            planning_artifacts=(str(path) for path in paths),
-        )
-        orchestration.max_root_workers = max(
-            orchestration.max_root_workers, needed,
-        )
-        return json.dumps({
-            "status": "ok",
-            "mode": state.mode,
-            "change_size": state.change_size,
-            "worker_chain": list(chain),
-            "next_role": state.next_role,
-            "max_root_workers": orchestration.max_root_workers,
-            "planning_artifacts": list(state.planning_artifacts),
-        })
-    except _PlanningContractError as exc:
-        return _root_control_error(exc.error_kind, str(exc), state)
-    except (OSError, ValueError) as exc:
-        return json.dumps({"status": "error", "error": str(exc)})
-
-
 def _runtime_root_registry() -> RootRegistry:
     root = Path(os.environ.get("MUSUBI_ROOT") or Path.cwd()).resolve()
     raw = os.environ.get(MANIFEST_ENV, "").strip()
     return RootRegistry.from_json(raw, root) if raw else RootRegistry.build(root)
+
+
+def _prepare_work_package_file_mutation(
+    name: str,
+    args: Mapping[str, Any],
+    orchestration: Orchestration | None,
+) -> tuple[Any, str, str, str] | None:
+    """Enforce WP file scope and capture the first byte-exact rollback point."""
+    if name not in {
+        "musubi_write_file", "musubi_append_file", "musubi_edit_file",
+    } or orchestration is None:
+        return None
+    controller = orchestration.work_package_controller
+    if controller is None or not orchestration.work_package_attempt_id:
+        return None
+    work_package_id = orchestration.work_package_id
+    if not work_package_id:
+        raise ValueError("file mutation has no active Work Package")
+    _, attempt = controller.active_attempt_context(
+        orchestration.work_package_attempt_id,
+    )
+    root_alias = str(args.get("root") or "musubi")
+    path = str(args.get("path") or "").strip()
+    reference = f"{root_alias}::{path}"
+    controller.assert_paths_in_scope(work_package_id, [reference])
+    work_package = controller.work_packages[work_package_id]
+    if work_package.reversibility != "automatic":
+        return None
+    from agent.rollback import capture_before
+
+    attempt_id = attempt.attempt_id
+    capture_before(
+        session_id=controller.session_id,
+        work_package_id=work_package_id,
+        attempt_id=attempt_id,
+        root_alias=root_alias,
+        path=path,
+        roots=controller.roots,
+        db_path=controller.db_path,
+    )
+    return controller, attempt_id, root_alias, path
+
+
+def _work_package_side_effect_error(
+    name: str,
+    orchestration: Orchestration | None,
+) -> str | None:
+    """Reject automatic rollback claims for shell effects we cannot restore."""
+    if orchestration is None or orchestration.work_package_controller is None:
+        return None
+    controller = orchestration.work_package_controller
+    work_package_id = orchestration.work_package_id
+    if not orchestration.work_package_attempt_id or not work_package_id:
+        return None
+    work_package = controller.work_packages[work_package_id]
+    if name == "musubi_run_command" and work_package.reversibility == "automatic":
+        return (
+            "shell commands are outside automatic file rollback; supersede the "
+            "Work Package with reversibility=manual or irreversible"
+        )
+    return None
 
 
 def _tool_wrote_ok(text: str) -> bool:
@@ -4215,101 +3940,6 @@ def _record_touched_file(name: str, args: dict[str, Any], text: str) -> None:
         if not isinstance(root, str) or not root:
             root = "musubi"
         sink.add(path if root == "musubi" else f"{root}::{path}")
-
-
-def _file_tool_argument_error(name: str, args: Any) -> str | None:
-    if name not in ORDER_SENSITIVE_FILE_TOOLS:
-        return None
-    if not isinstance(args, dict):
-        return "arguments must be an object"
-
-    errors: list[str] = []
-    _require_string(args, "path", errors)
-    if name in {"musubi_write_file", "musubi_append_file"}:
-        _require_string(args, "content", errors)
-        if isinstance(args.get("content"), str) and not args["content"].strip():
-            errors.append(
-                "content is empty; regenerate the full file content "
-                "(an empty write is almost always a truncation artifact)"
-            )
-        _reject_elided_marker(args, "content", errors)
-        _optional_bool(args, "create_parents", errors)
-    elif name == "musubi_edit_file":
-        _require_string(args, "old_string", errors)
-        _require_string(args, "new_string", errors)
-        _reject_elided_marker(args, "old_string", errors)
-        _reject_elided_marker(args, "new_string", errors)
-        _optional_bool(args, "replace_all", errors)
-
-    if name == "musubi_append_file" and "expected_offset" in args:
-        offset = args.get("expected_offset")
-        if (
-            offset is not None
-            and (not isinstance(offset, int) or isinstance(offset, bool) or offset < 0)
-        ):
-            errors.append("expected_offset must be a non-negative integer")
-
-    return "; ".join(errors) if errors else None
-
-
-def _require_string(args: dict[str, Any], key: str, errors: list[str]) -> None:
-    if not isinstance(args.get(key), str):
-        errors.append(f"{key} must be a string")
-
-
-def _reject_elided_marker(
-    args: dict[str, Any], key: str, errors: list[str]
-) -> None:
-    if is_elided_tool_arg_marker(args.get(key)):
-        errors.append(
-            f"{key} is an elided tool argument marker; regenerate the original "
-            "content instead of copying replay-only context"
-        )
-
-
-def _optional_bool(args: dict[str, Any], key: str, errors: list[str]) -> None:
-    if key in args and not isinstance(args.get(key), bool):
-        errors.append(f"{key} must be a boolean")
-
-
-async def _call_tool_text(
-    session: ClientSession, name: str, args: dict[str, Any]
-) -> str:
-    """Call an MCP tool and return its first text chunk (raises on transport error)."""
-    result = await session.call_tool(name, arguments=args)
-    return _first_text(result)
-
-
-def _first_text(call_result: Any) -> str:
-    """Pull the first text chunk out of an MCP CallToolResult."""
-    for c in getattr(call_result, "content", []) or []:
-        text = getattr(c, "text", None)
-        if text:
-            return text
-    return ""
-
-
-def normalize_tool_result_text(text: str) -> str:
-    """Return a compact, deterministic tool result string for the next LM call."""
-    stripped = text.strip()
-    if not stripped:
-        return ""
-    try:
-        parsed = json.loads(stripped)
-    except (TypeError, json.JSONDecodeError):
-        return re.sub(r"\n{3,}", "\n\n", stripped)
-    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-
-
-def _skill_loaded_successfully(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError:
-        return True
-    return not (isinstance(payload, dict) and "error" in payload)
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -6,8 +6,6 @@ expires-when: never - frozen claims and provenance remain auditable
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,6 +14,7 @@ from typing import Any
 from composer import StageRecipe
 from skills.skill_loader import SkillMeta
 from workspace.grants import RootRegistry
+from validation.execution_contract import canonical_json, contract_hash
 
 _PATH_CHECKS = frozenset({
     "file_exists", "file_created_or_modified", "dom_count",
@@ -35,12 +34,6 @@ class FrozenStageContract:
     exit_when: tuple[Mapping[str, Any], ...]
     canonical_json: str
     contract_hash: str
-
-
-def _canonical(value: Any) -> str:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-    )
 
 
 def validate_and_freeze_contract(
@@ -111,8 +104,8 @@ def validate_and_freeze_contract(
         "goal": goal,
         "exit_when": normalized,
     }
-    canonical = _canonical(frozen_value)
-    digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = canonical_json(frozen_value)
+    digest = contract_hash(frozen_value)
     return FrozenStageContract(
         skill_id=skill_id,
         goal=goal,

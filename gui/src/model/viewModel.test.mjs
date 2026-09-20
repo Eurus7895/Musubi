@@ -1322,7 +1322,7 @@ test('trust strip carries live counters rather than fixed claims', () => {
 test('audit and firewall counters read uncapped evidence, not display lists', () => {
   // `audit` is truncated to 120 rows Rust-side, so its length plateaus and the
   // counter stops being evidence. totalSpawned + totalDone is the real ledger
-  // size: HI #8 writes one row per spawn and one per completion.
+  // size: spawn-audit contract writes one row per spawn and one per completion.
   const vm = buildViewModel(baseState({
     audit: new Array(120).fill(0).map((_, i) => ({ id: i, event: 'spawned', status: 'ok', role: 'coder', ts: '1' })),
     totalSpawned: 240,

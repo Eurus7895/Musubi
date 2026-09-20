@@ -18,7 +18,7 @@ A pipeline is an ordered chain of workers (composer reads the chain from
       → for each stage in order:
           spawn_pipeline_stage (authorise by membership)
           → get_subagent_context (firewalled brief + role skill + tools — the
-            same HI #2 push path every direct worker takes)
+            same skill-injection contract push path every direct worker takes)
           → resolve the role prompt (workers/ first, then
             pipeline-stages/<pipeline>/; NO prompt → the stage fails closed,
             it never runs on an empty prompt)
@@ -28,7 +28,7 @@ A pipeline is an ordered chain of workers (composer reads the chain from
 
 The brief threads forward: generator stages see the request plus the prior
 summaries; the evaluator (last stage) sees ONLY the immediately prior stage's
-output — the HI #3 firewall, generalised to any pipeline.
+output — the review-context isolation firewall, generalised to any pipeline.
 
 Stage nesting: when the caller passes its `Orchestration` and the server's
 stage response carries a non-empty `spawn_roles` (pipeline.yaml `spawns:` ∩
@@ -431,11 +431,11 @@ async def run_pipeline(
     from agent.budget import ChildTokenBudget, pipeline_stage_allowance
     from agent.run import (
         PolicyDeniedError,
-        _call_tool_text,
         _policy_incomplete,
         _worker_touched_files,
         run_unit,
     )
+    from agent.runtime_tools import _call_tool_text
     from agent.subagent import (
         build_subagent_system_prompt,
         select_child_tools,
@@ -693,7 +693,7 @@ async def run_pipeline(
 
         # Same context path as a direct worker (agent/subagent.py): the
         # spawn context carries the firewalled brief, the role's pushed
-        # skill (HI #2), and the effective tool allowlist.
+        # skill (skill-injection contract), and the effective tool allowlist.
         ctx_raw = await _call_tool_text(session, "musubi_get_subagent_context", {
             "handle_id": handle_id,
         })
@@ -726,7 +726,7 @@ async def run_pipeline(
         # server's `spawn_roles` (pipeline.yaml spawns ∩ firewall) is the
         # gate — not frontmatter, which worker prompts don't declare. The
         # stage's orchestration parents on the PIPELINE session so the
-        # server narrows its spawns per pipeline (HI #5); the server still
+        # server narrows its spawns per pipeline (fail-closed policy); the server still
         # re-validates every spawn.
         stage_orch = None
         stage_spawn_catalog = None
@@ -761,7 +761,7 @@ async def run_pipeline(
         # so no fitter may silently trim its role, pushed skill, brief, or tool
         # definitions to make it fit.
         from agent.context import ContextBudgetExceededError, fit_model_input
-        from agent.run import ORDER_SENSITIVE_FILE_TOOLS
+        from agent.runtime_tools import ORDER_SENSITIVE_FILE_TOOLS
         stage_context_budget_chars = min(
             spec.context_budget_chars,
             resolve_pipeline_context_budget_chars(
@@ -1198,7 +1198,7 @@ async def _complete_pipeline_stage(
     shields FastMCP's JSON-like scalar rehydration quirk without changing the
     exact structured answer that evaluator code consumes locally.
     """
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     completion_summary = summary
     if completion_summary.lstrip().startswith(("{", "[")):
@@ -1221,7 +1221,7 @@ async def _finalize_pipeline(
     final_status: str,
     escalated: bool,
 ) -> None:
-    from agent.run import _call_tool_text
+    from agent.runtime_tools import _call_tool_text
 
     await _call_tool_text(session, "musubi_finalize_pipeline_run", {
         "session_id": session_id,
@@ -1264,7 +1264,7 @@ def _stage_brief(
     """Build the bounded handoff for one stage.
 
     Stage zero receives the request. Every later stage receives exactly one
-    predecessor output. The evaluator retains the stricter HI #3 firewall and
+    predecessor output. The evaluator retains the stricter review-context isolation firewall and
     receives no original request. Historical results stay append-only in the
     stage store and are not projected into a protected worker prompt.
     """
@@ -1391,6 +1391,7 @@ def _record_gate_checkpoint(
     if not _require_attempt_row(session_id, stage, attempt, db_path):
         return
     from datetime import datetime, timezone
+
     from storage import db
     identity = db.StageAttemptIdentity(session_id, stage, attempt)
     db.transition_stage_attempt(

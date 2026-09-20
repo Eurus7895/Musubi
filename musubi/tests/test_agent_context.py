@@ -531,7 +531,7 @@ def test_agent_files_do_not_hardcode_a_vendor_model() -> None:
     spawn, not by the pipeline runner, which passes ONE vendor resolved from
     `.musubi/llm.json` to every stage. Hardcoding `claude-sonnet-4.5` in the
     catalog was therefore both dead and false at runtime (these runs use
-    deepseek and gpt-5-nano), and it contradicts HI #1: the vendor is data in
+    deepseek and gpt-5-nano), and it contradicts driver-only model boundary: the vendor is data in
     llm.json, not a constant in fourteen prompt files.
     """
     import re

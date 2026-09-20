@@ -2,7 +2,7 @@
 
 musubi-tier: substrate
 expires-when: never — the agent is the model's native mode (per
-  CLAUDE.md). The harness controls the environment; the model reasons.
+  docs/system.md). The harness controls the environment; the model reasons.
   This package is the LLM-vendor-agnostic surface that lets ANY MCP
   client + LLM API drive the substrate.
 

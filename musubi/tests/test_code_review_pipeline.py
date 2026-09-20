@@ -188,7 +188,7 @@ def test_stage_permissions_lock_synthesizer_to_findings() -> None:
     """Evaluator firewall: synthesizer reads ONLY findings — analogous to
     feature-dev's reviewer being locked to {'code'}. Cannot peek at request
     or scope. Pinned because regressing this would compromise the evaluator
-    independence invariant from CLAUDE.md."""
+    pipeline's configured review isolation."""
     assert _STAGE_PERMISSIONS["synthesizer"] == {"findings"}
     # And the symmetry: reviewer is still locked to code.
     assert _STAGE_PERMISSIONS["reviewer"] == {"code"}

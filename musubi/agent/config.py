@@ -46,8 +46,6 @@ KNOWN_FAMILIES = frozenset({
     "anthropic",
     "ollama",
 })
-
-
 def config_candidates(
     explicit: str | os.PathLike[str] | None,
     env_var: str,

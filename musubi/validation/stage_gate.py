@@ -127,7 +127,7 @@ def evaluate_stage_gate(
     for check in predicates:
         check_type = str(check.get("type") or "")
         try:
-            evidence: dict[str, Any] = {}
+            evidence: Mapping[str, Any] = {}
             passed = False
             if check_type in {
                 "file_exists", "file_created_or_modified", "dom_count",
@@ -186,3 +186,29 @@ def evaluate_stage_gate(
         else "pass"
     )
     return GateResult(status, tuple(results))
+
+
+def evaluate_execution_gate(
+    predicates: Sequence[Mapping[str, Any]],
+    snapshot: Mapping[str, Any],
+    manifest: Sequence[Mapping[str, Any]],
+    command_runner: Callable[[str], Any] | None = None,
+    *,
+    roots: RootRegistry,
+) -> GateResult:
+    """Evaluate shared execution predicates without exposing criterion metadata.
+
+    A Work Package predicate is ``{criterion_id, check}``; Stage contracts use
+    the check object directly.  Keeping criterion routing outside this function
+    preserves the mechanical gate's single responsibility and the evaluator
+    firewall.
+    """
+    checks = [
+        dict(predicate.get("check", {}))
+        if isinstance(predicate.get("check"), Mapping)
+        else dict(predicate)
+        for predicate in predicates
+    ]
+    return evaluate_stage_gate(
+        {"exit_when": checks}, snapshot, manifest, command_runner, roots=roots,
+    )

@@ -191,8 +191,8 @@ fontsize: 11pt
 
 ## Naming and Storage
 
-- Temporary outputs go to system temp dir — move to repo if committing.
-- Committed diagrams/docs live in `docs/` at the repo root.
-- Name pattern: `docs/{type}/{YYYY-MM-DD}-{slug}.{ext}`
-  - Example: `docs/architecture/2026-04-17-harness-overview.drawio`
-  - Example: `docs/reports/2026-04-17-day1-summary.pdf`
+- Temporary outputs go to the system temp directory.
+- `docs/system.md` is the repository's only system document; do not add plans,
+  reports, or generated artifacts under `docs/`.
+- Commit a generated artifact only when the user requests it, under the
+  repository's existing `artifacts/` structure.

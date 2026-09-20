@@ -181,7 +181,7 @@ def test_summon_a_preset_composed_pipeline_end_to_end(
 
     assert answer == "done"
     assert router.order == ["planner", "coder", "reviewer"]
-    # HI #3: the evaluator sees only the build output, not the request or plan.
+    # review-context isolation: the evaluator sees only the build output, not the request or plan.
     assert "code: wrote it" in router.reviewer_brief
     assert "build a thing" not in router.reviewer_brief
     assert "plan: step1" not in router.reviewer_brief

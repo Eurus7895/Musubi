@@ -7,7 +7,7 @@ export default function Audit({ vals }) {
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ padding: '22px 26px 6px', flexShrink: 0 }}>
         <div style={{ fontSize: 18, fontWeight: 600 }}>Audit ledger</div>
-        <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 3, fontFamily: "'IBM Plex Mono',monospace" }}>append-only · write-once · no silent sub-agents (HI #8) · storage/audit.db</div>
+        <div style={{ fontSize: 12, color: '#6a6a72', marginTop: 3, fontFamily: "'IBM Plex Mono',monospace" }}>append-only · write-once · no silent sub-agents (spawn-audit contract) · storage/audit.db</div>
       </div>
       <div style={{ display: 'flex', gap: 8, padding: '12px 26px', flexShrink: 0 }}>
         <button onClick={vals.setAuditAll} style={cssToObj(vals.auditFAll)}>all</button>
